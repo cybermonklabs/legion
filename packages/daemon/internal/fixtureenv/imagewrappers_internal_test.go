@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // A pod's PATH leads with /opt/legion/bin, whose git runs Legion's leak guard on every push and
@@ -32,7 +34,7 @@ func TestGuardTakesLegionsWrapperDirectoriesOffPath(t *testing.T) {
 		}
 	}
 	for name, body := range map[string]string{"image": "#!/bin/sh\n", "copied": "#!/bin/sh\nexec '" + git + "' \"$@\"\n", "tools": "#!/bin/sh\nexec '" + git + "' \"$@\"\n"} {
-		if err := os.WriteFile(filepath.Join(dirs[name], "git"), []byte(body), 0o700); err != nil {
+		if err := testexec.WriteFile(filepath.Join(dirs[name], "git"), []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -1,7 +1,7 @@
 # A second gate on tool_fallback: the tool-fallback-arm job proves the same two halves of
 # the Bun install on an arm64 runner, where no other job of this repository drives the second
 # half, the install from npm, and then the two halves of every other arm64 row: crane,
-# changie, mise, jj and elan, each through the same action the x86_64 job drives. It drives
+# changie, gotestsum, mise, jj and elan, each through the same action the x86_64 job drives. It drives
 # the same actions over the same manifest through the same helper, so one filter selects both
 # jobs, and check-ci-filters.sh keys a claim by (job, step), so the two gates claim different
 # steps and do not collide.
@@ -13,6 +13,7 @@ GATE = gate("tool_fallback", "tool-fallback-arm", reads=reads(
     (".github/actions/setup-bun/**", at("tool-fallback-arm", "./.github/actions/setup-bun")),
     (".github/actions/install-crane/**", at("tool-fallback-arm", "./.github/actions/install-crane")),
     (".github/actions/install-changie/**", at("tool-fallback-arm", "./.github/actions/install-changie")),
+    (".github/actions/install-gotestsum/**", at("tool-fallback-arm", "./.github/actions/install-gotestsum")),
     (".github/actions/install-jj/**", at("tool-fallback-arm", "./.github/actions/install-jj")),
     (".github/actions/install-elan/**", at("tool-fallback-arm", "./.github/actions/install-elan")),
     (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback-arm', './.github/actions/install-jj')}: the "

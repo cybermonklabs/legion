@@ -16,7 +16,9 @@
   - TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom  # 0.7 s
   - TestABrowserEditBeforeAVersionCommitsLeavesOnlyItsOwnAuthorOwed  # 0.8 s
   - TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits  # 1.3 s
+  - TestABrowserUpdateTheClosedIssuesGateCutsFromItsOwnBatchIsRefusedToItsSender
   - TestABrowserWrittenPointerToADisallowedTypeIsStoredAndNotListed  # 0.3 s
+  - TestABrowsersEditWaitsWhileTheRoomsUpdatesQueuePastItsBuffer
   - TestABufferedFoldEndsWithItsContext  # 0.4 s
   - TestABurstAfterAQuietCheckBringsTheDocumentsCheckForward  # 0.5 s
   - TestABurstOfBareAnnouncementsCostsOneCatchUp  # 1.4 s
@@ -896,6 +898,8 @@
   - TestASettlementRestoresADecidedAskAnEarlierReleaseReworded  # 1.0 s
   - TestASettlementThatAbandonsAfterWritingItsVersionReleasesWhatItRemembered  # 0.8 s
   - TestASettlementWhoseRoomClosedBeforeItsCatchUpIsArmedAgain  # 2.5 s
+  - TestASettlementsCommitDoesNotWaitOnAWorkerWaitingOnItsLock
+  - TestASettlementsSecondRepairDoesNotWaitOnAWorkerWaitingOnItsStamp
   - TestAShareHoldsEveryQueuedUpdateOfAPendingBatch  # 1.1 s
   - TestAShareReturnsTheOtherProcessesInFlightAppend  # 0.9 s
   - TestAStaleExcerptLeftByABuildThatStoresNoneIsMarkedAndCutAgain  # 0.5 s
@@ -1039,6 +1043,8 @@
   - TestOffsetBlocksCarriesTheAttributesTheRenderFound
   - TestOutsideReviewColdAgentVersionLastHuman  # 0.8 s
   - TestPanickingColdLoadFailsTheRoomAndRecovers  # 0.7 s
+  - TestParkedBytesAStoreErrorOtherThanTheCloseFailsTheRoom
+  - TestParkedBytesTheClosedIssuesGateRefusesCloseTheirRoomForItsIssue
   - TestPgVersionedConformance  # 0.9 s
   - TestQuiesceFlushesEveryLiveDocumentAndLeavesTheServiceUsable  # 0.5 s
   - TestQuoteMarkSettlesLegacyTableWithoutCanonicalizing  # 0.7 s

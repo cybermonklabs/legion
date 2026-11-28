@@ -1,13 +1,14 @@
 //go:build twobuild
 
 // The stored-document half of the two-build suite: each build reading, editing and keeping the
-// references of the other's documents, over the API and the document socket
-// (twobuild_harness_test.go holds the harness both halves start their builds with).
+// references of the other's documents, over the API and the document socket, and the list of
+// terms of The Spec that this build reads after the other build's moves (twobuild_harness_test.go
+// holds the harness both halves start their builds with).
 
 package main
 
 // The two-build suite's stored-document half reads this tree's side of what each build holds
-// (documentSides, tree ../../internal/dispatch at :55); the previous build's side is the copy
+// (documentSides, whose tree is ../../internal/dispatch); the previous build's side is the copy
 // packages/envoy/scripts/build-dispatch-build.sh writes outside the checkout.
 //ci:reads packages/envoy/internal/dispatch/pmdoc/schema/blocks.json documentSides readManifest (os.ReadFile) of the current build's block manifest
 //ci:reads packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md documentSides the current build's corpus: corpusFiles os.ReadDir, and requireCorpusCrossesBuilds os.ReadFile of each .md file it lists
@@ -29,17 +30,19 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/encoding"
+	ygsync "github.com/reearth/ygo/sync"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // ───── stored documents ─────────────────────────────────────────────────────
@@ -275,8 +278,10 @@ func withParagraph(render, paragraph string) string {
 	}
 }
 
-// The Hocuspocus frames a document socket's admission is read from (ygo provider/websocket).
+// The Hocuspocus frames a document socket's admission is read from (ygo provider/websocket), and
+// the sync frame that carries a y-protocols sync message.
 const (
+	hocuspocusSync          = 0
 	hocuspocusAuth          = 2
 	hocuspocusAuthToken     = 0
 	hocuspocusAuthDenied    = 1
@@ -349,10 +354,13 @@ func admittedScope(writer, reader documentSide, fleet fleetNumbers) string {
 }
 
 // documentSocket is a document socket as a page's provider holds it: authenticated with the
-// page's token, reading every frame the room sends until the connection ends.
+// page's token, reading every frame the room sends until the connection ends. answered closes once
+// the room has sent its first sync step 2, its answer to a sync step 1 (awaitRoomAnswer).
 type documentSocket struct {
 	artifactID string
 	scope      string
+	connection *gws.Conn
+	answered   chan struct{}
 	ended      chan struct{}
 	endErr     error
 }
@@ -372,7 +380,7 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 		}
 		t.Fatalf("open the document socket %s: status %d %s: %v", address, status, body, err)
 	}
-	socket := &documentSocket{artifactID: artifactID, ended: make(chan struct{})}
+	socket := &documentSocket{artifactID: artifactID, connection: connection, answered: make(chan struct{}), ended: make(chan struct{})}
 	t.Cleanup(func() {
 		_ = connection.Close()
 		<-socket.ended
@@ -387,7 +395,11 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 		t.Fatalf("authenticate the document socket: %v", err)
 	}
 	scopes := make(chan string, 1)
+	// read counts the messages the socket has read, which the wait for the answer names when it
+	// gives up: none, or messages of other kinds than the answer.
+	var read atomic.Int64
 	go func() {
+		roomAnswered := false
 		defer close(socket.ended)
 		for {
 			_, message, err := connection.ReadMessage()
@@ -395,11 +407,23 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 				socket.endErr = err
 				return
 			}
+			read.Add(1)
 			decoder := encoding.NewDecoder(message)
 			if _, err := decoder.ReadVarString(); err != nil {
 				continue
 			}
-			if kind, err := decoder.ReadVarUint(); err != nil || kind != hocuspocusAuth {
+			kind, err := decoder.ReadVarUint()
+			if err != nil {
+				continue
+			}
+			if kind == hocuspocusSync {
+				if step, _, err := ygsync.ReadSyncMessage(decoder.RemainingBytes()); err == nil && step == ygsync.MsgSyncStep2 && !roomAnswered {
+					roomAnswered = true
+					close(socket.answered)
+				}
+				continue
+			}
+			if kind != hocuspocusAuth {
 				continue
 			}
 			answer, err := decoder.ReadVarUint()
@@ -421,15 +445,46 @@ func openDocumentSocket(t *testing.T, server *dispatchProcess, artifactID string
 			}
 		}
 	}()
-	select {
-	case answer := <-scopes:
-		socket.scope = strings.TrimPrefix(answer, "scope ")
-	case <-socket.ended:
-		t.Fatalf("the document socket for %s closed before the server answered its authentication: %v", artifactID, socket.endErr)
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the server never answered the document socket's authentication for %s", artifactID)
-	}
+	answer := testwait.Until(t, "the server to answer the document socket's authentication for "+artifactID, func() (string, bool) {
+		select {
+		case answer := <-scopes:
+			return answer, true
+		case <-socket.ended:
+			t.Fatalf("the document socket for %s closed before the server answered its authentication: %v", artifactID, socket.endErr)
+		default:
+		}
+		return fmt.Sprintf("no answer to the authentication among the %d messages the socket has read, and the socket is open", read.Load()), false
+	})
+	socket.scope = strings.TrimPrefix(answer, "scope ")
 	return socket
+}
+
+// awaitRoomAnswer sends the socket's room a sync step 1 naming no state, as a page's provider does
+// once its socket is authenticated, and waits for the room's sync step 2 in answer: the room has
+// then loaded the document and serves the socket, so a close the server makes as it loads the room
+// or takes the socket's first frames has come before it. It fails the test when the socket closes
+// before the answer.
+func (s *documentSocket) awaitRoomAnswer(t *testing.T) {
+	t.Helper()
+	ask := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarString(s.artifactID)
+		encoder.WriteVarUint(hocuspocusSync)
+		encoder.WriteRaw(ygsync.EncodeSyncStep1(crdt.New()))
+	})
+	if err := s.connection.WriteMessage(gws.BinaryMessage, ask); err != nil {
+		t.Fatalf("send the room of document %s a sync step 1: %v", s.artifactID, err)
+	}
+	testwait.Until(t, "the room of document "+s.artifactID+" to answer the socket's sync step 1", func() (string, bool) {
+		select {
+		case <-s.answered:
+			return "answered", true
+		default:
+		}
+		if s.closed() {
+			t.Fatalf("the socket for document %s closed before its room answered its sync step 1: %v", s.artifactID, s.endErr)
+		}
+		return "no sync step 2 from the room yet, and the socket is open", false
+	})
 }
 
 func (s *documentSocket) closed() bool {
@@ -463,7 +518,8 @@ func corpusFiles(t *testing.T, dir string) []string {
 // A document either build wrote reads and edits on the other. For each writer X and each file of
 // X's own corpus: a document created on X answers /text on Y and takes an append edit there, and X
 // then renders it as its first render with the appended paragraph after it; on Y, a document socket
-// opened with X's page parameters is admitted writable and stays open. A version X wrote holding
+// opened with X's page parameters is admitted writable, its room answers its sync step 1, and it
+// is still open once every socket's room has answered. A version X wrote holding
 // every typed block of X's manifest is approved, the answer to its decision block makes Y write the
 // next version, and the approval is carried to it. A body holding every reference form of X's
 // text/testdata that Y's own table holds too keeps its refs rows after Y rewrites it, but for the
@@ -498,9 +554,67 @@ func TestTwoBuildsReadAndEditEachOthersDocuments(t *testing.T) {
 	}
 }
 
-// socketOpenFor is how long every socket the corpus row opened must stay open after the last one
-// was admitted: long enough for a server that closes a socket it admitted to have done so.
-const socketOpenFor = 3 * time.Second
+// A move that the previous build makes changes no definition of the list of terms of The Spec
+// that this build reads. The previous build knows no root of The Spec: its move takes no lock of a
+// list and writes the issue and its events alone. This build orders each definition of a root's
+// list by when it joined the list, the later of its approval and the event of the move that
+// brought it under the root, and both builds write that event (api/spec_terms.go,
+// approvedSpecTexts). The row: through this build the person approves lease outside the root
+// first, then another definition under the root; the previous build then moves the first issue
+// under the root, and moves the keeper to a level inside the root. This build's list keeps the
+// definition approved under the root, and its read of the moved issue names that definition.
+func TestAMoveByThePreviousBuildChangesNoDefinitionOfTheListOfTerms(t *testing.T) {
+	builds := newTwoBuilds(t)
+	project := uniqueProjectKey(t, "XST")
+	root := project + "-1"
+	builds.startPrevious(t, nil)
+	builds.startCurrent(t, map[string]string{"DISPATCH_SPEC_ROOTS": root})
+	current, previous := builds.current(), builds.previous()
+	current.createProject(t, project, "The list of terms across two builds")
+	if key, _ := createDocument(t, current, project, "The root of the written account", "# The Spec\n\nThe design of the written account.\n"); key != root {
+		t.Fatalf("the first issue of %s is %s, want %s", project, key, root)
+	}
+	move := func(p *dispatchProcess, issue, parent string) {
+		t.Helper()
+		p.call(t, http.MethodPatch, "/api/v1/issues/"+issue, jsonBody(t, map[string]any{"parent": parent}), http.StatusOK)
+	}
+	approve := func(artifactID string) {
+		t.Helper()
+		current.call(t, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/reviews", `{"state":"approved"}`, http.StatusCreated)
+	}
+	const (
+		earlierLease = "The time for which one session holds one work unit."
+		listedLease  = "The right of one session to one work unit for a time."
+	)
+	level, _ := createDocument(t, current, project, "A level under the root", "# Level\n\nA level of the written account.\n")
+	move(current, level, root)
+	earlier, earlierID := createDocument(t, current, project, "Defines lease outside the root, first", "# Spec\n\n## Terms\n\n- **lease**: "+earlierLease+"\n")
+	approve(earlierID)
+	keeper, keeperID := createDocument(t, current, project, "Defines lease under the root", "# Spec\n\n## Terms\n\n- **lease**: "+listedLease+"\n")
+	move(current, keeper, root)
+	approve(keeperID)
+
+	move(previous, earlier, root)
+	move(previous, keeper, level)
+
+	type specForm struct {
+		Terms    []struct{ Term, Definition, Issue string } `json:"terms"`
+		Findings []struct{ Rule, Detail string }            `json:"findings"`
+	}
+	var read specForm
+	getJSON(t, current, "/api/v1/artifacts/"+keeperID+"/spec-form", &read)
+	if len(read.Terms) != 1 || read.Terms[0].Term != "lease" || read.Terms[0].Issue != keeper || read.Terms[0].Definition != listedLease {
+		t.Errorf("after the %s moved %s under %s and %s under %s, the current build's list is %+v; want lease once, from %s: %q",
+			builds.previousName(), earlier, root, keeper, level, read.Terms, keeper, listedLease)
+	}
+	var moved specForm
+	getJSON(t, current, "/api/v1/artifacts/"+earlierID+"/spec-form", &moved)
+	if want := "spec.md version 1 of " + keeper + " already defines this term."; len(moved.Findings) != 1 || moved.Findings[0].Rule != "term-second-definition" ||
+		!strings.HasPrefix(moved.Findings[0].Detail, want) {
+		t.Errorf("the current build's read of %s, which the %s moved under the root, has findings %+v; want one term-second-definition that starts %q",
+			earlier, builds.previousName(), moved.Findings, want)
+	}
+}
 
 // corpusSkipped are the corpus files this row leaves out, each with why. A corpus file is
 // markdown for the parsers' fixtures, which a server does not have to be able to store.
@@ -553,7 +667,14 @@ func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader 
 		}
 		sockets = append(sockets, socket)
 	}
-	time.Sleep(socketOpenFor)
+	// A close the server makes as it loads a socket's room, or as it takes the socket's first
+	// frames, comes before the room's answer to the socket's sync step 1, so once every room has
+	// answered, a socket still open was not closed on its admission. A close on a server timer after
+	// that (the re-check of the writable sockets against the live fleet, every
+	// processes.LiveWindow) is twobuild_transition_test.go's row, which waits a whole re-check out.
+	for _, socket := range sockets {
+		socket.awaitRoomAnswer(t)
+	}
 	for _, socket := range sockets {
 		if socket.closed() {
 			t.Errorf("the %s closed the socket it admitted for document %s: %v", reader.name, socket.artifactID, socket.endErr)
@@ -645,44 +766,47 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 	// no pair the harness makes holds a build older than that: dispatch-two-builds pairs this tree
 	// with the newest release before it, which only moves forward, and dispatch-two-builds-same
 	// pairs it with its own build. So the comparison holds every field of the actor, the flag too.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	carried := testwait.Until(t, fmt.Sprintf("the answer on the %s to the decision block of a version the %s wrote and %s approved (version %d) to carry the approval to the next version",
+		reader.name, writer.name, dispatchTestLogin, approval.Version), func() (withOutput[[]servedReview], bool) {
 		var reviews []servedReview
 		getJSON(t, writer.process, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
-		if len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
-			reviews[0].Actor == (model.Actor{Kind: "user", ID: dispatchTestLogin, Proven: true}) {
-			t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, reviews[0].Version)
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the answer on the %s to the decision block of a version the %s wrote and %s approved (version %d) carried no approval within 30s; reviews: %+v\n%s:\n%s",
-				reader.name, writer.name, dispatchTestLogin, approval.Version, reviews, reader.name, reader.process.Output.String())
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return readWith(reviews, reader.process.Output), len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
+			reviews[0].Actor == (model.Actor{Kind: "user", ID: dispatchTestLogin, Proven: true})
+	}).read
+	t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, carried[0].Version)
 }
 
 // waitForBlockAsk waits for the ask settlement indexed from the decision block blockID of the
 // issue's documents, and returns its id.
 func waitForBlockAsk(t *testing.T, p *dispatchProcess, issueKey, blockID string) string {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		var asks []struct {
-			ID      string  `json:"id"`
-			BlockID *string `json:"block_id"`
-		}
+	var id string
+	testwait.Until(t, fmt.Sprintf("an ask to be indexed from the block %s of %s", blockID, issueKey), func() ([]blockAsk, bool) {
+		var asks []blockAsk
 		getJSON(t, p, "/api/v1/issues/"+issueKey+"/asks?state=all", &asks)
 		for _, ask := range asks {
 			if ask.BlockID != nil && *ask.BlockID == blockID {
-				return ask.ID
+				id = ask.ID
+				return asks, true
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no ask was indexed from the block %s of %s within 20s: %+v", blockID, issueKey, asks)
-		}
-		time.Sleep(100 * time.Millisecond)
+		return asks, false
+	})
+	return id
+}
+
+// blockAsk is an ask as an issue's asks list it: its id, and the decision block it was indexed
+// from, nil for an ask no block made.
+type blockAsk struct {
+	ID      string  `json:"id"`
+	BlockID *string `json:"block_id"`
+}
+
+func (a blockAsk) String() string {
+	if a.BlockID == nil {
+		return a.ID + " from no block"
 	}
+	return a.ID + " from block " + *a.BlockID
 }
 
 // referenceTables is a build's two reference tables of text/testdata: the bodies of its text table
@@ -854,10 +978,22 @@ func queryRows(t *testing.T, builds *twoBuilds, what, query string, args ...any)
 	return read
 }
 
-// referencesSettle is how long the references row waits after Y's edit before it reads the refs
-// rows again: past the default two-second settle delay, so a settlement that rewrites the document
-// after the edit has rewritten it too.
-const referencesSettle = 4 * time.Second
+// waitForSettled waits until the document owes no settlement. The write that appends an update
+// records a doc_settlements_pending row in its own transaction, so the row is there when the
+// edit's call returns, and the settlement that covers the update deletes it in the transaction
+// that commits the version it writes (migration 0063): a rewrite the settlement makes is in the
+// refs rows by then.
+func waitForSettled(t *testing.T, builds *twoBuilds, artifactID string) {
+	t.Helper()
+	testwait.Eventually(t, "the document's settlement to have run", func() bool {
+		var owed bool
+		if err := builds.database.Pool.QueryRow(context.Background(),
+			`select exists (select 1 from doc_settlements_pending where artifact_id = $1)`, artifactID).Scan(&owed); err != nil {
+			t.Fatalf("read whether the document owes a settlement: %v", err)
+		}
+		return !owed
+	})
+}
 
 // requireReferencesKeptAcrossBuilds creates the reference forms of X's text/testdata on X as two
 // bodies, split by Y's own tables (referencesMarkdown), appends a paragraph to each on Y, and
@@ -888,7 +1024,7 @@ func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, 
 	}
 	appendParagraph(t, reader.process, artifactID, "Rewritten on the "+reader.name+".")
 	requireRefsKept(t, documentRefs(t, builds, artifactID), written, "after the "+reader.name+" rewrote the body", writer.name, reader)
-	time.Sleep(referencesSettle)
+	waitForSettled(t, builds, artifactID)
 	dropped := requireRefsKept(t, documentRefs(t, builds, artifactID), written, "after the "+reader.name+"'s rewrite settled", writer.name, reader)
 	t.Logf("%d of the %d refs rows the %s wrote survived the %s's rewrite", len(written)-len(dropped), len(written), writer.name, reader.name)
 	if writerOnly == "" {
@@ -906,46 +1042,36 @@ func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, 
 	}
 }
 
-// writerOnlyReferencesBack is how long after the reader's rewrite every row of the forms only the
-// writer reads must be back: two intervals of the writer's forms drain, the wait between its
-// passes once no batch is full, so a pass that listed the queue just before the rewrite owed the
-// document is followed by one that drains it.
-const writerOnlyReferencesBack = 2 * docs.BlockIndexReconcileInterval
-
 // requireWriterOnlyReferencesBack creates markdown, the forms only the writer's table holds, on the
-// writer, appends a paragraph on the reader, and fails unless the document's edges are the ones
-// the writer wrote again within writerOnlyReferencesBack of that rewrite: every refs row back, and
-// no row of a kind the writer wrote that it did not write, which would mean the writer's index of
-// the reader's text read one form as another target, and its blocks' edges as the writer wrote
-// them. Until then the reader's rewrite may have dropped rows of the kinds it extracts, which is
-// logged; the first read is taken after referencesSettle, so a settlement that rewrites the
+// writer, appends a paragraph on the reader, and waits through the shared wait until the
+// document's edges are the ones the writer wrote again: every refs row back, and no row of a kind
+// the writer wrote that it did not write, which would mean the writer's index of the reader's text
+// read one form as another target, and its blocks' edges as the writer wrote them. Until then the
+// reader's rewrite may have dropped rows of the kinds it extracts, which is logged; the wait runs
+// once the rewrite's settlement has run (waitForSettled), so a settlement that rewrites the
 // document after the edit has dropped them too.
 func requireWriterOnlyReferencesBack(t *testing.T, builds *twoBuilds, writer, reader documentSide, project, markdown string) {
 	_, artifactID := createDocument(t, writer.process, project, "Every reference form only the writer reads", markdown)
 	written, writtenBlocks := documentRefs(t, builds, artifactID), documentBlockEdges(t, builds, artifactID)
-	rewritten := time.Now()
 	appendParagraph(t, reader.process, artifactID, "Rewritten on the "+reader.name+".")
 	if lost, _ := refRowsMoved(documentRefs(t, builds, artifactID), written); len(lost) > 0 {
 		t.Logf("after the %s rewrote the body of the forms only the %s reads, it dropped %d of the %d rows the %s wrote:\n%s",
 			reader.name, writer.name, len(lost), len(written), writer.name, refRowsText(lost))
 	}
-	time.Sleep(referencesSettle)
-	deadline := rewritten.Add(writerOnlyReferencesBack)
-	for {
+	waitForSettled(t, builds, artifactID)
+	testwait.Until(t, fmt.Sprintf("all %d refs rows and %d block edges the %s wrote of the forms only it reads to be back after the %s's rewrite",
+		len(written), len(writtenBlocks), writer.name, reader.name), func() (string, bool) {
 		got, blocks := documentRefs(t, builds, artifactID), documentBlockEdges(t, builds, artifactID)
 		lost, added := refRowsMoved(got, written)
 		if len(lost) == 0 && len(added) == 0 && slices.Equal(blocks, writtenBlocks) {
-			t.Logf("all %d refs rows and %d block edges the %s wrote of the forms only it reads were back %s after the %s's rewrite",
-				len(written), len(writtenBlocks), writer.name, time.Since(rewritten).Round(time.Second), reader.name)
-			return
+			return "all back", true
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s after the %s rewrote the body of the forms only the %s reads, its refs rows lack %d of the %d the %s wrote\n%s\nand hold %d rows of kinds the %s wrote that it did not write\n%s\nall rows now:\n%s\nits blocks hold the edges\n%s\nwhere the %s wrote\n%s",
-				writerOnlyReferencesBack, reader.name, writer.name, len(lost), len(written), writer.name, refRowsText(lost),
-				len(added), writer.name, refRowsText(added), refRowsText(got), refRowsText(blocks), writer.name, refRowsText(writtenBlocks))
-		}
-		time.Sleep(time.Second)
-	}
+		return fmt.Sprintf("its refs rows lack %d of the %d the %s wrote\n%s\nand hold %d rows of kinds the %s wrote that it did not write\n%s\nall rows now:\n%s\nits blocks hold the edges\n%s\nwhere the %s wrote\n%s",
+			len(lost), len(written), writer.name, refRowsText(lost),
+			len(added), writer.name, refRowsText(added), refRowsText(got), refRowsText(blocks), writer.name, refRowsText(writtenBlocks)), false
+	})
+	t.Logf("all %d refs rows and %d block edges the %s wrote of the forms only it reads were back after the %s's rewrite",
+		len(written), len(writtenBlocks), writer.name, reader.name)
 }
 
 // readsTabAddresses reports whether a build's text table holds the row naming an issue's plan tab,
@@ -1011,18 +1137,12 @@ func formsOwed(t *testing.T, builds *twoBuilds, artifactID string) bool {
 	return owed
 }
 
-// triggerRowsBack is how long the trigger rows give the writer to write a document's edges back:
-// the rewrite row's two drain intervals and two more, since after the previous build's rebuild-refs
-// the writer's first passes take every text that rebuild re-indexed and every document it marked
-// owed a block index.
-const triggerRowsBack = 4 * docs.BlockIndexReconcileInterval
-
 // requireEachTriggerOwesTheDocument shows each trigger that owes the writer (X, this build) a
 // document the reader (Y, the previous build, which reads no tab address) re-indexed needed on its
 // own, each through a re-index the other two do not see:
 //   - A version Y writes (migration 20261117025904): Y creates a document holding forms only X
 //     reads, so no edge of them exists for Y to delete, and only its version owes it. X's edges for
-//     that text, its own and its blocks', must appear within triggerRowsBack.
+//     that text, its own and its blocks', must appear.
 //   - Y's rebuild-refs' delete from refs (20261117025906): with both processes stopped, so nothing
 //     else re-indexes or drains, Y's rebuild-refs re-indexes every source's references alone,
 //     writing no version and no block edge, and the document holding forms only X reads must be
@@ -1033,10 +1153,9 @@ const triggerRowsBack = 4 * docs.BlockIndexReconcileInterval
 //     marked owed with no version, dropping the second block's edge; the document must then be
 //     owed.
 //
-// X, started again, must then write both documents' edges back within triggerRowsBack. A run with
-// any one of the three triggers removed fails its own step, where today's rewrite row passes with
-// either of the first two removed. The rows stop and restart both builds' processes, and so run
-// last.
+// X, started again, must then write both documents' edges back. A run with any one of the three
+// triggers removed fails its own step, where today's rewrite row passes with either of the first
+// two removed. The rows stop and restart both builds' processes, and so run last.
 func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, reader documentSide, project, key string) {
 	_, twin := createDocument(t, writer.process, project, "Forms only the writer reads, written by it", formsOnlyMarkdown(key))
 	onlyForms := writtenEdges(t, builds, twin)
@@ -1046,14 +1165,27 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 	// A version alone: the reader creates the same text the writer indexed in twin.
 	_, readerWrote := createDocument(t, reader.process, project, "Forms only the writer reads, written by the reader", formsOnlyMarkdown(key))
 	versionOwed := documentEdgesWritten{id: readerWrote, refs: onlyForms.refs, blocks: onlyForms.blocks}
-	waitUntil(t, triggerRowsBack, "the "+writer.name+" to write its edges of the forms only it reads for the document the "+reader.name+" created holding them, owed by its version alone",
-		func() bool { return versionOwed.back(t, builds) })
+	// The waits on a build's block index here (this one, the wait for the writer's documents to owe
+	// nothing, the reader's below and the writer's last) wait with Until, which has no minute: a
+	// block index drains every docs.BlockIndexReconcileInterval (30 s), a document owed stays owed
+	// until the writer's pass on that interval indexes it (RunRefsFormsReconciliation), and after
+	// rebuild-refs its first passes take every text that rebuild re-indexed and every document it
+	// marked owed a block index, which can take longer than Eventually's minute.
+	testwait.Until(t, "the "+writer.name+" to write its edges of the forms only it reads for the document the "+reader.name+" created holding them, owed by its version alone",
+		func() (bool, bool) {
+			back := versionOwed.back(t, builds)
+			return back, back
+		})
 
 	// Nothing runs from here until the reader starts again: the settlements of the writer's two
 	// documents have written their versions, and the reader holds no room of them.
-	time.Sleep(referencesSettle)
-	waitUntil(t, writerOnlyReferencesBack, "the "+writer.name+"'s documents to owe nothing",
-		func() bool { return !formsOwed(t, builds, twin) && !formsOwed(t, builds, issueTwice) })
+	waitForSettled(t, builds, twin)
+	waitForSettled(t, builds, issueTwice)
+	testwait.Until(t, "the "+writer.name+"'s documents to owe nothing", func() (string, bool) {
+		twinOwed, twiceOwed := formsOwed(t, builds, twin), formsOwed(t, builds, issueTwice)
+		return fmt.Sprintf("the document holding forms only it reads owed: %t; the document naming its issue twice owed: %t", twinOwed, twiceOwed),
+			!twinOwed && !twiceOwed
+	})
 	stop(t, reader.process)
 	stop(t, writer.process)
 	if formsOwed(t, builds, twin) || formsOwed(t, builds, issueTwice) {
@@ -1072,13 +1204,13 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 	}
 
 	reader.process = builds.startPrevious(t, referenceEnv())
-	waitUntil(t, triggerRowsBack, "the "+reader.name+"'s block index to index the document naming its issue twice", func() bool {
+	testwait.Until(t, "the "+reader.name+"'s block index to index the document naming its issue twice", func() (*int, bool) {
 		var version *int
 		if err := builds.database.Pool.QueryRow(context.Background(),
 			`select version from document_block_versions where artifact_id = $1::uuid`, issueTwice).Scan(&version); err != nil {
 			t.Fatalf("read the block index of %s: %v", issueTwice, err)
 		}
-		return version != nil
+		return version, version != nil
 	})
 	if !formsOwed(t, builds, issueTwice) {
 		t.Fatalf("after the %s's block index dropped a block's edge of the document naming its issue twice, the document is not owed: its blocks hold %v",
@@ -1086,18 +1218,19 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 	}
 
 	writer.process = builds.startCurrent(t, referenceEnv())
-	waitUntil(t, triggerRowsBack, "the "+writer.name+" to write back the edges of the documents the "+reader.name+"'s rebuild-refs and block index re-indexed",
-		func() bool { return onlyForms.back(t, builds) && twice.back(t, builds) })
+	testwait.Until(t, "the "+writer.name+" to write back the edges of the documents the "+reader.name+"'s rebuild-refs and block index re-indexed",
+		func() (bool, bool) {
+			back := onlyForms.back(t, builds) && twice.back(t, builds)
+			return back, back
+		})
 }
 
 // rebuildRefsOnPrevious runs the previous build's `envoy-dispatch rebuild-refs` against the pair's
 // database, as an operator runs it during a roll, and returns what it printed.
 func (b *twoBuilds) rebuildRefsOnPrevious(t *testing.T) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
 	home := t.TempDir()
-	cmd := exec.CommandContext(ctx, b.build.path("envoy-dispatch"), "rebuild-refs")
+	cmd := exec.CommandContext(testwait.Context(t), b.build.path("envoy-dispatch"), "rebuild-refs")
 	cmd.Dir = home
 	cmd.Env = []string{
 		"HOME=" + home, "XDG_CONFIG_HOME=" + home, "XDG_DATA_HOME=" + home,

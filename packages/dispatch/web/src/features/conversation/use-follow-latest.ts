@@ -89,7 +89,7 @@ export function useFollowLatest({
   // regardless of whatever height the issue header has at this breakpoint. The composer stands
   // above the list only where it is sticky, from `sm` up; below `sm` it is fixed at the foot of
   // the screen (`MentionComposer`'s docked form), so the newest turn goes to the top of the
-  // viewport and the composer's height, which its hint and a reply chip grow, is no offset. An
+  // viewport and the composer's height, which a reply chip grows, is no offset. An
   // offset of the foot composer's height lands the newest turn under that composer once twice
   // its height and the turn's no longer fit above it (`e2e/phone-landing.e2e.ts`).
   const jumpToLatest = useCallback(() => {

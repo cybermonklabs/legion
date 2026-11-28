@@ -13,7 +13,13 @@ import { callOf } from "@legion/envoy-client/test/fake-dispatch";
 import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import { leastAnswerFor } from "@legion/envoy-client/test/route-answers";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
-import { ErrorCode, NatsError, connect as realConnect } from "nats";
+import {
+  type ConnectionOptions,
+  ErrorCode,
+  type NatsConnection,
+  NatsError,
+  connect as realConnect,
+} from "nats";
 
 /** A message's headers, as nats.js's `MsgHdrs` reads them: a missing one reads `""`. */
 type MessageHeaders = { readonly get: (name: string) => string };
@@ -76,6 +82,14 @@ let installedFetch: typeof globalThis.fetch = globalThis.fetch;
 /** The real fetch, as this module found it: what a row restores (`tearDownRow` in
  *  `./extension-harness`) and what the live stack uses. */
 export const originalFetch: typeof globalThis.fetch = installedFetch;
+/** A row's stand-in for `fetch`, as `globalThis.fetch` takes it. Bun's `fetch` carries
+ *  `preconnect` beside its call, which no stand-in here answers for, so the real one's goes with
+ *  it: the type says what a stand-in must be, and this is the one place that supplies the rest. */
+export function standInFetch(
+  answer: (...request: Parameters<typeof fetch>) => Promise<Response>
+): typeof fetch {
+  return Object.assign(answer, { preconnect: originalFetch.preconnect });
+}
 const keyedFetch = keyedLayer((input: string | URL | Request, init?: RequestInit) =>
   installedFetch(input, init)
 );
@@ -476,6 +490,14 @@ export const natsStandInConnect = async (options: {
   if (!late) natsState.connections.push(made);
   return made;
 };
+
+// The extension always dials with a name and servers (`natsConnectionOptions`), which is all the
+// stand-in reads of nats.js's options, and it answers with a connection of the part the extension
+// uses, or nats.js's own where a row asks for it. A row that sets its own plan sets this again.
+export const natsStandIn = (options?: ConnectionOptions): Promise<NatsConnection> =>
+  natsStandInConnect(
+    options as Parameters<typeof natsStandInConnect>[0]
+  ) as unknown as Promise<NatsConnection>;
 
 /** What an ended row's late subscribe is given: a subscription that delivers nothing and ends
  *  when it is unsubscribed, as a subscription the server never answers would. */

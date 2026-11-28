@@ -318,12 +318,7 @@ tests read outside the daemon: the contracts fixtures `packages/daemon/internal/
 `packages/daemon/internal/api/state_golden_test.go#golden`,
 `packages/daemon/internal/intake/intake_test.go#TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer` and `packages/daemon/internal/intake/intake_test.go#TestAWorkflowRunEnvelopeIsNoFact`
 read, the agents `packages/daemon/internal/prompts/roles_test.go#TestEveryTaskAgentARolePromptDispatchesIsShipped`
-stats, the tools skill `packages/daemon/internal/prompts/roles_test.go#TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI`
-holds roles/mechanics/headless.md to, the rule file
-`packages/daemon/internal/prompts/roles_test.go#TestNoReusablePartNamesARepositoryOrLibrary`
-runs over each reusable role part, the merge gate
-`packages/daemon/internal/workflow/engine_test.go#TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries`
-holds the reviewer's prompt to, the GitHub App helper
+stats, the GitHub App helper
 `packages/daemon/internal/api/real_github_test.go#runGitHubAppsLib` sources, and the examples and
 docs its tests hold to the code (`packages/daemon/cmd/legion/config_example_test.go#stageShippedExample`,
 `packages/daemon/internal/config/controller_test.go#TestLoadControllerReadsTheShippedExample`,
@@ -331,8 +326,8 @@ docs its tests hold to the code (`packages/daemon/cmd/legion/config_example_test
 It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
 and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
 patches nats-server with.
-No bun_install and no skills/** - the two pages of skills/ this filter names are all
-this job reads of it: the tests of this suite that packed the two plugins - and so
+No bun_install and no skills/** - this job reads no page of skills/: the tests of this
+suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's
 partition of skills/ with the prepack script are the plugin-pack job's now, and
 this job installs nothing (dispatch://INFRA-1413, A4).
@@ -348,13 +343,6 @@ stats `agents/<name>.md`.
 With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 live proof" step) reads, they are the files of
 pi-legion this suite reads. The pack and prompt probes, which read the rest of
 it, are the plugin-pack job's.
-
-## daemon_go_tests: The rule file internal/prompts/roles_test.go holds the role parts to
-
-The repository's own rule file, .github/private-names.toml, which
-internal/prompts/roles_test.go's TestNoReusablePartNamesARepositoryOrLibrary reads and
-runs over every reusable role part, since the `legion` binary embeds no rule. A change
-to that file alone changes what the test refuses, so it starts this job.
 
 ## plugin_pack: The plugin-pack job: internal/daemon's three tests of
 
@@ -547,6 +535,11 @@ workspaces they build in, the target lists, the script holding the loops and the
 notices script it runs per target. Every Go and module file of the repository is in
 it because scripts/go-third-party-notices.sh reads each target's `go list -deps`: a
 new import changes the notices with no module file changed.
+The same filter gates lint's release path check, which runs after that step's module-cache
+restore: it asks `go list -deps` of each legion target as the notices step does, and reads
+release.yaml, release-push.sh and release-build-legion.sh besides, which the filter names for it
+(.github/ci-notes/release.md, "The Go legion's version arguments and the command that prints its
+envoy packages").
 
 ## go_notices: The step loads each release target's packages and writes
 
@@ -565,23 +558,13 @@ lockfile and no workspace manifest is an input of this job. The lint and the
 typecheck of the same directory are the tooling-checks job's, which the tooling_checks
 filter names scripts/sessions for.
 
-## pi_legion: src/skills-guard.test.ts spawns packages/claude-envoy/scripts/build.ts
-
-src/skills-guard.test.ts spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER) and
-asserts an exact file list over the tree it writes, so this job reads that whole
-package and the one entry of `packages/claude-envoy/scripts/build.ts#BUNDLE_ENTRYPOINTS` that
-lives outside it. A spawn carries no import, so no derivation of this repository
-sees the reach: both patterns are hand-kept, with their declared reads in
-ci_job_reads.py.
-
 ## pi_legion_build: the skills' guard and what it reads
 
 pi-legion-build runs src/skills-guard.test.ts too, so its gate (.github/ci-gates/pi-legion-build.py)
-declares what pi_legion's declares for it: the builder above, and the roots of the guard's sweep
-over every file a Legion agent reads (packages/daemon/internal, AGENTS.md, README.md,
-docs/kubernetes.md, docs/site's docs and the controller's example manifest). A change to any of
-them selects the job, so a skill or prompt change that breaks the guard fails on the pull request,
-not first in the merge queue.
+declares what pi_legion's declares for it beside the skills: the daemon's prompts, whose skill://
+links the guard resolves, and the Legion guides under docs/site's docs, which it reads. A change to
+any of them selects the job, so a skill or prompt change that breaks the guard fails on the pull
+request, not first in the merge queue.
 
 ## pi_legion: The Dispatch e2e client that scripts/skill-scenarios/seed.ts imports
 
@@ -825,7 +808,7 @@ module, and the guard step compiles that package's whole test closure, which
 reaches testdata and goldens across the module.
 Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
 the .go files the supervise pins type-check from source - internal/supervise and
-every package of this module it imports - the prompt the `text_checks` filter names (`packages/daemon/internal/prompts/roles/architect-root.md`), the committed copies
+every package of this module it imports - the committed copies
 its text checks hold to the texts they copy, and the store's migrations; and its
 credential-argument check reads every text file of the repository, so the `text_checks` filter's `'**'`
 selects the job for every change but one under docs/plans or docs/superpowers. The
@@ -1036,7 +1019,7 @@ ci.yaml's tool-fallback and tool-fallback-arm jobs, the live proof of the second
 source every tool install reads when the first source does not serve the bytes:
 the manifest that names both sources of each row, the fetch helper every install
 goes through, the filler and the gate beside it, the rig and the fault proxy it
-drives, the nine actions it installs through, and the two files a row's version is
+drives, the ten actions it installs through, and the two files a row's version is
 pinned in that the job itself reads (.bun-version for the bun rows and the
 worker image's Dockerfile for mise, jj and uv).
 packages/envoy/infra/internal/pulumitest/pulumitest.go, whose
@@ -1249,11 +1232,11 @@ The router: every check a pull request or the merge queue runs, in one workflow.
 Its first job, `changes`, reads the paths the change touched and selects, through one
 dorny/paths-filter filter per job, the jobs that read those paths; each job runs only when its
 filter matches (lint and priority-conflicts run on every change, and typecheck, test,
-tooling-checks, daemon-go, plugin-pack, private-names-port, sessions-script and text-checks also
-run when `changes` itself failed). A pull request runs the fast jobs its paths select, and the
-merge queue runs a job when the queue's own generator, against the queue's base, selects it,
-except a job whose `if:` admits only a pull request (dispatch-browser-pr, dispatch-references and
-worker-image), which never runs there
+tooling-checks, daemon-go, plugin-pack, step-models-chain, private-names-port, sessions-script
+and text-checks also run when `changes` itself failed). A pull request runs the fast jobs its
+paths select, and the merge queue runs a job when the queue's own generator, against the queue's
+base, selects it, except a job whose `if:` admits only a pull request (dispatch-browser-pr,
+dispatch-references and worker-image), which never runs there
 (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 ci-ok condenses every job's result into one check: it fails when a job `changes` selected did
 not succeed.
@@ -1327,19 +1310,25 @@ earlier Dispatch builds it runs (ci-job-dispatch-two-builds.yaml) and builds one
 ci-caches.yaml's dispatch-builds job fills both on main (the two-build section below says why).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
 included). The jobs that cache Go restore, in steps of their own, one of the families below with
-actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
-internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
+actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles internal/daemon's
+test binary with no race detector — step-models-chain, which compiles that
+package's test binary under the `e2e` tag, and pi-legion; the test job restored
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local, envoy-session-stall and
 envoy-refill, which build the same listener and natsd, listener-server-change and
 envoy-go-build, which build the listener, and envoy-go-checks, whose script tests run under the
 setup they had in envoy-go-build's job), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
-the API's of that set, the binaries, multiprocess
-and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
-broker's commands out of that same set, the two jobs of ci-job-dispatch-two-builds.yaml,
+the API's of that set, the multiprocess
+and visual jobs of dispatch-browser.yaml, which build the Dispatch server with cgo on out of
+that same set, the two jobs of ci-job-dispatch-two-builds.yaml,
 whose ceiling step and twobuild test step build out of it too, and dispatch-memory and
-dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test), go-envoy-smoke
+dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test),
+go-browser-binaries (the binaries job of dispatch-browser.yaml, whose CGO_ENABLED=0 builds of
+the Dispatch server and the real broker's commands share most of their cache keys with a cgo
+build: net and os/user build other files without cgo, so they and every package above them have
+other keys, and on a go-envoy-test entry 427 of the 1,034 packages they build were stale;
+.github/ci-notes/ci-caches.md#the-go-browser-binaries-family), go-envoy-smoke
 (envoy-smoke, whose smoke test, envoy-infra live tests and plugin build no other family holds
 together; .github/ci-notes/ci-caches.md#the-envoy-smoke-family), go-envoy-race (every leg of
 envoy-go-race, envoy-go-race-api and envoy-go-race-docs, the envoy race lane, whose race objects
@@ -1359,7 +1348,7 @@ go-notices puts the architecture before the OS in its key and the other families
 its entry holds go-licenses, a program lint's notices step runs, and a run of a workflow file
 older than the architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key
 starts with (ci-job-lint.yaml's restore step says what that did). go-daemon, go-notices,
-go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race and go-envoy-darwin-vet are filled on every push to main: the fill
+go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race, go-envoy-darwin-vet and go-browser-binaries are filled on every push to main: the fill
 restores the newest entry
 of the family, runs on it the build the job runs, which compiles only what changed since, deletes
 from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;
@@ -1384,7 +1373,7 @@ only when that key is missing, and ci-caches.yaml deletes the entry each such fi
 envoy-infra job says how); its save takes the key its lookup computed, since a hash of the module
 files taken after the build drifted from the lookup's and made every push build it again (run
 45088325195). What changed under it in eleven days had cost its linux vet 83 to 85%
-of what the same vet for darwin took with nothing cached. Since no entry of the five refilled
+of what the same vet for darwin took with nothing cached. Since no entry of the eight refilled
 families carries a job's key itself, every restore of them takes the newest entry by prefix, on
 main too: the key is a prefix of the fill's keys, so the dispatch-browser.yaml jobs that hold
 their restore-keys off main still find the last fill's entry. Those restore-keys were held off
@@ -1430,8 +1419,8 @@ ubuntu-24.04, each a reason of its own machine and not of the job's code:
     one is installed from its `-aarch64` row there, as changie (test and tooling-checks), crane
     (ci-images), mise and jj (pi-shared) and elan (airlock-lean) are;
   * the pinned Oh My Pi build, which .omp-pin names and whose release ships linux-x64 alone:
-    daemon-go, plugin-pack, pi-envoy and pi-legion (pi-legion-build installs none, and runs on
-    arm64);
+    daemon-go, plugin-pack, step-models-chain, pi-envoy and pi-legion (pi-legion-build installs
+    none, and runs on arm64);
   * a browser: dispatch-browser, dispatch-browser-pr and dispatch-references (the container of
     their shard and alone legs is an image built for linux/amd64 alone), dispatch-two-builds and
     docs (Playwright's Chromium on the runner's own libraries);
@@ -1441,8 +1430,8 @@ ubuntu-24.04, each a reason of its own machine and not of the job's code:
     CGO_ENABLED, as release-envoy-listener.yaml does on ubuntu-24.04: Go's default turns cgo on
     for a native build and off for a cross build, so only an x86_64 runner builds the release's
     own pair (ci-job-envoy-go-build.yaml says what the arm64 runner built instead);
-  * envoy-go-checks, whose script tests drive this image's own `docker compose` and
-    `locale-gen` and have run on no other image;
+  * envoy-go-checks, whose script tests drive this image's own Compose plugin and its en_US.UTF-8
+    locale, which the job generates only where the image lacks it, and have run on no other image;
   * tool-fallback, which is the x86_64 half of the tool proof; tool-fallback-arm is its arm64
     half.
 Every Go cache family carries the runner's architecture in its key, as the paragraph above
@@ -1469,6 +1458,11 @@ merge group reads, unless it asks for every job
 (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job),
 and it reports under names of its own
 (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
+workflow_call is .github/workflows/large-pr-lanes.yaml's: it calls this file on an approval's
+pull_request_review event, which the called run keeps as its own event, so `changes` selects as
+on a merge group (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
+It passes no input, and the two inputs this file reads, `migration-base` and `every-job`, are a
+dispatch's.
 
 ## What a dispatched run of a branch selects, and when to ask for every job
 
@@ -1543,8 +1537,11 @@ the image.
 The changes job hands the filter generation the commit the run's change lands onto
 (`CI_FILTERS_BASE`), and the generation compares the base tree's filters with this tree's when the
 change touches a file the filters are computed with: a merge group's `base_sha`; on a pull
-request, the first parent of the merge commit the run checked out, which is main as GitHub merged
-the branch into it; on a dispatch of a branch, its merge base with main
+request, and on the approval-time run of a large one, which runs under pull_request_review and
+checks out the same merge commit
+(#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head), the first parent of the
+merge commit the run checked out, which is main as GitHub merged the branch into it; on a
+dispatch of a branch, its merge base with main
 (#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job). The step "Find the
 commit this run's change is measured against" finds the last two with
 .github/scripts/edited-migrations-base.sh, which picks the base of envoy-go-build's migration
@@ -1767,6 +1764,29 @@ The one test of that suite that packs the two plugin releases, in a job of its o
 pack reads bun.lock, so with it in daemon-go a lockfile change ran the daemon's whole Go
 suite (dispatch://INFRA-1413, A4).
 
+## Why the step-models chain is a job of its own
+
+The chain drives both real harnesses behind the real shim and the real daemon, in a job of its
+own. It is the one job of ci.yaml that runs the daemon's `e2e` build tag. Its two tests need Oh My
+Pi, Claude Code, a Postgres service and a NATS image, which no other daemon lane needs together.
+It is a slow suite (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request): the
+merge queue runs it on the tree the change lands as. Its steps are in
+.github/workflows/ci-job-plugin-pack.yaml, which it shares with plugin-pack. ci.yaml may call no
+more reusable workflows, and that file is the nearest one. Both jobs run named tests of
+internal/daemon on the real Oh My Pi, off the go-daemon cache family
+(.github/ci-notes/ci.md#two-jobs-that-call-one-file).
+
+Its step joins `-tags e2e` with `-run`, so it runs those two tests and none of internal/daemon's
+untagged tests. Its untagged companion is `daemon-go-race`. The one run of the package untagged
+is the step "Test the concurrent packages under the race detector" of `daemon-go-race-legs`, the
+matrix that job passes only when every leg passed.
+`.github/scripts/ci_job_reads.py#TAG_RUNS` holds `daemon_go_tests` to every file this job's step
+reads. That entry selects no job: ci.yaml's own label terms turn each output on. So a pull
+request that needs this job's result at its head carries `lane:step_models_chain` and
+`lane:daemon_go_tests` together, or `full-ci`. `lane:step_models_chain` alone runs the tagged
+job while its companion stays off. Such a run is not the paired result
+(.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request).
+
 ## Why the private-name port harness has an output of its own
 
 The private-name port harness, in a job of its own: it builds the `legion` binary of
@@ -1899,8 +1919,9 @@ What that gives, with each job's 90th percentile in minutes:
   dispatch-memory 32.5, envoy-go-race 29.8,
   envoy-go-claim-model 21.1, dispatch-multiprocess 18.7, envoy-go-checks (24.0 as the one job
   it was; its script tests 17.4), pi-legion (14.8 as one job), envoy-infra-go (14.0 as one
-  job), test (12.3 as one job), dispatch-browser (the full lane), dispatch-two-builds 13.7 and
-  envoy-smoke 11.4;
+  job), test (12.3 as one job), dispatch-browser (the full lane), dispatch-two-builds 13.7,
+  envoy-smoke 11.4 and step-models-chain (unmeasured when it joined; its step's own -timeout is
+  40 minutes);
 - on the pull request: envoy-go-build 6.8 and the halves split off the jobs above -
   tooling-checks 1.0, pi-legion-build 0.8 and envoy-infra-build 3.0 - dispatch-browser-pr 14.2,
   and every other job, each at 9.8 or less.
@@ -1919,7 +1940,9 @@ their skip in the queue
 What this accepts: a slow test that would have failed the pull request now fails first in the
 queue, where the failure takes the entry out and the queue rebuilds the groups behind it. Every
 build, vet, format, typecheck and lint failure, and every failure of a fast test, still comes
-back on the pull request.
+back on the pull request. A large pull request, where a slow failure in the queue is likeliest
+and costs most, runs its slow suites once more before the queue, at the head a reviewer
+approves (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
 
 Why a slow suite runs in the queue and not on every pull request its paths select, measured on
 2026-11-27 (dispatch://INFRA-3862) over the merge groups of 2026-11-25 and 2026-11-26 (1,085 runs;
@@ -2052,9 +2075,7 @@ case's command word, is no such name, and nor is text that another part of the s
 too, which the rename of the part the citation means leaves standing. The release command of
 release-push.sh is cited by its case arm, `.github/scripts/release-push.sh#release)`: that file
 holds the arm's text once, so the rename of the arm alone fails the citation, which a citation
-of its usage line would not. A root of the list that skills-guard.test.ts sweeps is cited by
-its entry, `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "AGENTS.md")`,
-since another string of that file holds the file name alone.
+of its usage line would not.
 
 Outside .github a //ci: line alone is read: a line whose text, after any whitespace, starts with
 the five characters //ci:, the test that the parser of .github/scripts/ci_filter_sources.py puts
@@ -2075,20 +2096,20 @@ cache, at the version the root package.json and bun.lock give.
 ## A lane label turns on one slow suite on a pull request
 
 A pull request label `lane:<output>` turns on that one slow suite, as `full-ci` turns on all of
-them. `<output>` is one of the fifteen outputs the `full-ci` term gates, and the label turns
-that output on where its paths matched: `daemon_go_tests`, `dispatch_browser`,
+them. `<output>` is one of the sixteen outputs the `full-ci` term gates. The label turns that
+output on where its paths matched. The sixteen are `daemon_go_tests`, `dispatch_browser`,
 `dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds`, `envoy_go`,
 `envoy_go_checks`, `envoy_go_claim_model`, `envoy_go_race`, `envoy_go_race_api`,
-`envoy_go_race_docs`, `envoy_infra_go`, `envoy_smoke`, `pi_legion` and `test`. It is for a pull
-request that needs one slow suite's result at its head - a test that only that suite runs, or a
-`ci_check` naming that job - without running the others; the pull request's body names that
-need. Each term names its own label, so the label that turns a job on is written beside it and
-nowhere else, and the paths term stays: a lane label never runs a suite its filter did not
-select. No such need asks for `full-ci`: keep it for a change to the Dispatch store's migrations
-before its approval, or for a person who asks for it. Between 19:40 and 21:35Z on 2026-11-26 the
-slow suites took 13,072 of the 24,967 pull-request runner-minutes, 9,981 of them under `full-ci`,
-and on Legion's branches 819 of 9,384 went to a suite a `ci_check` of the issue named
-(dispatch://INFRA-3862).
+`envoy_go_race_docs`, `envoy_infra_go`, `envoy_smoke`, `pi_legion`, `step_models_chain` and
+`test`. The label is for a pull request that needs one slow suite's result at its head, without
+running the others. The result it needs is that of a test that only that suite runs, or of a
+`ci_check` naming that job; the pull request's body names that need. Each term names its own
+label, so the label that turns a job on is written beside it and nowhere else, and the paths term
+stays: a lane label never runs a suite its filter did not select. No such need asks for
+`full-ci`: keep it for a change to the Dispatch store's migrations before its approval, or for a
+person who asks for it. Between 19:40 and 21:35Z on 2026-11-26 the slow suites took 13,072 of
+the 24,967 pull-request runner-minutes, 9,981 of them under `full-ci`, and on Legion's branches
+819 of 9,384 went to a suite a `ci_check` of the issue named (dispatch://INFRA-3862).
 
 A label that names no such output - a misspelling, a job id such as `lane:envoy-go` where the
 output is `lane:envoy_go`, or an output that is not held back - turns on nothing and fails
@@ -2102,10 +2123,210 @@ takes effect at the next push, reopen or ready-for-review, not when it is added,
 workflow takes no `labeled` trigger. On a head with no new commit to push, close the pull
 request and reopen it. Take it off once the run it was added for passes, as `full-ci`.
 .github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own outputs
-(.github/scripts/ci_router_outputs.py) and holds them to this: each lane label turns on its
-own output and leaves every other one as an unlabelled pull request has it, `full-ci` still
-turns all fifteen on, the paths term still holds under both, and a label naming no such output
+(.github/scripts/ci_router_outputs.py) and holds them to what follows. Each lane label turns on
+its own output and leaves every other one as an unlabelled pull request has it. `full-ci` still
+turns all sixteen on, and the paths term still holds under both. A label naming no such output
 turns on nothing.
+
+## A large pull request runs its slow suites once, at the approved head
+
+A pull request of 100 changed files or more, or of 10,000 changed lines (additions and
+deletions) or more, runs every slow suite its paths select once before it can enter the merge
+queue: at the head a trusted reviewer approves. Its pushes run what every pull request's pushes
+run, the fast lane and any lane label's suite. A push after an approval runs it again only once
+the new head is approved. A smaller pull request is not changed, and its approval starts no job.
+
+Why: a pull request's run holds the slow suites back for the queue
+(.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue), so a
+defect only a slow suite finds fails first in the queue, which takes the entry out and rebuilds
+every group behind it. Of the 23 queue removals in the first hours after that rule (2026-11-23
+22:13Z to 2026-11-24 02:35Z), 3 were failed checks, and one of them failed in a job its pull
+request's run had skipped: #3125, 769 files and 70,803 lines, in envoy-go-docs-finalizers, about
+1,140 runner-minutes and 5 rebuilt groups. A large change is the likeliest to carry such a
+defect and the costliest to rebuild behind. The two lines are from the 360 pull requests merged
+from 2026-11-21: changed files p95 98 and p99 340, changed lines p95 8,702, so about 7 pull
+requests a day cross one of them.
+
+Two workflows make it:
+
+- .github/workflows/large-pr-label.yaml runs `.github/scripts/large-pr-lanes.sh label` at every
+  push of a pull request that may be large, and also when GitHub retargets one to another base
+  (an `edited` event whose base changed), which can change its size with no push: its job's `if:`
+  admits 100 changed files or more, 5,000 additions or 5,000 deletions or more (a sum of 10,000
+  has one of the two at 5,000), or the label already on, and skips every other push before a
+  runner starts. The job of any other edit (its title or body) skips too, and cancels nothing,
+  since the concurrency group is on the job, not the run: a group on the run would let such an
+  edit cancel a push's label run and then write no label. The job is named `label` only where
+  its `if:` holds, so such an edit's skipped run posts its name expression's text, a check name
+  other than `label`, and never replaces the push's `label`. The edit also starts a newer
+  `pr-title` run in the same settlement of the head. The Legion daemon tells no role and wakes no
+  pod of a settlement whose only change is skipped runs beside newer runs that stay success, so
+  an edit whose `pr-title` run stays success is told nobody; a newer run of a check that failed
+  or was cancelled is a change, whatever skipped runs stand beside it
+  (`packages/daemon/internal/workflow/review.go#changesOnlySkippedRuns`, dispatch://INFRA-6293).
+  The script reads the size from the
+  event's payload and puts the label `large-pr` on a large pull request, or takes it off
+  one that shrank. Its `GITHUB_TOKEN` holds `pull-requests: write`, which a pull request's labels
+  need (`issues: write` alone is refused: HTTP 403 "Resource not accessible by integration" at
+  every attempt, test pull request #5347's run 45353759536), in a job that checks out `.github`
+  alone and runs this repository's own script, no dependency's code. An event that token makes
+  starts no workflow run, and none is wanted: the label is read later, by the approval's run. A
+  fork's pull request is passed over, since its token cannot write a label.
+- .github/workflows/large-pr-lanes.yaml runs on every submitted review. The review is made with
+  the reviewer's own token, an App's or a person's, so its event starts a run; nothing this
+  mechanism writes has to start one. Its jobs run only on an approval of a pull request that is
+  not a draft and carries `large-pr`, by a reviewer this repository trusts: author_association
+  OWNER, MEMBER or COLLABORATOR, which is the repository's owner, an organization member or an
+  invited collaborator (a member's role on this repository, and a collaborator's, may be Read or
+  Triage: such an account spends runner time here, and reaches no secret with code of its own,
+  since a branch of this repository needs write access), or a GitHub App
+  (`github.event.review.user.type == 'Bot'`), which can review here only where it is installed on
+  this repository. The repository is public, and any signed-in account may approve one of its
+  pull requests, so without that term any account could start these runs, a three-hour hold and
+  every slow suite with this repository's secrets, as often as it liked. An App's approvals carry
+  author_association CONTRIBUTOR, as does any account with one merged commit, so the association
+  alone cannot admit the reviewer Legion uses (167 approvals by legion-reviewer[bot] on pull
+  requests merged from 2026-11-23 read CONTRIBUTOR, the 2 by a person MEMBER, and review
+  6042186091 on #5346 reads CONTRIBUTOR too; the hold step prints the type and association of the
+  approval it runs for).
+  Every other review's run is decided by the `if:`s, from the event alone, before any runner
+  starts, and leaves three skipped check runs: `approval`, and `lead` and the hold, both posted
+  under their name expressions' text, so none named `lead` or ci-ok. They are names new to the
+  head at its first review, and newer runs of the same names at each later review and each reply
+  to a review thread, so the head settles again each time. The Legion daemon tells no role and
+  wakes no pod of a settlement whose only change is such skipped runs
+  (`packages/daemon/internal/workflow/review.go#tellChecks`,
+  `packages/daemon/internal/workflow/wake.go#wakeOnSettlement`, dispatch://INFRA-6293). Since
+  `lead` and the hold post under those texts, a later review never leaves a skipped `lead` or
+  `ci-ok` over an approval-time run's at the same head: a skipped run replacing a run of another
+  word, which the daemon tells its roles of and wakes a pod for.
+  - `lead` decides whether this approval runs the suites or follows the approval-time run
+    already at this head: the earliest older run of this workflow at the same head whose ci-ok is
+    still open or passed (`.github/scripts/large-pr-lanes.sh lead`). So one approval-time run at
+    a time tests a head, unless GitHub refuses `lead`'s read, and later approvals of it, a third
+    as much as a second, conclude as that run does. Two runs at once would meet in ci.yaml's
+    concurrency group, which on this event is the merge commit (`ci-<sha>`), and in
+    browser-image.yaml's build group, keyed the same way: GitHub keeps one running and one
+    pending run per group, and a third arrival cancels the pending one, whatever
+    cancel-in-progress says, which would leave a failed ci-ok with nothing failed. A second call
+    that does start, after a refused read, lists no job while it waits in that group, so its own
+    ci-ok fails 300 s after its `lead` ended. The group keeps that call waiting rather than
+    cancelling it (`cancel-in-progress` is false; only a third call would cancel it), so it starts
+    once the first run ends and runs every suite again (#5347's run 45411425611: its `approval / changes` started 5 s after the
+    first run's `approval / ci-ok` ended). Its failed ci-ok stays until that run has ended and its
+    failed jobs are re-run (`gh run rerun <run> --failed`, which GitHub refuses with HTTP 403 while
+    the run is still running); the new attempt concludes as the suites that ran did. Its `lead`'s
+    warning and its hold's error say so. Keying those two groups per run on this event instead was
+    weighed and not taken: browser-image.yaml is part of the browser image's build recipe
+    (ci_images.py's recipe_sha256), so any edit of it rebuilds the image and moves its row, and
+    following does the same work with no second run of the suites at all.
+  - `approval` calls this file, through its `workflow_call` trigger, when `lead` says to run. A
+    called workflow runs under its caller's event, and on pull_request_review the `full-ci` term
+    of every held-back output (`github.event_name != 'pull_request' || …`) is true, so each takes its
+    paths filter's verdict, as on a merge group. ci-router-outputs.test.sh holds a review run's
+    outputs equal to a merge group's for the same paths verdicts. This file's own ci-ok judges
+    that run as `approval / ci-ok`, a name no ruleset reads.
+  - `ci-ok` is the check main's ruleset reads. GitHub creates the check run of a job with no
+    needs when it creates the run, and that of a job with needs only once they have ended: on
+    run 45314504563, read at 2026-11-24T02:45:31Z, the `changes` and `pr-title` check runs were
+    there from 02:43:54Z while 23 jobs ran, and no ci-ok check run was. So `approval / ci-ok`
+    appears only at the run's end, and this job, which needs nothing, holds a pending ci-ok on
+    the head from the run's first seconds, then concludes as `approval / ci-ok` concluded, or as
+    the ci-ok of the run it follows (`.github/scripts/large-pr-lanes.sh hold`). A run that ends
+    with no verdict fails it, and so does a caller that never starts, five minutes after `lead`
+    ended, so a broken or cancelled run never holds the head pending until the job's timeout.
+
+What an approval's run runs beside a merge group's. The jobs and steps of ci.yaml's tree that
+test the event, read at this head: dispatch-two-builds-same runs on both
+(ci-job-dispatch-two-builds.yaml); `pr-title` runs on an approval's run too, since #5231 left
+its `if:` the draft term alone, and it gates nothing (CI_OK_EXEMPT); the daemon API contract
+step of lint runs on a pull request and on a merge group (ci-job-lint.yaml), and
+dispatch-browser-pr and the dispatch-references preview on a pull request, so an approval's run
+skips all three, and each ran at the same head on that head's push run; worker-image runs on a
+pull request alone, so an approval's run skips it as a merge group does; ci-ok's step "Refuse a
+draft pull request" runs on a draft's run alone, and an approval's run is of a pull request that
+is no draft, so it skips that step as a merge group does; cancel-started, ci-ok's steps "Refuse a
+re-run attempt of a merge-group run" and "Hold a failing verdict until this group is the front of
+the queue", and every ci-ok-report post are merge-group mechanics; ci-ok's step "Set every other
+ci-ok on this head to this job's conclusion" runs on an approval's run, as on a pull request's;
+and two payload reads take the pull request's values on an approval's run, where a merge group's
+take the group's: browser-image.yaml's BUILT_SHA
+(`github.event.pull_request.head.sha || github.sha`) builds the pull request's head, and
+ci-job-tool-fallback.yaml's checkout of the base checks out the pull request's `base.sha`. The
+tree an approval's run tests is the head merged with its base as GitHub last merged it, not with
+the entries ahead of it in the queue.
+
+What keeps the pull request out of the queue while the run is going, and what is not known. A
+required check of the pull request's own event that exists and is pending makes GitHub refuse
+`enqueuePullRequest`: at 2026-11-24T16:11:03Z the coordinator tried it on #5380 (approved, base
+main) while its required `pr-title` was queued after an edit, and GitHub answered
+UNPROCESSABLE, "Pull request Required status check \"pr-title\" is queued." pr-title.yaml's
+header records a review's run that waited for a runner holding the required pr-title pending
+until the queue took the pull request (dispatch://INFRA-1825). This mechanism's case differs from
+both: the head holds the push run's ci-ok, passed, under the `pull_request` event, beside this
+workflow's ci-ok, pending, under `pull_request_review`. Whether GitHub refuses
+`enqueuePullRequest` then is UNKNOWN: no large pull request has been approved on main with this
+workflow there. The first such approval answers it, and until it does, whoever enqueues a pull
+request labelled `large-pr` waits for its review-event ci-ok to conclude first, and enqueues
+only on success. Legion's merger enqueues with `enqueuePullRequest` and waits for a required
+check still running (packages/daemon/internal/prompts/roles/merger.md, steps 4 and 6), but
+Legion's own readers do not read checks as GitHub does: cistore keeps one check run per name and
+GitHubLink.tsx the newest per name, workflow and event, where GitHub's rollup reads every one of
+them, so either can show a head green that GitHub holds (dispatch://INFRA-5728). The seconds
+between the approval and GitHub creating the run, before the ci-ok check run exists, are open in
+any case: on test pull request #5347 the ci-ok job was created 4 to 7 s after the review's
+submission (reviews 6038732981, 6039778587, 6040743425 and 6040755108), and the rollup read
+PENDING 9 s after it. Over the 384 queue entries of the 228 pull requests merged from 2026-11-23
+to 2026-11-24 12:00Z, the shortest time from an approval to the next entry was 7 s, and 2 entries
+came within 10 s of theirs, both enqueued by the coordinator.
+
+Why a run that tests nothing leaves no passing ci-ok. A skipped job's check run is a passing
+required check, so a skipped job named ci-ok on a head whose own ci-ok is red would read as
+green to any reader that takes one check run per name. Both jobs here are skipped on every
+review but a large pull request's approval, and GitHub evaluates a skipped job's name not at
+all (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own): the
+check run carries the expression's text. The name repeats the job's whole condition besides, so
+it reads `ci-ok` only where the job runs even if it were evaluated.
+
+No approval-time run is cancelled: the workflow holds no concurrency group, on a job or on the
+run. A ci-ok an older approval's run left at a head, cancelled or failed, stays beside the newer
+run's, and GitHub's rollup reads FAILURE with both there. Test pull request #5347 showed it both
+ways: at 3a30f85f12a a run-level group cancelled the older run (ci-ok check runs 138437935113
+cancelled, 138438707923 success), and at 9749b52fcd2 a group on the `approval` job cancelled its
+suites (138468630340 failure, 138469054547 success); both heads read FAILURE. A run-level group
+also held the newer run with no job, so with no pending ci-ok, for 39 s while the older run
+cancelled (run 45392143357, created 12:17:56Z, its ci-ok job 12:18:35Z). A later approval of a
+head follows the run already testing it, as `lead` says above; an approval of a newer head leaves
+the older head's run to finish. To run an approval-time run again after a failure that was not
+the change's, re-run its failed jobs (`gh run rerun <run> --failed`): a later attempt of a job
+replaces its own check run (the k28 probe of INFRA-1066, ci-ok-reconcile.sh's header). A run
+that follows it does **not** take that new verdict: a follower concludes on the first poll that
+sees the followed run's ci-ok completed, whatever its conclusion, and the polls are 60 s apart,
+so by the time anyone re-runs the lead run its followers have already failed their own ci-ok,
+and each failed ci-ok keeps the head red. Re-run the lead run's failed jobs first, then each
+follower's: a follower's new attempt chooses a run to follow again and follows the lead run's
+new attempt. Another approval would run the suites anew beside the failed verdict, which stays
+on the head.
+
+What it leaves as it was:
+
+- Main's ruleset keeps an approval across a push (`dismiss_stale_reviews_on_push` is false), so a
+  head pushed after the approval and not approved again reaches the queue with its fast lane
+  alone, as before this rule. Approve each new head again: that approval runs the slow suites at
+  the new head. Legion's review step does so, since it approves each head it reviews.
+- An approval sent before the `Large PR label` run has put `large-pr` on a head that has just
+  become large runs nothing, because the review's event carries no size, so its run reads no
+  label (#5944: review 6095318330 at 03:02:51Z, Large PR lanes run 46100963090 skipped every
+  job, and run 46100958913 put the label on at 03:05:48Z). That head reaches the queue with its
+  fast lane alone, as before this rule, and the queue runs its slow suites. Approve a head that
+  has just become large only after its `Large PR label` run has concluded, and where an
+  approval came first, approve it again once the label is on.
+- ci.yaml's ci-ok reads a runner shutdown off check runs named for its own jobs
+  (.github/scripts/runner-shutdown.sh), and under this caller each is named `approval / <job>`,
+  so a job the platform killed in an approval-time run reads as a failure, not as cancelled.
+  Re-run that run's failed jobs, and then each run that followed it.
+- `full-ci` and the lane labels decide nothing here: the approval's run selects by paths alone,
+  as the queue does.
 
 ## Why envoy-go's build and checks come back on every push
 
@@ -2277,8 +2498,8 @@ and checks: write are the ci-ok-report step's.
 ## The tool fallback proof: what it drives, what it only reasons about, and how to read it when it is red
 
 The live proof of the second source every tool install of this repository now has: it faults
-the host the first source is on, installs all nine tools through the source
-.github/ci-tools.yaml names for each, and then serves eighteen corrupted payloads and reads
+the host the first source is on, installs all ten tools through the source
+.github/ci-tools.yaml names for each, and then serves twenty corrupted payloads and reads
 the refusal of every one of them.
 It is permanent rather than a scaffold. A second source nothing exercises rots — a copy
 nothing fills, a seam a refactor dropped, a digest nobody reads — and the hour of 504s this
@@ -2296,7 +2517,7 @@ binary a third party installed seeds mise's install directory from that staged p
 rather than downloading one inside the fault.
 That is what keeps ci-ok green during the very outage this job proves survivable: this job
 is in ci-ok's `needs:`, and its filter selects ci.yaml, .bun-version, the worker image's
-Dockerfile, the manifest and the helper beside it, and the nine actions, so
+Dockerfile, the manifest and the helper beside it, and the ten actions, so
 a step of it that waited on a release host would turn every pull request touching one of
 those files red on exactly the day the fallback is doing its work.
 .github/scripts/ci-tools-proof.sh is the rig, which this job and tool-fallback-arm drive;
@@ -2351,11 +2572,11 @@ and `timeout-minutes: 1` whose action slept 180 s was ended after 72 s, and the 
 it read it as `outcome='failure' conclusion='success'`, so the failure is in the value an
 assertion reads while the job's own result says nothing happened.
 So on a step with no `continue-on-error` a bound is loud: it fails the job. This job's steps
-are in .github/workflows/ci-job-tool-fallback.yaml, and on one of the twenty-six installs
+are in .github/workflows/ci-job-tool-fallback.yaml, and on one of the twenty-nine installs
 there whose control passes a step whose `outcome` is `failure`, a bound is silent: a hang
 would satisfy that control and leave the job green, where the job's own ceiling would have
 cancelled it and failed ci-ok. That is why each of those installs is timed as well as read -
-the eight with nowhere to go by the control step "Check all eight installs with nowhere to go failed, and failed in their own time", the eighteen corrupted cases by
+the nine with nowhere to go by the control step "Check all nine installs with nowhere to go failed, and failed in their own time", the twenty corrupted cases by
 `report` itself - and why a new bound on a step some later assertion accepts the failure of
 needs the same treatment or none at all (dispatch://INFRA-2605).
 
@@ -2399,7 +2620,7 @@ action over the same manifest through the same helper, so one filter decides bot
 neither can drift from the other. CI_OK_SELECTED_BY maps this job to that filter, and
 .github/scripts/ci_job_reads.py holds a gate of its own on it for what this job reads.
 After the Bun halves it proves the other arm64 rows the same way: crane-aarch64,
-changie-aarch64, mise-aarch64, jj-aarch64 and elan-aarch64, each installed once from its
+changie-aarch64, gotestsum-aarch64, mise-aarch64, jj-aarch64 and elan-aarch64, each installed once from its
 release asset and once under the fault, where each must read its ghcr copy and each install's
 own 504 is read after a probe of its own (the called file's comments say how). Those faulted
 installs read the copies the ci-images job fills, so this job needs that job for order and
@@ -2413,19 +2634,21 @@ scope.
 
 ## The fail-open jobs, and what they buy while changes is broken
 
-lint, typecheck, test, tooling-checks, daemon-go, plugin-pack, private-names-port,
-sessions-script and text-checks are jobs ci-ok condenses; main's ruleset requires none of their
-names. Fail-open: when `changes` did not succeed, all of them but lint, which runs on every
-change anyway, run rather than skip. ci-ok fails then anyway (ci-ok.sh), so this buys signal:
-their results while `changes` is broken. The set is main's fail-open typecheck and test, and
-every job that took a suite from that test job: its plugin build, changelog check, lints and
-typechecks are tooling-checks', its daemon Go tests are daemon-go's, the tests of
+lint, typecheck, test, tooling-checks, daemon-go, plugin-pack, step-models-chain,
+private-names-port, sessions-script and text-checks are jobs ci-ok condenses; main's ruleset
+requires none of their names. Fail-open: when `changes` did not succeed, all of them but lint,
+which runs on every change anyway, run rather than skip. ci-ok fails then anyway (ci-ok.sh), so
+this buys signal: their results while `changes` is broken. The set is main's fail-open typecheck
+and test, and every job that took a suite from that test job: its plugin build, changelog check,
+lints and typechecks are tooling-checks', its daemon Go tests are daemon-go's, the tests of
 ci_job_reads.py's PLUGIN_PACK_TESTS are plugin-pack's, the private-name port harness is
 private-names-port's, the daemon's text checks are text-checks' and `bun test scripts/sessions`
 is sessions-script's, so each of those carries the term too and a suite that moves out of a
-fail-open job takes it with it. A re-run of only the failed jobs can leave the jobs `changes`
-then selects skipped, and ci-ok fails a selected job that skipped rather than passing with
-nothing tested: re-run every job instead.
+fail-open job takes it with it. step-models-chain took no suite from the test job: it carries
+plugin-pack's term because the two call one file (#two-jobs-that-call-one-file), and its `if:`
+is plugin-pack's with its own output. A re-run of only the failed jobs can leave the jobs
+`changes` then selects skipped, and ci-ok fails a selected job that skipped rather than passing
+with nothing tested: re-run every job instead.
 
 ## What the test job runs, and how each harness step is gated
 
@@ -2449,24 +2672,27 @@ them; the wait passes `--allow-none` for that run.
 ## Two jobs that call one file
 
 ci.yaml calls 45 unique reusable workflows, the most .github/scripts/check-workflow-files.sh
-allows it (its rule 5 keeps five below the 50 GitHub counts over every tree of nested calls),
-so a job split in two takes no file of its own for its new half, and a new job takes none
+allows it: its rule 5 holds every file to 46 over the 50 GitHub counts over every tree of nested
+calls, and .github/workflows/large-pr-lanes.yaml, which calls ci.yaml, counts ci.yaml and its 45.
+So a job split in two takes no file of its own for its new half, and a new job takes none
 either. test and tooling-checks call ci-job-test.yaml, pi-legion and pi-legion-build call
 ci-job-pi-legion.yaml, envoy-infra-go and envoy-infra-build call ci-job-envoy-infra-go.yaml,
-and envoy-e2e-local and envoy-refill, which build the same listener and natsd, call
-ci-job-envoy-e2e-local.yaml. Such a file holds one job per caller and
-takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its id>'`, each
-caller passes `job: <its own id>`, and each job ends with the ci-ok-report step under its own
-id. A call runs the one job named for its caller, and the other reads `skipped` under it.
+envoy-e2e-local and envoy-refill, which build the same listener and natsd, call
+ci-job-envoy-e2e-local.yaml, and plugin-pack and step-models-chain call ci-job-plugin-pack.yaml.
+Such a file holds one job per caller and takes a `job` input. Each of its jobs carries exactly
+`if: inputs.job == '<its id>'`, and each caller passes `job: <its own id>`. Each job ends with the
+ci-ok-report step under its own id. A call runs the one job named for its caller, and the other
+reads `skipped` under it.
 
 .github/scripts/ci_filter_coverage.py holds that shape (check_called_jobs): once a file two
 ci.yaml jobs call holds a job named for any of its callers, each caller must have a job of it
 named for itself, which must carry that `if:`, and must pass its own id, since a job that ran
 under a second caller would read files that caller's filter is never held to, and a caller with
 no job of its own there runs nothing its filter is held to.
-`.github/scripts/ci_job_reads.py#SHARED_FILE` maps each new half, and envoy-refill, to the file
-it shares, so its gates find their steps there. Each job keeps a filter of its own, and both name
-the shared file, so a change to it selects both. dispatch-browser.yaml has three callers,
+`.github/scripts/ci_job_reads.py#SHARED_FILE` maps each new half, envoy-refill and
+step-models-chain to the file it shares, so its gates find their steps there. Each job keeps a
+filter of its own, and both name the shared file, so a change to it selects both.
+dispatch-browser.yaml has three callers,
 dispatch-browser, dispatch-browser-pr and dispatch-references, but every job of it runs under
 any of them: it takes the caller's id as `job` for its artifact names, its read of its own jobs
 and its report, never to pick a job
@@ -2480,7 +2706,7 @@ build reads, the render check of every changelog fragment with the changie it in
 guides' layout step behind its own guide_layout filter, read out of the same list of matched
 filters (#one-list-for-the-test-jobs-step-gates), and the lints and typechecks of
 scripts/dispatch, scripts/github-apps, scripts/sessions and scripts/approval-eval, with the
-typecheck of scripts/e2e/lib's plan ratings read test. They are builds, lints and typechecks,
+typecheck of scripts/e2e/lib's scripts, fixtures and tests. They are builds, lints and typechecks,
 which a pull request runs whatever their time, and they come to 1.0 minutes at the 90th
 percentile (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 The job shares ci-job-test.yaml with the test job
@@ -2514,11 +2740,21 @@ its own headed by its exit status, wall seconds, CPU seconds and seconds waiting
 fails with an `::error` naming each that failed, and writes the same table to the job summary.
 It runs after a failed step too (`!cancelled()`), so a harness queued before the failure is
 still judged. A cancel or the job's timeout during the wait signals it: the step `exec`s it, and
-the runner signals a running step only when its condition no longer holds, which with
-`always()` it would always hold. The wait then names each harness still running with its log so
-far; a job cancelled before the wait began runs "Name the script harnesses a cancelled job left"
-(`wait --now`) instead. A recorder killed before its harness ended is a failure, and the pool
-ends that harness's session before its slot goes to another. `start
+the runner signals a running step only when its condition no longer holds (on a cancel or the
+job's timeout), which with `always()` it would always hold; on its own shutdown and on a step's
+own timeout, whatever its condition. The runner sends an INT first when it cancels a step, when
+the step times out and when the runner itself shuts down (actions/runner's ProcessInvoker,
+CancelAndKillProcessTree). An INT stops the wait: it names each harness still running with its
+log so far and exits 1. A TERM that reaches the wait while it still waits ends it at once, with
+status 143 and no report, as a TERM ends the shell of a plain step; once the report has begun,
+the wait ignores INT and TERM. The runner records no exit status for a step it stopped itself,
+so .github/scripts/runner-shutdown.sh can read a shutdown, during the wait as during any step,
+only where a TERM from outside the runner ended the step before the runner cancelled it. A wait
+that trapped that TERM would report and exit 1, and the shutdown of a job whose suites the pool
+runs would read as a failure of the change. A job cancelled before the wait began runs "Name the
+script harnesses a cancelled job left" (`wait --now`, which exits 1) instead. A recorder killed
+before its harness ended is a failure, and the pool ends that harness's session before its slot
+goes to another. `start
 --minutes <n>` bounds one harness as a step's timeout-minutes did and hands it
 HARNESS_POOL_DEADLINE_MS. The runner ends a step's leftover processes only at the job's end, so
 a harness outlives the step that queued it and the job's timeout-minutes still bounds it.
@@ -2531,7 +2767,12 @@ of them and ci-router-outputs.test.sh after the
 step that fetches the filters the run's changes job computed, whose path each takes in its step's
 env). In envoy-go-checks they are queued right after the Go cache restore and the helm install
 (the cluster test's nats.yaml render runs that helm, and a pooled harness takes the PATH of the
-step that queued it), longest first.
+step that queued it), longest first. Two plain steps stand after the fourth harness's step, when
+the first four hold every slot: the one that generates en_US.UTF-8 where the runner lacks it, and
+the one that pulls the Compose 2.12.2 image the deploy tests take. envoy-session-stall queues its
+thirteen stack suites the same way, after the contracts build they all import and the build of the
+Go commands they build that the go-envoy entry does not hold
+(#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack).
 
 Each job that queues harnesses also keeps a record of when each line of each harness's log was
 written. GitHub stamps a job's log by the line, and a pooled harness's log reaches GitHub only
@@ -2559,9 +2800,9 @@ failure to write it cannot end the recorder, the harness runs in a subshell of i
 `times` is the harness's CPU alone (`?` where that cannot be read, never 0), and a stamper that
 fails leaves an incomplete record, which the reader reports as UNKNOWN, and its error output in
 the entry's recorder log, which the wait prints in the harness's group. The upload step has
-`continue-on-error: true` in both jobs: an upload that fails is a red mark on that step, the job
-and its ci-ok report keep the harnesses' verdict, and the reader's UNKNOWN for a job with no
-artifact covers the lost record. The one thing the
+`continue-on-error: true` in each job that queues harnesses: an upload that fails is a red mark
+on that step, the job and its ci-ok report keep the harnesses' verdict, and the reader's UNKNOWN
+for a job with no artifact covers the lost record. The one thing the
 pool changes for a harness is PYTHONUNBUFFERED=1, so that a Python program's lines reach the log
 when it prints them rather than when it ends and carry their own times.
 
@@ -2640,8 +2881,9 @@ claim needs - on ubuntu-24.04, since the Oh My Pi release ships linux-x64 alone.
 suite (14.8 minutes at the 90th percentile as the one job it was), held back behind its
 `pi_legion` output (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request).
 pi-legion-build builds contracts, typechecks the plugin, runs the skills' guard
-(src/skills-guard.test.ts: every skill within its budget, every link resolving, every pinned
-sentence present) and packs the plugin as the release does, uploading the tarball as
+(src/skills-guard.test.ts: every skill within its budget, every link resolving, and the Legion
+guides' sentences on what counts a review round) and packs the plugin as the release does,
+uploading the tarball as
 `pi-legion-pr`: a build, a typecheck and a text check, which a pull request runs (0.8 minutes),
 on ubuntu-24.04-arm, since it installs no Oh My Pi. The guard also runs in pi-legion's suite in
 the merge queue, where it costs under a second.
@@ -2689,10 +2931,13 @@ Two inputs, each a literal of its caller's. `lane` decides the projects each job
 workflow runs, so nothing here chooses them a second time; it picks no browser to install any
 more: the shard and alone jobs run in the image this repository builds, which carries all three
 engines (dispatch://INFRA-1443), and the two-process job installs Chromium whatever the lane.
-`job` is the caller's own id. GitHub names each job of a called workflow `<caller> / <job>`, so a
-pull request's browser checks are `dispatch-browser-pr / shard (1)` and the like, and a
-`ci_check` naming `dispatch-browser / merge` finds no run of that name on a pull request
-without the label: the dispatch-browser job's own run concludes `skipped`, and no job of
+`job` is the caller's own id. GitHub names each job of a called workflow `<caller> / <job>`, and
+`<outer> / <caller> / <job>` where the caller is itself in a called workflow, as ci.yaml is under
+`.github/workflows/large-pr-lanes.yaml#approval`. So a pull request's browser checks are
+`dispatch-browser-pr / shard (1)` and the like, an approval-time run's are
+`approval / dispatch-browser / shard (1)`, and a `ci_check` naming `dispatch-browser / merge`
+finds no run of that name on a pull request without the label: the dispatch-browser job's own
+run concludes `skipped`, and no job of
 dispatch-browser.yaml starts under it. The merge job reads only the jobs named under its own
 caller, every artifact name starts with the id so callers that share a run share none, and
 the merge job's ci-ok report names it.
@@ -2954,12 +3199,51 @@ are rebalanced from their own times. Two more are envoy's own:
 
 What it costs: each job repeats its setup, about 80 s for a unit leg and 65 s for a race leg, so
 the legs use more runner minutes than the two jobs did, and each summary job is one more wait for
-a runner after its kind's last leg. A job sets up only what its tests use: envoy-go-race-impossible
-and envoy-go-skips run no test that starts a container and run no Bun, so they pull no test image
-(their Postgres service's image aside, which envoy-go-race-impossible also runs as its second
-Postgres), install nothing and set no testcontainers variable.
+a runner after its kind's last leg. envoy-go-race-impossible installs gotestsum, and envoy-go-skips
+installs gotestsum and jj. Neither installs Bun or sets a testcontainers variable. Neither pulls a
+test image other than the Postgres service's image, which envoy-go-race-impossible also runs as
+its second Postgres.
 Standard runners on this public repository bill no money; the cost is runner concurrency and that
 wait.
+
+## What envoy-go-race-impossible runs in its plain run
+
+The step "Test what the race build cannot run at all or at full size" of envoy-go-race-impossible
+(.github/workflows/ci-job-envoy-go.yaml) runs the tests the race detector makes impossible that
+measure no time, which the race job of each of these packages therefore cannot make, so envoy-go
+keeps a plain run of exactly them: internal/bus counts HoldsSeed's allocations, which the race
+runtime's own allocations would be counted into; the API's priorities read's four tests run over a
+corpus of production's counts (13,298 issues, 678,943 events), whose seed is heavy work, and the
+bound's test prints read times, which the detector stretches; and the documents package measures the
+heap a room keeps, which the detector's shadow memory and instrumentation move. Those are out of the
+race build altogether (//go:build !race), and the two render-reuse storms run fewer seeds and fewer
+edits under it (raceEnabled), so this is their full-size run. The API's line runs the four on the
+Postgres the job's step "Start a Postgres that preloads pg_stat_statements" starts
+(DISPATCH_TEST_DATABASE_URL): the bound's test reads each statement's database time from
+pg_stat_statements, which a server loads only at its start, and the service starts on the one
+command line every Postgres service is held to, which preloads nothing. The four assert no time: the
+bound's test holds the answers of the reads it times and their shape under each plan (the
+statements, the round trips and the event probes) and prints their times, which c-both-forms' step,
+outside CI, holds to the bound, and the other three hold answers, walks and buffer ratios on clones
+of the corpus the first of them builds once per test binary (storetest.OpenFrom), so they run in its
+go test, on the same server. On a four-CPU build pod (c4d-highmem-8, INFRA-5791), the bound's test
+(TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan) took 47.1 s for the corpus's build and its
+840 reads, TestThePrioritiesReadKeepsItsPlansWithAProjectNamed 1.4 s,
+TestThePrioritiesReadWalksIssuesOnceOnTheCorpus 1.3 s and
+TestThePrioritiesReadAnswersAsTheMergeBaseAnswers 4.5 s, 54.4 s for the package's run. The documents
+package's line runs under Go's cleanup detector (GODEBUG=checkfinalizers=1), as envoy-go-race-docs'
+run of the rest of it does, since it is the one package that registers a cleanup (ci_job_reads.py's
+CLEANUP_DETECTOR), and with -v, so its TestMain's count of services left alive prints. The rows of
+that run that measure time (the xid window tests, the xid rig, the API's issue-list bound and the
+auth service's restart storm) run alone in envoy-go-alone. The API's mention sender claim model is
+out of the race build too, and runs in a job of its own, envoy-go-claim-model; the API's ten source
+guards, and one_expression_guard_test.go beside them, carry that tag as well and are deliberately
+not here: they read the module's source, the text-check job runs their twenty-four tests by name,
+and ci_job_reads.py's CLAIM_MODEL_TESTS and TEXT_CHECK_TESTS leave exactly those tests out of the
+step rather than have each of them run twice. The -run lists are derived in
+.github/scripts/ci_job_reads.py from the race lane's own packages and those files' //go:build !race
+and raceEnabled, so a test added to either and missing from the step fails the ci-filters job naming
+it. 10 minutes each is ample.
 
 ## The CPU time of each envoy-go test binary
 
@@ -3007,13 +3291,13 @@ Two steps around each job's tests print what the rows add up to:
   (`sampler: "false"`): its rows measure time on a runner nothing else loads, and the sampler would
   be one more process there.
 - "Report the CPU time of each test binary" (`.github/actions/go-cpu-report`), the step before the
-  ci-ok report, runs `go-cpu-runner.py report`. It stops the sampler, keeps /proc/stat as the job's
-  end, and prints the `go-cpu job:` line, the rows summed by class, and the `go-cpu usage:` line,
-  the CPU the whole machine used between the two steps, with the build cache entries the job added
-  and the CPU of the job's Postgres containers (the service, and pg-stat-statements in
-  envoy-go-race-impossible). Given the job's `check_run_id`, it uploads
-  `$RUNNER_TEMP/go-test-events/` as the artifact `go-test-events-<check-run-id>`, an upload that
-  stands until dispatch://INFRA-6313's own upload of that directory lands in the jobs.
+  job's "Upload the go test events", runs `go-cpu-runner.py report`. It stops the sampler, keeps
+  /proc/stat as the job's end, and prints the `go-cpu job:` line, the rows summed by class, and the
+  `go-cpu usage:` line, the CPU the whole machine used between the two steps, with the build cache
+  entries the job added and the CPU of the job's Postgres containers (the service, and
+  pg-stat-statements in envoy-go-race-impossible). The upload after it then carries the rows and
+  the runner's files in `cpu/` of the artifact `go-test-events-<job id>`, beside the `*.jsonl`
+  events, so a reader of the events reads only `*.jsonl` and a reader of the record only `cpu/`.
 
 The report only measures: it runs under `if: always()`, so a failed or cancelled job is measured
 too, with `continue-on-error: true`, so it fails neither the job nor its ci-ok report, and with
@@ -3275,7 +3559,7 @@ build, beside this job and not after it (that job's comment says why).
 ## Why the two-builds jobs restore go-envoy-test
 
 Both jobs of ci-job-dispatch-two-builds.yaml restore go-envoy-test and save nothing, as
-envoy-go-claim-model and dispatch-browser.yaml's binaries job do. setup-go's own cache is off,
+envoy-go-claim-model and dispatch-browser.yaml's multiprocess job do. setup-go's own cache is off,
 so without a restore their Go steps start on an empty module cache and an empty build cache.
 When the two earlier builds come out of their own cache entries, the ceiling step's
 `go run ./internal/dispatch/store/cmd/connections` and the twobuild test step are the first
@@ -3420,6 +3704,41 @@ envoy-client job sets up neither, so a suite gated on LEGION_E2E_DISPATCH_STACK 
 there for ever. The filter envoy_session_stall already selects packages/envoy/** and
 packages/envoy-client/**, so the suite brings no new path into this job's closure.
 
+Each of these suites, the role topics and CI-result suites and the role takeover smoke beside
+them starts a stack of its own (test/envoy-stack.ts, test/dispatch-stack.ts,
+test/ci-results-stack.ts, packages/pi-envoy/scripts/smoke-role-takeover.sh): its binaries built
+into a scratch directory of its own that also keeps its servers' state, its servers on ports the
+kernel chose for them, and each Dispatch server and the CI-result stack's brokers on a database
+of their own. They share the checkout, the Postgres service and the Go module and build caches.
+Most of each suite's time is a real window or timer it is about (nats.js's ping and dial timers,
+the listener's live window, gone horizon and reap interval): as one step after another the
+thirteen were 628 s of the job's 673 s median (31 green merge-group jobs, runs 46065919629 to
+46103162044, 2026-11-27 and 28), and over the ten of them that ran on 2026-11-27 the runner's
+four cores were 9.6 to 10.5 % busy (vmstat every 5 s, four jobs of probe run 46024057392). So
+the job queues them through the harness pool (#the-harness-pool), and its wait step is their
+verdict.
+
+The go-envoy entry holds no objects of ./cmd/dispatch, of the NATS auth service or of the four
+commands the CI-result stack builds (./cmd/cipherd, ./cmd/dev-oidc-issuer, ./cmd/dev-proxy-stands
+and ./cmd/cipher), and each suite that runs one builds its own, so the first build of each in a
+run compiles it. One step after another, only the first suite that built each paid that compile:
+22.6 s to the first Dispatch suite's first row against 5.9 s for the next (job 140522567454), and
+49.5 s to the first CI-result suite's first row against 11.3 s for the second (job 140850240061).
+Queued in the pool, the four Dispatch suites of 2026-11-27 started within 16 s of each other and
+each compiled ./cmd/dispatch again (66.8, 31.2, 16.3 and 16.6 s of CPU, job 140590752284), and a
+compile beside the suites shares the processors with rows that read real clocks. So the job
+compiles each command once, before the pool starts any suite.
+
+The suites are queued longest first by each suite's wall in the pool after that build, so that
+the shorter ones fill the other cores around the longest. For ten of them that wall is the
+median of six jobs of probe run 46030395172: the smoke 117 s, envoy-client's NATS stall 107 s,
+the session state rig 88 s, claude-envoy's stall 77 s, the broker credential tests 30 s (27.5 to
+49.9 s, queued ahead of pi-envoy for that longest reading), pi-envoy's stall 32 s, the comment
+mention 17 s, the design-gate advice 9 s, the keyed resend 8 s and the moved-approval advice 7 s.
+The three that joined the job after that probe are placed by their walls in job 140859710731:
+the CI-result suite 56.3 s, queued after claude-envoy's stall, and the role topics 16.4 s and the
+refused result 17.0 s, queued after the comment mention.
+
 ## What the refill live proof shows
 
 packages/envoy/scripts/e2e-refill.sh, the refill live proof (INFRA-261): on a real listener
@@ -3449,6 +3768,9 @@ into the runner's empty cache: 236 modules, 368 MB of zips and 17 s on a devbox.
 no cache. It also holds every workflow file to 64,000 bytes and to what GitHub's own parser reads
 (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a second
 time, in a file small enough to start when this one is too large to.
+
+It also holds every step a filter gates that names a declared script to a Run that cites it: rule
+4's script half in .github/scripts/check-ci-filters.sh's header says how a step names a script.
 
 ## What the proof editor's offline proof shows
 
@@ -3660,9 +3982,9 @@ behind the front makes the queue build on the failed entry, and decides nothing 
 
 This job's `if:` is `always()` and nothing else. Every other job of this file is skipped on a
 draft pull request: `changes` carries `!github.event.pull_request.draft`, the jobs its
-outputs gate skip with it, and lint, priority-conflicts, typecheck, test, daemon-go, plugin-pack,
-private-names-port, sessions-script, text-checks and `pr-title`, whose `if:`s do not wait on
-`changes`, carry that term themselves.
+outputs gate skip with it, and lint, priority-conflicts, typecheck, test, tooling-checks, daemon-go,
+plugin-pack, step-models-chain, private-names-port, sessions-script, text-checks and `pr-title`,
+whose `if:`s do not wait on `changes`, carry that term themselves.
 Every job but `pr-title` and this one is skipped on a re-run attempt of a merge-group run by
 `github.run_attempt == '1'`
 (.github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries says
@@ -3754,6 +4076,13 @@ from its run's creation, so the job concludes inside the queue's own 180-minute 
 It reads both refs with `git ls-remote` every 30 seconds, which spends none of the
 installation's REST API budget; its one REST read, the run's creation time, waits for no
 budget reset.
+
+The step's env carries that reasoning in two numbers, and this is where they are derived.
+`CI_OK_HOLD_AGE_SECONDS` is 10,200 seconds, 170 minutes from the run's creation. The
+merge_queue rule of main assumes a check failed 180 minutes into the group. The last pause, the
+last read's ladder and the job's end fit in the 10 minutes left. `CI_OK_HOLD_RUN_SECONDS` is
+3,330 seconds, the longest merge-group run of 2026-11-22, 55.5 minutes (run 44966798236). It is
+taken off the age when the run's creation cannot be read and the hold counts from its own start.
 
 It keys on the verdict step's own outcome (`steps.verdict.outcome`), not on `failure()`, so a
 passing verdict never waits whatever a later step does; `!cancelled()` lets it run after that

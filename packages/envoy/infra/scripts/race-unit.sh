@@ -4,7 +4,7 @@
 # The race build of envoy-infra's unit tests: the one command envoy-infra-build's unit step runs
 # and ci-caches.yaml's envoy-infra fill compiles into the build cache that step restores.
 #
-#   race-unit.sh run       go test -count=1 -race over PACKAGES (envoy-infra-build's unit step)
+#   race-unit.sh run       go test -json -count=1 -race over PACKAGES (envoy-infra-build's unit step)
 #   race-unit.sh compile   go test -c -o /dev/null -race over PACKAGES (the fill's arm64 leg)
 #
 # PACKAGES is every package of the module, from `go list ./...`, less those EXCLUDE matches: the
@@ -18,8 +18,13 @@
 # `scripts/race-unit.sh compile` and to no race build of its own.
 #
 # It runs from the module whatever the caller's directory, takes exactly one argument, and exits
-# 2 on any other; it exits 1 when go list fails or keeps no package, and otherwise with go test's
-# own status.
+# 2 on any other; it exits 1 when go list fails or keeps no package. Compile exits with go test's
+# status. Run exits with gotestsum's status: go test's own, 128+N if gotestsum forwarded signal N
+# to go test, 127 if a signal gotestsum did not forward ended go test, or 3 for gotestsum's own
+# fault. With no gotestsum on PATH, run exits 127 before testing and prints the script's own
+# "race-unit.sh: gotestsum is not on PATH" message.
+# gotestsum keeps test2json events in $RUNNER_TEMP/go-test-events/race-unit-*.jsonl for the job's
+# artifact, or in a temporary file removed on exit.
 set -euo pipefail
 
 EXCLUDE='/internal/textcheck$'
@@ -29,8 +34,16 @@ if [ "$#" -ne 1 ]; then
 	exit 2
 fi
 case "$1" in
-run) flags=(-count=1) ;;
-compile) flags=(-c -o /dev/null) ;;
+run)
+	if ! command -v gotestsum >/dev/null; then
+		echo 'race-unit.sh: gotestsum is not on PATH. Use .github/actions/install-gotestsum in CI or install the release in the gotestsum row of .github/ci-tools.yaml.' >&2
+		exit 127
+	fi
+	flags=(-json -count=1)
+	;;
+compile)
+	flags=(-c -o /dev/null)
+	;;
 *)
 	echo "usage: $0 run|compile" >&2
 	exit 2
@@ -44,4 +57,16 @@ if [ "${#packages[@]}" -eq 0 ]; then
 	echo "race-unit.sh: go list ./... kept no package once EXCLUDE ($EXCLUDE) was taken out" >&2
 	exit 1
 fi
-exec go test "${flags[@]}" -race "${packages[@]}"
+go_test=(go test "${flags[@]}" -race "${packages[@]}")
+if [ "$1" = compile ]; then
+	exec "${go_test[@]}"
+fi
+
+if [ -n "${RUNNER_TEMP:-}" ]; then
+	mkdir -p "$RUNNER_TEMP/go-test-events"
+	events=$(mktemp --suffix=.jsonl "$RUNNER_TEMP/go-test-events/race-unit-XXXXXX")
+else
+	events=$(mktemp --suffix=.jsonl -t race-unit-XXXXXX)
+	trap 'rm -f "$events"' EXIT
+fi
+gotestsum --jsonfile "$events" --format standard-quiet --raw-command -- "${go_test[@]}"

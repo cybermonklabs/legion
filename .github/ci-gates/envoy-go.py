@@ -14,7 +14,9 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     # ADOPTER_PACKAGES' tests, -v, after install-jj, in envoy-go-skips, built from the one list
     # that also puts the package with that job in the legs file (hold_envoy_legs).
     step_run(ENVOY_SKIPS_JOB, ADOPTER_STEP, ADOPTER_TEXT, ENVOY, ADOPTER_PKGS, workflow=ENVOY_GO_FILE),
-    ceiling_run(ENVOY_LEGS_JOB, ENVOY_GO_FILE),
+    # Each job of the file with a Postgres service checks its ceiling in a step of its own.
+    *[ceiling_run(job, ENVOY_GO_FILE)
+      for job in (ENVOY_LEGS_JOB, ENVOY_ALONE_JOB, ENVOY_RACE_IMPOSSIBLE_JOB, ENVOY_SKIPS_JOB, ENVOY_NATSLIVE_JOB)],
 ], exact=[
     # One go test per package of the plain run the race lane cannot make (RACE_IMPOSSIBLE_*),
     # each selecting that package's own tests with -run: the rows that measure no time here, and
@@ -111,7 +113,10 @@ GATE = gate("envoy_go", "envoy-go", runs=[
 ) + go_cpu_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
   + ceiling_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE) + service_settings_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
   + install_jj(ENVOY_SKIPS_JOB, ENVOY_GO_FILE)
-  + setup_go(ENVOY_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_FILE) + bun_job(ENVOY_LEGS_JOB, ENVOY_GO_FILE))
+  + setup_go(ENVOY_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_FILE) + bun_job(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
+  + go_test_events(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
+  + [read for job in (ENVOY_ALONE_JOB, ENVOY_RACE_IMPOSSIBLE_JOB, ENVOY_SKIPS_JOB, ENVOY_NATSLIVE_JOB)
+     for read in install_gotestsum(job, ENVOY_GO_FILE) + go_test_events(job, ENVOY_GO_FILE)])
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_go held packages/envoy/** by hand before the filters were computed: it selected 728 file(s) no other read of this gate declares", but=('**/*_test.go',)),
 ])

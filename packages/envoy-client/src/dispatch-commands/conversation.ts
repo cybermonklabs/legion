@@ -14,7 +14,7 @@ import {
   parseDispatchRef,
 } from "../dispatch-owner";
 import { ToolInputError } from "../tool-input-errors";
-import { renderAdvice } from "./advice";
+import { legionRunsPostedIssue, renderAdvice } from "./advice";
 import { movedApprovalLine, resolveReplyToAsk } from "./asks";
 import {
   type CommandContext,
@@ -346,11 +346,19 @@ export async function commentCommand(context: CommandContext): Promise<DispatchT
     resolved === undefined
       ? { issue: comment.issue_key, comment: comment.id }
       : writeResultDetails(resolved, { comment: comment.id });
+  const isAskReply = replyToAsk !== undefined;
   const adviceLines = renderAdvice(input.tool, commentOwner.label, comment.advice, {
-    isAskReply: replyToAsk !== undefined,
+    isAskReply,
     replyToOwnAsk:
       replyToAsk !== undefined &&
       (comment.advice?.your_open_asks?.some((ask) => ask.id === replyToAsk) ?? false),
+    legionRunsIssue: await legionRunsPostedIssue(
+      client,
+      input.tool,
+      comment.issue_key,
+      comment.advice,
+      isAskReply
+    ),
   });
   if (replyToAsk !== undefined) {
     // The server answers whom the ask waits on now that this comment is its newest reply. It
@@ -508,7 +516,9 @@ export async function messageCommand(context: CommandContext): Promise<DispatchT
     actor,
   });
   const messageRef = dispatchChildRef(dispatchIssueRef(issueKey), "message", message.id);
-  const adviceLines = renderAdvice(input.tool, issueKey, message.advice, {});
+  const adviceLines = renderAdvice(input.tool, issueKey, message.advice, {
+    legionRunsIssue: await legionRunsPostedIssue(client, input.tool, issueKey, message.advice),
+  });
   return {
     text: [
       `Posted message ${message.id} (${messageRef})${await notSubscribed(issueTopic(issueKey), input.subscriptions)}`,

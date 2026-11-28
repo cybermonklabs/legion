@@ -1,7 +1,7 @@
 package workflow
 
 // One rule says whether the merge of the head the pull request stands at is owed to a role
-// (owedAsk): the hold at each start, the completion fence, the landed message and the delivery of
+// (record.OwedMergeForward): the hold at each start, the completion fence, the landed message and the delivery of
 // each row read it, so a worker is held exactly while the merge is owed, and is told to wait only
 // if it was held. A merge owed at the head always has its one asked role: a move that ends the ask
 // asks the role of the phase it enters where the merge is owed there, and an asked role whose
@@ -35,9 +35,7 @@ func TestATesterStartedAfterAMergeableReadIsHeldWhileTheAskIsOwed(t *testing.T) 
 	if pr := recordedPR(t, pool, "LEGION-208"); pr.ConflictingHead != "" || pr.MergeForward == nil {
 		t.Fatalf("after the mergeable read the record holds conflicting head %q and ask %+v, want none and the implementer's ask", pr.ConflictingHead, pr.MergeForward)
 	}
-	applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1,
-		State: "approved", CommitID: conflictHead, HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
-		SubmittedAt: firstConflictRead.Add(3 * time.Minute)})
+	approvesAsTheReviewer(t, pool, readsAfter(3*time.Minute), 1, conflictHead, firstConflictRead.Add(3*time.Minute))
 	if got := issuePhase(t, pool); got != phase.Testing {
 		t.Fatalf("after the approval the issue is in %s, want testing", got)
 	}
@@ -357,7 +355,7 @@ func TestAPlannerBeforeTheImplementerIsToldAndFencedWhileTheMergeIsOwed(t *testi
 // On the default steps the implementer is asked in testing and its merge lands, and then the
 // branch moves back to the head the merge replaced, as a forced push moves it: the record's ask
 // has landed, and its confirmed conflict is of the head the pull request stands at again. A landed
-// ask is owed to nobody (openAsk), so the tester's completion and the reviewer's approval at that
+// ask is owed to nobody (record.OpenMergeForward), so the tester's completion and the reviewer's approval at that
 // head move the issue on with nobody held, and the move into merging asks the merger to merge the
 // base forward onto that head, once, and holds it for no ask. A later read that finds the head
 // still conflicting asks nothing more: the merger owes the merge.
@@ -388,9 +386,7 @@ func TestABranchBackAtTheHeadALandedMergeReplacedIsTheMergersToMergeForward(t *t
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester's pass at %s the issue is in %s, want reviewing", conflictHead, got)
 	}
-	applyRefusingNothing(t, pool, readsAfter(6*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1,
-		State: "approved", CommitID: conflictHead, HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
-		SubmittedAt: firstConflictRead.Add(6 * time.Minute)})
+	approvesAsTheReviewer(t, pool, readsAfter(6*time.Minute), 1, conflictHead, firstConflictRead.Add(6*time.Minute))
 	if got := issuePhase(t, pool); got != phase.Accepting {
 		t.Fatalf("after the reviewer's approval of %s the issue is in %s, want accepting", conflictHead, got)
 	}

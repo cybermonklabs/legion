@@ -106,9 +106,9 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 	)
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	writeWhole(t, fakeSecretsFile, `{"secrets": [
-		{"name": "`+testSecretsPrefix+`airlock-token", "kms_key_id": "`+testSecretsKMSKeyARN+`",
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	writeWhole(t, memorySecretsFile, `{"secrets": [
+		{"name": "`+testSecretsPrefix+`airlock-token",
 		 "tags": {"owner": "`+service+`", "tier": "agent", "`+policy.TagProxy+`": "`+boundKind+`"}, "value": "the-real-airlock-token"}
 	]}`)
 	// The airlock's settings are airlockEnv's, so a setting added there reaches this broker too;
@@ -119,7 +119,8 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 		"BROKER_DATABASE_URL="+storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE="+memorySecretsFile,
 		"BROKER_K8S_OIDC_ISSUER="+issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE="+podAudience,
 		"BROKER_SERVICE_LOGINS="+service+"="+loginAccount,
@@ -173,15 +174,16 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 // TestMainOutsideAClusterStartsWithoutTheRanges: with KUBERNETES_SERVICE_HOST unset - a dev box,
 // a local run - the setting is optional, and a broker with the airlock on and no ranges starts.
 func TestMainOutsideAClusterStartsWithoutTheRanges(t *testing.T) {
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	broker := startBroker(t, brokerOptions{Env: append(airlockEnv(t),
 		"BROKER_DATABASE_URL="+storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE="+memorySecretsFile,
 		"BROKER_PROFILES_FILE="+profilesFile(t, deelKindFile),
 		"KUBERNETES_SERVICE_HOST=",
 		"BROKER_AIRLOCK_CLUSTER_RANGES=",

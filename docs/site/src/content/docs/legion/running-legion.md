@@ -727,6 +727,56 @@ What each part is for:
   The loader refuses a name that is no `owner/name` and a repository the list names twice,
   compared without case and through `repository_renames`, and a daemon that predates the key
   refuses it at boot, as it does any key it does not know.
+- **`projects.<KEY>.watched_workflows`** (optional) names the workflows whose completed runs on
+  their repository's default branch reach the project's controller:
+
+  ```yaml
+  projects:
+    WIDGETS:
+      watched_workflows:
+        - acme/widgets/nightly.yaml@schedule,workflow_dispatch
+        - acme/widgets/release.yml
+  ```
+
+  An entry is `<owner>/<repo>/<file>`: a repository, and the name of a file in its
+  `.github/workflows/`, of letters, digits, `.`, `_` and `-`, ending in `.yml` or `.yaml`.
+  It can end with `@` and the trigger events whose runs count, comma-separated, each written as a
+  workflow's `on:` writes it
+  ([GitHub's list](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)).
+  An entry with no `@` watches `schedule` runs alone, so `acme/widgets/release.yml` above hears its
+  scheduled runs and no other.
+  Write one entry a line, as above: in a flow list (`[…]`) a comma ends the entry, unless the entry
+  is quoted.
+  Write the owner and the repository as GitHub spells them, the repository's `full_name`
+  (`gh api repos/<owner>/<repo> --jq .full_name` prints it): Envoy names a run's topic with that
+  spelling, a topic is case-sensitive, and the loader cannot ask GitHub, so an entry spelled
+  otherwise loads and hears nothing.
+  Envoy publishes no run that a pull request names, so such a run never reaches the controller,
+  and neither does a run on another branch, or one from a fork's branch that has the default
+  branch's name.
+  The loader takes every trigger event, and an entry that names only events that never start a run
+  on the repository's own default branch — `pull_request`, `pull_request_target`,
+  `pull_request_review`, `pull_request_review_comment`, `merge_group` and `workflow_call`, and
+  `release` and `create` for a tag — hears nothing.
+  The key needs no `controller` setting, no runtime and no secrets broker.
+  The daemon gives the list to its controller when the controller registers, under either
+  `controller` setting, and the controller's prompt names each entry with its events.
+  A running controller keeps the list of its first registration for as long as its process
+  lives: each later claim, after a `/new`, a `/resume`, a `/fork`, a `/branch` or a typed
+  `/legion-claim-controller`, subscribes that same list for its own session, and a later
+  registration that names another list is one log line and changes nothing.
+  Every launch form takes a changed list at its next launch.
+  Under the sandbox runtime a daemon restarted with another list relaunches its controller into
+  its session, and the relaunched controller hears the new list.
+  Under the tmux runtime, and under `legion controller start`, the next start of the controller
+  takes it: its prompt, its subscriptions and the read of each entry's newest run at its start.
+  The loader refuses, naming the key, the entry's place in the list and the entry: an entry of
+  another shape; an `@` with no event, or an empty event; a name that is not one of GitHub's
+  trigger events, compared with case; an event an entry names twice; and one workflow in two
+  entries, the owner and the repository compared without case and the file with it.
+  `legion config check` prints the project's entries, each with its events, and prints no such
+  line for a project that names none.
+  A daemon that predates the key refuses it at boot, as it does any key it does not know.
 - **`repository_renames`** (optional) tells the daemon that two names are one repository, for a
   repository that moved: after a transfer GitHub's events name the new repository while every tree
   Legion has already recorded names the old one.
@@ -883,6 +933,18 @@ What each part is for:
   store and its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
+- **`nats_daemon_service_token_file`** (optional) names the file of the daemon's own projected
+  ServiceAccount token, which its NATS connection presents in place of a seed, as user `service`,
+  to a hub whose connections the [Secrets Broker](/legion/broker/)'s NATS auth service admits.
+  Mount the token for the broker's `BROKER_NATS_K8S_AUDIENCE`, for at most 3600 seconds, and list
+  the daemon's account under a `daemon/-/*` entry of the broker's `BROKER_NATS_SERVICES`. The
+  daemon reads the file again at each connect. The key outranks the variable
+  `NATS_DAEMON_SERVICE_TOKEN_FILE`. Either one beside a setting of the daemon's own seed
+  (`nats_daemon_nkey_seed_file`, `NATS_DAEMON_NKEY_SEED_FILE`, `NATS_DAEMON_NKEY_SEED`) refuses
+  the start, naming both; the agents' seed stays allowed beside it. The daemon waits out a refusal
+  of the token
+  ([Configuration](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#configuration)
+  in docs/kubernetes.md).
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
   [Secrets Broker](/legion/broker/): `url` is the broker, and `token_file` is where the daemon's own
   projected ServiceAccount token for the broker's audience is mounted. The daemon logs in with that
@@ -1098,9 +1160,11 @@ What each part is for:
   `LEGION_STALL_RESUME_MS` (120000, after a resume, when the daemon answers that the claim owes
   work) and
   `LEGION_STALL_ARCHITECT_AFTER` (3: how many delivered reminders in a row change nothing before
-  the architect is told, and never fewer than 2). Each of the six millisecond values is a whole
-  number of 0 or more; a value that is not is ignored, the default stands, and the worker's log
-  carries one `warn` line naming the variable.
+  the architect is told, and never fewer than 2). A reminder goes out only while the daemon's
+  record holds work open for the worker's role, and none goes out when the daemon's answer cannot
+  be read: no variable changes that. Each of the six millisecond values is a whole number of 0 or
+  more; a value that is not is ignored, the default stands, and the worker's log carries one
+  `warn` line naming the variable.
 
 The loader refuses any key it does not know, naming it, and refuses `omp_invocation` and
 `omp_launch_prefix` under Kubernetes, since every pod runs the image's Oh My Pi.

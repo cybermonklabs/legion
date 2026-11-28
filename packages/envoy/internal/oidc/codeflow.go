@@ -15,6 +15,7 @@ import (
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -24,13 +25,23 @@ import (
 // deadline of its own can check that deadline against it, as Dispatch's membership test does.
 const TokenTimeout = 10 * time.Second
 
-// tokenClient is the HTTP client every call that carries the client's credentials is made with:
-// the code flow's own calls to the token and revocation endpoints, and CheckClient's discovery
+// tokenClient is the HTTP client every call that carries the client's credentials is made with,
+// but a revocation: the code flow's own calls to the token endpoint, and CheckClient's discovery
 // read and token request. A redirect is answered as it stands: following a 307 or 308 would
 // re-send the form, and with it a code, a refresh token or the client's secret, to wherever the
-// redirect points.
+// redirect points. Its Timeout, TokenTimeout on the wall clock, bounds each of those calls. Revoke
+// sends with revocationClient, which answers a redirect the same way, and bounds the revocation on
+// the code flow's clock instead.
 func tokenClient() *http.Client {
-	return &http.Client{Timeout: TokenTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
+	client := revocationClient()
+	client.Timeout = TokenTimeout
+	return client
+}
+
+// revocationClient is tokenClient with no bound of its own, for Revoke, which arms TokenTimeout on
+// the code flow's clock around the request it sends with it.
+func revocationClient() *http.Client {
+	return &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
 }
@@ -72,6 +83,10 @@ type CodeFlow struct {
 	// group mode, a Cognito sign-in pool's.
 	hostedDomain string
 	http         *http.Client
+	// revocation is the client Revoke sends with (revocationClient), and clock what it arms each
+	// revocation's bound, TokenTimeout, on: clock.Real, or a test's clocktest.Fake (NewCodeFlowOn).
+	revocation *http.Client
+	clock      clock.Clock
 }
 
 // codeFlowIssuer is what a code flow reads from its issuer's discovery document: the verifier of
@@ -89,12 +104,21 @@ type codeFlowIssuer struct {
 // Google Workspace domain of a domain-mode flow (Google's issuer), which asks for offline access
 // and reads the Workspace claims; empty, the flow is a Cognito sign-in pool's and does neither.
 func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow {
+	return NewCodeFlowOn(issuer, clientID, clientSecret, hostedDomain, clock.Real())
+}
+
+// NewCodeFlowOn is NewCodeFlow with each revocation's bound, TokenTimeout, armed on c: clock.Real
+// from NewCodeFlow, and a test's clocktest.Fake, which ends a revocation the issuer holds only
+// where the test moves it. Every other call keeps TokenTimeout on the wall clock (tokenClient).
+func NewCodeFlowOn(issuer, clientID, clientSecret, hostedDomain string, c clock.Clock) *CodeFlow {
 	return &CodeFlow{
 		discovery: newDiscovery(issuer, func(ctx context.Context) (*codeFlowIssuer, error) {
 			return discoverCodeFlow(ctx, issuer, clientID, clientSecret)
 		}),
 		hostedDomain: hostedDomain,
 		http:         tokenClient(),
+		revocation:   revocationClient(),
+		clock:        c,
 	}
 }
 
@@ -431,7 +455,8 @@ func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, e
 // a secret; the issuer ends every token it issued from it. An issuer answers 200 for a token it
 // has revoked already or does not know, so that is success too. Any other answer, a redirect
 // included, is an error naming the HTTP status and the OAuth error code the body names, if any;
-// the error never carries the token.
+// the error never carries the token. The request and the read of its answer are bounded by
+// TokenTimeout on the code flow's clock (NewCodeFlowOn).
 func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
@@ -440,6 +465,8 @@ func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 	if issuer.revocationURL == "" {
 		return errors.New("oidc: revoke: the issuer names no revocation_endpoint in its discovery document")
 	}
+	ctx, cancel := f.clock.WithTimeout(ctx, TokenTimeout)
+	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, issuer.revocationURL, strings.NewReader(url.Values{"token": {refreshToken}}.Encode()))
 	if err != nil {
 		return fmt.Errorf("oidc: revoke: %w", err)
@@ -447,7 +474,7 @@ func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// The token endpoint's encoding (oauth2's AuthStyleInHeader): RFC 6749 section 2.3.1.
 	request.SetBasicAuth(url.QueryEscape(issuer.config.ClientID), url.QueryEscape(issuer.config.ClientSecret))
-	response, err := f.http.Do(request)
+	response, err := f.revocation.Do(request)
 	if err != nil {
 		return fmt.Errorf("oidc: revoke: %w", err)
 	}

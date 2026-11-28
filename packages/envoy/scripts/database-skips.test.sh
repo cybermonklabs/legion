@@ -163,7 +163,7 @@ count() {
   local name="$1"
   shift
   local code=0
-  "$@" >"$WORK/$name.out" 2>"$WORK/$name.err" || code=$?
+  RUNNER_TEMP="$WORK/runner" "$@" >"$WORK/$name.out" 2>"$WORK/$name.err" || code=$?
   echo "$code" >"$WORK/$name.exit"
   { cat "$WORK/$name.out"; echo; cat "$WORK/$name.err"; echo; } >>"$WORK/runs.log"
 }
@@ -597,6 +597,52 @@ unplanted="$(tr ' ' '\n' <<<"$printed" | grep -v '^TestPlanted' | paste -sd ' ' 
 judge "$([ "$scan_status" = 0 ] && [ -n "$printed" ] && [ -z "$unplanted" ] && echo 0 || echo 1)" \
   "control 8: every failed or unfinished test that any run of controls 1 to 7 printed is named TestPlanted..., and they printed some" \
   "runs.log $([ "$scan_status" = 0 ] && echo read || echo unreadable); tests: ${printed:-none}; not named TestPlanted...: ${unplanted:-none}"
+
+echo "database-skips.test.sh: events for the job's artifact" >&2
+mkdir -p "$WORK/events-bin" "$WORK/events-runner" "$WORK/events-local"
+{
+  ev run "$brokerapi" TestHealthzIsPublic
+  ev pass "$brokerapi" TestHealthzIsPublic
+  ev pass "$brokerapi"
+} >"$WORK/input.jsonl"
+cat >"$WORK/events-bin/go" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  list) printf '%s 1 0\n' "$EVENT_PACKAGE" ;;
+  test) cat "$EVENT_STREAM" ;;
+  *) exit 2 ;;
+esac
+EOF
+cat >"$WORK/events-bin/jq" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${!#}" = */report.json ]]; then
+  cp "${!#}" "$SEEN_REPORT"
+fi
+exec "$REAL_JQ" "$@"
+EOF
+chmod +x "$WORK/events-bin/"{go,jq}
+event_env=(PATH="$WORK/events-bin:$PATH" EVENT_PACKAGE="$brokerapi" EVENT_STREAM="$WORK/input.jsonl"
+  REAL_JQ="$(type -P jq)" SEEN_REPORT="$WORK/report-read.jsonl")
+count events-ci env "${event_env[@]}" RUNNER_TEMP="$WORK/events-runner" "$COUNTER" ./internal/cipher/api/
+events=("$WORK/events-runner/go-test-events"/database-skips-*.jsonl)
+judge "$([ "$(code events-ci)" = 0 ] && [ "${#events[@]}" -eq 1 ] &&
+  cmp -s "$WORK/input.jsonl" "$WORK/report-read.jsonl" &&
+  cmp -s "$WORK/report-read.jsonl" "${events[0]}" && echo 0 || echo 1)" \
+  "the artifact holds one byte-for-byte copy of the report the counter read" "$(seen events-ci)"
+count events-report env "${event_env[@]}" RUNNER_TEMP="$WORK/events-report" \
+  "$COUNTER" --report "$WORK/input.jsonl" ./internal/cipher/api/
+judge "$([ "$(code events-report)" = 0 ] && [ ! -e "$WORK/events-report" ] && echo 0 || echo 1)" \
+  "--report writes no events" "$(seen events-report)"
+count events-local env -u RUNNER_TEMP "${event_env[@]}" TMPDIR="$WORK/events-local" \
+  "$COUNTER" ./internal/cipher/api/
+judge "$([ "$(code events-local)" = 0 ] && [ -z "$(find "$WORK/events-local" -mindepth 1 -print)" ] &&
+  echo 0 || echo 1)" "a local run leaves no events file behind" "$(seen events-local)"
+printf '#!/usr/bin/env bash\ncat\nexit 9\n' >"$WORK/events-bin/tee"
+chmod +x "$WORK/events-bin/tee"
+count events-tee-fail env "${event_env[@]}" RUNNER_TEMP="$WORK/events-broken" "$COUNTER" ./internal/cipher/api/
+judge "$([ "$(code events-tee-fail)" = 1 ] && grep -qxF 'go_test_exit=0' "$WORK/events-tee-fail.out" &&
+  said events-tee-fail 'tee could not write the test events' && echo 0 || echo 1)" \
+  "a failed tee fails the counter even when go test passed" "$(seen events-tee-fail)"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "database-skips.test.sh: failed ($FAILED of $((PASSED + FAILED)))"

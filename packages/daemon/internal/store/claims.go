@@ -457,6 +457,14 @@ func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *state
 // earlier release retired carries the column's default, 0, which is below every number the
 // sequence hands out, so no owed row of it is ever ended and it behaves as it did before the
 // column existed (20261109191929_outbox_write_mark).
+//
+// The write that records a claim's process records its launch too, in the same statement: the
+// leading insert adds the row of claim_launches at the claim's generation where the write carries
+// a locator. A launch is the generation a locator is first written under (supervise's launchNow),
+// so a later write of the same launch finds the row and adds none. A write with no locator adds
+// none either, and nor does one at generation 0, which no launch has: launchNow raises the
+// generation before it starts a process. The rows are what a step's counts read of its agent's
+// launches (record.Store.AgentLaunches).
 func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
@@ -527,7 +535,9 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	}
 	repository, repositoryRound := roundRepositoryColumns(c)
 	working, workingIncarnation := workingRepositoryColumns(c)
-	_, err = tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
+	_, err = tx.Exec(ctx, `with launched as (insert into claim_launches (claim, generation)
+		select $1::text, $6::bigint where $10::jsonb is not null and $6::bigint > 0 on conflict do nothing)
+		insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
 		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
@@ -659,18 +669,38 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 // not validate refuses the whole read, naming the claim: a daemon that loaded it would believe in
 // a process it has no way to act on.
 func (s *Store) Claims(ctx context.Context) ([]supervise.Claim, error) {
-	return ReadOnly(ctx, s.pool, "read claims", readClaims)
+	return ReadOnly(ctx, s.pool, "read claims", func(ctx context.Context, tx pgx.Tx) ([]supervise.Claim, error) {
+		return readClaims(ctx, tx, "")
+	})
 }
 
 // ClaimsTx is Claims through tx's snapshot. State reports use it with their durable issue and
 // outbox reads, so a claim's state and the queued start that might wake it cannot come from two
 // moments.
 func (s *Store) ClaimsTx(ctx context.Context, tx pgx.Tx) ([]supervise.Claim, error) {
-	return readClaims(ctx, tx)
+	return readClaims(ctx, tx, "")
 }
 
-func readClaims(ctx context.Context, tx pgx.Tx) ([]supervise.Claim, error) {
-	rows, err := tx.Query(ctx, claimSelect+" order by c.token")
+// ClaimTx is the claim of token through tx, as Claims reads every claim: with its pending
+// delivery, the entry it last served and its update round, which is what a rule of the claim's
+// own reads where a narrower read of it carries less, such as the entry it serves
+// (supervise.Claim.ServingEntry) after the released-claim read (ReleasedClaimsOf). A token no
+// claim holds is refused.
+func ClaimTx(ctx context.Context, tx pgx.Tx, token claim.Token) (supervise.Claim, error) {
+	claims, err := readClaims(ctx, tx, " where c.token = $1", string(token))
+	if err != nil {
+		return supervise.Claim{}, err
+	}
+	if len(claims) == 0 {
+		return supervise.Claim{}, fmt.Errorf("no claim holds token %s", token)
+	}
+	return claims[0], nil
+}
+
+// readClaims reads the claims filter selects — a where clause over claims c, binding args, and ""
+// for every claim — with their pending deliveries, in token order.
+func readClaims(ctx context.Context, tx pgx.Tx, filter string, args ...any) ([]supervise.Claim, error) {
+	rows, err := tx.Query(ctx, claimSelect+filter+" order by c.token", args...)
 	if err != nil {
 		return nil, fmt.Errorf("read claims: %w", err)
 	}

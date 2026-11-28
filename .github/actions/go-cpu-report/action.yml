@@ -8,12 +8,9 @@ description: >-
   the CPU of its Postgres containers; the script's header says what each figure is.
   The calling step sets `if: always()`, so a failed or cancelled job is measured too,
   `continue-on-error: true` and `timeout-minutes: 2`, because the report only measures and must
-  neither fail nor hold the job. It runs before the job's upload of
-  `$RUNNER_TEMP/go-test-events/`, so the upload carries the files the report writes there.
-  Given a check-run-id, a second step uploads that directory itself, as the artifact
-  `go-test-events-<check-run-id>`. That upload stands until dispatch://INFRA-6313's own upload of
-  the same directory under the same name lands in the jobs, and is then removed: two artifacts of
-  one name in one run fail.
+  neither fail nor hold the job. It runs before the job's step "Upload the go test events"
+  (.github/actions/go-test-events-upload), which uploads `$RUNNER_TEMP/go-test-events/` as the
+  artifact `go-test-events-<job id>`, so that artifact carries the files the report writes there.
 
 inputs:
   rows:
@@ -33,12 +30,6 @@ inputs:
     description: >-
       The names of the other Postgres containers the job started, separated by spaces, each read
       as `--postgres <name>=<name>`.
-    required: false
-    default: ""
-  check-run-id:
-    description: >-
-      `job.check_run_id` of the calling job. When it is given, a second step uploads
-      `$RUNNER_TEMP/go-test-events/` as the artifact `go-test-events-<check-run-id>`.
     required: false
     default: ""
 
@@ -70,11 +61,3 @@ runs:
           arguments+=(--postgres "$name=$name")
         done
         "$GITHUB_ACTION_PATH/../../scripts/go-cpu-runner.py" report "${arguments[@]}"
-    - name: Upload the Go test events
-      if: always() && inputs.check-run-id != ''
-      continue-on-error: true
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      with:
-        name: go-test-events-${{ inputs.check-run-id }}
-        path: ${{ runner.temp }}/go-test-events/
-        if-no-files-found: warn

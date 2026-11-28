@@ -40,7 +40,7 @@ func (c *Client) File(ctx context.Context, token, owner, repo, sha, path string)
 	if err != nil {
 		return nil, err
 	}
-	if err := CheckRepositoryResponse(status, header, body, repoFull, target); err != nil {
+	if err := checkRepositoryResponseAt(status, header, body, repoFull, target, c.limitNow()); err != nil {
 		return nil, err
 	}
 	var answer struct {

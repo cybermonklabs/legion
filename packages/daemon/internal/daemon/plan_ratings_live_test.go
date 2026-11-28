@@ -319,20 +319,29 @@ func plansAnswerBlock(answer []byte) string {
 func (l *planRatingsLive) readScript(issue string) (string, int) {
 	t := l.t
 	t.Helper()
-	cli := dispatchCLI(l.root)
+	out, code := l.personsShell().run([]string{personsDispatchPATH(t, l.root, l.cliHome)},
+		"bash", filepath.Join(l.root, "scripts", "e2e", "plan-ratings-read.sh"), l.cfg.Project, issue)
+	return string(out.stdout) + string(out.stderr), code
+}
+
+// personsDispatchPATH writes the `dispatch` command of the person's shell into the bin directory
+// of cliHome: root's CLI run under bun, as the installed command runs it. It writes it with
+// execfile.Write, since the daemon forks panes while the shell runs it. It answers the PATH
+// setting that finds that command first.
+func personsDispatchPATH(t *testing.T, root, cliHome string) string {
+	t.Helper()
+	cli := dispatchCLI(root)
 	if strings.Contains(cli, "'") {
-		t.Fatalf("the checkout's path %s holds a quotation mark the dispatch wrapper cannot quote", l.root)
+		t.Fatalf("the checkout's path %s holds a quotation mark the dispatch wrapper cannot quote", root)
 	}
-	bin := filepath.Join(l.cliHome, "bin")
+	bin := filepath.Join(cliHome, "bin")
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := execfile.Write(filepath.Join(bin, "dispatch"), []byte("#!/bin/sh\nexec bun '"+cli+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatalf("write the dispatch command of the person's shell: %v", err)
 	}
-	out, code := l.personsShell().run([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")},
-		"bash", filepath.Join(l.root, "scripts", "e2e", "plan-ratings-read.sh"), l.cfg.Project, issue)
-	return string(out.stdout) + string(out.stderr), code
+	return "PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")
 }
 
 // lastLine is the last line of out.

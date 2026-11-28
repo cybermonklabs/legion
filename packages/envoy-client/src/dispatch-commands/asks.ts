@@ -14,6 +14,7 @@ import { declinedAskLines, relatedCheckLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import {
   handBackApprovalCommand,
+  legionRunsPostedIssue,
   movedApprovalClauses,
   movedApprovalDocuments,
   otherAdviceLines,
@@ -369,8 +370,10 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
   // for a write that does, so there is nothing to print there.
   const declinedLines =
     ask.issue_key === null ? [] : declinedAskLines(ask.advice, ask.issue_key, linkBase);
-  const adviceLines = await otherAdviceLines(() =>
-    renderAdvice(input.tool, askOwner.label, ask.advice, {})
+  const adviceLines = await otherAdviceLines(async () =>
+    renderAdvice(input.tool, askOwner.label, ask.advice, {
+      legionRunsIssue: await legionRunsPostedIssue(client, input.tool, ask.issue_key, ask.advice),
+    })
   );
   // The person the question reaches is on the line that names the ask, so an agent learns
   // who reads it without a second command.

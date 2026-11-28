@@ -49,7 +49,7 @@ from pathlib import Path
 import yaml
 from audited_scripts import Unreadable, reading_of
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
-from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
+from workflow_paths import REQUIRED_CHECKS, PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
 # The workflow that fills, on a push to main, the Go cache families WORKFLOW's jobs restore.
@@ -289,8 +289,31 @@ class TagRun:
 
 
 # Every workflow step a why cites through at(), checked to exist so a renamed step fails here.
-# Each entry is (the workflow file that holds the step, the job, the step).
+# Each entry is (the workflow file that holds the step, the job, the step). A why that cites a
+# step is also the table's word that the step starts the Run's script, which rule 4 reads back.
 CITED: list = []
+
+
+def citation(workflow: str, job: str, step: str) -> str:
+    """The text at() writes into a why for a step, and rule 4 looks for in a why again."""
+    return f'{os.path.basename(workflow)} {job} "{step}"'
+
+
+def cited_in(why: str, index: dict) -> set:
+    """The steps a why cites, given `index` ({citation() text: the CITED entries that make it}):
+    each entry whose text is in the why, unless that occurrence lies inside an occurrence of a
+    longer text of the index, which is the one at() wrote there. So `ci.yaml app "Build"` is not
+    read inside `long+ci.yaml app "Build"`: the longer citation was made by at() too, and only
+    at() makes one. The workflows are files of one directory, so a basename names one file."""
+    found = []
+    for text in index:
+        end = 0
+        while (start := why.find(text, end)) != -1:
+            end = start + len(text)
+            found.append((start, end, text))
+    kept = {text for start, end, text in found
+            if not any(s <= start and end <= e and e - s > end - start for s, e, _ in found)}
+    return set().union(*(index[text] for text in kept))
 
 
 def at(job: str, step: str, workflow: str = WORKFLOW) -> str:
@@ -298,7 +321,7 @@ def at(job: str, step: str, workflow: str = WORKFLOW) -> str:
     `workflow` is the file that holds the job. It is ci.yaml, or a workflow ci.yaml calls: a job
     that calls a reusable workflow keeps its gate here and its steps there."""
     CITED.append((workflow, job, step))
-    return f'{os.path.basename(workflow)} {job} "{step}"'
+    return citation(workflow, job, step)
 
 
 # ---------------------------------------------------------------- the workflow documents
@@ -1703,11 +1726,85 @@ def squash(text: str) -> str:
     return " ".join(text.split())
 
 
+GOTESTSUM_RUN = re.compile(
+    r'(?<![^ \t\n])gotestsum[ \t]+--jsonfile[ \t]+"\$RUNNER_TEMP/go-test-events/[A-Za-z0-9._-]+\.jsonl"'
+    r'[ \t]+--format[ \t]+standard-(?:quiet|verbose)[ \t]+--raw-command[ \t]+--'
+    r'[ \t]+go[ \t]+test[ \t]+-json(?=[ \t\n]|$)'
+)
+
+
+def as_go_test(text: str) -> str:
+    """Read the CI gotestsum form as `go test`, without its added `-json`.
+
+    Keep the command's arguments and anything before the prefix, such as assignments or xargs.
+    Leave other forms alone for the caller to read or refuse.
+    """
+    return GOTESTSUM_RUN.sub("go test", text)
+
+
+def gotestsum_prefix(name: str, verbose: bool = False) -> str:
+    """The CI gotestsum command through `go test -json`, before the test arguments."""
+    format_ = "standard-verbose" if verbose else "standard-quiet"
+    return (f'gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/{name}.jsonl" '
+            f'--format {format_} --raw-command -- go test -json')
+
+
 def script_lines(text: str) -> list:
     """The lines of a run: script as bash splits them (at \\n alone), stripped of spaces and tabs,
-    comments and blank lines aside."""
+    comments and blank lines aside, with CI gotestsum commands read as their go test."""
     stripped = (line.strip(" \t") for line in text.split("\n"))
-    return [line for line in stripped if line and not line.startswith("#")]
+    return [as_go_test(line) for line in stripped if line and not line.startswith("#")]
+
+
+@functools.lru_cache(maxsize=None)
+def composite_steps(folder: Path) -> tuple:
+    """The steps of a composite action in a resolved directory, if present."""
+    action = next((folder / name for name in ("action.yml", "action.yaml") if (folder / name).is_file()), None)
+    if action is None:
+        return ()
+    runs = (load_repository_yaml(action) or {}).get("runs") or {}
+    return tuple(runs.get("steps") or ()) if runs.get("using") == "composite" else ()
+
+
+def step_texts(step: dict):
+    """The texts rule 4 reads in a step: its run:, or its with: values and the run: of each step
+    of each composite action of this repository that it uses, directly or through another such
+    action. One walk per step keeps the set of action folders it has read, so each action is read
+    once (a cycle ends there too) and the time is linear in the number of actions; a uses: path
+    that resolves outside the repository is not followed, and no inner step's with: is read."""
+    if "uses" in step and "run" not in step:
+        yield from (str(value) for value in (step.get("with") or {}).values())
+    seen = set()
+    pending = [step]
+    while pending:
+        inner = pending.pop()
+        if "run" in inner:
+            yield str(inner["run"])
+        elif (uses := str(inner.get("uses", ""))).startswith("./"):
+            folder = (REPO / uses).resolve()
+            if not folder.is_relative_to(REPO) or folder in seen:
+                continue
+            seen.add(folder)
+            pending.extend(reversed(composite_steps(folder)))
+
+
+SCRIPT_SEPARATORS = str.maketrans({char: " " for char in """'"=;&|()<>"""})
+
+
+def names_script(word: str, script: str) -> bool:
+    """Whether a word names a script: the shorter of the two is the end of the longer, whole or
+    after a `/`. Plain string tests, so the time is linear in the word, whatever the text holds."""
+    longer, shorter = (word, script) if len(word) >= len(script) else (script, word)
+    start = len(longer) - len(shorter)
+    return longer.endswith(shorter) and (start == 0 or longer[start - 1] == "/")
+
+
+def scripts_named(text: str, scripts: set) -> set:
+    """The declared scripts a text names, as rule 4 reads it: the text split into words at blanks,
+    quotes, = and ;&|()<>, one leading ./ removed from each word, each word tested with
+    names_script against each script."""
+    words = (word.removeprefix("./") for word in text.translate(SCRIPT_SEPARATORS).split())
+    return {script for word in words for script in scripts if names_script(word, script)}
 
 
 def odd_character(text: str) -> str | None:
@@ -1856,6 +1953,7 @@ def reduce_line(line: str) -> tuple:
     with -race, the directory its `go -C` names or "", ""), any other as (None, None, None, None,
     None, the first reason it is not one of them)."""
     unreduced = (None, None, None, None, None)
+    line = as_go_test(line)
     special = next((c for c in line if c in NOT_SIMPLE), None)
     if special:
         return *unreduced, f"it has `{special}`"
@@ -1946,14 +2044,20 @@ ENV_ALLOWED = frozenset({
     "GOCACHE",
     "GOPROXY",
     # The job's state, success, failure or cancelled, which the step "Wait for the script
-    # harnesses and judge them" of the test job and envoy-go-checks hands .github/scripts/
-    # harness-pool.sh to choose --allow-none and --now. go reads it nowhere.
+    # harnesses and judge them" of envoy-go-checks and envoy-session-stall hands
+    # .github/scripts/harness-pool.sh to choose --allow-none. go reads it nowhere.
     "JOB_STATUS",
     # The job's timeout-minutes, which .github/scripts/gh-read.sh's wait for a spent API budget
     # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that
     # run go commands among them, and around_job reads a job's env. go reads it nowhere.
     "JOB_TIMEOUT_MINUTES",
-    "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
+    "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN",
+    # Where a live test writes its evidence: the daemon's own log file, and the step-models
+    # chain's directory. The chain writes its records, transcripts, captures and verdicts to that
+    # directory. Each is read at run time by the test that writes it. So go compiles the same
+    # files and runs the same tests with it set as without.
+    "LEGION_E2E_DAEMON_LOG", "LEGION_E2E_STEP_MODELS_EVIDENCE",
+    "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
     # The commit envoy-go-build's edited-migrations step compares a bypass run's tree with:
     # .github/scripts/edited-migrations-base.sh, which that step runs, reads it and hands the base
@@ -2199,6 +2303,63 @@ def declared(g: Gate) -> str:
                  and r.glob.endswith(".py") and "*" not in r.glob), ".github/scripts/ci_job_reads.py")
 
 
+def check_script_steps(data, units: list, caller_jobs: dict, inputs_of: dict,
+                       excluded: dict, problems: list[Annotation]) -> None:
+    """See the script half of rule 4 in check-ci-filters.sh's header.
+
+    Read the caller's if:, the called job's if: and the step's if:. Resolve inputs through the
+    caller's with:. A citation counts only when no other step of the job answers to it.
+    """
+    index = defaultdict(set)  # a citation() text -> the CITED entries that make it
+    for entry in CITED:
+        index[citation(*entry)].add(entry)
+    scripts = set()
+    cited = defaultdict(set)  # (script, filter, caller job) -> the citations for that script
+    gate_jobs = {(g.filter, g.job) for g in data.GATES}
+    for g in data.GATES:
+        for r in gate_runs(g):
+            if r.source:
+                scripts.add(r.source)
+                cited[(r.source, g.filter, g.job)] |= cited_in(r.why, index)
+    for own, path, name_there, _, job in units:
+        caller = caller_jobs.get(own) or {}
+        passed = inputs_of.get((path, own), {})
+        around = set(gated_filters(str(caller.get("if", ""))))
+        if path != WORKFLOW:
+            around |= set(gated_filters(resolve_condition(str(job.get("if", "")), passed)))
+        steps = job.get("steps") or []
+        for step in steps:
+            own_if = set(gated_filters(resolve_condition(str(step.get("if", "")), passed)))
+            gating = (around | own_if) - {REF_OUTPUT} - set(excluded)
+            if not gating:
+                continue
+            named = {script for text in step_texts(step) for script in scripts_named(text, scripts)}
+            if not named:
+                continue
+            where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\""
+            for script in sorted(named):
+                for f in sorted(gating):
+                    refs = {ref for p, j, ref in cited.get((script, f, own), ())
+                            if (p, j) == (path, name_there) and step_matches(step, ref)}
+                    if any(sum(1 for s in steps if step_matches(s, ref)) == 1 for ref in refs):
+                        continue
+                    if (f, own) not in gate_jobs:
+                        reason = (f"a script a Run of {GATES_DIR} lists go commands of, and filter {f} gates "
+                                  f"the step, but no gate of {GATES_DIR} covers it (a gate of {f} on job {own}), "
+                                  f"so that filter is held to nothing the script compiles there; add a gate of "
+                                  f"{f} on job {own} with a Run of the script whose why cites the step with at()")
+                    elif refs:
+                        reason = (f"and a Run of it in gate {f} on job {own} cites the step only as "
+                                  f"\"{min(refs)}\", which more than one step of the job answers to, so it "
+                                  f"declares none of them; cite each step by its own id: or run: text")
+                    else:
+                        reason = (f"a script a Run of {GATES_DIR} lists go commands of, but no Run of it in gate "
+                                  f"{f} on job {own}, which gates this step, cites the step, so filter {f}, which "
+                                  f"can skip the step, is held to nothing the script compiles there; add a Run of "
+                                  f"the script to that gate whose why cites the step with at()")
+                    problems.append(error(path, f"{where} runs {script}, {reason}"))
+
+
 def check_table(documents: dict, data, files: set, problems: list[Annotation]) -> dict:
     """The table must say what ci.yaml says: every gate a filter the changes job hands on to a
     real job, every go command a job's run: steps start listed, every pin and citation still
@@ -2367,7 +2528,7 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
             mine = [r for (j, ref), rs in claims.items() if j == own and step_matches(step, ref) for r in rs]
             for line in go_lines(script):
                 where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\" runs `{line}`"
-                pinned = [r for r in mine if squash(r.text) in squash(line)]
+                pinned = [r for r in mine if squash(as_go_test(r.text)) in squash(line)]
                 if not pinned:
                     problems.append(error(path, f"{where}, which no Run of a gate in {GATES_DIR} lists; add it "
                                                  f"to the job's gate so its closure is computed"))
@@ -2412,11 +2573,12 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
                                                  f"which is not one run: step of it; update or remove the entry"))
     for (job_id, ref), rs in claims.items():
         steps = [s for s in owner_steps(units, job_id) if step_matches(s, ref)]
-        text = squash(" ".join(str(s.get("run", "")) for s in steps))
+        text = squash(" ".join(as_go_test(str(s.get("run", ""))) for s in steps))
         for r in rs:
-            if not steps or squash(r.text) not in text:
+            if not steps or squash(as_go_test(r.text)) not in text:
                 problems.append(error(GATES_DIR, f"job {job_id} step \"{ref}\" no longer runs `{r.text}`; update or "
                                                  f"remove the Run"))
+    check_script_steps(data, units, caller_jobs, inputs_of, excluded, problems)
     # A script's go command is held exact rather than reduced: the line holding the pinned text is
     # that text alone, uncontinued, and no env:, shell: or defaults.run.shell of the workflow, the
     # job or its steps, no container: and no environment write of the job can move it - over every
@@ -2520,7 +2682,6 @@ CALLER_VALUE = re.compile(r"\$\{\{\s*inputs\.([A-Za-z0-9_-]+)\s*\}\}")
 # alone: on a dispatch of main too it is `pr-title (dispatch)`, which main's ruleset does not read.
 # What keeps a skipped pr-title from posting a pass named pr-title is that its name is an
 # expression at all.
-REQUIRED_CHECKS = ("ci-ok", "pr-title")
 VERDICT_JOB = "ci-ok"
 REF_OUTPUT = "ref_is_main"
 REF_OUTPUT_VALUE = "${{ steps.ref.outputs.is_main }}"
@@ -2923,7 +3084,8 @@ def step_go_lines(document: dict, job: dict, step: dict) -> list:
     read out of it, whose SHA-256 the expansion harness checks. No script is read here: what a
     script runs depends on its control flow, which a line-by-line reading cannot see. Raises
     audited_scripts.Unreadable for a run: that names such a script in a form no entry reads."""
-    run = str(step.get("run", ""))
+    # An events filename is not a reference to an audited script, even if it shares its name.
+    run = as_go_test(str(step.get("run", "")))
     reading = reading_of(step_workdir(document, job, step), run)
     return [line for line in script_lines(run if reading is None else reading.script) if TAG_RUN_TEST.search(line)]
 
@@ -4043,6 +4205,7 @@ def check() -> int:
     rules.check_cache_round_trip(documents, problems)
     rules.check_race_fill_packages(data.RACE_FILLS, problems)
     rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
+    rules.check_binaries_fill(data.BINARIES_FILLS, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
     # Rule 20: a vet for another platform passes over no file a build tag would compile.
