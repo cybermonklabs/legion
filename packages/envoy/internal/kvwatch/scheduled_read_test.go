@@ -17,9 +17,9 @@ import (
 )
 
 // scheduledEvery is the scheduled read's interval these tests set (kvwatch.WithScheduledRead). No
-// other wait the watcher arms has it as its delay -- a stream probe's 2 s, a re-read's 0 or 5 s, a
-// scan idle wait's 10 s, a repair wait's minute -- so a test finds the scheduled waits among those
-// a pending keeps by that delay alone.
+// other wait the watcher arms -- a stream probe's 2 s, a re-read's 0 or 5 s, an abandoned watch's
+// drain bound (kvwatch.AbandonedDrain, 1 s), a scan idle wait's 10 s, or a repair wait's minute --
+// has that delay, so a test can find scheduled waits by delay alone.
 const scheduledEvery = 45 * time.Second
 
 // putKeys writes each of keys into the bucket kv is a handle on.

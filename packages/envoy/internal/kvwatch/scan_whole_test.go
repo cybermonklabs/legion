@@ -20,8 +20,8 @@ import (
 )
 
 // TestAScanVisitsAListedKeyItsWatchLeftOut checks that both scans recover an omitted live key at
-// its stored revision and read no other key from the leader. The old scan ends at the watch's nil
-// entry and never visits the omitted key.
+// its stored revision and read no other key from the leader. A scan that ended at the watch's
+// nil entry would never visit the omitted key.
 func TestAScanVisitsAListedKeyItsWatchLeftOut(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -61,7 +61,7 @@ func TestAScanVisitsAListedKeyItsWatchLeftOut(t *testing.T) {
 }
 
 // TestAScanLeavesOutAListedKeyTheLeaderNoLongerHolds checks that a listed key deleted before its
-// leader read is not visited or counted as a put. The old scan also omits it, but never reads it.
+// leader read is not visited or counted as a put.
 func TestAScanLeavesOutAListedKeyTheLeaderNoLongerHolds(t *testing.T) {
 	t.Parallel()
 	kv := wholeScanBucket(t, "scan_deleted_before_read")
@@ -84,7 +84,7 @@ func TestAScanLeavesOutAListedKeyTheLeaderNoLongerHolds(t *testing.T) {
 }
 
 // TestAScanWhoseLeaderReadFailsNamesTheKey checks that a failed or refused read names the scan and
-// the omitted key and wraps the read error. The old scan never reads the key and returns nil.
+// the omitted key and wraps the read error.
 func TestAScanWhoseLeaderReadFailsNamesTheKey(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -105,7 +105,7 @@ func TestAScanWhoseLeaderReadFailsNamesTheKey(t *testing.T) {
 			beforeRead := func() error { return wantErr }
 			if row.legacy {
 				_, key = testnats.LegacyKeys(bucket, "u")
-				if _, err := kv.Streams().Publish(ctx, "$KV."+bucket+"."+key, []byte("legacy")); err != nil {
+				if _, err := kv.Streams().Publish(ctx, testnats.KVSubject(bucket, key), []byte("legacy")); err != nil {
 					t.Fatalf("publish the %d-byte legacy key: %v", len(key), err)
 				}
 				wantErr = bus.ErrRefused
@@ -131,8 +131,7 @@ func TestAScanWhoseLeaderReadFailsNamesTheKey(t *testing.T) {
 }
 
 // TestAScanKeepsAKeyWrittenAgainDuringIt checks that every scan visits both keys while one is
-// continuously rewritten. The old scan can miss that key when its next revision arrives after
-// the watch's first delivery ends.
+// continuously rewritten. A rewrite can move that key past the watch's first delivery.
 func TestAScanKeepsAKeyWrittenAgainDuringIt(t *testing.T) {
 	t.Parallel()
 	const scans = 100
@@ -182,10 +181,20 @@ func TestAScanKeepsAKeyWrittenAgainDuringIt(t *testing.T) {
 }
 
 // TestAScanReadsNoDeletedKeyFromTheLeader checks that both scans count 10,000 delete markers and
-// visit the live keys without reading any key individually. The old scan passes because it never
-// reads keys beyond what the watch delivers.
+// visit the live keys without reading any key individually.
 func TestAScanReadsNoDeletedKeyFromTheLeader(t *testing.T) {
 	t.Parallel()
+	const bucket = "scan_many_markers"
+	const deleted, live = 10_000, 20
+	kv := wholeScanBucket(t, bucket)
+	uri := testnats.URL(t)
+	seedScanMarkers(t, kv, deleted)
+	keys := make([]string, live)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("live.%02d", i)
+	}
+	want := putScanKeys(t, kv, keys...)
+
 	for _, row := range []struct {
 		name    string
 		filters []string
@@ -195,16 +204,18 @@ func TestAScanReadsNoDeletedKeyFromTheLeader(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			const deleted, live = 10_000, 20
-			kv := wholeScanBucket(t, "scan_many_markers")
-			seedScanMarkers(t, kv, deleted)
-			keys := make([]string, live)
-			for i := range keys {
-				keys[i] = fmt.Sprintf("live.%02d", i)
+			inbox := scanGetInboxPrefix + row.name
+			conn, err := testnats.AwaitConnectSeed(t, uri, "", natsgo.CustomInboxPrefix(inbox))
+			if err != nil {
+				t.Fatalf("connect to the scan bucket's account: %v", err)
 			}
-			want := putScanKeys(t, kv, keys...)
+			t.Cleanup(conn.Close)
+			ctx := testwait.Context(t)
+			kv, err := bus.OpenKeyValue(ctx, conn, jetStream(t, conn), bucket)
+			if err != nil {
+				t.Fatalf("open bucket %s: %v", bucket, err)
+			}
 
-			conn := kv.Conn()
 			stream := "KV_" + kv.Bucket()
 			gets := []string{"$JS.API.STREAM.MSG.GET." + stream, "$JS.API.DIRECT.GET." + stream, "$JS.API.DIRECT.GET." + stream + ".>"}
 			subs := make([]*natsgo.Subscription, 0, len(gets))
@@ -218,14 +229,14 @@ func TestAScanReadsNoDeletedKeyFromTheLeader(t *testing.T) {
 			}
 
 			got := make(scanVisits)
-			scan, err := runWholeScan(testwait.Context(t), kv, row.filters, "visit live keys among markers", got)
+			scan, err := runWholeScan(ctx, kv, row.filters, "visit live keys among markers", got)
 			if err != nil {
 				t.Fatalf("scan: %v", err)
 			}
 			if !maps.Equal(got, want) || scan.Puts != live || scan.Markers != deleted {
 				t.Errorf("scan visited %v and counted %+v, want %v, %d puts and %d markers", got, scan, want, live, deleted)
 			}
-			assertNoScanGets(t, conn, subs)
+			assertNoScanGets(t, conn, subs, inbox)
 		})
 	}
 }
@@ -344,7 +355,7 @@ func seedScanMarkers(t *testing.T, kv bus.KeyValue, count int) {
 	for first := 0; first < count; first += batchKeys {
 		futures = futures[:0]
 		for i := first; i < min(first+batchKeys, count); i++ {
-			subject := fmt.Sprintf("$KV.%s.deleted.%05d", kv.Bucket(), i)
+			subject := testnats.KVSubject(kv.Bucket(), fmt.Sprintf("deleted.%05d", i))
 			put, err := js.PublishAsync(subject, []byte("value"))
 			if err != nil {
 				t.Fatalf("publish put on %s: %v", subject, err)
@@ -370,10 +381,13 @@ func seedScanMarkers(t *testing.T, kv bus.KeyValue, count int) {
 	}
 }
 
+const scanGetInboxPrefix = "_INBOX.scan_many_markers."
+
 // assertNoScanGets counts requests after a sentinel sent on the handle's connection. The server
 // echoes that connection's publishes in order, so when the sentinel arrives nats.go has already
-// queued every matching get the scan sent before it returned.
-func assertNoScanGets(t *testing.T, conn *natsgo.Conn, subs []*natsgo.Subscription) {
+// queued every matching get the scan sent before it returned. The request's reply inbox identifies
+// the other row's gets on the shared bucket. A request with no recognized inbox still counts.
+func assertNoScanGets(t *testing.T, conn *natsgo.Conn, subs []*natsgo.Subscription, inbox string) {
 	t.Helper()
 	sentinels := make(chan *natsgo.Msg, 1)
 	sentinel, err := conn.ChanSubscribe(natsgo.NewInbox(), sentinels)
@@ -385,10 +399,21 @@ func assertNoScanGets(t *testing.T, conn *natsgo.Conn, subs []*natsgo.Subscripti
 		t.Fatalf("publish the sentinel: %v", err)
 	}
 	testwait.Receive(t, "the sentinel published after the scan returned", sentinels)
+	ctx := testwait.Context(t)
 	for _, sub := range subs {
-		pending, _, err := sub.Pending()
+		queued, _, err := sub.Pending()
 		if err != nil {
 			t.Fatalf("count requests on %s: %v", sub.Subject, err)
+		}
+		pending := 0
+		for range queued {
+			msg, err := sub.NextMsgWithContext(ctx)
+			if err != nil {
+				t.Fatalf("read a queued request on %s: %v", sub.Subject, err)
+			}
+			if !strings.HasPrefix(msg.Reply, scanGetInboxPrefix) || strings.HasPrefix(msg.Reply, inbox+".") {
+				pending++
+			}
 		}
 		if pending != 0 {
 			t.Errorf("scan sent %d requests on %s, want zero", pending, sub.Subject)

@@ -37,10 +37,7 @@ func waitCompleteBlocked(t *testing.T, ctx context.Context, w *kvwatch.Watcher) 
 		answers <- w.WaitComplete(ctx)
 	}()
 	id := testwait.Receive(t, "the WaitComplete caller's goroutine id", calling)
-	testwait.Until(t, "WaitComplete to block on its wake-up", func() (bool, bool) {
-		blocked := blockedInWaitComplete(id)
-		return blocked, blocked
-	})
+	eventually(t, "WaitComplete to block on its wake-up", func() bool { return blockedInWaitComplete(id) })
 	return answers
 }
 

@@ -101,10 +101,7 @@ func TestAKeyWrittenThroughBetweenAReadsCreateAndItsBeginSurvivesTheRead(t *test
 		t.Fatalf("the write into the copy came to outcome %d, want Applied (%d)", outcome, kvwatch.Applied)
 	}
 	held.let()
-	testwait.Until(t, "the read's completion", func() (bool, bool) {
-		following := w.Following()
-		return following, following
-	})
+	eventually(t, "the read's completion", w.Following)
 	if !into.has("written-through") || into.has("gone-from-the-bucket") || !into.has("one") {
 		t.Fatalf("after the read: written-through key %v, gone key %v, bucket key %v; want the written key and the bucket's kept, the gone key swept",
 			into.has("written-through"), into.has("gone-from-the-bucket"), into.has("one"))

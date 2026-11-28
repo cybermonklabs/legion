@@ -120,7 +120,7 @@ func TestEndEndsAWatcherArmedAfterTheStop(t *testing.T) {
 	}()
 	close(held.release)
 	testwait.Receive(t, "End to return once the watch it waited for armed and ended its watcher", ended)
-	if consumers := testConsumers(t, testContext(t), kv); len(consumers) != 0 {
+	if consumers := testConsumers(t, testwait.Context(t), kv); len(consumers) != 0 {
 		t.Fatalf("consumers after End = %v, want none", consumers)
 	}
 	if got := warnings(records()); len(got) != 0 {
@@ -148,7 +148,7 @@ func TestAWatchStillStartingAtEndsDeadlineIsAnError(t *testing.T) {
 	defer cancel()
 	w.End(ctx)
 	close(held.release)
-	listCtx := testContext(t)
+	listCtx := testwait.Context(t)
 	testwait.Until(t, "the late watch to delete its consumer", func() ([]string, bool) {
 		consumers := testConsumers(t, listCtx, kv)
 		return consumers, len(consumers) == 0
@@ -250,9 +250,10 @@ func TestADeleteConsumerAnsweredErrDisconnectedDuringEndIsAWarning(t *testing.T)
 
 // endsWaiting counts the recorded End callers parked waiting for a watch or for another End.
 func endsWaiting(ids []uint64) int {
+	traces := goroutinetest.Traces()
 	n := 0
 	for _, id := range ids {
-		trace := traceOf(id)
+		trace := traceIn(traces, id)
 		header, _, _ := strings.Cut(trace, "\n")
 		parked := strings.Contains(header, "[select") || strings.Contains(header, "[sync.Mutex.Lock")
 		if parked && strings.Contains(trace, "kvwatch.(*Watcher).End(") {
@@ -297,7 +298,7 @@ func TestEndCalledTwiceAtOnceReturnsForBoth(t *testing.T) {
 	for range 2 {
 		testwait.Receive(t, "both Ends to return once the watch they waited for had finished", ended)
 	}
-	if consumers := testConsumers(t, testContext(t), kv); len(consumers) != 0 {
+	if consumers := testConsumers(t, testwait.Context(t), kv); len(consumers) != 0 {
 		t.Fatalf("consumers after both Ends = %v, want none", consumers)
 	}
 	if got := warnings(records()); len(got) != 0 {
@@ -322,7 +323,7 @@ func TestAFailedConsumerDeleteAtTheEndIsAnError(t *testing.T) {
 	if err := js.DeleteKeyValue("kvwatch-test"); err != nil {
 		t.Fatalf("delete bucket: %v", err)
 	}
-	w.End(testContext(t))
+	w.End(testwait.Context(t))
 	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end failed: nats: stream not found"; got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
 	}

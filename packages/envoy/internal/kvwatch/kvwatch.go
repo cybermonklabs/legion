@@ -495,7 +495,7 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 		// run ended while the create was in flight, and cancelled the watcher's context.
 		if err == nil {
 			sub := &subscription{watcher: watcher, cancel: cancel}
-			sub.retireWithin(run, abandonedDrain, w.after)
+			sub.retireWithin(run, w.after)
 		}
 		cancel()
 		return fmt.Errorf("create the %s watcher: %w", w.name, run.Err())
@@ -539,7 +539,7 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 	if older || (expect != 0 && w.generation != expect) {
 		w.mu.Unlock()
 		w.applyMu.Unlock()
-		sub.retireWithin(run, abandonedDrain, w.after)
+		sub.retireWithin(run, w.after)
 		return nil
 	}
 	previous := w.watcher
@@ -729,12 +729,17 @@ func (w *Watcher) closed(sub *subscription, generation uint64) {
 // else; a signal already pending is enough.
 func (w *Watcher) armIdle(d time.Duration, idle chan<- struct{}) {
 	w.clearIdleArm()
-	w.idleTimer = w.after(d, func() {
+	w.idleTimer = w.after(d, notify(idle))
+}
+
+// notify returns a callback that signals ch without blocking. A pending signal is enough.
+func notify(ch chan<- struct{}) func() {
+	return func() {
 		select {
-		case idle <- struct{}{}:
+		case ch <- struct{}{}:
 		default:
 		}
-	})
+	}
 }
 
 // idleExpired reports whether generation's scan, whose last entry consume took at last, has gone

@@ -77,10 +77,7 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 			// Cleanups run last-in first-out: the held Stop is released before the watcher stops.
 			t.Cleanup(release)
 			w.Start()
-			testwait.Until(t, "the first read's completion", func() (bool, bool) {
-				following := w.Following()
-				return following, following
-			})
+			eventually(t, "the first read's completion", w.Following)
 
 			conn := testnats.Connect(t, uri)
 			t.Cleanup(conn.Close)
@@ -141,10 +138,7 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 			if _, err := w.KV().Put("after-the-rewatch", []byte("1")); err != nil {
 				t.Fatalf("put: %v", err)
 			}
-			testwait.Until(t, "the replacement watcher's delivery", func() (bool, bool) {
-				has := into.has("after-the-rewatch")
-				return has, has
-			})
+			eventually(t, "the replacement watcher's delivery", func() bool { return into.has("after-the-rewatch") })
 		})
 	}
 }

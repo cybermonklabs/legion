@@ -3,6 +3,7 @@ package kvwatch_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -85,6 +86,21 @@ func (p *pending) last(t *testing.T, d time.Duration) *pendingWait {
 	return armed[len(armed)-1]
 }
 
+// lastBut is the last wait p armed whose delay is not in skip. It fails the test if there is none.
+func (p *pending) lastBut(t *testing.T, skip ...time.Duration) *pendingWait {
+	t.Helper()
+	p.mu.Lock()
+	waits := slices.Clone(p.waits)
+	p.mu.Unlock()
+	for i := len(waits) - 1; i >= 0; i-- {
+		if !slices.Contains(skip, waits[i].delay) {
+			return waits[i]
+		}
+	}
+	t.Fatalf("the watcher armed no wait but of %v", skip)
+	return nil
+}
+
 // countingKV counts the reads of its bucket's stream (Stream, the STREAM.INFO a watcher reads).
 type countingKV struct {
 	jetstream.JetStream
@@ -128,12 +144,18 @@ func injecting(records <-chan jetstream.KeyValueEntry) watchStep {
 // offerRecord waits for the injecting watch to accept an entry without leaving a sender blocked.
 func offerRecord(t *testing.T, records chan<- jetstream.KeyValueEntry, entry jetstream.KeyValueEntry) {
 	t.Helper()
-	testwait.Until(t, "the injecting watch to accept "+entry.Key(), func() (bool, bool) {
+	offer(t, "the injecting watch to accept "+entry.Key(), records, entry)
+}
+
+// offer waits for ch to accept entry without blocking on a send.
+func offer(t *testing.T, what string, ch chan<- jetstream.KeyValueEntry, entry jetstream.KeyValueEntry) {
+	t.Helper()
+	eventually(t, what, func() bool {
 		select {
-		case records <- entry:
-			return true, true
+		case ch <- entry:
+			return true
 		default:
-			return false, false
+			return false
 		}
 	})
 }
@@ -287,19 +309,13 @@ func TestARecordFromARecreatedBucketIsAppliedOnlyOnceTheCopyStoppedFollowing(t *
 		kvwatch.WithNow(now.Now), kvwatch.WithAfterFunc(timers.afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	testwait.Until(t, "the first read's completion", func() (bool, bool) {
-		following := w.Following()
-		return following, following
-	})
+	eventually(t, "the first read's completion", w.Following)
 
 	recreated := recreate(t, conn, "fresh")
 	entry := jetStreamEntry(t, wrap(t, conn, recreated), "fresh")
 	now.advance(staleConfirmation)
 	offerRecord(t, records, entry)
-	testwait.Until(t, "the new bucket's record to be applied", func() (bool, bool) {
-		has := into.has("fresh")
-		return has, has
-	})
+	eventually(t, "the new bucket's record to be applied", func() bool { return into.has("fresh") })
 	mu.Lock()
 	whileFollowing := followingAt["fresh"]
 	mu.Unlock()
@@ -689,10 +705,7 @@ func TestARecordWaitsForTheProbesReadInFlight(t *testing.T) {
 	t.Cleanup(w.Stop)
 	w.Start()
 	consumeID := testwait.Receive(t, "the first watcher's first apply", reading)
-	testwait.Until(t, "the first read's completion", func() (bool, bool) {
-		following := w.Following()
-		return following, following
-	})
+	eventually(t, "the first read's completion", w.Following)
 
 	recreated := recreate(t, conn, "fresh")
 	entry := jetStreamEntry(t, wrap(t, conn, recreated), "fresh")
@@ -710,19 +723,13 @@ func TestARecordWaitsForTheProbesReadInFlight(t *testing.T) {
 		return n, n == base+1
 	})
 	offerRecord(t, records, entry)
-	testwait.Until(t, "the record to wait in the gate", func() (bool, bool) {
-		waiting := waitingInTheGate(consumeID)
-		return waiting, waiting
-	})
+	eventually(t, "the record to wait in the gate", func() bool { return waitingInTheGate(consumeID) })
 	if into.has("fresh") {
 		t.Fatal("the record was applied while the probe's read was in flight")
 	}
 	let()
 	wait(t, probed, "the probe to end")
-	testwait.Until(t, "the new bucket's record to be applied", func() (bool, bool) {
-		has := into.has("fresh")
-		return has, has
-	})
+	eventually(t, "the new bucket's record to be applied", func() bool { return into.has("fresh") })
 	mu.Lock()
 	whileFollowing := followingAt["fresh"]
 	mu.Unlock()

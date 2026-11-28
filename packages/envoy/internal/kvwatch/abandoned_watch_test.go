@@ -93,35 +93,17 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			uri := testnats.URL(t)
-			conn, kv := bucket(t, uri)
+			_, kv := bucket(t, uri)
 			into := newSeen()
 			timers := &pending{}
 			w := kvwatch.New("test cache", kv, into, kvwatch.WithStreamProbeInterval(0),
 				kvwatch.WithAfterFunc(timers.afterFunc()))
 			t.Cleanup(w.Stop)
 			w.Start()
-			testwait.Until(t, "the first read's completion", func() (bool, bool) {
-				following := w.Following()
-				return following, following
-			})
+			eventually(t, "the first read's completion", w.Following)
 
-			js, err := jetstream.New(conn, testnats.RequestTimeout(t))
-			if err != nil {
-				t.Fatalf("jetstream: %v", err)
-			}
 			ctx := testwait.Context(t)
-			consumers := func() int {
-				stream, err := js.Stream(ctx, "KV_"+kv.Bucket())
-				if err != nil {
-					t.Fatalf("read the bucket's stream: %v", err)
-				}
-				info, err := stream.Info(ctx)
-				if err != nil {
-					t.Fatalf("read the bucket's stream: %v", err)
-				}
-				return info.State.Consumers
-			}
-			held := consumers()
+			held := len(testConsumers(t, ctx, kv))
 
 			run, end := context.WithCancel(ctx)
 			t.Cleanup(end)
@@ -150,7 +132,7 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 			t.Cleanup(release)
 			watched := make(chan error, 1)
 			go func() { watched <- tc.install(w, run, bus.NewKeyValue(kv.Legacy(), abandon, kv.Streams())) }()
-			err = testwait.Receive(t, "the watch to return while the discarded watcher's stop is held", watched)
+			err := testwait.Receive(t, "the watch to return while the discarded watcher's stop is held", watched)
 			if tc.ends && err == nil {
 				t.Fatal("a watch whose run ended while its create was in flight answered nil, want the run's end")
 			}
@@ -201,7 +183,7 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 				t.Error("the drain returned without stopping its timer")
 			}
 			testwait.Until(t, "the discarded watcher's consumer to be gone", func() (int, bool) {
-				got := consumers()
+				got := len(testConsumers(t, ctx, kv))
 				return got, got <= held
 			})
 
@@ -211,10 +193,7 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 			if _, err := kv.Put("after-the-discarded-watch", []byte("1")); err != nil {
 				t.Fatalf("put: %v", err)
 			}
-			testwait.Until(t, "the cache's own watcher to deliver a new record", func() (bool, bool) {
-				delivered := into.has("after-the-discarded-watch")
-				return delivered, delivered
-			})
+			eventually(t, "the cache's own watcher to deliver a new record", func() bool { return into.has("after-the-discarded-watch") })
 		})
 	}
 }

@@ -63,14 +63,7 @@ func (f *fakeWatcher) end() {
 // binary's deadline ends it.
 func (f *fakeWatcher) deliver(t *testing.T, entry jetstream.KeyValueEntry) {
 	t.Helper()
-	testwait.Until(t, "the watcher's reader to take an entry", func() (bool, bool) {
-		select {
-		case f.updates <- entry:
-			return true, true
-		default:
-			return false, false
-		}
-	})
+	offer(t, "the watcher's reader to take an entry", f.updates, entry)
 }
 
 // step is the watch that hands out f, keeping the context it was created in.
@@ -170,10 +163,7 @@ func TestAReplacedWatcherStillScanningIsStoppedAtOnceAndReadUntilItEnds(t *testi
 	}
 	scanning.stopCount(t, 1, "replaced mid-scan, when the replacing watch returned")
 	scanning.released(t, "replaced mid-scan")
-	testwait.Until(t, "the replacement's read to complete", func() (bool, bool) {
-		following := w.Following()
-		return following, following
-	})
+	eventually(t, "the replacement's read to complete", w.Following)
 
 	scanning.deliver(t, fakeEntry{key: "from-the-replaced-watcher"})
 	scanning.deliver(t, nil)
@@ -204,7 +194,7 @@ func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
 			older: func(t *testing.T, conn *natsgo.Conn, kv bus.KeyValue) *jetstream.StreamInfo {
 				// The handle's stream client is the product's: the read takes the test's context,
 				// which ends near the test binary's deadline, not the client's own bound.
-				stream, err := kv.Streams().Stream(testContext(t), "KV_"+kv.Bucket())
+				stream, err := kv.Streams().Stream(testwait.Context(t), "KV_"+kv.Bucket())
 				if err != nil {
 					t.Fatalf("stream: %v", err)
 				}
@@ -230,10 +220,7 @@ func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
 				kvwatch.WithAfterFunc((&pending{}).afterFunc()))
 			t.Cleanup(w.Stop)
 			w.Start()
-			testwait.Until(t, "the first read's completion", func() (bool, bool) {
-				following := w.Following()
-				return following, following
-			})
+			eventually(t, "the first read's completion", w.Following)
 
 			discarded := newFakeWatcher(t)
 			if old != nil {
@@ -259,7 +246,7 @@ func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
 				t.Fatalf("after the discarded watch delivered: %d reads begun (%d before it), Err %v, its record applied %v; want it discarded",
 					got, reads, w.Err(), into.has("from-the-discarded-watcher"))
 			}
-			w.End(testContext(t))
+			w.End(testwait.Context(t))
 			discarded.stopCount(t, 1, "after End")
 		})
 	}

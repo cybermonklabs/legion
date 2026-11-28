@@ -109,7 +109,7 @@ func ScanMetaOnly() ScanOption {
 // left unread would park its subscription's goroutine for good. A stop that fails is logged through
 // log at WARN, except after ctx's end, which unsubscribes the watch through nats.go itself.
 func ScanExistingKeys(ctx context.Context, kv bus.KeyValue, keys, what string, idle time.Duration, log *slog.Logger, visitLive func(Entry) error, opts ...ScanOption) (KeyScan, error) {
-	return scanKeys(ctx, kv, []string{keys}, false, what, idle, log, visitLive, opts)
+	return drainScan(ctx, kv, []string{keys}, false, what, idle, log, visitLive, opts)
 }
 
 // ScanFilteredKeys is ScanExistingKeys over several key patterns at once, for a caller reading a
@@ -120,27 +120,35 @@ func ScanExistingKeys(ctx context.Context, kv bus.KeyValue, keys, what string, i
 // holds. Its one caller answers no request, so this scan holds its watch to its idle bound and each
 // read of the stream to bus.RequestTimeout, as a scan under context.Background() does.
 func ScanFilteredKeys(kv bus.KeyValue, keys []string, what string, idle time.Duration, log *slog.Logger, visitLive func(Entry) error, opts ...ScanOption) (KeyScan, error) {
-	return scanKeys(context.Background(), kv, keys, true, what, idle, log, visitLive, opts)
+	return drainScan(context.Background(), kv, keys, true, what, idle, log, visitLive, opts)
 }
 
-// scanKeys is both scans (ScanExistingKeys, ScanFilteredKeys) over patterns: the stream's state;
+// drainScan is both scans (ScanExistingKeys, ScanFilteredKeys) over patterns: the stream's state;
 // the list of each pattern's keys through its last sequence; one watch of them all
 // (WatchFilteredKeys where filtered, else WatchKeys of the one pattern), opened even when the list
 // names no key, so a scan makes exactly one; its first delivery up to the nil entry, the one place
 // the watcher's two endings, ctx's end and the scan's own idle bound are told apart; and then each
 // listed key for which that delivery carried neither a put nor a marker, read from the leader in
 // the list's order.
-func scanKeys(ctx context.Context, kv bus.KeyValue, patterns []string, filtered bool, what string, idle time.Duration, log *slog.Logger, visitLive func(Entry) error, opts []ScanOption) (KeyScan, error) {
+func drainScan(ctx context.Context, kv bus.KeyValue, patterns []string, filtered bool, what string, idle time.Duration, log *slog.Logger, visitLive func(Entry) error, opts []ScanOption) (KeyScan, error) {
 	state, err := kv.ReadStreamState(ctx)
 	if err != nil {
 		return KeyScan{}, fmt.Errorf("%s: read the bucket's stream state: %w", what, err)
 	}
 	var listed []string
-	delivered := map[string]bool{}
-	for _, pattern := range patterns {
+	var delivered map[string]bool
+	for i, pattern := range patterns {
 		keys, err := kv.StoredKeys(ctx, pattern, state.LastSeq)
 		if err != nil {
 			return KeyScan{}, fmt.Errorf("%s: %w", what, err)
+		}
+		if i == 0 {
+			listed = keys
+			delivered = make(map[string]bool, len(keys))
+			for _, key := range keys {
+				delivered[key] = false
+			}
+			continue
 		}
 		for _, key := range keys {
 			if _, alreadyListed := delivered[key]; !alreadyListed {
@@ -148,6 +156,9 @@ func scanKeys(ctx context.Context, kv bus.KeyValue, patterns []string, filtered 
 				delivered[key] = false
 			}
 		}
+	}
+	if delivered == nil {
+		delivered = make(map[string]bool)
 	}
 
 	var options scanOptions

@@ -25,10 +25,7 @@ func TestAWatcherARewatchInstalledOutlivesTheRunThatInstalledIt(t *testing.T) {
 	w := kvwatch.New("test cache", kv, into, kvwatch.WithLogger(logger))
 	t.Cleanup(w.Stop)
 	w.Start()
-	testwait.Until(t, "the first read's completion", func() (bool, bool) {
-		following := w.Following()
-		return following, following
-	})
+	eventually(t, "the first read's completion", w.Following)
 
 	_, kv2 := bucket(t, uri)
 	run, end := context.WithCancel(context.Background())
@@ -66,10 +63,7 @@ func TestAWatcherARewatchInstalledOutlivesTheRunThatInstalledIt(t *testing.T) {
 	if _, err := w.KV().Put("after-the-run", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	testwait.Until(t, "the watcher to deliver a write made after its run ended", func() (bool, bool) {
-		has := into.has("after-the-run")
-		return has, has
-	})
+	eventually(t, "the watcher to deliver a write made after its run ended", func() bool { return into.has("after-the-run") })
 	if err := w.Err(); err != nil {
 		t.Fatalf("the watcher ended after its run: %v", err)
 	}

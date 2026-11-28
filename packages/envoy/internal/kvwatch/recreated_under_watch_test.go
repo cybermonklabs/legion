@@ -2,7 +2,6 @@ package kvwatch_test
 
 import (
 	"fmt"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -68,10 +67,7 @@ func TestABucketRecreatedUnderALiveWatcherIsReadWholeWithoutCheck(t *testing.T) 
 			w = kvwatch.New("test cache", kv, into, kvwatch.WithAfterFunc(timers.afterFunc()))
 			t.Cleanup(w.Stop)
 			w.Start()
-			testwait.Until(t, "the first read's completion", func() (bool, bool) {
-				following := w.Following()
-				return following, following
-			})
+			eventually(t, "the first read's completion", w.Following)
 
 			js := jetStream(t, conn)
 			deleteTestBucket(t, js)
@@ -87,7 +83,7 @@ func TestABucketRecreatedUnderALiveWatcherIsReadWholeWithoutCheck(t *testing.T) 
 			// No Check and no Rewatch: the watcher alone must find the new incarnation and read it.
 			// Its stream probe is the one wait its first read armed besides that read's idle wait, so
 			// the delay checked here is the one the watcher asked for, whatever its default.
-			probe := lastWaitBut(t, timers, kvwatch.ScanIdleTimeout, rereadNow, kvwatch.AbandonedDrain)
+			probe := timers.lastBut(t, kvwatch.ScanIdleTimeout, rereadNow, kvwatch.AbandonedDrain)
 			if probe.delay > recreateNoticeBound {
 				t.Fatalf("stream probe delay = %v, want at most %v", probe.delay, recreateNoticeBound)
 			}
@@ -119,20 +115,4 @@ func TestABucketRecreatedUnderALiveWatcherIsReadWholeWithoutCheck(t *testing.T) 
 			}
 		})
 	}
-}
-
-// lastWaitBut is the wait timers armed last whose delay is none of skip, failing the test when it
-// armed none.
-func lastWaitBut(t *testing.T, timers *pending, skip ...time.Duration) *pendingWait {
-	t.Helper()
-	timers.mu.Lock()
-	waits := slices.Clone(timers.waits)
-	timers.mu.Unlock()
-	for i := len(waits) - 1; i >= 0; i-- {
-		if !slices.Contains(skip, waits[i].delay) {
-			return waits[i]
-		}
-	}
-	t.Fatalf("the watcher armed no wait but of %v", skip)
-	return nil
 }

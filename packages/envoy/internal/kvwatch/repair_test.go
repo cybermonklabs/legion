@@ -25,7 +25,6 @@ import (
 // and fireIdle fires the last idle wait.
 type armed struct {
 	mu     sync.Mutex
-	delay  time.Duration
 	delays []time.Duration
 	fires  []func()
 	idles  []func()
@@ -43,7 +42,6 @@ func (a *armed) afterFunc() kvwatch.AfterFunc {
 		if d == kvwatch.AbandonedDrain {
 			return (*armedTimer)(a)
 		}
-		a.delay = d
 		a.delays = append(a.delays, d)
 		a.fires = append(a.fires, f)
 		return (*armedTimer)(a)
@@ -61,7 +59,17 @@ func (a *armed) waits() int {
 func (a *armed) asked() time.Duration {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.delay
+	if len(a.delays) == 0 {
+		return 0
+	}
+	return a.delays[len(a.delays)-1]
+}
+
+// askedDelays returns the delays of the waits counted by waits, in the order they were armed.
+func (a *armed) askedDelays() []time.Duration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.delays)
 }
 
 // fireIdle runs the last scan idle wait's callback, and fails when none was armed.
@@ -342,19 +350,13 @@ func TestAWaitARepairClearedReportsNotTheNextStop(t *testing.T) {
 	// delete during that confirmation would make it arm a re-read of its own (rereadDelay), a wait
 	// neither stop armed. WaitComplete would not do here: the copy stays servable through its
 	// stale episode, so it can answer before the replacement's read has completed.
-	testwait.Until(t, "the replacement's read to complete", func() (bool, bool) {
-		following := w.Following()
-		return following, following
-	})
+	eventually(t, "the replacement's read to complete", w.Following)
 	deleteTestBucket(t, js)
 	// Rewatch opens its own handle, so end the replacement's subscription by closing its connection.
 	live.Close()
 	waitForStopWarns(t, records, 2)
 	if got := arm.waits(); got != 2 {
-		arm.mu.Lock()
-		delays := slices.Clone(arm.delays)
-		arm.mu.Unlock()
-		t.Fatalf("two stops armed %d waits (%v), want two repair waits", got, delays)
+		t.Fatalf("two stops armed %d waits (%v), want two repair waits", got, arm.askedDelays())
 	}
 
 	// The repair cleared the first wait; its callback runs now, as one already started would.
@@ -389,7 +391,7 @@ func TestAWatcherStoppedOnPurposeLogsNeither(t *testing.T) {
 	w.Start()
 	eventually(t, "the first scan", w.Ready)
 
-	w.End(testContext(t))
+	w.End(testwait.Context(t))
 
 	if warns := matching(records(), "WARN", stoppedWarn); len(warns) != 0 {
 		t.Fatalf("an ordered stop logged %d %q warnings, want none: %v", len(warns), stoppedWarn, warns)

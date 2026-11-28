@@ -1,7 +1,6 @@
 package kvwatch_test
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -9,7 +8,6 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -25,17 +23,6 @@ func natsContextWaits(creator uint64) int {
 		}
 	}
 	return n
-}
-
-// deliveryBlocked reports whether this watch's delivery is parked on its full updates buffer.
-func deliveryBlocked(creator uint64) bool {
-	for _, trace := range startedIn(creator, "") {
-		header, _, _ := strings.Cut(trace, "\n")
-		if strings.Contains(header, "[chan send") && strings.Contains(trace, "jetstream.(*kvs).WatchFiltered.func") {
-			return true
-		}
-	}
-	return false
 }
 
 // A watcher's subscription can end while its scan is under way and its idle wait armed: a watch
@@ -68,10 +55,7 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 				done <- kvwatch.WatchOn(w, other)
 			}()
 			id := testwait.Receive(t, "the replacing watch's goroutine id", watching)
-			testwait.Until(t, "the replacing watch waiting for the held apply", func() (bool, bool) {
-				parked := parkedOnTheApplyLock(id)
-				return parked, parked
-			})
+			eventually(t, "the replacing watch waiting for the held apply", func() bool { return parkedOnTheApplyLock(id) })
 			release()
 			if err := testwait.Receive(t, "the replacing watch to return", done); err != nil {
 				t.Fatalf("the replacing watch: %v", err)
@@ -96,11 +80,7 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 				}
 			}
 			conn, kv := bucket(t, uri)
-			subscribing := make(chan uint64, 1)
-			step := func(ctx context.Context, handle jetstream.KeyValue) (jetstream.KeyWatcher, error) {
-				subscribing <- goroutinetest.ID()
-				return handle.WatchAll(ctx)
-			}
+			ids := make(chan uint64, 1)
 			consume := make(chan uint64, 1)
 			holdCtx := testwait.Context(t)
 
@@ -119,17 +99,17 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 			timers := &pending{}
 			now := newClock()
 			logger, logged := jsonLogger(t)
-			w := kvwatch.New("test cache", scripted(kv, step).handle(), into, kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithNow(now.Now),
+			w := kvwatch.New("test cache", scripted(kv, subscribing(ids)).handle(), into, kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithNow(now.Now),
 				kvwatch.WithStreamProbeInterval(0), kvwatch.WithLogger(logger))
 			t.Cleanup(w.Stop)
 			t.Cleanup(release)
 			w.Start()
-			creator := testwait.Receive(t, "the subscribing goroutine id", subscribing)
+			creator := testwait.Receive(t, "the subscribing goroutine id", ids)
 			consumeID := testwait.Receive(t, "the scan's first record", consume)
 			idle := timers.last(t, kvwatch.ScanIdleTimeout)
-			testwait.Until(t, "nats.go's delivery to park on the full updates buffer", func() (bool, bool) {
-				blocked := deliveryBlocked(creator)
-				return blocked, blocked
+			eventually(t, "nats.go's delivery to park on the full updates buffer", func() bool {
+				_, blocked := deliveryBlocked(creator, "")
+				return blocked
 			})
 			if natsContextWaits(creator) == 0 {
 				t.Fatal("no goroutine of nats.go's waits on the running watch's context: the release checked below would prove nothing")

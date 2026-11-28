@@ -89,7 +89,7 @@ func TestAWarmUpLogsWhatItStreamedAndThatItCompleted(t *testing.T) {
 	w := kvwatch.New("interest registry", kv, into, kvwatch.WithLogger(logger))
 	t.Cleanup(w.Stop)
 	w.Start()
-	if err := w.WaitReady(testContext(t)); err != nil {
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestATimedOutWarmUpSaysSoAndIsReadAgainByTheWatcher(t *testing.T) {
 	}
 	now.advance(kvwatch.ScanIdleTimeout)
 	arm.fireIdle(t)
-	if err := w.WaitReady(testContext(t)); err != nil {
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 

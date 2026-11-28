@@ -1,16 +1,12 @@
 package kvwatch_test
 
 import (
-	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
-	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -34,8 +30,14 @@ import (
 // armed.
 func TestASubscriptionEndingMidScanNeverPanics(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"stopped before its end is read", "stopped after its end is read"} {
-		t.Run(name, func(t *testing.T) {
+	for _, row := range []struct {
+		name      string
+		stopFirst bool
+	}{
+		{name: "stopped before its end is read", stopFirst: true},
+		{name: "stopped after its end is read"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			uri := testnats.URL(t)
 			conn, kv := bucket(t, uri)
@@ -55,13 +57,9 @@ func TestASubscriptionEndingMidScanNeverPanics(t *testing.T) {
 				})
 			}}
 			creator, consuming := make(chan uint64, 1), make(chan uint64, 1)
-			step := func(ctx context.Context, kv jetstream.KeyValue) (jetstream.KeyWatcher, error) {
-				creator <- goroutinetest.ID()
-				return kv.WatchAll(ctx)
-			}
 			timers := &pending{}
 			logger, logged := jsonLogger(t)
-			w := kvwatch.New("test cache", scripted(kv, reader(step, consuming)).handle(), into,
+			w := kvwatch.New("test cache", scripted(kv, reader(subscribing(creator), consuming)).handle(), into,
 				kvwatch.WithStreamProbeInterval(0), kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithLogger(logger))
 			t.Cleanup(w.Stop)
 			t.Cleanup(release)
@@ -70,18 +68,11 @@ func TestASubscriptionEndingMidScanNeverPanics(t *testing.T) {
 			consumeID := testwait.Receive(t, "the watch to start consuming", consuming)
 			testwait.Receive(t, "the scan's first record to reach the cache", held)
 			testwait.Until(t, "this subscription's delivery to park on its full updates buffer", func() ([]string, bool) {
-				traces := startedIn(createdBy, "github.com/nats-io/nats%2ego.(*Conn).subscribeLocked")
-				for _, trace := range traces {
-					header, _, _ := strings.Cut(trace, "\n")
-					if strings.Contains(header, "[chan send") && strings.Contains(trace, "jetstream.(*kvs).WatchFiltered.func") {
-						return traces, true
-					}
-				}
-				return traces, false
+				return deliveryBlocked(createdBy, "github.com/nats-io/nats%2ego.(*Conn).subscribeLocked")
 			})
 			conn.Close()
 
-			if name == "stopped before its end is read" {
+			if row.stopFirst {
 				w.Stop()
 				release()
 				returned(t, "the stopped watch's consumer to return", consumeID)
