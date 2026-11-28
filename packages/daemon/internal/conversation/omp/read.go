@@ -140,8 +140,11 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 //
 // The reader does not apply these request-time branches:
 //
-//   - The sender applies the session's secrets policy to credential redaction and compaction file
-//     notes. The session journal does not record that policy.
+//   - The sender applies the session's secrets policy (secrets.enabled) to credential redaction
+//     and compaction file notes. The journal does not record this policy. Read matches the
+//     pinned Oh My Pi only when the policy changes neither assistant thinking nor tool arguments.
+//     The pin clears a changed block's signature before its replay transform, so Read's
+//     signature rules can decide differently. The policy is off by default.
 //   - foreignCredential changes nothing unless the Anthropic target verifies signatures and
 //     both the recorded and current credential IDs are known and different. Read has no current ID.
 //   - Responses portable reasoning needs the effective target compat, including the per-call
