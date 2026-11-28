@@ -471,7 +471,7 @@ func (r *registerGateBasisLive) refusedOnAnAcceptedBasis() {
 		"spec": requirementsMarkdown("Uplink", "u1", "u2")}))
 	r.setStatus(ancestor.Key, "in_progress")
 	approved := r.approve(ancestor.PrimaryArtifactID).Version
-	client := dispatch.New(r.baseURL, r.scratch.token)
+	client := dispatch.New(r.baseURL, dispatch.BearerTransport(r.scratch.token, nil))
 	read, err := client.GetIssue(t.Context(), ancestor.Key)
 	if err != nil {
 		t.Fatalf("read %s before its acceptance: %v", ancestor.Key, err)
