@@ -107,10 +107,13 @@ and nobody is asked.)
 While your approval stands, the model requests of the root's architect carry a message that says
 you approved that version of the spec. It tells the architect that its top responsibility is now to
 deliver that spec and no other, and to bring you a change to what the spec delivers as one decision,
-before any work on it. If the spec changes after the work started, the deployment's `gates.hold`
-says what waits until you approve the new version: the merge and the start of new issues
-(`merge`, the default), or all the tree's work (`work`), whose workers the daemon stops with their
-sessions kept. See [The design gate](/legion/legion/concepts/#the-design-gate).
+before any work on it.
+On a model that takes no `system` message inside the conversation, the message goes at the end of the request's top-level system prompt.
+If the spec changes after the work started, the deployment's `gates.hold` says what waits until you approve the new version.
+`start`, the default, holds the first phase of each issue that has not started.
+`work` also starts no phase but `merging`, and stops every phase worker of the tree but the merger, with its session kept, at the end of its turn or within 2 minutes.
+No value holds the merge.
+See [The design gate](/legion/legion/concepts/#the-design-gate).
 
 If a phase gets stuck, or the architect hits something only a person can decide, it asks you the
 same way: a question in your Inbox that says what is blocked, the options, and what it recommends.

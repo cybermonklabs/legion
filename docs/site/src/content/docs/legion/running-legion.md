@@ -787,8 +787,8 @@ What each part is for:
   finds each App's installations itself; `installations` (owner to installation id) is optional.
 - **`gates.design`**: the design gate steps, a list naming `decisions` (the root issue's decisions
   document), `criteria` (its Verification document) and `spec` (its primary document), in the
-  order a person approves them. No phase of the tree starts, no released child starts and no
-  merger merges until a person has approved the document of every step listed. A list that names
+  order a person approves them. No phase of the tree starts and no released child starts until a
+  person has approved the document of every step listed. A list that names
   `spec` and not `criteria` lets a root's architect also register the root's Verification document
   as `criteria`, and that tree then waits for that document too. The default is `[spec]`, which
   the word `root-issues` also means; the empty list `[]` skips the
@@ -799,16 +799,17 @@ What each part is for:
   `gated_steps`.
 - **`gates.hold`**: what a new version of an approved document of a gated step holds until a person
   approves that version, until Dispatch carries the approval after an exact undo, or until the step
-  opens on an ancestor's approval. `merge`, the
-  default, holds the merger's start and the first phase of each issue that has not started, and
-  every running phase goes on. `work` also holds the tree's running work: no phase starts, and the
-  daemon stops each phase worker of the tree when its turn ends or 2 minutes after the close message
-  reached it. A stopped worker keeps its session, its phase and its task, the daemon keeps its pod,
+  opens on an ancestor's approval.
+  No value holds the merge: an issue in `merging` goes on, and its merger merges.
+  `start`, the default, holds the first phase of each issue that has not started, and every running phase goes on.
+  `work` also holds the tree's running work: no phase but `merging` starts.
+  The daemon stops each phase worker of the tree but the merger when its turn ends or 2 minutes after the close message reached it.
+  A stopped worker keeps its session, its phase and its task, the daemon keeps its pod,
   and `legion claims list` shows it as `suspended:hold`. The architects go on. When the gate opens,
-  the daemon starts each worker it stopped. Under either word, the daemon wakes a merger whose idle
-  pod it released for the close message, so that the merger can take its pull request out of
-  GitHub's merge queue. Any other value is refused at load:
-  `gates.hold must be merge or work (got "<value>")`. A daemon release before this key refuses it
+  the daemon starts each worker it stopped.
+  The daemon wakes no merger for the close message under either word.
+  Any other value is refused at load:
+  `gates.hold must be start or work (got "<value>")`. A daemon release before this key refuses it
   as an unknown key of `gates`, so set it only once the daemon carries it. `legion state --json`
   answers the word at `settings.gates.hold`, and `legion config check` prints it as
   `design-gate-hold=<word>`. [The design gate](/legion/legion/concepts/#the-design-gate) says what
@@ -1318,7 +1319,7 @@ command or writing a file:
 
 ```sh
 legion config check --config legion.yaml
-# Config OK: project=WIDGETS design-gate-steps=spec design-gate-hold=merge
+# Config OK: project=WIDGETS design-gate-steps=spec design-gate-hold=start
 ```
 
 Then start it:

@@ -3243,7 +3243,7 @@ A `design_changes` row that this release queued waits in the outbox under the ea
 **Four statements must run before the earlier image is pinned.**
 The earlier release decodes each outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields` in `record/outbox.go`), and it does not know two members that this release adds to a payload.
 It refuses on every attempt a `supervise` row that carries `news`, which is a news-only start.
-Such a start waits while its claim works a turn, and a merger's start waits while its design gate is closed.
+Such a start waits while its claim works a turn, and a merger's start waits until the daemon records what changed in the approved design.
 It also refuses on every attempt a `design_gates_publish` row that carries `holds`, which is every such row this release queued with at least one entry (an emptied set carries none).
 Its `RoleRuns` decodes each queued supervise row of the role and generation it reads, so each admission pass that reads that role's run fails too.
 Its `pending_task_deliveries` upsert names only its own columns, and its `on conflict ... do update` leaves `design_news`, `carried_news`, `carried_ran` and `news_only` as this release wrote them.
@@ -9172,7 +9172,7 @@ The two claim marks preserve which answers the daemon lifted and when the round 
 The next replacement reads the workspace again and tells the architect what it took if the read finds work or fails and the replacement proceeds.
 
 A launch that the runtime permits can start in the kept pod.
-For service-account drift, the architect and a woken merger run on the old account while held work keeps the pod.
+For service-account drift, the architect and a merger that starts in the pod run on the old account while held work keeps the pod.
 The late-round notice names the old and new accounts and the stopped claims.
 Opening the work hold or acting on a stopped claim lets the round proceed once no stopped claim's work keeps it.
 For exchange-identity drift, `dispatch_token_broker: true` with no `dispatch_token_transition_file` prevents launches into a pod without the exchange identity.
@@ -9747,9 +9747,9 @@ The wakes are these:
   A worker also gets no backstop when a wake of it came while the release ran, since that wake already brings the worker back in the new pod.
 
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
-While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
-It also waits while the merger is owed news of an approved new version whose change the daemon has not recorded yet.
-It wakes the merger only once the gate is open and that change is recorded (`mergerWaitsForTheDesignGate` in `internal/daemon/outbox.go` reads `mergerNewsUnrecorded` in `internal/daemon/design_news.go`).
+No value of `gates.hold` holds that message: it wakes a released merger also while the root's design gate is closed.
+It waits while the merger is owed news of an approved new version whose change the daemon has not recorded yet.
+It wakes the merger only once that change is recorded (`mergerWaitsForTheDesignGate` in `internal/daemon/outbox.go` reads `mergerNewsUnrecorded` in `internal/daemon/design_news.go`).
 That wait has a bound: after the reconcile's bounded attempts, the daemon records a change that Dispatch cannot read as unavailable, and a review history that it cannot read as unread.
 The message can also wait for a merger that has no claim yet, because the merger's start is still owed.
 The message wakes no merger that the operator or the controller suspended, since a wake starts only an agent whose claim is still `released` (`wakeForDelivery`, `internal/daemon/wake.go`).
@@ -9763,7 +9763,7 @@ The boot's resume by rule passes over a released claim (`booted`), and a wake or
 Two other boot steps can start a released claim.
 Admission's pass at a boot does what each of its passes does: when a released claim stands behind the entry that its phases row names, the pass sends that entry's task to the claim (`owedEntryRoles`, `internal/admit/admit.go`).
 The first boot of this release also queues, once, a start for each merger that the cutover from `awaiting_merge`, the phase of the builds before `legion-v20.5.0`, left stopped (`cutoverMergerRepair`, `internal/workflow/cutover_merger_repair.go`).
-That merger starts when its tree's design gate allows it, as at any start of the `merging` phase, which holds no admission slot.
+That merger starts as at any start of the `merging` phase, which holds no admission slot: at once, or, where the approved design of its tree changed, once the daemon has recorded what changed.
 A wake that arrives while the release runs cancels it, up to the moment the first role process of the pod is stopped, and the roles go on in the same pod.
 After that moment, the release's record of a role's claim as `released` is its point of no return for that role: a wake of that role no longer cancels the release.
 The release's teardown runs to its end, and the wake's start waits for it, because no start of a role of the issue runs while the issue's teardown row is in the outbox.

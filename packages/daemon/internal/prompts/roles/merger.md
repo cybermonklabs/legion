@@ -50,7 +50,7 @@ You write the issue workspace for one thing only: a merge of the base forward an
 
    Watch until GitHub merges the pull request or removes it from the queue. Do not use `gh pr view` for this watch. On the `gh` of your pod, `gh pr view` has no `isInMergeQueue` field.
 
-   The daemon sends you a message when GitHub reports that the pull request left the merge queue at the head you hold. The daemon sends this message also when the idle release deleted your pod. Then the daemon starts your pod again for the message. While the root's design gate is closed, the daemon does not start your pod for the message. When a person approves a new version of the design, the daemon first records what changed in that version. Until then, it does not start your pod for the message. The message then waits until the gate opens and that change is recorded. GitHub's event names no reason for the removal. Read the entries to the queue and the removals from it with this command. It lists them newest last:
+   The daemon sends you a message when GitHub reports that the pull request left the merge queue at the head you hold. The daemon sends this message also when the idle release deleted your pod. Then the daemon starts your pod again for the message. When a person approves a new version of the design, the daemon first records what changed in that version. Until then, it does not start your pod for the message. GitHub's event names no reason for the removal. Read the entries to the queue and the removals from it with this command. It lists them newest last:
 
    ```bash
    gh api graphql -F number=<n> -f owner=<o> -f name=<r> -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT],last:20){nodes{__typename ... on AddedToMergeQueueEvent{createdAt actor{login}} ... on RemovedFromMergeQueueEvent{createdAt reason actor{login} beforeCommit{oid}}}}}}}'
@@ -72,7 +72,7 @@ You write the issue workspace for one thing only: a merge of the base forward an
      - `DIRTY`: the head conflicts with the base. Merge the base forward (*A head that conflicts with its base*).
      - `UNKNOWN`: run the watch again on your own backoff for up to five minutes. Then decide in the same way by the state that it reads.
      - Any other state: the head conflicted with an entry ahead of it in the queue. If you have not used the further enqueue, enqueue the same head one more time (step 4) and record that enqueue in a `dispatch comment` on the issue. If you used it, tell the architect with `envoy_publish` to its encoded role token, quoting the timeline and the state.
-   - `manual`: if the `actor` is your own App and you removed the pull request because the design gate closed, the removal is your own act. Follow "A closed design gate" below. The timeline gives an App's login without the `[bot]` at its end, so compare the `actor` login with your App's login with `[bot]` taken off. Any other `manual` removal is a person's dequeue. It is that person's decision. Report it to the architect with `envoy_publish` to its encoded role token.
+   - `manual`: the removal is a person's dequeue. It is that person's decision. Report it to the architect with `envoy_publish` to its encoded role token.
    - Any other reason: tell the architect with `envoy_publish` to its encoded role token. Quote the reason.
 
    A removal is never a merge.
@@ -100,20 +100,9 @@ Read its log, and the same check on the base branch, and decide its cause. A che
 
 For a check that fails on the base too, wait only while the issue that tracks it is claimed and `in_progress`, and its holder said on Envoy that they are working on it now: tell the holder what you need and by when, and merge the base forward if their fix lands on the base in time. Otherwise send the issue back the same way, with a reason that names the check and says it also fails on the base.
 
-## A closed design gate
+## News of the approved design
 
-The root's design gate holds the merge, and you are one of the phase holders told when it moves. A message reading `The design gate of <tree> closed: version <n> of its <step> document (<id>)` says a new version of one gated document is with its reviewer, so the design this head implements may change: merge nothing, enqueue nothing, and do not complete while the gate is closed. A pull request already in a merge queue comes back out at once, since the queue would merge it under you:
-
-```bash
-gh api graphql -f query='mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){mergeQueueEntry{position state}}}' \
-  -f pr="$(gh pr view <n> -R <o>/<r> --json id -q .id)"
-```
-
-When the close message ends "End your turn now.", take the pull request out of the queue and end your turn.
-
-Then wait: end each turn with a line that starts `WAITING` and names the opening you wait for. The daemon sends a task only between turns, so a turn that does not end holds back a task that carries the opening. The message reading `The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open`, or `The design gate of <tree> opened: every step the deployment gates now stands open` where a step stands open on an ancestor's approval, is what releases the merge, and it comes only once every gated step stands open, so a deployment that gates more than one document sends it for the last of them, and you begin again at step 1, reading the head afresh: it may have moved while you waited. A merger the daemon has not started yet waits for the gate in the daemon's own start row.
-
-The opening can also come as a news task. Its first sentence is the gate's sentence, opened or closed as the gate stands when the task is sent. When it is the opened message's words, its news then names what changed in the approved design for your issue, or says that nothing your issue holds changed. Your start task can carry such news too, after a blank line. Read each named section and check before you merge. Then merge from step 1, or move the issue back with `request_backward_move` when the change makes the head stale. When the first sentence is the closed message's words, a later version closed the gate before the task was sent: merge nothing and wait for the opening, as for the closed message above.
+A news task names what changed in the approved design for your issue, or says that nothing your issue holds changed. Your start task can carry such news too, after a blank line. The first sentence of a news task is the design gate's sentence, opened or closed as the gate stands when the task is sent. Read each named section and check before you merge. Then merge from step 1, or move the issue back with `request_backward_move` when the change makes the head stale. When that first sentence says that the gate closed, do the same: the design gate holds no merge.
 
 ## Completion
 

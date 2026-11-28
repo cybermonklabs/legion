@@ -499,38 +499,40 @@ the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`) and until no Dispatch child of
 (`SIGNOFF_CHILD_OPEN`), and the ancestor's architect is told when a root starts or stops resting on
 it (`resting-root`).
 
-`gates.hold` says what a closed gate holds once the tree has started. Under `merge`, the default,
-the merge waits: no merger starts, and no issue of the tree starts its first phase. Every phase that
-runs goes on. The daemon tells each phase worker of the tree and the root's architect that the gate
-closed, and that the merge waits until every gated step stands open again. Under `work`, the gate
-also holds the tree's running work, and no phase starts. The daemon tells every architect and phase
-worker of the tree that the gate closed, and tells each phase worker to end its turn. It stops each
-phase worker, with its session kept, when its turn ends or 2 minutes after the message reached it.
+`gates.hold` says what a closed gate holds once the tree has started.
+No value holds the merge: an issue in `merging` goes on, and its merger merges.
+After you approve a new version, a merger's start waits only until the daemon records what changed, so that the merger reads the change before it merges.
+Under `start`, the default, the first phase of each issue that has not started waits, and every phase that runs goes on.
+The daemon tells each phase worker of the tree and the root's architect that the gate closed, and tells each phase worker that its phase goes on.
+Under `work`, the gate also holds the tree's running work: no phase but `merging` starts.
+The daemon tells every architect and phase worker of the tree that the gate closed.
+It tells the merger that its phase goes on, and tells each other phase worker to end its turn.
+It stops each phase worker but the merger, with its session kept, when its turn ends or 2 minutes after the message reached it.
 The 2 minutes count from the delivery of the message that the daemon confirmed.
 A daemon restart or a late confirmation can make the stop later, by the length of the restart or of a retry's backoff, but never earlier.
 A project pause can release a worker before its close message runs.
 The pause's resume then relaunches the worker, the worker gets the close message, and the daemon stops it 2 minutes later at most.
-The architects go on. While the hold stands, the daemon keeps the pod of each worker it stopped, and
-the `why` in the state of each issue at a phase worker's phase names the hold and the version that
-closed the gate. When the gate opens again, the daemon starts each worker it stopped. The worker's
-task names the version that closed the gate, and tells it to check what its cut turn already did.
+The architects go on.
+While the hold stands, the daemon keeps the pod of each worker it stopped.
+The `why` in the state of each issue at the phase of a worker that the hold stops names the hold and the version that closed the gate.
+When the gate opens again, the daemon starts each worker it stopped.
+The worker's task names the version that closed the gate, and tells it to check what its cut turn already did.
 Where the worker is owed news of the approved version, that same task carries the news after the work.
-A merger that the hold stopped starts again only after the daemon records what changed in the approved version.
 A worker can keep a task that an operator gave it before the hold stopped it, where no turn took that task.
 When the gate opens, the daemon sends that task first, and then the task that names the version that closed the gate.
 
 Under `work`, the daemon tells no architect to start its own acceptance (`acceptance:owner`) while the gate is closed.
 The notice that an issue waits in `accepting` for that acceptance waits, and a catch-up names no such issue.
+A `merge-holds-changed` notice of an issue in `accepting` waits too, and when the gate opens it counts as the notice of that issue's acceptance.
 The architect's other notices go meanwhile.
 When the gate opens, the daemon sends that notice for each issue that stands in `accepting`.
 The daemon records a step that an architect reports while the gate is closed, such as its sign-off or a move back.
 The start that the report makes waits for the opening, as every phase start does.
 
-Under both holds, the daemon wakes a merger whose idle pod it released for the close message, so
-that the merger can take its pull request out of GitHub's merge queue. This wake is the one start
-of a merger that the closed gate lets through. The words of a hook to a released merger do not
-wake it: they wait until the gate opens again. Under `work`, a released worker that is not a merger
-is not woken: the daemon records the hold on it, and only the gate's opening starts it.
+No value of `gates.hold` wakes a merger for the close message.
+A merger whose idle pod the daemon released gets no close message.
+A CI settlement, a hook or a merge-queue message wakes that merger while the gate is closed, as when no version waits.
+Under `work`, a released worker that is not a merger is not woken: the daemon records the hold on it, and only the gate's opening starts it.
 
 Dispatch records your approval of a new version in the same write as that version when the version
 holds nothing new to you: your own answer to a decision block, as above, or text that is the

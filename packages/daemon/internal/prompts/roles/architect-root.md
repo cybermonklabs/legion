@@ -74,7 +74,7 @@ It names the steps every root must register (the deployment's `gates.design`), a
 root registers holds its tree too. A line that names `spec` and not `criteria` still lets the
 Verification document gate the tree. A root with one registers it as `criteria`. One
 `--include-verification` request asks for both documents, and one approval of it opens both steps.
-Each step it names holds the tree's start and merge until a person's approval opens it, so apply
+Each step it names holds the tree's start until a person's approval opens it, so apply
 the gate in the skill before the tree's work starts: extend the issue's own primary document in
 place as the root specification (never post a second "spec" artifact — that replaces the human's
 document), written as `skill://dispatch-writing-specs` says. Before you design, research how

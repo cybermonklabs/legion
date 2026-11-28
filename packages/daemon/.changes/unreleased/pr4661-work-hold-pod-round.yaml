@@ -14,7 +14,7 @@ body: |-
   no SQL because the earlier release names each column it reads and writes.
 
   For service-account drift, the late-round notice names the old and new accounts and the stopped
-  claims. The architect and a merger woken into the kept pod use the old account while the hold
+  claims. The architect and a merger that starts in the kept pod use the old account while the hold
   keeps the round open. An operator can resume or retry a stopped claim.
 
   With `dispatch_token_broker: true` and no `dispatch_token_transition_file`, the runtime refuses

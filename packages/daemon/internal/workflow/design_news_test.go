@@ -1,10 +1,8 @@
 package workflow
 
 import (
-	"os"
-	"path/filepath"
+	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -237,19 +235,19 @@ func everyNewsForm() map[string]string {
 	}
 }
 
-// mergerQuote is the gate sentence prompts/roles/merger.md quotes as the message that moves a
-// merge, opened or closed, with its placeholders filled in: the words a merger reads for.
-func mergerQuote(t *testing.T, move, step, document string, version int) string {
-	t.Helper()
-	prompt, err := os.ReadFile(filepath.Join("..", "prompts", "roles", "merger.md"))
-	if err != nil {
-		t.Fatalf("read the merger's prompt: %v", err)
-	}
-	quoted := regexp.MustCompile("`(The design gate of <tree> " + move + ":[^`]*)`").FindStringSubmatch(string(prompt))
-	if quoted == nil {
-		t.Fatalf("the merger's prompt quotes no gate sentence that says %q", move)
-	}
-	return strings.NewReplacer("<tree>", newsTree, "<n>", strconv.Itoa(version), "<step>", step, "<id>", document).Replace(quoted[1])
+// openedGateSentence is the start of the opened message of a person's approval of version of
+// step's document (gateOpenedMessage), with its tree filled in: the gate sentence that a news task
+// owed the opening leads with while the gate stands open.
+func openedGateSentence(step, document string, version int) string {
+	return fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
+		"and every step the deployment gates now stands open", newsTree, version, step, document)
+}
+
+// closedGateSentence is the start of the close message of version of step's document
+// (gateClosedHead), with its tree filled in: the gate sentence of a news task that the daemon sends
+// after that version closed the gate.
+func closedGateSentence(step, document string, version int) string {
+	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s)", newsTree, version, step, document)
 }
 
 // newsItem is the item of a news list whose first line opens with opening, that line and the
@@ -285,16 +283,15 @@ func newsLine(t *testing.T, text, opening string) string {
 	return ""
 }
 
-// A holder owed the opening reads the gate sentence first, in the words the merger's prompt
-// quotes as what releases a merge, so a merger released by its news task reads the release it
-// waits for. A holder that was told the opening already reads no gate sentence.
-func TestNewsOwedTheOpeningLeadsWithTheSentenceThatReleasesAMerge(t *testing.T) {
+// A holder owed the opening reads the gate sentence first: the opened message of the approval that
+// opened the gate. A holder that was told the opening already reads no gate sentence.
+func TestNewsOwedTheOpeningLeadsWithTheOpenedMessage(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(rootHolderNews())
 	t.Logf("the root holder's news:\n%s", text)
-	opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5)
+	opened := openedGateSentence("spec", "artifact-spec", 5)
 	if !strings.HasPrefix(text, opened) {
-		t.Fatalf("the news opens %q, want the merger prompt's quoted opening %q first", firstLine(text), opened)
+		t.Fatalf("the news opens %q, want the opened message %q first", firstLine(text), opened)
 	}
 	told := rootHolderNews()
 	told.OpeningOwed = false
@@ -310,9 +307,9 @@ func TestNewsSentAfterALaterVersionClosedTheGateSaysClosed(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(closedHolderNews())
 	t.Logf("the news sent after version 6 closed the gate:\n%s", text)
-	closed := mergerQuote(t, "closed", "spec", "artifact-spec", 6)
+	closed := closedGateSentence("spec", "artifact-spec", 6)
 	if !strings.HasPrefix(text, closed) {
-		t.Fatalf("the news opens %q, want the merger prompt's quoted close at version 6 %q first", firstLine(text), closed)
+		t.Fatalf("the news opens %q, want the close of version 6 %q first", firstLine(text), closed)
 	}
 	if strings.Contains(text, "opened") {
 		t.Fatalf("news sent while the gate is closed says it opened:\n%s", text)
@@ -480,7 +477,7 @@ func TestADecisionOnlyVersionOwedTheOpeningSaysNothingChanged(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(decisionOnlyHolderNews())
 	t.Logf("the news of a decision-only version:\n%s", text)
-	if opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
+	if opened := openedGateSentence("spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
 		t.Fatalf("the news opens %q, want the opening %q first", firstLine(text), opened)
 	}
 	if !strings.Contains(text, "Nothing your issue holds changed since version 4, which your phase took.") {
@@ -502,7 +499,7 @@ func TestAnUnchangedVersionOwedTheOpeningSaysItHoldsTheSameText(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(unchangedHolderNews())
 	t.Logf("the news of an unchanged version:\n%s", text)
-	if opened := mergerQuote(t, "opened", "spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
+	if opened := openedGateSentence("spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
 		t.Fatalf("the news opens %q, want the opening %q first", firstLine(text), opened)
 	}
 	if want := "Nothing your issue holds changed since version 4, which your phase took. " +
@@ -644,7 +641,7 @@ func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(mergedRootSummaryNews())
 	t.Logf("the summary of a merged root:\n%s", text)
-	if opened := mergerQuote(t, "opened", "criteria", "artifact-checks", 3); !strings.HasPrefix(text, opened) {
+	if opened := openedGateSentence("criteria", "artifact-checks", 3); !strings.HasPrefix(text, opened) {
 		t.Fatalf("the summary owed the opening opens %q, want %q first", firstLine(text), opened)
 	}
 	merged := newsLine(t, text, "- LEGION-208, in merging: ")

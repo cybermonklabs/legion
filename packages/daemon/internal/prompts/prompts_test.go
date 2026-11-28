@@ -68,12 +68,13 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		// off it, and carries the message it writes itself; its completion is an ordinary phase
 		// completion, refused only on the grounds every phase worker's is (dispatch://INFRA-714, R2).
 		// It also disarms an auto-merge an older release armed, since GitHub holds an armed pull
-		// request to no head, and it merges nothing while the design gate is closed (R5).
+		// request to no head, and a news task of the approved design holds no merge, whichever gate
+		// sentence it opens with, since no value of `gates.hold` holds the merge.
 		{"merger", claim.RoleMerger, false, []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
 			"gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''",
 			"enqueuePullRequest", "squash_merge_commit_message",
-			"gh pr merge <n> --disable-auto", "autoMergeRequest", "dequeuePullRequest(input:{id:$pr})",
-			"The design gate of <tree> closed: version <n> of its <step> document (<id>)",
+			"gh pr merge <n> --disable-auto", "autoMergeRequest",
+			"When that first sentence says that the gate closed, do the same: the design gate holds no merge.",
 			"`HANDOFF_NOT_CURRENT_PHASE`", "`HANDOFF_STALE_GENERATION`", "`HANDOFF_NO_RUN`",
 			"`HANDOFF_ALREADY_RECORDED`", "`TREE_LINGERING`"}},
 	} {
