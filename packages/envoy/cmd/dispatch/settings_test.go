@@ -2228,6 +2228,35 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_COVERAGE_FILL_BACKOFF": func(t *testing.T) {
+			const name = "DISPATCH_TEST_COVERAGE_FILL_BACKOFF"
+			t.Run("unset", func(t *testing.T) {
+				if boot := resolveWith(t, nil); boot.CoverageFillBackoff != 0 {
+					t.Errorf("%s unset: CoverageFillBackoff = %v, want 0 (embedqueue's own)", name, boot.CoverageFillBackoff)
+				}
+			})
+			for _, want := range []time.Duration{100 * time.Millisecond, 10 * time.Second} {
+				t.Run(want.String(), func(t *testing.T) {
+					boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: want.String()})
+					if boot.CoverageFillBackoff != want {
+						t.Errorf("%s: CoverageFillBackoff = %v, want %v", name, boot.CoverageFillBackoff, want)
+					}
+				})
+			}
+			t.Run("without_hooks", func(t *testing.T) {
+				refusedWith(t, map[string]string{name: "100ms"}, "DISPATCH_TEST_HOOKS=1 required with "+name)
+			})
+			t.Run("above_maximum", func(t *testing.T) {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "11s"},
+					name+`="11s" (expected at most 10s`)
+			})
+			t.Run("nonpositive", func(t *testing.T) {
+				for _, invalid := range []string{"0s", "-1s"} {
+					refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+						fmt.Sprintf("%s=%q (expected a positive Go duration)", name, invalid))
+				}
+			})
+		},
 		"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CoverageStatementTimeout != 0 {
 				t.Errorf("DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT unset: CoverageStatementTimeout = %v, want 0 (embedqueue's 10 s)", boot.CoverageStatementTimeout)

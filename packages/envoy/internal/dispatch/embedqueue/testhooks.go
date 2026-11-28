@@ -33,6 +33,15 @@ func ShortenCoverageFillTimeoutForTest(timeout time.Duration) {
 	coverageFillTimeout = timeout
 }
 
+// ShortenCoverageBackoffForTest points the first bound of the wait after a failed fill or recount
+// (coverageFirstBackoff) at d; the doubling, the ceiling and the full jitter stay. cmd/dispatch
+// calls it, and only under DISPATCH_TEST_HOOKS=1 with DISPATCH_TEST_COVERAGE_FILL_BACKOFF set,
+// before the counts loop starts, so a test sees a failed fill retried without waiting a
+// deployment's ten seconds out.
+func ShortenCoverageBackoffForTest(d time.Duration) {
+	coverageFirstBackoff = d
+}
+
 // FailCoverageFillsForTest makes the next failures fills of the coverage counts fail before their
 // first statement (errFillMadeToFail), as a fill that fails does. cmd/dispatch calls it, and only
 // under DISPATCH_TEST_HOOKS=1 with DISPATCH_TEST_COVERAGE_FILL_FAILURES set, before the counts

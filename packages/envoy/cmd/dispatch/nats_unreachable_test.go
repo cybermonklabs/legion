@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -358,6 +359,26 @@ func (p *dispatchProcess) waitForLog(t *testing.T, within time.Duration, parts .
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// awaitLog is waitForLog with no bound of its own.
+func (p *dispatchProcess) awaitLog(t *testing.T, parts ...string) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("Dispatch to log a line holding %q", parts), func() (*cmdtest.LockedBuffer, bool) {
+		if len(p.logLines(parts...)) != 0 {
+			return nil, true
+		}
+		select {
+		case <-p.Exited:
+			// Exited closes only once the output is whole, so this read is final.
+			if len(p.logLines(parts...)) != 0 {
+				return nil, true
+			}
+			t.Fatalf("Dispatch exited (%s) before logging a line holding %q:\n%s", p.Cmd.ProcessState, parts, p.Output.String())
+		default:
+		}
+		return p.Output, false
+	})
 }
 
 // readStreamFrom is every envelope the stream retains past head, in sequence order

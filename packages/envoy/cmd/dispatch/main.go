@@ -214,6 +214,10 @@ type bootConfig struct {
 	// embedqueue's own, zero for that; only DISPATCH_TEST_COVERAGE_FILL_TIMEOUT, under the test
 	// hooks, sets it, so a test sees a fill reach its timeout without waiting a deployment's out.
 	CoverageFillTimeout time.Duration
+	// CoverageFillBackoff replaces embedqueue's initial 10 s retry bound so a test can see a
+	// failed fill retried promptly. Zero keeps the default. Only DISPATCH_TEST_COVERAGE_FILL_BACKOFF
+	// under the test hooks sets it.
+	CoverageFillBackoff time.Duration
 	// CoverageStatementTimeout bounds the search coverage route's statement in place of
 	// embedqueue's 10 s, zero for that; only DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT, under the
 	// test hooks, sets it, so a test sees the route's 503 SEARCH_COVERAGE_TIMEOUT at once.
@@ -1444,11 +1448,14 @@ func main() {
 	// keyword fill it takes nothing and writes nothing until serving closes, so no start waits for a
 	// count and the route answers 503 SEARCH_COVERAGE_NOT_FILLED until the first fill ends. Every
 	// way out from here waits for it (waitCounts) before the pool closes: once ctx is cancelled it
-	// returns at once, rolling back the fill, fold or recount in flight. The three
+	// returns at once, rolling back the fill, fold or recount in flight. The four
 	// DISPATCH_TEST_COVERAGE_* settings, read only under DISPATCH_TEST_HOOKS=1, shorten the fill's
-	// timeout and the route's bound and make fills fail, for a test of each.
+	// timeout, its first retry bound and the route's bound, and make fills fail, for a test of each.
 	if boot.CoverageFillTimeout > 0 {
 		embedqueue.ShortenCoverageFillTimeoutForTest(boot.CoverageFillTimeout)
+	}
+	if boot.CoverageFillBackoff > 0 {
+		embedqueue.ShortenCoverageBackoffForTest(boot.CoverageFillBackoff)
 	}
 	if boot.CoverageStatementTimeout > 0 {
 		embedqueue.ShortenCoverageBoundForTest(boot.CoverageStatementTimeout)
@@ -1868,6 +1875,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
 		{"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT", &boot.CoverageFillTimeout},
+		{"DISPATCH_TEST_COVERAGE_FILL_BACKOFF", &boot.CoverageFillBackoff},
 		{"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT", &boot.CoverageStatementTimeout},
 		{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT", &boot.SearchFillLockTimeout},
 		{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT", &boot.SearchFillReadTimeout},
@@ -1877,6 +1885,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	if boot.CoverageFillBackoff > embedqueue.CoverageFirstBackoff {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_COVERAGE_FILL_BACKOFF=%q (expected at most %s, a deployment's first retry bound: a test shortens the wait after a failed fill, never lengthens it)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_COVERAGE_FILL_BACKOFF")), embedqueue.CoverageFirstBackoff)
 	}
 	if err := testHookCount(env, "DISPATCH_TEST_COVERAGE_FILL_FAILURES", boot.TestHooksEnabled, &boot.CoverageFillFailures); err != nil {
 		return bootConfig{}, err
