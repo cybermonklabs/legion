@@ -1690,9 +1690,11 @@ func someIDs(ids []int64) string {
 // The blocks the claim fetched from the indexes of events, summed over pg_index with
 // pg_stat_get_xact_blocks_fetched in the same transaction and on the same connection, see that
 // walk: on 2026-11-09 the healthy claim fetched 37 blocks at 5,000 and 37 at 20,000, and the
-// claim over the rebuilt index 56 and 113. blocks_fetched counts a hit and a read alike, so cache
-// pressure does not move it. The tuples an index returned do not separate the two cases, which
-// the review of INFRA-2065 measured: the access method skips the entries without returning them.
+// claim over the rebuilt index 56 and 113; the row now measures 1,000 and 16,000 rows of each
+// population, and the bound below gives its counts at those sizes. blocks_fetched counts a hit
+// and a read alike, so cache pressure does not move it. The tuples an index returned do not
+// separate the two cases, which the review of INFRA-2065 measured: the access method skips the
+// entries without returning them.
 //
 // A count is the same on a loaded machine as on an idle one, which no wall clock is. This row
 // asserted the claim ran in under 0.5 ms, and on 2026-11-08 the claim, unchanged and healthy,
@@ -1741,11 +1743,11 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 	}
 	// The blocks the claim fetches in the indexes of events must not grow with the backlog: work
 	// that grows with the rows it skips is the regression this figure is here for. Measured on
-	// 2026-11-09 on an idle pod: 37 blocks at both sizes in all 12 readings of 3 runs of the
-	// healthy claim, against 56 and 113 for a claim whose retry index leads on id. The half is
-	// for a btree that gains a level as the table grows, which costs one more block for each
-	// descent the claim makes, around ten of them; half of 37 is 18, and the mutated claim is 29
-	// blocks past its own bound.
+	// 2026-11-28 in a build Job (4 CPU, CI's Postgres): 85 blocks at both sizes, 1,000 and 16,000
+	// rows of each population, in the 10 readings of 5 runs of the healthy claim, against 88 and
+	// 146 for a claim whose retry index leads on id. The half is for a btree that gains a level as
+	// the table grows, which costs one more block for each descent the claim makes, around ten of
+	// them; half of 85 is 42, and the mutated claim is 14 blocks past its own bound of 132.
 	if bound := small.indexBlocks + small.indexBlocks/2; big.indexBlocks > bound {
 		t.Errorf("the claim fetched %d blocks from the indexes of events with a backlog of %d and %d with a backlog of %d, want at most %d at the larger size: what the claim does inside an index must not grow with the rows it skips",
 			big.indexBlocks, big.backlog, small.indexBlocks, small.backlog, bound)

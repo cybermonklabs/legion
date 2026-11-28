@@ -654,15 +654,16 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 		burstCount   = batchSize
 		// minOutstanding is the fewest sends a correct drain holds outstanding at its peak, in
 		// the non-burst cases. Measured three ways under 48 busy loops on a 2-CPU box on
-		// 2026-11-09. The product held 50 (messages), 55 (comment replies) and 60 (unclaimed
-		// comments), the same figure in each of three runs. The product with concurrentBatches
-		// cut to 1 and the sends unchanged held 50, 55 and 60 too, so the reading is one batch's
-		// own overlap and not the scan's batches running side by side. A drain patched to issue
-		// one chain and wait for its answer before the next held 3 in every non-burst case. The
-		// floor sits between the two: 20 is 6.7 times the serialized drain's 3, and the lowest
-		// healthy peak measured is 45, which is 2.25 times the floor. That 45 was read once
-		// among the 60 non-burst readings of the loaded campaign at head 844b43ec05b2 on
-		// 2026-11-09; every other reading of it was 50, 55 or 60.
+		// 2026-11-09, with a backlog of 2 * batchSize. The product held 50 (messages), 55
+		// (comment replies) and 60 (unclaimed comments), the same figure in each of three runs.
+		// The product with concurrentBatches cut to 1 and the sends unchanged held 50, 55 and 60
+		// too, so the reading is one batch's own overlap and not the scan's batches running side
+		// by side. A drain patched to issue one chain and wait for its answer before the next
+		// held 3 in every non-burst case. The floor sits between the two: 20 is 6.7 times the
+		// serialized drain's 3. With the backlog at batchSize + backlogIssues, 120 non-burst
+		// readings in two build Jobs on 4-CPU nodes on 2026-11-28 (the package run whole and the
+		// row run by name) mostly read 50, 55 and 56 to 60 again; the lowest was 34, 1.7 times
+		// the floor, and 12 of the 120 were under 45.
 		minOutstanding = 20
 	)
 	for _, load := range []struct {
