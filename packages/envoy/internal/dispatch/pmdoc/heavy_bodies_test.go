@@ -156,13 +156,15 @@ func heavyBodyWriteShapes() []countedShape {
 // build-cluster Jobs at 5955cd4e. Parse at the cap stays at full size because the cap is the
 // claim. Read and whole write divide both original sizes, keeping the step from checkLengthOf:
 // the footnote regression can hide beside the rest of the work at an eightfold step.
+// The bracket run uses the full builder size for parse and write because the smaller pair
+// did not catch the bracket regression when measured again at 12e3db2a.
 var heavyBodySizeDivisors = map[string]struct {
 	parse, write, read, wholeWrite int
 }{
 	"plain-list":                           {parse: 1, write: 4, read: 8, wholeWrite: 8},
 	"lazy-quote":                           {parse: 2, write: 2, read: 8, wholeWrite: 8},
 	"lazy-list-item":                       {parse: 2, write: 2, read: 8, wholeWrite: 8},
-	"bracket-run":                          {parse: 2, write: 2, read: 8, wholeWrite: 8},
+	"bracket-run":                          {parse: 1, write: 1, read: 8, wholeWrite: 8},
 	"nested-49-items-then-blank-lines":     {parse: 4, write: 4, read: 8, wholeWrite: 8},
 	"markers-49-then-blank-lines":          {parse: 8, write: 8, read: 8, wholeWrite: 8},
 	"nested-100-items-then-blank-lines":    {parse: 4, read: 4},
@@ -295,13 +297,14 @@ var heavyCapReadings = map[string]countedReading{
 	"bangs-before-carets":                  {most: 302.9734375, scanMost: 1.9999375},
 }
 
-// heavyParseReadings records parse growth by fixture ID. The resized leaves were measured
-// in the issue pod on 2026-11-28 with Go 1.27.3.
+// heavyParseReadings records parse growth by fixture ID. The resized leaves, including the
+// bracket run at 3,750 and 30,000 characters, were measured in the issue pod on 2026-11-28
+// with Go 1.27.3.
 var heavyParseReadings = map[string]countedReading{
 	"plain-list":                           {past: 1563.0078571428571, most: 1564.0495, scanMost: 2},
 	"lazy-quote":                           {past: 578.5428244874633, most: 582.216608304152, scanMost: 2.003001500750375},
 	"lazy-list-item":                       {past: 617.045574683906, most: 621.9779889944972, scanMost: 2.003001500750375},
-	"bracket-run":                          {past: 2140.885638095238, most: 4213.5162666666665, searchedMost: 0.5, scanMost: 2.0005333333333333},
+	"bracket-run":                          {past: 2525, most: 2462.482233333333, searchedMost: 0.5, scanMost: 2.0002666666666666},
 	"nested-49-items-then-blank-lines":     {past: 9533, most: 12372.45, scanMost: 6.539130434782609},
 	"markers-49-then-blank-lines":          {past: 9533, most: 10225.43373493976, scanMost: 1.4016064257028114},
 	"nested-100-items-then-blank-lines":    {past: 8173, most: 17028.867256637168, scanMost: 16.19174041297935},
@@ -312,12 +315,13 @@ var heavyParseReadings = map[string]countedReading{
 }
 
 // heavyWriteReadings records write growth at sizes within the cap by fixture ID. The resized
-// leaves were measured in the issue pod on 2026-11-28 with Go 1.27.3.
+// leaves, including the bracket run at 3,750 and 30,000 characters, were measured in the issue
+// pod on 2026-11-28 with Go 1.27.3.
 var heavyWriteReadings = map[string]countedReading{
 	"plain-list":                           {past: 2079.9691428571427, most: 2084.379, scanMost: 2},
 	"lazy-quote":                           {past: 580.542967354811, most: 585.0695347673837, scanMost: 2.003001500750375},
 	"lazy-list-item":                       {past: 619.0457175512537, most: 625.4627313656829, scanMost: 2.003001500750375},
-	"bracket-run":                          {past: 2142.885638095238, most: 4216.165333333333, searchedMost: 0.5, scanMost: 2.0005333333333333},
+	"bracket-run":                          {past: 2527.000076190476, most: 2464.5228666666667, searchedMost: 0.5, scanMost: 2.0002666666666666},
 	"nested-49-items-then-blank-lines":     {past: 9533, most: 12518.804347826086, scanMost: 6.539130434782609},
 	"markers-49-then-blank-lines":          {past: 9533, most: 10444.058232931728, scanMost: 1.4016064257028114},
 	"footnote-references-then-definitions": {past: 732.2235436979892, most: 732.1644790299393, searchedMost: 0.11091318207387962, scanMost: 2.0467216701043816},

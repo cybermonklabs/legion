@@ -262,14 +262,15 @@ func runsAndLabelsShapes() []countedShape {
 	return withLinearReadings(shapes, runsAndLabelsReadings)
 }
 
-// runsAndLabelsReadings records the counts at the chosen sizes (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+// runsAndLabelsReadings records the counts at the chosen sizes. The two resized delimiter
+// renders were measured again in the issue pod on 2026-11-28 with Go 1.27.3.
 var runsAndLabelsReadings = map[string]linearReading{
 	"[^a before one ] with a long label defined/Render":  {512, countedReading{past: 32.335379464285715, most: 171.4296875, searchedMost: 0.999755859375}},
 	"[^a before one ] with a short label defined/Render": {32, countedReading{past: 32.36607142857143, most: 91.8125, searchedMost: 0.99609375}},
 	"[^a before one ] with no footnote/Render":           {8, countedReading{past: 29.071428571428573, most: 88.625, searchedMost: 0.984375}},
 	"\\~ and a run of ~/Parse":                           {512, countedReading{past: 225, most: 231.732421875, scanMost: 1.99951171875}},
-	"a run of */Render":                                  {32, countedReading{past: 58, most: 198.28125, scanMost: 2.03125}},
-	"a run of _/Render":                                  {32, countedReading{past: 46, most: 187.8125, scanMost: 2.03125}},
+	"a run of */Render":                                  {64, countedReading{past: 58, most: 128.140625, scanMost: 2.015625}},
+	"a run of _/Render":                                  {64, countedReading{past: 46, most: 116.90625, scanMost: 2.015625}},
 	"a run of ~/Parse":                                   {512, countedReading{past: 222, most: 229.21484375, scanMost: 1.999755859375}},
 	"a run of ~/Render":                                  {512, countedReading{past: 631, most: 649.509765625, scanMost: 6.001953125}},
 	"a\\~~ repeated/ParseRendering":                      {128, countedReading{past: 756.015625, most: 783.34375, scanMost: 5}},
@@ -458,11 +459,12 @@ func bareURLShapes() []countedShape {
 	return withLinearReadings(shapes, bareURLReadings)
 }
 
-// bareURLReadings records the counts at the chosen sizes (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+// bareURLReadings records the counts at the chosen sizes. The 18 resized spellings were
+// measured again in the issue pod on 2026-11-28 with Go 1.27.3.
 var bareURLReadings = map[string]linearReading{
 	" \"'https://-a.b/ParseRendering+Render":                          {8, countedReading{past: 5194, most: 5942.5, scanMost: 30.5}},
-	" \".www.a/ParseRendering+Render":                                 {16, countedReading{past: 3789, most: 4150.5625, scanMost: 16.25}},
-	"&amp;https://-a./ParseRendering+Render":                          {4, countedReading{past: 2896, most: 5214, scanMost: 29.25}},
+	" \".www.a/ParseRendering+Render":                                 {32, countedReading{past: 3789, most: 3969.78125, scanMost: 16.125}},
+	"&amp;https://-a./ParseRendering+Render":                          {8, countedReading{past: 2896, most: 4055, scanMost: 28.625}},
 	"&lt;!-- a@b.cc …-->/ParseRendering+Render":                       {2, countedReading{past: 6351, most: 10838, searchedMost: 63, scanMost: 50.5}},
 	"&lt;!X a@b.cc …>/ParseRendering+Render":                          {2, countedReading{past: 5752, most: 9885.5, searchedMost: 32.4375, scanMost: 46.5}},
 	"&lt;![CDATA[ a@b.cc …]]>/ParseRendering+Render":                  {3, countedReading{past: 7972, most: 11105.666666666666, searchedMost: 97.58333333333333, scanMost: 58.666666666666664}},
@@ -470,28 +472,28 @@ var bareURLReadings = map[string]linearReading{
 	"&lt;a b=\"x;a@b.cc …\">/ParseRendering+Render":                   {908, countedReading{past: 20821, most: 20830.350220264318, searchedMost: 14, scanMost: 178.03303964757708}},
 	"&lt;a b='&lt;a c=\"x;a@b.cc …'>/ParseRendering+Render":           {604, countedReading{past: 31924, most: 31930.67880794702, searchedMost: 26, scanMost: 217.0496688741722}},
 	"(\"\"www.a_/ParseRendering+Render":                               {14, countedReading{past: 2771.0102040816328, most: 3320.214285714286, scanMost: 19.357142857142858}},
-	"(https://-a.b\\/ParseRendering+Render":                           {4, countedReading{past: 2658, most: 4971.75, scanMost: 28.25}},
-	"-www.x_/ParseRendering+Render":                                   {9, countedReading{past: 3556.0158730158732, most: 4845.777777777777, scanMost: 32.111111111111114}},
-	".www.a&/ParseRendering+Render":                                   {4, countedReading{past: 1318, most: 2775.75, scanMost: 7.75}},
-	".www/ParseRendering+Render":                                      {16, countedReading{past: 811, most: 1292.4375, scanMost: 8.3125}},
-	";;/ParseRendering+Render":                                        {64, countedReading{past: 334, most: 403.6875, scanMost: 2.046875}},
-	";a_a@/ParseRendering+Render":                                     {25, countedReading{past: 2018, most: 2325.28, scanMost: 10.2}},
-	";https://-a.b/ParseRendering+Render":                             {4, countedReading{past: 2572, most: 4872.25, scanMost: 27.25}},
+	"(https://-a.b\\/ParseRendering+Render":                           {8, countedReading{past: 2658, most: 3814.875, scanMost: 27.625}},
+	"-www.x_/ParseRendering+Render":                                   {18, countedReading{past: 3556.0158730158732, most: 4200.888888888889, scanMost: 31.555555555555557}},
+	".www.a&/ParseRendering+Render":                                   {8, countedReading{past: 1318, most: 2046.875, scanMost: 7.375}},
+	".www/ParseRendering+Render":                                      {32, countedReading{past: 811, most: 1051.71875, scanMost: 8.15625}},
+	";;/ParseRendering+Render":                                        {128, countedReading{past: 334, most: 368.84375, scanMost: 2.0234375}},
+	";a_a@/ParseRendering+Render":                                     {50, countedReading{past: 2018, most: 2171.64, scanMost: 10.1}},
+	";https://-a.b/ParseRendering+Render":                             {8, countedReading{past: 2572, most: 3722.125, scanMost: 26.625}},
 	"HTTP://a /ParseRendering+Render":                                 {56, countedReading{past: 2204, most: 2332.410714285714, scanMost: 18.089285714285715}},
-	"\\*/ParseRendering+Render":                                       {32, countedReading{past: 216, most: 487.9375, scanMost: 4.25}},
-	"\\*https://-a/ParseRendering+Render":                             {5, countedReading{past: 2706, most: 4248.8, scanMost: 25}},
-	"_www.a/ParseRendering+Render":                                    {21, countedReading{past: 5082, most: 6162.190476190476, scanMost: 41.523809523809526}},
-	"http\\://-a./ParseRendering+Render":                              {5, countedReading{past: 2074, most: 3844.6, scanMost: 22}},
+	"\\*/ParseRendering+Render":                                       {64, countedReading{past: 216, most: 351.96875, scanMost: 4.125}},
+	"\\*https://-a/ParseRendering+Render":                             {10, countedReading{past: 2706, most: 3477.4, scanMost: 24.5}},
+	"_www.a/ParseRendering+Render":                                    {42, countedReading{past: 5082, most: 5622.0952380952385, scanMost: 40.26190476190476}},
+	"http\\://-a./ParseRendering+Render":                              {10, countedReading{past: 2074, most: 2959.3, scanMost: 21.5}},
 	"unreadableRun before repeated lorem ipsum/ParseRendering+Render": {10, countedReading{past: 165728, most: 670920.8, scanMost: 1945.3}},
-	"www./ParseRendering+Render":                                      {8, countedReading{past: 420, most: 1555.875, scanMost: 8.625}},
+	"www./ParseRendering+Render":                                      {16, countedReading{past: 420, most: 987.9375, scanMost: 8.3125}},
 	"www\\./ParseRendering+Render":                                    {25, countedReading{past: 1008, most: 1422.36, scanMost: 14.28}},
 	"www\\.a /ParseRendering+Render":                                  {73, countedReading{past: 2885, most: 2984.849315068493, scanMost: 13.068493150684931}},
-	"www\\.a@/ParseRendering+Render":                                  {9, countedReading{past: 639, most: 1244.3333333333333, scanMost: 7.333333333333333}},
-	"www\\.a_/ParseRendering+Render":                                  {18, countedReading{past: 3313, most: 3847, scanMost: 20.5}},
+	"www\\.a@/ParseRendering+Render":                                  {18, countedReading{past: 639, most: 941.6666666666666, scanMost: 7.166666666666667}},
+	"www\\.a_/ParseRendering+Render":                                  {36, countedReading{past: 3313, most: 3580, scanMost: 20.25}},
 	"x\"www.a_/ParseRendering+Render":                                 {16, countedReading{past: 2529, most: 3008.3125, scanMost: 16.375}},
 	"x;www.a_/ParseRendering+Render":                                  {16, countedReading{past: 2529, most: 3008.3125, scanMost: 16.375}},
-	"é+a@b-/ParseRendering+Render":                                    {9, countedReading{past: 1515, most: 2396.3333333333335, scanMost: 14.555555555555555}},
-	"éhttps://-a./ParseRendering+Render":                              {4, countedReading{past: 2548, most: 4527.25, scanMost: 27.25}},
+	"é+a@b-/ParseRendering+Render":                                    {18, countedReading{past: 1515, most: 1955.6666666666667, scanMost: 14.277777777777779}},
+	"éhttps://-a./ParseRendering+Render":                              {8, countedReading{past: 2548, most: 3537.625, scanMost: 26.625}},
 }
 
 // TestUnclosedRawHTMLShapesParseAndRenderLinearly counts a read and its render as one operation.
@@ -524,9 +526,10 @@ func unclosedRawHTMLShapes() []countedShape {
 	return withLinearReadings(shapes, unclosedRawHTMLReadings)
 }
 
-// unclosedRawHTMLReadings records the counts at the chosen sizes (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+// unclosedRawHTMLReadings records the counts at the chosen sizes. The comment opener was
+// measured again in the issue pod on 2026-11-28 with Go 1.27.3.
 var unclosedRawHTMLReadings = map[string]linearReading{
-	"p <!--/ParseRendering+Render":                {2, countedReading{past: 920, most: 3444, searchedMost: 24.5, scanMost: 6.5}},
+	"p <!--/ParseRendering+Render":                {4, countedReading{past: 920, most: 2182, searchedMost: 22.25, scanMost: 5.25}},
 	"p <!A/ParseRendering+Render":                 {5, countedReading{past: 625, most: 1627.4, searchedMost: 10, scanMost: 4}},
 	"p <![CDATA[/ParseRendering+Render":           {3, countedReading{past: 1716, most: 3388.3333333333335, searchedMost: 56.666666666666664, scanMost: 10.666666666666666}},
 	"p <!a/ParseRendering+Render":                 {5, countedReading{past: 625, most: 1627.4, searchedMost: 10, scanMost: 4}},
