@@ -431,10 +431,12 @@ func TestARemovalReachesTheFreshSessionOfTheMergersLaunchWhileTheOldSessionHolds
 // The merger was asked to merge the base forward in merging, and the architect moved the issue
 // back to accepting, where that ask is owed to nobody, before the ask's row ran; the merger's
 // claim has failed. The row's attempt reads that the workflow no longer delivers it. Before the
-// row ends, the issue moves into merging again, where the ask is owed once more and the move asks
-// nothing again (mergeForwardOnEntry), and the operator's retry relaunches the merger, whose new
-// launch comes ready while the row is still queued and sends nothing. The end reads the ask's
-// owing again under the fact lock, so the merger's new launch is told the ask once.
+// row ends, the issue stands in merging again, where the ask is owed once more: the test writes
+// the issue's record there (PutIssue) rather than moving it through the engine, and a move
+// through the engine would send nothing for this claim, since a failed claim reads as launch 0 at
+// the move (askMergerAtEntry). The operator's retry relaunches the merger, whose new launch comes
+// ready while the row is still queued and sends nothing. The end reads the ask's owing again
+// under the fact lock, so the merger's new launch is told the ask once.
 func TestAMergersAskOwedAgainBeforeItsRowEndsReachesItsNewLaunch(t *testing.T) {
 	t.Parallel()
 	ask := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: owedAskHead, Base: "main",
