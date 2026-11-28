@@ -604,21 +604,29 @@ func (g *Guard) ghReadRefused(slug string, err error) error {
 // own (ghReadContext), which leaves part of the caller's bound to the read through curl. A rate
 // limit is a *rateLimitError. A failure on gh's connection to GitHub with no answer from GitHub is
 // a *transportError: one gh reports (ghTransportFailure), or a stop by the guard's own bound before
-// GitHub sent a status line (ghStoppedByItsBound). A reported failure that is a TLS handshake
-// timeout tells Options.OnTLSTimeout its host, read from gh's line (tlstimeout.HostInLine), where
-// the caller set one. A gh that exited non-zero after GitHub's status line 404, and was no rate
-// limit, is a *notFoundError. A gh that the caller's bound stopped is the *stoppedError run
-// answers, since no bound is left for another read.
+// GitHub sent a status line (ghStoppedByItsBound). Two of these are told to the caller as they
+// are met, each as its event (tellTLSTimeout): a reported failure that is a TLS handshake timeout,
+// with the host of gh's line (tlstimeout.HostInLine), and the stop by ghReadBound itself, with
+// gitHubAPIHost, the host gh asked. That stop is the same fault met sooner: the real gh prints its
+// TLS handshake timeout only once net/http's 10 s have run out, after ghReadBound. A stop by a
+// bound the caller's deadline shortened goes on to curl the same way but is told to nobody: it can
+// come after a few seconds, which a gh slowed by a busy CPU alone can take (ghReadContext). A gh
+// that exited non-zero after GitHub's status line 404, and was no rate limit, is a
+// *notFoundError. A gh that the caller's bound stopped is the *stoppedError run answers, since no
+// bound is left for another read, and is told to nobody.
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
 	read, err := g.ghReadChild(slug, VisibilityReadWithHeadersArgs(slug))
 	if err != nil {
 		return "", g.ghReadRefused(slug, err)
 	}
-	bounded, cancel := ghReadContext(ctx)
+	bounded, cancel, wholeBound := ghReadContext(ctx)
 	defer cancel()
 	status, printed, err := g.run(bounded, read)
 	if err != nil {
 		if unreached := ghStoppedByItsBound(ctx, err, printed); unreached != nil {
+			if wholeBound {
+				g.tellTLSTimeout(gitHubAPIHost, tlstimeout.GuardBound)
+			}
 			return "", unreached
 		}
 		return "", procgroup.Said(err, printed)
@@ -627,8 +635,8 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 		return "", limited
 	}
 	if unreached := ghTransportFailure(status, printed, slug); unreached != nil {
-		if host, ok := tlstimeout.HostInLine(printed); ok && g.opts.OnTLSTimeout != nil {
-			g.opts.OnTLSTimeout(host)
+		if host, ok := tlstimeout.HostInLine(printed); ok {
+			g.tellTLSTimeout(host, tlstimeout.HandshakeTimeout)
 		}
 		return "", unreached
 	}
@@ -646,6 +654,17 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 		return visibility, nil
 	default:
 		return "", fmt.Errorf("gh api repos/%s answered no visibility GitHub reports", shownText(slug))
+	}
+}
+
+// tellTLSTimeout tells the caller event at host, which gh's REST read met: the event
+// (Options.OnTLSEvent) and then the host (Options.OnTLSTimeout), each where the caller set one.
+func (g *Guard) tellTLSTimeout(host string, event tlstimeout.Event) {
+	if g.opts.OnTLSEvent != nil {
+		g.opts.OnTLSEvent(event)
+	}
+	if g.opts.OnTLSTimeout != nil {
+		g.opts.OnTLSTimeout(host)
 	}
 }
 

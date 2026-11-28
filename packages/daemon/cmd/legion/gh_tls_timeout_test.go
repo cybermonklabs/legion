@@ -18,9 +18,11 @@ import (
 )
 
 // tlsRecordLine is the start of the record line `legion gh` writes for a TLS handshake timeout to
-// host (tlstimeout.Recorder.Record).
-func tlsRecordLine(host string) string {
-	return "legion-gh: tls handshake timeout recorded: host=" + host + " "
+// host (tlstimeout.Recorder.RecordContext), naming event as the line does: handshake_timeout for
+// Go's `net/http: TLS handshake timeout`, guard_bound for the leak guard's own bound stopping its
+// gh read before GitHub sent any answer.
+func tlsRecordLine(host, event string) string {
+	return "legion-gh: tls handshake timeout recorded: host=" + host + " event=" + event + " "
 }
 
 // tlsRecordEnv is what a `legion` of these tests is handed to record a TLS handshake timeout: its
@@ -129,8 +131,8 @@ func TestLegionGhRecordsATLSHandshakeTimeoutOfTheRealGh(t *testing.T) {
 				want = append(want, tc.printed)
 			}
 			if tc.records {
-				if len(lines) != 2 || !strings.HasPrefix(lines[1], tlsRecordLine(silent)) || !strings.Contains(lines[1], " child_user_s=") {
-					t.Fatalf("legion gh wrote %q, want gh's line and then one record line naming %q and gh's CPU", stderr, tlsRecordLine(silent))
+				if len(lines) != 2 || !strings.HasPrefix(lines[1], tlsRecordLine(silent, "handshake_timeout")) || !strings.Contains(lines[1], " child_user_s=") {
+					t.Fatalf("legion gh wrote %q, want gh's line and then one record line naming %q and gh's CPU", stderr, tlsRecordLine(silent, "handshake_timeout"))
 				}
 				if strings.Contains(lines[1], "/graphql") {
 					t.Errorf("the record line names the call's path: %q", lines[1])
@@ -179,8 +181,8 @@ func TestLegionGhRecordsTheGuardsGhTLSHandshakeTimeoutWhenTheCallIsOver(t *testi
 	if code != 0 {
 		t.Fatalf("legion gh %q = exit %d, stderr %q; want gh's own 0", args, code, stderr)
 	}
-	if lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], tlsRecordLine("api.github.com")) || strings.Contains(lines[0], "child_user_s") {
-		t.Errorf("legion gh wrote %q, want one record line naming %q and no child CPU", stderr, tlsRecordLine("api.github.com"))
+	if lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], tlsRecordLine("api.github.com", "handshake_timeout")) || strings.Contains(lines[0], "child_user_s") {
+		t.Errorf("legion gh wrote %q, want one record line naming %q and no child CPU", stderr, tlsRecordLine("api.github.com", "handshake_timeout"))
 	}
 	asked, err := os.ReadFile(probe)
 	if err != nil {
@@ -221,11 +223,107 @@ func TestLeakCheckPrePushRecordsTheGuardsGhTLSHandshakeTimeout(t *testing.T) {
 		t.Errorf("exited %d, want %d: %s", code, leakguard.StatusSetupFailure, printed)
 	}
 	refusal, record, _ := strings.Cut(strings.TrimSuffix(printed, "\n"), "\nlegion-gh: ")
-	if !strings.Contains(refusal, notFoundSays("the push to origin")) || !strings.HasPrefix("legion-gh: "+record, tlsRecordLine("api.github.com")) || strings.Contains(record, "\n") {
-		t.Errorf("the hook printed %q, want the not-found refusal and then one record line naming %q", printed, tlsRecordLine("api.github.com"))
+	if !strings.Contains(refusal, notFoundSays("the push to origin")) || !strings.HasPrefix("legion-gh: "+record, tlsRecordLine("api.github.com", "handshake_timeout")) || strings.Contains(record, "\n") {
+		t.Errorf("the hook printed %q, want the not-found refusal and then one record line naming %q", printed, tlsRecordLine("api.github.com", "handshake_timeout"))
 	}
 	if _, err := os.Stat(probe); err != nil {
 		t.Errorf("the record ran no curl probe: %v", err)
+	}
+}
+
+// legionWithTheProductsBounds runs this test binary as `legion args…` as legionIn does, with none
+// of this binary's deadline (testDeadlineEnv), so the run keeps the product's own bounds
+// (boundByTheEnvironment): a row that reads one such bound's own stop, the leak guard's
+// ghReadBound of 8 s, would otherwise have to outlast what is left of this binary's deadline,
+// which the bound would then be. Every other wait of the run has its product bound too, which a
+// stand-in answers well within.
+func legionWithTheProductsBounds(t *testing.T, env map[string]string, stdin string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	cmd := legionCommand(t, t.TempDir(), env, args...)
+	cmd.Env = slices.DeleteFunc(cmd.Env, func(entry string) bool { return strings.HasPrefix(entry, testDeadlineEnv+"=") })
+	return runLegionCommand(t, cmd, stdin)
+}
+
+// R11 of dispatch://INFRA-3562, the leak guard's own bound: where the real gh of the guard's REST
+// visibility read prints nothing and sleeps past ghReadBound, as the real gh does while its TLS
+// handshake stalls (it prints `net/http: TLS handshake timeout` only at net/http's 10 s), the guard
+// stops it at the bound, reads the visibility through curl as before, and the command records the
+// stall for api.github.com once the call is over, as the last line it prints, naming the guard's
+// bound as its event. `legion gh`'s guarded write is cleared by curl's public and exits gh's 0,
+// its record the one line of standard error, with no child CPU since the gh stopped was the
+// guard's; `legion leak-check pre-push` is refused for curl's 404, exit 2 with the not-found
+// words, and then records. Each runs with the product's bounds (legionWithTheProductsBounds), so
+// the guard's bound is its 8 s. The record's Go probe goes through the proxy HTTPS_PROXY names, a
+// peer that never answers, and its curl probe asks https://api.github.com/.
+func TestTheGuardsOwnBoundOnItsGhReadIsRecordedAsItsOwnTLSEvent(t *testing.T) {
+	t.Parallel()
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		// args and stdin are the row's command; gh is its stand-in real gh, whose REST visibility
+		// read prints nothing and sleeps past the guard's bound; answer is the stand-in curl's
+		// answer to the guard's read through curl; code is the status the command exits with, and
+		// before what it prints ahead of the record line.
+		args   []string
+		stdin  string
+		gh     func(t *testing.T) string
+		answer string
+		code   int
+		before string
+	}{
+		{
+			name: "legion gh", args: []string{"gh", "pr", "create", "-R", "acme/widgets", "--title", "a title the rules pass"}, answer: curlReadsPublic,
+			gh: func(t *testing.T) string {
+				stub := filepath.Join(t.TempDir(), "real-gh")
+				script := ghStandInHelp(help) + "case \" $* \" in\n" + ghVisibilityReadArgv + ")\n  exec sleep 30;;\nesac\nexit 0\n"
+				if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				return stub
+			},
+		},
+		{
+			name: "legion leak-check pre-push", args: []string{"leak-check", "pre-push", "origin", "https://github.com/" + noSuchRepo + ".git"}, stdin: refusedRefDeletion,
+			answer: "printf 'HTTP/2 404\\r\\ncontent-type: application/json; charset=utf-8\\r\\n\\r\\n{\"message\":\"Not Found\"}'\nexit 0\n",
+			code:   leakguard.StatusSetupFailure, before: notFoundSays("the push to origin"),
+			gh: func(t *testing.T) string {
+				stub, _ := visibilityReadGh(t, "exec sleep 30\n")
+				return stub
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			curl, probe := tlsCurlStandIn(t, tc.answer)
+			code, _, printed := legionWithTheProductsBounds(t, tlsRecordEnv(t, map[string]string{
+				"GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root, "LEGION_GH_PATH": tc.gh(t), "XDG_STATE_HOME": t.TempDir(),
+				"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+				leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
+				testCurlEnv:            curl,
+				"HTTPS_PROXY":          "http://" + tlstimeouttest.Silent(t),
+			}), tc.stdin, tc.args...)
+			if code != tc.code {
+				t.Errorf("legion %s exited %d, want %d: %s", tc.args[0], code, tc.code, printed)
+			}
+			lines := strings.Split(strings.TrimSuffix(printed, "\n"), "\n")
+			record, earlier := lines[len(lines)-1], strings.Join(lines[:len(lines)-1], "\n")
+			want := tlsRecordLine("api.github.com", "guard_bound")
+			if !strings.HasPrefix(record, want) || strings.Contains(record, "child_user_s") || strings.Count(printed, "tls handshake timeout recorded") != 1 ||
+				!strings.Contains(earlier, tc.before) || (tc.before == "" && earlier != "") {
+				t.Errorf("legion %s printed %q; want %q and then one record line naming %q and no child CPU", tc.args[0], printed, tc.before, want)
+			}
+			asked, err := os.ReadFile(probe)
+			if err != nil {
+				t.Fatalf("the record ran no curl probe: %v", err)
+			}
+			if argv := strings.Split(strings.TrimSuffix(string(asked), "\n"), "\n"); argv[len(argv)-1] != "https://api.github.com/" {
+				t.Errorf("the record's curl ran as %q, want https://api.github.com/ last", argv)
+			}
+		})
 	}
 }
 
@@ -371,8 +469,8 @@ func TestASignalDuringATLSRecordEndsTheCommandWithTheSignalsStatus(t *testing.T)
 				t.Errorf("legion %s after a SIGTERM during its record = %v; want exit 143: %s", tc.args[0], waited, out)
 			}
 			lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-			if last := lines[len(lines)-1]; !strings.HasPrefix(last, tlsRecordLine(tc.host)) || !strings.Contains(strings.Join(lines[:len(lines)-1], "\n"), tc.before) {
-				t.Errorf("legion %s printed %q; want %q and then the record line, naming %q", tc.args[0], out, tc.before, tlsRecordLine(tc.host))
+			if last := lines[len(lines)-1]; !strings.HasPrefix(last, tlsRecordLine(tc.host, "handshake_timeout")) || !strings.Contains(strings.Join(lines[:len(lines)-1], "\n"), tc.before) {
+				t.Errorf("legion %s printed %q; want %q and then the record line, naming %q", tc.args[0], out, tc.before, tlsRecordLine(tc.host, "handshake_timeout"))
 			}
 			if helperRunning(pid, tc.seconds) {
 				t.Errorf("the record's curl (pid %d) still runs after legion %s exited; want it stopped with the record", pid, tc.args[0])

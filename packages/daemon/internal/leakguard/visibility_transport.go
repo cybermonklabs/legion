@@ -36,9 +36,13 @@ func (e *transportError) Error() string {
 	return e.program + " could not reach GitHub: " + e.said
 }
 
-// gitHubAPI is the origin of GitHub's REST API, which gh's REST read (`gh api --hostname
-// github.com`) and the curl read both ask.
-const gitHubAPI = "https://api.github.com"
+// gitHubAPIHost is the host of GitHub's REST API, which gh's REST read (`gh api --hostname
+// github.com`) asks, and which the guard tells as the host of that read's stall where its own bound
+// stops it (Guard.ghVisibility).
+const gitHubAPIHost = "api.github.com"
+
+// gitHubAPI is the origin of GitHub's REST API, which gh's REST read and the curl read both ask.
+const gitHubAPI = "https://" + gitHubAPIHost
 
 // ghTransportFailures are the endings of the line gh prints when its REST read failed on its
 // connection. Each is the wording of Go's own net or net/http package, and each names a failure
@@ -121,17 +125,26 @@ var curlReserve = 5 * time.Second
 // ghReadContext is the context gh's REST read runs under: ctx bounded at ghReadBound, or, where ctx
 // has a deadline, at that deadline less curlReserve if that is sooner. Where ctx's deadline leaves
 // curlReserve or less, gh runs under ctx alone, as it did before this bound: what time there is is
-// the caller's, and a stop is the caller's.
-func ghReadContext(ctx context.Context) (context.Context, context.CancelFunc) {
+// the caller's, and a stop is the caller's. whole is whether the bound is ghReadBound itself, which
+// no caller's deadline shortened: only a stop at that bound is the stall R11 of
+// dispatch://INFRA-3562 records (Guard.ghVisibility). A shortened bound can be a few seconds (the
+// capability report's `github` row hands `legion gh` a deadline 8 s ahead), which a gh slowed by a
+// busy CPU alone can pass, and its stop goes on to curl as any stop by the guard's bound does
+// (ghStoppedByItsBound), but records nothing.
+func ghReadContext(ctx context.Context) (bounded context.Context, cancel context.CancelFunc, whole bool) {
 	bound := programbound.Of(&ghReadBound)
 	if deadline, ok := ctx.Deadline(); ok {
 		left := time.Until(deadline) - curlReserve
 		if left <= 0 {
-			return ctx, func() {}
+			return ctx, func() {}, false
 		}
-		bound = min(bound, left)
+		if left < bound {
+			bounded, cancel = context.WithTimeout(ctx, left)
+			return bounded, cancel, false
+		}
 	}
-	return context.WithTimeout(ctx, bound)
+	bounded, cancel = context.WithTimeout(ctx, bound)
+	return bounded, cancel, true
 }
 
 // stoppedByItsOwnBound is the stop err carries, and whether it is a stop by a bound of the guard's

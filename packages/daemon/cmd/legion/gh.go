@@ -147,11 +147,13 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // see the end of.
 //
 // A TLS handshake timeout is recorded in the pod at the moment it is met, as one line on this
-// command's standard error (ghTLSTimeouts, tlstimeout.Recorder): the host, the phases of a fresh
-// Go handshake and of one curl handshake to it, this process's CPU and the cgroup's CPU and process
-// count, bounded and at most once a minute. The real gh's own, where its output is the caller's,
-// is read off gh's standard error as gh exits (runGhChild); the guard's own gh read's is told by
-// the guard (leakguard.Options.OnTLSTimeout) and recorded once the call is over. Neither changes
+// command's standard error (ghTLSTimeouts, tlstimeout.Recorder): the host, the event, the phases of
+// a fresh Go handshake and of one curl handshake to it, this process's CPU and the cgroup's CPU and
+// process count, bounded and at most once a minute. The real gh's own, where its output is the
+// caller's, is read off gh's standard error as gh exits (runGhChild); the guard's own gh read's is
+// told by the guard (leakguard.Options.OnTLSTimeout and OnTLSEvent), on gh's own timeout line and
+// where the guard's own 8 s bound, not one LEGION_GH_DEADLINE shortened, stopped that read before
+// GitHub sent any answer, and recorded once the call is over (guardTLSTimeout). Neither changes
 // the status the call exits with or what the guard allows or refuses, but a record's probes end
 // with this command's context: a SIGINT or a SIGTERM that comes while they run ends them, and the
 // command with 128+<signal> (endedBySignal), as a signal before gh runs does.
@@ -195,16 +197,17 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// one ends the command with its status rather than with the refusal its stopped work made.
 	beforeGh, stopHangup := hangupCancels(ctx)
 	defer stopHangup()
-	// guardTLSHost is the host of a TLS handshake timeout the guard's own gh read met
-	// (leakguard.Options.OnTLSTimeout, below). It is recorded once, when the call is over, after
-	// the real gh's own run, and never in the middle of the guard's work: the record's probes
-	// take up to their bound, and the guard's curl and ls-remote reads would wait for them. It is
-	// recorded under ctx, which a SIGINT or a SIGTERM ends, and such a signal during the record is
-	// the status the command ends with, whatever the call's was. beforeGh, which stopHangup has
-	// ended where gh ran, is read only for a signal that came before the record.
-	guardTLSHost := ""
+	// guardTLS is what the guard's own gh read told of a stall of its TLS handshake
+	// (leakguard.Options.OnTLSTimeout and OnTLSEvent, below). It is recorded once, when the call
+	// is over, after the real gh's own run, and never in the middle of the guard's work: the
+	// record's probes take up to their bound, and the guard's curl and ls-remote reads would wait
+	// for them. It is recorded under ctx, which a SIGINT or a SIGTERM ends, and such a signal
+	// during the record is the status the command ends with, whatever the call's was. beforeGh,
+	// which stopHangup has ended where gh ran, is read only for a signal that came before the
+	// record.
+	var guardTLS guardTLSTimeout
 	defer func() {
-		if signal, ok := recordGuardTLSTimeout(ctx, guardTLSHost, stderr, beforeGh); ok {
+		if signal, ok := recordGuardTLSTimeout(ctx, guardTLS, stderr, beforeGh); ok {
 			status = signal
 		}
 	}()
@@ -350,7 +353,8 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 				visibilitySource = string(source)
 			},
 			OnStep:       steps.write,
-			OnTLSTimeout: func(host string) { guardTLSHost = host },
+			OnTLSTimeout: guardTLS.toldHost,
+			OnTLSEvent:   guardTLS.toldEvent,
 			Curl:         leakguardCurl,
 			RoleState:    ghRoleStateBase,
 			GhRead:       ghGuardRead(env),
@@ -742,7 +746,7 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 	}
 	if _, ended := signalled(ctx); tail != nil && status != 0 && !ended {
 		if host, ok := tlstimeout.HostInLine(string(tail.kept)); ok {
-			ghTLSTimeouts(stderr, ghChildCPU(child.ProcessState)).RecordContext(ctx, host)
+			ghTLSTimeouts(stderr, ghChildCPU(child.ProcessState)).RecordContext(ctx, host, tlstimeout.HandshakeTimeout)
 			if signal, ok := signalled(ctx); ok {
 				return signal
 			}

@@ -84,10 +84,15 @@ func cgroupV1(t *testing.T) string {
 
 // recordKeys are the keys of a record line, in their order, the child's CPU among them.
 var recordKeys = []string{
-	"host", "go_dns_s", "go_connect_s", "go_tls_start_s", "go_tls_done_s", "go_tls_version", "go_tls_curve", "go_error",
+	"host", "event", "go_dns_s", "go_connect_s", "go_tls_start_s", "go_tls_done_s", "go_tls_version", "go_tls_curve", "go_error",
 	"curl_namelookup_s", "curl_connect_s", "curl_appconnect_s", "curl_total_s", "curl_exit",
 	"proc_user_s", "proc_sys_s", "child_user_s", "child_sys_s",
 	"cpu_quota_us", "cpu_period_us", "cpu_usage_s", "pids", "bound_s", "at",
+}
+
+// childlessKeys are recordKeys without the child's CPU, the keys of a record with no ChildCPU.
+func childlessKeys() []string {
+	return slices.DeleteFunc(slices.Clone(recordKeys), func(key string) bool { return strings.HasPrefix(key, "child_") })
 }
 
 // seconds is a figure of seconds as a record writes one: three decimals.
@@ -166,13 +171,14 @@ func newRecordRig(t *testing.T, curl string) *recordRig {
 }
 
 // Check c-tls-timeout-recorded, point 1: a record is one line, `<client>: tls handshake timeout
-// recorded: ` and then every field in its order: the host; the Go probe's phases from the record's
-// start, with the TLS version and curve and its error; curl's four timings and its exit; the
-// process's CPU and the child's; the cgroup's quota, period, usage and process count; the bound;
-// and the time in RFC 3339 UTC. Against a peer that never answers, the Go probe connects, starts
-// its handshake and is stopped by the bound, and a phase that never happened is `-`. curl is run
-// with no .curlrc and no netrc, no globbing, silent with its errors, its body dropped, under the
-// bound, with the four timings asked of it, for the host's root alone.
+// recorded: ` and then every field in its order: the host; the event it records (Record's is
+// net/http's own handshake timeout); the Go probe's phases from the record's start, with the TLS
+// version and curve and its error; curl's four timings and its exit; the process's CPU and the
+// child's; the cgroup's quota, period, usage and process count; the bound; and the time in RFC
+// 3339 UTC. Against a peer that never answers, the Go probe connects, starts its handshake and is
+// stopped by the bound, and a phase that never happened is `-`. curl is run with no .curlrc and no
+// netrc, no globbing, silent with its errors, its body dropped, under the bound, with the four
+// timings asked of it, for the host's root alone.
 func TestARecordIsOneLineOfEveryFieldInOrder(t *testing.T) {
 	rig := newRecordRig(t, curlTimesOut)
 	rig.r.ChildCPU = func() (time.Duration, time.Duration, bool) {
@@ -188,7 +194,7 @@ func TestARecordIsOneLineOfEveryFieldInOrder(t *testing.T) {
 		t.Fatalf("the line's keys are %q, want %q", keys, recordKeys)
 	}
 	want := map[string]string{
-		"host": host, "go_dns_s": "-", "go_tls_done_s": "-", "go_tls_version": "-", "go_tls_curve": "-",
+		"host": host, "event": "handshake_timeout", "go_dns_s": "-", "go_tls_done_s": "-", "go_tls_version": "-", "go_tls_curve": "-",
 		"go_error": "context deadline exceeded", "curl_namelookup_s": "0.012", "curl_connect_s": "0.034",
 		"curl_appconnect_s": "-", "curl_total_s": "1.000", "curl_exit": "28", "child_user_s": "1.500",
 		"child_sys_s": "0.250", "cpu_quota_us": "200000", "cpu_period_us": "100000", "cpu_usage_s": "2884.240",
@@ -465,7 +471,7 @@ func TestARecordEndsWithItsContextAndStillWritesItsLine(t *testing.T) {
 	defer cancel()
 	ended := make(chan time.Time, 1)
 	go func() {
-		rig.r.RecordContext(ctx, host)
+		rig.r.RecordContext(ctx, host, HandshakeTimeout)
 		ended <- time.Now()
 	}()
 	testwait.Eventually(t, "the record's curl to run", func() bool { return curlRuns(t, rig.curl) == 1 })
@@ -495,6 +501,37 @@ func TestABurstOfTimeoutsWritesOneLine(t *testing.T) {
 	wg.Wait()
 	if lines := strings.Count(rig.stderr.String(), "tls handshake timeout recorded"); lines != 1 || curlRuns(t, rig.curl) != 1 {
 		t.Errorf("8 records at once wrote %d lines and ran curl %d times, want 1 and 1:\n%s", lines, curlRuns(t, rig.curl), rig.stderr.String())
+	}
+}
+
+// R11 of dispatch://INFRA-3562 records two events, and the line names which, in the key after the
+// host: Record, which the HTTP transports call for net/http's own TLS handshake timeout, and
+// RecordContext for that timeout write event=handshake_timeout, and RecordContext for the leak
+// guard's own bound stopping its gh read before GitHub sent any answer writes event=guard_bound.
+// Every other key of the line is the same for both.
+func TestARecordNamesItsEvent(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		record func(r *Recorder, host string)
+		event  string
+	}{
+		{name: "Record", record: (*Recorder).Record, event: "handshake_timeout"},
+		{name: "a TLS handshake timeout", record: func(r *Recorder, host string) { r.RecordContext(context.Background(), host, HandshakeTimeout) }, event: "handshake_timeout"},
+		{name: "the leak guard's own bound", record: func(r *Recorder, host string) { r.RecordContext(context.Background(), host, GuardBound) }, event: "guard_bound"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newRecordRig(t, curlTimesOut)
+			tc.record(rig.r, testport.Refused(t))
+			_, keys, values := parseRecord(t, rig.stderr.String())
+			if want := childlessKeys(); !slices.Equal(keys, want) {
+				t.Errorf("the line's keys are %q, want %q", keys, want)
+			}
+			if values["event"] != tc.event {
+				t.Errorf("event=%q, want %q", values["event"], tc.event)
+			}
+		})
 	}
 }
 
@@ -582,12 +619,12 @@ func TestARecordKeepsItsStampPrivateAndRefusesALink(t *testing.T) {
 func TestARecordLineIsAtMost2048Bytes(t *testing.T) {
 	t.Parallel()
 	said := strings.Repeat("é\"", 2000)
-	line := recordLine("agent-secrets", "api.github.com", observed{goProbe: goPhases{said: said}, bound: time.Second, at: time.Now()})
+	line := recordLine("agent-secrets", "api.github.com", HandshakeTimeout, observed{goProbe: goPhases{said: said}, bound: time.Second, at: time.Now()})
 	if len(line) > 2048 {
 		t.Errorf("the line is %d bytes, want at most 2048", len(line))
 	}
 	_, keys, values := parseRecord(t, line)
-	if want := slices.DeleteFunc(slices.Clone(recordKeys), func(key string) bool { return strings.HasPrefix(key, "child_") }); !slices.Equal(keys, want) {
+	if want := childlessKeys(); !slices.Equal(keys, want) {
 		t.Errorf("the line's keys are %q, want %q", keys, want)
 	}
 	if !strings.HasPrefix(said, values["go_error"]) || values["go_error"] == "" {

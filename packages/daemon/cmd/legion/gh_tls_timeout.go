@@ -26,8 +26,8 @@ var (
 // ghTLSTimeouts is the record of a TLS handshake timeout `legion gh` writes, its line to stderr
 // under the client name legion-gh: where the real gh of a call whose output is the caller's printed
 // Go's `<Method> "<URL>": net/http: TLS handshake timeout` and exited non-zero (runGhChild), with
-// that gh's CPU as childCPU; and where the leak guard's own gh read met one
-// (leakguard.Options.OnTLSTimeout), once the call is over, with no child CPU, since the gh that
+// that gh's CPU as childCPU; and where the leak guard's own gh read met one of the two events the
+// guard tells (guardTLSTimeout), once the call is over, with no child CPU, since the gh that
 // failed was the guard's, which `legion gh` did not wait for. Its curl starts through
 // procgroup.NoReaper: `legion gh` reaps no child it did not start.
 func ghTLSTimeouts(stderr io.Writer, childCPU func() (user, sys time.Duration, ok bool)) *tlstimeout.Recorder {
@@ -37,15 +37,29 @@ func ghTLSTimeouts(stderr io.Writer, childCPU func() (user, sys time.Duration, o
 	}
 }
 
-// recordGuardTLSTimeout records, under ctx, the TLS handshake timeout to host that the leak guard's
-// own gh read met (leakguard.Options.OnTLSTimeout), where it met one (host is not empty) and a
-// signal ended neither ctx nor any of also, the other contexts the call ran under (signalled): a
-// call a signal stopped waits for no probe. It answers the status a signal that ended ctx during
-// the record ends the command with (signalled), and whether one did: the record's probes end with
-// ctx (tlstimeout.Recorder.RecordContext), so a SIGINT or a SIGTERM that comes while they run ends
-// the command at once, with the status of a signal that came during the call itself.
-func recordGuardTLSTimeout(ctx context.Context, host string, stderr io.Writer, also ...context.Context) (int, bool) {
-	if _, ended := signalled(ctx); host == "" || ended {
+// guardTLSTimeout is what the leak guard's own gh read told of a stall of its TLS handshake, which
+// `legion gh` and `legion leak-check pre-push` record once the call is over
+// (recordGuardTLSTimeout): the host (leakguard.Options.OnTLSTimeout, toldHost), "" where the guard
+// told none, and the event (leakguard.Options.OnTLSEvent, toldEvent), gh's own timeout line or the
+// guard's own 8 s bound stopping gh before GitHub sent any answer, which the record line names.
+type guardTLSTimeout struct {
+	host  string
+	event tlstimeout.Event
+}
+
+func (g *guardTLSTimeout) toldHost(host string) { g.host = host }
+
+func (g *guardTLSTimeout) toldEvent(event tlstimeout.Event) { g.event = event }
+
+// recordGuardTLSTimeout records, under ctx, what the leak guard's own gh read met (told), where it
+// met one of the two events (its host is not empty) and a signal ended neither ctx nor any of
+// also, the other contexts the call ran under (signalled): a call a signal stopped waits for no
+// probe. It answers the status a signal that ended ctx during the record ends the command with
+// (signalled), and whether one did: the record's probes end with ctx
+// (tlstimeout.Recorder.RecordContext), so a SIGINT or a SIGTERM that comes while they run ends the
+// command at once, with the status of a signal that came during the call itself.
+func recordGuardTLSTimeout(ctx context.Context, told guardTLSTimeout, stderr io.Writer, also ...context.Context) (int, bool) {
+	if _, ended := signalled(ctx); told.host == "" || ended {
 		return 0, false
 	}
 	for _, ran := range also {
@@ -53,7 +67,7 @@ func recordGuardTLSTimeout(ctx context.Context, host string, stderr io.Writer, a
 			return 0, false
 		}
 	}
-	ghTLSTimeouts(stderr, nil).RecordContext(ctx, host)
+	ghTLSTimeouts(stderr, nil).RecordContext(ctx, told.host, told.event)
 	return signalled(ctx)
 }
 

@@ -1433,7 +1433,13 @@ func legionGhIn(t *testing.T, dir string, env map[string]string, stdin string, a
 // beside the package's other tests.
 func legionIn(t *testing.T, dir string, env map[string]string, stdin string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
-	cmd := legionCommand(t, dir, env, args...)
+	return runLegionCommand(t, legionCommand(t, dir, env, args...), stdin)
+}
+
+// runLegionCommand runs cmd, a `legion` command legionCommand built, with stdin, and answers what
+// it exited with and printed.
+func runLegionCommand(t *testing.T, cmd *exec.Cmd, stdin string) (code int, stdout, stderr string) {
+	t.Helper()
 	var out, errb bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(stdin), &out, &errb
 	err := cmd.Run()
@@ -1441,7 +1447,7 @@ func legionIn(t *testing.T, dir string, env map[string]string, stdin string, arg
 		return exit.ExitCode(), out.String(), errb.String()
 	}
 	if err != nil {
-		t.Fatalf("legion %v: %v", args, err)
+		t.Fatalf("legion %v: %v", cmd.Args[1:], err)
 	}
 	return 0, out.String(), errb.String()
 }

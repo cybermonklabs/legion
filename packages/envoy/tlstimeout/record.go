@@ -20,8 +20,9 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// Recorder writes the record of a TLS handshake timeout (RecordContext). Client, Stderr and Start
-// are a caller's own; every other field is a seam a test fills and the binaries leave zero.
+// Recorder writes the record of a TLS handshake timeout, or of the stall the Legion leak guard's
+// own bound meets before it (Event), at the moment it is met (RecordContext). Client, Stderr and
+// Start are a caller's own; every other field is a seam a test fills and the binaries leave zero.
 type Recorder struct {
 	// Client names what met the timeout, first on the line: `legion-gh` (`legion gh` around the
 	// real gh, and the leak guard's own gh read), `agent-secrets` or `legion` (legion's own HTTP
@@ -58,9 +59,40 @@ type Recorder struct {
 	ChildCPU func() (user, sys time.Duration, ok bool)
 }
 
-// Record is RecordContext under a context that never ends, for a caller with no end of its own
-// to stop the probes at: the HTTP transports (Transport).
-func (r *Recorder) Record(host string) { r.RecordContext(context.Background(), host) }
+// Record is RecordContext of a TLS handshake timeout (HandshakeTimeout) under a context that never
+// ends, for a caller with no end of its own to stop the probes at: the HTTP transports
+// (Transport).
+func (r *Recorder) Record(host string) { r.RecordContext(context.Background(), host, HandshakeTimeout) }
+
+// Event is what a record is made for, one of the two events R11 of dispatch://INFRA-3562
+// records, which the record's line names in the key after the host (event=):
+//
+//   - HandshakeTimeout, `handshake_timeout`, the zero Event: a Go client's own `net/http: TLS
+//     handshake timeout`, as the HTTP transports meet it (Transport) and as `legion gh` reads it
+//     off the line gh prints for it (HostInLine).
+//   - GuardBound, `guard_bound`: the Legion leak guard's own bound (8 s, and not one a caller's
+//     deadline shortened) stopping its gh read of a repository's visibility before GitHub sent
+//     any answer. It is the same fault met sooner: gh prints its timeout only once net/http's 10 s
+//     have run out, so the guard, which then reads with curl, stops gh before gh could print it,
+//     and a push, whose only Go TLS client is that read, would otherwise record nothing.
+type Event int
+
+const (
+	HandshakeTimeout Event = iota
+	GuardBound
+)
+
+// word is e as the line writes it, and `-` for a value that is neither event.
+func (e Event) word() string {
+	switch e {
+	case HandshakeTimeout:
+		return "handshake_timeout"
+	case GuardBound:
+		return "guard_bound"
+	default:
+		return "-"
+	}
+}
 
 const (
 	defaultCurl   = "/usr/bin/curl"
@@ -482,9 +514,10 @@ func printedHost(host string) string {
 	return strconv.Quote(host)
 }
 
-// recordLine is the record's line for host, its line break included, at most lineBytes: where it
-// would be longer, the Go probe's error is cut at a character's start until its quote fits.
-func recordLine(client, host string, seen observed) string {
+// recordLine is the record's line for event at host, its line break included, at most lineBytes:
+// where it would be longer, the Go probe's error is cut at a character's start until its quote
+// fits.
+func recordLine(client, host string, event Event, seen observed) string {
 	exit := "-"
 	if seen.curl.exited {
 		exit = strconv.Itoa(seen.curl.exit)
@@ -500,6 +533,7 @@ func recordLine(client, host string, seen observed) string {
 		}
 		b.WriteString(client + ": tls handshake timeout recorded:")
 		write("host", host)
+		write("event", event.word())
 		write("go_dns_s", seen.goProbe.dns.word())
 		write("go_connect_s", seen.goProbe.connect.word())
 		write("go_tls_start_s", seen.goProbe.tlsStart.word())

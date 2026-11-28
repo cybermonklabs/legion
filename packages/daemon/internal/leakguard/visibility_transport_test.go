@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/tlstimeout"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 )
 
@@ -378,15 +379,17 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 
 // The guard tells its caller the host of a TLS handshake timeout of gh's REST read
 // (Options.OnTLSTimeout), once, from gh's own line: api.github.com, whose read then goes on to
-// curl as it does without the callback. No other failure of the read is told: another of gh's
-// transport failures, which goes on to curl the same way, the TLS words beside GitHub's status
-// line, which refuse the call, and a read that answers. A guard with no callback reads as before.
+// curl as it does without the callback, and tells the event, the handshake timeout
+// (Options.OnTLSEvent), once. No other failure of the read is told: another of gh's transport
+// failures, which goes on to curl the same way, the TLS words beside GitHub's status line, which
+// refuse the call, and a read that answers. A guard with no callback reads as before.
 func TestTheGuardTellsAGhTLSHandshakeTimeoutsHost(t *testing.T) {
 	for _, tc := range []struct {
 		name, rest string
 		told       []string
+		events     []tlstimeout.Event
 	}{
-		{name: "a TLS handshake timeout", rest: ghTLSTimeout, told: []string{"api.github.com"}},
+		{name: "a TLS handshake timeout", rest: ghTLSTimeout, told: []string{"api.github.com"}, events: []tlstimeout.Event{tlstimeout.HandshakeTimeout}},
 		{name: "a dial timeout", rest: ghFailsOn("dial tcp 140.82.112.5:443: i/o timeout")},
 		{name: "the HTTP client's own timeout", rest: ghFailsOn("context deadline exceeded (Client.Timeout exceeded while awaiting headers)")},
 		{
@@ -398,17 +401,91 @@ func TestTheGuardTellsAGhTLSHandshakeTimeoutsHost(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var told []string
+			var events []tlstimeout.Event
 			rig := newTransportRig(t, tc.rest, noGraphQL, curlAnswers("private"), answersTheRefs)
 			rig.guard.opts.OnTLSTimeout = func(host string) { told = append(told, host) }
+			rig.guard.opts.OnTLSEvent = func(event tlstimeout.Event) { events = append(events, event) }
 			_, _ = rig.guard.Visibility(bound(t), theRepo)
-			if !slices.Equal(told, tc.told) {
-				t.Errorf("the guard told the hosts %q, want %q", told, tc.told)
+			if !slices.Equal(told, tc.told) || !slices.Equal(events, tc.events) {
+				t.Errorf("the guard told the hosts %q and the events %v, want %q and %v", told, events, tc.told, tc.events)
 			}
 		})
 	}
 	rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), answersTheRefs)
 	if visibility, err := rig.guard.Visibility(bound(t), theRepo); err != nil || visibility != Private {
 		t.Errorf("a guard with no OnTLSTimeout read %q, %v; want curl's private", visibility, err)
+	}
+}
+
+// R11 of dispatch://INFRA-3562, the guard's own bound: where ghReadBound, the product's 8 s, which
+// this package's tests do not stretch, stops gh's REST read before GitHub sent any answer (gh
+// printed no status line, as the real gh prints none while its TLS handshake stalls), the guard
+// tells its caller api.github.com (Options.OnTLSTimeout) and the guard's-bound event
+// (Options.OnTLSEvent), once each, and the read goes on to curl, as for gh's own line of a TLS
+// handshake timeout. No other stop of the read is told. A bound the caller's deadline shortened, a
+// deadline 8 s away less curlReserve's 5 s, stops a gh that printed nothing with the read going on
+// to curl as before, since the stop is the caller's short bound and not the stall the record is
+// for. The rest refuse the call as they did: the guard's bound stopping a gh that printed GitHub's
+// status line and then stalled, since GitHub answered; and the caller's own end, by a deadline of
+// 2 s, which leaves less than curlReserve and so sets no bound of the guard's own, or by its
+// cancel, since neither leaves a bound for another read. Each caller's end comes only once the
+// stand-in gh has started, so it is a running gh the end stops on a loaded machine too.
+func TestTheGuardTellsItsOwnBoundStoppingAGhReadThatHeardNothingAndNoOtherStop(t *testing.T) {
+	callersMinute := func(t *testing.T, _ string) context.Context { return bound(t) }
+	for _, tc := range []struct {
+		name string
+		// rest is what the stand-in gh's REST read does once it has written the file it is handed,
+		// and caller the caller's context, given that file.
+		rest   string
+		caller func(t *testing.T, started string) context.Context
+		// told and events are what the guard tells; a call that is not refused reads curl's
+		// private.
+		told    []string
+		events  []tlstimeout.Event
+		refused bool
+	}{
+		{
+			name: "the guard's bound, before GitHub sent anything", rest: "exec sleep 30\n", caller: callersMinute,
+			told: []string{"api.github.com"}, events: []tlstimeout.Event{tlstimeout.GuardBound},
+		},
+		{name: "the guard's bound, after GitHub's status line", rest: "printf 'HTTP/2.0 200 OK\\r\\n'\nexec sleep 30\n", caller: callersMinute, refused: true},
+		{
+			name: "the guard's bound shortened by the caller's deadline", rest: "exec sleep 30\n",
+			caller: func(t *testing.T, _ string) context.Context {
+				ctx, cancel := context.WithTimeout(context.Background(), ghReadBound)
+				t.Cleanup(cancel)
+				return ctx
+			},
+		},
+		{
+			name: "the caller's deadline, shorter than curlReserve", rest: "exec sleep 30\n", refused: true,
+			caller: func(t *testing.T, started string) context.Context {
+				return deadlineOnceWritten(t, started, 2*time.Second)
+			},
+		},
+		{name: "the caller's cancel", rest: "exec sleep 30\n", caller: cancelsOnceWritten, refused: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			started := filepath.Join(t.TempDir(), "started")
+			rig := newTransportRig(t, ": > "+shQuote(started)+"\n"+tc.rest, noGraphQL, curlAnswers("private"), answersTheRefs)
+			var told []string
+			var events []tlstimeout.Event
+			rig.guard.opts.OnTLSTimeout = func(host string) { told = append(told, host) }
+			rig.guard.opts.OnTLSEvent = func(event tlstimeout.Event) { events = append(events, event) }
+			ctx := tc.caller(t, started)
+			var visibility Visibility
+			var err error
+			answered(t, "the visibility read whose gh stalls", func() { visibility, err = rig.guard.Visibility(ctx, theRepo) })
+			switch {
+			case tc.refused && err == nil:
+				t.Errorf("read %q, want the call refused", visibility)
+			case !tc.refused && (err != nil || visibility != Private):
+				t.Errorf("read %q, %v; want curl's private", visibility, err)
+			}
+			if !slices.Equal(told, tc.told) || !slices.Equal(events, tc.events) {
+				t.Errorf("the guard told the hosts %q and the events %v, want %q and %v", told, events, tc.told, tc.events)
+			}
+		})
 	}
 }
 
@@ -618,6 +695,30 @@ func TestCurlReadNeverRunsTheCurlFirstOnPath(t *testing.T) {
 	}
 }
 
+// cancelsOnceWritten is a caller's context, within the test's minute, that the caller cancels once
+// the stand-in program has written the file started names.
+func cancelsOnceWritten(t *testing.T, started string) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(bound(t))
+	t.Cleanup(cancel)
+	whenWritten(ctx, started, cancel)
+	return ctx
+}
+
+// deadlineOnceWritten is a caller's context with a deadline d away, which ends at that deadline
+// but not before the stand-in program has written the file started names (deadlineOnceStarted).
+func deadlineOnceWritten(t *testing.T, started string, d time.Duration) context.Context {
+	t.Helper()
+	deadline, cancel := context.WithTimeout(context.Background(), d)
+	t.Cleanup(cancel)
+	ctx := &deadlineOnceStarted{Context: deadline, done: make(chan struct{})}
+	whenWritten(bound(t), started, func() {
+		<-deadline.Done()
+		close(ctx.done)
+	})
+	return ctx
+}
+
 // A gh REST read that the caller's own bound stops is no transport failure: the call is refused
 // at once, naming gh's stop, and neither curl nor git runs, since no bound is left for them. The
 // caller cancels, or its deadline of 2 s, which leaves less than curlReserve and so sets no bound
@@ -632,13 +733,8 @@ func TestTransportPathLeavesTheCallersStopAnError(t *testing.T) {
 		stop func(t *testing.T, err error)
 	}{
 		{
-			name: "the caller cancels",
-			caller: func(t *testing.T, started string) context.Context {
-				ctx, cancel := context.WithCancel(bound(t))
-				t.Cleanup(cancel)
-				whenWritten(ctx, started, cancel)
-				return ctx
-			},
+			name:   "the caller cancels",
+			caller: cancelsOnceWritten,
 			stop: func(t *testing.T, err error) {
 				if want := "and was stopped by a cancel"; !strings.Contains(err.Error(), want) {
 					t.Errorf("the failure %q does not say %q", err, want)
@@ -648,14 +744,7 @@ func TestTransportPathLeavesTheCallersStopAnError(t *testing.T) {
 		{
 			name: "the caller's deadline comes first",
 			caller: func(t *testing.T, started string) context.Context {
-				deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				t.Cleanup(cancel)
-				ctx := &deadlineOnceStarted{Context: deadline, done: make(chan struct{})}
-				whenWritten(bound(t), started, func() {
-					<-deadline.Done()
-					close(ctx.done)
-				})
-				return ctx
+				return deadlineOnceWritten(t, started, 2*time.Second)
 			},
 			stop: func(t *testing.T, err error) {
 				if got := stopBound(t, err); got > 2 {

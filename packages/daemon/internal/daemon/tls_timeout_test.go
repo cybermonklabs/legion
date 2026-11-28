@@ -21,8 +21,8 @@ import (
 // REST client its boot puts on the rate counter's transport (countingTokens), to a GitHub that
 // takes the connection and never answers TLS fails after http.DefaultTransport's 10 s with the
 // error the counter's transport with no record gives the same call, and the record under it
-// (tlsTimeouts) writes one line naming legion and the host and port alone, with neither the token
-// the call carried nor its path.
+// (tlsTimeouts) writes one line naming legion, the host and port alone and the handshake timeout
+// as its event, with neither the token the call carried nor its path.
 func TestTheDaemonsGitHubRESTClientRecordsATLSHandshakeTimeout(t *testing.T) {
 	// Not parallel: it sets the package variable tlsTimeouts, and the REST client transport of the whole process (githubrest.SetTransport, in countingTokens).
 	var stderr testlog.Buffer
@@ -62,8 +62,8 @@ func TestTheDaemonsGitHubRESTClientRecordsATLSHandshakeTimeout(t *testing.T) {
 		t.Errorf("the call answered %v, want net/http's TLS handshake timeout, as the call with no record answered: %v", recorded, unrecorded)
 	}
 	written := stderr.String()
-	if strings.Count(written, "\n") != 1 || !strings.HasPrefix(written, "legion: tls handshake timeout recorded: host="+host+" ") {
-		t.Errorf("the client wrote %q, want one record line naming legion and host=%s", written, host)
+	if strings.Count(written, "\n") != 1 || !strings.HasPrefix(written, "legion: tls handshake timeout recorded: host="+host+" event=handshake_timeout ") {
+		t.Errorf("the client wrote %q, want one record line naming legion, host=%s and event=handshake_timeout", written, host)
 	}
 	for _, word := range []string{token, "Authorization", "/repos", "pulls"} {
 		if strings.Contains(written, word) {

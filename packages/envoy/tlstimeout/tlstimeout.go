@@ -6,9 +6,11 @@
 // a record is that measurement, made where the failure was.
 //
 // Three clients record: `legion gh` around the real gh, which reads gh's own line (HostInLine);
-// agent-secrets; and `legion`'s own HTTP clients, which wrap their transport (Transport). The
-// record changes nothing of the call that failed: not its error, its response or its status, and
-// not what the leak guard allows.
+// agent-secrets; and `legion`'s own HTTP clients, which wrap their transport (Transport). `legion
+// gh` and `legion leak-check pre-push` also record for the Legion leak guard's own gh read: on
+// gh's line, and where the guard's own bound stops that read before GitHub sent any answer, and
+// the line names which of the two events it records (Event). The record changes nothing of the
+// call that failed: not its error, its response or its status, and not what the leak guard allows.
 //
 // Each caller names how the record's curl starts (Recorder.Start), and this package names no
 // start of its own: the pod's launcher, its container's PID 1, reaps every exited child it does

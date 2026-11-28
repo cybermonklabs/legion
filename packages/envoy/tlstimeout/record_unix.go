@@ -22,18 +22,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// RecordContext writes one line to Stderr, at most 2048 bytes, that says what stood around a TLS
-// handshake timeout to host (a host and port, the request URL's Host), where its rate limit of one
-// a minute allows it:
+// RecordContext writes one line to Stderr, at most 2048 bytes, that says what stood around event
+// at host (a host and port, the request URL's Host): a TLS handshake timeout to it, or the leak
+// guard's own bound stopping a read of it before any answer (Event). It writes it where its rate
+// limit of one a minute allows it:
 //
-//	<Client>: tls handshake timeout recorded: host=<host> go_dns_s=… go_connect_s=…
-//	go_tls_start_s=… go_tls_done_s=… go_tls_version=… go_tls_curve=… go_error="…"
-//	curl_namelookup_s=… curl_connect_s=… curl_appconnect_s=… curl_total_s=… curl_exit=…
-//	proc_user_s=… proc_sys_s=… [child_user_s=… child_sys_s=…] cpu_quota_us=… cpu_period_us=…
-//	cpu_usage_s=… pids=… bound_s=… at=<RFC 3339 UTC>
+//	<Client>: tls handshake timeout recorded: host=<host> event=<handshake_timeout|guard_bound>
+//	go_dns_s=… go_connect_s=… go_tls_start_s=… go_tls_done_s=… go_tls_version=… go_tls_curve=…
+//	go_error="…" curl_namelookup_s=… curl_connect_s=… curl_appconnect_s=… curl_total_s=…
+//	curl_exit=… proc_user_s=… proc_sys_s=… [child_user_s=… child_sys_s=…] cpu_quota_us=…
+//	cpu_period_us=… cpu_usage_s=… pids=… bound_s=… at=<RFC 3339 UTC>
 //
 // on one line. Seconds have three decimals; a figure that could not be read, and a phase that did
-// not happen, is `-`. In order, it:
+// not happen, is `-`. Both events share the rate limit, since both are the one fault. In order,
+// it:
 //
 //   - keeps the rate limit: a stamp, the file <StampDir>/<Client> of mode 0600 in a directory of
 //     mode 0700 that this user owns, neither a link. Where the stamp's time is within a minute of
@@ -62,7 +64,7 @@ import (
 // run, such as `legion gh` on a SIGTERM, is not held to the bound. The line is written all the
 // same, with what the probes saw by then: the Go probe's error is the context's end, and a curl
 // stopped before it exited of its own has no exit status.
-func (r *Recorder) RecordContext(ctx context.Context, host string) {
+func (r *Recorder) RecordContext(ctx context.Context, host string, event Event) {
 	defer func() { _ = recover() }()
 	if r == nil || r.Stderr == nil || !clientWord(r.Client) {
 		return
@@ -91,7 +93,7 @@ func (r *Recorder) RecordContext(ctx context.Context, host string) {
 	} else {
 		seen.goProbe.said = "the host is no plain host, so nothing probed it"
 	}
-	_, _ = io.WriteString(r.Stderr, recordLine(r.Client, printedHost(host), seen))
+	_, _ = io.WriteString(r.Stderr, recordLine(r.Client, printedHost(host), event, seen))
 }
 
 // claim is the rate limit (RecordContext): whether a record of r.Client may be made at now, having

@@ -185,7 +185,7 @@ func TestTransportReturnsTheBasesOwnAnswerUnchanged(t *testing.T) {
 		if response != gotResponse || err != gotErr || !IsTimeout(err) {
 			t.Errorf("Transport answered %v, %v; want the base's own %v, %v, a handshake timeout", response, err, gotResponse, gotErr)
 		}
-		if lines := strings.Count(stderr.String(), "agent-secrets: tls handshake timeout recorded: host="+silent+" "); lines != 1 {
+		if lines := strings.Count(stderr.String(), "agent-secrets: tls handshake timeout recorded: host="+silent+" event=handshake_timeout "); lines != 1 {
 			t.Errorf("the timeout wrote %d record lines, want 1:\n%s", lines, stderr.String())
 		}
 	})
