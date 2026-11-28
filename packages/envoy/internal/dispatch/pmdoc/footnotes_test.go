@@ -227,6 +227,60 @@ func BenchmarkALongBlocksCallsAgainstNineThousandLabels(b *testing.B) {
 	}
 }
 
+// longLabelOpenCalls is the markdown of two blocks of about 50,000 bytes, each opening thousands of
+// calls that its one `]` closes: open, `[^` written 24,999 times and then `[^k1]`, 25,000 calls;
+// escaped, `\[^` written 16,665 times and then `\[^k1]`, 16,666 calls, each opened by a `[^` after
+// a backslash; and labels, the labels a document defines, `k1` and one label of 50,000 bytes, `x`
+// written 50,000 times, which no call of either block names.
+func longLabelOpenCalls() (open, escaped string, labels []string) {
+	open = strings.Repeat("[^", 24_999) + "[^k1]"
+	escaped = strings.Repeat(`\[^`, 16_665) + `\[^k1]`
+	return open, escaped, []string{"k1", strings.Repeat("x", 50_000)}
+}
+
+// A block of about 50,000 bytes whose one `]` closes the 25,000 calls it opens writes `k1` alone
+// against the keys of `k1` and of a label of 50,000 bytes, and so does one whose 16,666 calls each
+// open after a backslash (longLabelOpenCalls): of the labels those calls run to, from `k1` to one
+// of about 50,000 bytes, only `k1` folds to the key of a label the document defines. A document's
+// author sets the length of a label, so the reading of a block must not fold each call open within
+// a bound that grows with it: against a label of 50,000 bytes such a bound would fold every call of
+// both blocks, for an answer that stays `k1` (BenchmarkALongBlocksOpenCallsAgainstALongLabel times
+// both readings).
+func TestALongBlocksOpenCallsAgainstALongLabelWriteTheSameLabels(t *testing.T) {
+	t.Parallel()
+	open, escaped, labels := longLabelOpenCalls()
+	want := []string{"k1"}
+	for _, block := range []struct{ name, markdown string }{{"open", open}, {"escaped", escaped}} {
+		if got := KeyFootnoteLabels(labels).Written(block.markdown); !slices.Equal(got, want) {
+			t.Errorf("the reading of the %s block of %d bytes = %q, want %q", block.name, len(block.markdown), got, want)
+		}
+	}
+}
+
+// BenchmarkALongBlocksOpenCallsAgainstALongLabel times the reading of each block of
+// longLabelOpenCalls against the keys of `k1` and of a label of 50,000 bytes: open, whose one `]`
+// closes the 25,000 calls it opens, and escaped, whose 16,666 calls each open after a backslash.
+// The keys are made once outside the timed loop, as the server makes them once for a document
+// (footnotesCalledIn).
+func BenchmarkALongBlocksOpenCallsAgainstALongLabel(b *testing.B) {
+	open, escaped, labels := longLabelOpenCalls()
+	keys := KeyFootnoteLabels(labels)
+	want := []string{"k1"}
+	read := func(markdown string) func(*testing.B) {
+		return func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if got := keys.Written(markdown); !slices.Equal(got, want) {
+					b.Fatalf("the block's reading answers %q, want %q", got, want)
+				}
+			}
+		}
+	}
+	b.Run("open", read(open))
+	b.Run("escaped", read(escaped))
+}
+
 // A footnote reference resolves to the first definition whose label it equals byte for byte, and
 // failing that to the first whose label matches it up to case (footnoteLabelKey), carrying its
 // label as written then; a reference that matches no definition stays text. That was goldmark's
