@@ -300,13 +300,16 @@ type SendResponse struct {
 	// RecipientState is the state the recipient's record puts it in at the moment the send was
 	// accepted: live, or unresponsive for a session that has stopped answering and whose messages
 	// the listener still stores, and gone for a session the session registry holds no entry of
-	// within the gone horizon that the known-session store still knows, which State then answers
-	// stopped. A sender that must know whether its message will be read soon reads it; one that
-	// only needs the message stored ignores it. It is left out when State is no_receiver, and
-	// only then: the session's entry may read live by its age, but no message reaches its
-	// conversation now, and an answer that said live would say it does. The field is left out
-	// rather than empty, because every released plugin refuses an empty string as no value of its
-	// closed list of three. A client reads an absent field as the empty SessionState.
+	// within the gone horizon. Such a session is one the known-session store still knows, which
+	// State then answers stopped, or a stopped Legion agent whose daemon the send was handed to
+	// (the listener's handOffToLegion), which State leaves empty, whether the send named that
+	// session or carried the mark of a role whose newest session it is (SendRequest.Role). A
+	// sender that must know whether its message will be read soon reads it; one that only needs
+	// the message stored ignores it. It is left out when State is no_receiver, and only then: the
+	// session's entry may read live by its age, but no message reaches its conversation now, and
+	// an answer that said live would say it does. The field is left out rather than empty,
+	// because every released plugin refuses an empty string as no value of its closed list of
+	// three. A client reads an absent field as the empty SessionState.
 	RecipientState SessionState `json:"recipient_state,omitempty"`
 	// State is what the connection probe and the entry found the recipient to be when the message
 	// was stored: connected, stopped or no_receiver, by the rules the listener's sendHandler

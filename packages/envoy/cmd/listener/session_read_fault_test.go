@@ -16,8 +16,8 @@ import (
 // bucket stream's leader (NewestFromLeader, bus.LeaderReads), first asks fault about its key: an
 // error is the read's answer, and nil lets the read go on to the bucket, a leader read through
 // leader, the handle this one stands in for. A resolution reads a holder its cache does not show
-// live the one way or the other (roleHolderSessions, leaderHolderSessions), so a fault planted
-// here reaches it whichever way it reads.
+// live the one way or the other (roleHolderSessions, cachedThenLeaderHolderSessions), so a fault
+// planted here reaches it whichever way it reads.
 type sessionReadFault struct {
 	natsgo.KeyValue
 	leader bus.KeyValue

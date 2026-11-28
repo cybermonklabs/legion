@@ -670,22 +670,20 @@ func (rig *inProcessRig) stoppedAgentHandoff(t *testing.T) *legionHandoff {
 		agents: newLegionAgentRegistry(agents), logger: rig.logger}
 }
 
-// The agent subject's give-up hands a message off within legionHandoffGiveUpWindow and no longer.
-// While an earlier attempt of the same hand-off is still in process, as routes frozen under it
-// leave it, the stream refuses every publish of the give-up's hand-off as in process
+// The agent subject's give-up hands a message off within its window (handoffGiveUpWindow) and no
+// longer. While an earlier attempt of the same hand-off is still in process, as routes frozen under
+// it leave it, the stream refuses every publish of the give-up's hand-off as in process
 // (bus.ErrDuplicateInProcess), and publishPastInProcess publishes again until its context ends.
 // The window is that context: the give-up returns once it ends, records the failed hand-off (its
 // line and its count) and NAKs the message to be tried again, rather than publishing again for as
 // long as the earlier attempt is not stored, which a stream that lost its quorum may never store.
-// The window is shortened to a second here; the row's own bound, ten seconds past it, is what
-// fails a give-up that does not stop.
+// The window is shortened to a second here, on the rig's own copy of the configuration; the row's
+// own bound, ten seconds past it, is what fails a give-up that does not stop.
 func TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess(t *testing.T) {
-	saved := legionHandoffGiveUpWindow
-	legionHandoffGiveUpWindow = time.Second
-	t.Cleanup(func() { legionHandoffGiveUpWindow = saved })
 	rig := newInProcessRig(t)
 	cfg := rig.harness.config
 	cfg.handoff = rig.stoppedAgentHandoff(t)
+	cfg.handoffGiveUpWindow = time.Second
 	subject := listenerwire.LegionHandoffSubject("infra", handoffAgent)
 	item := envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+"."+id.New(), "agent")
 
@@ -724,7 +722,7 @@ func TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess(t 
 	}()
 	awaitHanded(t, heard, 1)
 
-	window := legionHandoffGiveUpWindow
+	window := cfg.handoffGiveUpWindow
 	bound := window + 10*time.Second
 	started := time.Now()
 	answered := make(chan bool, 1)

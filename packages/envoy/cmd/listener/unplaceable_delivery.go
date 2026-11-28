@@ -205,10 +205,12 @@ func noRecordAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMe
 // and its project answers, the daemon answers the message from the agent's own conversation and
 // decides whether the agent wakes, so the hand-off is the message's whole outcome and no wake is
 // reported beside it, which would resume a released agent before its daemon decided. A hand-off
-// whose publish failed is NAKed and decided again at its next delivery. Each listener that decides
-// the message - the one the session's interest row names, or every listener when no row does -
-// hands it off under the one MsgId, so the stream stores it once. Only a message no daemon took
-// has the session's wake reported (reportNoRecordWake).
+// whose publish failed is NAKed and reports no wake either: below the stream's last delivery it is
+// decided again at its next one, and at the last delivery, or on a core delivery, it ends with its
+// ERROR line alone (offerAgentDeliveryToLegion). Each listener that decides the message - the one
+// the session's interest row names, or every listener when no row does - hands it off under the
+// one MsgId, so the stream stores it once. Only a message no daemon took has the session's wake
+// reported (reportNoRecordWake).
 func decideNoRecordAgentMessage(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
 	if offerAgentDeliveryToLegion(cfg, message, item, sessionID) {
 		return

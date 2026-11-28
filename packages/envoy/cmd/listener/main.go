@@ -1716,6 +1716,9 @@ func runListener(credentialWait time.Duration) {
 		// handler and route built from this one value shares it, as they share the set above.
 		roleKeepDrains: newRoleKeepGuards(),
 		handoff:        handoff,
+		// One agent-subject hand-off's bound, well inside the durable's ack wait
+		// (legionHandoffGiveUpWindow).
+		handoffGiveUpWindow: legionHandoffGiveUpWindow,
 		// The listener's one clock for a kept copy's hour: the keep's answer, and the
 		// handovers the claim route, the keep, the registration and the sweep start
 		// (role_keep.go).

@@ -733,8 +733,8 @@ func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T
 // claimRoleBeyondTheSessionCache registers holder and claims each of roles for it with this
 // listener's session cache no longer watching the bucket, so every resolution of those roles'
 // holder reads the session bucket itself (session.SessionRegistry.Refresh, or RefreshFromLeader
-// for a resolution through leaderHolderSessions): the read these tests fail. The holder is
-// registered through a registry of its own, since the cache this listener has stopped would
+// for a resolution through cachedThenLeaderHolderSessions): the read these tests fail. The holder
+// is registered through a registry of its own, since the cache this listener has stopped would
 // otherwise answer for it.
 func claimRoleBeyondTheSessionCache(t *testing.T, harness listenerDeliveryHarness, holder string, roles ...string) {
 	t.Helper()

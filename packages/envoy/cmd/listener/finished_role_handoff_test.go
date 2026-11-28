@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // finishedLegionRole is the role token of a Legion phase worker whose issue has left the
@@ -64,10 +67,16 @@ type handedPublishAnswer struct {
 // wait for nobody, while the daemon answers this one now from the stopped agent's conversation.
 // The publish names the role in its old form, the name alone, and the hand-off's 200 names the
 // new form in its warnings as a delivery's 200 and a keep's 202 do (store.Registry.ReadRole): the
-// publisher is one the old form's refusal would stop, whoever answers it.
+// publisher is one the old form's refusal would stop, whoever answers it. The publish's delivery
+// line and its count read handed_off, as the agent subject's hand-off's do, and the line names the
+// agent it was handed to (sendHandedOff).
 func TestAPublishToAFinishedLegionRoleIsHandedToItsDaemonAndNotKept(t *testing.T) {
 	d, client := keptRoleDeps(t)
 	withFinishedHandoff(t, d)
+	logs := &cmdtest.LockedBuffer{}
+	d.delivery.logger = logging.NewWithWriter("test", logs)
+	counts := metrics.New()
+	d.delivery.messagesDelivered = counts.NewCounter("test_messages_delivered", "test")
 
 	recorder, _ := publishToRole(t, d, finishedLegionRole,
 		`{"topic":"`+contracts.RoleTopicPrefix+finishedLegionRole+`","source":"agent","source_session":"ses-architect","message":"what did the review find?"}`)
@@ -95,5 +104,14 @@ func TestAPublishToAFinishedLegionRoleIsHandedToItsDaemonAndNotKept(t *testing.T
 	if wire.TargetSession != finishedRoleSession || wire.RoleToken != finishedLegionRole ||
 		wire.OriginalTopic != contracts.RoleTopicPrefix+finishedLegionRole {
 		t.Fatalf("the stored hand-off is %+v, want the publish's topic handed to the finished role's newest session", wire)
+	}
+
+	lines := linesIn(logs.String(), "listener publish role send", nil)
+	if len(lines) != 1 || lines[0]["delivery_status"] != "handed_off" || lines[0]["reason"] != "handed_off" || lines[0]["session_id"] != finishedRoleSession {
+		t.Fatalf("the publish's delivery lines are %v, want one with delivery_status and reason handed_off naming %s, the session it was handed to:\n%s",
+			lines, finishedRoleSession, logs.String())
+	}
+	if body := string(counts.Text("test_messages_delivered")); !strings.Contains(body, `test_messages_delivered{delivery_status="handed_off"} 1`) {
+		t.Fatalf("the listener's delivery count lacks the hand-off, delivery_status handed_off:\n%s", body)
 	}
 }

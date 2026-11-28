@@ -845,12 +845,12 @@ const senderStampReadTimeout = 1 * time.Second
 //   - No entry, or one past the gone horizon, for a stopped Legion agent whose daemon answers for
 //     it (handOffToLegion: the agent registry names the session and its project last said it
 //     answers, an agent whose idle issue pod the daemon released among them), whether or not a
-//     known-session record stands: 200, recipient the session and state empty, the message handed
-//     to that daemon, stored for no session and raising no wake report. A repeat under one
-//     idempotency key whose hand-off the stream already held is answered that hand-off's
-//     envelope, read back as a stored copy is and with duplicate where it is another request's
-//     (answerHandedOff), or the stored-copy 503 when it cannot be read back. A connected_only send
-//     and one carrying "handoff": false are never handed off.
+//     known-session record stands: 200, recipient the session, recipient_state gone and state
+//     empty (handedOffSendResponse), the message handed to that daemon, stored for no session and
+//     raising no wake report. A repeat under one idempotency key whose hand-off the stream already
+//     held is answered that hand-off's envelope, read back as a stored copy is and with duplicate
+//     where it is another request's (answerHandedOff), or the stored-copy 503 when it cannot be
+//     read back. A connected_only send and one carrying "handoff": false are never handed off.
 //   - No entry, or one past the gone horizon, and a known-session record: 200, state stopped,
 //     recipient_state gone and last_seen the record's. The message is stored either way, and
 //     Envoy keeps it for 72 hours, so a session that runs again under the same id gets it from
@@ -998,32 +998,19 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// off too, and its daemon decides whether the message wakes it. A connected-only send
 			// is not handed off: it asks for a stopped target to be refused, and a daemon answering
 			// in the agent's place is not the agent connected.
-			handed, handoffErr := d.handoff.handOffToLegion(ctx, legionHandoffTarget{
+			handed, duplicate, handoffErr := d.handoff.handOffForRequest(ctx, legionHandoffTarget{
 				envelope: item, session: targetSession, stampSender: true,
 				optedOut: optedOutOfHandoff(body) || request.ConnectedOnly,
-			})
+			}, record, senderOf(r, item), &item)
 			if handoffErr != nil {
-				charge.published(bus.StoredAck{}, handoffErr)
 				record.refuseBusUnavailable(w, handoffErr)
 				return
 			}
 			if handed != nil {
-				charge.published(handed.ack, nil)
 				// A repeat whose first send was handed off is answered the hand-off the stream
 				// holds, as a repeat this route publishes is answered its stored copy
 				// (answerHandedOff, publishHeld).
-				duplicate, answerErr := answerHandedOff(ctx, d.client, record, senderOf(r, item), handed, &item)
-				if answerErr != nil {
-					record.refuseBusUnavailable(w, answerErr)
-					return
-				}
-				record.accept(w, listenerwire.SendResponse{
-					Envelope:       item,
-					ExpectsReply:   expectsReplyAnswer(body.ExpectsReply, item.ExpectsReply),
-					Recipient:      handed.TargetSession,
-					RecipientState: recipientState,
-					Duplicate:      duplicate,
-				})
+				record.accept(w, handedOffSendResponse(item, body.ExpectsReply, handed, duplicate))
 				return
 			}
 			var recorded bool
@@ -1580,11 +1567,11 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			}
 			ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(publishDeliveryWindow))
 			defer cancel()
-			// The request's keep flag is read here and nowhere else: it belongs to this route's
-			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
-			// holder and back in this route's own answer. No flag at all means keep, so every
+			// The request's keep flag is read by sendToRole and nowhere else: it belongs to this
+			// route's give-up (roleSend.noHolder) rather than to the envelope, which travels on to
+			// the holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, senderOf(r, item), request.ExpectsReply, role, request.Keep == nil || *request.Keep, optedOutOfHandoff(request.MessageBody), arrived, warnings)
+			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, senderOf(r, item), request, role, arrived, warnings)
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone

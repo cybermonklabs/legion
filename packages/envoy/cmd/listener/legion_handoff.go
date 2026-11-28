@@ -44,13 +44,19 @@ func isLegionHandoffSubject(subject string) bool {
 // would have before its delivery; a role publish stamps the sender before it resolves the holder
 // (sendToRole) and a bus message already carries the stamp its publishing listener gave it.
 // optedOut is a publish or send body that carried "handoff": false, as every one the daemon makes
-// does.
+// does. confirmMiss, which only a role token's target carries, is its caller's last check before
+// the registry is scanned for the role's newest session (answeringAgent): it is asked once the
+// role's project is found to answer, and a false answer hands nothing off. The publish route's
+// role send sets it to its confirmation, from the buckets' stream leaders, that the role still has
+// no live holder (roleSend.missConfirmed), so a role whose project does not answer costs no leader
+// read.
 type legionHandoffTarget struct {
 	envelope    contracts.Envelope
 	session     string
 	roleToken   string
 	stampSender bool
 	optedOut    bool
+	confirmMiss func() bool
 }
 
 // legionHandoff hands a stopped Legion agent's message to its daemon. A nil one hands nothing off.
@@ -85,11 +91,14 @@ type legionHandedOff struct {
 //   - the Legion agent registry names the session: the session addressed, or the role token's
 //     newest session, whether that entry's issue has left the workflow or not (answeringAgent). A
 //     role the registry holds no entry for keeps its message for the role's first holder instead;
-//   - that session's project last said it answers (project.<legion_project>, legionagents.Project).
-//     Only the flag counts, never its age: a daemon that stated answering: true and then stopped
-//     still gets its agents' messages, which JetStream holds until it reads them (spec v21,
-//     section 2.12 of dispatch://INFRA-204's plan). A project that stated answering: false, or
-//     never stated anything, keeps the refusal it had before hand-off;
+//   - that session's project last said it answers (project.<legion_project>, legionagents.Project,
+//     legionProjectAnswers). Only the flag counts, never its age: a daemon that stated answering:
+//     true and then stopped still gets its agents' messages, which JetStream holds until it reads
+//     them (spec v21, section 2.12 of dispatch://INFRA-204's plan). A project that stated
+//     answering: false, or never stated anything, keeps the refusal it had before hand-off. A role
+//     token names its project, whose flag is read before anything else (answeringAgent);
+//   - for a role token whose caller confirms the role's miss (confirmMiss), that confirmation
+//     holds;
 //   - envoy_sessions holds no record of the session at all, or one past the gone horizon
 //     (notGone, read through this listener's cache to the bucket). A session that is live, and one
 //     past the live window but still inside the gone horizon, is not handed off: the first is
@@ -173,12 +182,58 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 // mayHandOff reports whether handOffToLegion can hand target off at all, before any read: this
 // listener has a hand-off, the body did not opt out with "handoff": false, the source is not
 // envoy, and a role token is a Legion workflow role's (legionagents.ValidateRoleToken), since the
-// registry names no session for any other. A caller that pays a read of its own before a
-// hand-off asks it first, so a message that can never be handed off, a plain Envoy role's among
-// them, pays nothing (roleSend.noHolder).
+// registry names no session for any other. handOffToLegion asks it first, and a read a caller pays
+// for a hand-off alone is the target's confirmMiss, asked only once this holds and the role's
+// project answers, so a message that can never be handed off, a plain Envoy role's among them,
+// and one for a role whose project does not answer pay nothing for it (roleSend.noHolder).
 func (h *legionHandoff) mayHandOff(target legionHandoffTarget) bool {
 	return h != nil && !target.optedOut && target.envelope.Source != "envoy" &&
 		(target.roleToken == "" || legionagents.ValidateRoleToken(target.roleToken) == nil)
+}
+
+// handOffForRequest is the hand-off of a message a request carries, as each route that answers a
+// request makes it: the send route's for a session (sendHandler), the send route's for a send
+// marked with a role (handOffOrKeepRoleSend) and the publish route's for a role
+// (roleSend.noHolder). It hands target off (handOffToLegion), marks the request's charge
+// (record.charge) by the stream's verdict on the hand-off's publish, a publish that failed
+// included (senderCharge.published), and makes *item, the envelope target carries, the answer of
+// the hand-off it published (answerHandedOff), reading a copy the stream already held through
+// this listener's bus client. It answers the hand-off, nil with *item untouched when nothing was
+// handed off, and duplicate as answerHandedOff answers it. The error is a hand-off whose publish
+// failed, or whose copy could not be read back: each caller refuses on it as it refuses a publish
+// of its own that failed, and otherwise builds its own answer.
+func (h *legionHandoff) handOffForRequest(ctx context.Context, target legionHandoffTarget, record *requestRecord, sender requestSender, item *contracts.Envelope) (handed *legionHandedOff, duplicate bool, err error) {
+	handed, err = h.handOffToLegion(ctx, target)
+	if err != nil {
+		record.charge.published(bus.StoredAck{}, err)
+		return nil, false, err
+	}
+	if handed == nil {
+		return nil, false, nil
+	}
+	record.charge.published(handed.ack, nil)
+	if duplicate, err = answerHandedOff(ctx, h.client, record, sender, handed, item); err != nil {
+		return nil, false, err
+	}
+	return handed, duplicate, nil
+}
+
+// handedOffSendResponse is the send route's 200 for a send handed to a stopped Legion agent's
+// daemon (handOffForRequest), whether the send named the agent's session (sendHandler) or carried
+// the mark of a role whose newest session the agent is (handOffOrKeepRoleSend), so both answer
+// alike: item, the envelope the hand-off answered, its expects_reply in the dialect the request
+// spoke (expectsReplyAnswer), the agent's session as recipient and recipient_state gone. A
+// hand-off takes only a session with no entry within the gone horizon (handOffToLegion), which is
+// the session listenerwire.SendResponse.RecipientState names gone. It carries no state and no
+// last_seen: the message was stored for no session, and no session was probed.
+func handedOffSendResponse(item contracts.Envelope, expectsReply json.RawMessage, handed *legionHandedOff, duplicate bool) listenerwire.SendResponse {
+	return listenerwire.SendResponse{
+		Envelope:       item,
+		ExpectsReply:   expectsReplyAnswer(expectsReply, item.ExpectsReply),
+		Recipient:      handed.TargetSession,
+		RecipientState: session.Gone,
+		Duplicate:      duplicate,
+	}
 }
 
 // answerHandedOff makes *item, the envelope a route built for its request, the answer of handed,
@@ -240,7 +295,16 @@ func (r handoffCopies) NextStoredMessage(ctx context.Context, subject string, se
 // the registry names no session for it (a session id the registry would not hold included), when
 // its project said otherwise, and while the registry's bucket is not open, which the routes
 // answer 503 and this answers as it answers a registry naming no session. A role token that is
-// not a Legion workflow role's never reaches it (mayHandOff).
+// not a Legion workflow role's never reaches it (mayHandOff). Whether a project answers is
+// legionProjectAnswers' rule, the one the registry's reads answer each entry's answering by.
+//
+// A role token names its project (legionagents.RoleTokenParts), the one every entry under it
+// carries (legionagents.Validate), so that project's flag is read first: a role whose project does
+// not answer costs neither a scan of the registry nor the reads its caller confirms the role's
+// miss with (confirmMiss), which are asked next, before the scan. The flag's read and the scan
+// are each bounded by legionagents.ReadTimeout, so the confirmation's reads take nothing from the
+// scan's bound. A session addressed by id is read first, and its entry names the project whose
+// flag is read after it, the two under one bound.
 //
 // A role token is answered for by its newest entry, whether that entry's issue has left the
 // workflow or not: a worker that failed, or that the workflow, an operator or an idle release
@@ -261,47 +325,47 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 	if agents == nil {
 		return nil, nil
 	}
+	if target.roleToken != "" {
+		project, _ := legionagents.RoleTokenParts(target.roleToken)
+		readCtx, cancel := context.WithTimeout(ctx, legionagents.ReadTimeout)
+		answers, err := legionProjectAnswers(readCtx, agents, project)
+		cancel()
+		if err != nil || !answers {
+			return nil, err
+		}
+		if target.confirmMiss != nil && !target.confirmMiss() {
+			return nil, nil
+		}
+		readCtx, cancel = context.WithTimeout(ctx, legionagents.ReadTimeout)
+		defer cancel()
+		held, err := agents.ByRoleToken(readCtx, target.roleToken)
+		if err != nil || len(held) == 0 {
+			return nil, err
+		}
+		return &held[0].LegionAgentEntry, nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, legionagents.ReadTimeout)
 	defer cancel()
-	var entry legionagents.Entry
-	if target.roleToken != "" {
-		held, err := agents.ByRoleToken(ctx, target.roleToken)
-		if err != nil {
-			return nil, err
-		}
-		if len(held) == 0 {
-			return nil, nil
-		}
-		entry = held[0].LegionAgentEntry
-	} else {
-		agent, err := agents.Get(ctx, target.session)
-		if errors.Is(err, legionagents.ErrNotFound) || errors.Is(err, legionagents.ErrInvalid) {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		entry = agent.LegionAgentEntry
+	agent, err := agents.Get(ctx, target.session)
+	if errors.Is(err, legionagents.ErrNotFound) || errors.Is(err, legionagents.ErrInvalid) {
+		return nil, nil
 	}
-	record, found, err := agents.Project(ctx, entry.LegionProject)
 	if err != nil {
 		return nil, err
 	}
-	if !found || !record.Answering {
-		return nil, nil
+	if answers, err := legionProjectAnswers(ctx, agents, agent.LegionProject); err != nil || !answers {
+		return nil, err
 	}
-	return &entry, nil
+	return &agent.LegionAgentEntry, nil
 }
 
-// legionHandoffGiveUpWindow bounds one hand-off the agent-subject delivery's decision makes
-// (decideNoRecordAgentMessage, offerAgentDeliveryToLegion): its registry reads and its publish,
-// retries of an id still in process included. A publish takes milliseconds and each send is
-// bounded by the bus's own publish bound, so a window well inside the consumer's ack wait
+// legionHandoffGiveUpWindow is the bound main.go gives one hand-off the agent-subject delivery's
+// decision makes (listenerDeliveryHandlerConfig.handoffGiveUpWindow): its registry reads and its
+// publish, retries of an id still in process included. A publish takes milliseconds and each send
+// is bounded by the bus's own publish bound, so a window well inside the consumer's ack wait
 // (consumerAckWait) leaves the NAK room to ask for the redelivery before the server would send the
 // message again by itself.
-// It is a variable so that a test can shorten it
-// (TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess).
-var legionHandoffGiveUpWindow = 10 * time.Second
+const legionHandoffGiveUpWindow = 10 * time.Second
 
 // offerAgentDeliveryToLegion offers one agent-subject delivery this listener found no session
 // record for to the stopped Legion agent's daemon, and reports whether that offer was the
@@ -318,10 +382,14 @@ var legionHandoffGiveUpWindow = 10 * time.Second
 //     the message ACKed, with no exception - the daemon answers it from the agent's own
 //     conversation. Its line says whether the stream already held that hand-off (duplicate),
 //     as another listener's durable that handed off the same message first leaves it;
-//   - a hand-off whose publish failed is NAKed and tried again rather than answered, since the
-//     decision's own answer would report the very wake the hand-off replaces. Its attempt-cache
-//     entry is cleared with it, or the redelivery this NAK asks for is swallowed as an
-//     attempt-dedupe skip before the handler runs again.
+//   - a hand-off whose publish failed is logged at ERROR, counted failed and NAKed, with its
+//     attempt-cache entry cleared, and reports no wake: the decision's own answer would report the
+//     very wake the hand-off replaces. Below the stream's last delivery (consumerMaxDeliver) the
+//     NAK brings the message back to be decided again, and the cleared entry keeps that redelivery
+//     from being swallowed as an attempt-dedupe skip before the handler runs again. At the stream's
+//     last delivery the NAK gets no redelivery, and a core delivery is never sent again
+//     (deliveryMessage.finalize does nothing to one), so there the message ends with the ERROR
+//     line alone.
 //
 // It answers false when nothing was handed off - no registry entry for the session, a project
 // that does not answer, a session that is not gone, a message that opted out, a registry that
@@ -329,12 +397,11 @@ var legionHandoffGiveUpWindow = 10 * time.Second
 // caller reports the session's wake (reportNoRecordWake).
 //
 // The decision answers no request, so the hand-off takes a context of its own,
-// legionHandoffGiveUpWindow, rather than none: its publish is made again for as long as a
-// clustered stream refuses it as still in process under an earlier attempt
-// (publishPastInProcess), and a refusal that outlives the window is a hand-off that failed, NAKed
-// and tried again like any other.
+// cfg.handoffWindow(), rather than none: its publish is made again for as long as a clustered
+// stream refuses it as still in process under an earlier attempt (publishPastInProcess), and a
+// refusal that outlives the window is a hand-off that failed, answered as any other is.
 func offerAgentDeliveryToLegion(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), legionHandoffGiveUpWindow)
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.handoffWindow())
 	defer cancel()
 	handed, err := cfg.handoff.handOffToLegion(ctx, legionHandoffTarget{envelope: item, session: sessionID})
 	switch {
@@ -364,4 +431,14 @@ func offerAgentDeliveryToLegion(cfg listenerDeliveryHandlerConfig, message deliv
 		return false
 	}
 	return true
+}
+
+// handoffWindow is the bound of one hand-off the agent-subject delivery's decision makes
+// (offerAgentDeliveryToLegion): cfg.handoffGiveUpWindow, or legionHandoffGiveUpWindow for a
+// configuration that sets none, so a zero window never ends a hand-off before its first read.
+func (cfg listenerDeliveryHandlerConfig) handoffWindow() time.Duration {
+	if cfg.handoffGiveUpWindow <= 0 {
+		return legionHandoffGiveUpWindow
+	}
+	return cfg.handoffGiveUpWindow
 }

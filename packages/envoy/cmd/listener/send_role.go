@@ -125,10 +125,11 @@ func dispatchFieldRefusal(r *http.Request, dispatchPrincipal, field string) stri
 // publish route answers a send to such a role (roleSend.noHolder). A Legion role whose newest
 // session's daemon answers for it, whether its issue has left the workflow or not and whether or
 // not the daemon released that session's idle issue pod, takes the message through that daemon
-// (handOffToLegion on the role token, under the conditions its comment names), answered 200 as
-// the send route answers a send it handed off: the envelope handed off, that session as
-// recipient, and for a repeat whose hand-off the stream already held, that hand-off's envelope,
-// with duplicate where it is another request's (answerHandedOff). Dispatch marks a role's message
+// (handOffForRequest on the role token, under the conditions handOffToLegion's comment names),
+// answered 200 as the send route answers a send it handed off, with the one answer both build
+// (handedOffSendResponse): the envelope handed off, that session as recipient, recipient_state
+// gone, and for a repeat whose hand-off the stream already held, that hand-off's envelope, with
+// duplicate where it is another request's (answerHandedOff). Dispatch marks a role's message
 // it sends to that stopped session whenever its recheck of the session pinned on the attempt
 // finds the listener's own record of it, a known-session record among them, which names no
 // registry redirect (mentionResolutionFor, resolveDeliveryTarget in internal/dispatch/api), so
@@ -154,28 +155,16 @@ func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listen
 		holder, live = resolved.Holder, resolved.State == roles.Live
 	}
 	if !live {
-		handed, err := d.handoff.handOffToLegion(ctx, legionHandoffTarget{
+		handed, duplicate, err := d.handoff.handOffForRequest(ctx, legionHandoffTarget{
 			envelope: *item, roleToken: item.Role, stampSender: true,
 			optedOut: optedOutOfHandoff(request.MessageBody),
-		})
+		}, record, sender, item)
 		if err != nil {
-			charge.published(bus.StoredAck{}, err)
 			record.refuseBusUnavailable(w, err)
 			return
 		}
 		if handed != nil {
-			charge.published(handed.ack, nil)
-			duplicate, err := answerHandedOff(ctx, d.client, record, sender, handed, item)
-			if err != nil {
-				record.refuseBusUnavailable(w, err)
-				return
-			}
-			record.accept(w, listenerwire.SendResponse{
-				Envelope:     *item,
-				ExpectsReply: expectsReplyAnswer(request.ExpectsReply, item.ExpectsReply),
-				Recipient:    handed.TargetSession,
-				Duplicate:    duplicate,
-			})
+			record.accept(w, handedOffSendResponse(*item, request.ExpectsReply, handed, duplicate))
 			return
 		}
 	}

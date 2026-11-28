@@ -176,6 +176,12 @@ type listenerDeliveryHandlerConfig struct {
 	// handoff hands an agent-subject message with no session record to the stopped Legion agent's
 	// daemon in place of its wake (decideNoRecordAgentMessage); nil hands nothing off.
 	handoff *legionHandoff
+	// handoffGiveUpWindow bounds one hand-off that decision makes (offerAgentDeliveryToLegion):
+	// its registry reads and its publish, retries of an id still in process included. A test that
+	// runs a give-up out to its window shortens it on its copy; at or below zero it is
+	// legionHandoffGiveUpWindow (handoffWindow), the bound main.go and the tests' delivery harness
+	// (newListenerDeliveryHarnessOn) set.
+	handoffGiveUpWindow time.Duration
 	// now is the listener's clock, which a kept copy's age and the end of its hour are measured
 	// by, against the time the stream stored the copy: the keep's answer (storeKeptRoleCopy), the
 	// handovers the claim route, the keep and a registration that makes a holder live again

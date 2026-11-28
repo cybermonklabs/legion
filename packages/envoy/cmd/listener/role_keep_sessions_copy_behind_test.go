@@ -8,15 +8,15 @@ import (
 )
 
 // The kept lane's handover resolves the role's holder with the holder's session record read from
-// the session bucket stream's leader (handOverKeptRole, leaderHolderSessions), so a copy kept for
-// the role reaches a holder this listener's cache has not caught up with, even where the copy of
-// the session bucket a direct get reaches has not applied that holder's registration either. The
-// sweep is the one start of a handover in this row (sweepOnce): the holder registered and claimed
-// the role through another listener's stores, which starts no handover on this one, and the copy
-// was kept with no handover started behind it. When the handover read the record with a direct
-// get, the copy answered it absent, the holder read lapsed, and the walk with no holder left the
-// copy on the lane for the next sweep, minutes later, which would read the record the same way.
-// Control: with a current copy the same sweep forwards the kept copy to the holder.
+// the session bucket stream's leader (handOverKeptRole, cachedThenLeaderHolderSessions), so a copy
+// kept for the role reaches a holder this listener's cache has not caught up with, even where the
+// copy of the session bucket a direct get reaches has not applied that holder's registration
+// either. The sweep is the one start of a handover in this row (sweepOnce): the holder registered
+// and claimed the role through another listener's stores, which starts no handover on this one,
+// and the copy was kept with no handover started behind it. When the handover read the record
+// with a direct get, the copy answered it absent, the holder read lapsed, and the walk with no
+// holder left the copy on the lane for the next sweep, minutes later, which would read the record
+// the same way. Control: with a current copy the same sweep forwards the kept copy to the holder.
 func TestTheKeptLaneSweepHandsACopyToAHolderWhileTheSessionsCopyIsBehind(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

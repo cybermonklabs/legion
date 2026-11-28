@@ -4067,6 +4067,9 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 		// The takeover copy's seams, which a row forces a fault through (setTakeoverFaults):
 		// this listener's own, shared by every copy of this configuration.
 		takeoverFaults: &takeoverFaultHooks{},
+		// The bound of an agent-subject hand-off, main.go's, for a test that puts a hand-off on
+		// a copy of this configuration; a test that runs a give-up out to its window shortens it.
+		handoffGiveUpWindow: legionHandoffGiveUpWindow,
 		// Whether the test's NATS user holds the session consumers' calls, asked of the server
 		// at each call: the harness opens no session delivery, whose answer main.go wires. A rig
 		// that opens one sets its answer instead (crashRig).

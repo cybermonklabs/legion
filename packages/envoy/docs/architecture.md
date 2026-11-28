@@ -1142,7 +1142,10 @@ record of the session within the gone horizon). The offer publishes a hand-off
 handed off logs INFO `listener agent handed off to its legion daemon`, counts `handed_off`,
 reports no wake, and is
 acknowledged. A hand-off whose publish failed logs ERROR `listener legion hand-off failed`,
-counts `failed`, and is sent back to be decided again. A message no daemon took gets one wake
+counts `failed`, and reports no wake. Below the stream's 20th and last delivery the message is
+sent back to be decided again; at that last delivery, after which the stream delivers it no more,
+and on a core delivery, which nothing delivers again, it ends with that ERROR line alone. A
+message no daemon took gets one wake
 report on `notifications.legion.wake`, and the listener waits up to 2 s for the stream to store
 it. A stored report logs INFO `listener agent wake reported`, counts `wake_reported`, and the
 message is acknowledged. A report the stream did not store sends the message back for the same

@@ -236,9 +236,12 @@ func answerLegionAgents(ctx context.Context, registry *legionagents.Store, sessi
 }
 
 // legionProjectAnswers reports whether project last stated that its daemon answers for its
-// stopped agents: its answering record's flag, false when it holds none. Its error is a record the
-// bucket did not answer or one that does not decode (legionagents.ErrMalformedRecord), which the
-// read answers as it answers either of those on any other record (writeLegionAgentError).
+// stopped agents: its answering record's flag, false when it holds none. It is the one rule of
+// whether a project answers: each read answers an entry's answering by it, and the hand-off reads
+// it before it hands a stopped agent's message to that project's daemon
+// (legionHandoff.answeringAgent). Its error is a record the bucket did not answer or one that does
+// not decode (legionagents.ErrMalformedRecord), which the read answers as it answers either of
+// those on any other record (writeLegionAgentError).
 func legionProjectAnswers(ctx context.Context, registry *legionagents.Store, project string) (bool, error) {
 	record, found, err := registry.Project(ctx, project)
 	return found && record.Answering, err

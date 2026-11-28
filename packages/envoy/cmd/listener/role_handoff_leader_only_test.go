@@ -20,7 +20,7 @@ import (
 
 // The first two tests below hold the role routes' hand-off to a stopped Legion agent's daemon to
 // the record of the role's holder as the session bucket stream's leader holds it, whatever this
-// listener's session cache holds (leaderOnlyHolderSessions). The leader holds a registration the
+// listener's session cache holds (leaderHolderSessions). The leader holds a registration the
 // holder made a moment ago, live. The cache follows the bucket through a watcher and so trails
 // it: it still holds the holder's registration before that one, one millisecond inside its live
 // window. A resolution that answers from the cache while the cached record reads live looks that
@@ -164,11 +164,11 @@ func (crossed crossedHolderRole) requireReachedHolder(t *testing.T, holder, even
 // session bucket stream's leader whatever the cache holds (roleSend.missConfirmed). The leader
 // holds the holder's newer registration, live, so nothing is handed off: the message is kept, 202,
 // and the kept lane's handover gives it to the holder. When the confirmation took the cache's
-// answer while that read live (leaderHolderSessions), it judged the same cached registration
-// lapsed, and the publish was handed to the stopped agent's daemon, 200: the live holder never
-// received it. Control: with the cached registration live when judged too, the route finds the
-// holder live and forwards the publish to it, 200. The publish names a source session, so its
-// first resolution reads as GET /v1/roles/<role> does (roleSend.resolve).
+// answer while that read live (cachedThenLeaderHolderSessions), it judged the same cached
+// registration lapsed, and the publish was handed to the stopped agent's daemon, 200: the live
+// holder never received it. Control: with the cached registration live when judged too, the route
+// finds the holder live and forwards the publish to it, 200. The publish names a source session,
+// so its first resolution reads as GET /v1/roles/<role> does (roleSend.resolve).
 func TestARolePublishReachesTheLiveHolderWhoseCachedRecordLapsesBetweenLookAndJudgement(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -206,8 +206,8 @@ func TestARolePublishReachesTheLiveHolderWhoseCachedRecordLapsesBetweenLookAndJu
 // session bucket stream's leader whatever the cache holds. The leader holds the holder's newer
 // registration, live, so the send is kept for the holder, 202 kept, the kept lane's handover
 // gives it to the holder, and the stopped agent's daemon is handed nothing. When the resolution
-// took the cache's answer while that read live (leaderHolderSessions), it looked the cached
-// registration up live and judged it lapsed, and the send was handed to the stopped agent's
+// took the cache's answer while that read live (cachedThenLeaderHolderSessions), it looked the
+// cached registration up live and judged it lapsed, and the send was handed to the stopped agent's
 // daemon, 200: the live holder never received it. Control: with the cached registration live when
 // judged too, the same send is kept for the holder and reaches it.
 func TestAMarkedSendReachesTheLiveHolderWhoseCachedRecordLapsesBetweenLookAndJudgement(t *testing.T) {

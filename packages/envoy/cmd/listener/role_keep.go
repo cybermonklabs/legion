@@ -872,18 +872,18 @@ type keptRoleHandover struct {
 // Each pass opens by reading the role's kept lane and its drain cursor (readKeptLaneHead) within
 // roleKeepDrainWindow, resolves the role's holder as every other read of this build does
 // (roles.ResolveHolder), with the claim and the holder's session record read from the buckets'
-// stream leaders (leaderRoleClaims, leaderHolderSessions), within roleKeepHolderWindow only when
-// that lane holds copies its cursor has not reached, and walks the lane for the holder it found,
-// handing that walk the head it read (walkKeptRole). The lane is read before the holder, so a pass
-// that finds the lane empty ends the handover with no resolution at all: every claim the claim
-// route grants starts a handover, as do that route's refresh of a claimant it read not live and
-// every registration that makes a holder live again, for each role of that session, and most roles
-// have nothing kept for them, which would otherwise cost each of those starts a claim read and a
-// session read, made from a goroutine its own answer has already outlived. The resolution is taken
-// after the pause the walk before it earned rather than before it: a holder resolved before that
-// pause can have released the role while it ran, and a walk started for it would find that out
-// only at its first read of the role's claim record (roleKeepDrainHolds), ending as a walk that
-// forwarded nothing and spending one of the handover's idle walks.
+// stream leaders (leaderRoleClaims, cachedThenLeaderHolderSessions), within roleKeepHolderWindow
+// only when that lane holds copies its cursor has not reached, and walks the lane for the holder
+// it found, handing that walk the head it read (walkKeptRole). The lane is read before the holder,
+// so a pass that finds the lane empty ends the handover with no resolution at all: every claim the
+// claim route grants starts a handover, as do that route's refresh of a claimant it read not live
+// and every registration that makes a holder live again, for each role of that session, and most
+// roles have nothing kept for them, which would otherwise cost each of those starts a claim read
+// and a session read, made from a goroutine its own answer has already outlived. The resolution is
+// taken after the pause the walk before it earned rather than before it: a holder resolved before
+// that pause can have released the role while it ran, and a walk started for it would find that
+// out only at its first read of the role's claim record (roleKeepDrainHolds), ending as a walk
+// that forwarded nothing and spending one of the handover's idle walks.
 //
 // A resolution that finds no live holder - roles.Unclaimed, or roles.Lapsed - walks the lane with
 // no holder instead: the walk ends each copy whose hour ended, and a copy under a dead-letter claim
@@ -1040,7 +1040,7 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			return ended()
 		}
 		holderCtx, cancelHolder := context.WithTimeout(ctx, roleKeepHolderWindow)
-		resolved, holderErr := roles.ResolveHolder(holderCtx, leaderRoleClaims{cfg.registry}, leaderHolderSessions{cfg.sessions}, role)
+		resolved, holderErr := roles.ResolveHolder(holderCtx, leaderRoleClaims{cfg.registry}, cachedThenLeaderHolderSessions{cfg.sessions}, role)
 		cancelHolder()
 		// The walk forwards to a live holder alone, and walks with no holder for every other
 		// resolution, one that did not answer included.
@@ -1467,11 +1467,11 @@ func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 // must not read the claim from before a takeover: each claim read is the role bucket stream
 // leader's (store.Registry.RoleClaimFromLeader), since on a replicated bucket a direct get can
 // answer the claim as it stood before a takeover, naming the previous holder. The kept lane
-// handover reads through it, with leaderHolderSessions (handOverKeptRole), where a stale claim
-// would walk the lane for the previous holder, whose drain hold (roleKeepDrainHolds, a leader
-// read) refuses every forward, and give the lane up with the copy left on it until the next
-// sweep, minutes later. The resolutions that act on a miss no later read takes back read through
-// it too, with leaderOnlyHolderSessions (resolveRoleHolderFromLeaders).
+// handover reads through it, with cachedThenLeaderHolderSessions (handOverKeptRole), where a stale
+// claim would walk the lane for the previous holder, whose drain hold (roleKeepDrainHolds, a
+// leader read) refuses every forward, and give the lane up with the copy left on it until the
+// next sweep, minutes later. The resolutions that act on a miss no later read takes back read
+// through it too, with leaderHolderSessions (resolveRoleHolderFromLeaders).
 type leaderRoleClaims struct{ registry *store.Registry }
 
 func (c leaderRoleClaims) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {

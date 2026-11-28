@@ -129,17 +129,18 @@ func TestASendToAStoppedLegionAgentTheKnownStoreHoldsIsHandedToItsDaemon(t *test
 	requireStored(2, "the send to a project that does not answer")
 }
 
-// markedSendAnswer is one marked send's answer as the test below reads it: the status and raw
+// markedSendAnswer is one marked send's answer as the tests below read it: the status and raw
 // body, and the fields of a hand-off's 200 and of a keep's 202.
 type markedSendAnswer struct {
 	status int
 	raw    string
 
-	EventID   string `json:"event_id"`
-	Recipient string `json:"recipient"`
-	State     string `json:"state"`
-	Kept      bool   `json:"kept"`
-	KeptUntil int64  `json:"kept_until"`
+	EventID        string `json:"event_id"`
+	Recipient      string `json:"recipient"`
+	RecipientState string `json:"recipient_state"`
+	State          string `json:"state"`
+	Kept           bool   `json:"kept"`
+	KeptUntil      int64  `json:"kept_until"`
 }
 
 // sendMarkedByDispatch sends one message to target marked with role through the /v1 routes mux
@@ -218,5 +219,43 @@ func TestADispatchSendMarkedWithAStoppedRoleIsHandedToItsDaemon(t *testing.T) {
 	waitForKeptRoleMessage(t, client, role, kept.EventID)
 	if count, _ := handoffs(t, client, agent); count != 1 {
 		t.Fatalf("control: the stream holds %d hand-offs for %s, want only the send's while its project answered", count, agent)
+	}
+}
+
+// A send handed to a stopped Legion agent's daemon answers recipient_state gone, whether it named
+// the agent's session (sendHandler) or carried the mark of a role whose newest session the agent
+// is (handOffOrKeepRoleSend): a hand-off takes only a session with no entry within the gone
+// horizon, which listenerwire.SendResponse names gone, and both paths answer with the one answer
+// (handedOffSendResponse). Each is 200 with the agent as recipient and no state, and the stream
+// holds one hand-off for each. Before, the marked send's answer left recipient_state out, which
+// @legion/envoy-client reads as live.
+func TestAHandedOffSendAnswersItsRecipientGoneOnBothSendPaths(t *testing.T) {
+	rig := newKnownSessionRig(t)
+	const principal = "system:serviceaccount:dispatch:example-dispatch"
+	useDispatchPrincipal(rig.deps, principal)
+	const agent = "ses_handed_off_gone"
+	stopped := legionAgentEntry(agent, "INFRA-216", "reviewer")
+	withLegionAgent(t, rig.deps, stopped)
+	rig.register(t, agent, nil)
+	rig.stop(t, agent)
+	rig.record(t, agent)
+
+	bySession := rig.send(t, agent, nil)
+	byRole := sendMarkedByDispatch(t, rig.mux, principal, agent, stopped.RoleToken, "what did the review find?")
+	for _, answer := range []struct {
+		path                                  string
+		status                                int
+		raw, recipient, recipientState, state string
+	}{
+		{"a send to the stopped agent's session", bySession.status, bySession.raw, bySession.Recipient, bySession.RecipientState, bySession.State},
+		{"a send marked with the stopped agent's role", byRole.status, byRole.raw, byRole.Recipient, byRole.RecipientState, byRole.State},
+	} {
+		if answer.status != http.StatusOK || answer.recipient != agent || answer.recipientState != string(session.Gone) || answer.state != "" {
+			t.Errorf("%s: status %d, body %s; want 200 handed off to %s with recipient_state gone and no state",
+				answer.path, answer.status, answer.raw, agent)
+		}
+	}
+	if count, _ := handoffs(t, rig.harness.client, agent); count != 2 {
+		t.Fatalf("the stream holds %d hand-offs for %s, want one for each send", count, agent)
 	}
 }
