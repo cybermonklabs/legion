@@ -1,5 +1,5 @@
 import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
@@ -8,28 +8,29 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 import { fileRowLimit, SCRIPT_RUN, VCS_COMMAND } from "./test-limit";
 
-// The hooks stage the runs and run score.ts over them as a process of its own, so each test and
-// hook gets the limit test-limit.ts computes from the bounds of what they wait for.
-setDefaultTimeout(
-  fileRowLimit(
-    VCS_COMMAND,
-    VCS_COMMAND,
-    VCS_COMMAND,
-    VCS_COMMAND,
-    VCS_COMMAND,
-    VCS_COMMAND,
-    VCS_COMMAND
-  )
-);
+// Every test and hook gets the limit test-limit.ts computes from the bounds of what it waits for.
+// The longest wait is the staging hook's (the first `beforeAll` below): the pushed-code run's
+// seven git calls, one after another (init, add, commit, rev-parse, commit, rev-parse and the
+// bare clone). The score hook's one score.ts run (SCRIPT_RUN) and each row's waits are shorter.
+// Neither hook names a limit of its own: a hook runs on no row's clock (row-clock.ts), so a hook
+// limit under its processes' bounds ends a slow process with Bun's hook timeout before
+// spawnWithin's refusal can name it.
+setDefaultTimeout(fileRowLimit(...Array.from({ length: 7 }, () => VCS_COMMAND)));
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the
 // score reports it as a rig error and leaves it out of the pass counts. An agent that got a turn and
 // then did nothing the scenario asks is a failure.
 
-// score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
-const work = temporaryDirectory("skill-scenarios-score");
+// The world is staged as rig.sh lays it out (rig.sh's header, "the map"): each run's directory
+// under <work>/runs and each label's profile, with its checkout file, under <work>/profiles, and
+// the map's links that name them, <work>/maps/runs/<name> and <work>/maps/profiles/<label>.
+// score.ts reads the runs through the map (`mapRuns`); a row's paths into a run name its own
+// directory (`runs`), as the run's agent saw it. The work directory is a real path, as the map's
+// links resolve to one.
+const work = temporaryDirectory("skill-scenarios-score", { real: true });
 const runs = path.join(work, "runs");
+const mapRuns = path.join(work, "maps", "runs");
 // The repository the pushed-code run below is cloned from. Reserved here, above the hook that
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,
 // so a reservation made further down would be made after that drain had already run.
@@ -45,14 +46,17 @@ const pushWork = temporaryDirectory("skill-scenarios-push");
 const stagings: (() => void)[] = [];
 
 beforeAll(() => {
+  mkdirSync(mapRuns, { recursive: true });
+  mkdirSync(path.join(work, "maps", "profiles"), { recursive: true });
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
     writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
+    symlinkSync(`../../profiles/${label}`, path.join(work, "maps", "profiles", label));
   }
   // A staging may queue another (the pushed-code run below queues its scenario once the
   // repository is built), so the queue is drained until it is empty rather than in one pass.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
-}, 60_000);
+});
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
 const header = [
@@ -73,11 +77,14 @@ const dispatchRecord = (database: string, postgres = "pg-1") =>
   JSON.stringify({ postgres, database, port: 20000, url: "http://127.0.0.1:20000" });
 
 /** Stages a run directory holding `files` (by default a dispatch.json naming the run's own
- * database, or none when `files` gives it null) and `transcript`, when the hook above runs. */
+ * database, or none when `files` gives it null) and `transcript`, and its link in the map, when
+ * the hook above runs. */
 function run(name: string, files: Record<string, string | null>, transcript: object[]) {
   stagings.push(() => {
     const dir = path.join(runs, name);
     mkdirSync(path.join(dir, "sessions"), { recursive: true });
+    if (!existsSync(path.join(mapRuns, name)))
+      symlinkSync(`../../runs/${name}`, path.join(mapRuns, name));
     const own = dispatchRecord(`run_${name.replaceAll("-", "_")}`);
     for (const [file, text] of Object.entries({ "dispatch.json": own, ...files }))
       if (text !== null) writeFileSync(path.join(dir, file), text);
@@ -3201,6 +3208,17 @@ run(
   }),
   [...header, said(10, "WAITING for a later result of k1."), said(30, "Changes requested.")]
 );
+// A `gh pr review` that names no pull request reviews the one of the checkout's branch: the world's
+// own (world.json's `pr`), which is not #702 here, so a reader that took #702 for every such
+// review would find no review of the run's pull request.
+run(
+  "reviewer-pass-and-fail-head-95",
+  headsFiles({
+    "calls.jsonl": `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "--request-changes", "-b", "k1 holds a pass and a fail at this head."], exit: 0 })}\n`,
+    "world.json": JSON.stringify({ ...JSON.parse(reviewWorld), pr: 1702 }),
+  }),
+  [...header, said(10, "k1 is not known at the head.")]
+);
 // The rules that decide a heads run, each staged once as it passes and once as it fails: the
 // approval of #702 must name #702's head (headsReview's `approves`), a refusal must name k1
 // (`namesCheck`), and the architect must sign nothing off (`signOffs`) and send the issue back with
@@ -3381,6 +3399,10 @@ run(
   }),
   [...header, said(10, "k1 reads not known at the head: a test failure.")]
 );
+// A tester whose agent never got a model turn: a rig error of the same role and label.
+run("ci-pass-and-fail-tester-head-6", ciFiles({ "handoffs.json": ciTestRecords(20, k1Failure) }), [
+  ...header,
+]);
 run("ci-pass-and-fail-architect-head-1", ciFiles({ "daemon.log": sentBackAt(20) }), [
   ...header,
   said(10, "k1 holds a pass and a fail at the head."),
@@ -3399,11 +3421,11 @@ beforeAll(() => {
     "bun",
     path.join(import.meta.dir, "score.ts"),
     "runs",
-    runs,
+    mapRuns,
   ]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
-}, 60_000);
+});
 
 test("a heads run's WAITING line fails it only where it comes before the run's decision", () => {
   expect(rowOf("architect-pass-and-fail-head-91")).toMatch(
@@ -3478,6 +3500,14 @@ test("a request for changes that does not name k1 fails a reviewer-pass-and-fail
   );
 });
 
+// Catches: a `gh pr review` that names no pull request read as a review of the fixture's #702,
+// whatever the run's own pull request is.
+test("a gh pr review that names no pull request reviews the world's own", () => {
+  expect(rowOf("reviewer-pass-and-fail-head-95")).toMatch(
+    /^reviewer-pass-and-fail-head-95\tpass=true\t.*review=REQUEST_CHANGES@none .*namesK1=true/
+  );
+});
+
 // Catches: an architect's sign-off left out of its score (P4).
 test("an architect that sends the issue back naming k1 and also signs it off fails", () => {
   expect(rowOf("architect-pass-and-fail-head-93")).toMatch(
@@ -3522,6 +3552,16 @@ test("ci-pass-and-fail: the tester's own record listing k1 passes", () => {
     /^ci-pass-and-fail-tester-head-5\tpass=true\t.*record=h-test v2/
   );
   expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t3\/5\t/m);
+});
+
+// Catches: a heads run's row counted under one key and its rig error under another, which splits
+// one scenario and label into two lines of the table with nothing said. The key's scenario was
+// built in five places (scoreRuns, and in each heads scorer); scoreRuns now gives every row its
+// scenario from the run's name (run-names.ts rowScenario), as it keys the run's rig error.
+test("a ci-pass-and-fail tester's rig error counts on its role's line, beside its scored runs", () => {
+  expect(out).toContain("ci-pass-and-fail-tester-head-6\trig error: ");
+  expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t3\/5\t0\/5\t1\t\d+$/m);
+  expect(out).not.toMatch(/^ci-pass-and-fail[^\t]*\thead\t0\/0\t/m);
 });
 
 // Catches: an architect of ci-pass-and-fail scored without its wait rule, or not at all.
@@ -4284,8 +4324,10 @@ test("refusals: a usage refusal the CLI prints and logs is one refusal, at its c
 });
 
 test("refusals: a run whose CLI ledger is missing is a rig error naming the file", () => {
+  // score.ts reads the run through its link in the map, so the path it names is the map's.
+  const ledger = path.relative(runs, ledgerDir("spec-writing-head-45"));
   expect(out).toContain(
-    `spec-writing-head-45\trig error: ${path.join(ledgerDir("spec-writing-head-45"), "results.jsonl")} is missing`
+    `spec-writing-head-45\trig error: ${path.join(mapRuns, ledger, "results.jsonl")} is missing`
   );
 });
 
@@ -4298,7 +4340,7 @@ test("judged: a judge file that leaves out, repeats or invents what judge.ts gav
       expect(out).toMatch(
         new RegExp(`${run}\\trig error: [^\\n]*${problem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
       );
-    expect(out).toContain(`: run rig.sh judge ${path.join(runs, run)}\n`);
+    expect(out).toContain(`: run rig.sh judge ${path.join(mapRuns, run)}\n`);
   };
   uncovered("spec-writing-head-47", "checkable.json", "no row for requirement R2");
   uncovered(
@@ -4630,7 +4672,7 @@ function scoredRowOf(name: string): { outcome: string; error?: string } {
     "bun",
     path.join(import.meta.dir, "score.ts"),
     "runs",
-    runs,
+    mapRuns,
     "--run",
     name,
   ]);

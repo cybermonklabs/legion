@@ -35,7 +35,6 @@ import { RunRow } from "./scored-runs-contracts";
 import {
   JUDGE_OMP,
   JUDGE_OMP_ENVIRONMENT,
-  JUDGE_PULLS,
   RIG_STEP,
   rowLimit,
   SCRIPT_RUN,
@@ -1281,6 +1280,13 @@ echo done
     expect(existsSync(path.join(label, "superpowers"))).toBe(false);
   });
 });
+
+/**
+ * The pulls of the judge's image rig.sh judge-omp asks for at most, a pause of 2 s between two
+ * (rig.sh's `for attempt in 1 2 3`): a pull that fails within its bound is asked again, and a pull
+ * its bound ends is not.
+ */
+const JUDGE_PULLS = 3;
 
 // rig.sh judge-omp, the whole script, in its Docker container (Docker is on the devbox and on CI's
 // ubuntu-24.04 runners), with the real key-file route and a stand-in omp that records its argv and
@@ -5125,6 +5131,37 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       stored: false,
     });
     expect(existsSync(path.join(bare, "stored"))).toBe(false);
+  });
+
+  // Catches: a pack that follows a link of the run's tree. find lists the run's regular files and
+  // directories, and a process still running can swap a listed file for a link to a credential
+  // before tar packs it; a tar that follows every listed path (--dereference) then packs and
+  // uploads the credential's bytes, where tar must pack the link as a link, which restore-stored
+  // refuses.
+  test("a listed file swapped for a link before the pack is packed as that link, never as what it points at", () => {
+    const store = plantStore();
+    const pod = freshDir("store-swap");
+    plantScored(pod, "head", { kind: "root", form: "B", family: "claude" }, 1, { read: true });
+    const secret = path.join(freshDir("store-swap-secret"), "token");
+    writeFileSync(secret, "credential-marker-5f1c\n");
+    const stored = bash(
+      [
+        defs("note", "fail", "store_scored_run"),
+        "work=$1 maps=$1/maps",
+        'swap=$(readlink -f -- "$maps/runs/$2")/world.json secret=$3',
+        // The swap a process still running could make between store_scored_run's find and its tar.
+        'tar() { ln -sfn -- "$secret" "$swap"; command tar "$@"; }',
+        'store_scored_run "$2"',
+      ].join("\n"),
+      [pod, run(1), secret],
+      { RT_STORE: store.bin }
+    );
+    expect({ code: stored.code, stderr: stored.stderr }).toEqual({ code: 0, stderr: "" });
+    const pack = at(store.bucket, 1, "tar.gz");
+    expect(members(pack)).toContain(`${run(1)}/world.json`);
+    expect(types(pack)).toContain("l");
+    const bytes = childSpawn({ ...RIG_STEP, part: "tar -xOzf" }, ["tar", "-xOzf", pack]);
+    expect(bytes.stdout.toString()).not.toContain("credential-marker-5f1c");
   });
 
   // Catches: a restart that launches its cell from nothing; one that counts a run whose row was

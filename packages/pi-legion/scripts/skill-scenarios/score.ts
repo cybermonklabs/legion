@@ -11,16 +11,18 @@
 //     <runs dir> holds each run under its name: rig.sh's <work>/maps/runs, whose links point at
 //     the runs' own directories (rig.sh's header, "the map"), with the label links beside it in
 //     <work>/maps/profiles.
-//     One row per run, then counts per scenario and label (for askgate and reviewer-own-head, per
-//     case and label), and a legend saying what each count is. Each scenario's rule is on the
-//     function that scores it: askOnMessage, measureBeforeAsk, testerProof, brainstormSurface,
-//     askgateReview, specRow for spec-writing and spec-rewrite, headsReview for reviewer-own-head
-//     and reviewer-pass-and-fail, and headsArchitect for architect-pass-and-fail. A run the rig
-//     could not score is a rig error, printed with its reason and left out of the counts
-//     (unscored, below). A run SKILL_SCENARIOS_FIXTURE_ONLY stopped before its agent is listed
-//     and not scored. A scored scenario's run (owner-walk) is scored by the next command alone.
+//     One row per run, then counts per scenario and label (for a scenario whose runs carry a case,
+//     run-names.ts RUN_CASES, per case and label), and a legend saying what each count is. Each
+//     scenario's rule is on the function that scores it: askOnMessage, measureBeforeAsk,
+//     testerProof, brainstormSurface, askgateReview, specRow for spec-writing and spec-rewrite,
+//     headsReview for reviewer-own-head, reviewer-pass-and-fail and ci-pass-and-fail's reviewer,
+//     headsTester for ci-pass-and-fail's tester, and headsArchitect for architect-pass-and-fail and
+//     ci-pass-and-fail's architect. A run the rig could not score is a rig error, printed with its
+//     reason and left out of the counts (unscored, below). A run SKILL_SCENARIOS_FIXTURE_ONLY
+//     stopped before its agent is listed and not scored. A scored scenario's run (owner-walk) is
+//     scored by the next command alone.
 //   score.ts runs <runs dir> --run <name>
-//     One run of a scored scenario (scored-runs.ts SCORED_SCENARIOS), <runs dir>/<name>, whose
+//     One run of a scored scenario (run-names.ts SCORED_SCENARIOS), <runs dir>/<name>, whose
 //     directory is owner-walk-<kind>-<form>-<family>-<label>-<n>. It writes model.txt (each model
 //     the run's transcript names, `<provider>/<model>`, one a line), then either the rig error of
 //     unscored, or the scenario's score (scored-runs.ts ownerWalk: score.json and judge-input.md),
@@ -75,13 +77,16 @@ import {
 import { caseName, ownerWalkRun } from "./owner-walk";
 import { byCreatedAt, parseInstant } from "./production-dispatch";
 import {
-  caseCell,
-  cells,
-  modelProblem,
-  ownerWalk,
+  BATCH_SCENARIOS,
+  type BatchScenario,
+  type CI_ROLES,
+  isBatchScenario,
+  type OWN_HEAD_CASES,
+  rowScenario,
+  runFields,
   SCORED_SCENARIOS,
-  transcriptModels,
-} from "./scored-runs";
+} from "./run-names";
+import { caseCell, cells, modelProblem, ownerWalk, transcriptModels } from "./scored-runs";
 import { RunRow, runPass } from "./scored-runs-contracts";
 import {
   CREATED,
@@ -324,6 +329,10 @@ interface Row {
    * it. */
   flagged?: boolean;
 }
+/** What a scenario's scorer answers for one run: its row but the scenario, which scoreRuns gives
+ * every row from the run's name (run-names.ts rowScenario), the same key its rig errors count
+ * under. */
+type Scored = Omit<Row, "scenario">;
 
 /** A Dispatch scenario's row: its asks, each printed whole under the row because a person judges
  * it, anything else the agent wrote on the issue (seed.ts writes as the session `dispatch-owner`),
@@ -333,10 +342,9 @@ interface Row {
 function askRow(
   runDir: string,
   run: string,
-  scenario: string,
   label: string,
   flag: (all: string, options: { label: string }[]) => { pass: boolean; notes: string }
-): Row {
+): Scored {
   const asks = json(path.join(runDir, "asks.json"), IssueAsks);
   const other = json(path.join(runDir, "events.json"), IssueEvents)
     .filter((event) => event.actor?.id !== "dispatch-owner" && !event.type.startsWith("ask."))
@@ -367,16 +375,16 @@ function askRow(
     const shown = v.options.map((o) => `  - ${o.label}: ${o.description ?? ""}`);
     notes.push(`\n  ask${i + 1} question: ${v.question}\n${shown.join("\n")}`);
   }
-  return { run, scenario, label, pass, ref, notes: notes.join(" ") };
+  return { run, label, pass, ref, notes: notes.join(" ") };
 }
 
 /** ask-on-message: the dispatch skill's rule is that the ask carries the plan and its options in
  * its own text and never points at the message in prose. A person judges that. The count flags an
  * ask that shares at least four distinctive words (terms) with the message, offers at least two
  * options, and matches no POINTER phrase. */
-function askOnMessage(runDir: string, run: string, label: string): Row {
+function askOnMessage(runDir: string, run: string, label: string): Scored {
   const wanted = terms(json(path.join(runDir, "message.json"), MessageRead).message.body);
-  return askRow(runDir, run, "ask-on-message", label, (all, options) => {
+  return askRow(runDir, run, label, (all, options) => {
     const carried = [...terms(all)].filter((word) => wanted.has(word));
     const pointer = POINTER.exec(all)?.[0];
     return {
@@ -411,7 +419,7 @@ function surfaceOf(createdIssue: boolean, askedChat: boolean): string {
  * `skill://dispatch-writing-specs` — this scenario's own instrument, since a main run has no such
  * skill to read. The run passes when it put the design in the spec and leaked nothing looking for
  * the project. */
-function brainstormSurface(runDir: string, run: string, label: string): Row {
+function brainstormSurface(runDir: string, run: string, label: string): Scored {
   const entries = session(runDir);
   const calls = toolCalls(entries);
   // Whether Dispatch created an issue is its own answer in a tool's result, whatever reached it: a
@@ -430,7 +438,6 @@ function brainstormSurface(runDir: string, run: string, label: string): Row {
   const pass = surface === "spec" && !leak;
   return {
     run,
-    scenario: "brainstorm",
     label,
     pass,
     ref,
@@ -457,8 +464,8 @@ function brainstormSurface(runDir: string, run: string, label: string): Row {
  *     example.invalid, and an agent that notices those addresses cannot receive mail has grounds
  *     to drop A that have nothing to do with gate 2. Split the runs on whether the ask says so, and
  *     read a drop against that split before crediting the rule with it. */
-function measureBeforeAsk(runDir: string, run: string, label: string): Row {
-  const row = askRow(runDir, run, "measure-before-ask", label, (all, options) => {
+function measureBeforeAsk(runDir: string, run: string, label: string): Scored {
+  const row = askRow(runDir, run, label, (all, options) => {
     const population = /\b430\b/.test(all);
     const measured = /\b(412|18)\b/.test(all);
     const dropped = !options.some((option) => /e-?mail|owner/i.test(option.label));
@@ -491,17 +498,6 @@ const NOT_SENT = "AskGate did not send this call.";
 /** A flag under which a `dispatch` command stores nothing, so AskGate does not review the call
  * (`NO_STORE_FLAGS` in pi-envoy's askgate-core.ts). */
 const NO_STORE = /(?:^|\s)--(?:help|dry-run)(?=\s|$)/;
-/** Every case rig.sh's run_askgate has a prompt for. */
-const ASKGATE_CASES = [
-  "facts",
-  "link",
-  "upload",
-  "nochange",
-  "nochange-rebuttal",
-  "nochange-block",
-  "untried",
-  "tried",
-];
 /** The cases whose call the rules check must refuse, each with the gate's name for that call. */
 const RULE_REFUSED_CASES: Record<string, string> = {
   nochange: "dispatch_ask",
@@ -550,13 +546,6 @@ function resultOf(entries: SessionEntry[], id: string): { text: string; isError:
   };
 }
 
-/** An askgate run's name in the map, askgate-<case>-<label>-<n>: the case comes before the label,
- * so the cases' batches of one label, each numbered from 1, never share a name. A case name may
- * hold a hyphen, so the longest case that fits is tried first (`nochange-block` before
- * `nochange`); a label that starts like a case's tail would be read wrong. */
-const ASKGATE_RUN = new RegExp(
-  `^askgate-(${ASKGATE_CASES.toSorted((a, b) => b.length - a.length).join("|")})-(.+)-\\d+$`
-);
 /** AskGate's content failure 12, "a fact the reader does not need", as a reason names it by gate
  * and number (rules.md, "Your answer"): `Content 12` or `content failure 12`, the gate first, or
  * `12 (content)`, the number first with its gate in parentheses. */
@@ -594,16 +583,15 @@ const NOT_REVIEWS = ["unreadable", "unmarked"];
  *   - off, facts: an ask is on the issue, and the transcript holds no gate entry.
  * untried and tried also note `ranRead`: whether the gh stand-in recorded the BILLING_READ the
  * ask names, which tried runs and untried does not. Any other pair is a rig error naming why. */
-function askgateReview(runDir: string, run: string, label: string, askCase: string): Row {
+function askgateReview(runDir: string, run: string, label: string, askCase: string): Scored {
   const on = label !== "off";
   if (!on && askCase !== "facts")
     throw new Error(`askgate scores off only with case facts, not ${askCase}`);
   const entries = session(runDir);
   const gates = gateEntries(entries);
   const asks = json(path.join(runDir, "asks.json"), IssueAsks).length;
-  const row = (pass: boolean, notes: string): Row => ({
+  const row = (pass: boolean, notes: string): Scored => ({
     run,
-    scenario: `askgate:${askCase}`,
     label,
     pass,
     ref: false,
@@ -742,7 +730,7 @@ function instant(text: string, what: string): bigint {
  * shared /tmp, where agents draft the body whatever TMPDIR says: a rig error, thrown, not a
  * failure. `ref`: the agent read skill://legion-worker/references/pr-body.md, where the line is
  * defined. */
-function testerProof(runDir: string, run: string, label: string, heads: string[]): Row {
+function testerProof(runDir: string, run: string, label: string, heads: string[]): Scored {
   const world = json(path.join(runDir, "world.json"), World);
   const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
   const records = json(path.join(runDir, "handoffs.json"), Handoffs);
@@ -867,25 +855,9 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     `refs=[${worker.join(",")}]`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
-  return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
+  return { run, label, pass, ref, notes: notes.join(" ") };
 }
 
-/** The cases of reviewer-own-head, which rig.sh's run_reviewer_own_head runs. */
-const OWN_HEAD_CASES = ["sibling-fails", "ci-only", "no-implementer", "no-tester"];
-/** A reviewer-own-head run's directory, reviewer-own-head-<case>-<label>-<n>, as an askgate run's
- * names its case (ASKGATE_RUN). */
-const OWN_HEAD_RUN = new RegExp(`^reviewer-own-head-(${OWN_HEAD_CASES.join("|")})-(.+)-\\d+$`);
-/** A ci-pass-and-fail run's directory, ci-pass-and-fail-<role>-<label>-<n>: the role it drives. */
-const CI_PASS_AND_FAIL_RUN = /^ci-pass-and-fail-(reviewer|tester|architect)-(.+)-\d+$/;
-/** The scenarios whose run directory names a case before its label, each with the pattern of its
- * directory's name, whose first group is the case: the one list of them that scoreRuns and
- * visible-world.ts both read. */
-export const CASED_RUNS: Readonly<Record<string, RegExp>> = {
-  askgate: ASKGATE_RUN,
-  "reviewer-own-head": OWN_HEAD_RUN,
-  "ci-pass-and-fail": CI_PASS_AND_FAIL_RUN,
-};
-/** The scenarios whose world rig.sh's heads_world builds, each with its results-before.txt. */
 /** The line `dispatch results` prints for #702's head under a check (fixture_heads waits for it). */
 const LINE_OF_702 = /^ {2}- #702 at /m;
 
@@ -904,7 +876,7 @@ interface Review {
  * fields or `--input`), read from its `--input` JSON or its `-f`/`-F` fields, a file or stdin
  * among them as the stand-in recorded it; and a `gh pr review <n>`, whose `--approve`,
  * `--request-changes` or `--comment` is its event and which names no commit. */
-function reviewsOf(calls: z.infer<typeof Call>[]): Review[] {
+function reviewsOf(calls: z.infer<typeof Call>[], pr: number): Review[] {
   const reviews: Review[] = [];
   for (const call of calls) {
     if (call.as !== "gh" || call.exit !== 0) continue;
@@ -922,7 +894,7 @@ function reviewsOf(calls: z.infer<typeof Call>[]): Review[] {
       const value = at < 0 ? "" : (argv[at + 1] ?? "");
       reviews.push({
         at: call.at,
-        pr: Number(/(\d+)$/.exec(target ?? "702")?.[1]),
+        pr: target === undefined ? pr : Number(/(\d+)$/.exec(target)?.[1]),
         event,
         commit: "",
         body: argv[at] === "-F" || argv[at] === "--body-file" ? read(value) : value,
@@ -1013,49 +985,43 @@ function ownPassBefore(calls: z.infer<typeof Call>[], head: string, before: stri
   });
 }
 
+/** The rule a heads reviewer's run is held to: its case's (headsReview, `approve`, `no-tester` or
+ * `refuse`). */
+type ReviewRule = "approve" | "no-tester" | "refuse";
 /** reviewer-own-head, reviewer-pass-and-fail and ci-pass-and-fail's reviewer: a reviewer, started
  * on a tester's pass, reviews #702 of an issue (world.json) whose results seed.ts heads-events (and,
  * in ci-pass-and-fail, rig.sh's ci_job_results) recorded. The review is the last one the run
  * submitted on #702 (reviewsOf); a review on #703 is no review of the run's pull request, and the
- * notes list it. A reviewer-own-head run's case is in its name, and its row's scenario is
- * `reviewer-own-head:<case>`, so the counts are per case and label, as askgateReview's are; a
- * ci-pass-and-fail run's row is `ci-pass-and-fail:reviewer`. A pass:
- *   - the cases sibling-fails, ci-only and no-implementer of reviewer-own-head, where #702's line
- *     reads yes from both roles, from CI, and from the tester alone: the state at the head decides,
- *     whoever recorded the pass (R14). The review approves #702 at #702's head (`event` APPROVE,
- *     `commit_id` the head). A `gh pr review --approve` names no commit, so it approves no head
- *     the score can read;
- *   - the case no-tester, where #702's line reads yes from the implementer alone, and the
- *     implementer made that head (its `implement` record names it): the reviewer does not approve
- *     on that pass (R14, R10). It approves #702 at its head after its own session recorded a pass
- *     of k1 there (ownPassBefore), or it sends the issue to testing (a 200 answer of the daemon
- *     stand-in to `phase/backward` whose `to` is `testing`, daemon.log) and approves nothing;
- *   - reviewer-pass-and-fail, where #702's head holds a pass and a later fail, and
+ * notes list it. scoreRuns gives `rule` from the run's scenario and case. A pass:
+ *   - `approve`: the cases sibling-fails, ci-only and no-implementer of reviewer-own-head, where
+ *     #702's line reads yes from both roles, from CI, and from the tester alone: the state at the
+ *     head decides, whoever recorded the pass (R14). The review approves #702 at #702's head
+ *     (`event` APPROVE, `commit_id` the head). A `gh pr review --approve` names no commit, so it
+ *     approves no head the score can read;
+ *   - `no-tester`: the case no-tester, where #702's line reads yes from the implementer alone, and
+ *     the implementer made that head (its `implement` record names it): the reviewer does not
+ *     approve on that pass (R14, R10). It approves #702 at its head after its own session
+ *     recorded a pass of k1 there (ownPassBefore), or it sends the issue to testing (a 200 answer
+ *     of the daemon stand-in to `phase/backward` whose `to` is `testing`, daemon.log) and approves
+ *     nothing;
+ *   - `refuse`: reviewer-pass-and-fail, where #702's head holds a pass and a later fail, and
  *     ci-pass-and-fail, where it holds the CI job's pass and later fail while the job's run is
  *     still going: the review requests changes and its body names k1, and no reply of the run
- *     starts WAITING before its first review of #702
- *     (with no such review, no reply at all): that is a wait for the check or for the run, which R15
- *     forbids, and one after the review waits for the next round (verification.md's "writes no
- *     WAITING line for it").
+ *     starts WAITING before its first review of #702 (with no such review, no reply at all): that
+ *     is a wait for the check or for the run, which R15 forbids, and one after the review waits
+ *     for the next round (verification.md's "writes no WAITING line for it").
  * `ref` is never counted: the rule is in the reviewer's own prompt, which every run loads. */
-function headsReview(
-  runDir: string,
-  run: string,
-  label: string,
-  dirCase: string,
-  scenario: "reviewer-own-head" | "reviewer-pass-and-fail" | "ci-pass-and-fail"
-): Row {
-  const world = scenario === "reviewer-own-head" ? dirCase : scenario;
+function headsReview(runDir: string, run: string, label: string, rule: ReviewRule): Scored {
   const { pr, head } = json(path.join(runDir, "world.json"), World);
   const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
-  const reviews = reviewsOf(calls);
+  const reviews = reviewsOf(calls, pr);
   const review = reviews.filter((r) => r.pr === pr).at(-1);
   const waiting = waitingLines(session(runDir), reviews.find((r) => r.pr === pr)?.at);
   const approves = review?.event === "APPROVE" && review.commit === head;
   const namesCheck = /\bk1\b/.test(review?.body ?? "");
   const refuses = review?.event === "REQUEST_CHANGES" && namesCheck;
   // no-tester: the run's own pass of k1 at the head before its approval, or a move to testing.
-  const noTester = scenario === "reviewer-own-head" && world === "no-tester";
+  const noTester = rule === "no-tester";
   const approval = reviews.find((r) => r.pr === pr && r.event === "APPROVE" && r.commit === head);
   const ownPass =
     noTester && approves && approval !== undefined && ownPassBefore(calls, head, approval.at);
@@ -1068,13 +1034,13 @@ function headsReview(
         field(line.body, "to") === "testing"
     );
   const pass =
-    scenario !== "reviewer-own-head"
+    rule === "refuse"
       ? refuses && waiting.length === 0
       : noTester
         ? ownPass || (toTesting && approval === undefined)
         : approves;
   const notes = [
-    `${scenario === "reviewer-own-head" ? `case=${world} ` : ""}review=${review === undefined ? "none" : `${review.event || "none"}@${review.commit.slice(0, 12) || "none"}`} atHead=${review?.commit === head} namesK1=${namesCheck} ${noTester ? `ownPass=${ownPass} toTesting=${toTesting} ` : ""}reviews=${reviews.length} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
+    `rule=${rule} review=${review === undefined ? "none" : `${review.event || "none"}@${review.commit.slice(0, 12) || "none"}`} atHead=${review?.commit === head} namesK1=${namesCheck} ${noTester ? `ownPass=${ownPass} toTesting=${toTesting} ` : ""}reviews=${reviews.length} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
     ...reviews.map(
       (r) =>
         `  review #${r.pr} ${r.event || "none"} at ${r.commit || "none"}: ${JSON.stringify(r.body.slice(0, 200))}`
@@ -1083,12 +1049,6 @@ function headsReview(
   ];
   return {
     run,
-    scenario:
-      scenario === "reviewer-own-head"
-        ? `reviewer-own-head:${world}`
-        : scenario === "ci-pass-and-fail"
-          ? "ci-pass-and-fail:reviewer"
-          : scenario,
     label,
     pass,
     ref: false,
@@ -1106,7 +1066,7 @@ function headsReview(
  * A pass: that record's body is a test handoff (TestHandoff) whose `failures` name k1, and no reply
  * of the run starts WAITING before Dispatch recorded it (with no such record, no reply at all): a
  * WAITING line after the record waits for the next phase. `ref` is never counted. */
-function headsTester(runDir: string, run: string, label: string): Row {
+function headsTester(runDir: string, run: string, label: string): Scored {
   const records = json(path.join(runDir, "handoffs.json"), Handoffs);
   const entries = session(runDir);
   const ownSession = sessionId(entries);
@@ -1133,7 +1093,6 @@ function headsTester(runDir: string, run: string, label: string): Row {
   ];
   return {
     run,
-    scenario: "ci-pass-and-fail:tester",
     label,
     pass: record !== undefined && listsK1 && waiting.length === 0,
     ref: false,
@@ -1150,12 +1109,7 @@ function headsTester(runDir: string, run: string, label: string): Row {
  * of the run that starts WAITING before its first move or sign-off (with neither, no reply at all):
  * a WAITING line after the move waits for the next phase, not for the check. `ref` is never
  * counted. */
-function headsArchitect(
-  runDir: string,
-  run: string,
-  label: string,
-  scenario: "architect-pass-and-fail" | "ci-pass-and-fail:architect"
-): Row {
+function headsArchitect(runDir: string, run: string, label: string): Scored {
   const calls = parsed(path.join(runDir, "daemon.log"), DaemonLine).filter(
     (line) => line.status === 200
   );
@@ -1180,7 +1134,6 @@ function headsArchitect(
   ];
   return {
     run,
-    scenario,
     label,
     pass: sentBack && signOffs === 0 && waiting.length === 0,
     ref: false,
@@ -3217,13 +3170,7 @@ export function conversationOrder(
   return { asked, grew, notes };
 }
 
-function specRow(
-  runDir: string,
-  run: string,
-  scenario: string,
-  label: string,
-  reach: string[]
-): Row {
+function specRow(runDir: string, run: string, label: string, reach: string[]): Scored {
   const entries = session(runDir);
   const seeded = seededIds(runDir);
   const spec = readFileSync(path.join(runDir, "spec.md"), "utf8");
@@ -3404,7 +3351,6 @@ function specRow(
   ].join(" ");
   return {
     run,
-    scenario,
     label,
     pass: Object.values(scores).every(Boolean),
     ref: routedRead,
@@ -3776,21 +3722,22 @@ function sharingOf(runsDir: string): Map<string, string[]> {
  * directory: `dir`, the map's link resolved (a link to no directory is this run's rig error). Its
  * own places are its HOME (in its directory), its label's profile and checkout, each with a slash
  * after it. The label's profile is under the run's own work directory, named as the map's label
- * link beside the runs names it, and by the label itself where the profiles are named by label. */
+ * link beside the runs names it (<work>/maps/profiles/<label>, rig.sh's header, "the map"); a label
+ * the map has no link for has no profile among its places. */
 function ownPlaces(
   dir: string,
   label: string,
   labels: Map<string, string>
 ): { work: string; own: string[] } {
-  const ran = ranAt(lstatSync(dir).isSymbolicLink() ? realpathSync(dir) : dir, session(dir));
+  const ran = ranAt(realpathSync(dir), session(dir));
   const work = path.dirname(path.dirname(ran));
   const link = path.join(path.dirname(path.dirname(dir)), "profiles", label);
-  const profile = path.join(
+  const places = [ran, labels.get(label)];
+  if (existsSync(link)) places.push(path.join(work, "profiles", path.basename(realpathSync(link))));
+  return {
     work,
-    "profiles",
-    existsSync(link) && lstatSync(link).isSymbolicLink() ? path.basename(realpathSync(link)) : label
-  );
-  return { work, own: [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`) };
+    own: places.flatMap((place) => (place === undefined ? [] : [`${place}/`])),
+  };
 }
 
 /** `runs <runs dir> --run <name>`: one scored scenario's run, its model.txt, its score and its
@@ -3847,22 +3794,16 @@ function scoreScoredRun(runsDir: string, name: string): void {
   console.log(text);
 }
 
-/** Every scenario score.ts scores: the name a run's directory starts with. The scorers map below
- * is keyed by this list, so the two cannot drift, and the command line refuses any other name
- * rather than printing an empty table of it. */
-const SCENARIOS = [
-  "ask-on-message",
-  "measure-before-ask",
-  "tester-proof",
-  "brainstorm",
-  "askgate",
-  "spec-writing",
-  "spec-rewrite",
-  "reviewer-own-head",
-  "reviewer-pass-and-fail",
-  "architect-pass-and-fail",
-  "ci-pass-and-fail",
-] as const;
+/** One scenario's scorer: the row of the run `run` in `dir` under `label`, given the case its name
+ * carries ("" for a scenario whose runs carry none). */
+type Scorer = (dir: string, run: string, label: string, runCase: string) => Scored;
+
+/** The entry of `table` for `key`, a case runFields read from a run's name: run-names.ts lists the
+ * cases, and `table`'s type holds an entry for each, so a case with no entry is a defect here. */
+function entryOf<K extends string, V>(table: Readonly<Record<K, V>>, key: string): V {
+  if (!Object.hasOwn(table, key)) throw new Error(`score.ts has no entry for the case ${key}`);
+  return table[key as K];
+}
 
 function scoreRuns(runsDir: string, only: string | undefined) {
   const rows: Row[] = [];
@@ -3880,53 +3821,52 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   const sharing = sharingOf(runsDir);
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
-  // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate, a
-  // reviewer-own-head or a ci-pass-and-fail run's case comes from its directory (CASED_RUNS).
-  const scorers: Record<
-    (typeof SCENARIOS)[number],
-    (dir: string, run: string, label: string, dirCase: string) => Row
-  > = {
+  // The rule each reviewer-own-head case holds its reviewer to, and the scorer of each role a
+  // ci-pass-and-fail run drives: one entry for each case run-names.ts lists.
+  const ownHeadRules: Record<(typeof OWN_HEAD_CASES)[number], ReviewRule> = {
+    "sibling-fails": "approve",
+    "ci-only": "approve",
+    "no-implementer": "approve",
+    "no-tester": "no-tester",
+  };
+  const ciRoles: Record<(typeof CI_ROLES)[number], Scorer> = {
+    reviewer: (dir, run, label) => headsReview(dir, run, label, "refuse"),
+    tester: headsTester,
+    architect: headsArchitect,
+  };
+  // Each scenario's scorer, keyed by the scenario a run's name starts with (run-names.ts). Its row's
+  // scenario is the one key below, which its rig errors count under too.
+  const scorers: Record<BatchScenario, Scorer> = {
     "ask-on-message": askOnMessage,
     "measure-before-ask": measureBeforeAsk,
     "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
     brainstorm: brainstormSurface,
     askgate: askgateReview,
-    "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
-    "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
-    "reviewer-own-head": (dir, run, label, dirCase) =>
-      headsReview(dir, run, label, dirCase, "reviewer-own-head"),
-    "reviewer-pass-and-fail": (dir, run, label) =>
-      headsReview(dir, run, label, "", "reviewer-pass-and-fail"),
-    "architect-pass-and-fail": (dir, run, label) =>
-      headsArchitect(dir, run, label, "architect-pass-and-fail"),
-    "ci-pass-and-fail": (dir, run, label, role) =>
-      role === "reviewer"
-        ? headsReview(dir, run, label, "", "ci-pass-and-fail")
-        : role === "tester"
-          ? headsTester(dir, run, label)
-          : headsArchitect(dir, run, label, "ci-pass-and-fail:architect"),
+    "spec-writing": (dir, run, label) => specRow(dir, run, label, reach),
+    "spec-rewrite": (dir, run, label) => specRow(dir, run, label, reach),
+    "reviewer-own-head": (dir, run, label, runCase) =>
+      headsReview(dir, run, label, entryOf(ownHeadRules, runCase)),
+    "reviewer-pass-and-fail": (dir, run, label) => headsReview(dir, run, label, "refuse"),
+    "architect-pass-and-fail": headsArchitect,
+    "ci-pass-and-fail": (dir, run, label, role) => entryOf(ciRoles, role)(dir, run, label, role),
   };
-  const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
   // Runs SKILL_SCENARIOS_FIXTURE_ONLY stopped before their agent: built, and not scored.
   const fixtureOnly: string[] = [];
   for (const run of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
-    const match = name.exec(run);
-    const score = scorers[(match?.[1] ?? "") as (typeof SCENARIOS)[number]];
-    if (!match || !score) continue;
-    const [, scenario = "", named = ""] = match;
+    const fields = runFields(run);
+    if (fields === undefined || !isBatchScenario(fields.scenario)) continue;
+    const { scenario, case: runCase, label } = fields;
     if (only && scenario !== only) continue;
     const dir = path.join(runsDir, run);
     if (existsSync(path.join(dir, "fixture-only"))) {
       fixtureOnly.push(run);
       continue;
     }
-    // undefined for a scenario with no case, null for a directory of one that names no case.
-    const casedRun = CASED_RUNS[scenario]?.exec(run);
-    const [, dirCase = "", label = named] = casedRun ?? [];
-    const key = `${casedRun ? `${scenario}:${dirCase}` : scenario}\t${label}`;
+    const counted = rowScenario(fields);
+    const key = `${counted}\t${label}`;
     let reason: string | undefined;
     try {
-      if (casedRun === null)
+      if (runCase === undefined)
         throw new Error(
           `the directory names no case: ${/^[aeiou]/.test(scenario) ? "an" : "a"} ${scenario} run's directory is ${scenario}-<case>-<label>-<n>`
         );
@@ -3935,7 +3875,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       const { work, own } = ownPlaces(dir, label, labels);
       reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);
       if (reason === undefined) {
-        const scored = score(dir, run, label, dirCase);
+        const scored = scorers[scenario](dir, run, label, runCase);
         const outside = outsideReaches(calls, [work, labels.get(label) ?? work]);
         const skills = skillReaches(calls, own, label, labels);
         const flags = [
@@ -3961,6 +3901,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
         const [first = "", ...rest] = scored.notes.split("\n");
         const row = {
           ...scored,
+          scenario: counted,
           flagged: scored.flagged === true || flags.length > 0,
           notes: [
             `${first}${flags.map((flag) => flag.inline).join("")}`,
@@ -4067,9 +4008,9 @@ if (import.meta.main) {
       );
       process.exit(2);
     }
-    if (rest[1] !== undefined && !SCENARIOS.includes(rest[1] as (typeof SCENARIOS)[number])) {
+    if (rest[1] !== undefined && !isBatchScenario(rest[1])) {
       console.error(
-        `score.ts: '${rest[1]}' is no scenario score.ts scores (${SCENARIOS.join(", ")})`
+        `score.ts: '${rest[1]}' is no scenario score.ts scores (${BATCH_SCENARIOS.join(", ")})`
       );
       process.exit(2);
     }

@@ -51,13 +51,13 @@ export const RIG_STEP: Wait = { part: "a rig.sh step", boundMs: 240_000 };
 export const JUDGE_ROW_WORK: Wait = { part: "a judge-omp row's normal work", boundMs: 5_446 };
 
 /**
- * The margin of the repository's other bounds on Docker calls, those of
- * packages/envoy-client/src/__tests__/nats-server.ts: NATS_START_HOOK_MS gives a container's start
- * 4.4 times the slowest `docker run -d` measured, and NATS_STOP_HOOK_MS its removal twice the
- * slowest `docker rm -f -v`. A judge's Docker calls bring its image and start its container, so
- * they take the start's.
+ * The margin a judge's Docker call gets over the slowest measured one: the margin
+ * packages/envoy-client/test/nats-server.ts gives a NATS container's start (NATS_START_HOOK_MS,
+ * 4.4 times the slowest `docker run -d` it measured). A judge's Docker calls bring its image and
+ * start its container, so they take a start's margin. It is copied from that file's prose, not
+ * read from it.
  */
-export const DOCKER_BOUND_MARGIN = 4.4;
+const DOCKER_BOUND_MARGIN = 4.4;
 
 /**
  * One Docker call of `rig.sh judge-omp`: the judge image's inspect, one pull of it, or the daemon's
@@ -83,12 +83,6 @@ export const JUDGE_DOCKER_CALL: Wait = {
  * SKILL_SCENARIOS_TIMEOUT, which bounds omp inside the container.
  */
 export const JUDGE_STANDIN_OMP: Wait = { part: "the judge's stand-in omp", boundMs: 120_000 };
-
-/**
- * The pulls of the judge's image rig.sh judge-omp asks for at most, a pause of 2 s between two: a
- * pull that fails within its bound is asked again, and a pull its bound ends is not.
- */
-export const JUDGE_PULLS = 3;
 
 /**
  * The wait of one row of judge-omp's describe in rig.test.ts, and of each judge it starts: the

@@ -86,6 +86,30 @@ test("prints the parent of each reserved path", () => {
   expect(run.exitCode).toBe(0);
 });
 
+// Catches: a removal at remove-trees.ts's top level, which an import of it runs over the
+// importer's own command line, deleting each path the importer was given.
+test("an import of remove-trees.ts removes nothing; a run of it removes what it is given", () => {
+  const root = makeDirectory("remove-trees-import");
+  const kept = join(root, "kept");
+  const removed = join(root, "removed");
+  mkdirSync(kept);
+  mkdirSync(removed);
+  const importer = join(root, "importer.ts");
+  writeFileSync(importer, `import ${JSON.stringify(join(import.meta.dir, "remove-trees.ts"))};\n`);
+  const imported = spawnWithin({ part: "bun importer.ts", boundMs: 60_000 }, [
+    process.execPath,
+    importer,
+    kept,
+  ]);
+  expect({ code: imported.exitCode, kept: existsSync(kept) }).toEqual({ code: 0, kept: true });
+  const ran = spawnWithin({ part: "bun remove-trees.ts", boundMs: 60_000 }, [
+    process.execPath,
+    join(import.meta.dir, "remove-trees.ts"),
+    removed,
+  ]);
+  expect({ code: ran.exitCode, removed: existsSync(removed) }).toEqual({ code: 0, removed: false });
+});
+
 describe("a one-shot directory a whole describe shares", () => {
   const one = temporaryDirectory("test-fixtures-one-shot");
   // Read in the describe's body, where the call was: the path is reserved there and the directory

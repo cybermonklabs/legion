@@ -8,23 +8,27 @@
  * leave every later directory behind and name only the one it stopped on (the behaviour
  * `packages/envoy-client/test/temp-dir.ts` had, which the fixture took over from it).
  *
- * It imports only `node:` modules, so it runs as a plain bun script, outside `bun test`.
+ * It imports only `node:` modules, so it runs as a plain bun script, outside `bun test`. It
+ * removes only when bun runs it (`import.meta.main`): a module that imported it would otherwise
+ * remove each path of its own command line.
  */
 import type { Stats } from "node:fs";
 import { chmod, lstat, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-const failures: string[] = [];
-for (const directory of process.argv.slice(2).reverse()) {
-  try {
-    await removeTree(directory);
-  } catch (error) {
-    failures.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`);
+if (import.meta.main) {
+  const failures: string[] = [];
+  for (const directory of process.argv.slice(2).reverse()) {
+    try {
+      await removeTree(directory);
+    } catch (error) {
+      failures.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
-}
-if (failures.length > 0) {
-  process.stderr.write(`temporary directories left behind:\n  ${failures.join("\n  ")}\n`);
-  process.exit(1);
+  if (failures.length > 0) {
+    process.stderr.write(`temporary directories left behind:\n  ${failures.join("\n  ")}\n`);
+    process.exit(1);
+  }
 }
 
 /**

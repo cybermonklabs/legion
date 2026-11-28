@@ -214,7 +214,7 @@
 #                   reviewer (on the tester's pass), tester (on the implementer's completion) and
 #                   architect (in accepting, after the reviewer's approval). Scored by headsReview,
 #                   headsTester and headsArchitect, counted per role and label.
-#   owner-walk      A scored scenario (scored-runs.ts SCORED_SCENARIOS): one fresh owner, a root's
+#   owner-walk      A scored scenario (run-names.ts SCORED_SCENARIOS): one fresh owner, a root's
 #                   architect or a child's, plans the issue G of worlds/owner-walk/issue.md and then
 #                   answers its form's questions, on a label's own texts (run_owner_walk, below).
 #                   SKILL_SCENARIOS_OWNER_WALK_CASE names the case, <kind>-<form>-<family>
@@ -3055,26 +3055,35 @@ batch_scored_cell() {
 
 # store_scored_run NAME stores the run NAME, when RT_STORE is set: the directory the map names NAME
 # ($maps/runs/NAME, a link to the run's directory under $work/runs, map_run), packed under NAME.
-# find and tar follow that one link (find -H, tar --dereference) and no other, since the list they
-# share holds regular files and directories alone. A failed pack or put is noted and stops neither
-# the batch nor the run's count in this pod. After a failed pack or a failed put of it, its row is
-# not stored, so no restart counts the run; at download (cmd_check_stored) a run whose object the
-# log names and the download lacks is a rig error.
+# The map's link is resolved once, and find and tar then read the run's own directory, following no
+# link (find's default, tar with no --dereference), and tar names each member under NAME
+# (--transform). So a listed file that a process still running swaps for a link between the list
+# and the pack is packed as that link, which restore-stored refuses (pack_problem), never as what
+# it points at. A failed pack or put is noted and stops neither the batch nor the run's count in
+# this pod. After a failed pack or a failed put of it, its row is not stored, so no restart counts
+# the run; at download (cmd_check_stored) a run whose object the log names and the download lacks
+# is a rig error.
 store_scored_run() {
   [ -n "${RT_STORE:-}" ] || return 0
   local name=$1 pack=$work/stored/$1.tar.gz row=$work/stored/$1.row.json list=$work/stored/$1.list
-  local hex left
+  local hex left dir parent base
   mkdir -p "$work/stored"
   rm -f -- "$pack" "$row" "$list"
-  (cd "$maps/runs" && find -H "$name" \( -type d \( -name home -o -name secrets \) -o -path "$name/pane.env" \
-    -o -path "$name/texts/launch-request.json" -o -path "$name/texts/launch-answer.json" \) -prune \
+  dir=$(readlink -f -- "$maps/runs/$name") || dir=
+  if [ ! -d "$dir" ]; then
+    note "the map's link of $name names no directory, so the run is not stored"
+    return 0
+  fi
+  parent=${dir%/*} base=${dir##*/}
+  (cd "$parent" && find "$base" \( -type d \( -name home -o -name secrets \) -o -path "$base/pane.env" \
+    -o -path "$base/texts/launch-request.json" -o -path "$base/texts/launch-answer.json" \) -prune \
     -o \( -type d -o -type f \) -print0) >"$list"
-  left=$(cd "$maps/runs" && find -H "$name" \( -type d \( -name home -o -name secrets \) -o -path "$name/pane.env" \
-    -o -path "$name/texts/launch-request.json" -o -path "$name/texts/launch-answer.json" \) -prune \
+  left=$(cd "$parent" && find "$base" \( -type d \( -name home -o -name secrets \) -o -path "$base/pane.env" \
+    -o -path "$base/texts/launch-request.json" -o -path "$base/texts/launch-answer.json" \) -prune \
     -o ! -type d ! -type f -printf '%P\n' | LC_ALL=C sort)
   [ -z "$left" ] ||
     note "the pack of $name leaves out $(grep -c . <<<"$left") entries that are no regular file or directory: $(paste -sd' ' <<<"$left")"
-  if ! tar -czf "$pack" -C "$maps/runs" --dereference --no-recursion --hard-dereference --null -T "$list"; then
+  if ! tar -czf "$pack" -C "$parent" --transform "s|^$base|$name|" --no-recursion --hard-dereference --null -T "$list"; then
     note "the pack of $name failed, so the run is not stored"
     rm -f -- "$pack" "$list"
     return 0

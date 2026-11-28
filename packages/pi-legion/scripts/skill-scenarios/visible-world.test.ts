@@ -20,6 +20,7 @@ const works = {
   view: temporaryDirectory("visible-world-view", { real: true }),
   links: temporaryDirectory("visible-world-links", { real: true }),
   role: temporaryDirectory("visible-world-role", { real: true }),
+  walk: temporaryDirectory("visible-world-walk", { real: true }),
 };
 
 // The view rows walk a real bubblewrap view, which needs bwrap and a user namespace it may make
@@ -128,6 +129,22 @@ test("a ci-pass-and-fail run's scenario and its role are hits, as scenario (own)
   expect(out).toContain(`tree\t${run}/cwd/notes.txt\tscenario (own)\tci-pass-and-fail\t`);
   expect(out).toContain(`tree\t${run}/cwd/role.txt\tcase (own)\t-tester-\t`);
   expect(out).not.toContain("ci-pass-and-fail-tester\t");
+  expect(code).toBe(1);
+});
+
+// Catches: a walk that reads a run's case from some scenarios and not from owner-walk's, so an
+// owner-walk run is walked as the scenario owner-walk-<case> with no case, and a file that names
+// its case (`root-B-claude`) is no hit.
+test("an owner-walk run's scenario and its case are hits, as scenario (own) and case (own)", () => {
+  const run = runIn(
+    works.walk,
+    { "cwd/notes.txt": "this run is owner-walk\n", "cwd/case.md": "the case root-B-claude\n" },
+    [["owner-walk-root-B-claude-head-3", "0123456789abcdef"]]
+  );
+  const { code, out } = search(run);
+  expect(out).toContain(`tree\t${run}/cwd/notes.txt\tscenario (own)\towner-walk\t`);
+  expect(out).toContain(`tree\t${run}/cwd/case.md\tcase (own)\troot-B-claude\t`);
+  expect(out).not.toContain("owner-walk-root-B-claude\t");
   expect(code).toBe(1);
 });
 

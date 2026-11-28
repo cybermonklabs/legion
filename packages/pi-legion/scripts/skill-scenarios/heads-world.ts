@@ -14,15 +14,12 @@ import {
 } from "../../../dispatch/e2e/api";
 import { harnessPorts } from "../../../dispatch/e2e/harness-ports";
 import { RIG_WORLD } from "./rig-world";
+import { CI_ROLES, OWN_HEAD_CASES } from "./run-names";
 import { agentPost, IMPLEMENTER } from "./seed-dispatch";
 
 /** The repository of the heads scenarios' world and its default branch, rig-world.json's. */
 const HEADS_REPO = RIG_WORLD.repository;
 const HEADS_BASE = RIG_WORLD.defaultBranch;
-/** The cases of reviewer-own-head, each one batch of rig.sh's cmd_batch. */
-const OWN_HEAD_CASES = ["sibling-fails", "ci-only", "no-implementer", "no-tester"] as const;
-/** The cases of ci-pass-and-fail: the role its run drives through one world. */
-const CI_ROLES = ["reviewer", "tester", "architect"] as const;
 /** A heads scenario's world in one word: a case of reviewer-own-head, the scenario's name, or
  * ci-pass-and-fail with its role. */
 type HeadsWorld =
