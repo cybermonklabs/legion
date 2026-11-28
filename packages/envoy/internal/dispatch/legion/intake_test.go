@@ -156,11 +156,6 @@ func (c *intakeClock) AfterFunc(d time.Duration, f func()) clock.Timer {
 	})
 }
 
-// now is the intake's reading of the clock (Now).
-func (c *intakeClock) now() time.Time {
-	return c.Now()
-}
-
 // advance moves the clock by, firing every call deferred and every hand-back parked that is due by
 // then (clocktest.Fake.Advance). A test that aims at a moment the clock has passed already moves it
 // back (by below 0), which fires nothing.
@@ -597,6 +592,16 @@ func (r *intakeRig) drained(key string) {
 	testwait.Receive(r.t, fmt.Sprintf("the work queued on the runner of %q before a barrier to run", key), ran)
 }
 
+// wakeLanded waits for the rig's intakes to have handled every wake wakeUp sent (awaitWakes), and
+// then for the work queued on project's runner before a barrier to run (drained): the starting
+// point each of those wakes queued there has run by then, so what a wake did, a read it made or a
+// call it deferred included, is done, and a count read after it is final.
+func (r *intakeRig) wakeLanded(project string) {
+	r.t.Helper()
+	r.awaitWakes()
+	r.drained(project)
+}
+
 // drainedAll queues a barrier on settingsKey that, once it runs, queues a barrier on the runner of
 // each project with a Legion setting (ListSettings), and waits for the last of them to run: a
 // settings read queued on settingsKey before it (SettingsChanged) has queued each project's
@@ -712,15 +717,17 @@ func (r *intakeRig) state() rigState {
 // take-over, a deferred call or callRead queues shows in none of those counts until it starts, so
 // where the counts say quiet, quiet queues a barrier on settingsKey that queues one on each
 // configured project's runner (drainedAll), waits for the last of them to run, and answers true
-// only where the counts are still those it read before the barriers.
-func (r *intakeRig) quiet() bool {
+// only where the counts are still those it read before the barriers. It answers the state it read
+// last too, for a wait's failure to print.
+func (r *intakeRig) quiet() (rigState, bool) {
 	r.t.Helper()
 	before := r.state()
 	if !before.idle() {
-		return false
+		return before, false
 	}
 	r.drainedAll()
-	return r.state() == before
+	after := r.state()
+	return after, after == before
 }
 
 // runUntil runs the rig until cond holds, and answers true then. Each time the shared wait asks
@@ -732,21 +739,19 @@ func (r *intakeRig) quiet() bool {
 // clock's other moves, a test's or a stalled read's, are not counted. It moves the clock only while
 // nothing runs and cond does not hold, which keeps the order a wait in real time gives. It answers
 // false where the rig is quiet with no deadline armed within what is left of jumps. deadline is
-// the wall-clock deadline of the wait runUntil replaces, which it hands to the shared wait's
-// bounded form (testwait.Holds, clamped to the binary's deadline by testwait.Bounded), and it
-// answers false once that passes; with 0 the wait is the shared one (testwait.Until), whose give-up
-// at the binary's deadline fails the test.
+// the wall-clock deadline of the wait, which it hands to the shared wait's bounded form
+// (testwait.Holds, clamped to the binary's deadline by testwait.Bounded), and it answers false
+// once that passes.
 func (r *intakeRig) runUntil(cond func() bool, jumps, deadline time.Duration) bool {
 	r.t.Helper()
 	var jumped time.Duration
-	held, reading := false, "the rig has not been read"
+	held := false
 	step := func() bool {
 		if cond() {
 			held = true
 			return true
 		}
-		if !r.quiet() {
-			reading = "the condition does not hold and the rig is not quiet"
+		if _, quiet := r.quiet(); !quiet {
 			return false
 		}
 		if cond() {
@@ -754,7 +759,7 @@ func (r *intakeRig) runUntil(cond func() bool, jumps, deadline time.Duration) bo
 			return true
 		}
 		var by time.Duration
-		armed, moved := r.clock.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+		_, moved := r.clock.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
 			if len(armed) == 0 {
 				return now, false
 			}
@@ -765,20 +770,12 @@ func (r *intakeRig) runUntil(cond func() bool, jumps, deadline time.Duration) bo
 			return now.Add(by), true
 		})
 		if !moved {
-			reading = fmt.Sprintf("the rig is quiet, and the deadlines armed on its clock, %v, are not within the %s of jumps left", armed, jumps-jumped)
 			return true
 		}
 		jumped += by
-		reading = fmt.Sprintf("the rig was quiet, and its clock moved %s to its earliest armed deadline", by)
 		return false
 	}
-	if deadline > 0 {
-		testwait.Holds(testwait.Bounded(r.t, deadline, testwait.Margin), testwait.Poll, step)
-		return held
-	}
-	testwait.Until(r.t, "the condition runUntil waits for, or the rig quiet with nothing armed within its jumps", func() (string, bool) {
-		return reading, step()
-	})
+	testwait.Holds(testwait.Bounded(r.t, deadline, testwait.Margin), testwait.Poll, step)
 	return held
 }
 
@@ -851,7 +848,10 @@ func (r *intakeRig) waitingOn(project string) int {
 func (r *intakeRig) judgedOrWaiting(project string) (string, bool) {
 	r.t.Helper()
 	info := r.consumerInfo()
-	waiting, parked := r.waitingOn(project), len(r.parked())
+	waiting := r.waitingOn(project)
+	r.mu.Lock()
+	parked := len(r.backs)
+	r.mu.Unlock()
 	return fmt.Sprintf("%d messages not delivered, %d not acknowledged, %d waiting on %s's runner, %d parked", info.NumPending, info.NumAckPending, waiting, project, parked),
 		info.NumPending == 0 && info.NumAckPending == waiting+parked
 }
@@ -1253,20 +1253,19 @@ func TestQuietWaitsForTheStartingPointQueuedBehindAHeldRead(t *testing.T) {
 	answer := daemon.holds(t)
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
 	rig.start()
-	testwait.Until(t, "the take-over's starting read to reach INFRA's daemon", func() (int, bool) {
-		served := daemon.served()
-		return served, served >= 1
-	})
+	daemon.awaitServed(t, "the take-over's starting read to reach INFRA's daemon", 1)
 	rig.barred = rig.holdRunner("INFRA")
 	rig.intake.SettingsChanged(t.Context())
 	rig.clock.advance(ReadRetryAfter + time.Second)
-	if rig.quiet() {
+	if _, quiet := rig.quiet(); quiet {
 		t.Fatalf("the rig is quiet while INFRA's starting read is held at its daemon")
 	}
 
 	answer()
 	testwait.Until(t, "the rig to be quiet once INFRA's daemon has answered", func() (string, bool) {
-		return fmt.Sprintf("INFRA's daemon served %d reads", daemon.served()), rig.quiet()
+		reading := fmt.Sprintf("INFRA's daemon served %d reads", daemon.served())
+		_, quiet := rig.quiet()
+		return reading, quiet
 	})
 	if served := daemon.served(); served != 2 {
 		t.Fatalf("the rig was quiet with INFRA's daemon having served %d reads, want 2, the starting read and the read of the starting point queued behind it: quiet answered while that starting point still waited on INFRA's runner",
@@ -1777,7 +1776,7 @@ func TestAProjectWithoutAStartingPointIsReadOnceAndNothingReadsItAgain(t *testin
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "LINUX", linux.URL, actor); err != nil {
 		t.Fatalf("set LINUX's daemon: %v", err)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.awaitWholeReads(2)
 	rig.publish("LINUX", change(21, "LINUX-1", moved("phase", "implementing")))
 	rig.publish("LINUX", change(22, "LINUX-1", moved("phase", "testing")))
@@ -1793,7 +1792,7 @@ func TestAProjectWithoutAStartingPointIsReadOnceAndNothingReadsItAgain(t *testin
 	if c := cursorOf(t, rig.database, "INFRA"); c.lastSeq != nil || c.stateID != nil || c.readOwed || c.readHolder != nil {
 		t.Fatalf("INFRA's cursor after the PUT of the same URL is %s, want no sequence, no store, nothing owed and no holder", c)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.awaitWholeReads(3)
 
 	// A settings change that leaves both cursors, then more events: no read. The check is queued
@@ -2993,7 +2992,7 @@ func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedB
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		t.Fatalf("point INFRA at the named daemon: %v", err)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.awaitWholeReads(2)
 	reads := readRecords(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, false)
@@ -3564,12 +3563,8 @@ func TestAHeldReadThatFailsTwiceIsMadeByItsThirdRedelivery(t *testing.T) {
 	rig.clock.jumps(ReadRetryAfter - holdAtLeast)
 	// runUntil moves the clock to the end of each hand-back once the rig is quiet: left for the
 	// first, and holdAtLeast at the most for each of the two after the refused reads.
-	var info *natsgo.ConsumerInfo
-	if !rig.runUntil(func() bool {
-		info = rig.consumerInfo()
-		return info.AckFloor.Stream >= holder && info.NumAckPending == 0 && info.NumPending == 0
-	}, left+2*holdAtLeast, 20*time.Second) {
-		t.Fatalf("the intake has not acknowledged through stream sequence %d: %+v", holder, info)
+	if !rig.runUntil(rig.finishedThrough(holder), left+2*holdAtLeast, 20*time.Second) {
+		t.Fatalf("the intake has not acknowledged through stream sequence %d: %+v", holder, rig.consumerInfo())
 	}
 
 	if served := daemon.served(); served != 5 {
@@ -3843,7 +3838,7 @@ func TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes(t *testing.T) {
 	rig.awaitStartingRead("INFRA")
 
 	daemon.stalls(func() { rig.clock.advance(RequestTimeout) })
-	from := rig.clock.now()
+	from := rig.clock.Now()
 	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
 	holder := rig.lastStreamSeq()
 
@@ -3863,7 +3858,7 @@ func TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes(t *testing.T) {
 		t.Fatalf("the message that holds INFRA's read is not acknowledged after %d reads and %d hand-backs: %+v",
 			daemon.served()-1, len(rig.logRecords(heldLine)), info)
 	}
-	held := rig.clock.now().Sub(from)
+	held := rig.clock.Now().Sub(from)
 
 	if served := daemon.served(); served != 1+failures {
 		t.Errorf("INFRA's daemon served %d reads, want the starting read and %d that timed out", served, failures)

@@ -201,8 +201,7 @@ var readRuleInvariants = map[int]string{
 // (intakeClock), which moves only where a step or a wait moves it, and the hand-backs come back on
 // it (intakeRig.park): each wait of a sequence ends at its event, the rig quiet among them
 // (intakeRig.quiet), or moves the clock on to the next deadline armed on it within the budget the
-// step or the end names (intakeRig.runUntil), each under the wall-clock deadline it had when it
-// waited on real time.
+// step or the end names (intakeRig.runUntil), a budget that bounds the wait's wall-clock time too.
 // The parent is parallel too, and the seeds run beside the package's other parallel tests,
 // storetest.DefaultParallel at once (TestMain).
 func TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute(t *testing.T) {
@@ -631,12 +630,7 @@ func (m *readRuleModel) run() {
 // so the checks after settle read the state the step left.
 func (m *readRuleModel) settle() {
 	testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return m.rig.consumerInfo().NumPending == 0 })
-	testwait.Until(m.t, "the rig to be quiet once the step's messages reached the intake", func() (string, bool) {
-		if m.rig.quiet() {
-			return "", true
-		}
-		return fmt.Sprintf("%+v", m.rig.state()), false
-	})
+	testwait.Until(m.t, "the rig to be quiet once the step's messages reached the intake", m.rig.quiet)
 }
 
 // commitStep: the daemon behind the setting's URL commits and publishes, drops a message, publishes
@@ -714,10 +708,10 @@ func (m *readRuleModel) foreignStep() {
 // messages of the setting's store fill the project's runner, the intake's clock moves to a few
 // seconds before the read's minute ends, one to four messages arrive past the cap (the first
 // sometimes of a store the cursor drops: after a write naming another daemon, the store that write
-// replaces), and the answer is let go once every message past the cap is judged (pastCapJudged).
-// Whether the read began is the first of its outcomes (decided), within 3 s as before: the read
-// reached the daemon, the wake or the take-over deferred it to the end of its minute, or a message
-// holds it, parked to come back on the rig's clock.
+// replaces), and the answer is let go once every message past the cap is judged
+// (intakeRig.judgedOrWaiting). Whether the read began is the first of its outcomes (decided),
+// within 3 s of wall-clock time: the read reached the daemon, the wake or the take-over deferred
+// it to the end of its minute, or a message holds it, parked to come back on the rig's clock.
 func (m *readRuleModel) burstStep() {
 	trigger := m.random.IntN(4)
 	past := 1 + m.random.IntN(4)
@@ -814,25 +808,10 @@ func (m *readRuleModel) burstStep() {
 		m.publish(store, false, m.commit(store, 1)...)
 	}
 	testwait.Holds(5*time.Second, 20*time.Millisecond, func() bool { return m.rig.consumerInfo().NumPending == 0 })
-	testwait.Until(m.t, "every message past the cap to be judged before the held answer goes", m.pastCapJudged)
+	testwait.Until(m.t, "every message past the cap to be judged before the held answer goes", func() (string, bool) {
+		return m.rig.judgedOrWaiting("INFRA")
+	})
 	release()
-}
-
-// pastCapJudged reports whether every message published so far has been delivered and each one the
-// durable has not acknowledged waits on INFRA's runner (Intake.waiting) or is parked to come back on
-// the rig's clock: each message keyed past the cap, to INFRA's crowded key, has been judged
-// (judgeCrowded), since a message judged there is acknowledged or handed back, and one not judged
-// yet is neither and waits on no runner's count. It reads the durable first, so a message that
-// moves from the runner's count to its acknowledgement meanwhile counts on the durable's side.
-func (m *readRuleModel) pastCapJudged() (string, bool) {
-	info := m.rig.consumerInfo()
-	in := m.rig.intake
-	in.mu.Lock()
-	waiting := in.waiting.projects["INFRA"]
-	in.mu.Unlock()
-	parked := len(m.rig.parked())
-	return fmt.Sprintf("%d messages not delivered, %d not acknowledged, %d waiting on INFRA's runner, %d parked", info.NumPending, info.NumAckPending, waiting, parked),
-		info.NumPending == 0 && info.NumAckPending == waiting+parked
 }
 
 // outcomeStep: what the next reads of the daemon behind the setting's URL come to.
@@ -905,10 +884,10 @@ func (m *readRuleModel) refusesLate(d *modelDaemon, reads int) {
 // redeliveries of the message that holds it make those reads: stateMaxHolds hand-backs at the
 // most, after which the message is let go and the read waits for the project's next message. Each
 // refusal moves the clock a minute itself, so each hand-back between two refused reads is
-// holdAtLeast, which runUntil moves the clock on to once the rig is quiet, (reads+2) times 1.5 s of
-// such moves at the most, under the same span of real time as before. As before, the step goes on
-// to the checks whether or not the daemon was read that many times: the hold may have let its
-// message go first.
+// holdAtLeast, which runUntil moves the clock on to once the rig is quiet: the step waits (reads+2)
+// times 1.5 s at the most, of such moves and of wall-clock time alike. The step goes on to the
+// checks whether or not the daemon was read that many times: the hold may have let its message go
+// first.
 func (m *readRuleModel) stopsAnsweringStep() {
 	d, s := m.setting, m.setting.store
 	reads := 8 + m.random.IntN(7)
@@ -1051,11 +1030,11 @@ func (m *readRuleModel) heldStart(then string, withhold bool) *withheldHandBack 
 	return withheld
 }
 
-// idleAfterWake waits for the intake to have handled the wake a write signalled (awaitWakes), and
-// then for the rig to be quiet after it (settle): the read of the wake, where it made one, has
-// ended, and a call it deferred to the end of the read's minute is armed on the rig's clock.
+// idleAfterWake waits for the rig to be quiet after the wake a write signalled (settle): quiet
+// holds only once every wake wakeUp sent has been handled (rigState.idle), so the read of the
+// wake, where it made one, has ended, and a call it deferred to the end of the read's minute is
+// armed on the rig's clock.
 func (m *readRuleModel) idleAfterWake() {
-	m.rig.awaitWakes()
 	m.settle()
 }
 
@@ -1126,25 +1105,27 @@ func (m *readRuleModel) awaitCaughtUp(index int) {
 		c := cursorOf(m.t, m.rig.database, "INFRA")
 		info := m.rig.consumerInfo()
 		behind := fmt.Sprintf("INFRA's cursor is %s, behind %s's store %s (%s) at %d", c, d.name, s.name, s.id, s.seq)
-		if len(m.rig.clock.Armed()) == 0 && m.rig.quiet() {
-			switch {
-			case c.readOwed && c.readHolder == nil && nexts < 3 && m.failedReadUnheld():
-				nexts++
-				events := m.commit(s, 1)
-				m.record("end: %s publishes %s, the project's next message, which the failed read that no message holds waits for", d.name, span(s, events))
-				m.publish(s, false, events...)
-				continue
-			case !c.readOwed:
-				m.fail(index, 2, "%s; it owes no read, and no message or read of INFRA is pending: nothing brings it up. INFRA's whole reads: %s", behind, m.readList())
-			case c.readHolder != nil:
-				m.fail(index, 2, "%s; it names the message at stream sequence %d as the owed read's holder, and no message of INFRA is pending: that holder never makes the read. INFRA's whole reads: %s",
-					behind, *c.readHolder, m.readList())
-			case c.readOwed && c.readHolder == nil && m.failedReadUnheld():
-				m.fail(index, 2, "%s; it owes a read that no message holds, and its last read failed or a holder was released, but %d next messages of the daemon did not bring the cursor up. INFRA's whole reads: %s",
-					behind, nexts, m.readList())
-			default:
-				m.fail(index, 2, "%s; it owes a read that no message holds, though its last read was good and no holder went back %d times. INFRA's whole reads: %s",
-					behind, stateMaxHolds, m.readList())
+		if len(m.rig.clock.Armed()) == 0 {
+			if _, quiet := m.rig.quiet(); quiet {
+				switch {
+				case c.readOwed && c.readHolder == nil && nexts < 3 && m.failedReadUnheld():
+					nexts++
+					events := m.commit(s, 1)
+					m.record("end: %s publishes %s, the project's next message, which the failed read that no message holds waits for", d.name, span(s, events))
+					m.publish(s, false, events...)
+					continue
+				case !c.readOwed:
+					m.fail(index, 2, "%s; it owes no read, and no message or read of INFRA is pending: nothing brings it up. INFRA's whole reads: %s", behind, m.readList())
+				case c.readHolder != nil:
+					m.fail(index, 2, "%s; it names the message at stream sequence %d as the owed read's holder, and no message of INFRA is pending: that holder never makes the read. INFRA's whole reads: %s",
+						behind, *c.readHolder, m.readList())
+				case c.readOwed && c.readHolder == nil && m.failedReadUnheld():
+					m.fail(index, 2, "%s; it owes a read that no message holds, and its last read failed or a holder was released, but %d next messages of the daemon did not bring the cursor up. INFRA's whole reads: %s",
+						behind, nexts, m.readList())
+				default:
+					m.fail(index, 2, "%s; it owes a read that no message holds, though its last read was good and no holder went back %d times. INFRA's whole reads: %s",
+						behind, stateMaxHolds, m.readList())
+				}
 			}
 		}
 		m.fail(index, 2, "%s %s after the intake's clock moved past ReadRetryAfter; the durable is %+v. INFRA's whole reads: %s",
@@ -1175,8 +1156,8 @@ func (m *readRuleModel) intakeIdle() bool {
 // tells the three states apart: work in flight, a burst's held read landing and the messages it
 // held back judged after it among it, is what settle waited out; a message parked to come back on
 // the rig's clock, which keeps the intake from being idle until the clock moves past its delay, is
-// held for redelivery, and the check is not made then, as before for a message handed back with a
-// delay; and otherwise the intake is idle, and the check is made.
+// held for redelivery, and the check is not made then; and otherwise the intake is idle, and the
+// check is made.
 func (m *readRuleModel) checkIdleCursor(index int) {
 	var floor uint64
 	idle := func() bool {

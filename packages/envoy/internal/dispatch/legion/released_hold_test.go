@@ -22,8 +22,7 @@ const (
 // client option, not a change of http.DefaultTransport, which every test of the process shares, so
 // it gives no other test's reads this window: that is what lets the read rule's seeds, which call
 // it, run at once. A stalled read ends at the stall (fakeDaemon.stalls), so the window ends no such
-// read: it is a guard for a read that must not hang, as RequestTimeout is in production, and the
-// end of a read a daemon holds until the client hangs up (fakeDaemon.stallsUntilHungUp). Call it
+// read: it is a guard for a read that must not hang, as RequestTimeout is in production. Call it
 // before start.
 func (r *intakeRig) windowed(readWindow time.Duration) {
 	r.t.Helper()
@@ -110,7 +109,7 @@ func TestEachWriteOfAnotherDaemonEndsTheHoldOfTheMessageBeforeIt(t *testing.T) {
 		if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 			t.Fatalf("point INFRA at %s: %v", name, err)
 		}
-		rig.wake <- struct{}{}
+		rig.wakeUp()
 		rig.waitFor(time.Minute, rig.finishedThrough(held), func() string {
 			return fmt.Sprintf("the held message at %d is not finished a minute after the write naming %s: %+v", held, name, rig.consumerInfo())
 		})
@@ -140,7 +139,7 @@ func TestEachWriteOfAnotherDaemonEndsTheHoldOfTheMessageBeforeIt(t *testing.T) {
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", b.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		t.Fatalf("point INFRA at B: %v", err)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	heldB := hold("B", b, bRun, bStore)
 
 	c := newFakeDaemon(t, "")
@@ -272,7 +271,7 @@ func TestASecondWriteOfAnotherDaemonKeepsTheReleaseOfAMessageStillOut(t *testing
 	rig.awaitWholeReads(1)
 	requireWholeRead(t, wholeReadsOf(t, rig.database, "INFRA")[0], ReadReasonStart, false)
 	due := lastReadStartedAt(t, rig, "INFRA").Add(ReadRetryAfter)
-	rig.clock.advance(due.Add(-left).Sub(rig.clock.now()))
+	rig.clock.advance(due.Add(-left).Sub(rig.clock.Now()))
 
 	// hold has the daemon named name publish a message of store under run, whose next hand-back the
 	// rig withholds (withholdOf), waits for that message to go back to the stream holding INFRA's
@@ -303,8 +302,7 @@ func TestASecondWriteOfAnotherDaemonKeepsTheReleaseOfAMessageStillOut(t *testing
 		}
 		released := cursorOf(t, rig.database, "INFRA").releasedHolders
 		rig.wakeUp()
-		rig.awaitWakes()
-		rig.drained("INFRA")
+		rig.wakeLanded("INFRA")
 		return released
 	}
 
@@ -471,7 +469,7 @@ func TestAWriteBackToADaemonMarkedAsNoDaemonOfTheProjectAppliesItsMessages(t *te
 	if c := cursorOf(t, rig.database, "INFRA"); len(c.foreignStateIDs) != 0 || c.previousStateID == nil || *c.previousStateID != cStore {
 		t.Fatalf("INFRA's cursor after the write back to B is %s, want no store marked and C's store %s recorded", c, cStore)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.awaitWholeReads(5)
 	reads := wholeReadsOf(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, true)

@@ -61,7 +61,7 @@ func TestAMessageOfTheStoreASettingNamedBeforeMakesNoStartingRead(t *testing.T) 
 	}
 
 	// The wake reads the named daemon whole, and its events follow that read.
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.awaitWholeReads(2)
 	reads := wholeReadsOf(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, true)
@@ -101,7 +101,7 @@ func TestAWriteBackToTheDaemonOfTheStoreASettingNamedBeforeAppliesItsMessages(t 
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", other.URL, actor); err != nil {
 		t.Fatalf("point INFRA at the other daemon: %v", err)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.awaitWholeReads(2)
 	reads := wholeReadsOf(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, false)
@@ -115,7 +115,7 @@ func TestAWriteBackToTheDaemonOfTheStoreASettingNamedBeforeAppliesItsMessages(t 
 	if c := cursorOf(t, rig.database, "INFRA"); c.stateID != nil || c.previousStateID != nil || c.previousStateURL != nil {
 		t.Fatalf("INFRA's cursor after the write back is %s, want no store and no store recorded", c)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.awaitWholeReads(3)
 	reads = wholeReadsOf(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, true)
@@ -174,7 +174,7 @@ func TestAWriteBackWhoseFirstReadFailsIsReadAgainAtItsDaemonsNextMessage(t *test
 		c.previousStateURL == nil || *c.previousStateURL != daemon.URL {
 		t.Fatalf("INFRA's cursor after the write naming another daemon is %s, want the store %s recorded with the URL %s it followed", c, rigStateID, daemon.URL)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.awaitWholeReads(2)
 	reads := wholeReadsOf(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, false)
@@ -186,7 +186,7 @@ func TestAWriteBackWhoseFirstReadFailsIsReadAgainAtItsDaemonsNextMessage(t *test
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", daemon.URL, actor); err != nil {
 		t.Fatalf("point INFRA back at its first daemon: %v", err)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.awaitWholeReads(3)
 	reads = wholeReadsOf(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, false)
@@ -272,7 +272,7 @@ func TestATakeOverFinishesAMessageOfTheStoreASettingNamedBeforeAfterTheTakeOvers
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		t.Fatalf("point INFRA at another daemon: %v", err)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.awaitWholeReads(2)
 	reads := wholeReadsOf(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, false)
@@ -344,7 +344,7 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedRead(t *testing.T) 
 		if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 			t.Fatalf("point INFRA at a second URL: %v", err)
 		}
-		rig.wake <- struct{}{}
+		rig.wakeUp()
 		rig.awaitWholeReads(2)
 		return rig, daemon
 	}
@@ -427,7 +427,7 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedRead(t *testing.T) 
 		if err != nil || !found {
 			t.Fatalf("read INFRA's cursor: found %v, %v", found, err)
 		}
-		if current.stateID == nil || *current.stateID != namedStore || !current.forgets(rigStateID) || !current.readFor("", rig.clock.now(), 0, false, nil).read {
+		if current.stateID == nil || *current.stateID != namedStore || !current.forgets(rigStateID) || !current.readFor("", rig.clock.Now(), 0, false, nil).read {
 			t.Fatalf("INFRA's cursor is %s, want the store %s, the store %s dropped, and a read that a call no message makes would make now",
 				cursorOf(t, rig.database, "INFRA"), namedStore, rigStateID)
 		}
@@ -543,7 +543,7 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForNoReadBeforeTheOwedReadIsD
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		t.Fatalf("point INFRA at the named daemon: %v", err)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.awaitWholeReads(2)
 	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.stateID != nil || c.readHolder != nil ||
 		c.previousStateID == nil || *c.previousStateID != rigStateID {
@@ -616,7 +616,7 @@ func TestAWriteOfTheSameURLDeletesTheHeldPartsOfASplitTransaction(t *testing.T) 
 			if held := heldPartCount(t, rig.database, "INFRA"); held != 0 {
 				t.Fatalf("%d parts held after the write of the same URL, want none", held)
 			}
-			rig.wake <- struct{}{}
+			rig.wakeUp()
 			rig.awaitWholeReads(2)
 
 			rig.clock.advance(ReadRetryAfter + time.Second)
@@ -675,7 +675,7 @@ func TestAWriteOfTheSameURLWhileAReadOfItIsInFlightTakesThatReadAsItsStartingPoi
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", daemon.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		t.Fatalf("write INFRA's setting again with its own URL: %v", err)
 	}
-	wrote := rig.clock.now()
+	wrote := rig.clock.Now()
 	if c := cursorOf(t, rig.database, "INFRA"); c.stateURL != "" || c.lastSeq != nil || c.stateID != nil || c.readOwed || c.readHolder != nil {
 		t.Fatalf("INFRA's cursor after the write of its own URL during the gap read is %s, want it reset: following no daemon, no sequence, no store, nothing owed and no holder", c)
 	}
@@ -1017,7 +1017,7 @@ func (r *intakeRig) pointAt(daemon *fakeDaemon, reads int) {
 	if _, err := PutSettings(r.t.Context(), r.database.Pool, "INFRA", daemon.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		r.t.Fatalf("point INFRA at %s: %v", daemon.URL, err)
 	}
-	r.wake <- struct{}{}
+	r.wakeUp()
 	r.awaitWholeReads(reads)
 	r.clock.advance(ReadRetryAfter + time.Second)
 }

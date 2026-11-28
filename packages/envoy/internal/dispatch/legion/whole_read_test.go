@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestMain removes the NATS server the package's tests share (testnats.Main), which the intake's
@@ -38,9 +39,8 @@ func TestMain(m *testing.M) {
 // reads, counting the reads it served. delay is how long each answer waits, as a daemon reading a
 // state of several MB does (slows), held a gate each answer waits on until the test releases it
 // (holds), refusals how many of the next reads it refuses with refusalStatus (refusesFor), stall
-// what each read runs before it ends with no answer (stalls), stallWaits whether such a read then
-// waits for the client to hang up rather than end at once (stallsUntilHungUp), and lag what the
-// next read runs before it answers as it would otherwise (lagsNext).
+// what each read runs before it ends with no answer (stalls), and lag what the next read runs
+// before it answers as it would otherwise (lagsNext).
 type fakeDaemon struct {
 	*httptest.Server
 	mu            sync.Mutex
@@ -52,7 +52,6 @@ type fakeDaemon struct {
 	refusals      int
 	refusalStatus int
 	stall         func()
-	stallWaits    bool
 	lag           func()
 }
 
@@ -73,7 +72,7 @@ func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 			return
 		}
 		daemon.mu.Lock()
-		body, status, delay, held, stall, stallWaits, lag := daemon.body, daemon.status, daemon.delay, daemon.held, daemon.stall, daemon.stallWaits, daemon.lag
+		body, status, delay, held, stall, lag := daemon.body, daemon.status, daemon.delay, daemon.held, daemon.stall, daemon.lag
 		if daemon.refusals > 0 {
 			daemon.refusals--
 			body, status = refusalBody, daemon.refusalStatus
@@ -86,13 +85,9 @@ func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 		}
 		if stall != nil {
 			stall()
-			if !stallWaits {
-				// The server closes the connection with no answer, and logs nothing for this
-				// panic: the client's read fails at once.
-				panic(http.ErrAbortHandler)
-			}
-			<-r.Context().Done()
-			return
+			// The server closes the connection with no answer, and logs nothing for this panic:
+			// the client's read fails at once.
+			panic(http.ErrAbortHandler)
 		}
 		if held != nil {
 			select {
@@ -142,6 +137,16 @@ func (d *fakeDaemon) served() int {
 	return d.reads
 }
 
+// awaitServed waits for the daemon to have served n reads at the least; what names the wait in its
+// failure (testwait.Until).
+func (d *fakeDaemon) awaitServed(t *testing.T, what string, n int) {
+	t.Helper()
+	testwait.Until(t, what, func() (int, bool) {
+		served := d.served()
+		return served, served >= n
+	})
+}
+
 // slows has each answer from here on wait delay before it is sent.
 func (d *fakeDaemon) slows(delay time.Duration) {
 	d.mu.Lock()
@@ -158,17 +163,7 @@ func (d *fakeDaemon) slows(delay time.Duration) {
 func (d *fakeDaemon) stalls(stall func()) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.stall, d.stallWaits = stall, false
-}
-
-// stallsUntilHungUp is stalls for a test that reads the failed read's error: each read from here
-// on runs stall and then never answers, and waits until the client hangs up, at the end of the
-// client's window (the rig's windowed) or of its context, so the read's failure is the client's
-// own timeout.
-func (d *fakeDaemon) stallsUntilHungUp(stall func()) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.stall, d.stallWaits = stall, true
+	d.stall = stall
 }
 
 // lagsNext has the next read the daemon serves run lag first, and then answer as it would
@@ -420,6 +415,10 @@ func TestAWholeReadOverTheCapRecordsItsSize(t *testing.T) {
 	} {
 		t.Run(over.name, func(t *testing.T) {
 			t.Parallel()
+			if !over.declared {
+				capSizedReads.Lock()
+				defer capSizedReads.Unlock()
+			}
 			daemon, _ := streamedState(t, over.size, over.declared)
 			database, setting := configured(t, daemon.URL)
 

@@ -74,6 +74,7 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 	t.Parallel()
 	for _, golden := range []string{"state.json", "observed-state.json"} {
 		t.Run(golden, func(t *testing.T) {
+			t.Parallel()
 			body, err := os.ReadFile(daemonAPIFixture(golden))
 			if err != nil {
 				t.Fatalf("read the daemon's state golden: %v", err)

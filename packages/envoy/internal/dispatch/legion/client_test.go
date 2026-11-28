@@ -9,11 +9,18 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/testport"
 )
+
+// capSizedReads lets one read of a body of ResponseLimit or more run at a time: each such read
+// buffers about 64 MiB (readBounded), and the package runs storetest.DefaultParallel tests at once.
+// A test or subtest that makes one holds it from right after its t.Parallel to its end. A parent
+// that holds it lets it go as its own body returns, before its parallel subtests run.
+var capSizedReads sync.Mutex
 
 // stateServer is a daemon stand-in answering GET /legion/v1/state with body, and anything else
 // with 404.
@@ -172,6 +179,8 @@ func stateOfSize(size int) string {
 // bound refuses only what is over it.
 func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
 	t.Parallel()
+	capSizedReads.Lock()
+	defer capSizedReads.Unlock()
 	if ResponseLimit != 64<<20 {
 		t.Fatalf("ResponseLimit = %d, want 64 MiB (%d)", ResponseLimit, 64<<20)
 	}
@@ -194,6 +203,10 @@ func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
 	} {
 		t.Run(over.name, func(t *testing.T) {
 			t.Parallel()
+			if !over.declared {
+				capSizedReads.Lock()
+				defer capSizedReads.Unlock()
+			}
 			server, written := streamedState(t, over.size, over.declared)
 
 			_, bytes, err := New(server.URL).State(t.Context())
@@ -254,6 +267,8 @@ func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
 // ResponseLimit+1, not the bytes the daemon sent.
 func TestABodyCutShortPastTheCapStopsAtTheCap(t *testing.T) {
 	t.Parallel()
+	capSizedReads.Lock()
+	defer capSizedReads.Unlock()
 	const sent = ResponseLimit + 1<<20
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.Copy(w, io.LimitReader(paddedState(2*sent), sent))

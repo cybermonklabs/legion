@@ -64,7 +64,7 @@ func TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *
 			rig.awaitStartingRead("INFRA")
 
 			daemon.stalls(func() { rig.clock.advance(RequestTimeout) })
-			from := rig.clock.now()
+			from := rig.clock.Now()
 			rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
 			holder := rig.lastStreamSeq()
 			var before []int
@@ -86,7 +86,7 @@ func TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *
 				t.Fatalf("the message that holds INFRA's read is not acknowledged after %d hand-backs, %v of them before each take-over: %+v",
 					len(rig.logRecords(heldLine)), before, info)
 			}
-			held := rig.clock.now().Sub(from)
+			held := rig.clock.Now().Sub(from)
 			if got := rig.heldValues(holder, "handBack"); len(got) != stateMaxHolds {
 				t.Errorf("the message went back %d times in all, %v of them before each take-over, want %d", len(got), before, stateMaxHolds)
 			}
@@ -156,7 +156,7 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 
 			stall := func() { rig.clock.advance(RequestTimeout) }
 			daemon.stalls(stall)
-			from := rig.clock.now()
+			from := rig.clock.Now()
 			rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
 			holder := rig.lastStreamSeq()
 			named := daemon
@@ -179,8 +179,7 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 				// The write has landed once its wake is handled and the starting point the wake
 				// queued on INFRA's runner has run (a barrier on INFRA): that starting point joins
 				// the held read, or reads the daemon the write names.
-				rig.awaitWakes()
-				rig.drained("INFRA")
+				rig.wakeLanded("INFRA")
 				withheld.release()
 			}
 
@@ -211,7 +210,7 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 			if !rig.runUntil(acknowledged, 2*time.Minute, 2*time.Minute) {
 				t.Fatalf("the message that holds INFRA's read is not acknowledged after %d hand-backs: %+v", len(rig.logRecords(heldLine)), info)
 			}
-			held := rig.clock.now().Sub(from)
+			held := rig.clock.Now().Sub(from)
 			handBacks := rig.heldValues(holder, "handBack")
 			reads := time.Duration(failures) * RequestTimeout
 			if len(handBacks) > stateMaxHolds || held >= reads+time.Minute {
@@ -264,8 +263,8 @@ func startingReadHeld(t *testing.T, left time.Duration) (rig *intakeRig, daemon 
 	}
 
 	daemon.stalls(func() { rig.clock.advance(RequestTimeout) })
-	rig.clock.advance(due.Add(-left).Sub(rig.clock.now()))
-	from = rig.clock.now()
+	rig.clock.advance(due.Add(-left).Sub(rig.clock.Now()))
+	from = rig.clock.Now()
 	holder = rig.lastStreamSeq() + 1
 	first = rig.withholdOf(holder)
 	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
@@ -365,29 +364,21 @@ func TestASettingWrittenWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutEleve
 					t.Fatalf("write INFRA's setting again with its own URL: %v", err)
 				}
 			}
-			// landed waits for the rig's intake to have handled the wake of a write and for the
-			// starting point that wake queued on INFRA's runner to have run (a barrier on INFRA):
-			// what the wake does, a read it makes or a call it defers included, is done by then.
-			landed := func() {
-				t.Helper()
-				rig.awaitWakes()
-				rig.drained("INFRA")
-			}
 			if test.early {
 				write()
 				requireStartingReadHeld(t, rig, holder, 1, "a write of its own URL before the starting read was due")
 				rig.wakeUp()
 				// The wake runs before the clock moves on, so it finds the starting read not due.
-				landed()
+				rig.wakeLanded("INFRA")
 				if deferred := rig.clock.deferredCalls(); deferred != 1 {
 					t.Errorf("the intake deferred %d calls by the write before the starting read was due, want the one of startingReadHeld's write: the write's wake deferred a call while the message held the starting read", deferred)
 				}
 			}
-			rig.clock.advance(due.Add(time.Second).Sub(rig.clock.now()))
+			rig.clock.advance(due.Add(time.Second).Sub(rig.clock.Now()))
 			write()
 			requireStartingReadHeld(t, rig, holder, 1, "a write of its own URL once the starting read was due")
 			rig.wakeUp()
-			landed()
+			rig.wakeLanded("INFRA")
 			first.release()
 			for i, at := range test.later {
 				if !rig.runUntil(func() bool { return len(rig.logRecords(heldLine)) >= at }, time.Minute, time.Minute) {
@@ -466,7 +457,7 @@ func TestATakeOverWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutElevenMinut
 	rig, daemon, holder, from, due, _ := startingReadHeld(t, left)
 
 	rig.stop()
-	rig.clock.advance(due.Add(time.Second).Sub(rig.clock.now()))
+	rig.clock.advance(due.Add(time.Second).Sub(rig.clock.Now()))
 	lock, err := rig.database.Pool.Begin(t.Context())
 	if err != nil {
 		t.Fatalf("open the transaction that locks legion_settings: %v", err)
@@ -479,7 +470,7 @@ func TestATakeOverWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutElevenMinut
 	clamped := rig.withholdOf(holder)
 	var back atomic.Bool
 	rig.startOn(func() time.Time {
-		now := rig.clock.now()
+		now := rig.clock.Now()
 		if !back.Load() && len(rig.logRecords(heldLine)) == away {
 			if still := due.Add(-clamp); now.After(still) {
 				return still
@@ -589,7 +580,7 @@ func requireHoldEndedWithinElevenMinutes(t *testing.T, rig *intakeRig, holder ui
 	}, 2*time.Minute, 2*time.Minute) {
 		t.Fatalf("the message that holds INFRA's read is not acknowledged after %d hand-backs: %+v", len(rig.logRecords(heldLine)), info)
 	}
-	held := rig.clock.now().Sub(from)
+	held := rig.clock.Now().Sub(from)
 	if got := rig.heldValues(holder, "handBack"); !slices.Equal(got, oneTo(stateMaxHolds)) {
 		t.Errorf("the cursor counted the hand-backs %v, want %v: %s", got, oneTo(stateMaxHolds), why)
 	}
@@ -634,13 +625,13 @@ func TestAReadCutShortByAStopKeepsItsStart(t *testing.T) {
 	first := lastReadStartedAt(t, rig, "INFRA")
 
 	release := daemon.holds(t)
-	from := rig.clock.now()
+	from := rig.clock.Now()
 	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "testing")))
 	holder := rig.lastStreamSeq()
 	rig.waitFor(20*time.Second, func() bool { return daemon.served() >= 2 }, func() string {
 		return "INFRA's message at 12 never made the gap read"
 	})
-	to := rig.clock.now()
+	to := rig.clock.Now()
 	rig.stop()
 
 	if reads := wholeReadsOf(t, rig.database, "INFRA"); len(reads) != 1 {
@@ -656,7 +647,7 @@ func TestAReadCutShortByAStopKeepsItsStart(t *testing.T) {
 	daemon.serves(daemonState("INFRA", 12, inPhase("testing")))
 	release()
 	due := cut.Add(ReadRetryAfter)
-	rig.clock.advance(due.Add(-left).Sub(rig.clock.now()))
+	rig.clock.advance(due.Add(-left).Sub(rig.clock.Now()))
 	rig.start()
 	// The take-over delivers the message again, which holds the gap read for what is left of the
 	// minute: the rig parks its hand-back on its clock, the one deadline armed there, and the clock
@@ -811,10 +802,7 @@ func TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead(t *t
 		t.Errorf("INFRA's whole reads once the later message of the old daemon's store was acknowledged are %v, %d of them since its publish, want none while the read it calls for is held at the new daemon's gate: it waited for that read, or made it",
 			recorded, len(recorded)-reads)
 	}
-	testwait.Until(t, "the read the later message calls for to reach the new daemon, held at its gate", func() (int, bool) {
-		served := named.served()
-		return served, served >= before+1
-	})
+	named.awaitServed(t, "the read the later message calls for to reach the new daemon, held at its gate", before+1)
 	owed()
 	// The owed read is recorded, and a barrier on INFRA's runner then runs after whatever the later
 	// message queued there: the count of the new daemon's reads is final.
@@ -862,7 +850,7 @@ func TestAnEventOfTheSameStoreDuringTheReadThatVerifiesANewURLIsApplied(t *testi
 	if _, err := PutSettings(context.Background(), rig.database.Pool, "INFRA", relocated.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		t.Fatalf("point INFRA at the URL its daemon moved to: %v", err)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.waitFor(20*time.Second, func() bool { return relocated.served() >= 1 }, func() string {
 		return "the write's starting read of the URL the daemon moved to never began"
 	})
@@ -1115,7 +1103,7 @@ func TestEventsPastTheCapDuringTheReadThatFindsAForgottenStoreAreApplied(t *test
 			if _, err := PutSettings(context.Background(), rig.database.Pool, "INFRA", relocated.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 				t.Fatalf("point INFRA at the URL its daemon moved to: %v", err)
 			}
-			rig.wake <- struct{}{}
+			rig.wakeUp()
 			rig.waitFor(20*time.Second, func() bool { return relocated.served() >= 1 }, func() string {
 				return "the write's starting read of the URL the daemon moved to never began"
 			})
@@ -1244,7 +1232,7 @@ func TestABootOfTheOldStoreWhileTheNewURLIsUnverifiedHoldsNoRead(t *testing.T) {
 			if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", unverified.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 				t.Fatalf("point INFRA at a URL whose reads fail: %v", err)
 			}
-			rig.wake <- struct{}{}
+			rig.wakeUp()
 			rig.awaitWholeReads(2)
 			if tc.due {
 				rig.clock.advance(ReadRetryAfter + time.Second)
@@ -1305,7 +1293,7 @@ func TestEventsPastTheCapBehindAHeldMessageOfADroppedStoreAreAppliedWhenTheReadF
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		t.Fatalf("point INFRA at another daemon: %v", err)
 	}
-	rig.wake <- struct{}{}
+	rig.wakeUp()
 	rig.waitFor(20*time.Second, func() bool { return named.served() >= 1 }, func() string {
 		return "the write's starting read of the daemon it names never began"
 	})
