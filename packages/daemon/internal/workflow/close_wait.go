@@ -951,9 +951,6 @@ func (e *Engine) tellEachStanding(ctx context.Context, tx pgx.Tx, issues []recor
 		if issue == nil || issue.Phase != phase.Verifying {
 			continue
 		}
-		if told := issue.StandingToldAt; told != nil && told.UTC().Format(time.DateOnly) == now.UTC().Format(time.DateOnly) {
-			continue
-		}
 		view, err := e.closeWait(ctx, tx, *issue)
 		if err != nil {
 			return err
