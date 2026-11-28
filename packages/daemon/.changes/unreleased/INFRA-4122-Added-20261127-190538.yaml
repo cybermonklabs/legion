@@ -1,0 +1,35 @@
+kind: Added
+body: |-
+    `legion.yaml` takes `projects.<KEY>.watched_workflows`: the workflows whose completed runs on
+    their repository's default branch reach the project's controller. Each entry is
+    `<owner>/<repo>/<file>`, the file one of the repository's `.github/workflows/`, and can end with
+    `@` and the trigger events whose runs count, comma-separated; an entry with no `@` watches
+    `schedule` runs alone. Write the owner and the repository as GitHub spells them: a topic is
+    case-sensitive, so an entry spelled otherwise hears nothing. The key needs no `controller`
+    setting, runtime or secrets broker. The loader refuses an entry of another shape, an `@` with
+    no event, a name that is not one of GitHub's trigger events, an event named twice in one entry
+    and one workflow in two entries, naming the key, the entry's place in the list and the entry.
+    `legion config check` prints each entry of a project that names the key, with its events, and
+    prints nothing new for a project that names none. A daemon before this release refuses a file
+    that sets the key.
+
+    The daemon gives the list to its controller under the daemon API contract entry
+    20261127193422 (`watched-workflows`). The controller's answer of `POST
+    /legion/v1/claims/register` carries `watchedWorkflows`, one `{owner, repo, workflow, events}`
+    for each entry in the file's order, to the controller the daemon launches (`controller:
+    daemon`) and to the one `legion controller start` launches, whatever the runtime; it is absent
+    for a project that watches none, and a plugin below the entry is served the answer without it.
+    `POST /legion/v1/controller/secret` answers `watchedWorkflows` too, `[]` for none, and `legion
+    controller start` refuses an answer without it, asking to upgrade the daemon. Each launch
+    form's controller prompt carries a `Watched workflows:` line naming each entry with its
+    events and telling the controller to read
+    `skill://legion-controller/references/watched-workflows.md` at every start and on each
+    delivered run, and a project that watches none gets no line. `GET /legion/v1/state` never
+    carries the list, and no environment variable carries it. Under the sandbox runtime a daemon
+    restarted with another list relaunches its controller into its session, and a controller
+    recorded by a daemon before this release is relaunched only once the project names a list;
+    under the tmux runtime and under `legion controller start` the controller takes a changed list
+    at its next launch.
+time: 2026-11-27T19:05:38Z
+custom:
+    Issue: INFRA-4122

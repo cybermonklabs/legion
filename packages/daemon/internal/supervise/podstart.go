@@ -629,6 +629,13 @@ func (m *Machine) adoptPodLoad() {
 // as the park leaves it, launching, which a request that does not wait restores once the pause's
 // gate holds the wake (dropWakeFor).
 //
+// A parked try of a launch of the stale-plugin lane keeps the credit of the refresh gate that
+// launch was admitted on, since the launch is still owed (heldTryWake, laneLaunchOwed): the
+// decision of the grant, or of whatever drops the wake, gives it back as it ends unless the
+// launch leaves itself still owed. No view shows the park as a waiting wake, so the gate's
+// correction reads none for it, and the credit out is what the gate counts for it
+// (RefreshGate.Correct).
+//
 // A restart finds a claim whose launch was parked here stored launching with no process, as it
 // finds one the wake pacing parked over no process: internal/daemon's supervisor.restore writes
 // it launch_uncertain, and relaunchUnfinished, once the boot's reconciliation has proved that no
@@ -727,7 +734,9 @@ func podEndFor(state ClaimState, live podHoldEnd) podHoldEnd {
 // A grant whose start's work the issue left during the park starts nothing either, by the rule
 // every park's end keeps (startLeftWhileParked): the claim is suspended for the daemon, and the
 // hold, which the wake gave up but the machine still records, leaves the gate at the end of this
-// decision as a suspension's (endPodPark), so the pod goes to the next start that waits.
+// decision as a suspension's (endPodPark), so the pod goes to the next start that waits. The
+// exception is that rule's own: a claim that holds a task of work its issue still holds, queued
+// during the park, goes on with the granted launch, for that task.
 func podStartDue(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
 	if waiting == nil || waiting.park == nil {
@@ -742,7 +751,7 @@ func podStartDue(m *Machine, ctx context.Context, _ Event) error {
 		return m.pauseGate(ctx, waiting, pause)
 	}
 	m.wake = nil
-	if left, err := m.startLeftWhileParked(ctx, waiting.start, waiting.again); left {
+	if left, err := m.startLeftWhileParked(ctx, waiting.kind, waiting.start, waiting.again); left {
 		return err
 	}
 	m.podPark = nil

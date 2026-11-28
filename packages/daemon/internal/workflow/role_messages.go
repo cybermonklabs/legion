@@ -31,7 +31,7 @@ type addressedRole struct {
 }
 
 // addressRoles is the one collection the daemon's role messages are addressed by (tellChecks,
-// tellGateMoved, mergeForward, mergeForwardLanded, holdMerger, awaitChildren): the claim of the
+// tellGateMoved, mergeForward, mergeForwardLanded, tellRole, awaitChildren): the claim of the
 // worker on each recipient's role's step (record.WorkerClaim over the recipient issue's phases
 // rows, read in tx), in the order given and each token once, so a role named twice - the
 // implementer that also holds the phase, two roles one keyed agent works - is told once. A
@@ -41,7 +41,7 @@ type addressedRole struct {
 // six senders choose of how the collection runs: nil ends the collection with that error, and so
 // the fact's transaction, while a function is given the recipient and the error and may answer nil
 // to leave that one untold and address the rest. tellChecks, mergeForward, mergeForwardLanded,
-// holdMerger and awaitChildren pass nil, so a holder they cannot name rolls their fact back.
+// tellRole and awaitChildren pass nil, so a holder they cannot name rolls their fact back.
 // tellGateMoved, whose message is secondary to the record the transaction writes, passes a
 // function that logs (logUnnamable), since aborting would roll the gate's move back for a name the
 // daemon could not spell.

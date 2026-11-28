@@ -33,7 +33,7 @@ func TestCutClaimTokenSplitsATokenAsTheDaemonDoes(t *testing.T) {
 		{"legion-infra-infra-448-tester", "infra", "INFRA-448", "tester"},
 		{"legion-sjawharlegion-legion-7-architect", "sjawharlegion", "LEGION-7", "architect"},
 		{"legion-acme-acme7-3-implementer", "acme", "ACME7-3", "implementer"},
-		{"legion-acme-acme-12-code-checker", "acme", "ACME-12", "code-checker"},
+		{"legion-acme2-acme-12-code-checker", "acme2", "ACME-12", "code-checker"},
 		{"legion-acme-acme-12-" + strings.Repeat("r", legionclaim.MaxRoleBytes), "acme", "ACME-12", strings.Repeat("r", legionclaim.MaxRoleBytes)},
 	} {
 		project, issue, agent, ok := legionclaim.CutClaimToken(tc.token)

@@ -17,6 +17,7 @@ import (
 )
 
 func TestAStepWorkspaceDeclineReachesItsWorkerBesideAnOlderRoleClaim(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	worker := rig.implementerOfAnotherAgent(t, claim.Agent(claim.RoleTester), supervise.StateIdle, "").Claim().Token
@@ -44,6 +45,7 @@ func TestAStepWorkspaceDeclineReachesItsWorkerBesideAnOlderRoleClaim(t *testing.
 }
 
 func TestAWorkspaceCheckFallsBackOnlyWhenItsWorkerIsNotLive(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-208"
 	older := mustClaimToken(t, issue, claim.RoleImplementer)
 	worker := mustClaimToken(t, issue, claim.RoleTester)
@@ -89,6 +91,7 @@ func TestAWorkspaceCheckFallsBackOnlyWhenItsWorkerIsNotLive(t *testing.T) {
 }
 
 func TestTheSameWorkspaceWorkIsNewsToAnotherClaimOfTheSameRole(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	worker := mustClaimToken(t, rig.issue.Key, claim.RoleTester)

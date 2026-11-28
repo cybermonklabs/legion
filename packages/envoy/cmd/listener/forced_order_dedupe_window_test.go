@@ -33,6 +33,8 @@ import (
 // the first copy as a duplicate, and the purge's own report, which must say it kept the id under
 // the deployed window.
 func TestForcedOrderARepeatIsStoredThoughThePurgeRanAtTheCut(t *testing.T) {
+	// Not parallel: it installs the server's forced-order hook (testnats.Hook), a process-wide
+	// CompareAndSwap that refuses a second test hooking the server at once.
 	if ok, why := testnats.DedupeReset.Exists(); !ok {
 		t.Skipf("nats-server %s has no %s: %s", natsserver.VERSION, testnats.DedupeReset, why)
 	}

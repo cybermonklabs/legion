@@ -180,6 +180,7 @@ func (l *keptLaneUnderClaim) keys() []string {
 // one walk forwards therefore used to strand every copy past the twentieth until it aged out
 // unread, with every sender answered 202 kept.
 func TestOneClaimHandsOverAKeptLaneLongerThanOneWalkOfIt(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-handover-budget"
@@ -209,6 +210,7 @@ func TestOneClaimHandsOverAKeptLaneLongerThanOneWalkOfIt(t *testing.T) {
 // starts none (subscribeHandler). The handover walks the lane again itself, after a back-off, so
 // the copy reaches the holder its sender was told it was kept for.
 func TestAKeptCopyWhoseForwardFailedReachesTheHolderWithNoSecondClaim(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-handover-retry"
@@ -237,6 +239,7 @@ func TestAKeptCopyWhoseForwardFailedReachesTheHolderWithNoSecondClaim(t *testing
 // instead, leaves the lane when the record no longer names its own session, and the handover walks
 // it again for the holder it finds then.
 func TestADrainStopsWhenTheRoleChangesHolderUnderIt(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role    = "kept-handover-moved"
@@ -336,6 +339,7 @@ func TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow(t *testing.T) 
 // another handover while that holder holds the role. The handover retries on a cadence that widens
 // instead (roleKeepDrainBackoff), for longer than roleKeepDrainIdleRounds walks.
 func TestAHandoverRetriesMoreFailedWalksThanItsIdleWalksAllow(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role     = "kept-handover-failures"
@@ -555,30 +559,6 @@ func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	}
 }
 
-// countingGetKV is a bucket that counts the reads made of it, and is otherwise the bucket itself.
-type countingGetKV struct {
-	natsgo.KeyValue
-	gets *atomic.Int64
-}
-
-func (kv countingGetKV) Get(key string) (natsgo.KeyValueEntry, error) {
-	kv.gets.Add(1)
-	return kv.KeyValue.Get(key)
-}
-
-// countSessionBucketReads counts every read sessions makes of the session bucket from here on
-// (swapSessionBucket), as failTheNextSessionRead fails the next of them. A resolution of a role's
-// holder reads the holder's session that way whenever this listener's cache does not hold it
-// (session.SessionRegistry.Refresh), so the counter is that resolution made visible.
-func countSessionBucketReads(t *testing.T, sessions *session.SessionRegistry) *atomic.Int64 {
-	t.Helper()
-	gets := &atomic.Int64{}
-	swapSessionBucket(t, sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
-		return countingGetKV{KeyValue: kv, gets: gets}
-	})
-	return gets
-}
-
 // A handover of a role whose kept lane holds nothing resolves no holder at all. Every claim the
 // claim route grants starts one and most roles have nothing kept for them, so a pass that resolved
 // the holder before it read the lane spent a claim read and a session read on every such claim -
@@ -634,6 +614,7 @@ func TestAHandoverOfAnEmptyKeptLaneResolvesNoHolder(t *testing.T) {
 // holder for, so the listener keeps this one, and the role's next live holder is handed it inside
 // its hour.
 func TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-dispatch-route"
@@ -674,6 +655,8 @@ func TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder(t *testing.T
 // goroutine on its guard. It ends with one WARN that it left the lane to the role's next claim,
 // naming the read that failed; the claimed row, whose lane is not left, writes none.
 func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T) {
+	// Not parallel: its unclaimed row requires the handover (drainKeptRole), which ends at its
+	// first lane read that fails, to end inside roleKeepDrainRetryPause (1 s).
 	for _, test := range []struct {
 		name           string
 		claimed        bool
@@ -747,39 +730,12 @@ func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T
 	}
 }
 
-// failFirstGetKV is a session bucket whose first read does not answer and whose reads after it
-// do: one round trip the bus missed, made deterministic.
-type failFirstGetKV struct {
-	natsgo.KeyValue
-	failed *atomic.Bool
-}
-
-func (kv failFirstGetKV) Get(key string) (natsgo.KeyValueEntry, error) {
-	if kv.failed.CompareAndSwap(false, true) {
-		return nil, errors.New("the session bucket's read did not answer")
-	}
-	return kv.KeyValue.Get(key)
-}
-
-// failTheNextSessionRead makes the next bucket read of sessions fail and every read after it
-// answer (swapSessionBucket), as countSessionBucketReads swaps the bucket for one that counts. A
-// resolution of a role's holder reads the holder's session that way whenever this listener's
-// cache does not hold it, so the flag it returns reports whether that resolution took the
-// failure.
-func failTheNextSessionRead(t *testing.T, sessions *session.SessionRegistry) *atomic.Bool {
-	t.Helper()
-	failed := &atomic.Bool{}
-	swapSessionBucket(t, sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
-		return failFirstGetKV{KeyValue: kv, failed: failed}
-	})
-	return failed
-}
-
 // claimRoleBeyondTheSessionCache registers holder and claims each of roles for it with this
 // listener's session cache no longer watching the bucket, so every resolution of those roles'
-// holder reads the session bucket itself (session.SessionRegistry.Refresh): the read these tests
-// fail. The holder is registered through a registry of its own, since the cache this listener
-// has stopped would otherwise answer for it.
+// holder reads the session bucket itself (session.SessionRegistry.Refresh, or RefreshFromLeader
+// for a resolution through cachedThenLeaderHolderSessions): the read these tests fail. The holder
+// is registered through a registry of its own, since the cache this listener has stopped would
+// otherwise answer for it.
 func claimRoleBeyondTheSessionCache(t *testing.T, harness listenerDeliveryHarness, holder string, roles ...string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -848,9 +804,9 @@ func TestAHandoverOfAClaimedRoleRetriesAHolderResolutionThatFailed(t *testing.T)
 	}
 }
 
-// sessionBucketThatStalls is a session bucket whose first read fails at once and whose reads
-// after it answer nothing until done is closed: the request a bus leaves unanswered until the
-// context of the handover making it has passed.
+// sessionBucketThatStalls is a session bucket whose first read, a direct get or a read from the
+// stream's leader, fails at once and whose reads after it answer nothing until done is closed:
+// the request a bus leaves unanswered until the context of the handover making it has passed.
 type sessionBucketThatStalls struct {
 	natsgo.KeyValue
 	failed atomic.Bool
@@ -863,6 +819,10 @@ func (kv *sessionBucketThatStalls) Get(string) (natsgo.KeyValueEntry, error) {
 	}
 	<-kv.done
 	return nil, context.DeadlineExceeded
+}
+
+func (kv *sessionBucketThatStalls) NewestFromLeader(context.Context, string) (natsgo.KeyValueEntry, error) {
+	return kv.Get("")
 }
 
 // A read that did not answer is carried out of a claimed role's handover to the one line above

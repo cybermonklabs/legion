@@ -27,6 +27,7 @@ import (
 )
 
 func TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name   string
@@ -94,6 +95,7 @@ func TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole(t *testing.T) {
 // its phase finds a step after the implementer on that line at either place, and fails place 1; a
 // worker read that names only Legion's own workers tells the linter nothing, and fails place 3.
 func TestAMergeForwardIsAskedAtADeploymentStepOnlyAfterTheImplementer(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name  string
@@ -163,6 +165,7 @@ func TestAMergeForwardIsAskedAtADeploymentStepOnlyAfterTheImplementer(t *testing
 // message held for its released claim would bring the claim back (mergeForwardWorker). The
 // control is the same issue under a deployment that defines the checker, which is told both.
 func TestAMergeForwardTellsNoRoleTheDeploymentLost(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name          string
@@ -211,6 +214,7 @@ func TestAMergeForwardTellsNoRoleTheDeploymentLost(t *testing.T) {
 // deployment has a slot for. The control is the same issue under a deployment that defines the
 // checker, whose tester is told both.
 func TestAMergeForwardTellsNoClaimInTheSlotOfARoleTheDeploymentLost(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name          string
@@ -261,6 +265,7 @@ func TestAMergeForwardTellsNoClaimInTheSlotOfARoleTheDeploymentLost(t *testing.T
 // checker again. The control is the same issue under a deployment that defines the checker: the
 // ask and the hold go, the architect is told, and the record keeps the ask.
 func TestAMergeForwardWhoseImplementerRunsInALostSlotAsksNothingAndRecordsNoAsk(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name string
@@ -300,6 +305,46 @@ func TestAMergeForwardWhoseImplementerRunsInALostSlotAsksNothingAndRecordsNoAsk(
 			if want := []string{"implementer ask", "tester hold"}; !reflect.DeepEqual(told, want) || asked == nil || asked.Head != conflictHead || notices != 1 {
 				t.Fatalf("the merge forward queued %v, recorded the ask %+v and told the architect %d times, want %v, the ask of %s and one notice",
 					told, asked, notices, want, conflictHead)
+			}
+		})
+	}
+}
+
+// The review a landed merge forward asks of a reviewer whose step already ran tells that reviewer
+// to tell what it decided to the architect and to the worker of the place the issue stands at: at
+// step, the role of the running step. On the task `implementer reviewer checker`, standing at the
+// checker's step, the landing tells the checker it landed and asks the reviewer to read the merge,
+// and the review names the checker beside the architect (record.MergeForwardMessage.Tells), so the
+// checker hears whether the reviewer rejects the head it works at. A rule that reads the worker
+// from the phase alone (phase.RoleFor) names nobody at step. The control is the same task at the
+// tester's place of `implementer reviewer tester`, whose review names the tester.
+func TestTheReviewOfAMergeForwardAtAStepTellsTheStepsRole(t *testing.T) {
+	t.Parallel()
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	for _, tc := range []struct {
+		name   string
+		at     phase.Phase
+		steps  []string
+		worker claim.Role
+	}{
+		{name: "the checker's step", at: phase.Step, steps: []string{"implementer", "reviewer", "checker"}, worker: "checker"},
+		{name: "control: the tester's step", at: phase.Testing, steps: []string{"implementer", "reviewer", "tester"}, worker: claim.RoleTester},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := plannedConflictIssue(t, tc.at, settledGreen("lint"), tc.steps...)
+			if tc.at == phase.Step {
+				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: tc.worker, Claim: claim.Token(string(tc.worker) + "-claim"), Entry: 1})
+			}
+			confirmsConflict(t, pool, requiresCI)
+			asked := len(mergeForwardMessages(t, pool))
+			landsMergeForward(t, pool)
+			landed := mergeForwardMessages(t, pool)[asked:]
+			if got, want := toldWho(landed), []string{string(tc.worker) + " landed", "reviewer review"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("the landing queued %v, want %v", got, want)
+			}
+			review := landed[1]
+			if got := review.Tells(); got != tc.worker {
+				t.Errorf("the review tells %q beside the architect, want %q", got, tc.worker)
 			}
 		})
 	}

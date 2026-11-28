@@ -1,0 +1,104 @@
+{
+  "id": 568297,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 1,
+  "type": "issue.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a1d826-d68f-711d-8ff2-845a80a40f68",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum",
+      "cwd": "lorem ipsum dolor sit",
+      "tmux": "lorem ipsu",
+      "pane": "lorem",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-15T09:34:29.914757Z",
+  "payload": {
+    "key": "ACME-1",
+    "rank": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+    "repo": null,
+    "claim": null,
+    "route": null,
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum",
+    "labels": [],
+    "number": 3757,
+    "parent": "ACME-2",
+    "status": "triage",
+    "changed": [
+      "title",
+      "status",
+      "rank",
+      "priority",
+      "assignee",
+      "parent",
+      "repo",
+      "components"
+    ],
+    "project": "ACME",
+    "advances": [],
+    "assignee": "alice@example.com",
+    "last_seq": 1,
+    "priority": 2,
+    "ancestors": [
+      "ACME-2"
+    ],
+    "closed_at": null,
+    "blocked_by": [],
+    "components": {
+      "ids": [
+        "lorem ipsum dol",
+        "lorem ipsum ",
+        "lorem ipsum dolor sit",
+        "lorem ipsum do",
+        "lorem ipsum do",
+        "lorem ipsum ",
+        "lorem "
+      ],
+      "mode": "explicit",
+      "reason": null,
+      "unknown": [],
+      "inherited_from": "ACME-2"
+    },
+    "created_at": "2026-11-15T09:34:29.914757Z",
+    "created_by": {
+      "id": "01a1d826-d68f-711d-8ff2-845a80a40f68",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit",
+        "host": "lor",
+        "pane": "lorem",
+        "tmux": "lorem ipsu",
+        "machine": "lorem ipsum",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit"
+      }
+    },
+    "updated_at": "2026-11-15T09:34:29.914757Z",
+    "resolved_repo": "lorem ipsum dolor si",
+    "external_links": [],
+    "plan_artifact_id": "",
+    "advances_revision": 0,
+    "references_changed": [
+      {
+        "id": "lorem ipsum dolor sit amet lore",
+        "ref": "dispatch://ACME-2",
+        "kind": "block",
+        "artifact_id": "02c987e4-c5e8-4fb9-a2af-6dda702022d7"
+      }
+    ],
+    "primary_artifact_id": "e822f36a-c3d9-4b2c-ad69-3309fe85d1af",
+    "decisions_artifact_id": "",
+    "verification_artifact_id": "",
+    "references_changed_truncated": true,
+    "references_changed_truncated_kinds": [
+      "ask"
+    ]
+  }
+}

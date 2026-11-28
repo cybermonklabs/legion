@@ -1,7 +1,5 @@
 package workflow
 
-//ci:reads skills/legion-worker/references/merge-gate.md TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries reads it under ../../../..
-
 import (
 	"context"
 	"crypto/rand"
@@ -9,7 +7,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -25,9 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -121,9 +116,10 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 		t.Fatalf("child tree/phase = %q/%q, want LEGION-208/planning", tree, gotPhase)
 	}
 	// The first supervise row is the child's own architect's start, before its planner's
-	// (Engine.gateOpened). The second notice is the child-status that every child the line starts
-	// tells the architect above it (ChildStartedNotice).
-	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
+	// (Engine.gateOpened). The one notice is the child-status that every child the line starts
+	// tells the architect above it (ChildStartedNotice): the child's move out of admitted tells
+	// nobody (noticeFor).
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice"})
 	var branchIssue string
 	var generation int
 	if err := pool.QueryRow(ctx, "select issue, (payload->>'generation')::int from outbox where kind = 'issue_branch'").Scan(&branchIssue, &generation); err != nil {
@@ -286,7 +282,9 @@ func TestCapturedApprovedReviewFlowsThroughConsumeToAccepting(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "captured review", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
 	// The base requires no check, so the head's settlement gives no verdict, and an approval waits on none.
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-captured", CheckedHead: "head-captured", Failing: []string{}})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "review-1"})
+	// The reviewer completed at the head the captured review approves, so a person's approval of it
+	// ends the round (reviewRound).
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "head-captured"})
 	var mu sync.Mutex
 	var asked []string
 	writers := func(_ context.Context, review intake.PullRequestReview) (bool, error) {
@@ -355,7 +353,9 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 // A reviewer started on the tester's pass is told the tester's verdict as the tester's, never as a
 // bare "Handoff verdict" it could take for a field of its own completion, which the daemon refuses
 // from a reviewer (VERDICT_ROLE_FORBIDDEN), and the tester's handoff as the Dispatch record it reads
-// with `dispatch handoff-read`, with no commit, since this completion of the tester's names none.
+// with `dispatch handoff-read`, at the version the daemon accepted and at the newest, with no
+// commit, since this completion of the tester's names none, and so no head standing over a later
+// version.
 func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -368,81 +368,19 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
 	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
+	if !strings.HasPrefix(task, "Working copy: branch legion/LEGION-208.\nContinue root. Issue: LEGION-208. Phase: reviewing.") {
+		t.Fatalf("reviewer task %q does not open with the working copy it works in and then the phase it starts", task)
+	}
+	assertNamesTheHandoff(t, task, "LEGION-208", "test", 3)
+	if want := " Tester's verdict: pass. Pull request: #42." +
 		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
 		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
 	}
+	if strings.Contains(task, "Where a later version") {
+		t.Fatalf("reviewer task %q names a head standing over a later version, but the tester's completion named no commit", task)
+	}
 	if strings.Contains(task, "Handoff verdict") {
 		t.Fatalf("reviewer task %q still names the verdict as the handoff's", task)
-	}
-}
-
-// rolePrompt is role's composed prompt as its pane reads it: every part Compose names, read back
-// and joined in order.
-func rolePrompt(t *testing.T, role claim.Role) string {
-	t.Helper()
-	composer, err := prompts.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("compose the shipped prompts: %v", err)
-	}
-	parts, err := composer.Compose(role, false)
-	if err != nil {
-		t.Fatalf("compose the %s's prompt: %v", role, err)
-	}
-	var prompt strings.Builder
-	for _, path := range parts.RolePromptPaths {
-		part, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read role prompt part %s: %v", path, err)
-		}
-		prompt.Write(part)
-	}
-	return prompt.String()
-}
-
-// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
-// its own completion carries none, so a rename on either side alone fails here.
-func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
-	t.Parallel()
-	prompt := rolePrompt(t, claim.RoleReviewer)
-	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("the reviewer's prompt does not say %q", want)
-		}
-	}
-}
-
-// The reviewer is told the commit its later round reads from, and the entry of each round, by
-// the labels its task carries (reviewround.Sentences), and its prompt and the merge gate of
-// skill://legion-worker, which the prompt sends it to, name those fields, so a rename of a label
-// in the writer alone, in the reviewer's prompt alone or in the merge gate alone fails here. The
-// reviewer writes the entry into its review's footer, so a prompt that did not name the field
-// would leave every review moving no commit.
-func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
-	t.Parallel()
-	mergeGate := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "merge-gate.md")
-	body, err := os.ReadFile(mergeGate)
-	if err != nil {
-		t.Fatalf("read %s, the skill the reviewer's prompt sends it to: %v", mergeGate, err)
-	}
-	prompt := rolePrompt(t, claim.RoleReviewer)
-	sentences := reviewround.Sentences("<sha>", 7)
-	for _, tc := range []struct {
-		field, part string
-	}{
-		{field: reviewround.CommitLabel + ": <sha>", part: " " + reviewround.CommitLabel + ": <sha>. "},
-		{field: reviewround.EntryLabel + ": <n>", part: " " + reviewround.EntryLabel + ": 7."},
-	} {
-		if !strings.Contains(sentences, tc.part) {
-			t.Fatalf("a task names its round as %q, want it to hold %q", sentences, tc.part)
-		}
-		want := "`" + tc.field
-		if !strings.Contains(prompt, want) {
-			t.Errorf("the reviewer's prompt does not say %q", want)
-		}
-		if !strings.Contains(string(body), want) {
-			t.Errorf("%s does not say %q", mergeGate, want)
-		}
 	}
 }
 

@@ -84,9 +84,10 @@ func (g Gates) Steps() []record.DesignStep {
 }
 
 // Project is a Dispatch project prefix's configuration: the Slack channels whose @-mentions reach
-// its controller, and whether a merge that closes one of its issues opens a production check at
-// all. It names no repository: the daemon takes each issue's repository from Dispatch, which
-// resolves it from the issue, its ancestors or the project, and never from this file.
+// its controller, the workflows whose runs on a default branch reach it, and whether a merge that
+// closes one of its issues opens a production check at all. It names no repository to work in: the
+// daemon takes each issue's repository from Dispatch, which resolves it from the issue, its
+// ancestors or the project, and never from this file.
 type Project struct {
 	// SlackChannels are `slack_channels`, the Slack channel ids whose app mentions the project's
 	// controller subscribes to, in the file's order; nil when the file names none.
@@ -97,6 +98,12 @@ type Project struct {
 	// each name's shape and refuses two names of one repository; nothing compares them with
 	// anything at boot, since a project works in each repository both role Apps reach.
 	CommitIssueTrailerRepos []ghrepo.Repository
+	// WatchedWorkflows are `watched_workflows`, the workflows whose completed runs on their
+	// repository's default branch reach the project's controller, each with the trigger events
+	// whose runs count, entries and events in the file's order; nil when the file names none. The
+	// load checks each entry's shape and events and refuses one workflow named twice; nothing
+	// compares an entry with GitHub, so the owner and the repository are as the file spells them.
+	WatchedWorkflows []WatchedWorkflow
 	// Memory is `memory`, the project's per-tree memory setting; its zero value is off, which a
 	// file that names no block leaves.
 	Memory Memory
@@ -187,12 +194,25 @@ type GitHubApps struct {
 const missingDispatchTokenFile = "dispatch_token_file is required when dispatch_url is configured"
 
 var (
-	projectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
 	// slackChannelPattern is a Slack channel id: C for a public channel, G for a private one, then
 	// capital letters and digits. It is one NATS subject token of the mention topic the controller
 	// subscribes to (notifications.slack.<team>.<channel>.mention), so nothing else is taken.
 	slackChannelPattern = regexp.MustCompile(`^[CG][A-Z0-9]+$`)
 )
+
+// CheckProjectKey refuses a `project` that is no Dispatch project key in the one shape the
+// contract takes for one (claim.IsProjectKey, claim.ProjectKeyPattern), naming the key, and the
+// value only where it has a key's shape (wordNamed), as readProjects names a key of `projects`.
+// The daemon's project is the key its state events, its Dispatch writes and its role topics are
+// named by, so a key the contract refuses would let the daemon migrate its store and mint its App
+// tokens and then fail at its first state event; the loader refuses it first (resolve), and so
+// does the boot's own first read of a configuration it was handed (internal/daemon's readBoot).
+func CheckProjectKey(project string) error {
+	if claim.IsProjectKey(project) {
+		return nil
+	}
+	return fmt.Errorf("%s is no Dispatch project key: it must match %s, a capital letter and then one to nine capital letters or digits", wordNamed("project", project), claim.ProjectKeyPattern)
+}
 
 // readProjects is `projects`, and the warnings its projects raise (Config.Warnings), in file
 // order: a key a project still sets that the daemon no longer reads is warned about, never
@@ -208,11 +228,11 @@ func readProjects(value *yaml.Node, key string) (map[string]Project, []string, e
 	for index := 0; index+1 < len(value.Content); index += 2 {
 		keyNode, entryNode := value.Content[index], value.Content[index+1]
 		name := keyNode.Value
-		if keyNode.Kind != yaml.ScalarNode || !projectKeyPattern.MatchString(name) {
+		if keyNode.Kind != yaml.ScalarNode || !claim.IsProjectKey(name) {
 			if keyNode.Kind != yaml.ScalarNode || !keyShape(name) {
-				return nil, nil, fmt.Errorf("%s: a project's key must match ^[A-Z][A-Z0-9]*$", unknownKeyAt(keyNode, key))
+				return nil, nil, fmt.Errorf("%s: a project's key must match %s", unknownKeyAt(keyNode, key), claim.ProjectKeyPattern)
 			}
-			return nil, nil, fmt.Errorf(`%s key %q must match ^[A-Z][A-Z0-9]*$`, key, name)
+			return nil, nil, fmt.Errorf(`%s key %q must match %s`, key, name, claim.ProjectKeyPattern)
 		}
 		if _, exists := projects[name]; exists {
 			return nil, nil, fmt.Errorf("%s names %s twice", key, name)
@@ -278,6 +298,11 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 			return Project{}, nil, err
 		}
 	}
+	if workflows := fields["watched_workflows"]; workflows != nil {
+		if project.WatchedWorkflows, err = readWatchedWorkflows(workflows, key+".watched_workflows"); err != nil {
+			return Project{}, nil, err
+		}
+	}
 	if memory := fields["memory"]; memory != nil {
 		if project.Memory, err = readMemory(memory, key+".memory"); err != nil {
 			return Project{}, nil, err
@@ -301,18 +326,22 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	}
 	// production_check is read by the key's presence rather than by its value: a project that
 	// names no key gets the tester, and the one word that takes the check away, `off`, is the
-	// empty role. A bare `off` reaches the reader as the string, as `memory.mode`'s does.
+	// empty role. A bare `off` reaches the reader as the string, as `memory.mode`'s does. Any other
+	// word is refused naming it only when it has a key's shape (keyShape); one of no key's shape,
+	// which can be a token pasted where the word goes, is refused by its line alone (shapelessWord).
 	project.ProductionCheck = claim.RoleTester
 	if check := fields["production_check"]; check != nil {
 		word, err := stringOf(check, key+".production_check")
 		if err != nil {
 			return Project{}, nil, err
 		}
-		switch word {
-		case ProductionCheckOff:
+		switch {
+		case word == ProductionCheckOff:
 			project.ProductionCheck = ""
-		case string(claim.RoleTester):
+		case word == string(claim.RoleTester):
 			project.ProductionCheck = claim.RoleTester
+		case !keyShape(word):
+			return Project{}, nil, shapelessWord(lineOf(key+".production_check", check), ProductionCheckOff+" or "+string(claim.RoleTester))
 		default:
 			return Project{}, nil, fmt.Errorf("%s.production_check must be %s or %s (got %q)", key, ProductionCheckOff, claim.RoleTester, word)
 		}
@@ -326,9 +355,13 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 }
 
 // readDefaultSteps is a project's `default_steps`: a list of steps, each entry one step in the
-// plan's grammar (plan.ParseSteps). It refuses an empty list and an entry that is not one step,
-// and judges nothing of the steps themselves: the roles and types they may name are the
-// deployment's (`roles`, `role_types`), read in any order beside this key, so
+// plan's grammar (plan.ParseSteps), a role or role:key. It refuses an empty list, and an entry
+// whose role or key is no word of the role grammar (roleWordShape) by its place alone
+// (roleEntryAt): a token pasted where a step goes is no word of the grammar, and plan.ParseSteps'
+// own refusal quotes the word, so the entry is never handed to it. An entry whose role and key
+// fit the grammar holds no white space and fits the plan's word for each (plan's nameWord), so it
+// is the one step it names. It judges nothing else of the steps: the roles and types they may name
+// are the deployment's (`roles`, `role_types`), read in any order beside this key, so
 // checkDeploymentRoleKeys judges them once the whole file is read.
 func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 	words, err := readStrings(value, key)
@@ -339,21 +372,19 @@ func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 		return nil, fmt.Errorf("%s names no step", key)
 	}
 	steps := make([]plan.Step, 0, len(words))
-	for _, word := range words {
-		parsed, err := plan.ParseSteps(word)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", key, err)
+	for index, word := range words {
+		role, stepKey, keyed := strings.Cut(word, ":")
+		if !roleWordShape(role) || keyed && !roleWordShape(stepKey) {
+			return nil, roleEntryAt(key, index, "an entry is one step, a role or role:key, each")
 		}
-		if len(parsed) != 1 {
-			return nil, fmt.Errorf("%s names %q, which is not one step: each entry of the list is one step", key, word)
-		}
-		steps = append(steps, parsed[0])
+		steps = append(steps, plan.Step{Role: role, Key: stepKey})
 	}
 	return steps, nil
 }
 
 // readSlackChannels is a project's `slack_channels`: Slack channel ids, each named once. An empty
-// list is no channel, as an absent key is.
+// list is no channel, as an absent key is. An entry that is no channel id is named as written only
+// where it has a key's shape, and by its number otherwise (entryNamed).
 func readSlackChannels(value *yaml.Node, key string) ([]string, error) {
 	channels, err := readStrings(value, key)
 	if err != nil || len(channels) == 0 {
@@ -361,7 +392,7 @@ func readSlackChannels(value *yaml.Node, key string) ([]string, error) {
 	}
 	for index, channel := range channels {
 		if !slackChannelPattern.MatchString(channel) {
-			return nil, fmt.Errorf("%s entry %q is not a Slack channel id (C or G, then capital letters and digits, such as C0123ABCD)", key, channel)
+			return nil, fmt.Errorf("%s is not a Slack channel id (C or G, then capital letters and digits, such as C0123ABCD)", entryNamed(key, index, channel))
 		}
 		if slices.Contains(channels[:index], channel) {
 			return nil, fmt.Errorf("%s names %q twice", key, channel)
@@ -371,10 +402,10 @@ func readSlackChannels(value *yaml.Node, key string) ([]string, error) {
 }
 
 // readCommitIssueTrailerRepos is a project's `commit_issue_trailer_repos`: a list of strings, each
-// exactly a repository Parse takes, whose commits a pane stamps with the issue key. One repository
-// is named once, compared as GitHub compares names, without case: a second entry stamps the same
-// commits the first does, so it is the file saying one thing twice rather than a second rule. An
-// empty list is no repository, as an absent key is.
+// exactly a repository Parse takes (parseRepository), whose commits a pane stamps with the issue
+// key. One repository is named once, compared as GitHub compares names, without case: a second
+// entry stamps the same commits the first does, so it is the file saying one thing twice rather
+// than a second rule. An empty list is no repository, as an absent key is.
 func readCommitIssueTrailerRepos(value *yaml.Node, key string) ([]ghrepo.Repository, error) {
 	names, err := readStrings(value, key)
 	if err != nil || len(names) == 0 {
@@ -382,7 +413,7 @@ func readCommitIssueTrailerRepos(value *yaml.Node, key string) ([]ghrepo.Reposit
 	}
 	repos := make([]ghrepo.Repository, 0, len(names))
 	for index, name := range names {
-		repo, err := ghrepo.Parse(fmt.Sprintf("%s[%d]", key, index), name)
+		repo, err := parseRepository(fmt.Sprintf("%s[%d]", key, index), name)
 		if err != nil {
 			return nil, err
 		}

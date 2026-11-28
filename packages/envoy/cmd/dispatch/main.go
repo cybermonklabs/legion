@@ -27,8 +27,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -46,7 +48,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
@@ -106,8 +110,12 @@ type bootConfig struct {
 	// conversation is started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	EnvoyURL        string
-	GitHubAPIBase   string
+	// SpecRoots is DISPATCH_SPEC_ROOTS: the issue keys of the roots of The Spec, separated by
+	// commas (specRootsSetting), which main builds the form of The Spec from (api.NewSpecForm).
+	// Empty names no root.
+	SpecRoots     string
+	EnvoyURL      string
+	GitHubAPIBase string
 	// ReviewerAppID is DISPATCH_REVIEWER_APP_ID, the id of the App whose `tester` and `architect`
 	// check runs are Legion's verdicts, as the text of the number GitHub's own objects carry it
 	// as. Empty means the CI reconcile pass records no verdict check at all.
@@ -194,6 +202,38 @@ type bootConfig struct {
 	// keeps its ratio of three beats to it, since no process-level test can wait a live window
 	// and a heartbeat for a refusal to stand.
 	ProcessHeartbeat time.Duration
+	// SearchFillReadTimeout is the client's own deadline on each read of the keyword fill's
+	// deferral line (searchFillTableHoldsRow), zero for the one searchFillBounds gives, four seconds
+	// past the statement timeout; only DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT, under the test hooks,
+	// sets it, so an end-to-end test can stage it past its run and leave each read to Postgres's own
+	// timeouts, however slowly a loaded machine dials. resolveBootConfig refuses one that is not
+	// past the statement timeout, so no setting orders the client's deadline before Postgres's.
+	SearchFillReadTimeout time.Duration
+	// CoverageFillTimeout bounds the whole fill of the search coverage counts in place of
+	// embedqueue's own, zero for that; only DISPATCH_TEST_COVERAGE_FILL_TIMEOUT, under the test
+	// hooks, sets it, so a test sees a fill reach its timeout without waiting a deployment's out.
+	CoverageFillTimeout time.Duration
+	// CoverageStatementTimeout bounds the search coverage route's statement in place of
+	// embedqueue's 10 s, zero for that; only DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT, under the
+	// test hooks, sets it, so a test sees the route's 503 SEARCH_COVERAGE_TIMEOUT at once.
+	CoverageStatementTimeout time.Duration
+	// CoverageFillFailures is how many fills of the search coverage counts fail before their first
+	// statement, zero for none; only DISPATCH_TEST_COVERAGE_FILL_FAILURES, under the test hooks,
+	// sets it, so a test sees a failed fill logged and tried again.
+	CoverageFillFailures int
+	// SearchFillLockTimeout is the lock timeout of each read the keyword fill's deferral line makes
+	// at boot (searchFillTableRows), zero for searchFillTableLockTimeout's five seconds; the
+	// statement timeout and the client's deadline keep their margins past it (searchFillBounds).
+	// Only DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT, under the test hooks, sets it, since a test whose
+	// boot meets a locked or a slow table waits each bound out; resolveBootConfig refuses one below
+	// searchFillTableLockTimeoutFloor.
+	SearchFillLockTimeout time.Duration
+	// HTTPDrain is how long shutdown waits for the requests in flight before the document service
+	// settles the documents owed with requests still running, zero for httpDrainBeforeDocuments'
+	// eleven seconds; only DISPATCH_TEST_HTTP_DRAIN, under the test hooks, sets it, since a test
+	// whose request holds the drain waits all of it out; resolveBootConfig refuses one longer than
+	// httpDrainBeforeDocuments (outboxStopBudget).
+	HTTPDrain time.Duration
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
 	// the test hooks, sets it.
@@ -202,6 +242,10 @@ type bootConfig struct {
 	// would have built: meaning search answers keyword-only and the embedding queue does nothing.
 	// Only DISPATCH_TEST_EMBEDDER_OFF=1, under the test hooks, sets it.
 	EmbedderOff bool
+	// CreateStaged makes this process create each element its manifest stages for the next
+	// version (pmdoc.CreateStagedForTest); only DISPATCH_TEST_CREATE_STAGED=1, under the test
+	// hooks, sets it.
+	CreateStaged bool
 	// ReconcileAtStart makes the delivery reconcile run one pass as it starts rather than only after
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
@@ -435,6 +479,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A test process told to creates the elements its manifest stages for the next version. The
+	// switch is set before the first install and is apart from the manifest, so no reinstall
+	// clears it.
+	if boot.CreateStaged {
+		pmdoc.CreateStagedForTest()
+		slog.Warn("dispatch: this test process creates the elements its block schema stages for the next version", "setting", "DISPATCH_TEST_CREATE_STAGED=1")
+	}
 	// A type is a node of the store, and the schema this process validates writes against and
 	// serves to an editor is built from those nodes (migration 20261109051232). The first
 	// install is here, beside the migration run: a process serving on a schema that is not the
@@ -485,12 +536,11 @@ func main() {
 	// session_titles (migration 20261117100008) holds each session's newest stamped title,
 	// 20261117100015's trigger keeps it in step from the deploy on, and this fills it for the
 	// events stored before that, in committed batches, for document_search's reason above
-	// (20261117100016's comment). A failure stops the boot: delivery.ResolveSessionTitles reads
-	// session_titles alone, so a process that served with the table unfilled would name every
-	// session stored before this release by its id. Production runs one replica under a
-	// Kubernetes Deployment's `strategy: Recreate` (README.md, "Database migrations"), so no
-	// process serves while this one migrates and fills: the old process has stopped, and this
-	// one listens only once the fill has ended.
+	// (20261117100016's comment). Production runs two replicas under `strategy: RollingUpdate`.
+	// This pod listens only after the fill, so the old pods serve while it migrates and fills.
+	// The old build reads titles from events, and the trigger stores the titles the old pods write.
+	// A failed fill exits this pod, stops the rollout and leaves the old pods serving: with the
+	// table unfilled, delivery.ResolveSessionTitles would name every earlier session by its id.
 	if filled, err := database.FillSessionTitles(ctx); err != nil {
 		slog.Error("dispatch: fill session_titles for the events stored before this release", "error", err)
 		os.Exit(1)
@@ -552,7 +602,7 @@ func main() {
 		slog.Error("dispatch: load signing key", "error", err)
 		os.Exit(1)
 	}
-	retirePlainRefreshTokens(ctx, people, plainRefreshTokenRetireTimeout)
+	retirePlainRefreshTokens(ctx, people, clock.Real(), plainRefreshTokenRetireTimeout)
 	sessions := store.NewPgSessionStore(database.Pool)
 
 	if boot.IdentityHeader != "" {
@@ -571,13 +621,16 @@ func main() {
 		ServerURL:   serverURL,
 		BuildCommit: buildCommit,
 	})
+	// The restoration below schedules settlements, whose version writes carry approvals, before
+	// the API is built: the form of The Spec is built first, and sets its gate on the service, so
+	// no carry passes it (api.NewSpecForm). The API judges with this same form.
+	specForm, err := api.NewSpecForm(boot.SpecRoots, serverURL, documentService)
+	if err != nil {
+		slog.Error("dispatch: read the roots of The Spec", "error", err)
+		os.Exit(1)
+	}
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
-	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
-	// interval below. It appends events and takes no copy lock, so it runs after
-	// restoreDecidedWordings, which takes the copy lock (see below).
-	issueAskRepairDeps := api.Deps{Store: database, Docs: documentService, Events: broker}
-	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
 	renameRepositories(ctx, database.Pool, renamePairs, renamesErr, repoRenamePassTimeout)
 
@@ -612,6 +665,13 @@ func main() {
 		slog.Error("dispatch: build the answerer", "error", err)
 		os.Exit(1)
 	}
+	// The process's one count of its own calls to GitHub, by installation, counter and caller
+	// kind, which the two GitHub clients of the process that call with an installation token
+	// count on, and the rate reading reports (runRateReading): the API's, which the architecture
+	// importer and the delivery intakes and reconcile share, and the CI reconcile's. The webhook
+	// redelivery sweep's client calls with the App's JWT alone, which GitHub charges to no
+	// installation, so it counts on nothing.
+	gitHubCalls := githubrate.NewCounter()
 
 	// The answers reads this process serves, each timed from the moment it enters the route's
 	// handler chain, as its access-log line times it: the API records them, and the keyword fill
@@ -630,10 +690,12 @@ func main() {
 		Store:          database,
 		ServerURL:      serverURL,
 		Docs:           documentService,
+		SpecForm:       &specForm,
 		Embedder:       embedder,
 		Events:         broker,
 		Renames:        renames,
 		App:            appCfg,
+		GitHubRate:     gitHubCalls,
 		AgentStream:    agentStream,
 		AgentPublisher: agentPublisher,
 		Files:          fileStore,
@@ -679,16 +741,18 @@ func main() {
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
-	//     suggestion outcomes (api.EventsChannel) and the delivery settings both intakes route by
-	//     (delivery.SettingsChannel). The two leased ones, reference-excerpts and edit-notices,
-	//     take their lease with no period (duty.RunWoken): a process that finds it held retries
-	//     until a pass of its own runs, since the other process's pass may have read before the
-	//     change that woke this one. The suggestion-outcome loop takes none: each of its pages
-	//     runs in a transaction holding the suggestion_outcome_cursor row for update, which
-	//     serialises two processes woken by one commit, the first pass on a database included
-	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
-	//     their window, and the deliveries a process that died left owed - keeps a timer of its
-	//     own below, because no wake announces either: a death commits nothing.
+	//     suggestion outcomes (api.EventsChannel), the delivery settings both delivery intakes
+	//     route by (delivery.SettingsChannel) and the Legion settings, on whose every write the
+	//     Legion state intake checks each project's starting point (legion.SettingsChannel). The
+	//     two leased ones, reference-excerpts and edit-notices, take their lease with no period
+	//     (duty.RunWoken): a process that finds it held retries until a pass of its own runs,
+	//     since the other process's pass may have read before the change that woke this one. The
+	//     suggestion-outcome loop takes none: each of its pages runs in a transaction holding the
+	//     suggestion_outcome_cursor row for update, which serialises two processes woken by one
+	//     commit, the first pass on a database included (api/suggestion_outcomes.go). The keyed
+	//     writes' own sweep - the Idempotency-Keys past their window, and the deliveries a process
+	//     that died left owed - keeps a timer of its own below, because no wake announces either:
+	//     a death commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
 	//     it, and repeats its identity steps and its record of issues' inputs every 10 minutes for
 	//     as long as the process runs) and the task progress reconciliation (retrying, briefly,
@@ -737,12 +801,17 @@ func main() {
 	// The keyword fill writes search_text_versions under a hold of its own as well
 	// (textversions.Run): one process fills at a time, and the others stand by for its hold.
 	//
+	// The search coverage counts loop (embedqueue.RunCounts) takes no lease either: its fill,
+	// each fold and each recount take one transaction-scoped advisory lock, so two processes'
+	// loops, as during a roll, run one of them at a time, and each is exact beside the other's.
+	//
 	// Deliberately NOT leased, in three classes:
 	//   - already claims its own work, so two processes never do one unit of it twice: the
 	//     embedding queue (embedqueue, `for update skip locked`), the task progress
-	//     reconciliation (`for no key update ... skip locked`) and the delivery intakes (each
+	//     reconciliation (`for no key update ... skip locked`), the delivery intakes (each
 	//     delivers from its durable only while it holds that durable's duty.Hold, which
-	//     delivery.StartIntakes takes).
+	//     delivery.StartIntakes takes) and the Legion state intake (likewise under its own
+	//     durable's hold, legion.StartIntake).
 	//   - per-process by design, because each serves this process's own connections or memory:
 	//     the delivery live hub and its listener (migration 0107_events_notify.up.sql states that
 	//     purpose), the event stream relay, the document rooms' timers, the document compaction
@@ -752,12 +821,14 @@ func main() {
 	//     listener hub (its connection is this process's membership and every loop above waits on
 	//     a wake of this process's own, so it has to run in every process), the room sync
 	//     registered on it (it serves the rooms resident in this process: it catches them up with
-	//     the other processes' writes and answers their room queries) and the document sockets'
-	//     schema re-check (it closes this process's own sockets).
+	//     the other processes' writes and answers their room queries), the document sockets'
+	//     schema re-check (it closes this process's own sockets) and the GitHub rate reading
+	//     (runRateReading: the own calls it reports are this process's, and its lines name the
+	//     process).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
-	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and
-	//     renameRepositories above, and the embedding coverage pass (two processes' passes at
-	//     once leave what one leaves).
+	//     retirePlainRefreshTokens, restoreDecidedWordings and renameRepositories above,
+	//     repairIssueAsks after the parent status fix below, and the embedding coverage pass (two
+	//     processes' passes at once leave what one leaves).
 	leaseCallers, err := database.Pool.Leases()
 	if err != nil {
 		slog.Error("dispatch: open the lease pool for the maintenance loops", "error", err)
@@ -818,18 +889,22 @@ func main() {
 	// The display tree fill (texttreefill.Run): a leased loop like the rest, reserved here so
 	// that this process's count is the same whether or not it has work to do.
 	textTreeFillLeases := reserve("text tree fill")
-	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
-	// this process's count is the same whether or not any project names a daemon.
-	legionSamplerLeases := reserve("Legion sampler")
 	// R25's one-time fix of parents' statuses at boot (api.RunParentStatusFixAtBoot, below): it
 	// takes its lease only with DISPATCH_PARENT_STATUS_RULE on, and is reserved here so that this
 	// process's count is the same with the setting off.
 	parentStatusFixLeases := reserve("parent status fix")
-	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
-	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
+	// The delivery intakes' six callers - a consumer lease, a hold and the hold's renewal per
+	// durable - whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
 	if err != nil {
 		slog.Error("dispatch delivery: reserve the lease pool for the intakes", "error", err)
+		os.Exit(1)
+	}
+	// The Legion state intake's three callers - its durable's consumer lease, its hold and the
+	// hold's renewal - whether or not this configuration starts it (legion.ReserveLeases).
+	legionIntakeLeases, err := legion.ReserveLeases(leaseCallers)
+	if err != nil {
+		slog.Error("dispatch: reserve the lease pool for the Legion state intake", "error", err)
 		os.Exit(1)
 	}
 	// The keyword fill's two callers - its own goroutine's hold statements, batches and reads, and
@@ -886,6 +961,13 @@ func main() {
 		slog.Error("dispatch: build app context", "error", err)
 		os.Exit(1)
 	}
+	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
+	// interval below. The pass restores an approval request as a reopen does, so it runs on the
+	// API's own dependencies (appCtx.APIDeps), which the routes run on, and never on a set built
+	// here beside them that could leave a field out. It appends events and takes no copy lock, so
+	// it runs after restoreDecidedWordings, which takes the copy lock (see above), and after the
+	// parent status fix, before which nothing writes.
+	repairIssueAsks(ctx, appCtx.APIDeps(), issueAskRepairBootTimeout)
 
 	// The outbox runs only with NATS, so a process with NATS disabled never publishes
 	// (outboxPublisher stays nil, and /healthz reports outbox_publisher false). outboxStopped is
@@ -893,6 +975,11 @@ func main() {
 	// shutdown waits for before it closes the pool; it stays nil with no outbox.
 	var outboxPublisher *outbox.Outbox
 	var outboxStopped chan struct{}
+	// The API server's writer of an issue message, which the outbox posts the message about the
+	// events a role did not take with (outbox.Deps.PostIssueMessage). The outbox starts before the
+	// API server is registered (routes.New, below), so it reads the writer from here once that has
+	// happened, and a post before it fails and is tried again on the post's own back-off.
+	var postSystemMessage atomic.Pointer[func(context.Context, model.Actor, model.SystemMessage) (string, error)]
 	outboxPublishFailures := met.NewCounter(
 		"envoy_dispatch_outbox_publish_failures_total",
 		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer) or failed (every other failure)",
@@ -915,13 +1002,20 @@ func main() {
 		// by the windows this deployment gave its listeners (roleHolderWindows).
 		holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows)
 		outboxPublisher = outbox.New(outbox.Deps{
-			Store:            &store.Store{Pool: outboxPool},
-			Publisher:        natsClient,
-			Broker:           broker,
-			Listen:           database.Pool.Listener,
-			RoleClaims:       holders,
-			Sessions:         holders,
-			KeptLanes:        natsClient,
+			Store:      &store.Store{Pool: outboxPool},
+			Publisher:  natsClient,
+			Broker:     broker,
+			Listen:     database.Pool.Listener,
+			RoleClaims: holders,
+			Sessions:   holders,
+			KeptLanes:  natsClient,
+			PostIssueMessage: func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error) {
+				post := postSystemMessage.Load()
+				if post == nil {
+					return "", errors.New("the API server is not registered yet")
+				}
+				return (*post)(ctx, actor, message)
+			},
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,
 			Metrics:          met,
@@ -932,24 +1026,6 @@ func main() {
 			outboxPublisher.Run(ctx)
 		}()
 	}
-	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so this always starts: the server's
-	// embedding queue keeps coverage itself, so a later deploy that gives meaning search a place
-	// to embed needs no other wiring change and no person-run step to cover existing content.
-	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
-	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
-	// pacing only its calls - never a live search request's own query embedding, which always
-	// goes straight through the unwrapped client - is what keeps saturating background work from
-	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
-	// comment has the AIMD mechanism and the headroom this leaves). A nil embedder (meaning
-	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
-	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
-	// below; it embeds and drops only while its embedder's identity is the active one, which every
-	// process decides from the live registry rows (embedqueue, active.go), so a process configured
-	// with another embedder than the fleet's leaves the vectors as they are.
-	var backgroundEmbedder embed.Embedder
-	if embedder != nil {
-		backgroundEmbedder = embed.NewRateLimitedEmbedder(embedder)
-	}
 
 	// This process's one shared LISTEN connection. Its name is what makes this process a member:
 	// the other envoy-dispatch processes read it in pg_stat_activity (docs/room_sync.go), and only
@@ -958,17 +1034,18 @@ func main() {
 	// still hold listener connections of their own (store.Pool.Listener).
 	//
 	// A wake is registered only for a loop that will read it: with no embedder embedqueue.Run
-	// returns at once, without NATS or the GitHub App no intake starts to route by the settings,
-	// and without the GitHub App this process keeps no copy of the GitHub reads' record (below),
-	// so none of those channels is LISTENed on.
+	// returns at once, without NATS or the GitHub App no delivery intake starts to route by the
+	// delivery settings, without NATS no Legion state intake starts to read a project's daemon on
+	// a write of its Legion setting, and without the GitHub App this process keeps no copy of the
+	// GitHub reads' record (below), so none of those channels is LISTENed on.
 	listenerHub := &pglisten.Hub{
 		Owner: "dispatch",
 		Dial: func(ctx context.Context) (*pgx.Conn, error) {
 			return database.Pool.Dedicated(ctx, docs.ListenerApplicationPrefix+documentService.ProcessID())
 		},
 	}
-	var embeddingsWake, settingsWake, gitHubReadsWake <-chan struct{}
-	if backgroundEmbedder != nil {
+	var embeddingsWake, settingsWake, legionSettingsWake, gitHubReadsWake <-chan struct{}
+	if embedder != nil {
 		embeddingsWake = listenerHub.Wake(embedqueue.WakeChannel)
 	}
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
@@ -980,6 +1057,9 @@ func main() {
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}
+	if natsClient != nil {
+		legionSettingsWake = listenerHub.Wake(legion.SettingsChannel)
+	}
 	if appCfg != nil {
 		gitHubReadsWake = listenerHub.Wake(githubreads.Channel)
 	}
@@ -990,7 +1070,23 @@ func main() {
 	textVersionsEventsWake := listenerHub.Wake(api.EventsChannel)
 	textVersionsReleasedWake := listenerHub.Wake(duty.HoldReleasedChannel)
 
-	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
+	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so this always starts: the server's
+	// embedding queue keeps coverage itself, so a later deploy that gives meaning search a place
+	// to embed needs no other wiring change and no person-run step to cover existing content.
+	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
+	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
+	// pacing only its calls - never a live search request's own query embedding, which always
+	// goes straight through the unwrapped client - is what keeps saturating background work from
+	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
+	// comment has the AIMD mechanism and the headroom this leaves). Deps.Paced makes the wrapper
+	// and keeps it as the queue's pace, so the pace's wait renews the queue's claim on the rows it
+	// waits to embed, and a canary that meets an outage backs the pace off. A nil embedder (meaning
+	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
+	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
+	// below; it embeds and drops only while its embedder's identity is the active one, which every
+	// process decides from the live registry rows (embedqueue, active.go), so a process configured
+	// with another embedder than the fleet's leaves the vectors as they are.
+	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: embedder, Wake: embeddingsWake}.Paced())
 	// The block schema the store holds, read again each time a supertag write announces itself.
 	// A read that fails, and a value the install refuses, leaves the installed schema in place
 	// and is read again; a store a newer build migrated is installed at this build's own
@@ -1096,7 +1192,7 @@ func main() {
 	go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
 	// The asks a process older than the withdrawal leaves on an issue it closes or
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
-	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
+	go api.RunIssueAskRepair(ctx, appCtx.APIDeps(), issueAskRepairLeases)
 
 	// Each of the four loops below that reads GitHub under a lease records its newest attempt in
 	// the record of GitHub reads (githubreads, store.GitHubReadAttempts) when its pass ends, and
@@ -1147,7 +1243,7 @@ func main() {
 	// ciInstance is filled in once this process is registered, below, and each pass records its
 	// counts in ci_reconcile_passes under the id it then holds.
 	ciInstance := &registeredInstance{}
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, boot.VerdictAppID, ciReconcileInterval, ciInstance, renames)
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, boot.VerdictAppID, ciReconcileInterval, ciInstance, renames, gitHubCalls)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
@@ -1182,11 +1278,17 @@ func main() {
 	appCtx.Architecture().GitHubReads = recordGitHubRead
 	go architecture.Run(ctx, appCtx.Architecture(), architectureImportLeases, boot.ArchitectureImportAtStart)
 
-	// dispatch://INFRA-1077: each project whose legion_settings row names a Legion daemon has its
-	// `GET /legion/v1/state` read once a minute from one replica, under the `legion-state` lease,
-	// and every value that moved recorded. It is a timer and not a woken loop for the reason the
-	// delivery reconcile below is: a remote daemon announces nothing Dispatch can listen for.
-	go legion.RunSampler(ctx, database.Pool, legionSamplerLeases)
+	// The GitHub rate reading: every 10 minutes, and once in the last minute before each counter
+	// resets, one github_rate_reading line for each installation of the App, through a JSON logger
+	// of its own, so a log store reads the line's fields where the rest of the log is text. It reads
+	// with the API's client, which counts on gitHubCalls with the CI reconcile's, and needs the
+	// App's private key.
+	if gitHub := appCtx.GitHub(); gitHub != nil {
+		slog.Info("dispatch: reading the GitHub rate counters of each installation of the App", "client_id", appCfg.ClientID, "interval", githubrate.Interval)
+		go runRateReading(ctx, gitHub, slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	} else {
+		slog.Info("dispatch: GitHub rate reading off: it needs the GitHub App private key")
+	}
 
 	// LEGION-567: the delivery timeline's 5-minute GitHub-App reconcile runs regardless of NATS
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
@@ -1200,43 +1302,69 @@ func main() {
 		reconcile.TickEvery(boot.DeliveryReconcileInterval)
 	}
 	go reconcile.Run(ctx, deliveryReconcileLeases)
-	// waitIntakes waits for both intakes to stop once ctx is cancelled; StartIntakes returns it as
-	// a sync.OnceFunc, so a second call returns once the first has. The shutdown runs it before it
-	// closes the database pool: it closes the intakes' NATS clients after their Runs return, then
-	// waits for any hand-back finalizer to release its duty.Hold through that pool. A hold left in
-	// place for its TTL names the stopped process's deliver subject, which a process of the build
-	// before holds, binding by lookup, goes on delivering at, so the next holder would read that
-	// binding as a dead holder's and take it over. Every exit after the intakes start runs it too
-	// (exitAfterIntakes, stopIntakesOnExit, and the stop during the registry's admission wait), since
-	// each intake can hold its durable before this process serves anything. With no NATS client there
-	// is nothing to wait for.
+	// waitIntakes waits for the three intakes to stop once ctx is cancelled: the two delivery
+	// intakes and the Legion state intake. StartIntakes and legion.StartIntake each return their
+	// stop as a function a second call of which returns once the first has, so a second call of
+	// waitIntakes does too. The shutdown runs it before it closes the database pool: each stop
+	// closes its intakes' NATS clients after their Runs return, then waits for any hand-back
+	// finalizer to release its duty.Hold through that pool. A hold left in place for its TTL
+	// names the stopped process's deliver subject, which a process of the build before holds,
+	// binding by lookup, goes on delivering at, so the next holder would read that binding as a dead
+	// holder's and take it over. Every exit after the intakes start runs it too (exitAfterIntakes,
+	// stopIntakesOnExit, and the stop during the registry's admission wait), since each intake can
+	// hold its durable before this process serves anything. With no NATS client there is nothing
+	// to wait for.
 	waitIntakes := func() {}
 	if natsClient != nil {
-		// The intake and the job intake (LEGION-690) each bind a durable, so each takes a client of
-		// its own (delivery.StartIntakes). Their Runs begin stopping at the signal beside the HTTP
-		// drain and document shutdown, and return once a message in a handler has been acknowledged or
-		// given up at its stop budget and handed back. StartIntakes then closes both clients, waits for
-		// each pending hand-back's finalizer to release the hold through the pool, and returns. Each
-		// connects in the background as the publisher does, and its poll takes the durable's hold once
-		// it has, whether or not delivery settings are saved. The intake hands each push of a branch
-		// to the architecture importer the ticker and the routes share, which imports the enabled
-		// sources on that repository and branch at once; a push it hands over once the importer's
-		// Close has begun starts nothing (architecture.Importer.Pushed).
+		// The intake and the job intake (LEGION-690) each bind a durable, and the Legion state
+		// intake a third, so each takes a client of its own (delivery.StartIntakes,
+		// legion.StartIntake). Their Runs begin stopping at the signal beside the HTTP drain and
+		// document shutdown, and return once a message in a handler has been acknowledged or given
+		// up at its stop budget and handed back. StartIntakes and legion.StartIntake then close
+		// their clients, wait for each pending hand-back's finalizer to release the hold through
+		// the pool, and return. Each connects in the background as the publisher does, and its poll
+		// takes the durable's hold once it has, whether or not delivery settings are saved. The
+		// intake hands each push of a branch to the architecture importer the ticker and the routes
+		// share, which imports the enabled sources on that repository and branch at once; a push it
+		// hands over once the importer's Close has begun starts nothing
+		// (architecture.Importer.Pushed). Each intake's client writes with the deadline
+		// delivery.IntakeWriteDeadline, which says how long a write to a frozen link holds the
+		// client's Close and why no fixed time bounds that Close. No other client of the server
+		// takes that deadline, since the publisher and the agent stream relay publish payloads a
+		// slow link can take longer than that to accept.
 		connectIntake := func(name string) (*bus.Client, error) {
-			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
+			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name),
+				bus.WithWriteDeadline(delivery.IntakeWriteDeadline))...)
 		}
 		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture(), attributor)
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
 		}
-		waitIntakes = stopIntakes
+		// dispatch://INFRA-3931: each project whose legion_settings row names a Legion daemon has
+		// its observations written from the state events that daemon publishes, which the Legion
+		// state intake takes from its held durable, with or without the GitHub App; it reads a
+		// daemon's `GET /legion/v1/state` whole only for the reasons legion's ReadReason constants
+		// name, a project's reads at least legion.ReadRetryAfter apart, and no recurring timer
+		// reads one. A connect that fails stops the delivery intakes before the exit, since they
+		// may hold their durables already.
+		stopLegionIntake, err := legion.StartIntake(ctx, connectIntake, database.Pool, legionIntakeLeases, legionSettingsWake)
+		if err != nil {
+			slog.Error("dispatch: connect the Legion state intake to NATS", "error", err)
+			cancel()
+			stopIntakes()
+			os.Exit(1)
+		}
+		waitIntakes = func() {
+			stopIntakes()
+			stopLegionIntake()
+		}
 		// A stop before serving (the admission wait, below) returns without shutdown, and a panic
 		// before serving unwinds past it, so the intakes are stopped here too; after shutdown has
 		// waited for them, this returns at once.
 		defer stopIntakesOnExit(cancel, waitIntakes)
 	} else {
-		slog.Info("dispatch delivery: no NATS client — intake is idle; the reconcile alone still runs")
+		slog.Info("dispatch: no NATS client — the delivery intakes and the Legion state intake are idle; the delivery reconcile alone still runs")
 	}
 
 	// LEGION-781, INFRA-555: the announcer publishes server.started once each time every live
@@ -1254,6 +1382,7 @@ func main() {
 	})
 
 	routesHandler, background := routes.New(appCtx)
+	postSystemMessage.Store(&background.PostSystemMessage)
 	// The keyword fill (textversions.Run) writes search_text_versions, the keyword table of each
 	// past version of the searchable text, from the event log. It is a held duty, not a loop woken
 	// per pass: one process holds its duty.Hold (search-text-versions-fill) for as long as it
@@ -1277,8 +1406,12 @@ func main() {
 	fillStopped := make(chan struct{})
 	if boot.SearchFillOff {
 		close(fillStopped)
+		bounds := searchFillBounds(boot.SearchFillLockTimeout)
+		if boot.SearchFillReadTimeout > 0 {
+			bounds.client = boot.SearchFillReadTimeout
+		}
 		slog.Info(searchFillDeferredLine, append([]any{"setting", "DISPATCH_SEARCH_FILL", "value", "off"},
-			searchFillTableRows(ctx, database.Pool)...)...)
+			searchFillTableRows(ctx, database.Pool, clock.Real(), bounds)...)...)
 	} else {
 		go func() {
 			defer close(fillStopped)
@@ -1296,14 +1429,43 @@ func main() {
 	}
 	// waitFill waits for the keyword fill to stop; only a cancelled ctx stops it.
 	waitFill := func() { <-fillStopped }
-	// exitAfterIntakes ends a process that started its intakes and its keyword fill and will not
-	// serve: it cancels ctx, waits for both to stop, which releases the intakes' holds, and exits
-	// 1. The deferred stop (stopIntakesOnExit) does not run on an os.Exit, so every exit here goes
-	// through this.
+	// The search coverage counts loop (embedqueue.RunCounts) keeps the counts GET
+	// /api/v1/search/coverage reads: it fills them where no fill has ended, folds the delta rows the
+	// counting triggers write every 10 s, and recounts every kind, each recount starting 11 minutes
+	// less the recount's bound (coverageRecountTimeout) after the one before started, or at a random
+	// time from 10 minutes up to that while the bound is under a minute, so a write the triggers
+	// missed is counted within 11 minutes. It starts at every start, with an embedder or with none,
+	// since the counts follow every write whatever embeds; its goroutine starts here, but like the
+	// keyword fill it takes nothing and writes nothing until serving closes, so no start waits for a
+	// count and the route answers 503 SEARCH_COVERAGE_NOT_FILLED until the first fill ends. Every
+	// way out from here waits for it (waitCounts) before the pool closes: once ctx is cancelled it
+	// returns at once, rolling back the fill, fold or recount in flight. The three
+	// DISPATCH_TEST_COVERAGE_* settings, read only under DISPATCH_TEST_HOOKS=1, shorten the fill's
+	// timeout and the route's bound and make fills fail, for a test of each.
+	if boot.CoverageFillTimeout > 0 {
+		embedqueue.ShortenCoverageFillTimeoutForTest(boot.CoverageFillTimeout)
+	}
+	if boot.CoverageStatementTimeout > 0 {
+		embedqueue.ShortenCoverageBoundForTest(boot.CoverageStatementTimeout)
+	}
+	if boot.CoverageFillFailures > 0 {
+		embedqueue.FailCoverageFillsForTest(boot.CoverageFillFailures)
+	}
+	countsStopped := make(chan struct{})
+	go func() {
+		defer close(countsStopped)
+		embedqueue.RunCounts(ctx, embedqueue.CountsDeps{Store: database, Serving: serving})
+	}()
+	waitCounts := func() { <-countsStopped }
+	// exitAfterIntakes ends a process that started its intakes, its keyword fill and its counts
+	// loop and will not serve: it cancels ctx, waits for all three to stop, which releases the
+	// intakes' holds, and exits 1. The deferred stop (stopIntakesOnExit) does not run on an
+	// os.Exit, so every exit here goes through this.
 	exitAfterIntakes := func() {
 		cancel()
 		waitIntakes()
 		waitFill()
+		waitCounts()
 		os.Exit(1)
 	}
 	// LEGION-550: resolves write_suggestions outcomes off the write path, from the events written
@@ -1375,6 +1537,7 @@ func main() {
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			waitIntakes()
 			waitFill()
+			waitCounts()
 			slog.Info("dispatch: stopped while waiting for admission to the registry of live server processes")
 			return
 		}
@@ -1389,19 +1552,26 @@ func main() {
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
-	// The registry admitted this process, so it serves: the keyword fill starts (above).
+	// The registry admitted this process, so it serves: the keyword fill and the coverage counts
+	// loop start (above).
 	close(serving)
 	// The importer's flights outlive the ticker's context, so they are closed inside the
 	// background wait: shutdown runs it before waitUntilIdle and pool.Close, and a sync still
 	// fetching then would write into a closing pool. The keyword fill is waited for here too, so
-	// its hold is released before the pool closes.
+	// its hold is released before the pool closes, and so is the coverage counts loop, whose
+	// statement in flight rolls back through the pool.
 	waitBackground := func() {
 		background.Wait()
 		appCtx.Architecture().Close()
 		waitFill()
+		waitCounts()
+	}
+	httpDrain := httpDrainBeforeDocuments
+	if boot.HTTPDrain > 0 {
+		httpDrain = boot.HTTPDrain
 	}
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
-		deregisterAfterDrain(registration), registration.Lost(), outboxStopped); err != nil {
+		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, httpDrain); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
 	}
@@ -1596,6 +1766,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		ProjectOwnerFallback:  strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
 		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
+		SpecRoots:             specRootsSetting(env),
 		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
 		SignInIssuer:          strings.TrimSpace(env.get("DISPATCH_SIGNIN_ISSUER")),
 		SignInClientID:        strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_ID")),
@@ -1691,10 +1862,30 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
+		{"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT", &boot.CoverageFillTimeout},
+		{"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT", &boot.CoverageStatementTimeout},
+		{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT", &boot.SearchFillLockTimeout},
+		{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT", &boot.SearchFillReadTimeout},
+		{"DISPATCH_TEST_HTTP_DRAIN", &boot.HTTPDrain},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	if err := testHookCount(env, "DISPATCH_TEST_COVERAGE_FILL_FAILURES", boot.TestHooksEnabled, &boot.CoverageFillFailures); err != nil {
+		return bootConfig{}, err
+	}
+	if lock := boot.SearchFillLockTimeout; lock > 0 && lock < searchFillTableLockTimeoutFloor {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT=%q (expected at least %s: the reads send their lock timeout to Postgres in whole milliseconds, and Postgres reads 0ms as no lock timeout)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT")), searchFillTableLockTimeoutFloor)
+	}
+	if read, statement := boot.SearchFillReadTimeout, searchFillBounds(boot.SearchFillLockTimeout).statement; read > 0 && read <= statement {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=%q (expected longer than %s, the reads' statement timeout, so that Postgres's own timeouts still end a read before the client's deadline)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT")), statement)
+	}
+	if boot.HTTPDrain > httpDrainBeforeDocuments {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_HTTP_DRAIN=%q (expected at most %s, a deployment's drain: what the %s stop grace leaves after the document service's %s budget and a 5s reserve)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_HTTP_DRAIN")), httpDrainBeforeDocuments, stopGrace, documentShutdownTimeout)
 	}
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
@@ -1708,6 +1899,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}{
 		{"DISPATCH_TEST_ROSTER_UNCACHED", &boot.ListenerRosterUncached},
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
+		{"DISPATCH_TEST_CREATE_STAGED", &boot.CreateStaged},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {
@@ -1760,11 +1952,16 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if boot.IdentityHeader == "" {
 			return bootConfig{}, errors.New("DISPATCH_IDENTITY header name required")
 		}
+		// The header is fixed (identity.UserHeader), so header identity never reads a credential
+		// header such as Authorization or Cookie as a person.
+		if http.CanonicalHeaderKey(boot.IdentityHeader) != identity.UserHeader {
+			return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q: header identity reads %s alone; set DISPATCH_IDENTITY=header:%s", mode, identity.UserHeader, identity.UserHeader)
+		}
 		if env.get("DISPATCH_IDENTITY_HEADER_TRUSTED") != "1" {
 			return bootConfig{}, errors.New("DISPATCH_IDENTITY_HEADER_TRUSTED=1 required: header identity is only for tests and local harnesses")
 		}
 	default:
-		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie, iap or header:<Header-Name>)", mode)
+		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie, iap or header:%s)", mode, identity.UserHeader)
 	}
 	if iapAudience != "" && boot.IAPAudience == "" {
 		return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap; unset it, or set DISPATCH_IDENTITY=iap")
@@ -1836,6 +2033,12 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		boot.DevSignIn = true
 	}
 	return boot, nil
+}
+
+// specRootsSetting is DISPATCH_SPEC_ROOTS as the server and the backfill commands read it: the
+// issue keys of the roots of The Spec, trimmed, which api.NewSpecForm parses.
+func specRootsSetting(env settingValues) string {
+	return strings.TrimSpace(env.get("DISPATCH_SPEC_ROOTS"))
 }
 
 // devSignInFence is the dev sign-in fence over the environment; devSignInLoadedFence covers what
@@ -2090,7 +2293,7 @@ const repoRenamesReadTimeout = 30 * time.Second
 // or runs out of time is logged and the start goes on, since each document's next settlement
 // restores its own asks.
 func restoreDecidedWordings(ctx context.Context, documents *docs.Service, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: restore decided asks' wordings", "dispatch: restored decided asks' wordings",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: restore decided asks' wordings", "dispatch: restored decided asks' wordings",
 		func(ctx context.Context) ([]any, error) {
 			restored, copies, err := documents.RestoreDecidedWordings(ctx)
 			if err != nil {
@@ -2104,7 +2307,7 @@ const reviewContentHashFillTimeout = 30 * time.Second
 
 // fillReviewContentHashes pins reviews from before the hash columns were added.
 func fillReviewContentHashes(ctx context.Context, pool *store.Pool, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: fill reviews' content hashes", "dispatch: filled reviews' content hashes",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: fill reviews' content hashes", "dispatch: filled reviews' content hashes",
 		func(ctx context.Context) ([]any, error) {
 			result, err := docs.FillReviewContentHashes(ctx, pool)
 			return []any{"filled", result.Filled, "unhashable", result.Unhashable}, err
@@ -2127,7 +2330,7 @@ const repoRenamePassTimeout = 30 * time.Second
 // next boot tries again.
 func renameRepositories(ctx context.Context, pool *store.Pool, pairs []store.RepoRename, readErr error, timeout time.Duration) {
 	const summary = "dispatch: rewrote renamed repositories' old names"
-	bootTask(ctx, timeout, summary, summary, func(ctx context.Context) ([]any, error) {
+	bootTask(ctx, clock.Real(), timeout, summary, summary, func(ctx context.Context) ([]any, error) {
 		pass := store.RewriteRenamedRepositories(ctx, pool, pairs)
 		if readErr != nil {
 			pass.Failures++
@@ -2151,7 +2354,7 @@ const issueAskRepairBootTimeout = 30 * time.Second
 // runs out of time is logged and the start goes on, since api.RunIssueAskRepair repairs the rest
 // every api.IssueAskRepairInterval.
 func repairIssueAsks(ctx context.Context, deps api.Deps, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: repair the asks of closed and reopened issues", "dispatch: repaired the asks of closed and reopened issues",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: repair the asks of closed and reopened issues", "dispatch: repaired the asks of closed and reopened issues",
 		func(ctx context.Context) ([]any, error) {
 			markedSince := time.Now().Add(-api.IssueAskRepairInterval)
 			repair, err := api.RepairIssueAsks(ctx, deps, &markedSince)
@@ -2159,11 +2362,11 @@ func repairIssueAsks(ctx context.Context, deps api.Deps, timeout time.Duration) 
 		})
 }
 
-// bootTask runs task, a repair the boot makes before it serves, bounded by timeout, and logs what
-// it reports: the counts task returns under done at INFO, or, when task fails or runs out of time,
-// those counts and the error under failed at ERROR. Either way the start goes on.
-func bootTask(ctx context.Context, timeout time.Duration, failed, done string, task func(context.Context) ([]any, error)) {
-	taskCtx, cancel := context.WithTimeout(ctx, timeout)
+// bootTask runs task, a repair the boot makes before it serves, bounded by timeout on clk, and logs
+// what it reports: the counts task returns under done at INFO, or, when task fails or runs out of
+// time, those counts and the error under failed at ERROR. Either way the start goes on.
+func bootTask(ctx context.Context, clk bootClock, timeout time.Duration, failed, done string, task func(context.Context) ([]any, error)) {
+	taskCtx, cancel := clk.WithTimeout(ctx, timeout)
 	defer cancel()
 	counts, err := task(taskCtx)
 	if err != nil {
@@ -2171,6 +2374,13 @@ func bootTask(ctx context.Context, timeout time.Duration, failed, done string, t
 		return
 	}
 	slog.Info(done, counts...)
+}
+
+// bootClock is the clock a boot task's bound runs on, and each read of the keyword fill's deferral
+// line (searchFillTableHoldsRow), a narrowing of clock.Clock: clock.Real in main, and a
+// clocktest.Fake in a test, which moves a bound or never moves it.
+type bootClock interface {
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
 
 // appContextOptions is what main hands routes.BuildAppContext: built, what main made from the
@@ -2249,34 +2459,59 @@ const searchFillDeferredLine = "dispatch: the keyword fill is deferred; this pro
 // SQL, so they are fixed here and never read from input.
 var searchFillTables = [...]string{"search_text_versions", "search_text_versions_fill"}
 
-// The three bounds of each read of searchFillTableRows. Each read sets lock_timeout and
-// statement_timeout in a transaction of its own, so Postgres itself ends a read that waits for a
-// lock on its table (55P03, after searchFillTableLockTimeout) or that runs on for any reason
-// (57014, after searchFillTableStatementTimeout), and no read is left running at the server once
-// the boot moves on. searchFillTableReadTimeout is the client's own deadline for each table, for a
-// server that answers nothing: pgx then closes the connection and asks the server to cancel the
-// statement. It also covers taking a connection from the pool, a dial or a wait for a free one
-// included, so it sits 4 s past the statement timeout: a slow dial still leaves the server's own
-// errors to end the read. The two reads run one after the other before the server listens, so
-// they delay the boot by at most twice searchFillTableReadTimeout in all; a lock on a table alone
-// delays it by about searchFillTableLockTimeout for that table.
+// searchFillReadBounds are the three bounds of each read of searchFillTableRows. Each read sets
+// lock_timeout and statement_timeout in a transaction of its own, so Postgres itself ends a read
+// that waits for a lock on its table (55P03, after lock) or that runs on for any reason (57014,
+// after statement), and no read is left running at the server once the boot moves on. client is
+// the client's own deadline for each table, for a server that answers nothing: pgx then closes the
+// connection and asks the server to cancel the statement. The two reads run one after the other
+// before the server listens, so they delay the boot by at most twice client in all; a lock on a
+// table alone delays it by about lock for that table. A test process may stage client past its run
+// instead (bootConfig.SearchFillReadTimeout).
+type searchFillReadBounds struct{ lock, statement, client time.Duration }
+
+// A deployment's lock timeout of the reads, and the margins the other two bounds keep past it. The
+// statement timeout sits searchFillTableStatementMargin past the lock timeout, so a read that waits
+// for a lock ends with 55P03 and never 57014. The client's deadline also covers taking a connection
+// from the pool, a dial or a wait for a free one included, so it sits searchFillTableClientMargin
+// past the statement timeout: a slow dial still leaves the server's own errors to end the read.
+// A deployment's bounds are 5, 6 and 10 s.
 const (
-	searchFillTableLockTimeout      = 5 * time.Second
-	searchFillTableStatementTimeout = 6 * time.Second
-	searchFillTableReadTimeout      = 10 * time.Second
+	searchFillTableLockTimeout     = 5 * time.Second
+	searchFillTableStatementMargin = time.Second
+	searchFillTableClientMargin    = 4 * time.Second
 )
 
+// searchFillTableLockTimeoutFloor is the shortest lock timeout resolveBootConfig takes from
+// DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT. searchFillTableHoldsRow sends each timeout to Postgres in
+// whole milliseconds, and Postgres reads a lock_timeout of 0 as no lock timeout, so a shorter one
+// would leave a read that waits for a lock to end at the statement timeout, with 57014 and not
+// 55P03.
+const searchFillTableLockTimeoutFloor = time.Millisecond
+
+// searchFillBounds are the read bounds with lock as the lock timeout, and zero is a deployment's,
+// searchFillTableLockTimeout (bootConfig.SearchFillLockTimeout, which only a test process sets,
+// and never below searchFillTableLockTimeoutFloor). The other two bounds keep their margins past
+// it whatever lock is, so no setting can order them otherwise.
+func searchFillBounds(lock time.Duration) searchFillReadBounds {
+	if lock <= 0 {
+		lock = searchFillTableLockTimeout
+	}
+	statement := lock + searchFillTableStatementMargin
+	return searchFillReadBounds{lock: lock, statement: statement, client: statement + searchFillTableClientMargin}
+}
+
 // searchFillTableRows answers the deferral line's fields that say whether each of
-// searchFillTables holds a row: <table>_rows=none or some, read by searchFillTableHoldsRow. A read
-// that fails, a timeout included, gives <table>_rows=unknown and the error in <table>_rows_error,
-// and the boot goes on: the line reports the tables and never decides whether the process starts.
-// The line is how a deployment learns, from the boot log alone, that a process booted with the
-// fill off found both tables empty.
-func searchFillTableRows(ctx context.Context, pool *store.Pool) []any {
+// searchFillTables holds a row: <table>_rows=none or some, read by searchFillTableHoldsRow within
+// bounds, the client's deadline armed on clk. A read that fails, a timeout included, gives
+// <table>_rows=unknown and the error in <table>_rows_error, and the boot goes on: the line reports
+// the tables and never decides whether the process starts. The line is how a deployment learns,
+// from the boot log alone, that a process booted with the fill off found both tables empty.
+func searchFillTableRows(ctx context.Context, pool *store.Pool, clk bootClock, bounds searchFillReadBounds) []any {
 	fields := make([]any, 0, 4*len(searchFillTables))
 	for _, table := range searchFillTables {
 		key := table + "_rows"
-		holdsRow, err := searchFillTableHoldsRow(ctx, pool, table)
+		holdsRow, err := searchFillTableHoldsRow(ctx, pool, clk, table, bounds)
 		switch {
 		case err != nil:
 			fields = append(fields, key, "unknown", key+"_error", err.Error())
@@ -2291,14 +2526,16 @@ func searchFillTableRows(ctx context.Context, pool *store.Pool) []any {
 
 // searchFillTableHoldsRow reads whether table holds a row by
 // `select exists(select 1 from public.<table>)`, which reads no column and stops at the first
-// visible row; it may scan dead rows before that one, which searchFillTableStatementTimeout bounds.
-// It reads in a read-only transaction of its own that first sets the bounds above, local to that
-// transaction. The read takes ACCESS SHARE on the table and holds it until that transaction rolls
-// back (the deferred Rollback) or its connection ends, normally milliseconds after the read; no
-// statement timeout bounds how long it holds it. Row writes go on beside it, but a TRUNCATE or
-// another statement that wants ACCESS EXCLUSIVE waits behind it for that long.
-func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, table string) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, searchFillTableReadTimeout)
+// visible row; it may scan dead rows before that one, which the statement timeout bounds. It reads
+// in a read-only transaction of its own that first sets bounds' lock and statement timeouts, local
+// to that transaction, under bounds' client deadline armed on clk: clock.Real in main, and a test's
+// clocktest.Fake that the test never moves, so only Postgres's own timeouts end the read. The read
+// takes ACCESS SHARE on the table and holds it until that transaction rolls back (the deferred
+// Rollback) or its connection ends, normally milliseconds after the read; no statement timeout
+// bounds how long it holds it. Row writes go on beside it, but a TRUNCATE or another statement that
+// wants ACCESS EXCLUSIVE waits behind it for that long.
+func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, clk bootClock, table string, bounds searchFillReadBounds) (bool, error) {
+	ctx, cancel := clk.WithTimeout(ctx, bounds.client)
 	defer cancel()
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -2306,8 +2543,8 @@ func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, table string
 	}
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true)`,
-		fmt.Sprintf("%dms", searchFillTableLockTimeout.Milliseconds()),
-		fmt.Sprintf("%dms", searchFillTableStatementTimeout.Milliseconds())); err != nil {
+		fmt.Sprintf("%dms", bounds.lock.Milliseconds()),
+		fmt.Sprintf("%dms", bounds.statement.Milliseconds())); err != nil {
 		return false, err
 	}
 	var holdsRow bool
@@ -2364,13 +2601,33 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
+//
+// The handler it returns is the server's root handler, so refuseContentSniffing around it holds
+// every answer the process writes.
 func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.Handle("GET /metrics", registry.Handler())
 	mux.Handle("/", handler)
-	return mux
+	return refuseContentSniffing(mux)
+}
+
+// refuseContentSniffing writes `X-Content-Type-Options: nosniff` on every answer, before the
+// handler below it runs, so the header is set whoever writes the answer and whatever it answers:
+// a probe, a route of the API table, the 404 of a path no route answers, a sign-in route, the
+// GitHub proxy, or a refusal the router gives before any route. A browser that reads a body as a
+// type it guessed from the bytes, rather than the type the answer names, can run text a person
+// wrote as a page of Dispatch's own origin.
+//
+// The API table sets the same header on its own answers (api.compressAnswers), for the entry
+// points that serve that table without this wrapper; setting the same value twice changes
+// nothing.
+func refuseContentSniffing(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // issuers are the two OIDC issuers the process discovers in the background, as /healthz reports
@@ -2499,12 +2756,16 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
 // the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
 // service that asks for it, because its route table classes the GET rows such a token may call
-// (the read class, readClasses in internal/dispatch/api), and every other route answers it
-// 403 READ_ONLY_TOKEN before anything of the route runs. It serves an approve-only token too
+// (the read class its declaration states, internal/dispatch/api), and every other route answers it
+// 403 READ_ONLY_TOKEN before anything of the route runs. It serves a results token
+// (ciphertoken.Options.ServesResults) for the same reason: the scope results alone, which the
+// broker mints from a result entry for one CI run, reaches the routes whose declaration states
+// ResultsScope and every other route answers it 403 RESULTS_ONLY_TOKEN.
+// It serves an approve-only token too
 // (ciphertoken.Options.ServesApproveOnly): the scope approve alone, which the broker mints for a
-// person's approve grant and spends through its proxy, never released. Dispatch's approve list
-// (approveScopeRoutes) names the routes such a token may call, and every other route answers it
-// 403 APPROVE_ONLY_TOKEN before anything of the route runs.
+// person's approve grant and spends through its proxy, never released. The routes whose
+// declaration states ApproveOnly are the routes such a token may call, and every other route
+// answers it 403 APPROVE_ONLY_TOKEN before anything of the route runs.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
@@ -2522,10 +2783,12 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read class, the approve list and their gates are Dispatch's own
-		// (internal/dispatch/api), so a read-only token reaches the reads of that class and an
-		// approve-only token the routes the approve list names, and no other route.
+		// The read class, the results list, the approve list and their gate are Dispatch's own
+		// (internal/dispatch/api), so a read-only token reaches the reads of that class, a results
+		// token the routes its list names and an approve-only token the routes the approve list
+		// names, and no other route.
 		ServesReadOnly:    true,
+		ServesResults:     true,
 		ServesApproveOnly: true,
 	})
 }
@@ -2753,6 +3016,24 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
 	}
 	*target = raw == "1"
+	return nil
+}
+
+// testHookCount reads the test-only count setting name into target, leaving target as it is when
+// the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so is any
+// value positiveSetting refuses.
+func testHookCount(env settingValues, name string, testHooksEnabled bool, target *int) error {
+	if strings.TrimSpace(env.get(name)) == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	value, err := positiveSetting(env, name)
+	if err != nil {
+		return err
+	}
+	*target = value
 	return nil
 }
 

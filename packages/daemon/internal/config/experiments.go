@@ -53,7 +53,8 @@ var experimentUnits = []ExperimentUnit{ExperimentTree, ExperimentIssue}
 // arm are done. PlanGroupOwner runs an issue as an issue of no experiment runs: its owner gives
 // the plan with register_plan, and an issue whose owner gives none runs the project's default
 // steps. PlanGroupDefault runs the project's default steps (Project.RunsByDefault), and Legion
-// takes no plan from the issue's owner. PlanGroupOwnerAlone is the owner doing the whole issue
+// takes from the issue's owner only a version that changes nothing but the text of its running
+// task default. PlanGroupOwnerAlone is the owner doing the whole issue
 // itself in one step, which this release refuses at load. The zero value is an arm that names no
 // plan, whose issues run as with no experiment.
 type PlanGroup string
@@ -334,7 +335,10 @@ func readExperiments(value *yaml.Node, key string) ([]Experiment, error) {
 // arms (absent is every one); `variants`, the arms it draws among, which it must have; and
 // `on_variant`, the arm mode on gives every unit, which that mode requires and which must name an
 // arm of this experiment. A mode other than off over one variant is refused: a draw among one arm
-// measures nothing, so the file is missing the arm it compares against.
+// measures nothing, so the file is missing the arm it compares against. A `mode` or `unit` the
+// block does not take, and an `on_variant` that names no arm, are named as written only where they
+// have a key's shape (keyShape), and by their line otherwise (shapelessWord, lineOf): such a word
+// can be a token pasted where the word goes.
 //
 // The rules of `plan` are checkExperimentPlans', which runs after checkExperimentMemory, so the one
 // experiment that may never set `plan`, `memory`, is refused by its own rule first.
@@ -360,6 +364,9 @@ func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 	}
 	if unit != "" {
 		if experiment.Unit = ExperimentUnit(unit); !slices.Contains(experimentUnits, experiment.Unit) {
+			if !keyShape(unit) {
+				return Experiment{}, shapelessWord(lineOf(key+".unit", fields["unit"]), "tree or issue")
+			}
 			return Experiment{}, fmt.Errorf("%s.unit must be tree or issue (got %q)", key, unit)
 		}
 	}
@@ -385,6 +392,8 @@ func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 	switch {
 	case experiment.Mode == ExperimentOn && experiment.OnVariant == "":
 		return Experiment{}, fmt.Errorf("%s is on and names no on_variant: mode on gives every unit one variant, so name the one it gives (%s)", key, strings.Join(names, ", "))
+	case experiment.OnVariant != "" && !slices.Contains(names, experiment.OnVariant) && !keyShape(experiment.OnVariant):
+		return Experiment{}, fmt.Errorf("%s names no variant of the experiment (%s)", lineOf(key+".on_variant", fields["on_variant"]), strings.Join(names, ", "))
 	case experiment.OnVariant != "" && !slices.Contains(names, experiment.OnVariant):
 		return Experiment{}, fmt.Errorf("%s.on_variant names %q, which is no variant of the experiment (%s)", key, experiment.OnVariant, strings.Join(names, ", "))
 	}
@@ -395,7 +404,8 @@ func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 // (claim.Roles), each named once. The controller is no word of it, since a controller runs in no
 // experiment. An empty list is refused rather than read as every role: it reads as no role, and an
 // experiment whose arms reach no launch treats nothing, so the file would say the opposite of what
-// the daemon did.
+// the daemon did. An entry outside the role grammar (roleWordShape) is refused by its place alone
+// (roleEntryAt), never as written; a name of the grammar that is no issue role is named.
 func readExperimentRoles(value *yaml.Node, key string) ([]claim.Role, error) {
 	if value.Kind != yaml.SequenceNode {
 		return nil, fmt.Errorf("%s must be a sequence of Legion issue roles, e.g. [planner, implementer]", key)
@@ -404,9 +414,12 @@ func readExperimentRoles(value *yaml.Node, key string) ([]claim.Role, error) {
 		return nil, fmt.Errorf("%s names no role: an experiment whose arms reach no launch treats nothing, so name the roles its arms reach, or leave the key out for every role", key)
 	}
 	roles := make([]claim.Role, 0, len(value.Content))
-	for _, entry := range value.Content {
+	for i, entry := range value.Content {
+		if entry.Kind != yaml.ScalarNode || !roleWordShape(entry.Value) {
+			return nil, roleEntryAt(key, i, "a role's name is")
+		}
 		role := claim.Role(entry.Value)
-		if entry.Kind != yaml.ScalarNode || !slices.Contains(claim.Roles, role) {
+		if !slices.Contains(claim.Roles, role) {
 			return nil, fmt.Errorf("%s names %q, which is not a Legion issue role (%s)", key, entry.Value, runtime.JoinRoles(claim.Roles))
 		}
 		if slices.Contains(roles, role) {
@@ -420,7 +433,8 @@ func readExperimentRoles(value *yaml.Node, key string) ([]claim.Role, error) {
 // readMode is the `mode` of an experiment's block or of a project's `memory` block: one of the
 // three words, or the empty mode for a block that names none, which each caller leaves at the
 // word its own absent key stands for. The two keys are one mode (Memory.Mode is an
-// ExperimentMode), so they are read once here and refuse a fourth word in the same words.
+// ExperimentMode), so they are read once here and refuse a fourth word in the same words, naming
+// it as written only where it has a key's shape (keyShape) and by its line otherwise.
 func readMode(value *yaml.Node, key string) (ExperimentMode, error) {
 	word, err := stringOf(value, key)
 	if err != nil || word == "" {
@@ -428,6 +442,9 @@ func readMode(value *yaml.Node, key string) (ExperimentMode, error) {
 	}
 	mode := ExperimentMode(word)
 	if !slices.Contains(experimentModes, mode) {
+		if !keyShape(word) {
+			return "", shapelessWord(lineOf(key, value), "off, on, or random")
+		}
 		return "", fmt.Errorf("%s must be off, on, or random (got %q)", key, word)
 	}
 	return mode, nil
@@ -439,7 +456,9 @@ func readMode(value *yaml.Node, key string) (ExperimentMode, error) {
 // (readOverlayFiles), an optional `instructions` path the daemon reads at boot, and an optional
 // `plan`, one of the words of PlanGroup. Neither file key is required: the arm that names no file
 // is the control the others are measured against. `plan: owner-alone` is refused: this release
-// does not carry it out.
+// does not carry it out. A name outside experimentNamePattern and a `plan` that is no word of
+// PlanGroup are named as written only where they have a key's shape (keyShape), as an
+// experiment's name is (readExperiments), and by their place otherwise.
 func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 	if value.Kind != yaml.SequenceNode {
 		return nil, fmt.Errorf("%s must be a sequence of variant blocks", key)
@@ -465,7 +484,7 @@ func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 		case variant.Name == "":
 			return nil, fmt.Errorf("%s names no name: a draw records the variant it drew by name", field)
 		case !experimentNamePattern.MatchString(variant.Name):
-			return nil, fmt.Errorf("%s name %q must match %s: a draw records the variant it drew by name", field, variant.Name, experimentNamePattern)
+			return nil, fmt.Errorf("%s must match %s: a draw records the variant it drew by name", wordNamed(field+" name", variant.Name), experimentNamePattern)
 		case slices.Contains(variantNames(variants), variant.Name):
 			return nil, fmt.Errorf("%s names %s twice", key, variant.Name)
 		}
@@ -497,6 +516,8 @@ func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 		}
 		switch variant.Plan = PlanGroup(plan); {
 		case plan == "":
+		case !slices.Contains(planGroups, variant.Plan) && !keyShape(plan):
+			return nil, shapelessWord(lineOf(field+".plan", fields["plan"]), "owner or default")
 		case !slices.Contains(planGroups, variant.Plan):
 			return nil, fmt.Errorf("%s.plan must be owner or default (got %q)", field, plan)
 		case variant.Plan == PlanGroupOwnerAlone:

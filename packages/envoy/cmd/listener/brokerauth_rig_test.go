@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +37,11 @@ type brokerRig struct {
 	// listener R9 is about: the no-bearer one a GCP VM and the clustered hub run, the VM's on
 	// loopback and the hub's off it behind its NetworkPolicy.
 	open http.Handler
-	// routes is the mux registerV1Routes filled, which both handlers above serve behind their
+	// daemon is the same routes behind an apiAuth that requires the shared bearer
+	// listenerTestToken and takes broker tokens beside it, which is the listener the Legion
+	// daemon's registry writer presents that bearer to (packages/daemon/internal/registrywrite).
+	daemon http.Handler
+	// routes is the mux registerV1Routes filled, which every handler above serves behind its
 	// apiAuth: a test resolves a path through it (ServeMux.Handler) to the pattern registered
 	// for it.
 	routes *http.ServeMux
@@ -106,6 +111,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 		deps:    deps,
 		handler: apiAuth(listenerAPIAuth{brokers: tokens, logger: logger}, routes),
 		open:    apiAuth(listenerAPIAuth{logger: logger}, routes),
+		daemon:  apiAuth(listenerAPIAuth{token: listenerTestToken, brokers: tokens, logger: logger}, routes),
 		routes:  routes,
 		broker:  broker,
 		caller:  ciphertokentest.NewCaller(t),
@@ -189,7 +195,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 			return `{"target_session":"` + target + `","source_session":"` + s + `","message":"a message of the rig"}`
 		}},
 		{name: "messages/publish", path: "/v1/messages/publish", body: func(s string) string {
-			return `{"topic":"notifications.github.rig","source_session":"` + s + `","message":"a message of the rig"}`
+			return `{"topic":"notifications.team.rig","source_session":"` + s + `","message":"a message of the rig"}`
 		}},
 	}
 
@@ -328,9 +334,75 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 	})
 }
 
+// The Legion agent registry's three writes are the Legion daemon's alone: a request presenting a
+// broker access token, which always names a session, is refused 403 on each and writes nothing,
+// whether the entry names another session or the token's own, and each refusal is one line naming
+// the token's session and the path and never the token. The daemon's own credential, the shared
+// bearer its registry writer sends, still writes each, to a listener that takes broker tokens too.
+func TestNoBrokerTokenWritesTheLegionAgentRegistry(t *testing.T) {
+	rig := newBrokerRig(t)
+	const (
+		bound = "ses_rig_legion_bound"
+		other = "ses_rig_legion_other"
+		token = "access-token-of-a-legion-session"
+	)
+	rig.broker.Says(token, sessionAnswer(bound, "ada@example.com", rig.caller.JKT()))
+	writes := []struct{ name, path, body string }{
+		{"an entry naming another session", "/v1/legion/agents/sessions/" + other,
+			legionEntry(other, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")},
+		{"an entry naming the token's own session", "/v1/legion/agents/sessions/" + bound,
+			legionEntry(bound, "INFRA-204", "tester", "2026-10-26T03:00:00Z")},
+		{"a batch", "/v1/legion/agents", `{"entries":[` + legionEntry(other, "INFRA-204", "implementer", "2026-10-26T03:00:00Z") + `]}`},
+		{"a project's answering record", "/v1/legion/projects/infra", `{"answering":true,"updated_at":"2026-10-26T04:00:00Z"}`},
+	}
+	const refusedLine = "listener: broker token of a session writes the Legion agent registry"
+	for _, write := range writes {
+		before := rig.logs.Len()
+		refused := rig.call(t, rig.handler, http.MethodPut, token, write.path, write.body)
+		if refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), bound) {
+			t.Fatalf("%s under a broker token of %s: status = %d, body = %s; want 403 naming the session",
+				write.name, bound, refused.Code, refused.Body.String())
+		}
+		var lines []string
+		for line := range strings.SplitSeq(rig.logs.String()[before:], "\n") {
+			if strings.Contains(line, refusedLine) {
+				lines = append(lines, line)
+			}
+		}
+		if len(lines) != 1 || !strings.Contains(lines[0], `"token_session":"`+bound+`"`) ||
+			!strings.Contains(lines[0], `"path":"`+write.path+`"`) || strings.Contains(lines[0], token) {
+			t.Fatalf("%s logged %q, want one refusal line naming %s and %s and not the token", write.name, lines, bound, write.path)
+		}
+	}
+	agents := rig.deps.legionAgents.store()
+	for _, session := range []string{bound, other} {
+		if _, err := agents.Get(context.Background(), session); !errors.Is(err, legionagents.ErrNotFound) {
+			t.Fatalf("after the refusals the registry read of %s answered %v, want no entry", session, err)
+		}
+	}
+	if _, found, err := agents.Project(context.Background(), "infra"); err != nil || found {
+		t.Fatalf("after the refusals the project infra's record is found %t (%v), want none", found, err)
+	}
+
+	for _, write := range writes {
+		request := httptest.NewRequest(http.MethodPut, write.path, strings.NewReader(write.body))
+		request.Host = "127.0.0.1:9020"
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer "+listenerTestToken)
+		answer := httptest.NewRecorder()
+		rig.daemon.ServeHTTP(answer, request)
+		if answer.Code != http.StatusOK {
+			t.Fatalf("%s under the daemon's bearer: status = %d, body = %s; want 200", write.name, answer.Code, answer.Body.String())
+		}
+	}
+	if _, found, err := agents.Project(context.Background(), "infra"); err != nil || !found {
+		t.Fatalf("after the daemon's writes the project infra's record is found %t (%v), want it stored", found, err)
+	}
+}
+
 // v1RoutePatterns is how many patterns registerV1Routes registers today, each of which the walk
 // below must visit at least once.
-const v1RoutePatterns = 16
+const v1RoutePatterns = 18
 
 // walkSession is where a walk request's path or body names the session its token names.
 const walkSession = "<session>"
@@ -363,15 +435,17 @@ var v1Walk = []struct {
 	{http.MethodGet, "/v1/legion/agents/sessions/<session>", "/v1/legion/agents/sessions/", ""},
 	{http.MethodPut, "/v1/legion/agents/sessions/<session>", "/v1/legion/agents/sessions/", `{"session_id":"<session>"}`},
 	{http.MethodGet, "/v1/legion/agents/roles/legion-infra-infra-3825-tester", "/v1/legion/agents/roles/", ""},
+	{http.MethodPut, "/v1/legion/projects/infra", "/v1/legion/projects/", `{"answering":true,"updated_at":"2026-10-26T04:00:00Z"}`},
 	{http.MethodGet, "/v1/interests/<session>", "/v1/interests/", ""},
 	{http.MethodDelete, "/v1/interests/<session>", "/v1/interests/", ""},
 	{http.MethodGet, "/v1/sessions", "/v1/sessions", ""},
 	{http.MethodPost, "/v1/messages/send", "/v1/messages/send",
 		`{"target_session":"<session>","source_session":"<session>","message":"a message of the walk"}`},
 	{http.MethodPost, "/v1/messages/publish", "/v1/messages/publish",
-		`{"topic":"notifications.github.rig","source_session":"<session>","message":"a message of the walk"}`},
+		`{"topic":"notifications.team.rig","source_session":"<session>","message":"a message of the walk"}`},
 	{http.MethodDelete, "/v1/sessions/<session>", "/v1/sessions/", ""},
 	{http.MethodGet, "/v1/sessions/<session>/relay", relaySocketPattern, ""},
+	{http.MethodGet, "/v1/sessions/<session>/successors", sessionSuccessorsPattern, ""},
 	{http.MethodGet, "/v1", "/v1", ""},
 	{http.MethodGet, "/v1/no-such-route", "/v1/", ""},
 }
@@ -456,6 +530,31 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 		walkToken{"a named project's token", namedToken, named})
 }
 
+// On a real bus, with no change to the listener's own code: a results token — the project scope
+// results beside the one scope results and the run a result entry mints it for, the one token
+// Dispatch's results route takes — is answered 401 not_a_session on every path registerV1Routes
+// registers (v1Walk), because the verifier brokerTokens.open builds leaves the results switch
+// unset (ciphertoken.Options.ServesResults) and so refuses the token as a build before the switch
+// refuses it. A CI job's token writes its results and reaches no listener. A token of a named
+// project is answered anything but 401 on each of the same requests and writes no rejection line,
+// so the refusal is the scope's and not the route's.
+func TestAPIAuthRefusesAResultsTokenOnEveryV1Route(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerRig(t)
+	const (
+		results      = "ses_rig_results"
+		named        = "ses_rig_named"
+		resultsToken = "access-token-that-writes-results"
+		namedToken   = "access-token-of-a-named-project"
+	)
+	rig.broker.Says(resultsToken, resultsAnswer(results, rig.caller.JKT()))
+	rig.broker.Says(namedToken, serviceAnswer(named, "example-fleet", rig.caller.JKT()))
+	rig.register(t, results)
+	rig.register(t, named)
+	walkEveryV1Route(t, rig, []walkToken{{"a results token", resultsToken, results}},
+		walkToken{"a named project's token", namedToken, named})
+}
+
 // A token narrowed to reading, of every kind of trade the broker narrows, is refused on every
 // path registerV1Routes registers (v1Walk) as the read entry's token is: each answer of the
 // golden file the broker's own test holds its narrowed answers to is answered 401 with one
@@ -464,6 +563,7 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 // token. A token of a named project is answered anything but 401 on each of the same requests
 // and writes no rejection line, so each refusal is the token's and not the route's.
 func TestAPIAuthRefusesANarrowedTokenOfEveryKindOnEveryV1Route(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerRig(t)
 	const (
 		narrowedSession = "ses_rig_narrowed"

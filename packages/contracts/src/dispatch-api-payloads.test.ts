@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import {
+  IssueRoleHolderRecordSchema,
+  IssueRoleHoldersChangedEventPayloadSchema,
+} from "./dispatch-api-issues";
 
 /**
  * Every event payload is written once. Before this, each lived twice in `dispatch-api.ts` - a
@@ -53,6 +57,7 @@ const PAYLOAD_TYPES = [
   "IssueEventPayload",
   "IssuePullRequestAttributionEventPayload",
   "IssueReleasedEventPayload",
+  "IssueRoleHoldersChangedEventPayload",
   "MessageAcceptedEventPayload",
   "MessageDeliveryEventPayload",
   "MessageEventPayload",
@@ -62,6 +67,7 @@ const PAYLOAD_TYPES = [
   "ProjectDefaultAssigneeUpdatedEventPayload",
   "ReferenceChangesPayload",
   "RepoProjectUpdatedEventPayload",
+  "RoleUndeliveredEventPayload",
   "SubscriptionRemovedEventPayload",
   "ThreadLoginsPayload",
   "UserAgentStateUpdatedEventPayload",
@@ -106,14 +112,14 @@ const CONSTANT_LIST_TYPES = [
  * already describes it is a failure rather than a slow return to two spellings of one shape.
  *
  * Most rows the route table holds are named by the generated module rather than by a type here,
- * so what a schema yields is mostly what only the bus carries. Eleven are the exception, and what
+ * so what a schema yields is mostly what only the bus carries. Twelve are the exception, and what
  * makes them one is not a measurement taken once but `src/dispatch-api-owned.ts`, which holds
  * each of those names to the shape the document declares for it, in both directions and at
  * compile time, over the union `scripts/gen-api.ts` renders from the same list it filters the
- * aliases by. So a regeneration that moves one of the eleven reds the typecheck by that name, and
- * a twelfth is added by passing that assertion rather than by being written here.
+ * aliases by. So a regeneration that moves one of the twelve reds the typecheck by that name, and
+ * a thirteenth is added by passing that assertion rather than by being written here.
  */
-const SCHEMA_DERIVATIONS = 66;
+const SCHEMA_DERIVATIONS = 69;
 
 /** The payloads whose shape the Go route table holds, so the generated module is their one
  *  definition and the split declares none of them: a `project.*` event carries the project row a
@@ -228,5 +234,30 @@ describe("every event payload is z.output of its own schema", () => {
   test(`the contract derives ${SCHEMA_DERIVATIONS} types from a schema`, () => {
     const derived = SOURCES.match(/export type [A-Za-z0-9_]+ = z\.output</g) ?? [];
     expect(derived).toHaveLength(SCHEMA_DERIVATIONS);
+  });
+});
+
+// The role-holders routes answer each holder with its `claim` and `works_step`, and an
+// `issue.role_holders_changed` event this release writes carries them too. An event a Dispatch
+// before them stored names neither, and the log keeps it as written, so the event's holder reads
+// a holder of either kind while the route's record still requires both fields.
+describe("issue.role_holders_changed reads a holder stored before claim and works_step", () => {
+  const named = {
+    role: "tester",
+    session: "ses-keyed",
+    claim: "legion-acme-acme-7-implementer",
+    works_step: true,
+    recorded_at: "2026-11-28T10:00:00Z",
+  };
+  const before = { role: "architect", session: "ses-a", recorded_at: "2026-11-25T00:34:14Z" };
+
+  test("the event reads both holders", () => {
+    const payload = { key: "ACME-7", holders: [named, before], previous_holders: [before] };
+    expect(IssueRoleHoldersChangedEventPayloadSchema.parse(payload)).toEqual(payload);
+  });
+
+  test("the route's record takes the holder that names both and refuses the one before", () => {
+    expect(IssueRoleHolderRecordSchema.safeParse(named).success).toBeTrue();
+    expect(IssueRoleHolderRecordSchema.safeParse(before).success).toBeFalse();
   });
 });

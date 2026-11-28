@@ -3,7 +3,9 @@ import { chmod, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { STALL_EXIT_CAP, STALL_EXIT_CODE } from "@legion/pi-shared/stall-watchdog";
 import { call, newestMessage } from "@legion/pi-shared/test/omp-harness";
+import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { span } from "@legion/test-fixtures/wait";
 import {
   ARCHITECT_TOPIC,
   BOUND_MS,
@@ -11,7 +13,6 @@ import {
   childOf,
   cleanup,
   conversation,
-  DEADLINE_MS,
   exitsFile,
   gone,
   ISSUE,
@@ -88,21 +89,26 @@ import {
 //     thing — the real worker exits, the real counter file is written and read back by the
 //     relaunch, and the real notice reaches the listener.
 
-/**
- * What one case's cleanup has to do, and why it gets a bound of its own: each pane's steps kill a
- * real Oh My Pi and wait for it to be reaped, close the stand-in server and the socket that
- * refuses NATS, and remove a scratch root holding that pane's home, its sessions and its `eval`
- * kernel's temporary files. On a loaded pod that is seconds of real work, and Bun's default hook
- * bound is 5 s: one run of three at `c9f2ddf3c71f` came back 6 pass, 2 fail with 68 `expect()`
- * calls against a clean run's 83, two cases cut short at the hook rather than at an assertion.
- * The bound here is proportionate to what the hook does, in a suite whose own cases are allowed
- * three minutes each; a cleanup that really hangs still fails, two minutes later.
- */
-const CLEANUP_MS = 120_000;
+// Every row of this file starts a cold Oh My Pi pane (a pinned binary spawning and registering over
+// NATS, which reads 5-6 s before the row's own work begins) and then drives the ladder's steps, so it
+// needs more than Bun's 5000 ms default in every mode: `bun run test`'s workers declare 300000 ms
+// (`test-timeout-preload.ts`), but a run of this file alone takes no worker and keeps 5000 ms. Each
+// row therefore takes a guard of its own, as the cold-pane row of
+// `legion-background-subagent-omp.test.ts` does: the row body calls `useRowGuard` for the shared
+// wait's deadline and passes the same value as `test`'s third argument for Bun's row kill, so a pane
+// wait that never answers gives up by name before Bun ends the row. The afterEach passes it as its
+// own hook timeout, because its cleanup is raw awaits: each pane's steps kill a real Oh My Pi and
+// wait for it to be reaped, close the stand-in server and the socket that refuses NATS, and remove a
+// scratch root holding that pane's home, its sessions and its `eval` kernel's temporary files. On a
+// loaded pod that is seconds of real work: one run of three at `c9f2ddf3c71f`, under Bun's 5 s
+// default for a hook, came back 6 pass, 2 fail with 68 `expect()` calls against a clean run's 83,
+// two cases cut short at the hook rather than at an assertion. See packages/pi-legion/package.json's
+// "//" note for the readings and their runs.
+const COLD_PANE_GUARD_MS = 300_000;
 
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-}, CLEANUP_MS);
+}, COLD_PANE_GUARD_MS);
 
 /** A directory of one case's own: the claim's state directory, or where a cell writes the pid of
  * the child it started. The maker is made here rather than in `stall-watchdog-pane.ts`, because
@@ -113,6 +119,7 @@ const scratchDir = temporaryDirectories("legion-watch");
 test.skipIf(skip)(
   "a cell that ends when its child dies: the call is judged from its execution start, the evidence names the child, the owner is told, and the first step ends the child with no abort sent",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const state = scratchDir("child-state");
     const pidFile = path.join(scratchDir("child-pid"), "child.pid");
     const pane = await startPane({
@@ -152,10 +159,11 @@ test.skipIf(skip)(
       toolCallId: evidence.toolCallId,
     });
 
-    // The notice's own record check reads this issue's record and never the whole project body
-    // (dispatch://INFRA-2694): the stall evidence takes that reader from the plugin's wiring.
+    // The notice asks the daemon what this claim owes for the architect that owns it, and never
+    // reads the whole project body (dispatch://INFRA-2694): the stall evidence takes that reader
+    // from the plugin's wiring.
     const paths = pane.requests.map((request) => request.path);
-    expect(paths).toContain(`/legion/v1/issues/${ISSUE}/record`);
+    expect(paths).toContain("/legion/v1/claims/owed");
     expect(paths).not.toContain("/legion/v1/state");
 
     // The first step: the child, and only the child — the cell's own child gone, this session's
@@ -192,12 +200,13 @@ test.skipIf(skip)(
     expect(await pane.restarts()).toEqual([]);
     expect(pane.running()).toBe(true);
   },
-  DEADLINE_MS + 60_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
   "a cell that goes on after its child dies: the abort ends the turn, the session lives, and the worker takes a turn again on the message it sent itself",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const state = scratchDir("abort-state");
     const pidFile = path.join(scratchDir("abort-pid"), "child.pid");
     const pane = await startPane({
@@ -262,12 +271,13 @@ test.skipIf(skip)(
     expect(ofKind(records, "stopped")).toEqual([]);
     await expect(readFile(exitsFile(state), "utf8")).rejects.toThrow();
   },
-  DEADLINE_MS + 60_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
   "a call the abort does not end: the worker ends its own process, the count survives in the state directory, and the launch that reaches the cap ends nothing and tells its owner",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const state = scratchDir("exit-state");
     /** One launch of the same claim on that state directory, whose host has no `abort()`. */
     const launch = async (name: string): Promise<StallPane> => {
@@ -331,20 +341,24 @@ test.skipIf(skip)(
     expect(told.topic).toBe(ARCHITECT_TOPIC);
     expect(String(told.message)).toContain("it cannot recover from on its own");
     expect(String(told.message)).toContain(`cap of ${STALL_EXIT_CAP}`);
-    // The process is what the cap protects. A real clock is the only thing that shows it is still
-    // there: an exit the ladder did not take emits no signal to await.
-    await Bun.sleep(2 * STEP_MS);
+    // The process is what the cap protects, and an exit the ladder did not take emits no signal:
+    // no record, no request, and the stopped ladder's later sweeps write nothing either.
+    await span(
+      2 * STEP_MS,
+      "an exit the ladder did not take writes no record and makes no request, so neither a read of the pane's state nor a later action's effect shows it was spared: two step gaps pass the moment the next step would have run"
+    );
     expect(third.running()).toBe(true);
     expect(JSON.parse(await readFile(exitsFile(state), "utf8"))).toMatchObject({
       exits: STALL_EXIT_CAP,
     });
   },
-  3 * DEADLINE_MS
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
   "a counter file the worker cannot read ends no process: the ladder stops at its last step and tells its owner instead",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const state = scratchDir("unreadable-state");
     // A counter file this worker may not read: a count it cannot trust is one it will not end its
     // own process on.
@@ -374,15 +388,19 @@ test.skipIf(skip)(
     );
     expect(String(told.message)).toContain("could not be read");
     // As above: the proposition is a process that is still there.
-    await Bun.sleep(2 * STEP_MS);
+    await span(
+      2 * STEP_MS,
+      "an exit the ladder did not take writes no record and makes no request, so neither a read of the pane's state nor a later action's effect shows it was spared: two step gaps pass the moment the next step would have run"
+    );
     expect(pane.running()).toBe(true);
   },
-  DEADLINE_MS + 60_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
   "a cell that finishes inside its bound is left alone: no record, no notice, no process ended, and its result comes back as usual",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const state = scratchDir("control-state");
     const pidFile = path.join(scratchDir("control-pid"), "child.pid");
     const pane = await startPane({
@@ -412,9 +430,11 @@ test.skipIf(skip)(
     );
     expect(conversation(after)).toContain("the control started");
 
-    // Past the bound and two sweeps. A real clock, deliberately: the proposition is that the watch
-    // did nothing at all, and a watch that does nothing emits no signal to await.
-    await Bun.sleep(QUIET_MS);
+    // Past the bound and two sweeps: the proposition is that the watch did nothing at all.
+    await span(
+      QUIET_MS,
+      "a watch that judges nothing writes no record, sends no notice and ends no process, so neither a read of the pane's state nor a later action's effect shows it held: the span is the bound and two of the plugin's sweeps"
+    );
     await pane.settled();
     expect(await pane.records()).toEqual([]);
     expect(await pane.restarts()).toEqual([]);
@@ -425,12 +445,13 @@ test.skipIf(skip)(
     expect(pane.running()).toBe(true);
     await expect(readFile(exitsFile(state), "utf8")).rejects.toThrow();
   },
-  DEADLINE_MS + 60_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
   "a cell with no child, on a kernel older than its call: the first step ends this session's own `eval` runner, which is the rule that needs the runner's real command",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const state = scratchDir("runner-state");
     const pane = await startPane({
       name: "stall-runner",
@@ -482,12 +503,13 @@ test.skipIf(skip)(
     ]);
     expect(pane.running()).toBe(true);
   },
-  DEADLINE_MS + 60_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
   "a steering delivery into the turn a wedged cell holds open takes nothing out of the watch's book, and the entry closes the run's calls at an end an extension could have told apart",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const state = scratchDir("steer-state");
     const pidFile = path.join(scratchDir("steer-pid"), "child.pid");
     const pane = await startPane({
@@ -544,12 +566,13 @@ test.skipIf(skip)(
     expect(ends.map((end) => end.pendingMessages)).toEqual([true, false]);
     expect(pane.running()).toBe(true);
   },
-  DEADLINE_MS + 60_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
   "a shell call the host backgrounds leaves the watch's book with the host's own end, past the moment its own deadline would have had it judged, while the process it started runs on",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const state = scratchDir("background-state");
     const pidFile = path.join(scratchDir("background-pid"), "child.pid");
     const pane = await startPane({
@@ -615,11 +638,14 @@ test.skipIf(skip)(
     // alone leaves it green, and that is the system rather than the case: the host ends the
     // turn immediately after it backgrounds the call, so the turn's own close takes the record
     // either way. No live case can hold one of these four alone.
-    await Bun.sleep(SHELL_DEADLINE_MS + QUIET_MS);
+    await span(
+      SHELL_DEADLINE_MS + QUIET_MS,
+      "a closed record is judged by no sweep and so writes nothing, which neither a read of the pane's state nor a later action's effect can show: the span is the call's own deadline, the grace and two sweeps"
+    );
     await pane.settled();
     expect(await pane.records()).toEqual([]);
     expect(pane.publishes()).toEqual([]);
     expect(pane.running()).toBe(true);
   },
-  DEADLINE_MS + 60_000
+  COLD_PANE_GUARD_MS
 );

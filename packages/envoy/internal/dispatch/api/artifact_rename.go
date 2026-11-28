@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -19,7 +20,7 @@ type renameArtifactInput struct {
 // slug, the reference key that slug gives and the role the document plays are its address and
 // its part, which the first title fixed. A correction moves none of them, so every
 // `dispatch://KEY/artifact/<slug>` reference, every anchored comment and the issue's plan or
-// Verification document still name the same row. It needs the person scope (routeScopes)
+// Verification document still name the same row. It needs the person scope (its route's OAuthScopes)
 // because a title is what every reader of the issue sees the document by, so only a credential
 // acting as its person corrects one.
 //
@@ -82,9 +83,9 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, renameRoleNameRefusal(name, slug, *role))
 		return
 	}
-	renamed, err := scanArtifact(tx.QueryRow(r.Context(), `
+	renamed, err := docs.ScanArtifact(tx.QueryRow(r.Context(), `
 		update artifacts set name = $2 where id = $1
-		returning `+artifactColumns, artifact.ID, name))
+		returning `+docs.ArtifactColumns, artifact.ID, name))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

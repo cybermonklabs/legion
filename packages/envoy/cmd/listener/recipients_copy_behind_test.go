@@ -63,6 +63,7 @@ func requireCopyBehind(t *testing.T, registry *store.Registry, former, next stri
 // bucket stream's leader, which holds every write, so the lane goes. Control: the copy behind is
 // real for the row: a direct get of the claim names the former holder after the claim.
 func TestATakeoverNarrowsTheFormerHolderWhileTheRoleCopyIsBehind(t *testing.T) {
+	t.Parallel()
 	rig := newLostLaneRig(t)
 	const former, next = "ses_behind_takeover_former", "ses_behind_takeover_next"
 	rig.subscribe(t, consumerRegistration(former, "epoch-1"))
@@ -90,6 +91,7 @@ func TestATakeoverNarrowsTheFormerHolderWhileTheRoleCopyIsBehind(t *testing.T) {
 // publish counted the former holder, recipients 1 for a message its consumer, filtered on the
 // claim's newest record, does not deliver. Control: the copy behind is real for the row.
 func TestALaneCountReadsTheClaimFromTheLeaderWhileTheRoleCopyIsBehind(t *testing.T) {
+	t.Parallel()
 	rig := newLostLaneRig(t)
 	const former, next = "ses_behind_count_former", "ses_behind_count_next"
 	claimRoles(t, rig.harness.registry, former, lostLaneRole)

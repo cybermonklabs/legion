@@ -85,6 +85,7 @@ func seedRoleClaims(t *testing.T, pool *pgxpool.Pool, keys ...string) {
 // close, which names that role, reaches: the claim of the worker on the role's step, by name and
 // by role.
 func TestEveryClaimWritesARowForEachStoredClaim(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	store := record.NewStore()

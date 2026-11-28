@@ -71,11 +71,16 @@ func idleRoot() pods.IdleView {
 func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name  string
-		view  pods.IdleView
-		image bool
-		want  IdleHold
-		roles []claim.Role
+		name string
+		view pods.IdleView
+		// image is whether the pod runs the configured image, and drifted whether it was built
+		// from a repository the issue's record has left. A row that sets neither reads a pod on
+		// the configured image and on the repository the record holds, which is every pod of a
+		// deployment nothing has changed under.
+		image   bool
+		drifted bool
+		want    IdleHold
+		roles   []claim.Role
 	}{
 		{
 			name: "every condition holds", view: idleChild(), image: true, want: IdleHoldNone,
@@ -160,6 +165,20 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 		},
 		{
 			name: "the pod does not run the configured image", view: idleChild(), image: false, want: IdleHoldImage,
+		},
+		{
+			// Dispatch moved the issue, the daemon's record followed it, and the pod still
+			// running is a clone of the repository the issue has left. The pod is the update
+			// round's to replace with a pod of the repository the record holds, not a release's
+			// to take.
+			name: "the pod was built from a repository the issue has left", view: idleChild(),
+			image: true, drifted: true, want: IdleHoldRepository,
+		},
+		{
+			// The image is read first, as the rule reads it: a pod behind on both is one hold
+			// and the first one named.
+			name: "a pod behind on its image and on its repository", view: idleChild(),
+			image: false, drifted: true, want: IdleHoldImage,
 		},
 		{
 			name:  "a live claim speaks an older plugin contract",
@@ -450,7 +469,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, idleContract)
+			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, tc.drifted, idleContract)
 			if got.Hold != tc.want {
 				t.Fatalf("hold = %s, want %s", got.Hold, tc.want)
 			}
@@ -508,7 +527,7 @@ func TestTheIdleRuleReleasesNoPodOfAnIssueAnotherProjectRecords(t *testing.T) {
 
 	var decided IdleDecision
 	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		decided = IdleRelease(view, now, idlePeriod, true, idleContract)
+		decided = IdleRelease(view, now, idlePeriod, true, false, idleContract)
 		if !decided.Release {
 			return store.IdleReleaseMark{}, nil
 		}

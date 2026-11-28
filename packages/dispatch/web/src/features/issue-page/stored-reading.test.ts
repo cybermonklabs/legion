@@ -1,10 +1,18 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 
 import type { DisplayTree } from "../../api/types";
+import {
+  edgeSpaceReads,
+  isPlainText,
+  parsedReading,
+  plainReading,
+  storedReading,
+  storedTextParses,
+} from "../decision-card/stored-reading";
+import fixtures from "../refs/__fixtures__/display-trees.json";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import { projectedNames } from "./projection-fixture";
-import { isPlainText, parsedReading, plainReading, storedReading } from "./stored-reading";
 
 // One row reads a reading through the shared engine, which loads lazily, and the rows run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -25,32 +33,15 @@ function firstBlockWords(reading: DisplayTree): string {
   return block === undefined ? "" : collapsed(wordsOf(block));
 }
 
-/** A wall-clock budget for one stored text read to words, not one of the machine-sensitive waits
- *  this package's defaults cover (`web/src/__tests__/setup.ts`). The regression it guards, a
- *  parse with no bound on how deeply lists nest, spends about 9 s on the body below, and the
- *  bounded parse well under one, so a budget far above what a loaded pod spends on the bounded
- *  parse fails only an unbounded one. */
-const NESTING_BUDGET_MS = 3_000;
-
-/** A wall-clock budget for drawing again the lines of an issue's stored texts, each read once
- *  already. A result whose read carries no reading - a server of the build before sends none -
- *  has its line read from its stored text, and an issue under review holds hundreds of results:
- *  the redesign's own root issue held 431 results and 492 distinct stored texts on 2026-11-18.
- *  Reading 900 such texts again from what the first draw read costs tens of milliseconds; parsing
- *  each again, as a first draw does, costs about a second on a pod's CPU. So a budget far above
- *  the first and far below the second fails only a draw that parses every text again. */
-const REDRAW_BUDGET_MS = 300;
-
 // sjawhar/legion#2519: a stored text is read on the page's own thread, and micromark gives every
 // open list or quote a turn on every line, so a body that opens thousands of them cost seconds or
 // overflowed the stack. The parse holds lists and quotes to the document service's bound of 100
 // blocks, where a list marker opens two (the list and its item), so the first 50 markers open
-// lists and the rest read as the text they are, as the server reads them.
+// lists and the rest read as the text they are, as the server reads them. The words are the
+// bound's own reading, and no clock decides the row: a parse with no bound opens all 3000 lists
+// and reads `x` alone, about 9 s later, or overflows the stack.
 test("a stored text of thousands of nested list markers reads to words within the nesting bound", () => {
-  const start = performance.now();
-  const words = wordsOfText(`${"- ".repeat(3000)}x`);
-  expect(performance.now() - start).toBeLessThan(NESTING_BUDGET_MS);
-  expect(words).toBe(`${"- ".repeat(2950)}x`);
+  expect(wordsOfText(`${"- ".repeat(3000)}x`)).toBe(`${"- ".repeat(2950)}x`);
 });
 
 // The server keeps the number a stored ordered list starts on as the list's `order`
@@ -203,21 +194,27 @@ test("a stored text's front matter reads as its fenced lines, and an unclosed fe
 // ask, a comment or a message is named from its stored text's reading, as is the reading the
 // Change of a decision with no reading quotes. The readings of the texts a draw read are
 // remembered so that the next draw reads them rather than parses them again: 900 distinct stored
-// texts, each reading held by what asked for it, must draw again within the budget, the second
-// draw in the same order as the first, as a page draws its rows.
+// texts, each reading held by what asked for it, must draw again with no parse at all, the second
+// draw in the same order as the first, as a page draws its rows. The parses are counted
+// (`storedTextParses`), not timed: the redesign's own root issue held 431 results and 492 distinct
+// stored texts on 2026-11-18, and each text parsed again on every draw is what this row refuses.
 test("the readings of more stored texts than the memo holds are read again without parsing them again", () => {
+  // Texts of this run's own, so a rerun of the row (`--rerun-each`) finds none of them remembered.
+  const run = crypto.randomUUID();
   const texts = Array.from(
     { length: 900 },
     (_, at) =>
-      `The run \`bun run test:web web/src/case-${at}.test.ts\` ends with **0 fail**, and names each test below as passed.\n` +
+      `The run \`bun run test:web web/src/case-${at}.test.ts\` ends with **0 fail**, and names each test below as passed (${run}).\n` +
       `- the first named test of case ${at}: pass\n- the second named test of case ${at}: pass\n` +
       `${"It held at the head, read with the junit report. ".repeat(12)}`
   );
   const holders = texts.map(() => ({}));
+  const before = storedTextParses();
   for (const [at, text] of texts.entries()) storedReading(text, holders[at]);
-  const start = performance.now();
+  const firstDraw = storedTextParses();
+  expect(firstDraw - before, "the first draw parses each text once").toBe(texts.length);
   for (const [at, text] of texts.entries()) storedReading(text, holders[at]);
-  expect(performance.now() - start).toBeLessThan(REDRAW_BUDGET_MS);
+  expect(storedTextParses() - firstDraw, "texts the second draw parsed again").toBe(0);
 });
 
 /** `words` on one line, its white space collapsed to single spaces, as every one-line reading of
@@ -487,4 +484,90 @@ test("the parse reads a bare URL, a www address and an email as the words they a
   const reading = parsedReading(text);
   expect(JSON.stringify(reading)).not.toContain('"link"');
   expect(collapsed(wordsOf(reading))).toBe(collapsed(text));
+});
+
+// Every line of a plain text is trimmed of the spaces and tabs it opens and ends with
+// (`plainReading`), on the page's own thread on every draw, and the text is what an author wrote,
+// up to a body's 1 MiB: a line that costs more than its length would stall the page. A run of
+// spaces followed by any other character is the line the end-anchored trim it once ran
+// (`/[ \t]+$/`) read from every start in the run: about the square of the run, which no count sees
+// inside a regular expression. The trim is a loop now, and the count is of the characters it
+// reads, at two lengths of each run.
+describe("the edge spaces a plain text's lines are trimmed of", () => {
+  /** The characters the trim read for `text`, a plain text whose reading is one paragraph of
+   *  `words`. */
+  function readsFor(text: string, words: string): number {
+    expect(isPlainText(text)).toBe(true);
+    const before = edgeSpaceReads();
+    const reading = storedReading(text);
+    const read = edgeSpaceReads() - before;
+    expect(reading).toEqual({
+      content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+      type: "doc",
+    });
+    return read;
+  }
+
+  const n = 20_000;
+
+  test("a line that ends in a run of spaces costs the run once", () => {
+    const short = readsFor(`x${" ".repeat(n)}`, "x");
+    const long = readsFor(`x${" ".repeat(2 * n)}`, "x");
+    // The run is read once, from its end, and the line's first character once by each loop.
+    expect(short).toBeGreaterThanOrEqual(n);
+    expect(short).toBeLessThanOrEqual(n + 16);
+    expect(long).toBeLessThanOrEqual(2 * short);
+  });
+
+  test("a run of spaces between two words costs no more than its ends", () => {
+    const short = readsFor(`a${" ".repeat(n)}b`, `a${" ".repeat(n)}b`);
+    const long = readsFor(`a${" ".repeat(2 * n)}b`, `a${" ".repeat(2 * n)}b`);
+    // Each end stops the trim at its first character.
+    expect(short).toBeGreaterThan(0);
+    expect(short).toBeLessThanOrEqual(16);
+    expect(long).toBe(short);
+  });
+});
+
+/** One text of the display-tree fixture `pmdoc`'s `TestWebDisplayFixture` writes: its name, the
+ *  markdown, and the server's reading of that markdown's latest version. */
+interface ServerReading {
+  readonly name: string;
+  readonly markdown: string;
+  readonly latest: DisplayTree;
+}
+
+/** The fixture's text named `name`, read by the server. */
+function serverReading(name: string): ServerReading {
+  const found = (fixtures as ServerReading[]).find((each) => each.name === name);
+  if (found === undefined) throw new Error(`no text named ${name} in the display-tree fixture`);
+  return found;
+}
+
+/** The first `ordered_list` among the blocks of `tree`. */
+function orderedListOf(tree: DisplayTree): DisplayTree | undefined {
+  return (tree.content as readonly DisplayTree[] | undefined)?.find(
+    (block) => block.type === "ordered_list"
+  );
+}
+
+/** The number `list` says it starts at, `undefined` where it says none. */
+function orderOf(list: DisplayTree | undefined): unknown {
+  return (list?.attrs as { readonly order?: unknown } | undefined)?.order;
+}
+
+// The server writes the number an ordered list starts at as the list's `order`, and leaves it
+// out where that is 1, so the page's own reading of a stored text must do the same: a list from
+// 3 read as a list from 1 draws the wrong numbers. The server's reading of the text from 3 is
+// the fixture's, written from the same text.
+test("an ordered list from 3 reads its start as the server's reading does, and one from 1 none", () => {
+  const fromThree = "3. Keep the old page.\n4. Then drop it.";
+  const server = serverReading("ordered-from-3");
+  expect(server.markdown).toBe(`${fromThree}\n`);
+  const list = orderedListOf(storedReading(fromThree));
+  expect(orderOf(list)).toBe(3);
+  expect(orderOf(list)).toBe(orderOf(orderedListOf(server.latest)));
+  const fromOne = orderedListOf(storedReading("1. one\n2. two"));
+  expect(fromOne?.type).toBe("ordered_list");
+  expect(orderOf(fromOne)).toBeUndefined();
 });

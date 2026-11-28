@@ -4,6 +4,7 @@
 package bus
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // SessionAcker answers one pulled message (SessionMessage).
@@ -96,6 +99,9 @@ type SessionPull struct {
 	remaining int
 	// heartbeat is the pull requests' idle heartbeat (sessionPullHeartbeat).
 	heartbeat time.Duration
+	// clock is what heard is read on and the stall timed by (take): SessionConsumers.pullClock, or
+	// the real clock where that is nil.
+	clock clock.Clock
 	// wake holds a token once receive has queued a message for Next.
 	wake chan struct{}
 	// detachOnce runs the drain of the inbox subscription once and detachErr holds what it ended
@@ -109,7 +115,8 @@ type SessionPull struct {
 	mu sync.Mutex
 	// queue holds what the server sent on the inbox, heartbeats aside, until Next reads it.
 	queue []*nats.Msg
-	// heard is when the server last sent anything on the inbox, or the pull last sent a request.
+	// heard is when the server last sent anything on the inbox, or the pull last sent a request,
+	// on clock.
 	heard time.Time
 	// droppedLoggedAt is when receive last wrote its line for a message it dropped, and
 	// droppedHeld how many it has dropped since without one (sessionPullDroppedLogEvery).
@@ -142,7 +149,7 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 	p := &SessionPull{
 		conn: conn, sessionID: sessionID, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(),
 		ack: "$JS.ACK." + Stream + "." + name + ".", request: request, logger: s.logger, heartbeat: s.pullHeartbeat,
-		wake: make(chan struct{}, 1),
+		clock: cmp.Or(s.pullClock, clock.Real()), wake: make(chan struct{}, 1),
 	}
 	if p.sub, err = conn.Subscribe(p.inbox, p.receive); err != nil {
 		return nil, err
@@ -179,7 +186,7 @@ func (p *SessionPull) receive(msg *nats.Msg) {
 		return
 	}
 	p.mu.Lock()
-	p.heard = time.Now()
+	p.heard = p.clock.Now()
 	if status != pullStatusHeartbeat {
 		p.queue = append(p.queue, msg)
 	}
@@ -233,13 +240,15 @@ func pullStatus(msg *nats.Msg) (status, description string) {
 	return msg.Header.Get("Status"), msg.Header.Get("Description")
 }
 
-// pull sends a pull request for sessionPullBatch messages.
+// pull sends a pull request for sessionPullBatch messages. It waits for no connection: a request
+// nats.go refuses while it reconnects the connection fails at once as ErrReconnecting
+// (Reconnecting), and its caller restarts the pull.
 func (p *SessionPull) pull() error {
 	p.mu.Lock()
-	p.heard = time.Now()
+	p.heard = p.clock.Now()
 	p.mu.Unlock()
 	if err := p.conn.PublishRequest(p.next, p.inbox, p.request); err != nil {
-		return err
+		return Reconnecting(err)
 	}
 	p.remaining = sessionPullBatch
 	return nil
@@ -275,7 +284,7 @@ func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 }
 
 // take returns the first message the server sent that Next has not read, waiting until one comes,
-// ctx ends, or the server has sent nothing for twice sessionPullHeartbeat.
+// ctx ends, or the server has sent nothing for twice sessionPullHeartbeat on the pull's clock.
 func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 	for {
 		p.mu.Lock()
@@ -286,15 +295,15 @@ func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 			p.mu.Unlock()
 			return msg, nil
 		}
-		stalled := time.Until(p.heard.Add(2 * p.heartbeat))
+		stalled := p.heard.Add(2 * p.heartbeat).Sub(p.clock.Now())
 		p.mu.Unlock()
 		if stalled <= 0 {
 			return nil, ErrSessionPullStalled
 		}
-		timer := time.NewTimer(stalled)
+		timer := p.clock.NewTimer(stalled)
 		select {
 		case <-p.wake:
-		case <-timer.C:
+		case <-timer.C():
 		case <-ctx.Done():
 			timer.Stop()
 			return nil, ctx.Err()
@@ -322,12 +331,16 @@ func sessionMessageOf(msg *nats.Msg) (SessionMessage, error) {
 }
 
 // sessionAck answers a pulled message on the connection it arrived on, by publishing to its reply
-// subject; Ack and NakWithDelay are sent once.
+// subject; Ack and NakWithDelay are sent once. An answer waits for no connection: one nats.go
+// refuses while it reconnects the connection fails at once as ErrReconnecting (Reconnecting), and
+// the server delivers the message again once its ack wait has passed.
 type sessionAck struct{ msg *nats.Msg }
 
-func (a sessionAck) Ack() error                             { return a.msg.Ack() }
-func (a sessionAck) InProgress() error                      { return a.msg.InProgress() }
-func (a sessionAck) NakWithDelay(delay time.Duration) error { return a.msg.NakWithDelay(delay) }
+func (a sessionAck) Ack() error        { return Reconnecting(a.msg.Ack()) }
+func (a sessionAck) InProgress() error { return Reconnecting(a.msg.InProgress()) }
+func (a sessionAck) NakWithDelay(delay time.Duration) error {
+	return Reconnecting(a.msg.NakWithDelay(delay))
+}
 
 // Stop ends the pull and leaves the messages it held and Next had not returned where they are:
 // the server delivers each of them again once its ack wait (SessionConsumerAckWait) has passed.
@@ -409,9 +422,9 @@ func (p *SessionPull) Release() (int, error) {
 // relay -- so that the two halves of one hand-over read apart in a log; the error carries the
 // package's own prefix itself, so no caller spells it.
 //
-// The naks of one hand-over fail together, since the connection is closed or its reconnect buffer
-// is full, so a failure is one error naming how many failed and the first of their errors rather
-// than up to SessionConsumerMaxAckPending copies of that one error.
+// The naks of one hand-over fail together, since the connection is closed or nats.go is
+// reconnecting it (ErrReconnecting), so a failure is one error naming how many failed and the
+// first of their errors rather than up to SessionConsumerMaxAckPending copies of that one error.
 func ReturnMessages(whose string, ackers []SessionAcker) (int, error) {
 	returned, failed := 0, 0
 	var firstErr error

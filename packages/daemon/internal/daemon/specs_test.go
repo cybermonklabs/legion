@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -29,11 +30,23 @@ func noAppOwners(claim.Role) []string { return nil }
 // A role the deployment defines launches with its own prompt file between the headless mechanics
 // and Legion's worker part (prompts.ComposeStep), and with the model its settings give it; one of
 // Legion's roles names no model; a role the deployment does not define is refused, with no prompt
-// and no panic.
+// and no panic. The test plants a marker in its own snapshot of go/worker-common.md, the part whose
+// SEPARATE-POD line tells a phase worker of its own pod, and finds that marker in the checker's
+// prompt as a live launch composes it (runtime.ComposePrompt): a planted string, so the test
+// quotes no phrase of Legion's own text.
 func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "planted-worker-common-marker-4333-b7e1"
+	part, err := os.OpenFile(composer.Part("worker-common.md"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = part.WriteString("\n" + marker + "\n")
+	if err := errors.Join(err, part.Close()); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
@@ -73,6 +86,9 @@ func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	if !strings.Contains(prompt, "Run the checks and report pass or fail.") {
 		t.Errorf("the checker's composed prompt lacks the text of its own prompt file:\n%s", prompt)
 	}
+	if !strings.Contains(prompt, marker) {
+		t.Errorf("the checker's composed prompt lacks the marker planted in go/worker-common.md, the part that tells a phase worker of its own pod:\n%s", prompt)
+	}
 
 	tester, err := launch(claim.RoleTester)
 	if err != nil {
@@ -87,13 +103,10 @@ func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	}
 }
 
-// A tree's root architect is told the design-gate steps its deployment gates after its
-// addressing, the "Design gate steps" line its shared role prompt reads, and its composed role
-// prompt carries what those steps ask of it: one registration for each step, on that step's own
-// document, with the approval request first where a person must approve it. No other claim is
-// told the steps: a child's spec is never gated. A two-step deployment and one on `root-issues`
-// give their root architects different prompts, so what a launch is told follows the
-// configuration rather than a policy word that says nothing about which steps hold its tree.
+// A tree's root architect is told which steps its deployment gates in the "Design gate steps"
+// line of its addressing (DesignGateFragment). No other claim is told the steps: a child's spec
+// is never gated. A two-step deployment and one on `root-issues` give their root architects
+// different addressing, so the steps a launch is told follow its deployment's configuration.
 // Every architect's addressing then ends with the project's production check
 // (ProductionCheckFragment), the root's after the steps, which
 // TestEveryArchitectIsToldTheProjectsProductionCheck reads for both settings.
@@ -103,12 +116,6 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	instructions := []string{
-		"the tree's work starts only once every step your `Design gate steps` line names holds a registration of its own",
-		"the `spec` step the issue's primary document",
-		"Where the line says `none`, request no approval and wait for no `design-approved`",
-	}
-	composed := map[string]string{}
 	for _, deployment := range []struct {
 		name  string
 		steps []record.DesignStep
@@ -147,38 +154,16 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 				if architect := tc.role == claim.RoleArchitect; strings.HasSuffix(spec.Prompt.Addressing, check) != architect {
 					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, check, architect)
 				}
-				if !tc.root {
-					return
-				}
-				var prompt strings.Builder
-				prompt.WriteString(spec.Prompt.Addressing)
-				for _, path := range spec.Prompt.RolePromptPaths {
-					part, err := os.ReadFile(path)
-					if err != nil {
-						t.Fatalf("read role prompt part %s: %v", path, err)
-					}
-					prompt.Write(part)
-				}
-				for _, want := range instructions {
-					if !strings.Contains(prompt.String(), want) {
-						t.Errorf("the root architect's composed prompt does not say %q", want)
-					}
-				}
-				composed[deployment.name] = prompt.String()
 			})
 		}
-	}
-	if composed["two steps"] == composed["root-issues"] {
-		t.Error("a two-step deployment's root architect is told exactly what a root-issues deployment's is; nothing in its prompt says which steps hold its tree")
 	}
 }
 
 // Every architect, the root's and a sub-architect's, is told the project's `production_check`
 // last in its addressing: `Production check: tester.` where the project gives the check to the
-// tester, and `Production check: off.` where it opens none, which is the line its composed prompt
-// reads to decide whether it writes an `after_merge` check for the production check
-// (dispatch://INFRA-175 R7). No phase worker is told it: none of them writes a Verification
-// document.
+// tester, and `Production check: off.` where it opens none, from which it decides whether it
+// writes an `after_merge` check for the production check (dispatch://INFRA-175 R7). No phase
+// worker is told it: none of them writes a Verification document.
 func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
@@ -218,20 +203,6 @@ func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
 				}
 				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+setting.line); told != tc.told || !tc.told && strings.Contains(spec.Prompt.Addressing, "Production check") {
 					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, setting.line, tc.told)
-				}
-				if !tc.told {
-					return
-				}
-				var prompt strings.Builder
-				for _, path := range spec.Prompt.RolePromptPaths {
-					part, err := os.ReadFile(path)
-					if err != nil {
-						t.Fatalf("read role prompt part %s: %v", path, err)
-					}
-					prompt.Write(part)
-				}
-				if want := "`Production check` line"; !strings.Contains(prompt.String(), want) {
-					t.Errorf("the %s's composed prompt never names the %s its addressing ends with", tc.name, want)
 				}
 			})
 		}
@@ -289,15 +260,6 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 			}
 		})
 	}
-	body, err := os.ReadFile(composer.Part(runtime.Backends[runtime.BackendClaude].PromptPart))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"`Read`, `Write` and `Edit`", "There is no `grep`, `glob` or `find` tool", "`Agent` tool", "`mcp__legion__legion`", "`Skill` tool"} {
-		if !strings.Contains(string(body), want) {
-			t.Errorf("the Claude Code part does not say %q", want)
-		}
-	}
 }
 
 // A worker's addressing ends naming its issue's repository and default branch, then the reach
@@ -320,8 +282,8 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 	owners := []string{"acme", "sjawhar"}
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer,
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-			return ghrepo.MustParse("acme/widgets"), "release/v7.1", nil
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: ghrepo.MustParse("acme/widgets"), DefaultBranch: "release/v7.1"}, nil
 		},
 		appOwners: func(claim.Role) []string { return owners },
 	}
@@ -385,6 +347,87 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 	}
 }
 
+// After Dispatch corrected an issue's repository, every launch of the issue's claims is told
+// both repositories: the one it works now, which the repository sentence already names, and the
+// one it left, with the moment the daemon applied the correction, written as an RFC 3339 time in
+// UTC whatever zone the record's moment carries. The sentence says where the issue's branch and
+// its pull request stayed, since those never move, and it is
+// rendered at every launch from then on rather than once: no claim turns it off. An issue no
+// correction has reached is told none of it. A daemon with no reader, which is told no
+// repository at all, is the test above's last case.
+//
+// One read of the record answers the repository, its default branch and the correction
+// (workflowRuntime.issueLaunchRepository), so a read that cannot answer refuses the launch, as a
+// launch that cannot read its repository always did, and no launch can be told it left the
+// repository it works.
+func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
+	t.Parallel()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	correctedAt := time.Date(2026, 11, 12, 9, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
+	worked := launchRepository{Repo: ghrepo.MustParse("zeta/tools"), DefaultBranch: "main"}
+	s := specs{
+		stateDir: t.TempDir(), project: "s1", prompts: composer,
+		repository: func(context.Context, string) (launchRepository, error) { return worked, nil },
+		appOwners:  func(claim.Role) []string { return []string{"acme", "zeta"} },
+	}
+	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := func() string {
+		t.Helper()
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: claim.RoleImplementer})
+		if err != nil {
+			t.Fatalf("SpawnSpec: %v", err)
+		}
+		return spec.Prompt.Addressing
+	}
+	const reach = "your role's GitHub App is installed on the owners acme, zeta, and its token reaches every repository of those owners."
+	const sentences = "The daemon changed your issue's repository from acme/widgets at 2026-11-12T07:30:00Z. " +
+		"Your issue's branch and your issue's pull request are on acme/widgets. " +
+		"Your work on this issue is on zeta/tools now."
+
+	s.repository = func(context.Context, string) (launchRepository, error) {
+		read := worked
+		read.Corrected = &RepositoryCorrection{RepositoryCorrection: record.RepositoryCorrection{Before: "acme/widgets", At: correctedAt}}
+		return read, nil
+	}
+	corrected := launch()
+	if !strings.HasSuffix(corrected, " "+sentences) {
+		t.Fatalf("the addressing of a corrected issue = %q, want it to end with %q", corrected, sentences)
+	}
+	if !strings.Contains(corrected, "Your issue's repository is zeta/tools (default branch main); "+reach) {
+		t.Fatalf("the addressing of a corrected issue = %q, want the repository it works now named before the correction", corrected)
+	}
+	// The second launch of the same claim is told it again: the branch and the pull request stay
+	// on acme/widgets for the life of the issue, so nothing stops saying so.
+	if again := launch(); again != corrected {
+		t.Fatalf("the second launch's addressing = %q, want the first's %q", again, corrected)
+	}
+
+	s.repository = func(context.Context, string) (launchRepository, error) { return worked, nil }
+	got := launch()
+	if strings.Contains(got, "changed your issue's repository") || strings.Contains(got, "acme/widgets.") {
+		t.Fatalf("the addressing of an issue no correction has reached = %q, want no correction sentence", got)
+	}
+	if !strings.HasSuffix(got, reach) {
+		t.Fatalf("the addressing of an issue no correction has reached = %q, want it to end with the repositories clause", got)
+	}
+
+	// The one read is the launch's repository read, so a store that cannot answer refuses the
+	// launch rather than costing it a sentence.
+	s.repository = func(context.Context, string) (launchRepository, error) {
+		return launchRepository{}, errors.New("read the record of S1-2: the store is closed")
+	}
+	if _, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: claim.RoleImplementer}); err == nil ||
+		!strings.Contains(err.Error(), "the store is closed") {
+		t.Fatalf("the launch of an issue whose record cannot be read = %v, want the store's refusal", err)
+	}
+}
+
 // The daemon's controller (`controller: daemon`) is launched with its role part and the headless
 // part, told the design-gate steps the project gates and its repositories as the operator's
 // controller is, with the deployment's instructions and launch secrets, and with no repository,
@@ -402,9 +445,9 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(), appOwners: noAppOwners,
 		instructions: "/state/deployment-instructions.md", secrets: map[string]string{"ENVOY_TOKEN": "envoy-bearer"},
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
+		repository: func(context.Context, string) (launchRepository, error) {
 			t.Error("the controller's launch asked for a repository")
-			return ghrepo.MustParse("acme/widgets"), "main", nil
+			return launchRepository{Repo: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, nil
 		},
 		identity: func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {
 			t.Error("the controller's launch asked for a git identity")
@@ -478,6 +521,64 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 	}
 }
 
+// The daemon's controller is told the project's watched workflows after its Slack channels: each
+// entry as `<owner>/<repo>/<file>` with its events, the runs its session hears while it holds the
+// controller role, and the skill reference that says what a run asks of it. The system prompt is
+// what a turn an Envoy card starts still reads after a compaction, so the line is there rather
+// than in a message. A project that watches none gets no line. No variable of the spec carries
+// the list: the plugin reads it from its registration's answer.
+func TestTheControllersLaunchNamesTheProjectsWatchedWorkflows(t *testing.T) {
+	t.Parallel()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	launch := func(channels []string, watched []config.WatchedWorkflow) runtime.SpawnSpec {
+		t.Helper()
+		s := specs{
+			stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(),
+			slackChannels: channels, watchedWorkflows: watched, appOwners: noAppOwners,
+		}
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController})
+		if err != nil {
+			t.Fatalf("SpawnSpec: %v", err)
+		}
+		return spec
+	}
+	const reach = "Design gate steps: none. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
+	const line = "Watched workflows: `acme/widgets/x.yaml` (`schedule`, `push`), `Acme/Gadgets/nightly.yml` (`schedule`): " +
+		"your session hears each one's completed runs on its repository's default branch, of the events named, " +
+		"while it holds the controller role. Read skill://legion-controller/references/watched-workflows.md at every start and on each delivered run."
+	watched := []config.WatchedWorkflow{
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
+		{Repository: ghrepo.MustParse("Acme/Gadgets"), File: "nightly.yml", Events: []string{"schedule"}},
+	}
+	for _, tc := range []struct {
+		name     string
+		channels []string
+		watched  []config.WatchedWorkflow
+		want     string
+	}{
+		{"two workflows, after the Slack channels", []string{"C00000000"}, watched,
+			reach + " Slack channels: `C00000000`: your session hears each one's app mentions while it holds the controller role; " +
+				"answer each in its thread, and nothing from any other channel (skill://legion-controller/references/slack-mentions.md). " + line},
+		{"two workflows and no channel", nil, watched, reach + " " + line},
+		{"no workflow", nil, nil, reach},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := launch(tc.channels, tc.watched)
+			if spec.Prompt.Addressing != tc.want {
+				t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, tc.want)
+			}
+			for name, value := range spec.Env {
+				if strings.Contains(value, "x.yaml") || strings.Contains(value, "nightly.yml") {
+					t.Errorf("the spec's %s carries the watched workflows (%q); only the registration's answer does", name, value)
+				}
+			}
+		})
+	}
+}
+
 // The controller's addressing gains the reach its GitHub App gives it after its design gate
 // steps, as a sentence of its own, so `legion controller start`'s operator and the
 // daemon-launched controller both read how far the project's token reaches; a worker's
@@ -547,13 +648,13 @@ func TestAWorkerLaunchIsOnItsIssuesRecordedRepository(t *testing.T) {
 	recorded := map[string][2]string{"S1-2": {"acme/widgets", "main"}, "S1-3": {"zeta/tools", "release/v7.1"}}
 	var asked []string
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-		repository: func(_ context.Context, issue string) (ghrepo.Repository, string, error) {
+		repository: func(_ context.Context, issue string) (launchRepository, error) {
 			asked = append(asked, issue)
 			if issue == "S1-9" {
-				return ghrepo.Repository{}, "", errors.New("read the record of S1-9: the database refused")
+				return launchRepository{}, errors.New("read the record of S1-9: the database refused")
 			}
 			named := recorded[issue]
-			return ghrepo.MustParse(named[0]), named[1], nil
+			return launchRepository{Repo: ghrepo.MustParse(named[0]), DefaultBranch: named[1]}, nil
 		}}
 	for issue, want := range recorded {
 		token, err := claim.NewToken("s1", issue, claim.RoleImplementer)
@@ -602,12 +703,12 @@ func TestASpecStampsTheIssueKeyOnlyOnARepositoryTheProjectNames(t *testing.T) {
 		stateDir: t.TempDir(), project: "acme", prompts: composer, appOwners: noAppOwners,
 		commitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
 		same:                    newRepositories("acme", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets-legacy", "acme/widgets"))).same,
-		repository: func(_ context.Context, issue string) (ghrepo.Repository, string, error) {
+		repository: func(_ context.Context, issue string) (launchRepository, error) {
 			name, recorded := recorded[issue]
 			if !recorded {
-				return ghrepo.Repository{}, "", nil
+				return launchRepository{}, nil
 			}
-			return ghrepo.MustParse(name), "main", nil
+			return launchRepository{Repo: ghrepo.MustParse(name), DefaultBranch: "main"}, nil
 		},
 	}
 	stamp := func(t *testing.T, s specs, issue string) string {
@@ -674,8 +775,8 @@ func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
 				commitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
 				same:                    newRepositories("acme", ghrepo.Renames{}).same,
 				backend:                 func(claim.Role) runtime.Backend { return backend },
-				repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-					return ghrepo.MustParse("acme/widgets"), "main", nil
+				repository: func(context.Context, string) (launchRepository, error) {
+					return launchRepository{Repo: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, nil
 				},
 			}
 			token, err := claim.NewToken("acme", "ACME-7", claim.RoleImplementer)
@@ -935,8 +1036,8 @@ func TestAHostLaunchProvisionsItsWorkspaceFirst(t *testing.T) {
 	var refuse error
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-			return ghrepo.MustParse("acme/widgets"), "release/v7.1", nil
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: ghrepo.MustParse("acme/widgets"), DefaultBranch: "release/v7.1"}, nil
 		},
 		hostWorkspaces: true,
 		ensureWorkspace: func(_ context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error {

@@ -81,9 +81,10 @@ type ownCopyAnswer struct {
 // whole answered envelope with the copy the stream holds, so an answer that names the copy's
 // event_id over another body fails too.
 func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	topic := "notifications.team.own-copy-" + id.New()
-	key := publishDedupePrefix + uuid.NewString()
+	key := bus.PublishDedupePrefix + uuid.NewString()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// storedThen stores stored on topic under key's message id, as the stream holds the first
@@ -117,7 +118,7 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 
 	t.Run("control: the verdict names another request's copy, answered with duplicate and that copy", func(t *testing.T) {
 		item := envelope()
-		item.DedupeKey = publishDedupePrefix + uuid.NewString()
+		item.DedupeKey = bus.PublishDedupePrefix + uuid.NewString()
 		other := item
 		other.EventID = id.New()
 		duplicate, err := publishHeld(ctx, client, storedThen(other), &requestRecord{}, requestSender{source: item.Source, session: item.SourceSession}, &item)
@@ -193,6 +194,7 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 // no sequence or a copy that cannot be read, as the send and topic routes' does after a resend.
 // The controls are the same two verdicts on a send's first forward, which carry no code.
 func TestADuplicateVerdictThatNamesNoCopyAnswers503AtOnce(t *testing.T) {
+	t.Parallel()
 	requireUnread := func(t *testing.T, what string, status int, retryAfter string, raw string, outcome any) {
 		t.Helper()
 		if status != http.StatusServiceUnavailable || retryAfter != "1" {

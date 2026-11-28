@@ -43,6 +43,7 @@ func issueAndWalkOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string
 // name step 3, which the fail then returns the work to, while step 4 itself is not before the
 // step that failed. In `implementer checker linter`, the linter at step 3 may name step 2.
 func TestAFailedStepReturnsToThePlaceItNames(t *testing.T) {
+	t.Parallel()
 	types := map[string]string{"checker": "testing", "linter": "review", "critic": "review"}
 
 	t.Run("the critic at step 4", func(t *testing.T) {
@@ -93,6 +94,7 @@ func TestAFailedStepReturnsToThePlaceItNames(t *testing.T) {
 // told once, in a notice that names the linter. The critic itself, at step 1, has no step before
 // it at all, and its fail stops the task the same way.
 func TestAStepWithNoImplementationBeforeItStopsNamingItsPlace(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		at   int

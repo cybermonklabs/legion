@@ -63,6 +63,7 @@ func stepReviewedHead(t *testing.T, pool *pgxpool.Pool, key string, role claim.R
 // cleared between the rounds, the critic's second task names none, so the commit comes from that
 // row alone.
 func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		role    claim.Role
@@ -131,7 +132,7 @@ func resetCritic(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: "critic", Claim: "critic-claim", Entry: resetEntry,
 		EntryTask: "Continue child. Issue: LEGION-208. Phase: step.", ReviewedHead: stepCommitW})
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().ClearTreeGeneration(t.Context(), tx, "LEGION-207", time.Now().UTC())
+		return deploymentEngine().ClearTreeGeneration(t.Context(), tx, "LEGION-207", time.Now().UTC())
 	})
 	if head := stepReviewedHead(t, pool, "LEGION-208", "critic"); head != "" {
 		t.Fatalf("the critic's row holds the commit %q right after the clear of its tree's generation, want none", head)
@@ -151,6 +152,7 @@ func resetCritic(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 // writes X, which that task names. Without the promotion (the root waits in the line), the row
 // stands on the entry before the reset with no task, and a completion of that entry writes none.
 func TestACompletionOfTheEntryBeforeAResetMovesNoStepCommit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		promoted bool
@@ -208,6 +210,7 @@ func TestACompletionOfTheEntryBeforeAResetMovesNoStepCommit(t *testing.T) {
 // ready of the critic's claim at step 2 of `implementer critic`, whose row holds X, sends a resume
 // task naming X; the same ready with the row holding none names no commit.
 func TestAResumedReviewStepIsToldTheCommitItsStepRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		head string

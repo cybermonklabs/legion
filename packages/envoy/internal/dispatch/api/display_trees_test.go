@@ -187,14 +187,20 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	for _, test := range []struct{ name, pattern, target, textPath, treePath string }{
 		{"the issue's comment list", "/api/v1/issues/{key}/comments",
 			"/api/v1/issues/" + issue.Key + "/comments", "0.body", "0.body_tree"},
+		{"the issue's comment thread page", "/api/v1/issues/{key}/comments",
+			"/api/v1/issues/" + issue.Key + "/comments?order=activity", "threads.0.comment.body", "threads.0.comment.body_tree"},
 		{"one comment's thread", "/api/v1/comments/{id}",
 			"/api/v1/comments/" + commentID, "comment.body", "comment.body_tree"},
 		{"the issue's message list", "/api/v1/issues/{key}/messages",
 			"/api/v1/issues/" + issue.Key + "/messages", "0.message.body", "0.message.body_tree"},
+		{"the issue's message thread page", "/api/v1/issues/{key}/messages",
+			"/api/v1/issues/" + issue.Key + "/messages?order=activity", "threads.0.message.body", "threads.0.message.body_tree"},
 		{"one message's thread", "/api/v1/messages/{id}",
 			"/api/v1/messages/" + messageID, "message.body", "message.body_tree"},
 		{"the issue's ask list", "/api/v1/issues/{key}/asks",
 			"/api/v1/issues/" + issue.Key + "/asks", "0.question", "0.question_tree"},
+		{"the issue's ask thread page", "/api/v1/issues/{key}/asks",
+			"/api/v1/issues/" + issue.Key + "/asks?order=activity", "threads.0.question", "threads.0.question_tree"},
 		{"an ask option in the list", "/api/v1/issues/{key}/asks",
 			"/api/v1/issues/" + issue.Key + "/asks", "0.options.0.label", "0.options.0.label_tree"},
 		{"one ask", "/api/v1/asks/{id}", "/api/v1/asks/" + askID, "ask.question", "ask.question_tree"},
@@ -556,7 +562,7 @@ func displayTreeFields(row reflect.Type, path string, seen map[reflect.Type]bool
 // A display tree stands on the shape a read answers and never on the row the whole deployment
 // shares, because an event payload carries that row (the spec's R6: the trees "are not part of
 // the message-bus schemas"). A document's approval is the case that was got wrong: the
-// `artifact.created` payload is the document row itself (artifactCreatedEventPayload), so a
+// `artifact.created` payload is the document row itself (docs.ArtifactCreatedEventPayload), so a
 // `reason_tree` on model.ArtifactApproval would be a response field published on the bus. Here
 // one document is reviewed, its read answers the tree of the reason, and the payload of its own
 // creation - and of every other event of its issue - carries none.

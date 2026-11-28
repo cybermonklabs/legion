@@ -48,14 +48,15 @@ type Supervisor interface {
 // names the launch; the registration is that launch's machine's to accept or refuse, and an
 // accepted one is issued a secret whose hash the machine has persisted before this answers — a
 // store that refuses the write is a 500 with no secret, so no agent holds a secret the daemon
-// forgot. A launch of the daemon's own controller registers as the project's controller too
-// (registerLaunchedController), and only under `controller: daemon`. A token no launch minted may
-// be the controller capability `legion controller start` fetched, which registers the project's
-// controller (registerController), and only under `controller: operator`: a daemon that launches
-// its own controller registers no other, so such a token is the unknown one it is. A claim of a
-// role the deployment defines that registers from a plugin below deploymentRolesContract's entry
-// is refused once its machine has recorded the registration, since that plugin cannot read the
-// claim's role in the answer.
+// forgot. The answer names the session the registering session replaces, if any
+// (replacedSession). A launch of the daemon's own controller registers as the project's
+// controller too (registerLaunchedController), and only under `controller: daemon`. A token no
+// launch minted may be the controller capability `legion controller start` fetched, which
+// registers the project's controller (registerController), and only under `controller:
+// operator`: a daemon that launches its own controller registers no other, so such a token is the
+// unknown one it is. A claim of a role the deployment defines that registers from a plugin below
+// deploymentRolesContract's entry is refused once its machine has recorded the registration,
+// since that plugin cannot read the claim's role in the answer.
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	var req claim.RegisterRequest
 	if !s.readRegisterBody(w, r, &req) || !s.requireFields(w, r,
@@ -128,7 +129,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 			"the contract that reads such a role", "claim", c.Token, "role", c.Role,
 			"generation", launch.Generation, "pluginContract", req.PluginContract, "contract", first)
 		s.refuse(w, r, http.StatusConflict, fmt.Sprintf("the role %s is one this deployment "+
-			"defines, and pi-legion speaks daemon API contract %d, which reads a claim's role as "+
+			"defines, and the plugin speaks daemon API contract %d, which reads a claim's role as "+
 			"one of Legion's six; a plugin of contract %d or later registers it",
 			c.Role, req.PluginContract, first))
 		return
@@ -143,7 +144,24 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		Generation:   launch.Generation,
 		Secret:       secret,
 		PromptAgents: s.promptAgentsList(),
+		Replaces:     replacedSession(c, req.SessionID),
 	})
+}
+
+// replacedSession is the session a registration of session on claim c replaces, which the answer
+// names as `replaces` (claim.RegisterResponse.Replaces): the session c abandoned when it last
+// forgot one (supervise.Claim.Abandoned), and "" where c abandoned none, where the abandoned
+// session is the one registering now (a relaunch that found no file abandoned it and its agent
+// registered it again), or where an operator's release freed its names
+// (supervise.AbandonedSession.Released), after which another claim may register that session
+// and the messages sent to it are that claim's. c is the claim as the machine left it once it
+// accepted the registration. The record stays until the claim's next forget, so each later
+// registration of the claim names the same session again.
+func replacedSession(c supervise.Claim, session string) string {
+	if a := c.Abandoned; a.Session != session && a.Released.IsZero() {
+		return a.Session
+	}
+	return ""
 }
 
 // promptAgentsList is Options.PromptAgents as the registration answers it: never nil, so a role
@@ -469,7 +487,7 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 // completed, and how many bytes of unpushed work it saved as a bundle (zero when the workspace
 // held none). Two claims of one issue can hold one role, so `claims` names what `roles` cannot.
 // `claims` is absent on a release that suspended no claim, on a record the release before
-// 20261124213823 wrote, and below the stranded token's entry (strandedTokenContract,
+// 20261128145836 wrote, and below the stranded token's entry (strandedTokenContract,
 // withoutRecordClaims).
 type ReleaseRecord struct {
 	ID          int64    `json:"id"`
@@ -483,11 +501,11 @@ type ReleaseRecord struct {
 
 // ResumeRecord is one wake of a released pod and what it cost: the release it ended (0 when no
 // release row is recorded for it), the role the wake was for, the claim it brought back and what
-// woke it, when the wake reached the daemon, when the replacement pod was Ready and when the woken
+// woke it, when the daemon took the wake, when the replacement pod was Ready and when the woken
 // claim took its first turn — each absent until it is observed — and whether the wake went ten
 // minutes with no turn. Claim is the claim's token (store.PodResume.Claim): two claims of one
 // issue can hold one role, and each can be woken, so the role does not say which came back. It is
-// absent on a wake recorded before 20261124213821, which stands for each claim of its role, and
+// absent on a wake recorded before 20261128145834, which stands for each claim of its role, and
 // below the stranded token's entry (strandedTokenContract, withoutRecordClaims). Pause is the
 // project pause that held the wake (store.PodResume.Pause), absent for a wake no pause held: a
 // held wake pairs with no release, and its wait to the first turn measures the pause, so a reader

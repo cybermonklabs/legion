@@ -120,7 +120,7 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 //     counts at work are built (workingTrees), which reads the runs of the project's phase
 //     workers in ready once, in one batched record.Store.RoleRuns read, and only where the
 //     deployment sets `worker_silence_minutes`; a pass with no such tree builds nothing here;
-//  3. whether a controller is registered (record.Store.ControllerRegistered, one read). It is a
+//  3. whether a controller is registered (record.Store.ControllerSession, one read). It is a
 //     refusal wakeController makes below, and one that answers for every root of this pass at
 //     once, so a project with no controller registered builds no membership and judges no tree
 //     for a notice that could not be queued;
@@ -215,9 +215,10 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	// Step 3: the refusal that answers for every root of this pass at once, asked before
 	// anything is built for a notice it would refuse. A controller that is not registered
 	// refuses the whole pass with one read, so nothing below is gathered or judged for a notice
-	// nothing would read.
-	registered, err := a.store.ControllerRegistered(ctx, tx, a.project)
-	if err != nil || !registered {
+	// wakeController would not queue: the controller that registers next reads the project's
+	// state at its start.
+	session, err := a.store.ControllerSession(ctx, tx, a.project)
+	if err != nil || session == "" {
 		return err
 	}
 	// Step 4: the tree is its root and the issues under it the workflow still runs
@@ -749,11 +750,11 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 //     frees the slot. The slots are the pass's own rows, the ones it judged the line from, so
 //     the fact is the slots table's and not a phase rule's reading of it: an issue holds a slot
 //     when a row names it. The table carries every project's rows while the cap counts this
-//     project's alone (ownSlots), and the walk below is over this project's own records, so a
-//     row of another project matches no issue here and says nothing about this line. A holder is
-//     asked the ladder a member is asked (waitsByDesign); it holds a row, so it is never a
-//     waiting_on_issue entry and waitsOnWorkOutsideItsTree never answers true of it. The cap's
-//     own hold is simply one
+//     project's alone (record.OwnSlots), and the walk below is over this project's own records,
+//     so a row of another project matches no issue here and says nothing about this line. A
+//     holder is asked the ladder a member is asked (waitsByDesign); it holds a row, so it is
+//     never a waiting_on_issue entry and waitsOnWorkOutsideItsTree never answers true of it.
+//     The cap's own hold is simply one
 //     a holder never carries: it is an entry of the line that holds no slot
 //     (record.LineEntry.Holds);
 //  3. the free-slot term: some entry of the line waits on no other issue (blockers.LineWaitsOn,

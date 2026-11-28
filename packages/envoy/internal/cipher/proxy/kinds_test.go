@@ -10,6 +10,7 @@ package proxy
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -456,6 +458,81 @@ func TestAProfilesAllowNarrowsItsKind(t *testing.T) {
 			}
 			if seen := r.requests(); len(seen) != 0 {
 				t.Errorf("the service saw %d calls; want none", len(seen))
+			}
+		})
+	}
+}
+
+// TestAKindsOwnPlaceholderPrefixIsReadBeforeTheSwap: SC14 reads a kind's own placeholder_prefix
+// in the request the command sent, outside the header the swap replaces. A whole tml- placeholder
+// in X-Other, the path or the query is refused and reaches no service; each boundary control,
+// html- with the same 32 characters, reaches the service because the tml- occurrence has a letter
+// before it. The named revert: remove the kind-prefix left-boundary check, which refuses the
+// controls.
+//
+// Two rows put text on each side of the placeholder the swap replaces, in the header it is
+// swapped in, under a value that ends in a character that is no letter or digit. x + P + tml-<32>
+// reaches the service as x + value + tml-<32>, a whole kind placeholder after the value's last
+// character, so it is refused. The default prefix + P + 32 letters and digits reaches the service
+// as that prefix, the value and the 32, which is no placeholder, so it is carried. The named
+// revert: scan the headers with the placeholder swapped for "" rather than a separator, which
+// joins the text on its two sides, carries the first row and refuses the second.
+func TestAKindsOwnPlaceholderPrefixIsReadBeforeTheSwap(t *testing.T) {
+	const (
+		prefix   = "tml-"
+		suffix   = "0123456789abcdef0123456789abcdef"
+		leftover = prefix + suffix
+		real     = prefix + "realrealrealrealrealrealrealreal"
+		// punctuated is a value whose last character is no letter or digit.
+		punctuated = "Real-value."
+	)
+	rules := testRules()
+	rules.Kinds[0].PlaceholderPrefix = prefix
+	for _, row := range []struct {
+		name    string
+		path    string
+		headers []string
+		// value is the value the swap puts in, and sent the Authorization the service must read
+		// where the request is carried; "" where the request is refused.
+		value, sent string
+	}{
+		{"a whole kind placeholder in a header", "/v1/things", []string{"Authorization", "Bearer " + workerPlaceholder, "X-Other", leftover}, real, ""},
+		{"the left-boundary control in a header", "/v1/things", []string{"Authorization", "Bearer " + workerPlaceholder, "X-Other", "h" + leftover}, real, "Bearer " + real},
+		{"a whole kind placeholder in the path", "/v1/" + leftover, []string{"Authorization", "Bearer " + workerPlaceholder}, real, ""},
+		{"the left-boundary control in the path", "/v1/h" + leftover, []string{"Authorization", "Bearer " + workerPlaceholder}, real, "Bearer " + real},
+		{"a whole kind placeholder in the query", "/v1/things?tag=" + leftover, []string{"Authorization", "Bearer " + workerPlaceholder}, real, ""},
+		{"the left-boundary control in the query", "/v1/things?tag=h" + leftover, []string{"Authorization", "Bearer " + workerPlaceholder}, real, "Bearer " + real},
+		{"a kind placeholder the swapped placeholder hides behind a letter", "/v1/things", []string{"Authorization", "Bearer x" + workerPlaceholder + leftover}, punctuated, ""},
+		{"the default prefix and 32 letters on the two sides of the swapped placeholder", "/v1/things", []string{"Authorization", "Bearer " + placeholder.Prefix + workerPlaceholder + suffix}, punctuated, "Bearer " + placeholder.Prefix + punctuated + suffix},
+		// A Basic credential whose payload holds a NUL, beside the header the swap replaces: the
+		// scan's separator must be one no header can make the decision refuse. The named revert:
+		// scan with Rewrite(rules, grant, "\x00", request), whose check finds the NUL carried in
+		// X-Other and answers nil, which serveBound dereferences.
+		{"a Basic credential holding a NUL beside the swapped header", "/v1/things", []string{"Authorization", "Bearer " + workerPlaceholder, "X-Other", "Basic " + base64.StdEncoding.EncodeToString([]byte("user:\x00"))}, real, "Bearer " + real},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRuledRig(t, rules, Options{})
+			r.grants.setValues(testGrantID, storedValues(workerName, row.value))
+			answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+row.path,
+				row.headers...)
+			if row.sent == "" {
+				if answer.StatusCode != http.StatusForbidden {
+					t.Fatalf("the request answered %d %q; want 403", answer.StatusCode, body)
+				}
+				lines := r.logs.refusals()
+				if len(lines) != 1 || lines[0].fields["code"] != codePlaceholderLeft {
+					t.Fatalf("the refusal logged %v; want one line coded %s", lines, codePlaceholderLeft)
+				}
+				if seen := r.requests(); len(seen) != 0 {
+					t.Fatalf("the service saw %d requests; want none", len(seen))
+				}
+				return
+			}
+			if answer.StatusCode != http.StatusOK {
+				t.Fatalf("the request answered %d %q; want 200", answer.StatusCode, body)
+			}
+			if seen := r.requests(); len(seen) != 1 || seen[0].Header.Get("Authorization") != row.sent {
+				t.Fatalf("the service saw %+v; want one with Authorization %q", seen, row.sent)
 			}
 		})
 	}

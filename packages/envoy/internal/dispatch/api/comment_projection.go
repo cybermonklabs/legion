@@ -182,10 +182,10 @@ func (s *server) commentEventPayload(ctx context.Context, tx pgx.Tx, comment *mo
 // no text at all: the deleted comment's body and suggestion, and the anchor quote of an insert
 // suggestion no accept made document text, which is the text that suggestion inserted, are
 // already cleared in the comment this payload is built from, and the block it names keeps every
-// field but its text (deleteEventReplyBlock), so the event keeps every field that routes it -
-// reply_to, ask_id, the anchor a root comment carries, the block's node id and id, thread_root_id
-// and thread_logins - and no copy of the post the reply answers. A reply naming no block carries
-// reply_block null either way.
+// field but its text, its quote and its occurrence (deleteEventReplyBlock), so the event keeps
+// every field that routes it - reply_to, ask_id, the anchor a root comment carries, the block's
+// node id and id, thread_root_id and thread_logins - and no copy of the post the reply answers.
+// A reply naming no block carries reply_block null either way.
 func (s *server) commentCorrectionPayload(ctx context.Context, tx pgx.Tx, comment *model.Comment, artifactName string, changes model.ReferenceChanges) (model.CommentEventPayload, *events.Logins, error) {
 	var thread commentEventThread
 	if comment.ReplyTo != nil {
@@ -242,8 +242,9 @@ func (s *server) registerCommentAnchor(ledger *docs.Ledger, comment model.Commen
 // quote and orphaned flag the refresh writes, as the refresh reads a stored row back. What it
 // reads - the anchor document's name and key, and a stored row's mention and delivery rows - it
 // reads here, in the read phase, once the refresh has found the anchor moved; a new comment's
-// mention rows are inserted after its projection, so the refresh read none. The builder only
-// assembles the event.
+// mention rows are inserted after its projection, so the refresh read none. The body is bounded
+// as every comment event's is (model.EventBody), as the docs refresh of a stored comment bounds
+// it (docs.anchorRefreshEvent). The builder only assembles the event.
 func (s *server) commentAnchorRefreshEvent(ctx context.Context, tx pgx.Tx, comment model.Comment, actor model.Actor, stored bool) (func(model.Anchor) (model.Event, error), error) {
 	row := comment
 	row.Mentions, row.Deliveries = []model.Mention{}, []model.CommentDelivery{}
@@ -268,6 +269,7 @@ func (s *server) commentAnchorRefreshEvent(ctx context.Context, tx pgx.Tx, comme
 		payload := payload
 		payload.Comment = row
 		payload.Comment.Anchor = &moved
+		payload.Body, payload.BodyTruncated = model.EventBody(row.Body)
 		return model.Event{
 			IssueKey: row.IssueKey, ArtifactID: row.ArtifactID,
 			Type: "comment.anchor_refreshed", Actor: actor, Payload: payload,

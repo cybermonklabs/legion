@@ -6,8 +6,8 @@
 // Key layout. session.<session_id> holds the entry, and two index keys hold the same entry JSON:
 // issue.<ISSUE>.<session_id> and role.<role_token>.<session_id>, the role token being the claim
 // token of the session's agent, which names the agent and not the role its step is on.
-// project.<legion_project> is reserved for the daemon's own record (INFRA-204), and no read here
-// reaches it: every read is a session key or an issue or role token prefix. A write claims the
+// project.<legion_project> is the daemon's answering record (Project, INFRA-204), which no agent
+// read reaches: every one is a session key or an issue or role token prefix. A write claims the
 // session key first, by compare-and-swap, and writes the index keys after it, so a session two
 // writes race for is listed under the winner's issue alone. Nothing is ever deleted, so a closed
 // issue's agents keep their entries and no read replays delete markers.
@@ -31,7 +31,8 @@ import (
 // of Legion's six or a role the deployment defines), the role of the step its agent runs as
 // of the entry's latest write. Its role token is the claim token of that agent, which ends in the
 // agent's name, the role of its first step. Readers ignore fields they do not know, so a later
-// writer may add some.
+// writer may add some, and an entry an earlier writer stored with a field since dropped, such as
+// the `released` of an idle-released claim, reads as the entry without it.
 type Entry = listenerwire.LegionAgentEntry
 
 // Agent is an entry with what a read derives from the other sessions of its role token, ordered by
@@ -74,6 +75,13 @@ var ErrInvalid = errors.New("invalid legion agent")
 
 // ErrNotFound is a session the registry holds no entry for.
 var ErrNotFound = errors.New("unknown legion agent")
+
+// ErrMalformedRecord is a record the registry's bucket holds and this build cannot decode: a
+// session's entry (session.<session_id>), an index key's (issue.<ISSUE>.<session_id>,
+// role.<role_token>.<session_id>) or a project's answering record (project.<legion_project>). The
+// bucket answered it, so it is not a read that failed, and reading it again returns the same
+// record; each error wrapping it names the session, the key or the project.
+var ErrMalformedRecord = errors.New("malformed legion agent registry record")
 
 // ErrTooMany is a batch of more than MaxBatch entries.
 var ErrTooMany = fmt.Errorf("a batch takes at most %d legion agents", MaxBatch)
@@ -154,17 +162,32 @@ func ValidateRoleToken(token string) error {
 	return nil
 }
 
+// RoleToken is the claim token of the agent named agent on issue under the Legion project token
+// project, legion-<legion_project>-<issue lower-cased>-<agent>: the role token every entry of that
+// agent's sessions carries. The agent's name is the role of its first step.
+func RoleToken(project, issue, agent string) string {
+	return "legion-" + project + "-" + strings.ToLower(issue) + "-" + agent
+}
+
+// RoleTokenParts reads a role token, the claim token of an agent of an issue, back to the Legion
+// project token and the issue key RoleToken built it from (legionclaim.CutClaimToken). A token
+// ValidateRoleToken refuses reads as neither.
+func RoleTokenParts(token string) (project, issue string) {
+	if ValidateRoleToken(token) != nil {
+		return "", ""
+	}
+	project, issue, _, _ = legionclaim.CutClaimToken(token)
+	return project, issue
+}
+
 // Validate refuses an entry the registry does not store. Both writes, one entry and a batch, refuse
 // through it, so they refuse the same entries.
 func Validate(entry Entry) error {
 	if err := ValidateSessionID(entry.SessionID); err != nil {
 		return err
 	}
-	if len(entry.LegionProject) > maxProjectBytes {
-		return invalid("legion_project is %d bytes, past %d", len(entry.LegionProject), maxProjectBytes)
-	}
-	if !projectTokenPattern.MatchString(entry.LegionProject) {
-		return invalid("legion_project %q is not a Legion project token (lower-case letters and digits)", entry.LegionProject)
+	if err := ValidateProject(entry.LegionProject); err != nil {
+		return err
 	}
 	if err := ValidateIssue(entry.Issue); err != nil {
 		return err

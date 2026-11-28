@@ -166,7 +166,7 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 // message older than that, and each message names its move back or its phases, so its reader
 // judges which round it was for.
 //
-// Six other executors publish to a role's topic, each with its own rules for what the publisher
+// Seven other executors publish to a role's topic, each with its own rules for what the publisher
 // answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
 // every other failure; deliverNotice, an architect's notice, holds the row for
 // a topic with no holder while the owning architect can hold its role again (noticeAnswered);
@@ -176,15 +176,18 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 // (notify.ErrPublishDenied); mergeQueueRemoval and mergeHoldsChanged, the merger's message of a
 // removal from the merge queue and of a change of the merge holds, hold the row for a topic with
 // no holder and for an unresponsive holder while the merger's claim has neither failed nor
-// retired, and retry every other failure (merge_queue_removal.go, merge_holds.go); and
+// retired, and retry every other failure (merge_queue_removal.go, merge_holds.go);
 // mergeForwardMessage, a message of a merge forward, holds its row the same way while the role's
 // claim has neither failed nor retired and the merge forward still stands at the row's head
-// (merge_forward.go). Those three publish through the deliverHeld they share. Each of those six
-// publishes with keep: false: deliverNotice and the three through deliverHeld hold their own row,
-// and a kept copy beside it would be a second keeper of one message; roleMessage's message is
-// stale by the time a role nobody holds is claimed; and updateAsk's round ends at its bound
-// whether or not the role answers. So whoever changes the rule for a topic with no holder must
-// read all eight executors, not this function alone.
+// (merge_forward.go), those three publishing through the deliverHeld they share; and
+// controllerNotice, every notice told to the project's controller, publishes only once the
+// registered controller session holds the controller's role live, and holds its row for a topic
+// with no live holder, however long that lasts. Each of those seven publishes with keep: false:
+// deliverNotice, the three through deliverHeld and controllerNotice hold their own row, and a kept
+// copy beside it would be a second keeper of one message; roleMessage's message is stale by the
+// time a role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the
+// role answers. So whoever changes the rule for a topic with no holder must read all nine
+// executors, not this function alone.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, token claim.Token, m keptRoleMessage) (*keptRoleMessageUndelivered, error) {
 	wake, err := r.claimWakeOf(ctx, token)
 	if err != nil {

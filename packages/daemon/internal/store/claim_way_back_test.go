@@ -18,7 +18,7 @@ import (
 
 // planStepAgentMigrationFile is the migration whose header carries the way back of the release that
 // names each step's agent.
-const planStepAgentMigrationFile = "20261124213820_plan_step_agent.up.sql"
+const planStepAgentMigrationFile = "20261128145833_plan_step_agent.up.sql"
 
 // headerWayBackOf is the transaction the header of the embedded migration file carries between its
 // psql heredoc and the heredoc's terminator, with the comment marker and the opener's indent taken
@@ -94,6 +94,7 @@ func decodeAsTheReleaseBefore(payload []byte, shape any) error {
 // the release before then decodes the row; this release still decodes it after the roll forward,
 // with no claim named.
 func TestTheWayBackTakesTheClaimOffEachRowTheReleaseBeforeDecodes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := emptyStore(t)
 	if _, err := st.Migrate(ctx); err != nil {
@@ -169,6 +170,7 @@ func TestTheWayBackTakesTheClaimOffEachRowTheReleaseBeforeDecodes(t *testing.T) 
 // row, as it takes `claim`, and keeps every other key: the release before then decodes the row, and
 // this release still decodes it after the roll forward, naming neither.
 func TestTheWayBackTakesTheRefusedPodAndTheSessionToLeaveOffAQueuedStart(t *testing.T) {
+	t.Parallel()
 	for _, key := range []string{"refusedPod", "leaveSession"} {
 		t.Run(key, func(t *testing.T) {
 			ctx := context.Background()

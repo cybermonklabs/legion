@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { primarySpec } from "../../api/issue-cache";
 import type { IssueDetails } from "../../api/types";
@@ -22,9 +22,15 @@ import { CONTROL_LABELS } from "./page-words";
 export function useDrawerPage(issue: IssueDetails | undefined): void {
   const setPage = useMarginDrawer()?.setPage;
   const specSlug = primarySpec(issue)?.slug;
+  // One-open request set by the Details control (`IssueIdentityRow.tsx`) right before it opens
+  // the drawer, read and cleared once by `DetailsDrawer` (`Margin.tsx`).
+  const leaveFocus = useRef(false);
   const page = useMemo<MarginDrawerPage>(
     () => ({
       chrome: pageChrome,
+      leaveFocusOnNextOpen: () => {
+        leaveFocus.current = true;
+      },
       routeItem: ({ hash, pathname, search }) => {
         const route = parseIssuePath(pathname, search);
         if (route === undefined) return undefined;
@@ -32,6 +38,11 @@ export function useDrawerPage(issue: IssueDetails | undefined): void {
         return address.target?.kind === "item"
           ? { besideDocument: address.documentItem !== undefined, id: address.target.id }
           : undefined;
+      },
+      takesLeaveFocus: () => {
+        const asked = leaveFocus.current;
+        leaveFocus.current = false;
+        return asked;
       },
       words: { close: CONTROL_LABELS.close, details: CONTROL_LABELS.details },
     }),

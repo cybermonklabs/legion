@@ -288,6 +288,7 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 // TestTheResumedAgentRunsTheConfiguredModel gives: the flagged resume writes a `model_change` of
 // its own into the session.
 func TestAResumeNamingItsModelOutlivesADroppedSavedModel(t *testing.T) {
+	t.Parallel()
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
 	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")

@@ -55,6 +55,7 @@ func returnsFromChildren(t *testing.T, pool *pgxpool.Pool, engine *Engine, key s
 // the start it holds. A return as testing whatever the walk holds would have no place to move the
 // task to.
 func TestAReturnOnAWalkWithNoTesterStartsTheReviewer(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	waiting := waitsOnItsChild(t, pool, engine, "implementer", "reviewer")
@@ -96,6 +97,7 @@ func TestAReturnOnAWalkWithNoTesterStartsTheReviewer(t *testing.T) {
 // from awaiting_children (issues_held_from_check), so the stop's hold could not stand there. The
 // task keeps running at the place of the start the parent holds, and the outbox is as it was.
 func TestAStopOfAWaitingParentsTaskIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	waiting := waitsOnItsChild(t, pool, engine, "implementer", "tester")
@@ -127,6 +129,7 @@ func TestAStopOfAWaitingParentsTaskIsRefused(t *testing.T) {
 // architect is told once. When the child is done the return starts the implementer on the task
 // the restart held, which names why.
 func TestARestartUnderAnOpenChildWaitsOnTheChild(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stoppedAtTesting(t, pool, engine)
@@ -173,6 +176,7 @@ func TestARestartUnderAnOpenChildWaitsOnTheChild(t *testing.T) {
 // start is held: the root waits in awaiting_children holding step at the checker's place, and no
 // checker is started. The return once the child is done starts the checker there.
 func TestAnOpenChildHoldsTheStartOfADeploymentStep(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := deploymentEngine()
 	waiting := waitsOnItsChild(t, pool, engine, "implementer", "checker")
@@ -197,6 +201,7 @@ func TestAnOpenChildHoldsTheStartOfADeploymentStep(t *testing.T) {
 // open child holds that start, so the root waits in awaiting_children holding reviewing. The cause
 // the held start keeps names the checker, the role whose step the move ended (Walk.endingRole).
 func TestAParentAtADeploymentStepWaitsForAnOpenChild(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := deploymentEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -217,4 +222,78 @@ func TestAParentAtADeploymentStepWaitsForAnOpenChild(t *testing.T) {
 	if starts := roleStartsOf(t, pool, root.Key, claim.RoleReviewer); len(starts) != 0 {
 		t.Fatalf("the reviewer's starts during the wait = %+v, want none", starts)
 	}
+}
+
+// Every role the deployment defines runs as the one phase step, so the texts of a wait name a
+// start by its place and compare the held start's place with the return's (childrenReturn), not
+// the phases they run as. The plan `implementer checker linter` moves on from the checker's pass
+// to the linter's step 3, whose start an open child holds; the return takes that start back to the
+// checker's step 2, the first step after the implementer's, which runs as step too. So the wait
+// goes back to another place than the start it holds, and each text says so by the steps' roles:
+// the architect's notice carries the return clause naming the checker's step, and a refused
+// stop_task and the checker's return task each name both steps, the checker's, which the return
+// goes back to, before the linter's, the start it holds. The names are the test's own: a text that
+// swapped the two steps names the linter's step first, a comparison of the two phases reads the
+// return as the held start itself, and a name of the phase alone names neither role.
+func TestAWaitAtADeploymentStepNamesTheStepItGoesBackTo(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	engine := deploymentEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "checker", "linter")
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	assertWalksAt(t, pool, engine, root.Key, phase.Step, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+	mirrorChild(t, pool, cwChild, root.Key, "todo", 1)
+
+	move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
+
+	waiting := issueOf(t, pool, engine, root.Key)
+	if waiting.Phase != phase.AwaitingChildren || waiting.ChildrenWait == nil || waiting.ChildrenWait.Start != phase.Step {
+		t.Fatalf("%s after the checker's pass stands in %s holding %+v, want awaiting_children holding step", root.Key, waiting.Phase, waiting.ChildrenWait)
+	}
+	assertWalksAt(t, pool, engine, root.Key, phase.AwaitingChildren, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+	var returns childrenReturn
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		w, err := engine.walk(ctx, tx, waiting)
+		returns = w.childrenReturn(waiting.ChildrenWait.Start)
+		return err
+	})
+	const checkerStep, linterStep = "the checker's step", "the linter's step"
+	linter := waitStart{Place: record.TaskPlace{Kind: record.PlaceStep, Position: 3}, At: phase.Step, Role: "linter"}
+	checker := waitStart{Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, At: phase.Step, Role: "checker"}
+	if returns.Held != linter || returns.Back != checker || !returns.Past || !returns.moves() {
+		t.Fatalf("the wait's return = %+v, moving %t; want the linter's step 3 held and the checker's step 2 gone back to, past the implementer's, at another place",
+			returns, returns.moves())
+	}
+	if held, back := returns.Held.named(), returns.Back.named(); held != linterStep || back != checkerStep {
+		t.Fatalf("the held start is named %q and the start gone back to %q, want %q and %q", held, back, linterStep, checkerStep)
+	}
+	// backFirst fails unless text carries part whole, and part, the words goesBack or returnStarts
+	// wrote of the return, names the checker's step, which the return goes back to, before the
+	// linter's, the start it holds.
+	backFirst := func(what, text, part string) {
+		t.Helper()
+		back, held := strings.Index(part, checkerStep), strings.Index(part, linterStep)
+		if !strings.Contains(text, part) || back < 0 || held < 0 || back > held {
+			t.Fatalf("%s %q; want it to carry %q, which names %q (at %d) before %q (at %d)", what, text, part, checkerStep, back, linterStep, held)
+		}
+	}
+
+	clause := returnClause(returns)
+	told := noticesOfKind(t, pool, root.Key, AwaitingChildrenNoticeKind)
+	if !strings.Contains(clause, checkerStep) || len(told) != 1 || !strings.Contains(told[0].Reason, clause) {
+		t.Fatalf("the awaiting-children notices = %+v; want one whose reason carries the return clause %q, which names %s", told, clause, checkerStep)
+	}
+	refusal := refusedWith(t, applyFacts(t, pool, engine)("stop", ownersStop(t, waiting, "a")), waitingOnChildren, checkerStep, linterStep)
+	backFirst("the refusal of stop_task", refusal, goesBack(returns))
+
+	returnsFromChildren(t, pool, engine, root.Key)
+
+	assertWalksAt(t, pool, engine, root.Key, phase.Step, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+	checkers := roleStartsOf(t, pool, root.Key, "checker")
+	if len(checkers) == 0 || checkers[len(checkers)-1].Phase != phase.Step {
+		t.Fatalf("the checker's starts after the return = %+v; want the last of step", checkers)
+	}
+	backFirst("the checker's return task", checkers[len(checkers)-1].Task, returnStarts(returns))
 }

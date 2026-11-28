@@ -76,11 +76,10 @@ func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logge
 	}
 	deployment := ""
 	if reads.instructions != nil {
-		source := cfg.InstructionsPath
 		if err := keep(instructionsCopy{
-			source:   source,
+			source:   cfg.InstructionsPath,
 			contents: reads.instructions,
-			read:     func() ([]byte, error) { return config.ReadDeploymentInstructions(source) },
+			read:     cfg.ReadInstructions,
 			write: func(contents []byte) error {
 				return config.WriteDeploymentInstructions(contents, cfg.StateDir, cfg.Project)
 			},

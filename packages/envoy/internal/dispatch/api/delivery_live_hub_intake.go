@@ -137,10 +137,13 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 // applyFeed takes the feed seedEvents stood up, with the open P0 issues read with it, and marks
 // every view dirty: a view computed before it read the database at a moment the hub cannot place
 // against the feed's head, so it may have missed an event at or below it, which no feed will carry.
+// For the same reason it drops the P0 state recorded for a recompute's read under way (p0Heard),
+// so that recompute installs nothing over the set read here: its read may have missed an event of
+// the gap between the two feeds, which neither carried, and the mark recomputes it again anyway.
 func (h *deliveryHub) applyFeed(g *hubGeneration, taken hubEventFeed) {
 	now := h.clock.Now()
 	h.mu.Lock()
-	g.p0 = taken.p0
+	g.p0, g.p0Heard = taken.p0, nil
 	h.dirtyAllLocked(g, now)
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "events seeded", eventID: taken.feed.head})
@@ -251,7 +254,10 @@ func (h *deliveryHub) receive(g *hubGeneration, event model.Event) {
 // wrote under, while a write carrying no title takes no name away and marks nothing. Those are
 // every writer of a field the Delivery page shows (Task 0 Step 18: route has one writer, PATCH
 // /api/v1/issues/{key}, whose event is issue.updated or issue.closed). The event is the relay's,
-// shared with every other subscriber, and is only read.
+// shared with every other subscriber, and is only read. Every issue event is applied, a quiet one
+// (notify false) as surely as any other: a write that moves the priority other issues take from
+// the issue it writes appends a quiet issue.updated on each of them, and that is all that tells
+// the hub of their new priority (J3 of dispatch://INFRA-5793).
 //
 // A mark judges a view by the issues, ancestors and sessions its last answer names (none before
 // its first), while a view whose read is under way (reading, set as that read took its change
@@ -265,11 +271,7 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 	}
 	switch event.Type {
 	case "issue.created", "issue.updated", "issue.closed":
-		var issue struct {
-			Key      string `json:"key"`
-			Status   string `json:"status"`
-			Priority *int   `json:"priority"`
-		}
+		var issue issueEventP0
 		// An issue event's payload is the JSON the log holds (readEventRows).
 		payload, _ := event.Payload.(json.RawMessage)
 		key := issueKey
@@ -277,11 +279,17 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 			key = issue.Key
 		}
 		_, before := g.p0[key]
-		after := issue.Priority != nil && *issue.Priority == 0 && issue.Status != "done"
+		after, decided := issue.openP0()
+		if !decided {
+			after = before
+		}
 		if after {
 			g.p0[key] = struct{}{}
 		} else {
 			delete(g.p0, key)
+		}
+		if decided && g.p0Heard != nil {
+			g.p0Heard[key] = after
 		}
 		h.dirtyIssueLocked(g, key, before || after, now)
 	case "issue.claimed", "issue.released":
@@ -313,6 +321,60 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 			}
 		}
 	}
+}
+
+// issueEventP0 is what the hub reads of an issue event's payload, the issue (model.Issue) cut to
+// what decides whether it is an open P0. ResolvedPriority is kept raw, so a payload with no
+// resolved_priority key, which a build before dispatch://INFRA-5793 writes while a release rolls,
+// is told from one whose resolved_priority is null, an issue that resolves no priority at all.
+type issueEventP0 struct {
+	Key              string          `json:"key"`
+	Status           string          `json:"status"`
+	Priority         *int            `json:"priority"`
+	ResolvedPriority json.RawMessage `json:"resolved_priority"`
+}
+
+// openP0 is whether the payload's issue is an open P0 after its event, and whether the payload
+// decides that at all (the plan's state table "The hub's P0 set"): a done issue is none, whatever
+// its priority; else its resolved_priority is 0; else, with no resolved_priority key, its own
+// priority is 0 where it has one. A payload with no resolved_priority key and no own priority
+// decides nothing: the issue takes a priority from above that the build which wrote it does not
+// say, so the hub keeps what it knew, and an older build's edit of an issue that takes P0 from
+// above does not take it out.
+func (issue issueEventP0) openP0() (p0, decided bool) {
+	switch {
+	case issue.Status == "done":
+		return false, true
+	case issue.ResolvedPriority != nil:
+		var resolved *int
+		if err := json.Unmarshal(issue.ResolvedPriority, &resolved); err != nil {
+			return false, false
+		}
+		return isPriorityZero(resolved), true
+	case issue.Priority != nil:
+		return *issue.Priority == 0, true
+	default:
+		return false, false
+	}
+}
+
+// installP0Locked installs open, the open P0 issues a recompute's read found, as g's set, with the
+// P0 state each issue event heard since that read took its change position decided applied over
+// it (p0Heard): the event may have committed after the read passed its issue's row, and an
+// event's state stands over the read's where both speak of one issue. Once a feed was taken during
+// the read (applyFeed), p0Heard is nil and the set read with that feed stands.
+func (g *hubGeneration) installP0Locked(open map[string]struct{}) {
+	if g.p0Heard == nil {
+		return
+	}
+	for key, p0 := range g.p0Heard {
+		if p0 {
+			open[key] = struct{}{}
+		} else {
+			delete(open, key)
+		}
+	}
+	g.p0 = open
 }
 
 func (h *deliveryHub) dirtyIssueLocked(g *hubGeneration, key string, p0 bool, now time.Time) {
@@ -406,25 +468,33 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 	some := func(in func(time.Time) bool) bool { return slices.ContainsFunc(times, in) }
 	atOrAfterFrom := func(t time.Time) bool { return !t.Before(from) }
 	switch change.Kind {
-	case "session_group", "settings":
+	case delivery.ChangeKindSessionGroup, delivery.ChangeKindSettings:
 		return true
-	case "pull_request":
+	case delivery.ChangeKindPullRequest:
 		switch view.spec.kind {
-		case deliveryLiveTimeline:
-			// The waiting line reads merges before the window, so every merge before its end can move it.
+		case deliveryLiveTimeline, deliveryLiveMeasures:
+			// The timeline's waiting line reads merges before the window, and the measures'
+			// deploys_with_prs counts a deploy of the window that ships a pull request merged before
+			// it (delivery.Deploys.ShippedBy), so every merge before the window's end can move either.
 			return len(times) == 0 || some(func(t time.Time) bool { return t.Before(to) })
-		case deliveryLiveMeasures:
-			return len(times) == 0 || some(func(t time.Time) bool { return !t.Before(from) && t.Before(to) })
 		default:
 			return some(atOrAfterFrom)
 		}
-	case "run", "run_job":
+	case delivery.ChangeKindRun, delivery.ChangeKindRunJob:
 		switch change.RunKind {
 		case string(delivery.DeliveryRunKindPRChecks):
 			return view.spec.kind == deliveryLivePipeline && (len(times) == 0 || some(atOrAfterFrom))
 		case string(delivery.DeliveryRunKindDeploy):
-			// The waiting line at the window's start reads deploy runs of any age.
-			return view.spec.kind == deliveryLiveTimeline || len(times) == 0 || some(atOrAfterFrom)
+			switch view.spec.kind {
+			case deliveryLiveTimeline, deliveryLiveMeasures:
+				// The timeline's waiting line at the window's start reads deploy runs of any age,
+				// and the measures' deploys_with_prs reads the runs created before the window too:
+				// a run of any age whose production job lands late can ship a pull request a deploy
+				// of the window shipped first until then (pop.windowShipped).
+				return true
+			default:
+				return len(times) == 0 || some(atOrAfterFrom)
+			}
 		}
 	}
 	return true

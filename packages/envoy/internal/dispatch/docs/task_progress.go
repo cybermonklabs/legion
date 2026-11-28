@@ -65,12 +65,13 @@ const latestPrimaryVersion = `(
 	where a.issue_key = i.key and a.is_primary
 )`
 
-// taskProgressDrift is the issues whose stored task count is not the count of their primary
+// TaskProgressDrift is the issues whose stored task count is not the count of their primary
 // document's latest version: never counted (every row the migration that added these columns
 // found), versioned by a server that wrote no count (a build predating LEGION-542), or whose
 // latest version was written while another writer held the issue's owner lock. The predicate is a
-// plain read, so it waits on nothing.
-const taskProgressDrift = `i.tasks_version is distinct from ` + latestPrimaryVersion
+// plain read, so it waits on nothing. The issue read at a cut reads it too, through the shadows
+// (api's tasksAtTheCutStatement), so that read and the reconciliation never disagree.
+const TaskProgressDrift = `i.tasks_version is distinct from ` + latestPrimaryVersion
 
 // taskProgressBatch is how many issues one reconciliation transaction counts; between batches the
 // pool is free for requests.
@@ -87,7 +88,7 @@ const (
 )
 
 // RunTaskProgressReconciliation counts, once at start, the primary document of every issue whose
-// stored task count is not its latest version's (taskProgressDrift), in batches, so an issue
+// stored task count is not its latest version's (TaskProgressDrift), in batches, so an issue
 // nobody has edited since the columns were added shows its progress. It runs no timer after that:
 // every version write records its count in its own transaction (RecordTaskProgress,
 // RecordTaskProgressMarkdown), in this build and in the build a deploy replaces, so nothing makes
@@ -196,7 +197,7 @@ func (s *Service) reconcileTaskProgressBatch(
 		want := taskProgressBatch - len(locked)
 		rows, err := tx.Query(ctx, `
 			select i.key from issues i
-			where `+taskProgressDrift+` and i.key > $2
+			where `+TaskProgressDrift+` and i.key > $2
 			order by i.key
 			limit $1
 		`, want, after)
@@ -235,7 +236,7 @@ func (s *Service) reconcileTaskProgressBatch(
 		       ), ''),
 		       `+latestPrimaryVersion+`
 		from issues i
-		where i.key = any($1::text[]) and `+taskProgressDrift+`
+		where i.key = any($1::text[]) and `+TaskProgressDrift+`
 		order by i.key
 	`, locked)
 	if err != nil {
@@ -281,7 +282,7 @@ func (s *Service) reconcileTaskProgressBatch(
 	// once it commits; the pass asks again. The batch's own rows are left out, so the read comes
 	// before its writes and says the same as after them.
 	if err := tx.QueryRow(ctx, `
-		select exists(select 1 from issues i where `+taskProgressDrift+` and i.key <> all($1::text[]))
+		select exists(select 1 from issues i where `+TaskProgressDrift+` and i.key <> all($1::text[]))
 	`, keysOf(batch, func(issue drifted) string { return issue.key })).Scan(&remaining); err != nil {
 		return 0, false, fmt.Errorf("check remaining task count drift: %w", err)
 	}

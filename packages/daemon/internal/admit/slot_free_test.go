@@ -15,11 +15,12 @@ import (
 
 // A slot the waiting line does not refill stays free until a person hands Legion an issue; the
 // controller names it in its summary and report. Admission wakes a registered controller once per
-// fact, on the controller topic alone, naming the first root whose slot it released, whether the
-// tree finished or a human took the root out of the workflow, live or found at boot. A slot the
-// waiting line refilled wakes nobody (TestApplyFactReleasesSlotWhenEngineCompletesPhaseAndPromotesHead
-// pins that), and with no controller registered nobody is woken (the slot wakes' rule,
-// controller_wake_test.go).
+// fact, on the controller's role topic alone (the daemon's outbox publishes it there once the
+// registered controller session holds the role live), naming the first root whose slot it
+// released, whether the tree finished or a human took the root out of the workflow, live or found
+// at boot. A slot the waiting line refilled wakes nobody
+// (TestApplyFactReleasesSlotWhenEngineCompletesPhaseAndPromotesHead pins that), and with no
+// controller registered nobody is woken (the slot wakes' rule, controller_wake_test.go).
 func TestAReleasedSlotNoWaitingRootTakesWakesTheController(t *testing.T) {
 	slotFree := func(issue string) []effect {
 		return []effect{{kind: record.OutboxKindControllerNotice, issue: issue, payload: record.ControllerNotice{Kind: record.SlotFreeNotice}}}

@@ -263,6 +263,7 @@ type removedEvent struct {
 // committed; and a settlement of the document that queued behind the removal for the issue's owner
 // lock reads on only after the commit, finds the document gone and ends saying nothing of it.
 func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault).
 	// The settlement is held back for the test's duration, so an edit written into a room is
 	// still unsettled when the removal reads it. The room test below runs a server of its own,
 	// which settles.
@@ -556,7 +557,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		}
 		// The update is the document's own first one over again, which decodes and adds nothing:
 		// what the removal reads of it is its version, above the one the document's version was
-		// stamped at (writeDocumentVersion), which is an edit that has not settled.
+		// stamped at (docs.Ledger.QueueVersion), which is an edit that has not settled.
 		appended, err := appending.Exec(ctx, `
 			insert into doc_updates (artifact_id, version, update, content_changed)
 			select $1::uuid, max(version) + 1, (array_agg(update order by version desc))[1], true

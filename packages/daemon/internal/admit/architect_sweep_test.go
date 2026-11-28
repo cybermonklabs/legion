@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -163,8 +165,8 @@ func TestTheArchitectSweepReachesEveryRootWhoseArchitectIsOwedItsEntry(t *testin
 		name   string
 		change func(*architectSweepFixture)
 		// label is the shape of the first task the derivation writes for the root: the work of
-		// its entry is derived again from the record, since its row does not mark the task to be
-		// sent as written.
+		// its entry is derived again from the record, since its row keeps no wait a resume
+		// answered.
 		label string
 		why   string
 	}{
@@ -335,9 +337,9 @@ func TestTheArchitectSweepRaisesTheEntryOfARootWhoseArchitectRowNamesNone(t *tes
 		if len(starts) != 1 || starts[0].entry != 1 || starts[0].task != row.EntryTask {
 			t.Fatalf("the architect starts of %s = %+v, want the one of entry 1 carrying %q", root, starts, row.EntryTask)
 		}
-		if !strings.Contains(starts[0].task, workflow.ArchitectFreshTreeLabel) || row.EntryVerbatim {
-			t.Fatalf("the task sent to %s = %q, sent again as written %t; want the first-task instruction the derivation writes, derived again at a later send",
-				root, starts[0].task, row.EntryVerbatim)
+		if !strings.Contains(starts[0].task, workflow.ArchitectFreshTreeLabel) || row.EntryAwaiting != nil {
+			t.Fatalf("the task sent to %s = %q, wait kept %+v; want the first-task instruction the derivation writes, derived again at a later send",
+				root, starts[0].task, row.EntryAwaiting)
 		}
 
 		applySweep(t, pool, admission, "architect-raise-2")
@@ -463,27 +465,31 @@ func TestTheArchitectSweepSendsTheTaskTheDerivationGivesOverTheRecord(t *testing
 // question ask-q, alice answers it, and the admission pass of that answer resumes the root
 // (workflow.Engine.ResumeAwaitedRoot). The resume raises the architect's entry one above the entry
 // the wait began on (workflow.Engine.EnterArchitect), writes its task as the work of the raised
-// entry, and queues the architect's start at that entry. The architect took the work of the entry
-// the wait began on, so its claim stands at that entry.
+// entry and keeps beside it the wait alice answered, and queues the architect's start at that
+// entry. That start carries the wait and no text, since its task is rendered at its send from the
+// record as it stands then. The architect took the work of the entry the wait began on, so its
+// claim stands at that entry.
 //
 // The lane then finishes the resume's start row without the task reaching the claim (runStart),
 // as the outbox's fences or a lost lane leave one. The claim stands one entry below its row, and
 // the sweep is the only thing left that sends the raised entry's work. One sweep writes one
-// architect start at the raised entry, carrying the resume's own task as the row stores it
-// (workflow.Engine.SendArchitectStart): the row marks that task to be sent as written
-// (record.PhaseRow.EntryVerbatim), since it names the answer, which is the work the entry owes,
-// and no kept decision, so it claims nothing. A second sweep, while that row is still queued,
-// writes no second row.
+// architect start at the raised entry, built from the wait the row keeps
+// (workflow.Engine.SendArchitectStart): the resume's own start again, that wait and no text,
+// claiming nothing, which its send renders into the resume's task, naming the answer. A second
+// sweep, while that row is still queued, writes no second row.
 //
 // The control is the same resume with its start row left in the outbox: that row already carries
 // the raised entry (workflow.OwedEntry), so the sweep writes nothing beside it.
 func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testing.T) {
 	const root = "LEGION-100"
+	answeredAt := fixedNow
+	answered := record.Awaiting{Ask: "ask-q", Since: seqMark(10), AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
+		AnsweredDetail: "ask-q"}
 	// resumed records LEGION-100 waiting on ask-q, its architect's row and claim both at
 	// seededEntry, and applies alice's answer. It checks what the resume wrote — the root back at
-	// admitted, the architect's row one entry up carrying the resume's task, and one start row of
-	// that entry carrying the same task — and answers the pool, the admission, the row and that
-	// start.
+	// admitted, the architect's row one entry up carrying the resume's task and the wait alice
+	// answered, and one start row of that entry carrying that wait and no text, which its send
+	// renders into that same task — and answers the pool, the admission, the row and that start.
 	resumed := func(t *testing.T) (*pgxpool.Pool, *Admission, record.PhaseRow, convergeStart) {
 		t.Helper()
 		pool := migratedPool(t)
@@ -499,15 +505,15 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 			t.Fatalf("%s after alice's answer stands in %s waiting on %+v, want it resumed at admitted with no wait", root, got.Phase, got.Awaiting)
 		}
 		row := architectRow(t, pool, root)
-		if row.Entry != seededEntry+1 || !strings.Contains(row.EntryTask, "ask-q") || !row.EntryVerbatim {
-			t.Fatalf("the architect row of %s after the resume = entry %d carrying %q, sent again as written %t; want entry %d carrying the resume's task, "+
-				"which names ask-q, marked to be sent as written", root, row.Entry, row.EntryTask, row.EntryVerbatim, seededEntry+1)
+		if row.Entry != seededEntry+1 || !strings.Contains(row.EntryTask, "ask-q") || !sameWait(row.EntryAwaiting, answered) {
+			t.Fatalf("the architect row of %s after the resume = entry %d carrying %q, keeping the wait %+v; want entry %d carrying the resume's task, "+
+				"which names ask-q, and the wait %+v", root, row.Entry, row.EntryTask, row.EntryAwaiting, seededEntry+1, answered)
 		}
 		starts := architectSweepStarts(t, pool, root)
-		if len(starts) != 1 || starts[0].entry != row.Entry || starts[0].task != row.EntryTask {
-			t.Fatalf("the architect starts of %s after the resume = %+v, want the one of entry %d carrying the resume's task %q",
-				root, starts, row.Entry, row.EntryTask)
+		if len(starts) != 1 || starts[0].entry != row.Entry {
+			t.Fatalf("the architect starts of %s after the resume = %+v, want the one of entry %d", root, starts, row.Entry)
 		}
+		assertResumeStart(t, pool, root, row.Entry, answered, row.EntryTask)
 		return pool, admission, row, starts[0]
 	}
 
@@ -537,10 +543,9 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 		if starts[0].entry != row.Entry {
 			t.Fatalf("the architect start of %s after the sweep = %+v, want it at the entry %d the resume raised", root, starts[0], row.Entry)
 		}
-		if starts[0].task != row.EntryTask {
-			t.Fatalf("the task the sweep sent %s = %q, want the resume's own %q stored on the row, which names the answer",
-				root, starts[0].task, row.EntryTask)
-		}
+		// The sweep's start is the resume's own: the wait the row keeps and no text, rendered at
+		// its send into the task that names the answer.
+		assertResumeStart(t, pool, root, row.Entry, answered, row.EntryTask)
 		if after := architectRow(t, pool, root); after.Entry != row.Entry {
 			t.Fatalf("the architect row of %s after the sweep = entry %d, want the %d the resume raised: the sweep sends the work of an entry and raises none",
 				root, after.Entry, row.Entry)
@@ -564,6 +569,76 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 				root, starts, start)
 		}
 	})
+}
+
+// A person's word on a document can move between the resume that raised an entry and the sweep's
+// send of that entry again, and the send tells the person's word as it stands then
+// (dispatch://INFRA-3136/spec R2). LEGION-100 waits on its spec at version 4, and alice requests
+// changes to version 4: the admission pass of that review resumes the root, raising the
+// architect's entry with the task that asks for the revision (workflow.Engine.ResumeAwaitedRoot).
+// The resume's start is lost, and alice then approves version 4, which Dispatch records after her
+// review. The sweep's start at the resume's entry, rendered as its send renders it (startText,
+// as the daemon's rootTask renders it, through workflow.ResumeAwaitedRootTask), says the approval
+// followed the review and names no revision, and says the gate is open: what the resume would say
+// now.
+//
+// The control is the task the row keeps, which the release before this one sent again as written:
+// it asks for the revision alice's approval answered. A sweep that sent that text again fails this
+// test on it.
+func TestTheArchitectSweepsResendOfALostResumeTellsTheApprovalThatSupersededItsReview(t *testing.T) {
+	const root = "LEGION-100"
+	pool := migratedPool(t)
+	admission := quiet(t, 1)
+	awaitingRoot(t, pool, record.Awaiting{GateVersion: 4, Since: seqMark(10)})
+	putArchitectRow(t, pool, root, seededEntry, handedBackAt)
+	token := putWorkerClaim(t, pool, root, root, claim.RoleArchitect, 1, supervise.StateIdle, "")
+	markGivenEntry(t, pool, token, seededEntry)
+
+	applyFact(t, pool, admission, "changes", intake.DispatchArtifact{Key: root, ArtifactID: "artifact-root",
+		Kind: intake.DispatchArtifactChangesRequested, Version: 4, Reason: "name the rollback path", Mark: seqMark(11)})
+	if got := issue(t, pool, root); got.Phase != phase.Admitted || got.Awaiting != nil {
+		t.Fatalf("%s after alice's review stands in %s waiting on %+v, want it resumed at admitted", root, got.Phase, got.Awaiting)
+	}
+	resumed := architectRow(t, pool, root)
+	const revise = "A person requested changes to your"
+	if resumed.Entry != seededEntry+1 || resumed.EntryAwaiting == nil || resumed.EntryAwaiting.AnsweredBy != record.AnsweredByChanges ||
+		!strings.Contains(resumed.EntryTask, revise) || !strings.Contains(resumed.EntryTask, "name the rollback path") {
+		t.Fatalf("the architect row of %s after the resume = entry %d carrying %q, keeping the wait %+v; want entry %d asking for alice's "+
+			"revision and keeping the changes request's wait, or this case proves nothing", root, resumed.Entry, resumed.EntryTask,
+			resumed.EntryAwaiting, seededEntry+1)
+	}
+	answered := *resumed.EntryAwaiting
+
+	// The resume's start is lost: nothing of it reaches the claim, which stands at the entry the
+	// wait began on. Then alice approves the version she reviewed.
+	runStart(t, pool, root)
+	applyFact(t, pool, admission, "approved", intake.DispatchArtifact{Key: root, ArtifactID: "artifact-root",
+		Kind: intake.DispatchArtifactApproved, Version: 4, Mark: seqMark(12)})
+	applySweep(t, pool, admission, "resume-lost-after-the-approval")
+
+	starts := architectStartsOf(t, pool, root)
+	if len(starts) != 1 || starts[0].Entry != resumed.Entry {
+		t.Fatalf("the architect starts of %s after the approval and the sweep = %+v, want the one the sweep writes for the entry %d the resume raised",
+			root, starts, resumed.Entry)
+	}
+	if starts[0].Task != "" || !sameWait(starts[0].Awaiting, answered) {
+		t.Errorf("the sweep's start of %s = task %q answering %+v, want the resume's own start: no text, and the wait %+v the row keeps",
+			root, starts[0].Task, starts[0].Awaiting, answered)
+	}
+	sent := startText(t, pool, root, config.DesignGateRootIssues, starts[0])
+	t.Logf("the sweep's start of %s, rendered as its send renders it: %q", root, sent)
+	for _, superseded := range []string{revise, "Read the review, and revise", "name the rollback path"} {
+		if strings.Contains(sent, superseded) {
+			t.Errorf("the task sent again for entry %d is %q; it holds %q, a revision alice's approval of version 4 answered after her review",
+				resumed.Entry, sent, superseded)
+		}
+	}
+	for _, want := range []string{"was approved at version 4 after it", "asks for no revision now", workflow.DesignApprovedWake} {
+		if !strings.Contains(sent, want) {
+			t.Errorf("the task sent again for entry %d is %q; it does not say %q, which the resume says of the record as it stands now",
+				resumed.Entry, sent, want)
+		}
+	}
 }
 
 // A root a hand-over carried in is inside the reach in every phase of the run that carried it,

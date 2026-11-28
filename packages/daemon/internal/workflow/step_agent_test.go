@@ -43,6 +43,7 @@ func keyedRun(t *testing.T) (*pgxpool.Pool, record.Issue) {
 // the record of step 2 names it as its agent. An entry that named no agent started a fresh tester
 // for the second step of key a.
 func TestAKeyedAgentsTwoStepsStartOneClaim(t *testing.T) {
+	t.Parallel()
 	pool, root := keyedRun(t)
 	keyed := claim.Token(token(t, root.Key, claim.RoleImplementer))
 	row := storedPhaseRow(t, pool, root.Key, claim.RoleTester)
@@ -69,6 +70,7 @@ func TestAKeyedAgentsTwoStepsStartOneClaim(t *testing.T) {
 // tester's start carries 2, above the entry its claim was given. Counting only the tester's row
 // would give 1 again and lose the second step's task.
 func TestAnEntryRisesAcrossTheRowsOfItsClaim(t *testing.T) {
+	t.Parallel()
 	pool, root := keyedRun(t)
 	if got := storedPhaseRow(t, pool, root.Key, claim.RoleImplementer).Entry; got != 1 {
 		t.Fatalf("the implementer's row holds entry %d, want 1", got)
@@ -85,6 +87,7 @@ func TestAnEntryRisesAcrossTheRowsOfItsClaim(t *testing.T) {
 // row to entry 3 and no completion wrote a claim on it. The next entry is 4. Counting only rows
 // that name the claim would give 1, which the completion route reads as behind.
 func TestAnEntryNeverFallsBelowItsRowsOwn(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -109,6 +112,7 @@ func TestAnEntryNeverFallsBelowItsRowsOwn(t *testing.T) {
 // An issue with no plan rows names no agent of a key: the worker of its first phase starts in its
 // role's own claim, which its row names, at entry 1, one above every row of the issue (R20).
 func TestARunWithNoPlanRowsNamesNoAgent(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -139,6 +143,7 @@ func highestEntryOf(starts []record.SuperviseRequest) int64 {
 // was that same number, so the claim's queue took the task as given already, no sweep owed it, and
 // the tester's step was never sent.
 func TestAnEntryIsAboveEveryEntryItsClaimWasHandedAcrossVersions(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	apply := applyFacts(t, pool, engine)

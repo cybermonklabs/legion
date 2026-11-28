@@ -152,6 +152,7 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 // working agent is not left running on a held issue. A fact that names no claim, from a daemon
 // before the claim was carried, keeps the role's rule and holds.
 func TestOnlyTheFailureOfTheStepsWorkerHoldsTheIssue(t *testing.T) {
+	t.Parallel()
 	const keyed, own = claim.Token("legion-legion-legion-209-implementer"), claim.Token("legion-legion-legion-209-tester")
 	root := "LEGION-208"
 	for _, tc := range []struct {

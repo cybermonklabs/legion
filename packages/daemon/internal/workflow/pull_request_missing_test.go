@@ -57,6 +57,7 @@ func TestAMissingPullRequestIsToldOnlyWhileTheCompletionWaitsForOne(t *testing.T
 // step, here key a's agent, `…-checker`, which the implementer's row names on its step, and not
 // a topic spelled from the role, which reaches the implementer's own claim.
 func TestAMissingPullRequestNamesTheTopicOfTheImplementersStepWorker(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION",
 		Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})

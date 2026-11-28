@@ -50,7 +50,7 @@ A run whose output you did not capture can be neither confirmed nor cleared.
 ## The rules every phase's evidence follows
 
 - The tester tries to break the changed surface (wrong and boundary inputs, the second and the concurrent run, the party it must refuse) and writes a failing test for each way it breaks that no existing test catches.
-  Lint, types and the unit and integration suites are CI's: read them on GitHub at the head, rerun no lane as evidence, and wait for none.
+  Lint, types and the unit and integration suites are CI's: read on GitHub the ones the head ran, rerun no lane as evidence, and wait for none; a slow suite the repository holds back on a pull request has no run at the head unless a label turns it on, and that is no gap in the tester's evidence; the merge queue runs such a suite when the queue's own selection, against the queue's base, picks it, and on cybermonklabs/legion ci-ok's `not run at this head:` line names each one the head's paths select.
 
 - On a new head, the tester reruns each check the change since the head it last tested can reach (for a merge of the base, `skill://legion-worker/references/conflicts-and-rewrites.md#reading-a-merge-of-the-base`) and records each other check with no `ci_check` at the new head unrun, its `--observed` naming the earlier pass and why the merge misses it.
 

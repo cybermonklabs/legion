@@ -22,7 +22,8 @@ import (
 // on the implementer's row, so the first push of every later round moved the issue to testing and
 // started the tester on the old commit. Its handoff record is cleared with its commit when the
 // round starts, so neither reads as the new round's completion; the tester's task then names the
-// round's record, and the commit the implementer reported with it.
+// round's record with the command that reads that version and the one that reads the newest, and
+// the commit the implementer reported with it, which stands whatever a later version names.
 func TestReworkRoundAdvancesOnlyOnThatRoundsHandoff(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -59,10 +60,9 @@ func TestReworkRoundAdvancesOnlyOnThatRoundsHandoff(t *testing.T) {
 	if err := pool.QueryRow(ctx, "select payload->>'task' from outbox where kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') <> ''").Scan(&task); err != nil {
 		t.Fatalf("read the tester's start task: %v", err)
 	}
-	for _, want := range []string{"Handoff: implement version 2 (dispatch handoff-read --issue LEGION-208 --phase implement --version 2).", "Handoff commit: round-1."} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("tester task %q, want it to carry %q", task, want)
-		}
+	assertNamesTheHandoff(t, task, "LEGION-208", "implement", 2)
+	if want := "Handoff commit: round-1. Where a later version names another head, the head this task names is still round-1."; !strings.Contains(task, want) {
+		t.Fatalf("tester task %q, want it to carry %q", task, want)
 	}
 }
 
@@ -456,6 +456,7 @@ func TestAnImplementerHandoffAfterAMergeInImplementingMovesTheIssueToTesting(t *
 // moves nothing; the row still names key a's agent, unreported, so later starts and messages of
 // the step still reach it. Key a's agent's own completion is not refused for it.
 func TestACompletionFromAClaimThatDoesNotWorkTheStepIsRefused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
@@ -504,6 +505,7 @@ func testerCompletes(t *testing.T, row record.PhaseRow, token claim.Token) intak
 // that runs no step of the plan — names no worker, so the completion is judged by its role, as
 // before the fence: the tester's own claim completes testing.
 func TestACompletionOnARowThatNamesNoClaimIsJudgedByItsRole(t *testing.T) {
+	t.Parallel()
 	for name, row := range map[string]record.PhaseRow{
 		"a step row that names no claim": {Issue: "LEGION-208", Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 1},
 		"a row that runs no step":        {Issue: "LEGION-208", Role: claim.RoleTester, Claim: "legion-legion-legion-208-implementer"},
@@ -517,6 +519,7 @@ func TestACompletionOnARowThatNamesNoClaimIsJudgedByItsRole(t *testing.T) {
 // The role's own claim, where the row names it on its step, works the step: its completion is
 // not refused.
 func TestTheRolesOwnClaimTheRowNamesCompletesItsStep(t *testing.T) {
+	t.Parallel()
 	const own = claim.Token("legion-legion-legion-208-tester")
 	row := record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: own, StepTask: "a", StepPlace: 2, Entry: 1}
 	if result := testerCompletes(t, row, own); result.Refusal != nil {

@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 
 import type { IssueDetails } from "../../api/types";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   focusBorder,
   focusVisibleRing,
@@ -20,7 +21,7 @@ import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 /**
  * The colours of each editor and its buttons, the new issue page's, which alone draws them, in a
  * row of Details: the box as the page's other boxes in Details are drawn (`RepoControl.tsx`'s box,
- * `AskCard.tsx`'s answer box) - the page's hairline rule, its paper and its ink, the placeholder in
+ * `AskBody.tsx`'s answer box) - the page's hairline rule, its paper and its ink, the placeholder in
  * the quiet grey, and `main`'s focus rule, the application's one focus indicator - and the route's
  * refusal in the failed red. Save is the page's bordered action (`ApprovalChip.tsx`'s): its rule,
  * its paper and the muted grey, which turns ink under the pointer while Save takes a press and
@@ -143,6 +144,8 @@ export function FormActions({
  *  Escape would close the editor and the whole sheet with it. A press stopped here reaches no
  *  listener above the form either. A press that ends an IME composition gives up what the reader
  *  was composing, not the editor: the form leaves it alone, unmarked, as the registry does. */
+// Safari's press that ends a composition, after its compositionend, is the exception: the guard
+// below marks it, so no enclosing Escape takes it either.
 function EditorForm({
   cancel,
   children,
@@ -156,7 +159,15 @@ function EditorForm({
     <form
       className="flex w-full min-w-0 flex-wrap items-center gap-2"
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+        if (event.key !== "Escape") return;
+        if (inputMethodKey(event.nativeEvent)) {
+          // The input method's Escape that arrives after its compositionend (Safari's keyCode 229,
+          // `isComposing` false) is marked with preventDefault, so the key registry, which skips
+          // only a press still composing (`shell/keymap.ts`), leaves it alone too, and the editor
+          // is not cancelled. A press still composing is the input method's alone.
+          if (!event.nativeEvent.isComposing) event.preventDefault();
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         cancel();

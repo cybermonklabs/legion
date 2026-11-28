@@ -7,16 +7,16 @@ import (
 	"path/filepath"
 )
 
-// Set is what ReadSet read of one directory: each note by its name inside the directory, with its
-// content, and each entry that is not a note, in name order.
+// Set is what ReadSet read of one directory: each file that it keeps by its name inside the
+// directory, with its content, and each entry that it does not keep, in name order.
 type Set struct {
 	Files    map[string][]byte
 	Rejected []Rejected
 }
 
-// Rejected is an entry of the directory that FileKind and IsNote reject: its path, the
-// directory's path joined with its name, and its kind. A command warns of it, since the importer
-// passes over such an entry in silence and its author expects it to count.
+// Rejected is an entry of the directory that FileKind and the keep rule of ReadSet reject: its
+// path, the directory's path joined with its name, and its kind. A command warns of it, since the
+// importer passes over such an entry in silence and its author expects it to count.
 type Rejected struct {
 	Path string
 	Kind Kind
@@ -25,9 +25,10 @@ type Rejected struct {
 // ErrNoDirectory is ReadSet's answer for a directory that does not exist.
 var ErrNoDirectory = errors.New("does not exist")
 
-// SizeRefusal is the bound's refusal of a set: one CheckSize error for each note above
-// MaxFileSize, each naming the note's path. A command reads it as a refused set, as it reads a
-// Parse problem; Held is the number of notes the set holds, and no note of it was parsed.
+// SizeRefusal is the bounds' refusal of a set: one CheckSet error for a set over MaxFiles or
+// MaxSetSize, else one CheckSize error for each note above MaxFileSize, each naming the note's
+// path. A command reads it as a refused set, as it reads a Parse problem; Held is the number of
+// notes the set holds, and no note of it was parsed.
 type SizeRefusal struct {
 	Held     int
 	Problems []error
@@ -36,15 +37,17 @@ type SizeRefusal struct {
 func (r *SizeRefusal) Error() string   { return errors.Join(r.Problems...).Error() }
 func (r *SizeRefusal) Unwrap() []error { return r.Problems }
 
-// ReadSet reads the note set of the directory fsys holds, whose path is dir: each entry FileKind
-// and IsNote accept, by name, with its content, and each entry they reject, in name order. It
-// checks the size of every note with CheckSize before it reads any, as the server's GitHub reader
-// refuses a listing before any blob read, and the length of each note it read again, as that
-// reader checks each blob; either refusal is a *SizeRefusal and answers no files. A directory
-// that does not exist is ErrNoDirectory, and any other failure to read it or a note is
-// cannotRead's "cannot be read" error. The Set's Rejected holds every entry rejected before the
-// failure, so a caller can warn of them whatever the error.
-func ReadSet(fsys fs.FS, dir string) (Set, error) {
+// ReadSet reads the set of files of the directory fsys holds, whose path is dir: each entry whose
+// name and FileKind keep accepts (IsNote for the notes of .dispatch/architecture, specgraph.IsFile
+// for the spec files of .dispatch/spec), by name, with its content, and each entry it rejects, in
+// name order. Before it reads any file, it checks the set's count and the sum of its sizes with
+// CheckSet, and then the size of every file with CheckSize, as the server's GitHub reader refuses
+// a listing before any blob read. Once they are read, it checks the length of each file and their
+// sum again, as that reader checks each blob. Any of these refusals is a *SizeRefusal and answers
+// no files. A directory that does not exist is ErrNoDirectory, and any other failure to read it or
+// a file is cannotRead's "cannot be read" error. The Set's Rejected holds every entry rejected
+// before the failure, so a caller can warn of them whatever the error.
+func ReadSet(fsys fs.FS, dir string, keep func(name string, kind Kind) bool) (Set, error) {
 	entries, err := fs.ReadDir(fsys, ".")
 	if errors.Is(err, fs.ErrNotExist) {
 		return Set{}, ErrNoDirectory
@@ -55,9 +58,10 @@ func ReadSet(fsys fs.FS, dir string) (Set, error) {
 	var set Set
 	var names []string
 	var refusals []error
+	var listed int64
 	for _, entry := range entries {
 		kind := FileKind(entry.Type())
-		if !IsNote(entry.Name(), kind) {
+		if !keep(entry.Name(), kind) {
 			set.Rejected = append(set.Rejected, Rejected{Path: filepath.Join(dir, entry.Name()), Kind: kind})
 			continue
 		}
@@ -68,12 +72,17 @@ func ReadSet(fsys fs.FS, dir string) (Set, error) {
 		if err := CheckSize(filepath.Join(dir, entry.Name()), info.Size()); err != nil {
 			refusals = append(refusals, err)
 		}
+		listed += info.Size()
 		names = append(names, entry.Name())
+	}
+	if err := CheckSet(dir, len(names), listed); err != nil {
+		return set, &SizeRefusal{Held: len(names), Problems: []error{err}}
 	}
 	if len(refusals) > 0 {
 		return set, &SizeRefusal{Held: len(names), Problems: refusals}
 	}
 	files := make(map[string][]byte, len(names))
+	var read int64
 	for _, name := range names {
 		content, err := fs.ReadFile(fsys, name)
 		if err != nil {
@@ -83,6 +92,10 @@ func ReadSet(fsys fs.FS, dir string) (Set, error) {
 			refusals = append(refusals, err)
 		}
 		files[name] = content
+		read += int64(len(content))
+	}
+	if err := CheckSet(dir, len(names), read); err != nil {
+		return set, &SizeRefusal{Held: len(names), Problems: []error{err}}
 	}
 	if len(refusals) > 0 {
 		return set, &SizeRefusal{Held: len(names), Problems: refusals}

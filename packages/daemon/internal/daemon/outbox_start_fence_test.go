@@ -16,6 +16,7 @@ import (
 // phases rows for the entry fence alone, so a row that fails an earlier fence, a start of no entry
 // and a root architect's start, which names no phase, read none; a failed read is the row's error.
 func TestAStartRowNamesTheFirstFenceItFailsAndReadsThePhasesRowsForTheEntryAlone(t *testing.T) {
+	t.Parallel()
 	checking := record.Issue{Key: "LEGION-208", Phase: phase.Step, StepRole: "checker", Generation: 2}
 	rows := []record.PhaseRow{{Issue: "LEGION-208", Role: "checker", Entry: 5}}
 	for _, tc := range []struct {

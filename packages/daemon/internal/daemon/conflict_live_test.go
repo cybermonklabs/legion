@@ -5,12 +5,13 @@
 // (dispatch://INFRA-4374), and conflict_merger_live_test.go's, a conflict past the review that the
 // merger merges forward (cybermonklabs/legion#4979). Each driver embeds conflictLive, liveIssueProof
 // (live_issue_proof_test.go) grown for a conflict: the daemon booted with its own log kept in
-// memory as it is written, which the steps read the daemon's decisions of a conflicting head from;
-// what the listener stand-in took on each role topic of an issue since a step's baseline; the
-// notices the issue's architect took since then; the wait for the outbox to have published every
-// message of an issue; the read of a role's connection that must stay silent; and what GitHub
-// answers of the base branch for a head it answers conflicting. What one proof alone drives stays
-// in its driver.
+// memory as it is written, which the steps read the daemon's decisions of a conflicting head from,
+// and with the listener stand-in refusing a publish to a role no session holds, as the real
+// listener does; what the listener stand-in took on each role topic of an issue since a step's
+// baseline; the notices the issue's architect took since then; the wait for the outbox to have
+// published every message of an issue; the read of a role's connection that must stay silent; and
+// what GitHub answers of the base branch for a head it answers conflicting. What one proof alone
+// drives stays in its driver.
 package daemon
 
 import (
@@ -55,8 +56,8 @@ const conflictSecondReadBound = 3 * time.Minute
 
 // conflictLive is what a live proof of a conflicting head holds beyond liveIssueProof: the daemon's
 // own log, kept in memory as it is written, and how many messages each role topic of the issue had
-// taken at the step's baseline, so a later step reads what the conflict sent apart from anything
-// before it.
+// taken, and how many publishes the listener had refused on each, at the step's baseline, so a
+// later step reads what the conflict sent apart from anything before it.
 type conflictLive struct {
 	liveIssueProof
 	// logged is the daemon's own log, kept in memory as it is written, which the steps read the
@@ -64,19 +65,27 @@ type conflictLive struct {
 	logged *recordingLog
 	// heard is how many messages each role topic of the issue had taken at the baseline a step set.
 	heard map[claim.Role]int
+	// refused is how many publishes the listener had refused on each role topic of the issue at
+	// that baseline (refusalsOn).
+	refused map[claim.Role]int
 }
 
 // bootLogged boots the daemon as liveIssueProof.boot does, with the daemon's own log also kept in
 // memory as it is written (recordingLog, as sub_architect_live_test.go keeps it), since the steps
-// read what the daemon decided of a conflicting head from the lines it logs for it.
+// read what the daemon decided of a conflicting head from the lines it logs for it. The listener
+// stand-in refuses a publish to a role no session holds, as the real listener does
+// (noticeListener's refuseUnheldRoles), and records each such refusal (refusalsOn): a held message
+// waits until a session holds its role (the daemon's deliverHeld), and the holder the stand-in
+// names is the session liveIssueProof.register registered.
 func (r *conflictLive) bootLogged() {
 	r.t.Helper()
 	r.rt.InPod = true
+	r.notices.refuseUnheldRoles()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
 	r.logged = newRecordingLog(r.log())
-	r.d = startDaemonWithin(r.t, r.cfg, o, slog.New(r.logged), 60*time.Second)
+	r.d = startDaemonLogging(r.t, r.cfg, o, slog.New(r.logged))
 }
 
 // silent holds that the daemon sends this role's connection nothing at all for within: the RPC
@@ -137,6 +146,20 @@ func (r *conflictLive) heardOn(issue string) map[claim.Role]int {
 		heard[role] = len(r.notices.acceptedOn(r.roleTopic(issue, role)))
 	}
 	return heard
+}
+
+// refusalsOn is how many publishes the listener has refused on the role topic of each of issue's
+// roles, the architect's among them (noticeListener's refusedOn). The listener refuses a publish to
+// a role no session holds (bootLogged), so each is a message the daemon tried to send to a role
+// nobody holds, and a step that says a topic took nothing expects no refusal on it either: a role
+// message the listener refuses ends undelivered, as does a notice to an architect whose claim
+// ended (the outbox's roleMessage and noticeAnswered), and neither is ever counted as heard.
+func (r *conflictLive) refusalsOn(issue string) map[claim.Role]int {
+	refused := map[claim.Role]int{}
+	for _, role := range claim.Roles {
+		refused[role] = len(r.notices.refusedOn(r.roleTopic(issue, role)))
+	}
+	return refused
 }
 
 // awaitHeard waits up to bound for the role topic of role on the issue to have taken count messages

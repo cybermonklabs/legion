@@ -52,6 +52,7 @@ import { GitHubLink } from "../issue/GitHubLink";
 import type { StepEntry } from "../issue/gated-steps";
 import { componentsControlName, IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
+import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl, PriorityEditor } from "../issue/PriorityControl";
 import { RepoControl } from "../issue/RepoControl";
 import {
@@ -803,12 +804,12 @@ const MOUNTS: readonly Mount[] = [
     name: "PriorityControl and PriorityEditor, both variants, set and not",
     node: () => (
       <>
-        <PriorityControl issueKey="CORE-1" priority={0} />
-        <PriorityControl issueKey="CORE-2" priority={null} />
+        <PriorityControl issueKey="CORE-1" priority={issuePriority({ priority: 0 })} />
+        <PriorityControl issueKey="CORE-2" priority={issuePriority({ priority: null })} />
         <PriorityEditor
           issueKey="CORE-3"
           variant="header"
-          write={{ ...idlePriorityWrite, shown: 1 }}
+          write={{ ...idlePriorityWrite, shown: issuePriority({ priority: 1 }) }}
         />
         <PriorityEditor issueKey="CORE-4" variant="header" write={idlePriorityWrite} />
       </>
@@ -1467,8 +1468,9 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
     [
       "alice",
       localTime("2026-10-08T00:00:00Z"),
-      "Copy reference dispatch://CORE-1/ask/ask-2",
+      // The card's reference stands under the ask body, after its submit (INFRA-5702 R16).
       "Add a reason to send Request changes",
+      "Copy reference dispatch://CORE-1/ask/ask-2",
     ],
   ],
   // The priorities' line draws each priority as its chip (`PriorityChip`), which carries the
@@ -2122,6 +2124,7 @@ function wrapOffences(mountName: string, value: Element, root: Element): string[
  */
 const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
+  "features/ask-body/AskBody.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskCard.tsx",
   "features/inbox/AskThread.tsx",

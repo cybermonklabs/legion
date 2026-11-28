@@ -9,8 +9,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -35,12 +38,14 @@ const sendStateSender = "ses_state_sender"
 // connection of its own (sessionConsumerRig), so a registration gets the consumer every
 // registration needs, and with the known-session store open, as main wires the routes with every
 // store open. clock is what that store stamps each record with and reads its 30-day retention and
-// its refresh age against; a test moves it.
+// its refresh age against; a test moves it. The store's own goroutines read it too - its sweeper's
+// marker pass, every kvchunk.MarkerGrace until the store stops - so it is a listenerClock, moved
+// under a lock.
 type knownSessionRig struct {
 	*sessionConsumerRig
 	known *session.KnownSessions
 	url   string
-	clock time.Time
+	clock *listenerClock
 }
 
 func newKnownSessionRig(t *testing.T) *knownSessionRig {
@@ -58,8 +63,8 @@ func newKnownSessionRig(t *testing.T) *knownSessionRig {
 // one whose grant it set among them.
 func newKnownSessionRigOn(t *testing.T, client *bus.Client, url string) *knownSessionRig {
 	t.Helper()
-	rig := &knownSessionRig{sessionConsumerRig: newSessionConsumerRigOn(t, client, url), url: url, clock: time.Now()}
-	rig.known = openKnownSessionsOn(t, client.Conn, func() time.Time { return rig.clock })
+	rig := &knownSessionRig{sessionConsumerRig: newSessionConsumerRigOn(t, client, url), url: url, clock: &listenerClock{now: time.Now()}}
+	rig.known = openKnownSessionsOn(t, client.Conn, rig.clock.Now)
 	// The routes read the deps they were built over at each request, so the store set here is the
 	// one every route below answers from. The confirmation record is the publish route's own, as
 	// main wires it, for a role send.
@@ -157,6 +162,16 @@ func (rig *sessionConsumerRig) register(t *testing.T, sessionID string, fields m
 	rig.post(t, "/v1/interests/subscribe", string(encoded))
 }
 
+// deliveryModes is fields with the capabilities of a session whose conversation takes messages:
+// the three delivery modes a plugin advertises once something writes into its conversation. A
+// probed session that advertises none answers a plain send no_receiver (sendHandler), so a test
+// that wants connected registers these.
+func deliveryModes(fields map[string]any) map[string]any {
+	registration := map[string]any{"capabilities": []string{"aside", "btw", "steer"}}
+	maps.Copy(registration, fields)
+	return registration
+}
+
 // stop ends sessionID the way a session that shuts down cleanly does, through the real route: its
 // session entry goes, its consumer after it, and its known-session record stays, moved to the
 // store's clock.
@@ -195,9 +210,9 @@ type sendAnswer struct {
 	Error          string `json:"error"`
 }
 
-// sendThroughRoutes sends one message to target through a listener's own /v1 routes. fields
+// sendRequest is one send of a message to target, as a listener's /v1 routes take it. fields
 // overrides or adds to the request's defaults, "connected_only" and "payload" among them.
-func sendThroughRoutes(t *testing.T, mux *http.ServeMux, target string, fields map[string]any) sendAnswer {
+func sendRequest(t *testing.T, target string, fields map[string]any) *http.Request {
 	t.Helper()
 	body := map[string]any{
 		"target_session": target,
@@ -210,19 +225,71 @@ func sendThroughRoutes(t *testing.T, mux *http.ServeMux, target string, fields m
 	if err != nil {
 		t.Fatal(err)
 	}
-	recorder := httptest.NewRecorder()
-	started := time.Now()
-	mux.ServeHTTP(recorder, postJSON("/v1/messages/send", string(encoded)))
-	answer := sendAnswer{status: recorder.Code, raw: recorder.Body.String(), elapsed: time.Since(started)}
+	return postJSON("/v1/messages/send", string(encoded))
+}
+
+// readSendAnswer decodes the answer a send's route wrote.
+func readSendAnswer(t *testing.T, recorder *httptest.ResponseRecorder) sendAnswer {
+	t.Helper()
+	answer := sendAnswer{status: recorder.Code, raw: recorder.Body.String()}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the send answer %s: %v", answer.raw, err)
 	}
 	return answer
 }
 
+// sendThroughRoutes sends one message to target through a listener's own /v1 routes
+// (sendRequest), and times the route (sendAnswer.elapsed).
+func sendThroughRoutes(t *testing.T, mux *http.ServeMux, target string, fields map[string]any) sendAnswer {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := sendRequest(t, target, fields)
+	started := time.Now()
+	mux.ServeHTTP(recorder, request)
+	elapsed := time.Since(started)
+	answer := readSendAnswer(t, recorder)
+	answer.elapsed = elapsed
+	return answer
+}
+
 func (rig *knownSessionRig) send(t *testing.T, target string, fields map[string]any) sendAnswer {
 	t.Helper()
 	return sendThroughRoutes(t, rig.mux, target, fields)
+}
+
+// sendInBackground sends one message to target through the rig's routes on a goroutine of its
+// own, and answers the channel its recorder arrives on once the route has answered.
+func (rig *knownSessionRig) sendInBackground(t *testing.T, target string, fields map[string]any) <-chan *httptest.ResponseRecorder {
+	t.Helper()
+	request := sendRequest(t, target, fields)
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		rig.mux.ServeHTTP(recorder, request)
+		answered <- recorder
+	}()
+	return answered
+}
+
+// stillClock puts the rig's routes on a fake clock the row never moves (listenerDeps.clock), and
+// a registration's consumer calls with them (sessionDelivery.clock), so no bound the routes arm
+// on it - the probe's second, the sender stamp's, the send's budget, a registration's consumer
+// calls' - can end: a send answered on it (sendOnStillClock) is answered by no wait of the route's
+// own. It is called before the row's first request.
+func (rig *knownSessionRig) stillClock() *clocktest.Fake {
+	fake := clocktest.New(time.Now())
+	rig.deps.clock = fake
+	rig.deps.consumers.clock = fake
+	return fake
+}
+
+// sendOnStillClock sends one message to target with the rig on its still clock (stillClock) and
+// waits for the answer through the shared wait, so a route that waited on a bound of its own is
+// named by that wait rather than read as slow.
+func (rig *knownSessionRig) sendOnStillClock(t *testing.T, target string, fields map[string]any) sendAnswer {
+	t.Helper()
+	return readSendAnswer(t, testwait.Receive(t, "the send to "+target+" to answer with the routes' clock unmoved",
+		rig.sendInBackground(t, target, fields)))
 }
 
 // requireAnswer fails the test unless answer is a 200 carrying state and recipientState.
@@ -293,6 +360,9 @@ func awaitNoRelaySubscriber(t *testing.T, uri, sessionID string) {
 	}
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: a send answered inside 1.5 s once the connection's close is seen.
+//
 // A session whose NATS connection closed with its entry still in place reads stopped, and reads
 // it inside a second and a half of the request, with last_seen its entry's and recipient_state
 // its entry's age: the probe wins over age.
@@ -303,13 +373,15 @@ func awaitNoRelaySubscriber(t *testing.T, uri, sessionID string) {
 // can only come from the closed connection. The plugin's connection runs through a proxy, whose
 // cut closes it as a network that ends it does.
 func TestASendReadsASessionWhoseConnectionClosedAsStopped(t *testing.T) {
+	// Not parallel: it requires the send to answer within 1.5 s of a session whose connection
+	// closed, half a second past the probe's 1 s connectionProbeTimeout.
 	rig := newKnownSessionRig(t)
 	startSecondListener(t, rig.url)
 
 	const checked = "ses_cut_connection"
 	proxy := testnats.StartProxy(t, rig.url)
 	plugin := startSessionStandInOn(t, testnats.Connect(t, proxy.URL()), checked, answerDone)
-	rig.register(t, checked, nil)
+	rig.register(t, checked, deliveryModes(nil))
 
 	connected := rig.send(t, checked, nil)
 	connected.requireAnswer(t, "a send to a session whose plugin holds its relay subject", sessionStateConnected, session.Live)
@@ -346,6 +418,9 @@ func asListenerUser(t *testing.T, uri string) string {
 	return parsed.String()
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: a send answered inside 1.5 s with no probe.
+//
 // A listener whose NATS user may not publish the probe answers connected, at once, and logs why.
 // The denial is the server's own - the user may publish every subject but the relay subjects - so
 // the probe comes back as bus.ErrPublishDenied from internal/bus's own detection and not from an
@@ -356,6 +431,8 @@ func asListenerUser(t *testing.T, uri string) string {
 // probed, because the publish never leaves this listener, so connected here is the denial's
 // answer and not a reply's.
 func TestASendAnswersConnectedWhenTheListenerMayNotProbe(t *testing.T) {
+	// Not parallel: it requires the send whose probe the server denies to answer within 1.5 s,
+	// half a second past the probe's 1 s connectionProbeTimeout.
 	_, uri := testnats.StartConfig(t, listenerGrant(bus.DeliverSubjectPrefix+">"), []string{"-js"}, false)
 	uri = asListenerUser(t, uri)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -368,7 +445,7 @@ func TestASendAnswersConnectedWhenTheListenerMayNotProbe(t *testing.T) {
 
 	const denied = "ses_denied_probe"
 	plugin := startSessionStandIn(t, uri, denied, answerDone)
-	rig.register(t, denied, nil)
+	rig.register(t, denied, deliveryModes(nil))
 
 	answer := rig.send(t, denied, nil)
 
@@ -391,6 +468,8 @@ func TestASendAnswersConnectedWhenTheListenerMayNotProbe(t *testing.T) {
 // control is the same session registered in consumer mode, its entry now recording consumer
 // delivery, with still nothing on its relay subject: that one is probed, and reads stopped.
 func TestASendToAnEntryWithoutConsumerDeliveryIsNotProbed(t *testing.T) {
+	// Not parallel: it requires the send to an entry it must not probe to answer within 900 ms,
+	// just under the probe's 1 s connectionProbeTimeout.
 	rig := newKnownSessionRig(t)
 	startSecondListener(t, rig.url)
 
@@ -414,16 +493,21 @@ func TestASendToAnEntryWithoutConsumerDeliveryIsNotProbed(t *testing.T) {
 	probed.requireAnswer(t, "the same session in consumer mode, nothing on its relay subject", sessionStateStopped, session.Live)
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: an answer after the probe's 1 s of silence and inside the route's 3.5 s budget.
+//
 // A subscriber on the session's relay subject that never answers reads connected, after the
 // probe's second of silence and inside the send's budget. The subscriber heard the probe as the
 // probe is sent: the one header Envoy-Probe: 1, none of a relay frame's headers - which would have
 // it decode as a frame and move the session's resume point - and no body.
 func TestASilentRelaySubscriberReadsConnected(t *testing.T) {
+	// Not parallel: it requires the send to answer within the 3.5 s sendRequestBudget after a
+	// probe that waits out its 1 s connectionProbeTimeout.
 	rig := newKnownSessionRig(t)
 	startSecondListener(t, rig.url)
 
 	const quiet = "ses_silent_subscriber"
-	rig.register(t, quiet, nil)
+	rig.register(t, quiet, deliveryModes(nil))
 	conn := testnats.Connect(t, rig.url)
 	t.Cleanup(conn.Close)
 	heard := make(chan *natsgo.Msg, 4)
@@ -485,7 +569,7 @@ func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
 	if unknown.status != http.StatusNotFound {
 		t.Fatalf("a send to a session neither store knows: status %d, body %s; want 404", unknown.status, unknown.raw)
 	}
-	if !strings.HasPrefix(unknown.Error, "no live session ses_never_registered") {
+	if !strings.HasPrefix(unknown.Error, contracts.NoLiveSession+" ses_never_registered") {
 		t.Fatalf("the 404 reads %q, want it to open with the session it names", unknown.Error)
 	}
 
@@ -497,7 +581,7 @@ func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
 	young := rig.send(t, aged, nil)
 	young.requireAnswer(t, "a send to a session with a fresh record", sessionStateStopped, session.Gone)
 
-	rig.clock = rig.clock.Add(session.KnownSessionRetention + time.Hour)
+	rig.clock.Advance(session.KnownSessionRetention + time.Hour)
 	if _, known := rig.known.Get(aged); known {
 		t.Fatalf("the store still answers a record of %s past its retention, so the route's answer shows nothing", aged)
 	}
@@ -505,7 +589,7 @@ func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
 	if old.status != http.StatusNotFound {
 		t.Fatalf("a send to a session whose record aged out: status %d, body %s; want 404", old.status, old.raw)
 	}
-	if !strings.HasPrefix(old.Error, "no live session "+aged) {
+	if !strings.HasPrefix(old.Error, contracts.NoLiveSession+" "+aged) {
 		t.Fatalf("the 404 reads %q, want it to open with the session it names", old.Error)
 	}
 }
@@ -602,7 +686,7 @@ func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 
 	const live = "ses_switch_connected"
 	plugin := startSessionStandIn(t, rig.url, live, answerDone)
-	rig.register(t, live, nil)
+	rig.register(t, live, deliveryModes(nil))
 	answer := rig.send(t, live, map[string]any{"connected_only": true})
 	answer.requireAnswer(t, "a connected_only send to a connected session", sessionStateConnected, session.Live)
 	if probed := plugin.probed.Load(); probed != 1 {
@@ -611,7 +695,8 @@ func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 }
 
 // awaitWake waits on wakes for the wake report of kind naming name (wakeNamed), skipping every
-// other report, and fails the test when none arrives within the bound.
+// other report but one a check of the running test forbade on wakes (forbidWake), on which it
+// fails, and fails the test when none arrives within the bound.
 func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 	t.Helper()
 	deadline := time.Now().Add(listenerWaitBound(t))
@@ -620,8 +705,78 @@ func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 		if err != nil {
 			t.Fatalf("no %s wake report named %s: %v", kind, name, err)
 		}
-		if wakeNamed(wakeReportIn(t, msg), kind, name) {
+		report := wakeReportIn(t, msg)
+		if wakeNamed(report, kind, name) {
 			return
+		}
+		requireNotForbidden(t, wakes, report)
+	}
+}
+
+// requireNoWake forbids a report of kind naming name on wakes for the rest of the test
+// (forbidWake), then reads wakes until no report has arrived for half a second, and fails on a
+// forbidden one. A report is published off the route's path, each on a goroutine of its own, so
+// the quiet alone does not tell a report that will never come from a late one: the forbiddance
+// makes every later read of wakes in the test, the awaitWake of a control's report among them,
+// fail on that report rather than skip it.
+func requireNoWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
+	t.Helper()
+	forbidWake(t, wakes, kind, name)
+	for {
+		msg, err := wakes.NextMsg(500 * time.Millisecond)
+		if errors.Is(err, natsgo.ErrTimeout) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("read the wake reports: %v", err)
+		}
+		requireNotForbidden(t, wakes, wakeReportIn(t, msg))
+	}
+}
+
+// wakeTarget is a wake report's kind and the name it carries in the field that kind names
+// (wakeNamed).
+type wakeTarget struct{ kind, name string }
+
+// forbiddenWakes is, for each wake subscription, the reports the running tests forbade on it.
+var forbiddenWakes = struct {
+	sync.Mutex
+	on map[*natsgo.Subscription][]wakeTarget
+}{on: map[*natsgo.Subscription][]wakeTarget{}}
+
+// forbidWake makes a report of kind naming name on wakes fail every later read of wakes by
+// awaitWake and requireNoWake until t ends: a subtest's forbiddance ends with the subtest, though
+// its rig's subscription outlives it.
+func forbidWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
+	t.Helper()
+	target := wakeTarget{kind, name}
+	forbiddenWakes.Lock()
+	defer forbiddenWakes.Unlock()
+	if slices.Contains(forbiddenWakes.on[wakes], target) {
+		return
+	}
+	forbiddenWakes.on[wakes] = append(forbiddenWakes.on[wakes], target)
+	t.Cleanup(func() {
+		forbiddenWakes.Lock()
+		defer forbiddenWakes.Unlock()
+		left := slices.DeleteFunc(forbiddenWakes.on[wakes], func(each wakeTarget) bool { return each == target })
+		if len(left) == 0 {
+			delete(forbiddenWakes.on, wakes)
+			return
+		}
+		forbiddenWakes.on[wakes] = left
+	})
+}
+
+// requireNotForbidden fails the test when report is one a check forbade on wakes (forbidWake).
+func requireNotForbidden(t *testing.T, wakes *natsgo.Subscription, report wakeReport) {
+	t.Helper()
+	forbiddenWakes.Lock()
+	forbidden := slices.Clone(forbiddenWakes.on[wakes])
+	forbiddenWakes.Unlock()
+	for _, each := range forbidden {
+		if wakeNamed(report, each.kind, each.name) {
+			t.Fatalf("a %s wake report named %s, want none", each.kind, each.name)
 		}
 	}
 }
@@ -686,10 +841,13 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 	if probeStopped.LastSeen != entry.UpdatedAt {
 		t.Fatalf("the probe-stopped answer's last_seen = %d, want the entry's %d: %s", probeStopped.LastSeen, entry.UpdatedAt, probeStopped.raw)
 	}
+	// A report is published off the route's path, so one naming the probe-stopped session could
+	// arrive among the controls' reports below: from here on it fails every read of wakes.
+	forbidWake(t, wakes, wakeKindAgent, unheld)
 
 	const cleanlyStopped = "ses_wake_clean_stop"
 	rig.register(t, cleanlyStopped, nil)
-	rig.clock = rig.clock.Add(time.Minute)
+	rig.clock.Advance(time.Minute)
 	rig.stop(t, cleanlyStopped)
 	record := rig.record(t, cleanlyStopped)
 	stopped := rig.send(t, cleanlyStopped, nil)
@@ -712,21 +870,9 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 	}
 	awaitWake(t, wakes, wakeKindAgent, pastHorizon)
 
-	// Every wake report the three sends raised has arrived by now: each is published off the
-	// route's path in the order the sends raised them, and the last two have been read. A report
-	// naming the probe-stopped session would be among them.
-	for {
-		msg, err := wakes.NextMsg(500 * time.Millisecond)
-		if errors.Is(err, natsgo.ErrTimeout) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("read the wake reports: %v", err)
-		}
-		if wakeNamed(wakeReportIn(t, msg), wakeKindAgent, unheld) {
-			t.Fatalf("the send to the probe-stopped %s raised a wake report", unheld)
-		}
-	}
+	// The waits above fail on a report naming the probe-stopped session that came before the
+	// controls' reports; this read fails on one still on its way.
+	requireNoWake(t, wakes, wakeKindAgent, unheld)
 }
 
 // A send to a session that stopped cleanly answers from the caches it already holds and the bucket

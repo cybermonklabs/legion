@@ -1,6 +1,6 @@
 // Package subjectforms holds the readers of the message names the rename that put a project into
-// them moves (dispatch://INFRA-3862), for a caller outside this module: an issue event's name
-// carries its key in either form, and a role lane's name its role in either form.
+// them moves, for a caller outside this module: an issue event's name carries its key in either
+// form, and a role lane's name its role in either form.
 //
 // It exists because the Legion daemon (packages/daemon, module
 // github.com/sjawhar/legion/daemon) is a Go module of its own, and Go's internal rule bars it
@@ -8,10 +8,8 @@
 // plan). This package is the one public door onto them, and re-exports them with no logic of its
 // own, so the daemon and the listener cannot read a name two ways.
 //
-// No package of the envoy module imports this one, for the reason sessiontiming gives:
-// packages/envoy/docker/Dockerfile copies only what the listener's own packages reach into the
-// listener image's build context. An envoy package that needs one of these readers reads
-// internal/contracts directly.
+// No package of the envoy module imports this one: an envoy package that needs one of these
+// readers reads internal/contracts directly.
 package subjectforms
 
 import "github.com/sjawhar/envoy/internal/contracts"

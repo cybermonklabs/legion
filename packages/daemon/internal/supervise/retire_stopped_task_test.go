@@ -146,7 +146,7 @@ func TestRetiringAStoppedPhasesTaskHoldsToTheBusyLateAndRelaunchRules(t *testing
 
 		// Oh My Pi still holds the retired prompt, admitted, so it answers the next prompt busy.
 		h.conn.SetStreaming(true)
-		h.conn.RefusePrompt(busyAnswer)
+		h.conn.FailPrompt(busyRefusal())
 		h.must(returned)
 		h.wantPrompts(2)
 		h.wantState(StateWorking)
@@ -171,7 +171,7 @@ func TestRetiringAStoppedPhasesTaskHoldsToTheBusyLateAndRelaunchRules(t *testing
 		h := newHarness(t)
 		h.reach(StateReady)
 		h.conn.SetStreaming(true)
-		h.conn.RefusePrompt(busyAnswer)
+		h.conn.FailPrompt(busyRefusal())
 		h.must(stopped)
 		h.wantPrompts(1)
 		h.wantState(StateWorking)

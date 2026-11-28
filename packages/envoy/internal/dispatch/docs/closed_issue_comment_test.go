@@ -81,6 +81,7 @@ func closeIssueAgo(t *testing.T, database *store.Store, issueKey string, ago tim
 // recovered. The settlement is held as it starts until the test has read the row the comment's
 // write left, so the row's going is the settlement's doing.
 func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	service, artifactID := newTestService(t)
@@ -474,7 +475,7 @@ func closedIssueRoomService(t *testing.T, database *store.Store, artifactID stri
 	}
 	service := New(Deps{
 		Store: database, Persistence: held, Events: events.NewBroker(),
-		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
+		Identity: identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
 		Settle:   time.Hour,
 	})
 	testcleanup.Add(t, func() {

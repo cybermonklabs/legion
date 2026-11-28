@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -150,45 +151,65 @@ func readSecretFile(variable, file string, modeFor func(os.FileInfo) secretMode)
 	return token, nil
 }
 
-// ReadDeploymentInstructions is the operator's instructions file, refused naming the operator's
-// path when it is missing, unreadable, or blank: a configured file with nothing in it is a
-// misconfiguration, not an empty fragment. It writes nothing, so `legion controller start` runs it
-// before the one daemon call it makes.
-func ReadDeploymentInstructions(instructionsPath string) ([]byte, error) {
-	contents, err := os.ReadFile(instructionsPath)
-	if err != nil {
-		return nil, fmt.Errorf("instructions file %s could not be read: %w", instructionsPath, err)
-	}
-	if strings.TrimSpace(string(contents)) == "" {
-		return nil, fmt.Errorf("instructions file %s is empty", instructionsPath)
-	}
-	return contents, nil
+// ReadInstructions is the operator's instructions file the daemon's configuration names
+// (InstructionsPath), read as readDeploymentInstructions reads it: boot reads it, and the daemon
+// again before every launch.
+func (c Config) ReadInstructions() ([]byte, error) {
+	return readDeploymentInstructions(c.InstructionsPath, c.instructionsUnshaped)
 }
 
-// MaterializeDeploymentInstructions reads the operator's instructions file and writes
-// `# Deployment instructions (<legionID>)`, a blank line, and its contents verbatim to
-// `<stateDir>/deployment-instructions.md`, returning that path — the file every launch's composed
-// system prompt ends with (runtime.ComposePrompt), so a role is never handed the operator's own
-// path, which a pod cannot read. legionID is `project` as the operator wrote it.
+// ReadInstructions is the operator's instructions file the controller's configuration names
+// (InstructionsPath), read as readDeploymentInstructions reads it. It writes nothing, so
+// `legion controller start` runs it before the one daemon call it makes.
+func (c ControllerConfig) ReadInstructions() ([]byte, error) {
+	return readDeploymentInstructions(c.InstructionsPath, c.instructionsUnshaped)
+}
+
+// readDeploymentInstructions is the operator's instructions file at path, refused when it is
+// missing, unreadable, or blank: a configured file with nothing in it is a misconfiguration, not
+// an empty fragment. The refusal names the path, and the read's error, which repeats it, where the
+// file writes `instructions` in a path's shape (pathShape); where it does not (unshaped), it names
+// the key and why in fileerr's words (unreadable), never the path, since the loader takes any word
+// there, a token pasted where the path goes among them. It writes nothing.
+func readDeploymentInstructions(path string, unshaped bool) ([]byte, error) {
+	contents, err := os.ReadFile(path)
+	switch {
+	case err != nil && unshaped:
+		return nil, unreadable("instructions", err)
+	case err != nil:
+		return nil, fmt.Errorf("instructions file %s could not be read: %w", path, err)
+	case strings.TrimSpace(string(contents)) != "":
+		return contents, nil
+	case unshaped:
+		return nil, errors.New("instructions names a file that is empty")
+	}
+	return nil, fmt.Errorf("instructions file %s is empty", path)
+}
+
+// MaterializeInstructions reads the operator's instructions file the controller's configuration
+// names (ReadInstructions) and writes `# Deployment instructions (<legionID>)`, a blank line, and
+// its contents verbatim to `<stateDir>/deployment-instructions.md`, returning that path — the
+// file every launch's composed system prompt ends with (runtime.ComposePrompt), so a role is never
+// handed the operator's own path, which a pod cannot read. legionID is the configuration's
+// project.
 //
-// A file ReadDeploymentInstructions refuses writes nothing.
-func MaterializeDeploymentInstructions(instructionsPath, stateDir, legionID string) (string, error) {
-	contents, err := ReadDeploymentInstructions(instructionsPath)
+// A file ReadInstructions refuses writes nothing.
+func (c ControllerConfig) MaterializeInstructions(stateDir string) (string, error) {
+	contents, err := c.ReadInstructions()
 	if err != nil {
 		return "", err
 	}
-	if err := WriteDeploymentInstructions(contents, stateDir, legionID); err != nil {
+	if err := WriteDeploymentInstructions(contents, stateDir, c.Project); err != nil {
 		return "", err
 	}
 	return DeploymentInstructionsCopy(stateDir), nil
 }
 
-// WriteDeploymentInstructions is MaterializeDeploymentInstructions' write, of contents
-// ReadDeploymentInstructions answered, to DeploymentInstructionsCopy: boot reads the file with
-// every other refusal before it writes anything, and writes this copy before the first pane
-// opens; the daemon writes it again whenever a launch reads an edited file. The copy is replaced
-// whole, so a launch composing its prompt while it is written reads the old copy or the new one,
-// never half of one.
+// WriteDeploymentInstructions is MaterializeInstructions' write, of contents ReadInstructions
+// answered, to DeploymentInstructionsCopy: boot reads the file with every other refusal before it
+// writes anything, and writes this copy before the first pane opens; the daemon writes it again
+// whenever a launch reads an edited file. The copy is replaced whole, so a launch composing its
+// prompt while it is written reads the old copy or the new one, never half of one.
 func WriteDeploymentInstructions(contents []byte, stateDir, legionID string) error {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return fmt.Errorf("create state directory %s: %w", stateDir, err)
@@ -237,22 +258,36 @@ func ReadVariantInstructions(experiment, variant, instructionsPath string) ([]by
 	return contents, nil
 }
 
-// ReadHookPrompt is the words of one hook's `prompt_file` (Hook.PromptFile), refused naming the
-// hook and the operator's path when the file is missing, unreadable, or blank: a configured file
-// with nothing in it is a misconfiguration, not an empty prompt, which is this loader's rule for
-// every path key. It writes nothing, so boot reads it with every other refusal before it writes
-// anything. The words come back without the whitespace around them, since a file's last newline
-// is no part of what the hook says.
-func ReadHookPrompt(hook, promptPath string) (string, error) {
-	contents, err := os.ReadFile(promptPath)
-	if err != nil {
-		return "", fmt.Errorf("hook %s prompt_file %s could not be read: %w", hook, promptPath, err)
+// ReadHookPrompt is the words of the prompt_file of hook, the hook at index of `hooks`
+// (Hook.PromptFile), refused naming the hook and the operator's path when the file is missing,
+// unreadable, or blank: a configured file with nothing in it is a misconfiguration, not an empty
+// prompt, which is this loader's rule for every path key. The hook is named by its name where it
+// has a name's shape (nameShape) and by its place (`hooks[0]`) otherwise; the path, and the read's
+// error, which repeats it, are named where the file writes prompt_file in a path's shape
+// (pathShape), and otherwise the refusal says why in fileerr's words (unreadable), never the path:
+// the loader takes any word in either key, a token pasted there among them. It writes nothing, so
+// boot reads it with every other refusal before it writes anything. The words come back without
+// the whitespace around them, since a file's last newline is no part of what the hook says.
+func ReadHookPrompt(index int, hook Hook) (string, error) {
+	key := "hook " + hook.Name + " prompt_file"
+	if !nameShape(hook.Name) {
+		key = fmt.Sprintf("%s[%d].prompt_file", hooksKey, index)
+	}
+	contents, err := os.ReadFile(hook.PromptFile)
+	switch {
+	case err != nil && hook.promptUnshaped:
+		return "", unreadable(key, err)
+	case err != nil:
+		return "", fmt.Errorf("%s %s could not be read: %w", key, hook.PromptFile, err)
 	}
 	words := strings.TrimSpace(string(contents))
-	if words == "" {
-		return "", fmt.Errorf("hook %s prompt_file %s is empty", hook, promptPath)
+	switch {
+	case words != "":
+		return words, nil
+	case hook.promptUnshaped:
+		return "", fmt.Errorf("%s names a file that is empty", key)
 	}
-	return words, nil
+	return "", fmt.Errorf("%s %s is empty", key, hook.PromptFile)
 }
 
 // WriteVariantInstructions writes the copy of contents ReadVariantInstructions answered (or, for

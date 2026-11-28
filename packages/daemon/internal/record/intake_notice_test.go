@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
@@ -17,7 +18,7 @@ import (
 
 // registerIntakeController records project's controller as the daemon does when
 // `legion controller start` mints a capability and its session registers with it, under the
-// project token (ControllerRegistered reads that row).
+// project token (ControllerSession reads that row).
 func registerIntakeController(t *testing.T, st *store.Store, project string) {
 	t.Helper()
 	ctx := context.Background()
@@ -375,7 +376,7 @@ func TestEachGiveUpIsCountedInExactlyOneNotice(t *testing.T) {
 		}
 		var waiting int
 		err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&waiting)
+			where datname = current_database() and `+lockwaittest.WaitingOn("advisory")).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 	must(t, first.Commit(ctx))

@@ -23,6 +23,7 @@ import (
 // row's entry. The controls, the completion of entry `second` and one of no entry, are recorded on
 // the row.
 func TestACompletionOfALeftPhaseOfAnEntryRaisedSinceIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		entry    func(first, second int64) int64
@@ -90,6 +91,7 @@ func TestACompletionOfALeftPhaseOfAnEntryRaisedSinceIsRefused(t *testing.T) {
 // taken at the head the pull request is at, as the route takes it. Each control is the completion
 // of the entry that stands, which moves the issue on.
 func TestACompletionOfAnEntryRaisedAfterTheRoutesReadMovesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		role   claim.Role

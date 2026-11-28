@@ -110,10 +110,11 @@ const (
 // shows: who wrote the newest write someone else made and its text (last_reply_id: a comment for
 // an ask or a comment thread, a message for a message thread, or the ask itself when that write is
 // its answer, read as the answerer and the answer's options and text), what the thread is about
-// (the ask's question, or its root's text), where it lives (the row's own owner columns, its
-// issue's priority and its project), how far the caller has read it, whether it is still unread,
-// how many writes in it they have not read, the document mark its root is anchored to, and the
-// version a dismissal of the row is held to (user_threads.version, migration 20261105093500).
+// (the ask's question, or its root's text) and who wrote it (the ask's asker, or its root's
+// author, as stored), where it lives (the row's own owner columns, its issue's own priority and
+// the one it resolves to, and its project), how far the caller has read it, whether it is still
+// unread, how many writes in it they have not read, the document mark its root is anchored to, and
+// the version a dismissal of the row is held to (user_threads.version, migration 20261105093500).
 // Its ref always names the thread's root, never the reply: a reply carries no anchor, so a link
 // to it would skip the document redirect an anchored root takes.
 //
@@ -177,8 +178,17 @@ const myRepliesDismissedCut = `
 		order by u.dismissed_at desc, u.thread_id desc
 		limit $4`
 
-// myRepliesPageRest is what every state selects over the rows the cut kept.
-const myRepliesPageRest = `
+// myRepliesPageRest is what every state selects over the rows the cut kept. A row carries the
+// priority its issue resolves to and its source beside the issue's own (refs.IssuePriorityTerms),
+// climbed once for the page from the issues of its rows (`subjects`), never once per row. The
+// subjects keep the issue of every row, an issue twice where two of its threads are on the page:
+// the terms answer one row per issue whatever they start from, and a distinct here is a sort the
+// planner may put over the page, which no Reply read may make (replies_plan_test.go). It is a
+// variable, as the terms are, so the four page reads below it are too.
+var myRepliesPageRest = `
+	subjects as (
+		select p.issue_key as key from page p where p.issue_key is not null
+	), ` + refs.IssuePriorityTerms + `,
 	message_replies as (
 		select p.thread_id as root_id, m.id, m.created_at, m.author
 		from page p join messages m on m.in_reply_to = p.thread_id
@@ -206,9 +216,9 @@ const myRepliesPageRest = `
 	       coalesce(rc.body, rm.body, answered.text, ''),
 	       coalesce(rc.deleted_at, rm.deleted_at), coalesce(rc.deleted_by, rm.deleted_by),
 	       coalesce(rc.created_at, rm.created_at, p.replied_at),
-	       i.priority, p.project_key, p.read_through, p.unread,
+	       i.priority, ` + refs.IssuePriorityColumns + `, p.project_key, p.read_through, p.unread,
 	       coalesce(counted.unread_count, 0), coalesce(root.anchor, a.anchor), p.dismissed_at,
-	       p.version
+	       p.version, coalesce(a.author, root.author, mroot.author)
 	from page p
 	-- The thread's own root and the reply the row shows, each read by its id. They are laterals
 	-- with an offset-0 fence rather than joins because a join leaves the planner free to hash the
@@ -216,17 +226,17 @@ const myRepliesPageRest = `
 	-- comments and two of 20,120 messages, 100 ms of the Inbox read's 154, to answer 1,540 rows
 	-- whose ids it already holds.
 	left join lateral (
-		select a.id, a.question, a.anchor, a.answer
+		select a.id, a.question, a.anchor, a.answer, a.author
 		from asks a where p.kind = 'ask' and a.id = p.thread_id
 		offset 0
 	) a on true
 	left join lateral (
-		select root.body, root.anchor, root.edited_at, root.deleted_at, root.deleted_by
+		select root.body, root.anchor, root.edited_at, root.deleted_at, root.deleted_by, root.author
 		from comments root where p.kind = 'comment' and root.id = p.thread_id
 		offset 0
 	) root on true
 	left join lateral (
-		select mroot.body, mroot.edited_at, mroot.deleted_at, mroot.deleted_by
+		select mroot.body, mroot.edited_at, mroot.deleted_at, mroot.deleted_by, mroot.author
 		from messages mroot where p.kind = 'message' and mroot.id = p.thread_id
 		offset 0
 	) mroot on true
@@ -272,12 +282,13 @@ const myRepliesPageRest = `
 		  and not (w.author->>'kind' = 'user' and user_threads_login(w.author->>'id') = $1)
 	) counted on true
 	left join issues i on i.key = p.issue_key
+	` + refs.IssuePriorityJoin + `
 	left join artifacts ar on ar.id = p.artifact_id`
 
-const (
+var (
 	myRepliesPageQuery      = myRepliesPage + myRepliesUnread + myRepliesPageCut + myRepliesPageRows + myRepliesPageRest
 	myRepliesInboxPageQuery = myRepliesPage + myRepliesInbox + myRepliesPageCut + myRepliesPageRows + myRepliesPageRest
-	// The Dismissed view's first page and the page that follows a cursor, two constants for the
+	// The Dismissed view's first page and the page that follows a cursor, two statements for the
 	// reason the states are three: a cursor behind a parameter is a filter, not an index
 	// condition.
 	myRepliesDismissedPageQuery = myRepliesPage + myRepliesDismissed +
@@ -692,7 +703,7 @@ func (s *server) readMyReplyRows(
 		var row model.MyReplyRow
 		var issueKey, issueTitle, project, slug, name, replyID *string
 		var subject, body string
-		var author, anchor, subjectDeletedBy, replyDeletedBy []byte
+		var author, rootAuthor, anchor, subjectDeletedBy, replyDeletedBy []byte
 		var subjectEditedAt, subjectDeletedAt, replyDeletedAt *time.Time
 		var isAnswer bool
 		var readThrough time.Time
@@ -705,8 +716,8 @@ func (s *server) readMyReplyRows(
 			&issueKey, &issueTitle, &project, &slug, &name,
 			&subject, &subjectEditedAt, &subjectDeletedAt, &subjectDeletedBy,
 			&replyID, &isAnswer, &author, &body, &replyDeletedAt, &replyDeletedBy, &row.Reply.CreatedAt,
-			&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
-			&row.DismissedAt, &version,
+			&row.Priority, &row.ResolvedPriority, &row.PriorityFrom, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
+			&row.DismissedAt, &version, &rootAuthor,
 		); err != nil {
 			return nil, fmt.Errorf("scan my reply: %w", err)
 		}
@@ -740,6 +751,12 @@ func (s *server) readMyReplyRows(
 		if author != nil {
 			if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
 				return nil, fmt.Errorf("decode my reply author: %w", err)
+			}
+		}
+		if rootAuthor != nil {
+			row.RootAuthor = &model.Actor{}
+			if err := json.Unmarshal(rootAuthor, row.RootAuthor); err != nil {
+				return nil, fmt.Errorf("decode my reply root author: %w", err)
 			}
 		}
 		if len(anchor) > 0 {

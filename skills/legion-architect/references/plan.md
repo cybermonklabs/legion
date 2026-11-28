@@ -2,7 +2,7 @@
 
 Part of `skill://legion-architect`, sections 1 and 2.
 Read it before you write or give an issue's plan.
-Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, `retro-held` and `plan-not-taken` notices:
+Stopping a task, a later version of a plan Legion runs and the reasons it gets for where its task stands, and the `task-stopped`, `retro-held` and `plan-not-taken` notices:
 `skill://legion-architect/references/plan-changes.md`.
 
 ## The task block
@@ -22,11 +22,9 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 - Give the block `serves` naming the spec's `requirement` blocks, as a planner's task does, so the issue's coverage counts it.
   A change of `serves` alone changes no task.
 
-- To have one agent work several steps, give each of them the same key after its role, as `steps="implementer:a tester:a reviewer"`.
+- To have one agent work several steps, give each the same key after its role, as `steps="implementer:a tester:a reviewer"`.
   Legion runs the steps of one key as one agent, in one claim and one session, whatever role each step is on; a step with no key is an agent of its own.
-  The agent of the step whose role your `Production check` line names keeps its session past the close, for that check; where no step of the task has that role, the check starts a fresh agent of it.
   A key other than `owner` may stand on any role but `acceptance`, and `owner` on `acceptance` alone.
-  Each agent is named for the role of its first step, so a later version that needs a fresh agent of a role whose name another agent of the plan holds is refused (`PLAN_REFUSED`).
 
 ## The roles and their order
 
@@ -46,8 +44,6 @@ The table lists Legion's steps in the order of the default steps:
 | `reviewer` | review | `reviewing` | No reviewer step, so no approval of the reviewer's: on a base whose rules require an approving review, the merger waits and tells you. |
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
 
-A step of a role of this deployment runs the checks only where its prompt file asks it to.
-
 Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
 A reviewer step approves only once a pass stands for every `before_merge` check at the head.
 Retro's first step sends back a check with no pass at the head, with two exceptions.
@@ -55,21 +51,22 @@ Do not send back a `ci_check` whose run has not concluded or cannot be read, who
 Send a whole-suite `run` to the architect as a finding, not a move back, because the implementer runs no whole suite.
 Send an `absent` name as a finding too, unless GitHub is holding the job back until its label is on.
 On a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
-A step of a role of this deployment holds the checks only as its prompt file asks.
+A step of a role of this deployment runs and holds the checks only as its prompt file asks.
 
 ## What Legion refuses
 
-`register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
-Fix each reason and give a new version.
+`register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, a reason for each cause, its `task` empty for a cause of the whole plan.
+Past the first reasons of one kind, it counts the rest of that kind in one more reason, of the whole plan.
+Give each task block an id of lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64 bytes: Legion refuses any other id, since Dispatch records no step of such a task.
+Fix each reason and give a new version; the next refusal names what is left.
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the rules above.
 Among them, a role of this deployment of the type implementation after the implementer's step: `task <id> names <role> at step <i>, a step of the type implementation after the step implementer at step <j>, and Legion's retro is done by the implementer in this release.`
 A step that names a role neither Legion nor this deployment defines is refused `step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.`, and no release takes it.
 
 An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
 Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
+The one exception is a version that changes only the text of its running task `default`, which Legion takes as for any issue.
 `read_record` shows such an issue: one of its `assignments` has `plan` `default`.
-
-The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
 ## When to give it
 
@@ -77,13 +74,13 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 
 - **A child:** before `release_children` releases it.
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;
-  the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`.
+  the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`, and `running` for a task that runs.
   A project's experiment draws the child when the daemon records it.
   If the child's group runs the project's default steps, its first step passes your plan over (`plan-not-taken`).
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 
-A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
+After a stop of the task `default`, a `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
 The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
 
 ## A root with no code of its own

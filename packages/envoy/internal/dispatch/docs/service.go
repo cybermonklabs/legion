@@ -164,12 +164,15 @@ type VersionedStore interface {
 
 // Service owns live Yjs documents and their durable Dispatch versions.
 type Service struct {
-	srv               *roomServer
-	store             *store.Store
-	persistence       VersionedStore
-	events            *events.Broker
-	identity          identity.Identity
-	serverURL         string
+	srv         *roomServer
+	store       *store.Store
+	persistence VersionedStore
+	events      *events.Broker
+	identity    identity.Identity
+	serverURL   string
+	// formGate is the form gate of The Spec that each carry of an approval asks (SetFormGate),
+	// nil until api.NewSpecForm sets it: a carry with no gate writes nothing (writeCarriedReview).
+	formGate          atomic.Pointer[FormGate]
 	settle            time.Duration
 	markWait          time.Duration
 	unrecordedMarkTTL time.Duration
@@ -798,6 +801,32 @@ func (s *Service) discardSuppressedSlot(room string, slot *suppressSlot) {
 	}
 }
 
+// consumeSuppressedPersistence takes the suppression slot of the writer whose update this is, and
+// reports whether the room's persistence leaves update to that writer. Slots are queued in the order
+// their writers prepare them, and updates reach the room's worker in the order ygo hands them on,
+// and the two need not agree: a published write and a settlement's repair each prepare a slot
+// before their transaction, and the document's lock can take the second one's first. So an update
+// takes its own slot wherever it stands in the queue: the one a repair's commit recorded it on
+// (recordSuppressedCommit), or the one a published write or a catch-up finished with it
+// (finishSuppressedPersistence), both set before ygo hands the update on. It waits for that
+// slot's writer to finish, which holds off the worker's removal of the update's class
+// (finishUpdateClass) until then.
+//
+// Paired with the first slot instead, an update that met another writer's slot there went by as
+// no slot's and left its own slot queued. A repair's update lost its class while the repair's
+// writer had still to store it (storeRepair, errUnclassifiedRepair), which fails the room. A
+// published write's or a catch-up's lost nothing, its class being stored, but its slot stayed at
+// the head, where a later repair's update met it and lost its class the same way.
+//
+// An update that is no writer's - a browser's - waits until the writer of the first slot queued
+// has finished that slot, and then goes by as no slot's. That holds back a browser's update that
+// ygo hands on ahead of the first writer's own update: it is stored only once that writer is done,
+// a repair's writer once its transaction has committed (finishSlots), a published write's once its
+// update is in the room (onLoadDocument), never while the writer is still in its write. A browser
+// update whose bytes match a repair's - a deletion leaves an update that carries no struct, only
+// its own deletes, so a browser's deletion of the items a repair deleted leaves the repair's bytes
+// - takes that repair's slot, and is stored all the same, its own class not being stored
+// (StoreUpdateContext).
 func (s *Service) consumeSuppressedPersistence(room string, update []byte) bool {
 	for {
 		s.suppressMu.Lock()
@@ -807,26 +836,36 @@ func (s *Service) consumeSuppressedPersistence(room string, update []byte) bool 
 			return false
 		}
 		slot := slots[0]
+		for _, candidate := range slots {
+			if bytes.Equal(candidate.committed, update) || bytes.Equal(candidate.update, update) {
+				slot = candidate
+				break
+			}
+		}
 		ready := slot.ready
 		s.suppressMu.Unlock()
 
 		<-ready
 
 		s.suppressMu.Lock()
-		slots = s.suppressed[room]
-		if len(slots) == 0 || slots[0] != slot {
+		at := -1
+		for index, queued := range s.suppressed[room] {
+			if queued == slot {
+				at = index
+				break
+			}
+		}
+		if at < 0 {
 			s.suppressMu.Unlock()
 			continue
 		}
 		if slot.canceled {
-			// A discarded repair's slot is consumed by that repair's own update alone. ygo runs the
-			// observers of two transactions in either order (renderedReplica), so another writer's
-			// update can reach the worker ahead of the repair's, and it is stored as any other.
+			// A discarded repair's slot is consumed by that repair's own update alone.
 			if !bytes.Equal(slot.committed, update) {
 				s.suppressMu.Unlock()
 				return false
 			}
-			s.consumeHeadSlotLocked(room)
+			s.consumeSlotLocked(room, at)
 			discarded := slot.discarded
 			s.suppressMu.Unlock()
 			return discarded
@@ -835,22 +874,28 @@ func (s *Service) consumeSuppressedPersistence(room string, update []byte) bool 
 			s.suppressMu.Unlock()
 			return false
 		}
-		s.consumeHeadSlotLocked(room)
+		s.consumeSlotLocked(room, at)
 		s.suppressMu.Unlock()
 		return true
 	}
 }
 
-// consumeHeadSlotLocked marks room's first suppression slot consumed and removes it. The caller
-// holds suppressMu.
-func (s *Service) consumeHeadSlotLocked(room string) {
+// consumeSlotLocked marks room's suppression slot at index at consumed and takes it out of the
+// queue in place: the head by reslicing, as the worker takes most slots, any other by moving the
+// slots after it down. The caller holds suppressMu.
+func (s *Service) consumeSlotLocked(room string, at int) {
 	slots := s.suppressed[room]
-	slots[0].consumed = true
-	if len(slots) == 1 {
+	slots[at].consumed = true
+	switch {
+	case len(slots) == 1:
 		delete(s.suppressed, room)
-		return
+	case at == 0:
+		s.suppressed[room] = slots[1:]
+	default:
+		copy(slots[at:], slots[at+1:])
+		slots[len(slots)-1] = nil
+		s.suppressed[room] = slots[:len(slots)-1]
 	}
-	s.suppressed[room] = slots[1:]
 }
 
 func (s *Service) cancelSuppressedPersistence(room string, slot *suppressSlot) {
@@ -2777,15 +2822,14 @@ func (s *Service) recheckRemovedRooms(ctx context.Context) {
 	}
 }
 
-// refuseClosedIssueAppend is a browser's append the gate refused because the document's issue is
-// closed and the room took the update later than closeMargin after the close (ErrIssueClosed); an
-// update the room took before then is stored (observedBeforeClose), and never reaches
-// here. The issue closed without this process hearing it - its listener redialing, which outlasts
-// the margin - and the room is closed for its issue here, as the notification would close it
-// (setRoomIssueOpen), so it stops taking edits and its browsers reconnect read-only. That runs on
-// a goroutine of its own: this is ygo's persistence worker, which the close waits for. The close
-// runs whatever the room's record holds: that flag is no proof that a close was ever made, for
-// the reason setRoomIssueOpen gives (notified).
+// refuseClosedIssueAppend answers an append the gate refused because the document's issue is
+// closed (ErrIssueClosed): a browser update the room took later than closeMargin after the close
+// (an update the room took before then is stored, observedBeforeClose), or a commit's parked
+// bytes, which carry no observed time (storeParked). It starts the close of the room for its
+// issue, as the notification would close it (setRoomIssueOpen), once per instance
+// (issueCloseStarted), on a goroutine of its own: the caller can be ygo's persistence worker,
+// which the close waits for. The close runs whatever the room's record holds: that flag is no proof
+// that a close was ever made, for the reason setRoomIssueOpen gives (notified).
 //
 // It closes the room that still holds instance, the room instance whose append was refused, and
 // no other: one try at that close holds the room's close gate for its check that the room holds
@@ -3388,10 +3432,15 @@ func (s *Service) failRoom(room string, cause error) {
 	s.failRoomLocked(room, state, cause)
 }
 
+// failRoomLocked fails room: it drops the room's settlement and starts the room's eviction
+// (evictFailed), which closes the room's sockets. It logs the failure and its cause once,
+// whichever of its callers made it; some of them log a cause of their own first, as livewrite.go
+// and the settlement retry above do.
 func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 	if state.failed != nil {
 		return
 	}
+	slog.Warn("dispatch: a document room failed", "room", room, "error", cause)
 	state.failed = cause
 	s.hooks.countRoomFailure(room)
 	state.failedDone = make(chan struct{})
@@ -3419,7 +3468,9 @@ func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 		if s.beforeFailedEviction != nil {
 			s.beforeFailedEviction(room)
 		}
-		_ = s.evictFailed(room, state)
+		if err := s.evictFailed(room, state); err != nil {
+			slog.Warn("dispatch: a failed document room's eviction failed", "room", room, "error", err)
+		}
 		close(done)
 	}()
 }

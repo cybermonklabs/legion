@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -73,7 +74,7 @@ var uploadOwners = []uploadOwner{
 		"project",
 		func(model.Issue) string { return "/api/v1/projects/TEST/artifacts" },
 		func(ctx context.Context, tx pgx.Tx, _ model.Issue) error {
-			return lockProjectArtifacts(ctx, tx, "TEST")
+			return docs.LockProjectArtifacts(ctx, tx, "TEST")
 		},
 	},
 	{
@@ -476,6 +477,7 @@ func unguardedFileReplacementSample(t *testing.T, registry *metrics.Registry) st
 // standing token is checked and not counted, a first upload replaces nothing and is not counted,
 // and a document's counter counts none of it. Serial: it sets the default logger.
 func TestFileReplacementWithNoTokenIsTakenCountedAndLogged(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	registry := metrics.New()

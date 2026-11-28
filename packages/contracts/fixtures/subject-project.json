@@ -40,7 +40,8 @@
       "args": ["_", "lead-reviewer"],
       "want": "notifications.role._.lead-reviewer"
     },
-    { "fn": "legionWakeSubject", "args": ["priv"], "want": "notifications.legion.priv.wake" }
+    { "fn": "legionWakeSubject", "args": ["priv"], "want": "notifications.legion.priv.wake" },
+    { "fn": "legionStateSubject", "args": ["infra"], "want": "notifications.legion.infra.state" }
   ],
   "issueProject": [
     { "key": "INFRA-12", "project": "INFRA", "ok": true },
@@ -142,6 +143,12 @@
       "subject": "notifications.github.sjawhar._github.push.branch.main",
       "project": "",
       "repo": "sjawhar/_github",
+      "ok": true
+    },
+    {
+      "subject": "notifications.github.acme.site_io.default_branch.workflow.ci_yml.completed.schedule",
+      "project": "",
+      "repo": "acme/site_io",
       "ok": true
     },
     { "subject": "notifications.slack.T1.C1.message", "project": "_", "repo": "", "ok": true },

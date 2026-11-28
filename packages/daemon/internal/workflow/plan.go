@@ -32,18 +32,21 @@ func PlanID(issue string, generation uint64) string {
 // the run's one id (PlanID). Its source is the version in force's (record.PlanVersion.Source):
 // owner, with the document and the version of it Legion took, or default, the project's default
 // steps, with neither. Its task is the run's one task, with its steps in order, each a role or
-// `role:key` (plan.Step.String). The node is written at the start of the work and again, whole, at
-// each later version Legion takes (planGiven): Dispatch replaces all four fields for a version
-// above the one it holds. Both read w with its plan rows: the start's first step writes them
-// (planFirstStep), and a version taken is one. A run with no plan rows walks today's line, so its
-// node is the task default of todaysSteps: a hand-over's carry of an orphan that ran before plans
+// `role:key` (plan.Step.String), and the tasks it needs, each by the id register_plan resolved
+// (record.PlanTask.Needs), [] where it needs none: the one record of the needs that Dispatch
+// serves. The node is written at the start of the work and again, whole, at each later version
+// Legion takes (planGiven): Dispatch replaces all four fields for a version above the one it
+// holds. Both read w with its plan rows: the start's first step writes them (planFirstStep), and a
+// version taken is one. A run with no plan rows walks today's line, so its node is the task
+// default of todaysSteps, which needs none: a hand-over's carry of an orphan that ran before plans
 // (WritePlan).
 func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	node := record.PlanRecord{ID: PlanID(issue.Key, issue.Generation), Generation: issue.Generation, Source: record.PlanSourceDefault}
+	needs := append([]string{}, w.Needs...)
 	if w.Version.Source == record.PlanSourceOwner {
 		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: w.Version.ArtifactID, Version: w.Version.Version}
 	}
-	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: plan.Words(namedSteps(w.Steps))}}
+	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: plan.Words(record.NamedSteps(w.Steps)), Needs: &needs}}
 	return node
 }
 
@@ -79,9 +82,11 @@ func (e *Engine) groupOf(ctx context.Context, tx pgx.Tx, issue string) (record.A
 	return experiment.GroupOf(rows[issue]), nil
 }
 
-// takesNoPlan says whether group, an issue's row of groupOf, takes no plan from the issue's owner:
-// the arm runs the project's default steps. It is the one answer the three readers of the group
-// read — the first step (planFirstStep), register_plan (planGiven) and stop_task (taskStopped) —
+// takesNoPlan says whether group, an issue's row of groupOf, sets how the issue is done: the arm
+// runs the project's default steps, and the issue takes from its owner no plan but a version that
+// changes nothing but the text of its running task default (versionRefusal). It is the one answer
+// the three readers of the group read — the first step (planFirstStep), register_plan (planGiven)
+// and stop_task (taskStopped) —
 // and it holds only the word this release carries out: the loader refuses `owner-alone`
 // (config's readVariants), so no draw of this release writes it.
 func takesNoPlan(group record.Assignment) bool {
@@ -100,7 +105,7 @@ func takesNoPlan(group record.Assignment) bool {
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
 // telling names (tellPassedOver).
 //
-// An issue whose group takes no plan from its owner (groupOf, takesNoPlan) takes the default
+// An issue whose group runs the project's default steps (groupOf, takesNoPlan) takes the default
 // steps: the owner's plans are passed over too (passOverOwners), and the one notice that tells
 // what it passed over names the group (tellNotTaken).
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
@@ -399,11 +404,15 @@ func namedOnce(versions []record.PlanVersion) string {
 		// last first, as one copy's givers do. tellPassedOver passes part of one read, in its order.
 		// tellNotTaken joins two, the earlier owners' and then its owner's, which need not keep that
 		// order, but its issue's group takes no plan. That group is drawn in the transaction that
-		// records the issue (drawExperiments), and from then on every give is refused PLAN_NOT_TAKEN
-		// (versionRefusal) and every stop_task too (taskStopped). So an owner's plan of such an issue
-		// was given before the record, at generation 0, and nothing carries it: its first step passes
-		// it over before it carries anything (planFirstStep). The joined list holds at most one copy
-		// of one version.
+		// records the issue (drawExperiments). From then on versionRefusal takes only a version it
+		// stores with the source default (one that changes nothing but the text of the running task
+		// default, and that version given again, retakesDefault), refuses every other give
+		// PLAN_NOT_TAKEN, and taskStopped refuses every stop_task. Both lists are read from
+		// PlansInForce, which reads only versions of the source owner (record's inForce), so no
+		// version taken after the record is in them. So an owner's plan of such an issue was given
+		// before the record, at generation 0, and nothing carries it: its first step passes it over
+		// before it carries anything (planFirstStep). The joined list holds at most one copy of one
+		// version.
 		var givers []claim.Token
 		for _, copied := range slices.Backward(versions) {
 			if !sameDocumentVersion(copied, version) {
@@ -443,16 +452,17 @@ func namedGivers(givers []claim.Token) string {
 	for i, giver := range givers {
 		names[i] = string(giver)
 	}
-	return listed(names)
+	return listed(names, "and")
 }
 
-// listed joins words as a sentence lists them: one alone, two joined by "and", more by commas and
-// a last "and".
-func listed(words []string) string {
+// listed joins words as a sentence lists them, with conjunction before the last: one alone, two
+// joined by it, more by commas and a last conjunction ("a", "a or b", "a, b and c").
+func listed(words []string, conjunction string) string {
 	if len(words) < 2 {
 		return strings.Join(words, "")
 	}
-	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
+	last := len(words) - 1
+	return strings.Join(words[:last], ", ") + " " + conjunction + " " + words[last]
 }
 
 // WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from its

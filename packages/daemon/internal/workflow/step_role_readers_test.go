@@ -53,6 +53,7 @@ func standAtStep(t *testing.T, pool *pgxpool.Pool, issue record.Issue, held bool
 // hold took the issue from, so it names a failed checker on a held issue as on one at step: only
 // its architect's retry starts it again.
 func TestTheResumePathsGiveTheRunningDeploymentRoleItsWork(t *testing.T) {
+	t.Parallel()
 	for _, held := range []bool{false, true} {
 		name := "at step"
 		if held {
@@ -173,6 +174,7 @@ func TestTheResumePathsGiveTheRunningDeploymentRoleItsWork(t *testing.T) {
 // implementer (tellChecks), and the closing sentence of the architect's task for a root carried
 // at step, whose worker the daemon starts itself (writeCarriedPhase).
 func TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole(t *testing.T) {
+	t.Parallel()
 	t.Run("the unprompted phase worker", func(t *testing.T) {
 		s := aSilentImplementer()
 		s.issue.Phase, s.issue.StepRole, s.role = phase.Step, deploymentChecker, deploymentChecker
@@ -250,6 +252,7 @@ func TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole(t *testing.T) {
 // The architect's catch-up names the role that runs a member at step, beside its phase: step alone
 // does not say which role of the deployment works it. A member at a phase of Legion's names none.
 func TestTheCatchUpNamesTheRunningDeploymentRole(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := seedAdmittedTree(t, pool, 1)
 	root.Phase = phase.Implementing

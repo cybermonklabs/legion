@@ -21,6 +21,7 @@ import (
 // controls: the same move of entry `second`, and a move that names no entry (the architect's, or
 // a claim that serves none), each send the task back to implementing.
 func TestAMoveBackOfAnEntryRaisedSinceMovesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		entry func(first, second int64) int64
@@ -82,6 +83,7 @@ func TestAMoveBackOfAnEntryRaisedSinceMovesNothing(t *testing.T) {
 // move, and a move that names no claim (from a route before the claim was carried), send the
 // task back to implementing.
 func TestOnlyTheStepsWorkerMovesItsIssueBack(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		by    func(keyed, own claim.Token) claim.Token
@@ -132,6 +134,7 @@ func TestOnlyTheStepsWorkerMovesItsIssueBack(t *testing.T) {
 // A move's refusal names the old and current issue-wide entries, not their distance as a count
 // of entries missed by the requesting role.
 func TestAStaleMoveBackReportsItsTwoEntryIdentities(t *testing.T) {
+	t.Parallel()
 	refusal := staleBackwardMove("LEGION-208", claim.RoleTester, phase.Testing, 9, 2)
 	if refusal.Status != http.StatusConflict || refusal.Code != "BACKWARD_REFUSED" {
 		t.Fatalf("stale move refusal = %+v, want 409 BACKWARD_REFUSED", refusal)

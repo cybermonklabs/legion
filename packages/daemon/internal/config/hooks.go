@@ -19,7 +19,7 @@ import (
 const hooksKey = "hooks"
 
 // HookEventWorkBack is the one event that ships: the work of an issue went back a phase, which
-// the daemon counts by its `<from>-<to>` pair (plan.MovesBackPairs).
+// the daemon counts by its `<from>-<to>` pair (phase.MovePairs).
 const HookEventWorkBack = "work_back"
 
 // HookEvents are the events a hook's `on` may name: the daemon's own set of events, which the
@@ -41,6 +41,10 @@ type Hook struct {
 	Roles      []claim.Role
 	Prompt     string // the words, inline
 	PromptFile string // or the path boot reads them from, resolved against the config directory
+	// promptUnshaped is whether the file writes prompt_file in no path's shape (pathShape), so
+	// ReadHookPrompt's refusal of the file names the key and never the path. It is judged on the
+	// path as written, before settleHooks joins it to the file's directory.
+	promptUnshaped bool
 }
 
 // DefaultWorkBackPrompt is the words of the one hook a deployment that writes no `hooks:` key
@@ -66,7 +70,9 @@ func DefaultHooks() []Hook {
 // readHooks is `hooks`: a list of mappings, each one hook of the deployment. It answers a pointer
 // so that the settle can tell a file that names no key, which runs DefaultHooks(), from one that
 // writes `hooks: []`, which runs none. A null key (`hooks:` and nothing under it) is the key
-// unset, as every other key of this loader reads a null, so the default stands.
+// unset, as every other key of this loader reads a null, so the default stands. A name two hooks
+// carry is named as written only where it has a name's shape (nameShape), and by the two hooks'
+// places alone otherwise.
 func readHooks(value *yaml.Node, key string) (*[]Hook, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -82,10 +88,17 @@ func readHooks(value *yaml.Node, key string) (*[]Hook, error) {
 			return nil, err
 		}
 		for earlier, named := range hooks {
-			if named.Name == hook.Name {
-				return nil, fmt.Errorf("%s.name is %q, which %s[%d] already carries: a hook is named once, and its name is what every prompt it publishes carries",
-					field, hook.Name, key, earlier)
+			if named.Name != hook.Name {
+				continue
 			}
+			// A hook's name is held to no grammar, so one of no name's shape, which can be a token
+			// pasted where the name goes, is named by the two places alone.
+			if !nameShape(hook.Name) {
+				return nil, fmt.Errorf("%s.name is the name %s[%d] already carries: a hook is named once, and its name is what every prompt it publishes carries",
+					field, key, earlier)
+			}
+			return nil, fmt.Errorf("%s.name is %q, which %s[%d] already carries: a hook is named once, and its name is what every prompt it publishes carries",
+				field, hook.Name, key, earlier)
 		}
 		hooks = append(hooks, hook)
 	}
@@ -94,7 +107,9 @@ func readHooks(value *yaml.Node, key string) (*[]Hook, error) {
 
 // readHook is one entry of the list, refused naming its position and the member at fault. The
 // words are the hook's own (`prompt`) or the file they are read from (`prompt_file`), never both
-// and never neither: a hook with no words would fire and say nothing.
+// and never neither: a hook with no words would fire and say nothing. An `on` that is no event is
+// named as written only where it has a key's shape, as every event's name has, and by its line
+// otherwise (shapelessWord).
 func readHook(entry *yaml.Node, field string) (Hook, error) {
 	if entry.Kind != yaml.MappingNode {
 		return Hook{}, fmt.Errorf("%s must be a mapping", field)
@@ -111,6 +126,9 @@ func readHook(entry *yaml.Node, field string) (Hook, error) {
 		return Hook{}, err
 	}
 	if !slices.Contains(HookEvents, hook.On) {
+		if !keyShape(hook.On) {
+			return Hook{}, shapelessWord(lineOf(field+".on", fields["on"]), "an event the daemon has ("+strings.Join(HookEvents, ", ")+")")
+		}
 		return Hook{}, fmt.Errorf("%s.on is %q, which is no event the daemon has (%s)", field, hook.On, strings.Join(HookEvents, ", "))
 	}
 	if hook.Every, err = readHookEvery(fields["every"], field); err != nil {
@@ -128,6 +146,7 @@ func readHook(entry *yaml.Node, field string) (Hook, error) {
 	if hook.PromptFile, err = optionalString(fields["prompt_file"], field+".prompt_file"); err != nil {
 		return Hook{}, err
 	}
+	hook.promptUnshaped = hook.PromptFile != "" && !pathShape(hook.PromptFile)
 	switch {
 	case hook.Prompt != "" && hook.PromptFile != "":
 		return Hook{}, fmt.Errorf("%s names prompt and prompt_file: the hook's words are written in the key, or read from a file, never both", field)
@@ -153,7 +172,9 @@ func readHookEvery(value *yaml.Node, field string) (int, error) {
 
 // readHookRoles is a hook's `roles`: the roles its words are put in front of, at least one, each
 // a role of an issue: a Legion role, or a name of the role grammar (claim.IsRole), which
-// checkDeploymentRoleKeys holds to a role of `roles` once every key is read. The architect is
+// checkDeploymentRoleKeys holds to a role of `roles` once every key is read. A name outside the
+// grammar (roleWordShape) is refused by its place alone (roleEntryAt), never as written; the
+// controller, a name of the grammar that is no role of an issue, is named. The architect is
 // refused: the daemon's own wake to an architect is a notice it writes itself, and a hook writes
 // none.
 func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
@@ -169,7 +190,10 @@ func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 		return nil, errors.New(key + " names no role: the hook puts its words in front of the roles it names")
 	}
 	roles := make([]claim.Role, 0, len(named))
-	for _, name := range named {
+	for index, name := range named {
+		if !roleWordShape(name) {
+			return nil, roleEntryAt(key, index, "a role's name is")
+		}
 		role := claim.Role(name)
 		if !claim.IsRole(role) {
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, name, runtime.JoinRoles(claim.Roles))
@@ -183,15 +207,18 @@ func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 }
 
 // readHookMoves is a hook's `moves`: the moves back it selects, each written "<from>-<to>" as the
-// daemon counts them: a move back some task's line makes (plan.MovesBackPairs). A task moves back
+// daemon counts them: a move back some task's line makes (plan.CanMoveBack). A task moves back
 // by its own order, which need not be today's, so the move back of one task (testing-reviewing,
 // where its review comes before its test) is a forward move of another. A step of a role the
 // deployment defines runs as step, so a move may leave or reach step, and the move back from one
 // such step to another is step-step. A pair of two workflow phases that no line makes as a move
 // back is refused, since the hook would never fire, and so is any other phase paired with itself
-// or a word that is no pair. The key left out, and the word `any`, each select every move back,
-// which is the empty list this answers. The empty list in the file is refused instead: it selects
-// nothing, so the hook could never fire, and the operator meant `any` or meant to name a move.
+// or a word that is no pair, that one by its place in the list alone, never as written: only a
+// word of the closed set of pairs passes phase.ParsePair, and any other, a token pasted there
+// among them, is no word a refusal may print. The key left out, and the word `any`, each select
+// every move back, which is the empty list this answers. The empty list in the file is refused
+// instead: it selects nothing, so the hook could never fire, and the operator meant `any` or meant
+// to name a move.
 func readHookMoves(value *yaml.Node, field string) ([]string, error) {
 	key := field + ".moves"
 	if value == nil {
@@ -210,10 +237,10 @@ func readHookMoves(value *yaml.Node, field string) ([]string, error) {
 	if len(moves) == 0 {
 		return nil, fmt.Errorf("%s names no move back: write any, or leave the key out, to select every move back", key)
 	}
-	for _, move := range moves {
+	for index, move := range moves {
 		from, to, ok := phase.ParsePair(move)
 		if !ok {
-			return nil, fmt.Errorf("%s names %q, which is no move the daemon counts: a move is written \"<from>-<to>\", two workflow phases, which differ but in step-step", key, move)
+			return nil, fmt.Errorf("%s entry %d is no move the daemon counts: a move is written \"<from>-<to>\", two workflow phases, which differ but in step-step", key, index+1)
 		}
 		if !plan.CanMoveBack(from, to) {
 			return nil, fmt.Errorf("%s names %q, which no task's line makes as a move back, so the hook would never fire: retro and merging end every line, and every tester, reviewer and acceptance step comes after the implementer's", key, move)

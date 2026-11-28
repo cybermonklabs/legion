@@ -30,6 +30,7 @@ func TestClaimIssueIsTheIssueTheClaimIsOn(t *testing.T) {
 // name its token ends in for a keyed agent on a step of another role; a token no claim holds is
 // refused.
 func TestClaimRoleIsTheClaimsStoredRole(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := migratedStore(t)
 	if err := s.PutClaim(ctx, supervise.Claim{Token: "legion-legion-legion-209-implementer", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-209",

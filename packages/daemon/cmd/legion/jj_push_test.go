@@ -162,6 +162,18 @@ func rolePushAuthorRows() []rolePushRow {
 				same:     map[string]rolePushIdentity{x.commit: one},
 			}
 		}},
+		// A role the deployment defines writes its own trailer, and LEGION_ROLE_IDENTITIES carries its
+		// identity beside Legion's (internal/daemon's specs.go): its commit, made under another role's
+		// App in the working copy the issue's roles share, is rewritten to its own identity
+		// (setAuthors, authorOrder).
+		{name: "a role of the deployment's trailer, another role's author", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
+			checker := rolePushIdentity{"legion-checker[bot]", "100000004+legion-checker[bot]@users.noreply.github.com"}
+			table := `{"checker":{"name":"legion-checker[bot]","email":"100000004+legion-checker[bot]@users.noreply.github.com"},` + rolePushTable[1:]
+			f.table = &table
+			c := f.commitOn(impl, impl, "main", rolePushMessage("checked", "checker"))
+			f.bookmark("legion/K-1", c.commit)
+			return rolePushSends("legion/K-1", c, "checker", checker)
+		}},
 	}
 	// emptyWaiting is @ on main, made and described with role's trailer under no identity, so with
 	// an empty author, under legion/K-1, with a write that no command has snapshotted. The dry run

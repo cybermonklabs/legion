@@ -256,6 +256,7 @@ func TestAShareHoldsEveryQueuedUpdateOfAPendingBatch(t *testing.T) {
 // What a share holds past roomShareLimit is not sent: the answer says too_large, carries no
 // updates, and the asker logs a WARN and judges without them.
 func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings).
 	pair := newQueryProcesses(t)
 	pair.heldEditOnB(t, 1, model.Actor{Kind: "user", ID: "bob"}, appendBlocks(t, strings.Repeat("Bob's huge paragraph. ", 4000)+"\n"))
 	logs := captureWarnings(t)
@@ -276,6 +277,8 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 // the wait and no more, and a WARN naming it. The silent member here holds the listener
 // connection's name, which is all membership reads, and listens to nothing.
 func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings), and it
+	// holds each query to roomQueryWait, 500 ms, and no more than 300 ms past it.
 	pair := newQueryProcesses(t)
 	// Production's wait, which this test holds: the pair's own is roomWait (newSeededProcessPair).
 	pair.taskA.roomQueries.wait = roomQueryWait
@@ -310,6 +313,8 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 // process's append waits on: it would wait out every member. The query reads the lock from the
 // database, skips the flush at once and logs it at ERROR.
 func TestAFlushIsNeverSentUnderTheDocumentsAdvisoryLock(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings), and it
+	// holds the skipped flush to less than half of roomQueryWait, 250 ms.
 	pair := newQueryProcesses(t)
 	logs := captureWarnings(t)
 	ctx := context.Background()

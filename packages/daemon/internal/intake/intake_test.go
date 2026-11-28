@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -494,14 +495,16 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			want:    DispatchClaim{Key: "CAPTURE-4", Seq: 12},
 		},
 		// The update Dispatch appends on an issue whose resolved priority a write to an issue
-		// above it changed, which wakes no session (J3 of dispatch://INFRA-5793): built by hand in
-		// the shape testdata/dispatch-resolved/README quotes, since no Dispatch release sends it
-		// yet. The consumer reads it as an update of the resolved priority alone.
+		// above it changed, which wakes no session (J3 of dispatch://INFRA-5793). Its payload is
+		// the event a Dispatch stack of that change appended on CAPTURE-12 when OTHER-5's priority
+		// was set to 0, captured from the issue's event log; the envelope around it is written in
+		// the shape of the other files here (testdata/dispatch-resolved/README). The consumer
+		// reads it as an update of the resolved priority alone.
 		{
-			name:    "Dispatch issue updated in its resolved priority alone (hand-built)",
+			name:    "Dispatch issue updated in its resolved priority alone (captured payload)",
 			subject: "notifications.dispatch.issue.CAPTURE-12.issue.updated",
 			file:    "dispatch/issue-updated-resolved-only.json",
-			want: DispatchIssue{Key: "CAPTURE-12", Seq: 3, Type: "issue.updated", Status: "todo", Title: "Captured child issue", Parent: "CAPTURE-7", Rank: "UUUk",
+			want: DispatchIssue{Key: "CAPTURE-12", Seq: 3, Type: "issue.updated", Status: "todo", Title: "Captured child issue", Parent: "CAPTURE-7", Rank: "f",
 				Resolved: record.Resolved{Priority: record.P0, From: "OTHER-5", Known: true}, ResolvedOnly: true, Labels: []string{}, ResolvedRepo: "sjawhar/legion",
 				Blockers: []string{}, ClaimKnown: true},
 		},
@@ -901,6 +904,7 @@ func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 // The negative control is artifact.renamed and artifact.removed back in mergeHoldsChangeTypes:
 // their two rows then decode to a MergeHoldsChanged.
 func TestAMergeHoldsDocumentEventIsTheProjectsMergeHoldsChange(t *testing.T) {
+	t.Parallel()
 	change := MergeHoldsChanged{Project: "CAPTURE", Event: "dispatch-71"}
 	for _, tc := range []struct {
 		name, project, slug, eventType string
@@ -956,6 +960,7 @@ func TestAMergeHoldsDocumentEventIsTheProjectsMergeHoldsChange(t *testing.T) {
 // and keeps the consumer's position: the backlog the consumer had stays pending, and the
 // document's event published after the boot is pending beside it.
 func TestTheDispatchConsumerHearsTheProjectsMergeHoldsDocument(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
@@ -992,6 +997,7 @@ func TestTheDispatchConsumerHearsTheProjectsMergeHoldsDocument(t *testing.T) {
 // A merge holds change is a workflow fact: the consumer applies it through ApplyFact under the
 // Dispatch event's id, so the same event delivered again applies nothing a second time.
 func TestConsumeAppliesAMergeHoldsChangeOnce(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -1283,7 +1289,10 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 // A completed workflow run, as Envoy's own normalizer writes it from a real sjawhar/legion
 // release.yaml push run on main (the workflow-run-completed golden), is no fact: no run of any
 // workflow wakes a production check, so the GitHub durable that carries the envelope
-// acknowledges it without a transaction, and it is never poison.
+// acknowledges it without a transaction, and it is never poison. Envoy publishes a run of the
+// default branch a second time first, on its default-branch topic, with the same payload and
+// dedupe key: that copy is no fact either, and both decode under the one fact id the dedupe key
+// gives, so the daemon applies the delivery once whichever it hears.
 func TestAWorkflowRunEnvelopeIsNoFact(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "github-envelopes", "workflow-run-completed.json"))
@@ -1302,20 +1311,25 @@ func TestAWorkflowRunEnvelopeIsNoFact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	envelope, err := json.Marshal(map[string]any{
-		"event_id": "golden", "source": "github", "source_event_id": "golden", "topic": golden.Topic,
-		"dedupe_key": "golden", "issued_at": 1, "payload_summary": golden.PayloadSummary,
-		"payload": string(text), "trace_id": "golden",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoded, err := decodeMessage(golden.Topic, "GOLDEN", capturedRepositories, envelope)
-	if err != nil {
-		t.Fatalf("decode %s: %v, want no poison", golden.Topic, err)
-	}
-	if decoded.Fact != nil {
-		t.Fatalf("the golden's fact = %#v, want none", decoded.Fact)
+	for _, subject := range []string{
+		golden.Topic,
+		"notifications.github.sjawhar.legion.default_branch.workflow.release_yaml.completed.push",
+	} {
+		envelope, err := json.Marshal(map[string]any{
+			"event_id": "golden", "source": "github", "source_event_id": "golden-delivery", "topic": subject,
+			"dedupe_key": "github.golden-delivery", "issued_at": 1, "payload_summary": golden.PayloadSummary,
+			"payload": string(text), "trace_id": "golden",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := decodeMessage(subject, "GOLDEN", capturedRepositories, envelope)
+		if err != nil {
+			t.Fatalf("decode %s: %v, want no poison", subject, err)
+		}
+		if decoded.Fact != nil || decoded.EventID != "github.golden-delivery" {
+			t.Fatalf("%s decodes fact %#v under id %q, want no fact under the dedupe key github.golden-delivery", subject, decoded.Fact, decoded.EventID)
+		}
 	}
 }
 
@@ -2083,7 +2097,7 @@ func TestApplyFactSerializesConcurrentFacts(t *testing.T) {
 	}()
 	testwait.Eventually(t, "the second fact to wait for the first", func() bool {
 		var waiting int
-		if err := pool.QueryRow(ctx, `select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&waiting); err != nil {
+		if err := pool.QueryRow(ctx, `select count(*) from pg_stat_activity where datname = current_database() and `+lockwaittest.WaitingOn("advisory")).Scan(&waiting); err != nil {
 			return false
 		}
 		return waiting == 1

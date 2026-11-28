@@ -72,15 +72,17 @@ const StepRecordsRollForward = 20261117064152
 //   - 20261123050533_idle_release_keeps_no_workspace.up.sql
 //   - 20261123224717_members_owed.up.sql
 //   - 20261124033010_plan_earlier_givers.up.sql
-//   - 20261124213821_pod_resume_claim.up.sql
-//   - 20261124213822_pod_wake_backstop_claim.up.sql
-//   - 20261124213823_release_suspends_claims.up.sql
-//   - 20261124213824_claim_role_change.up.sql
 //   - 20261125000600_production_check_failed_looks.up.sql
 //   - 20261125023041_idle_release_declines_told_pod.up.sql
 //   - 20261125023100_pod_replacements.up.sql
-//   - 20261125091522_idle_decline_claim.up.sql
 //   - 20261125163328_message_wake_pacing.up.sql
+//   - 20261127193428_claim_left.up.sql
+//   - 20261127224354_observed_step_role.up.sql
+//   - 20261128145834_pod_resume_claim.up.sql
+//   - 20261128145835_pod_wake_backstop_claim.up.sql
+//   - 20261128145836_release_suspends_claims.up.sql
+//   - 20261128145837_claim_role_change.up.sql
+//   - 20261128145838_idle_decline_claim.up.sql
 //
 // internal/textcheck's TestTheWayBackDocNamesEveryHeaderThatCarriesOne holds this list to the
 // headers by name: it reads each migration file name in this comment as a name of the list.

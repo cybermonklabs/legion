@@ -79,6 +79,9 @@ type registerGateAnswer struct {
 // TestRegisterGateBasisToolLive drives the proof's steps against one booted daemon and one
 // Dispatch.
 func TestRegisterGateBasisToolLive(t *testing.T) {
+	// Not parallel: a live proof whose daemon and scratch Dispatch run on the one NATS server
+	// LEGION_E2E_NATS_URL names, and which writes the file LEGION_E2E_DAEMON_LOG names and the
+	// dispatch.log beside it, which a proof beside it would share.
 	r := newRegisterGateBasisLive(t)
 	r.step("p-is-approved-with-requirement-blocks-and-r-is-a-view-under-it", r.world)
 	r.step("the-tool-registers-rs-spec-step-on-ps-approval-and-the-daemon-records-the-basis", r.registers)

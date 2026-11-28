@@ -13,6 +13,7 @@ import (
 // recorded in github_rate_limits under the GraphQL scope, and no request of either Dispatch
 // process reaches GitHub before the reset. It is k7.
 func TestAGraphQLRateLimitStopsEveryProcess(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -74,11 +75,13 @@ func TestAGraphQLRateLimitStopsEveryProcess(t *testing.T) {
 // identity reads -- goes on reading while the pass's queries wait the limit out. GitHub answers
 // that limit at either status, and the status is never what tells one.
 func TestAPrimaryGraphQLRateLimitLeavesRESTReadsAlone(t *testing.T) {
+	t.Parallel()
 	for name, limit := range map[string]graphQLLimit{
 		"at 200": limitByErrorEntry,
 		"at 403": limitForbiddenByErrorEntry,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			h := newHarness(t, reviewerAppID)
 			h.seedProjectDefault(rowRepository)
 			h.listHead()
@@ -131,12 +134,14 @@ func TestAPrimaryGraphQLRateLimitLeavesRESTReadsAlone(t *testing.T) {
 // The three shapes are the three GitHub answers a secondary limit with: the wording alone at
 // either status, and the wording with a retry-after of its own.
 func TestASecondaryQueryLimitHoldsTheInstallationsRESTReads(t *testing.T) {
+	t.Parallel()
 	for name, limit := range map[string]graphQLLimit{
 		"the wording alone":         limitBySecondaryMessage,
 		"a retry-after beside it":   limitBySecondaryRetryAfter,
 		"the wording alone, at 403": limitForbiddenBySecondaryMessage,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			h := newHarness(t, reviewerAppID)
 			h.seedProjectDefault(rowRepository)
 			h.listHead()
@@ -194,6 +199,7 @@ func TestASecondaryQueryLimitHoldsTheInstallationsRESTReads(t *testing.T) {
 // out a minute it was never asked for. The limit is read from GitHub's own envelope and headers
 // (githubapp.GraphQLRateLimit).
 func TestACheckRunNamedForTheLimitIsNotALimit(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()

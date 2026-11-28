@@ -19,6 +19,7 @@ import (
 // `CORE-12`, a working link to another issue. The API's rows hold the subject, the candidate's
 // first line and the excerpts an edge shows to the same rule end to end.
 func TestTheHeadsAReaderDrawsCutNoReferenceInHalf(t *testing.T) {
+	t.Parallel()
 	core := text.Ref{Kind: "issue", IssueKey: "CORE-1", ID: "CORE-1"}
 	t.Run("a first line", func(t *testing.T) {
 		lead := strings.Repeat("x", 151)
@@ -58,6 +59,7 @@ func TestTheHeadsAReaderDrawsCutNoReferenceInHalf(t *testing.T) {
 // too, so the list stays the inventory it says it is. The read is of each file's syntax tree, so
 // a cut named in a comment is not a call.
 func TestEveryHeadCutOfDispatchTextIsListed(t *testing.T) {
+	t.Parallel()
 	exempt := map[string]string{
 		"api/messages.go messageReplyPreview":     "the parent's text a reply's event and delivery frame carry, which an agent reads as written",
 		"api/priorities.go priorityChangedQuote":  "the stored title or description a 409 PRIORITY_CHANGED refusal quotes in its error message, which a caller reads as its characters, and which the page names by its code alone (web/src/features/writes/conflicts.ts)",
@@ -65,6 +67,7 @@ func TestEveryHeadCutOfDispatchTextIsListed(t *testing.T) {
 		"api/results_ci.go ciObserved":            "a CI run's output, a check result's observed text drawn as the characters it is",
 		"api/results_ci.go ciUnreadDetail":        "the server's own words on a CI read it could not make, quoting GitHub's error",
 		"api/status_change.go claimedSessionName": "a session id a request's body named, which the comment Dispatch signs quotes as an inline code span, so every reader draws it as its characters and reads no reference in it",
+		"docs/edits.go boundedReadBack":           "a document edit's read-back, the edits route's written field: the markdown the writer just wrote, which the dispatch command prints back to that writer as its characters and no page draws",
 		"embed/embed.go boundBatch":               "the input of an embedding, which no person reads",
 		"itemblocks/windows.go windowText":        "the text of an embedding window, which no person reads",
 		"outbox/publisher.go payloadSummary":      "an envelope's one-line summary, which an agent's notification carries",

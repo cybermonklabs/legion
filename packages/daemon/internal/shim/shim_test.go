@@ -20,11 +20,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -1129,7 +1131,7 @@ fail) echo "Error: the working copy is stale" >&2; exit 3 ;;
 hang) exec sleep 30 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake jj: %v", err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1296,7 +1298,7 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 			record := filepath.Join(t.TempDir(), "jj-invocation")
 			if tc.jjOnPath {
 				script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$FAKE_JJ_RECORD\"\nprintf 'JJ_USER=%s\\nJJ_EMAIL=%s\\n' \"$JJ_USER\" \"$JJ_EMAIL\" >> \"$FAKE_JJ_RECORD\"\n"
-				if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
+				if err := execfile.Write(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 					t.Fatalf("write the fake jj: %v", err)
 				}
 			}
@@ -1411,7 +1413,7 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 			// wrapper looking jj up on PATH never finds this one again.
 			record := filepath.Join(t.TempDir(), "jj-commands")
 			bin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\" >> "+record+"\nPATH=\"${PATH#*:}\" exec "+jj+" \"$@\"\n"), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(bin, "jj"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\" >> "+record+"\nPATH=\"${PATH#*:}\" exec "+jj+" \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1584,7 +1586,7 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 				t.Fatal(err)
 			}
 			bin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(tc.script(jj, lock)), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(bin, "jj"), []byte(tc.script(jj, lock)), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1645,7 +1647,7 @@ func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testin
 	bin := t.TempDir()
 	script := fmt.Sprintf("#!/bin/sh\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\n"+
 		"echo >&2\necho \"fatal: Unable to create '%s': File exists.\" >&2\nexit 1\n", 2*shimwire.MaxFrameBytes, lock)
-	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1846,7 +1848,8 @@ func TestTheShimLogsAnExtensionError(t *testing.T) {
 // any (redact.Runes), and the URL rule runs on them before the cut: a cut inside a userinfo, before
 // its "@", would leave a start of the user name that no rule after it reads as a userinfo. Wherever
 // the cut of the arguments as written falls, inside the userinfo or inside the query, the summary
-// holds no part of either: it is the cut of the arguments the rule left.
+// holds no part of either: it is the cut of what the rule leaves of the arguments
+// (redact.URLCredentials, read from the rule, never written out here).
 func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 	const url = "https://legion-reader@github.com/o/r.git?token=planted-query-token-4463"
 	for _, tc := range []struct {
@@ -1871,7 +1874,7 @@ func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 					t.Fatalf("the summary %q holds a part of the URL's user name or of its query", line)
 				}
 			}
-			left := []rune(head + `https://[a URL with credentials]/o/r.git"}`)
+			left := []rune(redact.URLCredentials(head + url + `"}`))
 			summary := string(left)
 			if len(left) > 80 {
 				summary = string(left[:79]) + "…"

@@ -334,13 +334,13 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 	return id
 }
 
-// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live
-// query embedding priority over background work: cmd/dispatch wires embedqueue's own Embedder
-// behind embed.RateLimitedEmbedder and never wraps the one api.Deps holds, so a live search
-// request's own query embedding is never paced or blocked by that limiter, however deep into
-// backoff it currently is. This drives that exact scenario with one shared fake embedder whose
-// errFor discriminates by InputType, matching how the two callers actually differ in production
-// (embedqueue always calls with InputDocument, search's embedQuery always calls with
+// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live query embedding priority over
+// background work: cmd/dispatch paces every call embedqueue makes (embedqueue.Deps.Paced keeps an
+// embed.RateLimitedEmbedder as the queue's pace) and never wraps the client api.Deps holds, so a
+// live search request's own query embedding is never paced or blocked by that limiter, however
+// deep into backoff it currently is. This drives that exact scenario with one shared fake embedder
+// whose errFor discriminates by InputType, matching how the two callers actually differ in
+// production (embedqueue always calls with InputDocument, search's embedQuery always calls with
 // InputQuery): a background goroutine keeps embedqueue's own ProcessBatch throttled and backing
 // off for the whole test, simulating a backlog saturating the model service's quota for bulk
 // document traffic, while concurrent live search requests keep succeeding non-degraded, because
@@ -376,9 +376,8 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 
 	bgCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	backgroundEmbedder := embed.NewRateLimitedEmbedder(embedder)
-	floor := backgroundEmbedder.Interval()
-	backgroundDeps := embedqueue.Deps{Store: database, Embedder: backgroundEmbedder}
+	backgroundDeps := embedqueue.Deps{Store: database, Embedder: embedder}.Paced()
+	floor := backgroundDeps.PaceIntervalForTest()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -399,7 +398,7 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 			t.Fatal("the background drain stopped before any call of it was throttled")
 		default:
 		}
-		interval := backgroundEmbedder.Interval()
+		interval := backgroundDeps.PaceIntervalForTest()
 		return interval, interval > floor
 	})
 
@@ -852,6 +851,7 @@ func TestSearchAndWritesRideOutAnAzureOutage(t *testing.T) {
 	// The comment's windows are the tick's to write, and it writes them while Azure is down:
 	// a window is a row, not a vector (INFRA-988).
 	windowOwedOwners(t, deps)
+	fillCoverageCounts(t, database)
 	processAllPending(t, database, client)
 	var embeddedDuringOutage, dead bool
 	commentWindow := "select %s from embeddings where kind = 'comment_block' and split_part(id, '#', 1) = 'comment/' || $1"
@@ -1278,7 +1278,7 @@ func TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabe
 
 // TestAFilteredMeaningSearchFindsTheCommentItsFiltersKeep is the defect at the other boundary:
 // not the project's, but q's own three filters (searchRowFilters). The route says ?status=,
-// ?author= and ?updated_since= narrow every leg of the search (routes_table.go, GET
+// ?author= and ?updated_since= narrow every leg of the search (the route files of GET
 // /api/v1/search), and main applies all three inside the comment arm's ordered, limited
 // candidate select. The arm this change buys takes the nearest searchWindowCandidates comment
 // windows first and applies them above that limit, so one crowd of windows the filter would
@@ -1620,7 +1620,7 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 // The third way the progress read can go wrong, and the one that costs a search time rather
 // than rows: the row is there, readable, and locked. The read then waits for the lock, and
 // behind an ACCESS EXCLUSIVE one it waited out the whole bound the server holds on a meaning
-// statement (searchMeaningStatementBound, 15 s) before degrading to the joined statement -
+// statement (searchStatementBound, 15 s) before degrading to the joined statement -
 // 15,002 ms measured at this change's head against 202 ms with a lock_timeout of 200 ms
 // (INFRA-988). A search whose answer is the same either way must not spend a quarter of a
 // minute learning that, so the savepoint bounds its own wait
@@ -1631,6 +1631,7 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 // read that gave up at its lock bound fails with lock_not_available (SQLSTATE 55P03), and one that
 // waited the statement bound out with query_canceled (57014), however loaded the server is.
 func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRow(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	const project = "LCKD"
 	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
 	ctx := context.Background()

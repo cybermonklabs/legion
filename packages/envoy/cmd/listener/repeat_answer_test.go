@@ -32,6 +32,7 @@ import (
 // included, with duplicate; the first send's answer is that copy too, with no duplicate, and under
 // the sender limit it costs one.
 func TestASendRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T) {
+	t.Parallel()
 	rig := newSenderLimitRig(t)
 	rig.limit(4, 2)
 
@@ -66,6 +67,7 @@ func TestASendRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T) {
 // and costs nothing. The first publish's answer is its stored copy, with no duplicate, and under
 // the limit it costs one.
 func TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T) {
+	t.Parallel()
 	rig := newSenderLimitRig(t)
 	topic := func() string { return "notifications.team.repeat-answer-" + id.New() }
 
@@ -125,6 +127,7 @@ func TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T
 // to read back, so each answers 200 with no duplicate, and the denial is shown to touch only the
 // answer to a repeat.
 func TestARepeatWhoseStoredCopyCannotBeReadAnswers503(t *testing.T) {
+	t.Parallel()
 	denied := listenerGrant("$JS.API.STREAM.MSG.GET." + bus.Stream)
 	server, uri := testnats.StartConfig(t, denied, []string{"-js"}, false)
 	uri = asListenerUser(t, uri)
@@ -219,10 +222,11 @@ func TestARepeatWhoseStoredCopyCannotBeReadAnswers503(t *testing.T) {
 // holder's agent subject under the holder's own send key keeps its role topic, and it is the copy
 // a direct send under that key repeats, so it is answered.
 func TestTheStoredCopyIsReadOnlyAtTheSequenceTheVerdictNamed(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	topic := "notifications.team.stored-copy-" + id.New()
 	message := func(text string) contracts.Envelope {
-		return contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_stored_copy", Text: text}, topic, publishDedupePrefix+uuid.NewString())
+		return contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_stored_copy", Text: text}, topic, bus.PublishDedupePrefix+uuid.NewString())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -261,7 +265,7 @@ func TestTheStoredCopyIsReadOnlyAtTheSequenceTheVerdictNamed(t *testing.T) {
 
 	// The sequence guard: the next copy on the subject carries the same dedupe key.
 	sameKeyTopic := "notifications.team.stored-copy-same-key-" + id.New()
-	sameKey := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_stored_copy", Text: "one key, two copies"}, sameKeyTopic, publishDedupePrefix+uuid.NewString())
+	sameKey := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_stored_copy", Text: "one key, two copies"}, sameKeyTopic, bus.PublishDedupePrefix+uuid.NewString())
 	keptAck, err := client.PublishStoredAck(ctx, sameKeyTopic, sameKey, bus.ForwardMsgID(sameKey.DedupeKey, sameKeyTopic))
 	if err != nil {
 		t.Fatalf("publish the copy under its message id: %v", err)
@@ -296,6 +300,7 @@ func TestTheStoredCopyIsReadOnlyAtTheSequenceTheVerdictNamed(t *testing.T) {
 // them, nothing where both say nothing, and the copy's own value in the one new vocabulary where a
 // repeat asked for another reply than the stored copy carries.
 func TestAnAnswersExpectsReplyIsTheAnsweredEnvelopesInTheRequestsSpelling(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name      string
 		requested string
@@ -326,6 +331,7 @@ func TestAnAnswersExpectsReplyIsTheAnsweredEnvelopesInTheRequestsSpelling(t *tes
 // in the same word reads back "none"; a repeat that asks for a required reply, or says nothing,
 // reads the copy's false, since the answer names the stored message and not the request.
 func TestARepeatAnswersTheStoredCopysExpectsReply(t *testing.T) {
+	t.Parallel()
 	rig := newSenderLimitRig(t)
 	const sender = "ses_repeat_expects_reply"
 	topic := "notifications.team.repeat-expects-reply-" + id.New()

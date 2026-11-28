@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -75,7 +76,8 @@ type DispatchIssue struct {
 	DaemonActor  bool
 	// ResolvedRepo is the repository (owner/name) Dispatch resolves the issue to at the event: its
 	// own, else its nearest ancestor's, else its project's default; empty when it resolves to none.
-	// The workflow takes it when it first records the issue, and never after.
+	// The workflow takes it when it first records the issue, and a recorded issue's record follows
+	// it onto another repository (workflow.Engine.ApplyRepositoryChange).
 	ResolvedRepo string
 	// Blockers is the keys of the issues the event says this issue waits on, in Dispatch's own
 	// order. An event retained from a Dispatch that did not yet send them carries none, as an issue
@@ -96,6 +98,31 @@ type DispatchIssue struct {
 	// installs the App is taken at that preparation with no wait and no restart. Empty for every
 	// other fact, the decode's own among them: only a preparation sets it.
 	RepositoryRefusal string
+	// RepositoryRefusalKind is what refused the repository RepositoryRefusal names a reason for,
+	// set beside it by the same preparation, so a reader that acts on the kind reads it here and
+	// never parses the name again: GitHub's answer for a repository name, or a name that is no
+	// <owner>/<name>, which asks GitHub nothing. RefusedNothing for every fact RepositoryRefusal is
+	// empty on.
+	RepositoryRefusalKind RepositoryRefusalKind
+	// RepositoryRead is what GitHub answered this event's preparation for the repository a
+	// recorded issue's resolution moves it onto: GitHub's own spelling of the repository and its
+	// default branch, read at that preparation, with both role Apps answered installed on it (the
+	// daemon's prepareRecorded). The correction writes it (workflow.Engine.ApplyRepositoryChange)
+	// and never a read the daemon kept from an earlier preparation, so an App uninstalled since,
+	// or a default branch renamed since, is what the record follows. Nil for every other fact, the
+	// decode's own among them, and for a preparation whose reads GitHub did not answer or refused:
+	// only a preparation sets it.
+	RepositoryRead *ghbranch.Repository
+	// PreparedAgainst is the repository the issue's record held when this fact was prepared (the
+	// daemon's prepareRecorded, from the record that preparation read), kept in memory with the
+	// fact and never stored. The record's correction is written only while the record still holds
+	// it; workflow.Engine.ApplyRepositoryChange says why. Empty for every fact no preparation of a
+	// recorded issue made, the decode's own among them, an event prepared while its issue had no
+	// record, and an event prepared while its record held no repository (record.Issue.Unfilled),
+	// which the preparation stamps empty: such a fact carries no RepositoryRead, so where it moves
+	// the record its correction writes nothing and asks a follow of the issue instead
+	// (ApplyRepositoryChange says why).
+	PreparedAgainst string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the issue: the chain release_children's own walk
 	// reads. It is read from Dispatch when the fact is prepared, outside the fact lock, for a
@@ -151,6 +178,22 @@ type DispatchIssue struct {
 	// value, "" included, keeps today's `triage` wake of the controller.
 	LabelSetter string
 }
+
+// RepositoryRefusalKind is what refused a repository (DispatchIssue.RepositoryRefusal), which is
+// what a person can do about it: install an App on the repository, or set another one.
+type RepositoryRefusalKind uint8
+
+const (
+	// RefusedNothing is no refusal.
+	RefusedNothing RepositoryRefusalKind = iota
+	// RefusedByGitHub is GitHub's answer for a repository name: a role App not installed on it,
+	// or no such repository, which one answer covers. Installing the App, or setting another
+	// repository, answers it.
+	RefusedByGitHub
+	// RefusedName is a name that is no <owner>/<name> at all, which asks GitHub nothing and which
+	// no App can be installed on: only setting a repository answers it.
+	RefusedName
+)
 
 // LabelledTriageRoot says whether the fact shows a root (no Dispatch parent) in triage that
 // carries the label: the one kind of issue whose label's setter the prepare stage and the boot
@@ -231,6 +274,37 @@ type Handover struct {
 	Issue      string
 	Tree       string
 	Generation uint64
+	// ResolvedRepo is the repository (owner/name) Dispatch resolved the issue to at the read the
+	// outbox made of it just before it applied this fact (its status executor), carried here so
+	// that this door follows Dispatch's resolution as every other one does (the engine's
+	// ApplyRepositoryChange): it raises a generation with no Dispatch event and no PATCH, so a
+	// root handed over while its repository changed in Dispatch would otherwise come back on the
+	// repository the record holds. It is empty where that read answered no repository and where
+	// nothing read one: the absence of a resolution is no statement by Dispatch about which
+	// repository the issue is on, so admission corrects nothing and the record stands, as a
+	// retained event's missing repository leaves it (workflow.SettleRetainedRepository).
+	ResolvedRepo string
+	// Seq is the sequence Dispatch had run to at that read (dispatch.Issue.LastSeq), zero where
+	// nothing read one. A record that took a later event (record.Issue.LastDispatchSeq above it)
+	// holds a newer statement by Dispatch of the issue's repository than this read, so admission
+	// corrects nothing from it, as the daemon's follow pass leaves a record a later event carried
+	// past its listing: the outbox reads GitHub between its Dispatch read and this fact's apply,
+	// and a person's change of the repository applied in that time would otherwise be undone.
+	Seq int64
+	// RepositoryRead, RepositoryRefusal and RepositoryRefusalKind are what the outbox's
+	// preparation of the fact read of GitHub for ResolvedRepo where it names another repository
+	// than the record holds (the daemon's prepareHandover), as an event's preparation carries them
+	// (DispatchIssue.RepositoryRead, RepositoryRefusal, RepositoryRefusalKind): the read the
+	// correction is written from, or GitHub's refusal it waits with. All empty where nothing was
+	// read, and the correction then writes nothing.
+	RepositoryRead        *ghbranch.Repository
+	RepositoryRefusal     string
+	RepositoryRefusalKind RepositoryRefusalKind
+	// PreparedAgainst is the repository the issue's record held at the outbox's preparation of
+	// the fact (the daemon's prepareHandover), as an event's preparation carries it
+	// (DispatchIssue.PreparedAgainst), kept in memory and never stored: admission's correction is
+	// written only while the record still holds it. Empty where nothing prepared the fact.
+	PreparedAgainst string
 }
 
 func (f Handover) namedIssue() (string, bool) { return f.Issue, true }
@@ -703,6 +777,18 @@ func (ControllerTick) namedIssue() (string, bool) { return "", false }
 type EntrySweep struct{}
 
 func (EntrySweep) namedIssue() (string, bool) { return "", false }
+
+// LingerDeadline is the moment a root's linger the admission block reads runs out, applied as a
+// synthetic fact by the daemon's one timer for it (internal/daemon's wakeAtLingerDeadlines) and
+// never decoded from an event: the block changes at that deadline with no write at all (admit's
+// queueAdmissionBlock), and an admission pass runs only on a fact, so this is the fact that runs
+// one there. Admission is the only handler that acts on it, and does nothing but end its pass with
+// the block judged, which admit's block rule (Admission.Apply) always does for this fact, and
+// written where it moved, which queues that change's state event. It carries nothing: the pass
+// reads the whole project and the clock.
+type LingerDeadline struct{}
+
+func (LingerDeadline) namedIssue() (string, bool) { return "", false }
 
 // ProjectResumed is the resume of the daemon's project's pause, applied as a synthetic fact once
 // the resume has committed and never decoded from an event (internal/daemon's
@@ -1433,8 +1519,8 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // check refuses never reaches the workflow. Generation is the issue's generation the route read,
 // and 0 for an issue the daemon has not recorded, whose plan waits at generation 0 until the
 // issue's first step takes the newest plan its owner gave, or, where the issue's experiment's
-// group takes no plan from its owner, passes it over. GivenBy is the claim of the architect whose
-// grant gave it, which is how the first step tells its owner's plan from an earlier owner's.
+// group runs the project's default steps, passes it over. GivenBy is the claim of the architect
+// whose grant gave it, which is how the first step tells its owner's plan from an earlier owner's.
 //
 // The workflow judges the giver and the generation again in the fact's own transaction, since
 // the route read them before the fact lock: a giver that owns the issue no longer is refused
@@ -1444,12 +1530,13 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // issue's first step will run, as taken and writes nothing, but where that version names another
 // giver, whom it adds (record.Store.AddPlanGiver); it stores the plan (workflow's planGiven) where
 // its task has not started, and applies the rules of a later version. It answers PLAN_REFUSED
-// (RunningTaskChanged; StartedBeforePlans for an issue that ran before Legion took plans; or
+// (plan.RunningChange; StartedBeforePlans for an issue that ran before Legion took plans; or
 // AgentUnnamed for a version in which an agent would need a name, its key's or its role's, that
 // another agent of the plan holds from an earlier version, refused before anything is written),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
-// PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE, PLAN_NOT_TAKEN (an issue whose experiment's group
-// takes no plan from its owner) and TREE_LINGERING, and it leaves each of those refusals unspent
+// PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE, PLAN_NOT_TAKEN (a plan of an issue whose experiment's
+// group runs the project's default steps, but a version that changes nothing but the text of its
+// running task default) and TREE_LINGERING, and it leaves each of those refusals unspent
 // (Result.Unspent) and writes nothing. The route names one registration by the issue, the
 // generation, the document and the version, and no id decides whether a give is one already taken
 // (ApplyFact runs the handlers for every PlanGiven, factApplies): the workflow decides it against
@@ -1470,8 +1557,8 @@ func (f PlanGiven) namedIssue() (string, bool) { return f.Issue, true }
 // read. The workflow judges the stop again in the fact's own transaction: an architect that owns
 // the issue no longer is refused ISSUE_OUTSIDE_TREE (IssueOutsideTree), and a stop of a run the
 // issue has left TASK_STALE_GENERATION (TaskStaleGeneration), each left unspent. It then answers
-// TaskNotStopped for every task of an issue whose experiment's group takes no plan from its owner,
-// whatever state the task stands in, and for any other issue stops the task or answers
+// TaskNotStopped for every task of an issue whose experiment's group runs the project's default
+// steps, whatever state the task stands in, and for any other issue stops the task or answers
 // TaskNotFound or TaskDone; a stop of a task already stopped changes nothing and is no refusal.
 // Each request is its own fact, so a task the owner stops, starts again with a later
 // version and stops once more is stopped twice.
@@ -2107,7 +2194,7 @@ type Result struct {
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
-// Reasons is set on a refused plan alone (PlanRefused): one reason for each cause, each naming
+// Reasons is set on a refused plan alone (PlanRefused): the reasons of its causes, each naming
 // its task where it has one, which the route writes beside the code; every other refusal is its
 // code and its sentence, and carries none.
 type Refusal struct {
@@ -2117,23 +2204,19 @@ type Refusal struct {
 	Reasons []plan.Refusal
 }
 
-// PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
-// cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
-// the workflow for a version that changes or removes a running task (RunningTaskChanged), or one
-// whose agent this release cannot name (AgentUnnamed). The message holds every reason in its
-// order, so a reader of the sentence alone reads every cause.
+// PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with its reasons:
+// register_plan answers it for a plan that plan.FromBlocks cannot read, or that plan.Supported or
+// plan.Validate refuses, each naming the first plan.MostReasons causes of each kind and counting
+// the rest, and the workflow for a version that removes a running task or changes more of it than
+// its text (plan.RunningChange), or one whose agent this release cannot name (AgentUnnamed). The
+// message holds every reason given, in its order, so a reader of the sentence alone reads every
+// reason the list holds.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
 		texts[i] = reason.Reason
 	}
 	return &Refusal{Status: 409, Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: " + strings.Join(texts, " "), Reasons: reasons}
-}
-
-// RunningTaskChanged is the reason a later version of the plan is refused when it changes or
-// removes task, which is running: the owner stops it first.
-func RunningTaskChanged(task string) plan.Refusal {
-	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is running: stop it with stop_task before you change it.", task)}
 }
 
 // AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task
@@ -2167,8 +2250,8 @@ func PlanDocumentChanged(issue, artifact string) *Refusal {
 
 // GroupClause is the one text of a group: the sentence that names the variant of the experiment
 // issue was drawn into (group, the issue's row of the experiment that sets how it is done),
-// whose issues run the project's default steps, the one group of this release that takes no plan
-// from an issue's owner (workflow's takesNoPlan). The refusals of register_plan and stop_task
+// whose issues run the project's default steps, the one group of this release that sets how an
+// issue is done (workflow's takesNoPlan). The refusals of register_plan and stop_task
 // (PlanNotTaken, TaskNotStopped) and the plan-not-taken notice of the issue's first step each
 // call it, and no other text states a group.
 func GroupClause(issue string, group record.Assignment) string {
@@ -2178,23 +2261,26 @@ func GroupClause(issue string, group record.Assignment) string {
 // PlanNotTaken is the 409 PLAN_NOT_TAKEN answer to a plan given for issue, whose group (its row
 // of the experiment that sets how it is done) names the arm's `plan` `default`: the experiment
 // decides how the issue is done, so Legion takes no plan from its owner, and a plan it stored and
-// did not carry out would be dropped in silence. It is no refusal of a plan's content, so it
-// carries no reasons and its code is not PLAN_REFUSED. The same registration sent again gets this
-// same answer: the workflow judges every PlanGiven whatever its id's mark (factApplies), and the
-// group never changes. The refusal is left unspent (Result.Unspent), which only a release before
-// reads.
+// did not carry out would be dropped in silence. The one version it takes is one that changes
+// nothing but the text of the issue's running task default (workflow's versionRefusal), which
+// keeps the task on the default steps where it stands, and the sentence names it. It is no
+// refusal of a plan's content, so it carries no reasons and its code is not PLAN_REFUSED. The same
+// registration sent again gets this same answer: the workflow judges every PlanGiven whatever its
+// id's mark (factApplies), and the group never changes. The refusal is left unspent
+// (Result.Unspent), which only a release before reads.
 func PlanNotTaken(issue string, group record.Assignment) *Refusal {
 	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
-		" Legion takes no plan from its owner for this issue. This plan changed nothing."}
+		" Legion takes no plan from its owner for this issue, only a version that changes nothing but the text of its running task default." +
+		" This plan changed nothing."}
 }
 
 // TaskNotStopped is the 409 PLAN_NOT_TAKEN refusal of stop_task for a task of issue, whose group
 // names the arm's `plan` `default`: the experiment decides how the issue is done, so Legion takes
-// no stop of one of its tasks from its owner either, and the code is the one register_plan
-// answers for the same issue.
+// no stop of one of its tasks from its owner, and the code is the one register_plan answers for
+// the same issue.
 func TaskNotStopped(issue string, group record.Assignment) *Refusal {
 	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
-		" Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}
+		" Legion takes no stop of its tasks from its owner. This stop changed nothing."}
 }
 
 // StartedBeforePlans is the reason a plan is refused for issue, which the daemon recorded with no
@@ -2858,9 +2944,14 @@ func Applied(ctx context.Context, pool store.TxPool, source string, eventIDs []s
 // settleObserved is the fact ApplyFact applies in fact's place, under the fact lock, and whether it
 // applies one: an Observed issue fact's view, as a plain observation, while the workflow records no
 // issue of its key, and once one is recorded the event it was prepared in place of (Delivered),
-// carrying the view's Ancestry and Reread, which the preparation read for the view alone,
-// or nothing when it was prepared in place of none. Every other fact applies as it is, so no
-// handler sees Observed or Delivered.
+// carrying the view's Ancestry and Reread, which the preparation read for the view alone, the
+// repository the record held at that preparation (PreparedAgainst), and what that preparation read
+// of GitHub for the view's repository (RepositoryRead, RepositoryRefusal and its kind) where the
+// event resolves the issue to that same repository, which a recorded issue's correction is written
+// from (workflow.Engine.ApplyRepositoryChange): the daemon's own status write resolves the issue as
+// the view does, so its correction would otherwise read as unread. A view prepared in place of no
+// event applies nothing. Every other fact applies as it is, so no handler sees Observed or
+// Delivered.
 //
 // A view older than an issue fact of the issue the daemon has already applied (the copy's applied
 // sequence, record.Store.DispatchIssueApplied, which blockers.Mirror raises for every applied issue
@@ -2894,7 +2985,11 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 		return nil, false, nil
 	default:
 		delivered := *issue.Delivered
-		delivered.Ancestry, delivered.Reread = issue.Ancestry, issue.Reread
+		delivered.Ancestry, delivered.Reread, delivered.PreparedAgainst = issue.Ancestry, issue.Reread, issue.PreparedAgainst
+		if strings.EqualFold(delivered.ResolvedRepo, issue.ResolvedRepo) {
+			delivered.RepositoryRead, delivered.RepositoryRefusal, delivered.RepositoryRefusalKind =
+				issue.RepositoryRead, issue.RepositoryRefusal, issue.RepositoryRefusalKind
+		}
 		return delivered, true, nil
 	}
 }

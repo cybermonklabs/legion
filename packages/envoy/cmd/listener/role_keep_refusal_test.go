@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	natsgo "github.com/nats-io/nats.go"
-
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
@@ -24,6 +22,8 @@ import (
 // forward again however often it is sent. The lane keeps its copy for the role's next claim and
 // for the sweep.
 func TestAHandoverEndsAtAForwardTheGrantRefuses(t *testing.T) {
+	// Not parallel: it requires the handover (handOverKeptRole) to make its one refused forward
+	// and end inside roleKeepDrainRetryPause (1 s).
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-handover-denied"
@@ -64,6 +64,8 @@ func TestAHandoverEndsAtAForwardTheGrantRefuses(t *testing.T) {
 // cursor to end it, and the grant refuses that write. A handover that walked again would resolve
 // the holder a second time, a second read of the session bucket.
 func TestAHandoverEndsAtAWalkTheGrantRefusesWhileItsHolderReadFailed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// NATS_NKEY_SEED in deniedGrantClient).
 	const (
 		role   = "kept-handover-denied-unresolved"
 		holder = "ses_kept_handover_denied_unresolved"
@@ -74,9 +76,14 @@ func TestAHandoverEndsAtAWalkTheGrantRefusesWhileItsHolderReadFailed(t *testing.
 		t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleBeyondTheSessionCache(t, harness, holder, role)
+	// The holder's session read fails once, as a read the bus missed does, and every read is
+	// counted, a direct get and a read from the stream's leader alike (faultSessionReads).
 	var reads atomic.Int32
-	swapSessionBucket(t, harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
-		return sessionReadsCounted{KeyValue: kv, reads: &reads}
+	faultSessionReads(t, harness.sessions, func(string) error {
+		if reads.Add(1) == 1 {
+			return errors.New("the session bucket's read did not answer")
+		}
+		return nil
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -89,18 +96,4 @@ func TestAHandoverEndsAtAWalkTheGrantRefusesWhileItsHolderReadFailed(t *testing.
 	if got := reads.Load(); got != 1 {
 		t.Fatalf("the handover read the holder's session %d times, want 1: a second resolution is a second pass over a walk the grant refused", got)
 	}
-}
-
-// sessionReadsCounted is a session bucket whose first read fails, as a read the bus missed does,
-// and whose every read is counted.
-type sessionReadsCounted struct {
-	natsgo.KeyValue
-	reads *atomic.Int32
-}
-
-func (kv sessionReadsCounted) Get(key string) (natsgo.KeyValueEntry, error) {
-	if kv.reads.Add(1) == 1 {
-		return nil, errors.New("the session bucket's read did not answer")
-	}
-	return kv.KeyValue.Get(key)
 }

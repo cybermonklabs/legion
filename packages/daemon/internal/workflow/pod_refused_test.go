@@ -97,6 +97,7 @@ func wantOwedEntryStart(t *testing.T, start record.SuperviseRequest, pod string)
 // an earlier run of the issue, which finishes without acting. The report an hour later, while the
 // start the first one queued stands, queues none.
 func TestALaunchItsPodRefusedQueuesAStartWhereNoQueuedStartBringsTheClaimBack(t *testing.T) {
+	t.Parallel()
 	token := claim.Token("legion-legion-legion-209-tester")
 	for _, tc := range []struct {
 		name   string
@@ -159,6 +160,7 @@ func TestALaunchItsPodRefusedQueuesAStartWhereNoQueuedStartBringsTheClaimBack(t 
 // the pod refused. So that claim is sent the owed entry's start, the entry and the task the row
 // holds, as a resend.
 func TestARefusedLaunchOfTheRolesWorkerIsSentTheOwedEntryWhateverClaimItsRowNames(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: "legion-legion-legion-209-implementer", Entry: 3,
@@ -179,6 +181,7 @@ func TestARefusedLaunchOfTheRolesWorkerIsSentTheOwedEntryWhateverClaimItsRowName
 // slot, and the start would wait for one for ever. The issue and the controller are still told.
 // The engine's deployment is Legion's own roles, which define no checker.
 func TestARefusedLaunchInTheSlotOfARoleTheDeploymentLostQueuesNoStart(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		role  claim.Role
@@ -215,6 +218,7 @@ func TestARefusedLaunchInTheSlotOfARoleTheDeploymentLostQueuesNoStart(t *testing
 // phase reaches the tester, and the same child under a root that does not linger, whose tester is
 // sent its owed entry.
 func TestARefusedLaunchIsQueuedNoStartTheOutboxWouldFinishWithoutActing(t *testing.T) {
+	t.Parallel()
 	token := claim.Token("legion-legion-legion-209-tester")
 	until := time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
 	stopped := func(from phase.Phase) func(t *testing.T, pool *pgxpool.Pool) {
@@ -286,6 +290,7 @@ func TestARefusedLaunchIsQueuedNoStartTheOutboxWouldFinishWithoutActing(t *testi
 // again only once that pod no longer refuses the claim (the daemon outbox's startRowEnded). It
 // tells nobody: the refusal's own report did.
 func TestAStartTheEndOfARowQueuesIsMarkedWithThePodThatRefusesTheClaim(t *testing.T) {
+	t.Parallel()
 	token := claim.Token("legion-legion-legion-209-tester")
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
@@ -330,6 +335,7 @@ func seedRefusedClaim(t *testing.T, pool *pgxpool.Pool, token claim.Token, gener
 // The claim's row is read for update, so a launch whose write comes after the fact's read waits for
 // the fact's commit, and the fact's effects stand for a claim that had not launched.
 func TestAFactOfARefusedLaunchAfterItsClaimLaunchedTellsNothingAndQueuesNothing(t *testing.T) {
+	t.Parallel()
 	token := claim.Token("legion-legion-legion-209-tester")
 	for _, tc := range []struct {
 		name   string
@@ -381,6 +387,7 @@ func TestAFactOfARefusedLaunchAfterItsClaimLaunchedTellsNothingAndQueuesNothing(
 // start and queues none of its own. Read by the tester's run alone, it queued a start of no phase,
 // which would have launched the claim with no task.
 func TestAQueuedStartOfAnotherRoleOfTheClaimBringsItBack(t *testing.T) {
+	t.Parallel()
 	token := claim.Token("legion-legion-legion-209-tester")
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")

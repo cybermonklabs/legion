@@ -30,14 +30,16 @@ import (
 var ErrUnavailable = errors.New("envoy listener unavailable")
 
 // ErrUnreachable marks the ErrUnavailable failures no listener answered: the request found no
-// connection, lost it, or ran out of time before an answer, or a 502, 503 or 504 came back - a
-// gateway in front of a listener that is gone, or a listener behind its starting gate
-// (cmd/listener/starting_gate.go startingGate). Those are what a listener being replaced gives for
-// a few seconds, so asking again a little later may be answered. Every other ErrUnavailable - a
-// status the listener chose, such as the 401 it gives a token it refuses, or an answer that does
-// not decode - is the listener's own answer, which asking again only repeats. An ErrUnreachable
-// failure is ErrUnavailable too, with the same text, so a caller that asks only errors.Is(err,
-// ErrUnavailable) reads it exactly as before.
+// connection, lost it, or ran out of time before an answer, or a listener outage status came back
+// (listenerwire.Outage: a 408, a 429, a 5xx but 500) - a gateway in front of a listener that is
+// gone, a listener behind its starting gate (cmd/listener/starting_gate.go startingGate), a proxy
+// that did not take the request in time or that limits how often it is asked. Those are what a
+// listener being replaced or overloaded gives for a few seconds, so asking again a little later
+// may be answered. Every other ErrUnavailable - a status the listener chose, such as the 401 it
+// gives a token it refuses or the 500 of a record it cannot decode, or an answer that does not
+// decode - is the listener's own answer, which asking again only repeats. An ErrUnreachable
+// failure is ErrUnavailable too, with the same text, so a caller that asks only
+// errors.Is(err, ErrUnavailable) reads it exactly as before.
 var ErrUnreachable = errors.New("envoy listener unreachable")
 
 // unreachableError marks the ErrUnavailable failure it wraps as ErrUnreachable without adding to
@@ -51,16 +53,10 @@ func (e unreachableError) Unwrap() error { return e.error }
 // unreachable marks err, an ErrUnavailable failure, as ErrUnreachable.
 func unreachable(err error) error { return unreachableError{err} }
 
-// gatewayStatus reports whether a listener answered with a status that comes from in front of it
-// or from its starting gate rather than from a decision about the request: a 502, 503 or 504.
-func gatewayStatus(code int) bool {
-	return code == http.StatusBadGateway || code == http.StatusServiceUnavailable || code == http.StatusGatewayTimeout
-}
-
 // unavailableStatus is the ErrUnavailable failure err a non-200 answer reads as, marked
-// ErrUnreachable when its status is a gatewayStatus.
+// ErrUnreachable when its status is a listener outage (listenerwire.Outage).
 func unavailableStatus(code int, err error) error {
-	if gatewayStatus(code) {
+	if listenerwire.Outage(code) {
 		return unreachable(err)
 	}
 	return err
@@ -145,11 +141,15 @@ const includeUnresponsive = "?include=" + StateUnresponsive
 // its record 200 with that state rather than 404.
 const includeUnresponsiveAndStopped = includeUnresponsive + "," + StateStopped
 
-// SendStateConnected and SendStateStopped are the two values a send's answer puts in `state`
-// (cmd/listener, sendHandler), beside the recipient_state the registry's age gives. Connected
-// means the session's relay subscriber answered the listener's probe or kept silent; stopped
-// means no subscriber holds the session, or the listener knows it only by its record, so the
-// message is stored for the session's own consumer and reaches it when it runs again.
+// SendStateConnected and SendStateStopped are two of the three values a send's answer puts in
+// `state` (cmd/listener, sendHandler), beside the recipient_state the registry's age gives.
+// Connected means the session's relay subscriber answered the listener's probe or kept silent;
+// stopped means no subscriber holds the session, or the listener knows it only by its record, so
+// the message is stored for the session's own consumer and reaches it when it runs again. The
+// third, no_receiver, means the probe passed but the session advertises no delivery mode, as a
+// Claude Code terminal does while no mod is connected to it; that answer names no
+// recipient_state. Only a send whose payload names no delivery mode can get it, and Dispatch
+// reads it as it reads connected: only stopped is queued.
 const (
 	SendStateConnected = "connected"
 	SendStateStopped   = "stopped"
@@ -264,8 +264,9 @@ type SendInput struct {
 // JetStream discarded, where it is older; the answer does not say which, so a caller reads no
 // envelope id from a duplicate.
 //
-// State is what the target was when the listener stored the message, SendStateConnected or
-// SendStateStopped. A listener that predates the field answers none, which reads as a connected
+// State is what the target was when the listener stored the message: SendStateConnected,
+// SendStateStopped, or the listener's no_receiver for a running session that advertises no
+// delivery mode. A listener that predates the field answers none, which reads as a connected
 // target. A send for a role that the listener kept on the role's kept lane, because the role's
 // claim named another session than the target when the send arrived, answers no State, and
 // EnvelopeID names the copy the lane holds: the message reaches the session that holds the role,
@@ -286,10 +287,14 @@ type Client struct {
 	// apiToken alone. The last of the two options given wins; cmd/dispatch refuses both.
 	identity   listenerIdentity
 	httpClient *http.Client
-	// window is how long every listener call gets (roundTrip): CallWindow, or what WithTimeout
-	// names. clock is what that window runs on: clock.Real(), or what WithClock names.
+	// window is how long every listener call gets where no call deadline is set (roundTrip):
+	// CallWindow, or what WithTimeout names. clock is what the window runs on: clock.Real(), or
+	// what WithClock names.
 	window time.Duration
 	clock  clock.Clock
+	// callDeadline is the end a test gives every call's window in window's place
+	// (WithCallDeadline); its zero value, production's, leaves each call window.
+	callDeadline clock.Deadline
 	// logger takes the line a call made again on the shared token writes (do); slog.Default()
 	// unless WithLogger names another.
 	logger *slog.Logger
@@ -298,19 +303,22 @@ type Client struct {
 // CallWindow is the window every listener call gets. A send that misses it is
 // ErrReceiptTimeout rather than a plain failure, because the envelope may already be published.
 // It is exported because a test whose server runs on a fake clock moves that clock past the
-// window to make a call miss it (api's comment delivery tests).
+// window to make a call miss it (api's comment delivery tests), and a test that holds a call at
+// its stand-in listener derives what it may hold from it.
 const CallWindow = 5 * time.Second
 
-// ErrCallWindow reports a listener call its window ended (CallWindow, or what WithTimeout names):
-// the call's error wraps it beside the request's own error, so it is still context.DeadlineExceeded
-// and a net.Error whose Timeout is true, as an end of http.Client.Timeout was. A call the caller's
-// own context ended is not ErrCallWindow, so a caller tells its own bound's end from the window's.
+// ErrCallWindow reports a listener call its window ended (CallWindow, what WithTimeout names, or
+// the end WithCallDeadline names): the call's error wraps it beside the request's own error, so it
+// is still context.DeadlineExceeded and a net.Error whose Timeout is true, as an end of
+// http.Client.Timeout was. A call the caller's own context ended is not ErrCallWindow, so a caller
+// tells its own bound's end from the window's.
 var ErrCallWindow = errors.New("envoy listener call window ended")
 
 // callWindowError is a call's error once its window ended and its caller's context had not.
+// window names that window: its duration, or the end WithCallDeadline set.
 type callWindowError struct {
 	err    error
-	window time.Duration
+	window string
 }
 
 func (e callWindowError) Error() string {
@@ -331,14 +339,22 @@ func (c *Client) windowEnded(err error, ctx, parent context.Context) error {
 	if err == nil || err == io.EOF || ctx.Err() == nil || parent.Err() != nil {
 		return err
 	}
-	return callWindowError{err: err, window: c.window}
+	window := c.window.String()
+	if !c.callDeadline.IsZero() {
+		window = "the end " + c.callDeadline.String()
+	}
+	return callWindowError{err: err, window: window}
 }
 
 // Option configures a Client.
 type Option func(*Client)
 
 // WithTimeout replaces the window every listener call gets. Tests use it to exercise a receipt
-// timeout without waiting out the production window.
+// timeout without waiting out the production window. A row moved to wait on its fact calls
+// WithCallDeadline instead, and WithTimeout goes with its last caller. A client given both arms
+// WithCallDeadline's end, whichever option comes last: that end is the moment the row's own waits
+// give up, so a shorter window would end a call the row still waits on, and the order of a
+// client's options then changes nothing.
 func WithTimeout(timeout time.Duration) Option {
 	return func(c *Client) { c.window = timeout }
 }
@@ -350,10 +366,26 @@ func WithClock(clock clock.Clock) Option {
 	return func(c *Client) { c.clock = clock }
 }
 
+// WithCallDeadline ends every listener call's window at deadline instead of CallWindow (or
+// WithTimeout's window) after the call began, on the client's clock; the zero deadline leaves the
+// window, which is what a deployment runs. A test that holds a call at its stand-in listener gives
+// the moment its own waits give up (testwait.GiveUpAt), or no end under -timeout 0, whose waits
+// have none.
+func WithCallDeadline(deadline clock.Deadline) Option {
+	return func(c *Client) { c.callDeadline = deadline }
+}
+
 // WithToken sets the bearer every listener call sends (cmd/dispatch: ENVOY_TOKEN). Without it, or
 // with an empty token, a call sends no Authorization header.
 func WithToken(token string) Option {
 	return func(c *Client) { c.apiToken = token }
+}
+
+// WithHTTPClient sets the HTTP client every listener call is sent through. Without it the client
+// builds one of its own, which is what a deployment does; a test passes one whose transport sees
+// each request's context.
+func WithHTTPClient(httpClient *http.Client) Option {
+	return func(c *Client) { c.httpClient = httpClient }
 }
 
 // WithAccountTokenFile makes every listener call present Dispatch's own identity (cmd/dispatch:
@@ -404,13 +436,15 @@ func New(baseURL string, options ...Option) *Client {
 	return client
 }
 
-// roundTrip sends request within the client's window on the client's clock. The window covers
-// reading the answer's body as well as its head, as http.Client.Timeout does, so its end is
-// released when the caller closes the body. A call or a body read the window ended fails with
-// ErrCallWindow beside its own error (windowEnded).
+// roundTrip sends request within its window on the client's clock: the client's window
+// (CallWindow, or what WithTimeout names), or the end a test set (WithCallDeadline), or none at
+// all (clock.Deadline.WithTimeout). The window covers reading the answer's body as well as its
+// head, as http.Client.Timeout does, so its end is released when the caller closes the body. A
+// call or a body read the window ended fails with ErrCallWindow beside its own error
+// (windowEnded).
 func (c *Client) roundTrip(request *http.Request) (*http.Response, error) {
 	parent := request.Context()
-	ctx, cancel := c.clock.WithTimeout(parent, c.window)
+	ctx, cancel := c.callDeadline.WithTimeout(c.clock, parent, c.window)
 	response, err := c.httpClient.Do(request.WithContext(ctx))
 	if err != nil {
 		err = c.windowEnded(err, ctx, parent)
@@ -742,6 +776,39 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 	return Session{}, err
 }
 
+// Successors returns what the listener answers for the sessions that replaced sessionID
+// (listenerwire.SessionSuccessors, GET /v1/sessions/<session_id>/successors): the sessions whose
+// claims named it as the session they replace, to which the listener copies what it had not
+// read, sorted, none for a session nobody replaced, and the principal each of them and sessionID
+// last registered as. A transport failure, a 5xx and a listener outage (listenerwire.Outage: a
+// 408, a 429, a 5xx but 500) are ErrUnavailable, carrying the listener's reason, and
+// ErrUnreachable too where nothing answered or the status came from in front of the listener
+// (unavailableGetStatus): who replaced the session was not read, so a proxy's 408 or 429 reads
+// as "ask again" rather than as "nobody replaced that session". A body that does not decode is
+// ErrUnavailable as well. Any other status is the listener's own answer that it names no
+// successor, an error that is not ErrUnavailable: a listener that predates the route answers its
+// GET 405 through the session delete route, and that listener copies no message to a successor.
+func (c *Client) Successors(ctx context.Context, sessionID string) (listenerwire.SessionSuccessors, error) {
+	route := "/v1/sessions/" + url.PathEscape(sessionID) + "/successors"
+	response, err := c.get(ctx, route, "")
+	if err != nil {
+		return listenerwire.SessionSuccessors{}, err
+	}
+	defer response.Body.Close()
+	switch {
+	case response.StatusCode == http.StatusOK:
+	case listenerwire.Outage(response.StatusCode) || response.StatusCode >= http.StatusInternalServerError:
+		return listenerwire.SessionSuccessors{}, unavailableGetStatus(response, route)
+	default:
+		return listenerwire.SessionSuccessors{}, fmt.Errorf("envoy listener: GET %s returned %d: it names no successor", route, response.StatusCode)
+	}
+	var answer listenerwire.SessionSuccessors
+	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+		return listenerwire.SessionSuccessors{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
+	}
+	return answer, nil
+}
+
 // Session returns one session's listener metadata, whatever its state, or ErrNotFound if the
 // listener holds no record of it: a 404, or a session id the listener refuses as a KV key (a
 // 400 for one outside nats.go's key alphabet or holding an empty token, a 413 for one too
@@ -758,9 +825,9 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 // one that is not running, is ErrNotFound here (SessionIncludingStopped reads it). Every other
 // status, a body that does not decode and a transport failure alike are ErrUnavailable carrying
 // the listener's own reason, so a read the message bus did not answer reads as "ask again", never
-// as "that session is gone"; only a transport failure and a 502, 503 or 504 are also
-// ErrUnreachable, because a status the listener chose - a 401 for a token it refuses, say - is
-// its answer and asking again repeats it.
+// as "that session is gone"; only a transport failure and a listener outage (listenerwire.Outage:
+// a 408, a 429, a 5xx but 500) are also ErrUnreachable, because a status the listener chose - a
+// 401 for a token it refuses, say - is its answer and asking again repeats it.
 func (c *Client) Session(ctx context.Context, sessionID string) (Session, error) {
 	return c.readSession(ctx, sessionID, includeUnresponsive)
 }
@@ -888,9 +955,9 @@ func (c *Client) get(ctx context.Context, route, query string) (*http.Response, 
 
 // unavailableGetStatus is ErrUnavailable for a GET of route the listener answered with a status
 // the caller does not take, carrying the listener's own reason when its body names one, and
-// ErrUnreachable too when that status came from in front of the listener (unavailableStatus).
-// The two list reads answer their refusals through listFailure instead, which tells a refilling
-// listener from an unavailable one.
+// ErrUnreachable too when that status is an outage (unavailableStatus). The two list reads answer
+// their refusals through listFailure instead, which tells a refilling listener from an
+// unavailable one.
 func unavailableGetStatus(response *http.Response, route string) error {
 	var failure listenerwire.APIError
 	if err := json.NewDecoder(response.Body).Decode(&failure); err == nil && failure.Error != "" {
@@ -1047,15 +1114,16 @@ func sendTransportError(err error, requestWritten bool) error {
 	return unreachable(fmt.Errorf("%w: POST /v1/messages/send: %w", ErrUnavailable, err))
 }
 
-// listenerResponseError is the error a role lookup or a send reports for a non-200 answer. A 502,
-// 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says: the listener behind its
-// starting gate answers 503 {"error":"service starting"} (cmd/listener/starting_gate.go
-// startingGate), and a gateway in front of one that is gone answers 502 or 504, so either is "ask
-// again" rather than the listener's verdict on the request. Any other status with a JSON reason is
-// that reason alone, which a delivery records and a person reads verbatim ("no live session <id>",
-// "message is required", "unauthorized"). The reason is kept on the unavailable error too, for the
-// same reader. Any other status without one is ErrUnavailable alone: the listener answered, and
-// asking again repeats it.
+// listenerResponseError is the error a role lookup or a send reports for a non-200 answer. A
+// listener outage (listenerwire.Outage: a 408, a 429, a 5xx but 500) is ErrUnavailable and
+// ErrUnreachable whatever its body says: the listener behind its starting gate answers 503
+// {"error":"service starting"} (cmd/listener/starting_gate.go startingGate), a gateway in front of
+// one that is gone answers 502 or 504, and a proxy that did not take the request in time answers
+// 408, so each is "ask again" rather than the listener's verdict on the request. Any other status
+// with a JSON reason is that reason alone, which a delivery records and a person reads verbatim
+// ("no live session <id>", "message is required", "unauthorized"). The reason is kept on the
+// unavailable error too, for the same reader. Any other status without one is ErrUnavailable
+// alone: the listener answered, and asking again repeats it.
 func listenerResponseError(response *http.Response) error {
 	var body listenerwire.APIError
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
@@ -1075,14 +1143,14 @@ func listenerResponseError(response *http.Response) error {
 var ErrStoreUnconfirmed = errors.New("envoy listener could not confirm the send was stored")
 
 // listenerRefusal is a refused answer as its caller reports it: the listener's own reason when
-// its body named one, and its status when the body named nothing a caller could act on. A 502,
-// 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says, reason and all, since
-// it comes from in front of the listener or from its starting gate rather than from a decision
-// about the request.
+// its body named one, and its status when the body named nothing a caller could act on. A
+// listener outage (listenerwire.Outage: a 408, a 429, a 5xx but 500) is ErrUnavailable and
+// ErrUnreachable whatever its body says, reason and all, since it says the listener could not
+// answer now rather than decide about the request.
 func listenerRefusal(response *http.Response, reason string) error {
 	code := response.StatusCode
 	if reason != "" {
-		if gatewayStatus(code) {
+		if listenerwire.Outage(code) {
 			return unreachable(fmt.Errorf("%w: listener returned %d: %s", ErrUnavailable, code, reason))
 		}
 		return errors.New(reason)
@@ -1092,8 +1160,9 @@ func listenerRefusal(response *http.Response, reason string) error {
 
 // listFailure classifies a list read's non-200 answer from its body: the listener's refilling 503
 // is a *RefillingError, anything else ErrUnavailable carrying the listener's own reason when its
-// body names one, and ErrUnreachable too when the status is a 502, 503 or 504, which comes from
-// in front of the listener or from its starting gate rather than from a verdict on the read.
+// body names one, and ErrUnreachable too when the status is a listener outage (listenerwire.Outage:
+// a 408, a 429, a 5xx but 500), which says the listener could not answer now rather than give a
+// verdict on the read.
 func listFailure(response *http.Response, route string) error {
 	var body listenerwire.APIError
 	decoded := json.NewDecoder(response.Body).Decode(&body) == nil

@@ -14,6 +14,7 @@ import (
 // generation is held for both: a checker serving an earlier run is not the worker of this one. At
 // a phase of Legion's the phase names the worker, as before.
 func TestAPhaseReminderIsArmedForTheDeploymentRoleThatRuns(t *testing.T) {
+	t.Parallel()
 	const checker claim.Role = "checker"
 	const checkerToken, implementerToken, testerToken claim.Token = "legion-legion-legion-209-checker",
 		"legion-legion-legion-209-implementer", "legion-legion-legion-209-tester"
@@ -43,6 +44,7 @@ func TestAPhaseReminderIsArmedForTheDeploymentRoleThatRuns(t *testing.T) {
 // works its phase in its own claim alone, the role's own token, so key a's agent, which holds the
 // role, works no phase there.
 func TestAPhaseReminderIsArmedOnlyForTheClaimTheStepNames(t *testing.T) {
+	t.Parallel()
 	const keyed, own = claim.Token("legion-legion-legion-209-implementer"), claim.Token("legion-legion-legion-209-tester")
 	named := pods.IdleView{Issue: "LEGION-209", Project: "legion", Phase: phase.Testing, Generation: 3,
 		Phases: map[claim.Role]pods.IdlePhase{claim.RoleTester: {Claim: keyed, StepTask: "a"}}}

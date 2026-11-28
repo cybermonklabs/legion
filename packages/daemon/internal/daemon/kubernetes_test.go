@@ -1059,11 +1059,14 @@ func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) 
 	}
 }
 
-// awaitHealthz returns once the daemon answers /healthz, and fails if it exits first.
+// awaitHealthz returns once the daemon answers /healthz, and fails if it exits first. It waits up
+// to a minute, or what the test binary's deadline leaves (testwait.Bounded): a daemon that boots
+// beside six busy loops on a two-CPU pod took 14 s to reach its intake stage, after which a 15 s
+// bound failed the idle rig in its setup in 6 of 7 runs.
 func awaitHealthz(t *testing.T, cfg config.Config, done chan error) {
 	t.Helper()
 	var err error
-	if !testwait.Holds(15*time.Second, 20*time.Millisecond, func() bool {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 20*time.Millisecond, func() bool {
 		var response *http.Response
 		response, err = pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/healthz")
 		if err == nil {
@@ -1163,6 +1166,36 @@ func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
 	cfg.Projects[cfg.Project] = project
 	if opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger()); len(opts.ControllerSlackChannels) != 0 {
 		t.Fatalf("ControllerSlackChannels = %q with no channel, want none", opts.ControllerSlackChannels)
+	}
+}
+
+// The controller's runtime is handed the project's watched workflows, entries and events as the
+// file names them, which it records with the controller's addresses (sandbox's address record),
+// so a daemon restarted with another list relaunches the controller; no entry is no list.
+func TestSandboxOptionsCarryTheProjectsWatchedWorkflows(t *testing.T) {
+	t.Parallel()
+	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+	project := cfg.Projects[cfg.Project]
+	project.WatchedWorkflows = []config.WatchedWorkflow{
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "y.yml", Events: []string{"schedule"}},
+	}
+	cfg.Projects = map[string]config.Project{cfg.Project: project}
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sandbox.WatchedWorkflow{
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "y.yml", Events: []string{"schedule"}},
+	}
+	if !reflect.DeepEqual(opts.ControllerWatchedWorkflows, want) {
+		t.Fatalf("ControllerWatchedWorkflows = %v, want %v", opts.ControllerWatchedWorkflows, want)
+	}
+	project.WatchedWorkflows = nil
+	cfg.Projects[cfg.Project] = project
+	if opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger()); len(opts.ControllerWatchedWorkflows) != 0 {
+		t.Fatalf("ControllerWatchedWorkflows = %v with no entry, want none", opts.ControllerWatchedWorkflows)
 	}
 }
 

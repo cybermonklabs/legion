@@ -14,11 +14,13 @@ const strandedTokenDropped = "the stranded claims' token, the claim views' token
 
 // A caller one contract below the stranded token's entry is served each stranded claim and each
 // claim view without its `token` and each issue without its `otherClaims`, keeps every stranded
-// claim, and is told so in one line of the entry's band. It stands at or above the deployment
-// roles' entry, so LEGION-240 is still at step with its checker. It reads the band's number from
-// the registry (entryNumber), so it holds no entry to be the newest (R4 of dispatch://INFRA-1569).
+// claim, and is told so in one line of the entry's band, beside one line of each band above it.
+// It stands at or above the deployment roles' entry, so LEGION-240 is still at step with its
+// checker. It reads the band's number from the registry (entryNumber), so it holds no entry to be
+// the newest (R4 of dispatch://INFRA-1569), and it reads the populated state with the keys each
+// later entry's band takes written into it (carriedState), so every band above it writes its line.
 func TestACallerBelowTheStrandedTokenEntryIsServedNoTokens(t *testing.T) {
-	state := populatedState(t)
+	state := carriedState(t)
 	if other := state.Issues["LEGION-208"].OtherClaims; len(other) == 0 || other[0].Claim.Token == "" {
 		t.Fatal("the fixture must carry another claim and its token")
 	}

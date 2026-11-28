@@ -42,7 +42,7 @@ func TestTheTickNamesAWaitingParentBlockedByItsOpenChildren(t *testing.T) {
 	var blocked []record.BlockedIssue
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		if held, blocked, _, err = admission.tickRows(context.Background(), tx); err != nil {
+		if held, blocked, _, err = admission.tickRows(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) }); err != nil {
 			t.Fatalf("read the tick's rows: %v", err)
 		}
 	})
@@ -58,7 +58,7 @@ func TestTheTickNamesAWaitingParentBlockedByItsOpenChildren(t *testing.T) {
 // The repair of a role behind the entry its phases row names (owedEntryRoles, which the entry
 // sweep and every admission pass send through resumeSlottedWorkers) starts no role of a parent
 // waiting in awaiting_children (dispatch://INFRA-3320 R11): that phase has no worker
-// (workflow.OpenPhaseRole), so the selection passes over it. The parent here even holds a slot
+// (workflow.OpenRoleOf), so the selection passes over it. The parent here even holds a slot
 // row, which puts it among the repair's candidates, and its implementer's claim stands behind the
 // entry its phases row names. The control is the same record in implementing, whose implementer
 // the sweep sends that entry's work.

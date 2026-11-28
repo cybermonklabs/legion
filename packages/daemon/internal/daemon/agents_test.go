@@ -344,7 +344,7 @@ func (r *ownerStepsRig) entryRose(c *stepClaimant, entered, before claim.Role) {
 // schema the release before leaves by the way backs its migrations' headers give (the name of each
 // step's agent and the claim of each resume), so its plan rows name no agent, as that release wrote
 // them. This release then boots and migrates the column again, which names each step for its role
-// (20261124213820), and the issue reaches done with the claims `…-implementer` and `…-reviewer`
+// (20261128145833), and the issue reaches done with the claims `…-implementer` and `…-reviewer`
 // of its steps and no other.
 func TestAnIssueThatRanUnderTheReleaseBeforeKeepsItsClaims(t *testing.T) {
 	t.Parallel()

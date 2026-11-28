@@ -508,6 +508,7 @@ func TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder(t *testing.T) {
 // a holder the scope shows (edgeScope.holderConfirmed) finds a writer's record. Control: with edge
 // mode off, the scope shows every holder and the row fails.
 func TestAnEdgeRoleSendThatEndedInProcessNamesNoHiddenHolder(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const hidden, shown = "ses_edge_in_process_pub", "ses_edge_in_process_priv"
 	for _, holder := range []struct {
@@ -583,7 +584,8 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 	ctx, cancel := context.WithDeadline(context.Background(), arrived.Add(publishDeliveryWindow))
 	defer cancel()
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-in-process")
-	sendToRole(ctx, recorder, scope, record, rig.deps, item, senderOf(httptest.NewRequest(http.MethodPost, "/v1/messages/publish", nil), item), nil, role, false, arrived, nil)
+	keep := false
+	sendToRole(ctx, recorder, scope, record, rig.deps, item, senderOf(httptest.NewRequest(http.MethodPost, "/v1/messages/publish", nil), item), listenerwire.PublishRequest{Keep: &keep}, role, arrived, nil)
 	body := strings.TrimSpace(recorder.Body.String())
 	t.Logf("the send to %s after %d forwards answered %d, Retry-After %q: %s", role, forwards.Load(), recorder.Code, recorder.Header().Get("Retry-After"), body)
 	var answer listenerwire.APIError
@@ -607,6 +609,7 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 // judged when the window ends, by the holder the send resolved last (the 503's builder calling
 // shownForwardError, as the edge-mode change had it before its fix), the row fails.
 func TestAnEdgeRoleSendJudgesAnInProcessErrorByTheHolderItsForwardWentTo(t *testing.T) {
+	t.Parallel()
 	const hidden, shown = "ses_edge_moved_in_process_pub", "ses_edge_moved_in_process_priv"
 	body := sendEndingInProcess(t, newEdgeRig(t), "legion-priv-priv-7-tester", hidden, "PUB", shown)
 	requireNamesNone(t, "the send's answer after the role moved", body, hidden)
@@ -623,6 +626,7 @@ func TestAnEdgeRoleSendJudgesAnInProcessErrorByTheHolderItsForwardWentTo(t *test
 // (edgeScope.holderConfirmed, edgeScope.namesHolderConfirmed) finds a writer's record. Control:
 // with edge mode off, the scope shows every holder and the row fails.
 func TestAnEdgeEchoJudgesAnUnreadStoredForwardByTheEarlierHolderItWentTo(t *testing.T) {
+	t.Parallel()
 	const hidden, sender, role = "ses_edge_echo_unread_pub", "ses_edge_echo_unread_priv", "legion-priv-priv-8-tester"
 	rig := newEdgeRig(t)
 	var scope *edgeScope

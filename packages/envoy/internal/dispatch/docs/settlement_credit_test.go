@@ -230,6 +230,8 @@ func TestTwoCreditedWritersBothSurviveACrashRestart(t *testing.T) {
 // pool tracks as one caller holding at most one connection. Every closing document still records
 // its latest edit source and releases its state, however many documents the issue has.
 func TestClosingAnIssueOnATrackedContextPersistsEveryDocumentsCredit(t *testing.T) {
+	// Not parallel: it sets the whole process's GOMAXPROCS to 4 and then to 16 for its subtests
+	// (runtime.GOMAXPROCS).
 	for _, procs := range []int{4, 16} {
 		t.Run(fmt.Sprintf("GOMAXPROCS=%d", procs), func(t *testing.T) {
 			defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(procs))
@@ -485,6 +487,20 @@ func connectBrowser(t *testing.T, serverURL, artifactID, login string) *docstest
 // finished with the same update.
 func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *docstest.Peer, markdown string) {
 	t.Helper()
+	recorded, unsubscribe := sendAsBrowser(t, service, artifactID, browser, markdown)
+	defer unsubscribe()
+	select {
+	case <-recorded:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the room did not record the browser's edit within roomWait")
+	}
+}
+
+// sendAsBrowser sends the room the edit editAsBrowser sends and returns at once, with the channel
+// editAsBrowser waits on - closed once the room's update observer has run for that update - and
+// what removes that observer.
+func sendAsBrowser(t *testing.T, service *Service, artifactID string, browser *docstest.Peer, markdown string) (<-chan struct{}, func()) {
+	t.Helper()
 	// These take the copy's lock themselves, so they are read before the transaction that holds it.
 	fragment := browser.Doc.GetXmlFragment(fragmentName)
 	client := browser.Doc.ClientID()
@@ -500,7 +516,6 @@ func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *d
 			once.Do(func() { close(recorded) })
 		}
 	})
-	defer unsubscribe()
 	var changeErr error
 	if _, err := browser.Send(func(txn *crdt.Transaction) {
 		current, err := treeOfTransaction(txn, fragment)
@@ -515,13 +530,10 @@ func editAsBrowser(t *testing.T, service *Service, artifactID string, browser *d
 		}
 		changeErr = pmdoc.Update(txn, fragment, target)
 	}); err != nil || changeErr != nil {
+		unsubscribe()
 		t.Fatalf("send the browser's edit: %v %v", err, changeErr)
 	}
-	select {
-	case <-recorded:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room did not record the browser's edit within roomWait")
-	}
+	return recorded, unsubscribe
 }
 
 // roomWait bounds a wait on a document room's own work - sending a browser the document,
@@ -1345,12 +1357,12 @@ func closeTestIssue(t *testing.T, service *Service) {
 // after the reopen has to reconcile (MarkReopenOwedAskDocuments): one that holds an ask block no
 // settlement has indexed, the block document of an open ask, or one holding the block of an ask
 // a settlement retracted. It then follows the versions a settlement wrote while the issue was
-// closed (FollowClosedIssueVersions): it moves an open approval request to its document's latest
-// version, carries a standing approval to that version, and forgets the editor a closed issue's
-// settlement kept for each document that owes no settlement. It restores no ask: a test that
-// wants an ask the close withdrew open again writes its row itself. The commit publishes the
-// events the follow appended (Ledger.Commit), and the reopen is then recorded on this service's
-// rooms, as room sync records it on the reopen's notification.
+// closed (ClosedIssueVersions, FollowClosedIssueVersions): it moves an open approval request to its
+// document's latest version, carries a standing approval to that version, and forgets the editor a
+// closed issue's settlement kept for each document that owes no settlement. It restores no ask: a
+// test that wants an ask the close withdrew open again writes its row itself. The commit publishes
+// the events the follow appended (Ledger.Commit), and the reopen is then recorded on this
+// service's rooms, as room sync records it on the reopen's notification.
 func reopenTestIssue(t *testing.T, service *Service) {
 	t.Helper()
 	if err := joinedWrite(service, func(ctx context.Context) error {
@@ -1361,7 +1373,11 @@ func reopenTestIssue(t *testing.T, service *Service) {
 		if err := service.MarkReopenOwedAskDocuments(ctx, "DOC-1"); err != nil {
 			return err
 		}
-		return service.FollowClosedIssueVersions(ctx, "DOC-1")
+		versions, err := service.ClosedIssueVersions(ctx, "DOC-1")
+		if err != nil {
+			return err
+		}
+		return service.FollowClosedIssueVersions(ctx, "DOC-1", versions)
 	}); err != nil {
 		t.Fatalf("reopen the issue, mark owed its documents whose ask blocks wait for the reopen and follow its closed versions: %v", err)
 	}

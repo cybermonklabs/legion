@@ -294,6 +294,9 @@ func TestARestartDoesWhatAMoveDoesAfterItsStart(t *testing.T) {
 		pr.MergeForward = &record.MergeForward{Head: pr.HeadSHA, Base: "main", Role: claim.RoleImplementer, Phase: phase.Testing,
 			Why: record.ConflictCheckNotGreen, AskedAt: stepClock}
 		seedPR(t, pool, pr)
+		if mf := recordedPR(t, pool, root.Key).MergeForward; mf == nil || mf.Head != pr.HeadSHA {
+			t.Fatalf("before the restart the record's merge forward = %+v, want the ask seeded for %s: the check after the restart would prove nothing", mf, pr.HeadSHA)
+		}
 
 		restartsAtStepOne(t, pool, engine, root.Key)
 

@@ -84,7 +84,7 @@ func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
 
 	eventTypes := []string{
 		"issue.created", "issue.updated", "issue.closed", "issue.reopened", "issue.claimed", "issue.released", "issue.deployed",
-		"issue.pull_request_attribution_changed",
+		"issue.pull_request_attribution_changed", "issue.role_holders_changed",
 		"child.added", "child.removed", "child.status",
 		"artifact.created", "artifact.version", "artifact.human_edited", "artifact.approved", "artifact.changes_requested",
 		"ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back", "ask.asked_of",
@@ -93,7 +93,7 @@ func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
 		"comment.edited", "comment.deleted", "comment.anchor_refreshed", "suggestion.accepted", "suggestion.rejected",
 		"subscription.remove_requested", "subscription.removed",
 		"message.created", "message.answered", "message.edited", "message.deleted", "message.delivery",
-		"message.accepted", "handoff.recorded",
+		"message.accepted", "handoff.recorded", "role.undelivered",
 		"block.repaired", "block.invalid", "result.recorded", "result.retracted",
 		"project.created", "project.updated", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
@@ -297,9 +297,11 @@ func TestIssueEventsSayWhatTheWriteChanged(t *testing.T) {
 	if want := []model.ChangedReference{{Kind: "issue", ID: child.Key}}; !reflect.DeepEqual(retitled.ReferencesChanged, want) {
 		t.Fatalf("a retitle's references_changed = %#v, want the parent whose panel shows the title, %#v", retitled.ReferencesChanged, want)
 	}
+	// The tree holds no priority, so the grandchild resolved none: its own priority of 1 moves the
+	// priority it resolves to with it, and priority_from stays none (dispatch://INFRA-5793, J1).
 	patch(map[string]any{"priority": 1})
-	if reprioritised := newestEventPayload[issueEventFields](t, database, "issue.updated", grandchild.Key); !slices.Equal(reprioritised.Changed, []string{"priority"}) || reprioritised.ReferencesChanged != nil {
-		t.Fatalf("a priority-only PATCH's issue.updated = %#v, want changed [priority] naming no reference", reprioritised)
+	if reprioritised := newestEventPayload[issueEventFields](t, database, "issue.updated", grandchild.Key); !slices.Equal(reprioritised.Changed, []string{"priority", "resolved_priority"}) || reprioritised.ReferencesChanged != nil {
+		t.Errorf("a priority-only PATCH's issue.updated = %#v, want changed [priority resolved_priority] naming no reference", reprioritised)
 	}
 
 	// Alice writes in the thread of one of the issue's open asks, the rows a close or reopen moves

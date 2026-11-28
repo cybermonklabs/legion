@@ -98,6 +98,7 @@ func runWayBack(t *testing.T, store *Store, sql string) error {
 // controller's claim, the release of an unowned pod and the waiting parent, which name no role of
 // the deployment, standing; and the next Migrate applies the file again.
 func TestTheStoreTakesADeploymentRoleAndTheStepPhase(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, deploymentRolesVersion-1)

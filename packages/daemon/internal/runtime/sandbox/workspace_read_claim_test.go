@@ -13,6 +13,7 @@ import (
 // The keyed agent runs the tester's step in the claim it started as implementer; no tester token
 // has a process or a connection.
 func TestAKeyedClaimsWorkspaceReadUsesItsOwnConnection(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	keyed := claim.Token("legion-legion-legion-208-implementer")
 	conn := fake.NewConn()

@@ -224,7 +224,7 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 		if !exists(filepath.Join(out, keyFile)) {
 			return
 		}
-		if err := writeFileAtomic(filepath.Join(out, enrollmentErrorFile), []byte(line+"\n"), 0o600); err != nil {
+		if err := writeFileAtomic(filepath.Join(out, enrollmentErrorFile), []byte(line+"\n")); err != nil {
 			fmt.Fprintf(stderr, "%s --pod: record that refusal in %s in %s: %v\n", prefix, enrollmentErrorFile, outDir, redact.File(err))
 		}
 	}
@@ -281,7 +281,7 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 			return 1
 		}
 	}
-	if err := writeFileAtomic(filepath.Join(out, enrollmentFile), []byte(enrollmentID+"\n"), 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(out, enrollmentFile), []byte(enrollmentID+"\n")); err != nil {
 		refuse(fmt.Sprintf("%s --pod: write %s in %s: %v", prefix, enrollmentFile, outDir, redact.File(err)))
 		return 1
 	}
@@ -315,18 +315,24 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 func podRefusal(prefix, what string, identity podIdentity, base cipheraddr.Address, err error) string {
 	var refused *apiError
 	if errors.As(err, &refused) {
-		answered := fmt.Sprintf("HTTP %d: %s", refused.Status, refused.Message)
-		if !refused.withheld {
-			// The code is the broker's, so it prints on one line as Message does.
-			code := redact.OneLine(refused.Code)
-			if code == "" {
-				code = "UNKNOWN"
-			}
-			answered = fmt.Sprintf("HTTP %d %s: %s", refused.Status, code, refused.Message)
-		}
-		return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s; asked %s", prefix, identity, what, answered, brokerSource(base))
+		return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s; asked %s", prefix, identity, what, refusalWords(refused), brokerSource(base))
 	}
 	return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s", prefix, identity, what, refusalText(brokerSource(base), err))
+}
+
+// refusalWords is a refusal of the broker's as every line of a renewer or an enrolment prints it:
+// the HTTP status, the broker's code and message - the status and Message alone where the answer's
+// text is withheld (apiError.withheld) - with UNKNOWN for a refusal that names no code.
+func refusalWords(refused *apiError) string {
+	if refused.withheld {
+		return fmt.Sprintf("HTTP %d: %s", refused.Status, refused.Message)
+	}
+	// The code is the broker's, so it prints on one line as Message does.
+	code := redact.OneLine(refused.Code)
+	if code == "" {
+		code = "UNKNOWN"
+	}
+	return fmt.Sprintf("HTTP %d %s: %s", refused.Status, code, refused.Message)
 }
 
 // podProjects is the Dispatch projects a pod names and where enroll --pod read them: --projects
@@ -399,7 +405,7 @@ func enrollSessionKey(dir string) (*ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writeFileAtomic(path, pemBytes, 0o600); err != nil {
+	if err := writeFileAtomic(path, pemBytes); err != nil {
 		return nil, fmt.Errorf("write %s: %w", outKeyFile, redact.File(err))
 	}
 	return key, nil

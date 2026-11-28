@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -691,6 +692,7 @@ func queueWaitingKeptRow(t *testing.T, st *Store, payload record.OutboxPayload) 
 // other's control: a term that let every such row go would fail the rows that hold, and the
 // predicate before the term, which held the pod for every such row, fails the rest.
 func TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *testing.T) {
+	t.Parallel()
 	for _, message := range keptRoleMessageRows {
 		for _, tc := range []struct {
 			name      string
@@ -756,6 +758,7 @@ func TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *t
 // TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers is what holds the
 // fallback.
 func TestAKeptRowNamingAClaimIsDecidedByThatClaimAndNotByItsRole(t *testing.T) {
+	t.Parallel()
 	for _, message := range keptRoleMessageRows {
 		for _, tc := range []struct {
 			name   string
@@ -840,6 +843,7 @@ func namedClaimOf(t *testing.T, payload record.OutboxPayload, token claim.Token)
 // control: a predicate that let the slot term exempt the phase-ended row would fail the first, and
 // one that let the claim term hold the start would fail the second.
 func TestAPhaseEndedMessageToARoleWhoseStartWaitsForItsSlotHoldsThePodByItsOwnRule(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		by    supervise.SuspendSource
@@ -977,13 +981,14 @@ func TestAStartWaitingForItsSlotHoldsNoPodUntilTheSlotComes(t *testing.T) {
 }
 
 // The store's rule for a start that waits for its admission slot (slotWaitingStart, read by the
-// idle view and by WaitsForItsSlot) repeats record's outboxInOrder, which holds such a start back
+// idle view and by SlotWaitingStarts) repeats record's outboxInOrder, which holds such a start back
 // until the slot comes. The two must agree about one row encoded as the workflow writes it, or the
 // idle rule holds the pod of an issue waiting in the line again, or releases a pod under a start
 // that is due. For a start marked to wait: without a slot the outbox lists no due start, the idle
-// view reads nothing waiting, and the issue waits for its slot; with a slot the start is due, the
-// view reads it as waiting, and the issue no longer waits. An ordinary start, whose payload carries
-// no `needsSlot`, is due, holds the pod and makes no wait, whether a slot stands or not.
+// view reads nothing waiting, and SlotWaitingStarts answers the start with the role, phase and run
+// it was queued for; with a slot the start is due, the view reads it as waiting, and
+// SlotWaitingStarts answers none. An ordinary start, whose payload carries no `needsSlot`, is due,
+// holds the pod and is answered by neither read, whether a slot stands or not.
 func TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1016,23 +1021,28 @@ func TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot(t *testing.T) {
 			}
 			check := func(slot bool) {
 				t.Helper()
-				var due, waits bool
+				var due bool
+				var starts []WaitingStart
 				if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 					rows, err := record.NewStore().DueRows(ctx, tx, "LEGION", rootIssue, []record.OutboxKind{record.OutboxKindSupervise}, time.Now().Add(time.Minute))
 					if err != nil {
 						return err
 					}
 					due = slices.ContainsFunc(rows, func(r record.OutboxRow) bool { return r.ID == id })
-					waits, err = records.WaitsForItsSlot(ctx, tx, rootIssue)
+					starts, err = records.SlotWaitingStarts(ctx, tx, rootIssue)
 					return err
 				}); err != nil {
 					t.Fatalf("read the outbox: %v", err)
 				}
 				held := tc.needsSlot && !slot
+				var wantStarts []WaitingStart
+				if held {
+					wantStarts = []WaitingStart{{Role: claim.RoleImplementer, Phase: phase.Implementing, Generation: 1}}
+				}
 				view := idleViewOf(t, st, rootIssue)
-				if due == held || waits != held || view.Waiting == held {
-					t.Fatalf("with a slot %t: due %t, waits for its slot %t, the idle view waiting %t; want due %t, waits %t, waiting %t",
-						slot, due, waits, view.Waiting, !held, held, !held)
+				if due == held || !slices.Equal(starts, wantStarts) || view.Waiting == held {
+					t.Fatalf("with a slot %t: due %t, the starts that wait for their slot %+v, the idle view waiting %t; want due %t, starts %+v, waiting %t",
+						slot, due, starts, view.Waiting, !held, wantStarts, !held)
 				}
 			}
 
@@ -1042,6 +1052,67 @@ func TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot(t *testing.T) {
 			}
 			check(true)
 		})
+	}
+}
+
+// SlotWaitingStarts judges no start: with the task of `checker linter` at the linter's step, it
+// answers the slot-waiting start of the checker's step, which the task has left, beside the
+// linter's, each with the role, phase and run it was queued for, oldest first. Which of them
+// silences a backstop is the workflow's to judge, by record.Issue.HoldsQueued (its podBackstopDue,
+// which TestABackstopWakesNoWorkerOfAnIssueThatWaitsForItsSlot holds at step). The issue's record
+// reading the linter as its step's role is the test's premise: a read that judged the starts by
+// the step would answer the linter's alone.
+func TestTheStartsThatWaitForTheirSlotAreAnsweredWhateverStepTheTaskStandsAt(t *testing.T) {
+	t.Parallel()
+	const checker, linter = claim.Role("checker"), claim.Role("linter")
+	st := migratedStore(t)
+	ctx := context.Background()
+	records := record.NewStore()
+	inTx(t, st, func(tx pgx.Tx) error {
+		if err := records.PutIssue(ctx, tx, record.Issue{Key: rootIssue, Tree: rootIssue, Project: "LEGION", Title: rootIssue, Phase: phase.Step,
+			Generation: 1, Status: "in_progress", Rank: "A", LastDispatchSeq: 1,
+			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
+			return err
+		}
+		v := record.PlanVersion{Issue: rootIssue, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: claim.Token("legion-legion-legion-208-architect"), GivenAt: time.Date(2026, 11, 28, 0, 0, 0, 0, time.UTC)}
+		task := record.PlanTask{Issue: rootIssue, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+		steps := []record.PlanStep{
+			{Issue: rootIssue, Generation: 1, Task: "a", Position: 1, Role: string(checker), Type: "testing"},
+			{Issue: rootIssue, Generation: 1, Task: "a", Position: 2, Role: string(linter), Type: "review"},
+		}
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
+			return err
+		}
+		return records.MoveTask(ctx, tx, rootIssue, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+	})
+	slotRecords := podRecords(t, st)
+	var issue *record.Issue
+	var starts []WaitingStart
+	inTx(t, st, func(tx pgx.Tx) error {
+		for _, role := range []claim.Role{checker, linter} {
+			row, err := record.NewOutboxRow(rootIssue, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: role,
+				Generation: 1, Phase: phase.Step, Task: "Continue.", NeedsSlot: true}, time.Now())
+			if err != nil {
+				return err
+			}
+			if err := records.Enqueue(ctx, tx, row); err != nil {
+				return err
+			}
+		}
+		var err error
+		if issue, err = records.Issue(ctx, tx, rootIssue); err != nil {
+			return err
+		}
+		starts, err = slotRecords.SlotWaitingStarts(ctx, tx, rootIssue)
+		return err
+	})
+	if issue == nil || issue.Phase != phase.Step || issue.Generation != 1 || issue.StepRole != linter {
+		t.Fatalf("UNKNOWN: %s reads %+v, want it at step at generation 1 with the linter's step running: the test's premise", rootIssue, issue)
+	}
+	want := []WaitingStart{{Role: checker, Phase: phase.Step, Generation: 1}, {Role: linter, Phase: phase.Step, Generation: 1}}
+	if !slices.Equal(starts, want) {
+		t.Fatalf("with the linter's step running, the starts that wait for their slot = %+v, want %+v", starts, want)
 	}
 }
 
@@ -1120,14 +1191,16 @@ func TestAPendingStepRecordHoldsNoIdlePod(t *testing.T) {
 
 // waitingOnTheSerializer is whether a backend of this test's database other than the reader waits
 // on an advisory lock: the shared serializer (treelifecycle.Serialize) is the only one the store
-// takes by that name outside a migration, so a waiter here is a transaction held at its head.
+// takes by that name outside a migration, so a waiter here is a transaction held at its head. The
+// wait is read from pg_locks (lockwaittest.WaitingOn, whose package comment says why not from the
+// wait event).
 func waitingOnTheSerializer(t *testing.T, st *Store) bool {
 	t.Helper()
 	var waiting bool
 	if err := st.Pool().QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity
 		where datname = current_database() and pid <> pg_backend_pid()
-		and wait_event_type = 'Lock' and wait_event = 'advisory')`).Scan(&waiting); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+		and `+lockwaittest.WaitingOn("advisory")+`)`).Scan(&waiting); err != nil {
+		t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 	}
 	return waiting
 }

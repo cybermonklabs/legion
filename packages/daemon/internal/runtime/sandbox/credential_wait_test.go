@@ -20,6 +20,7 @@ import (
 // slot with no launcher connected, or one whose connection closed, answers true, since the launch
 // then builds or waits for a pod of this release.
 func TestASlotsLauncherSaysWhetherItWaitsForTheCredential(t *testing.T) {
+	t.Parallel()
 	launchers := testLaunchers()
 	if pod, waits := launchers.credentialWaits(workerToken); pod != "" || !waits {
 		t.Fatalf("with no launcher connected = %q, %t; want none, waits", pod, waits)
@@ -51,6 +52,7 @@ func TestASlotsLauncherSaysWhetherItWaitsForTheCredential(t *testing.T) {
 // controls are the same launch with a launcher that waits, and a launch as the merger, a role of
 // the implement App the slot already holds, with a launcher that does not wait: both start.
 func TestALaunchOfAnotherAppIntoASlotWhoseLauncherDoesNotWaitIsRefused(t *testing.T) {
+	t.Parallel()
 	keyed := claim.Token("legion-legion-legion-208-implementer")
 	for _, tc := range []struct {
 		name    string
@@ -110,6 +112,7 @@ func TestALaunchOfAnotherAppIntoASlotWhoseLauncherDoesNotWaitIsRefused(t *testin
 // first ask and fails every ask after it. The launch fails with that failure and starts nothing.
 // Control: once the ActsAs answers again, the same launch starts.
 func TestAFailedActsAsAskInALaunchIsRetriedNotHeldForThePodsRound(t *testing.T) {
+	t.Parallel()
 	keyed := claim.Token("legion-legion-legion-208-implementer")
 	refused := errors.New("the owner's record could not be read")
 	var failing atomic.Bool
@@ -154,6 +157,7 @@ func TestAFailedActsAsAskInALaunchIsRetriedNotHeldForThePodsRound(t *testing.T) 
 // (the daemon's reroleWaitsForCredential). The control: the slot of an agent's name with no
 // launcher connected still answers that the launch waits.
 func TestASlotNoTokenCarriesIsRefusedRatherThanLetThrough(t *testing.T) {
+	t.Parallel()
 	r, err := configure(testOptions())
 	if err != nil {
 		t.Fatal(err)

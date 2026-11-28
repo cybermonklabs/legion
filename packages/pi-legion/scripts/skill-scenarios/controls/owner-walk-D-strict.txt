@@ -1,0 +1,4 @@
+# owner-walk, form D strict (ctl-D-strict, a second control of v-guidance-judge): D, and the
+# three lines of the architect's plan reference that name the read of earlier plans.
+unpatch controls/patches/owner-walk-D.patch
+drop skills/legion-architect/references/plan.md controls/drops/owner-walk-D-strict-plans-read.txt

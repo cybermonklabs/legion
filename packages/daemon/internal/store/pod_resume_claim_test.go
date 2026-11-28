@@ -18,6 +18,7 @@ import (
 // cancel of a release reads each released claim's resume (stopReleasedForPause), and a read by
 // role alone would mark the tester's own claim owed the launch the wake took for key a's agent.
 func TestAnOpenResumeIsTheClaimItsWakeBroughtBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)
@@ -58,6 +59,7 @@ func TestAnOpenResumeIsTheClaimItsWakeBroughtBack(t *testing.T) {
 // tester's own claim; key a's wake took the tester's open resume. A let-out of the tester's own
 // claim finds no resume of its own and moves nothing; key a's let-out moves its clock.
 func TestALetOutMovesTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)
@@ -102,6 +104,7 @@ func TestALetOutMovesTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.T) {
 // message to its session, a pause's owed launch of it — still takes a resume of its own; a second
 // wake of key a's agent takes none.
 func TestTwoClaimsOfOneRoleEachTakeAWakeOfTheirOwn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)
@@ -140,6 +143,7 @@ func TestTwoClaimsOfOneRoleEachTakeAWakeOfTheirOwn(t *testing.T) {
 // woken as the implementer, re-roled to the tester's step before its first turn, still finds,
 // stamps and closes the resume its wake took, by its token alone.
 func TestAReRoledClaimStillReachesTheResumeItsWakeTook(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)

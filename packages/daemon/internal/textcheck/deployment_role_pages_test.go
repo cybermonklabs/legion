@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
@@ -49,12 +50,20 @@ func TestTheOperatorTextsSayWhatARoleOfTheDeploymentTakes(t *testing.T) {
 }
 
 // Three texts an operator reads count the moves back a hook may name, and each count is the
-// loader's: config.readHookMoves takes a move from plan.MovesBackPairs alone, so the number is
-// that set's size, the pairs of a step of a role the deployment defines among them. A pair of
-// those is step-step, two equal phases, so no text says a move's two phases always differ.
-// Each text is read as prose (proseOf), so a comment's layout decides nothing.
+// loader's: config.readHookMoves takes a move only where plan.CanMoveBack takes it, so the number
+// is how many pairs of phase.MovePairs that set takes, the pairs of a step of a role the
+// deployment defines among them. A pair of those is step-step, two equal phases, so no text says a
+// move's two phases always differ. Each text is read as prose (proseOf), so a comment's layout
+// decides nothing.
 func TestTheOperatorTextsCountTheMovesBackAHookMayName(t *testing.T) {
-	count := fmt.Sprintf("any other of the %d moves back a task's line can make", len(plan.MovesBackPairs()))
+	moves := 0
+	for _, pair := range phase.MovePairs() {
+		from, to, _ := phase.ParsePair(pair)
+		if plan.CanMoveBack(from, to) {
+			moves++
+		}
+	}
+	count := fmt.Sprintf("any other of the %d moves back a task's line can make", moves)
 	for _, text := range []struct {
 		path string
 		want []string

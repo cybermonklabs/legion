@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -56,6 +57,28 @@ const liveDaemonLogEnv = "LEGION_E2E_DAEMON_LOG"
 // publishes after the fact that enqueued it commits — lands after the read that would otherwise
 // end the step, so the step watches this long for it.
 const liveSettle = 3 * time.Second
+
+// composedRole is a role as prompts.Composer.Compose tells one composition from another: the
+// role, and whether its issue is its tree's root, which only an architect's composition reads. It
+// is false for every role but an architect.
+type composedRole struct {
+	role claim.Role
+	root bool
+}
+
+// composedParts is, for each role a live proof holds a launch's role prompt to, the parts of the
+// composer's snapshot that prompts.Composer.Compose gives that role, in its order, as paths below
+// the state directory's prompts/: at boot prompts.New writes shared/ from the role prompts the
+// daemon embeds, and go/ from the daemon's own parts. It is this package's one copy of the
+// composer's lists. role_prompt_rule_live_test.go reads its three roles from it, and
+// conflict_merger_live_test.go its merger; the unit tests of internal/prompts hold the composer to
+// their own.
+var composedParts = map[composedRole][]string{
+	{claim.RoleArchitect, true}:  {"shared/architect-root.md", "go/architect-root.md", "go/architect-common.md"},
+	{claim.RoleArchitect, false}: {"shared/architect.md", "go/architect.md", "go/architect-common.md"},
+	{claim.RolePlanner, false}:   {"shared/core/common.md", "shared/core/planner.md", "shared/mechanics/headless.md", "shared/planner.md", "go/planner.md", "go/worker-common.md"},
+	{claim.RoleMerger, false}:    {"shared/mechanics/headless.md", "shared/merger.md", "go/merger.md", "go/worker-common.md"},
+}
 
 // liveProof is what a run of a live proof holds whatever it proves: the booted daemon, the
 // configuration it was booted with, a JetStream client of the script's broker, the Dispatch and
@@ -225,6 +248,22 @@ func (p *liveProof) admit(ctx context.Context, tx pgx.Tx, issues ...string) erro
 		index++
 	}
 	return nil
+}
+
+// admitReleased records token's claim of role on issue, of issue's own tree, as the release of an
+// idle pod leaves it (supervise.SuspendedByReleased) at launch 1, with session kept, as the
+// registration of its agent records it: the boot's resume by rule resumes no such claim, and a
+// delivery the role is owed wakes it.
+func (p *liveProof) admitReleased(token claim.Token, issue string, role claim.Role, session string) {
+	p.t.Helper()
+	if _, err := p.st.AdmitClaim(context.Background(), supervise.Claim{
+		Token: token, Project: p.project, Tree: issue, Issue: issue, Role: role,
+		Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
+		Session: session, SessionFile: p.t.TempDir() + "/" + session + ".jsonl",
+		BootTokenHash: supervise.HashBootToken("seeded-" + randomSuffix(p.t)), ServingGeneration: 1,
+	}); err != nil {
+		p.t.Fatalf("record the %s's released claim %s: %v", role, token, err)
+	}
 }
 
 // waitProcessed waits for the daemon's processed_events row for the GitHub envelope eventID, which

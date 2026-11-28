@@ -85,6 +85,7 @@ type reviewRangeIssue struct {
 
 // TestReviewRangeLive drives the proof's four checks against one booted daemon and one Dispatch.
 func TestReviewRangeLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newReviewRangeLive(t)
 	r.step("round-1-names-no-commit", r.roundOneNamesNoCommit)

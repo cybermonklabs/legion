@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { renderWithQueries } from "../../__tests__/query-provider";
 import type { Artifact, Comment } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -30,7 +31,7 @@ const specArtifact: Artifact = {
 };
 
 test("an issue margin offers Comments and Pinned, Comments first", () => {
-  const view = render(
+  const view = renderWithQueries(
     <MarginSheet
       model={{
         actions: {
@@ -53,6 +54,7 @@ test("an issue margin offers Comments and Pinned, Comments first", () => {
         items: {
           actionFailure: undefined,
           answeredAsksPending: false,
+          arriving: false,
           asksPending: false,
           commentsPending: false,
           commentsError: false,
@@ -157,6 +159,7 @@ test("a document owner shows the Comments tab and comment composer only", () => 
           items: {
             actionFailure: undefined,
             answeredAsksPending: false,
+            arriving: false,
             asksPending: false,
             commentsError: false,
             commentsPending: false,
@@ -297,6 +300,7 @@ test("MarginSheet shows the selected phone thread in a full-height view with a B
             items: {
               actionFailure: undefined,
               answeredAsksPending: false,
+              arriving: false,
               asksPending: false,
               commentsError: false,
               commentsPending: false,
@@ -453,6 +457,7 @@ test("the standalone document phone sheet shows each suggestion's diff and Accep
             items: {
               actionFailure: undefined,
               answeredAsksPending: false,
+              arriving: false,
               asksPending: false,
               commentsError: false,
               commentsPending: false,

@@ -1,6 +1,6 @@
 # Wakes
 
-Read this when the skill's wake table sends you here, and for the every-turn check of trees waiting on a root claim. Wakes come on `notifications.legion.<project>.controller`, agents' messages on `notifications.role.legion-<project>-controller`. Check each in `read_state` before you act. A notice's `reason` is the daemon's own account: quote it, never rewrite it.
+Read this when the skill's wake table sends you here, and for the every-turn check of trees waiting on a root claim. Check each in `read_state` before you act. A notice's `reason` is the daemon's own account: quote it, never rewrite it.
 
 ## Trees waiting on a root claim
 
@@ -42,7 +42,7 @@ The daemon could not ask the session store for a role's start. Open one finding 
 
 ## `pod-wait-held`
 
-`role` waits for a pod older than its role or its claim's slot, and no update round or release of the pod comes. `dispatch ask` the operator to resume or stop a claim the operator suspended, and resume or stop yours. If idle release is off, ask the operator, quoting `reason`. Never propose deleting the pod. It comes once per wait.
+`role` waits for a pod older than its role or its claim's slot, and no update round or release of the pod comes. `dispatch ask` the operator to resume or stop a claim the operator suspended, and resume or stop yours. If the idle release is off and no role runs in the pod, ask the operator, quoting `reason`. Never propose deleting the pod. It comes once per wait.
 
 ## `provider-errors`
 

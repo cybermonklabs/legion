@@ -211,6 +211,7 @@ func deployedRuntime(deployed appauth.DeploymentApps) *Runtime {
 // Legion nor the deployment defines is an error, never a pod read as holding fewer Apps than its
 // roles act as.
 func TestAPodsAppsAreItsRolesAppsAndARoleNobodyDefinesIsAnError(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		kind     podKind

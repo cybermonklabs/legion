@@ -1,0 +1,44 @@
+kind: Added
+body: |-
+  The listener keeps a role publish that names the Dispatch post it delivers.
+  `POST /v1/messages/publish` takes an optional `dispatch_post`
+  (`{"kind":"comment"|"message","id":"<uuid>"}`), the Dispatch post a role publish delivers. The
+  listener takes the field from Dispatch's own verified principal alone
+  (`ENVOY_DISPATCH_PRINCIPAL`), as it takes a send's `role`: every other caller that carries it,
+  on the shared token, a session's broker token or another service's identity token, and every
+  caller of a listener that names no Dispatch principal, is refused `403` naming the field, with
+  nothing kept. A publish that carries it is refused `400`, naming the field, when its topic is
+  not a role's, its `source` is not `dispatch`, it names a `source_session`, or its post is not a
+  comment or a message named by a lower-case UUID.
+
+  When no live session holds the role and no hand-off to a Legion daemon takes it, such a publish
+  is kept for the role's next live holder though it names no source session, and
+  answered `202` kept, and it raises the role's wake as every keep does; the copy carries
+  `source_event_id` `dispatch-post:<kind>:<id>`, which no other publish carries. Its copy gets no
+  dead letter: when its hour ends with no session taking it, however late the walk is, or when
+  the role's live holder does not take its delivery mode, the walk stores an expiry notice on
+  `notifications.envoy.kept.expired.<role>` naming the copy and the post, counted on
+  `envoy_role_kept_expiry_notices_total`. The notice carries `forward_unconfirmed` when a walk
+  claimed the copy to forward it and never confirmed the forward, so the copy may have reached the
+  session that held the role. A walk whose forward of the copy fails gives its claim up still
+  naming the copy as one whose forward may have reached the holder when it had taken over another
+  walk's forward claim or its own forward may have been stored (`forward_unconfirmed` on the
+  role's drain cursor), so the notice says so when the copy ends; a listener of an earlier
+  release drops that mark. The drop is
+  counted on `envoy_role_kept_expired_total` under `kept_by="listener"` when its hour ended, and
+  not when the walk ended it for the holder's delivery mode, whichever walk of several finishes
+  it: the claim a walk writes for the notice names that reason, and `_unconfirmed` after it for a
+  forward that may have reached the holder, as a dead letter's claim does, so a walk that takes
+  the claim over sends the same notice for the same reason and reports a delivery mode refusal as
+  no expired copy. Every other publish that names no `source_session` is still refused `404` with
+  nothing kept. A listener of an earlier release ignores the field and answers such a publish
+  `404`, as before.
+
+  A kept copy is one of four kinds, told by one rule (`bus.ClassifyKeptCopy`) that the listener's
+  walk, its keep and its wake scan all read: an outbox copy, a copy of a publish that names a
+  Dispatch post, a copy owed a dead letter, and a copy no one hears of. A copy whose dedupe key
+  is the outbox's and whose source event id names a post is none of the first two, so the walk,
+  the keep and the wake scan never read one copy as two kinds.
+time: 2026-11-27T05:43:45.000000000Z
+custom:
+    Issue: pr2230

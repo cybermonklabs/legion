@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -154,9 +155,10 @@ func (p inProcessPath) line() string {
 }
 
 // inProcessPaths are the publish route to a team topic and to a topic the stream captures for a
-// source, and the send route to target, a session the rig registers live.
+// source, and the send route to target, a session the rig registers live. The captured topic is
+// Slack's: the route refuses Dispatch's lane and GitHub's lane (publisherLanes).
 func inProcessPaths(target string) []inProcessPath {
-	const team, captured = "notifications.team.in-process", "notifications.github.legion-test.in_process.pr.1"
+	const team, captured = "notifications.team.in-process", "notifications.slack.legion-test.in_process.message"
 	return []inProcessPath{
 		{name: "publish to a team topic", route: "/v1/messages/publish", subject: team, body: func(sender, key string) map[string]any {
 			return map[string]any{"topic": team, "source": "agent", "source_session": sender, "message": "team, resent while in process", "idempotency_key": key}
@@ -202,14 +204,19 @@ func (rig *inProcessRig) hear(t *testing.T, subject string) *natsgo.Subscription
 	return heard
 }
 
-// awaitHanded waits until the leader has been handed n publishes on heard's subject.
-func awaitHanded(t *testing.T, heard *natsgo.Subscription, n int) {
+// awaitHanded waits until the leader has been handed n publishes on heard's subject, and returns
+// them in the order the leader was handed them.
+func awaitHanded(t *testing.T, heard *natsgo.Subscription, n int) []*natsgo.Msg {
 	t.Helper()
+	handed := make([]*natsgo.Msg, 0, n)
 	for i := range n {
-		if _, err := heard.NextMsg(10 * time.Second); err != nil {
+		msg, err := heard.NextMsg(10 * time.Second)
+		if err != nil {
 			t.Fatalf("the leader was handed %d of the %d publishes: %v", i, n, err)
 		}
+		handed = append(handed, msg)
 	}
+	return handed
 }
 
 // serve sends body to route, the publish route or the send route, under ctx, and returns its
@@ -282,7 +289,7 @@ func (rig *inProcessRig) requireOutcomes(t *testing.T, path inProcessPath, sende
 // forwardAttempts is the attempts of each role send delivery line for the dedupe key key.
 func (rig *inProcessRig) forwardAttempts(key string) []float64 {
 	var attempts []float64
-	for _, line := range linesIn(rig.harness.logs.String(), "listener publish role send", map[string]any{"dedupe_key": publishDedupePrefix + key}) {
+	for _, line := range linesIn(rig.harness.logs.String(), "listener publish role send", map[string]any{"dedupe_key": bus.PublishDedupePrefix + key}) {
 		n, _ := line["attempts"].(float64)
 		attempts = append(attempts, n)
 	}
@@ -308,6 +315,11 @@ func (rig *inProcessRig) forwardAttempts(key string) []float64 {
 // every confirmed forward, a duplicate's too (sendToRole), and the refused forward is sent again
 // inside that one forward, so each role send makes one attempt, where a refused forward counted
 // as one that failed makes a second.
+//
+// Both attempts the leader is handed carry one Nats-Msg-Id, which is what makes the stream refuse
+// the second as in process. That is the control of the delivery exception's row below
+// (TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce), which requires
+// the header absent on what the leader is handed.
 func TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsStored(t *testing.T) {
 	t.Parallel()
 	rig := newInProcessRig(t)
@@ -329,7 +341,10 @@ func TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsSt
 				rig.attempt(context.Background(), path.route, body),
 				rig.attempt(context.Background(), path.route, body),
 			}
-			awaitHanded(t, heard, 2)
+			handed := awaitHanded(t, heard, 2)
+			if first, second := handed[0].Header.Get(natsgo.MsgIdHdr), handed[1].Header.Get(natsgo.MsgIdHdr); first == "" || first != second {
+				t.Errorf("the leader was handed the two attempts under Nats-Msg-Id %q and %q, want one id on both", first, second)
+			}
 			thaw()
 			for _, answer := range answers {
 				if answer := <-answer; answer.Code != http.StatusOK {
@@ -584,27 +599,191 @@ func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing
 	}
 }
 
-// A delivery exception a clustered stream refuses as still in process under another listener's
-// publish of it (nats-server's 10158, bus.ErrDuplicateInProcess) is no failed publish: that
-// listener raised the same exception from its own durable under the same Nats-Msg-Id,
-// exception.<reason>.<origin> (publishDeliveryException), and its publish stores the one copy. So
-// it is logged at WARN, never the line the deployed publish-failure filter counts,
+// A hand-off resend that reaches a three-copy stream while its earlier attempt is still being
+// stored is refused as still in process (bus.ErrDuplicateInProcess) under the hand-off's MsgId,
+// which every attempt of one envelope derives alike. The hand-off publishes again until the
+// earlier attempt is stored and the answer names that copy (publishPastInProcess), so the resend
+// is handed off as a duplicate and never fails: a failed hand-off is the send route's and the
+// role routes' 503 and the agent subject give-up's NAK. The earlier attempt is handed off as no
+// duplicate, and the stream holds one hand-off.
+func TestAHandoffResendWhoseEarlierAttemptIsStillInProcessIsAnsweredDuplicate(t *testing.T) {
+	rig := newInProcessRig(t)
+	handoff := rig.stoppedAgentHandoff(t)
+	subject := listenerwire.LegionHandoffSubject("infra", handoffAgent)
+	item := envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+"."+id.New(), "agent")
+	type handedOff struct {
+		handed *legionHandedOff
+		err    error
+	}
+	attempt := func() <-chan handedOff {
+		answer := make(chan handedOff, 1)
+		go func() {
+			handed, err := handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: handoffAgent})
+			answer <- handedOff{handed, err}
+		}()
+		return answer
+	}
+	rig.requireLeader(t)
+	heard, before := rig.hear(t, subject), rig.copies(t, subject)
+	thaw := rig.cluster.FreezeRoutes(t)
+	t.Cleanup(thaw)
+	earlier := attempt()
+	awaitHanded(t, heard, 1)
+	resend := attempt()
+	awaitHanded(t, heard, 1)
+	thaw()
+	if got := <-earlier; got.err != nil || got.handed == nil || got.handed.ack.Duplicate {
+		t.Errorf("the earlier hand-off = %+v, %v; want it handed off, no duplicate", got.handed, got.err)
+	}
+	if got := <-resend; got.err != nil || got.handed == nil || !got.handed.ack.Duplicate {
+		t.Errorf("the resend's hand-off = %+v, %v; want the earlier attempt's copy, answered duplicate: its first publish was refused as in process, and that attempt is stored",
+			got.handed, got.err)
+	}
+	rig.requireOneCopy(t, subject, before)
+}
+
+// stoppedAgentHandoff is a hand-off over the rig's listener for handoffAgent, a stopped
+// implementer of the project infra, which says it answers. The registries are on the package's
+// shared server, as the rig's other reads are, so a frozen route holds the hand-off's publish over
+// the rig's listener and none of its reads.
+func (rig *inProcessRig) stoppedAgentHandoff(t *testing.T) *legionHandoff {
+	t.Helper()
+	agents, err := legionagents.Open(t.Context(), rig.harness.client.Conn, legionagents.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the legion agent registry: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := agents.Put(ctx, legionagents.Entry{
+		SessionID: handoffAgent, LegionProject: "infra", Issue: "INFRA-204", Role: "implementer",
+		RoleToken: "legion-infra-infra-204-implementer", Title: "Legion implementer · INFRA-204", Harness: "omp",
+		StartedAt: "2026-10-26T03:00:00Z",
+	}); err != nil {
+		t.Fatalf("record the stopped implementer: %v", err)
+	}
+	if _, err := agents.PutProject(ctx, "infra", legionagents.Project{
+		Answering: true, UpdatedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+	}); err != nil {
+		t.Fatalf("state that the project answers: %v", err)
+	}
+	return &legionHandoff{client: rig.d.client, registry: rig.harness.registry, sessions: rig.harness.sessions,
+		agents: newLegionAgentRegistry(agents), logger: rig.logger}
+}
+
+// The agent subject's give-up hands a message off within its window (handoffGiveUpWindow) and no
+// longer. While an earlier attempt of the same hand-off is still in process, as routes frozen under
+// it leave it, the stream refuses every publish of the give-up's hand-off as in process
+// (bus.ErrDuplicateInProcess), and publishPastInProcess publishes again until its context ends.
+// The window is that context: the give-up returns once it ends, records the failed hand-off (its
+// line and its count) and NAKs the message to be tried again, rather than publishing again for as
+// long as the earlier attempt is not stored, which a stream that lost its quorum may never store.
+// The window is shortened to a second here, on the rig's own copy of the configuration; the row's
+// own bound, ten seconds past it, is what fails a give-up that does not stop.
+func TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess(t *testing.T) {
+	rig := newInProcessRig(t)
+	cfg := rig.harness.config
+	cfg.handoff = rig.stoppedAgentHandoff(t)
+	cfg.handoffGiveUpWindow = time.Second
+	subject := listenerwire.LegionHandoffSubject("infra", handoffAgent)
+	item := envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+"."+id.New(), "agent")
+
+	// The message the give-up finalizes: one bound to a subscription, with a reply subject the
+	// test reads, so its NAK is heard where a durable message's would reach the server.
+	conn := rig.harness.client.Conn
+	nakInbox := natsgo.NewInbox()
+	naks, err := conn.SubscribeSync(nakInbox)
+	if err != nil {
+		t.Fatalf("subscribe the message's reply subject: %v", err)
+	}
+	t.Cleanup(func() { _ = naks.Unsubscribe() })
+	carrierSubject := "test.handoff-give-up." + id.New()
+	carrier, err := conn.SubscribeSync(carrierSubject)
+	if err != nil {
+		t.Fatalf("subscribe %s: %v", carrierSubject, err)
+	}
+	t.Cleanup(func() { _ = carrier.Unsubscribe() })
+	if err := conn.PublishMsg(&natsgo.Msg{Subject: carrierSubject, Reply: nakInbox, Data: marshalListenerEnvelope(t, item)}); err != nil {
+		t.Fatalf("publish the message: %v", err)
+	}
+	carried, err := carrier.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf("receive the message: %v", err)
+	}
+	message := deliveryMessage{data: carried.Data, mode: durableDelivery, msg: carried}
+
+	rig.requireLeader(t)
+	heard := rig.hear(t, subject)
+	thaw := rig.cluster.FreezeRoutes(t)
+	t.Cleanup(thaw)
+	earlier := make(chan error, 1)
+	go func() {
+		_, err := cfg.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: handoffAgent})
+		earlier <- err
+	}()
+	awaitHanded(t, heard, 1)
+
+	window := cfg.handoffGiveUpWindow
+	bound := window + 10*time.Second
+	started := time.Now()
+	answered := make(chan bool, 1)
+	go func() { answered <- offerAgentDeliveryToLegion(cfg, message, item, handoffAgent) }()
+	select {
+	case owned := <-answered:
+		if !owned {
+			t.Fatalf("the give-up answered that the hand-off was not the message's outcome; want it to own the failed hand-off:\n%s", rig.harness.logs.String())
+		}
+	case <-time.After(bound):
+		t.Fatalf("the give-up had not returned %s after it began, %s past its %s window: its hand-off is still publishing again while the earlier attempt is in process",
+			bound, bound-window, window)
+	}
+	if elapsed := time.Since(started); elapsed < window {
+		t.Errorf("the give-up returned after %s, inside its %s window: it was to publish again until the window ended", elapsed, window)
+	}
+	failed := deliveryRecords(t, rig.harness.logs.String(), "listener legion hand-off failed")
+	if len(failed) != 1 || failed[0].SessionID != handoffAgent || failed[0].DeliveryStatus != "failed" {
+		t.Errorf("the give-up wrote %+v, want one failed hand-off line for %s:\n%s", failed, handoffAgent, rig.harness.logs.String())
+	}
+	if !strings.Contains(rig.harness.logs.String(), errEarlierAttemptInProcess.Error()) {
+		t.Errorf("the failed hand-off does not say it ended while the earlier attempt was in process (%q):\n%s", errEarlierAttemptInProcess, rig.harness.logs.String())
+	}
+	if nak, err := naks.NextMsg(5 * time.Second); err != nil || !strings.HasPrefix(string(nak.Data), "-NAK") {
+		t.Errorf("the message's reply subject read %v, %v; want the give-up's NAK", nak, err)
+	}
+	body := metricsBody(t, rig.harness)
+	for _, series := range []string{`test_messages_naked 1`, `test_messages_delivered{delivery_status="failed"} 1`} {
+		if !strings.Contains(body, series) {
+			t.Errorf("the listener's metrics lack %s:\n%s", series, body)
+		}
+	}
+
+	thaw()
+	select {
+	case <-earlier:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the earlier hand-off had not returned 15 s after the thaw")
+	}
+}
+
+// A delivery exception is published under no Nats-Msg-Id (publishDeliveryException), so a
+// clustered stream never refuses it as still in process (bus.ErrDuplicateInProcess). Two
+// listeners that raise an exception for one message each store a copy, and neither logs a line.
+// A failure of the same publish, an exception past the server's max payload, is still logged once
+// at ERROR as exceptionPublishFailedLine, which the deployed publish-failure filter counts:
 // `{ $.level = "ERROR" && $.msg = "listener exception publish failed" }`
-// (packages/envoy/infra/aws/rendering/metricfilters.go), while a failure of the same publish, an
-// exception past the server's max payload, is still logged that line. The in-process row freezes
-// the members' routes, waits until the leader holds the other listener's publish, and raises the
-// exception through applyDeliveryOutcome before the thaw, so the refusal comes by events.
-func TestADeliveryExceptionStillInProcessIsNotLoggedAsAFailedPublish(t *testing.T) {
+// (packages/envoy/infra/aws/rendering/metricfilters.go). The first row freezes the members'
+// routes and thaws them once the leader holds both publishes. Under one message id the stream
+// would refuse the second publish while the first is in process.
+func TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce(t *testing.T) {
 	t.Parallel()
 	rig := newInProcessRig(t)
 	const topic, recipient, reason = "notifications.team.exception-in-process", "ses_exception_in_process", "delivery_failed"
 	lane := bus.ExceptionTopicPrefix + topic
 	for _, row := range []struct {
-		name      string
-		inProcess bool
+		name     string
+		tooLarge bool
 	}{
-		{"refused as still in process under another listener's publish", true},
-		{"past the server's max payload", false},
+		{"raised by two listeners while the routes are frozen", false},
+		{"past the server's max payload", true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			logs := &cmdtest.LockedBuffer{}
@@ -612,49 +791,60 @@ func TestADeliveryExceptionStillInProcessIsNotLoggedAsAFailedPublish(t *testing.
 			cfg.client = rig.d.client
 			cfg.logger = logging.NewWithWriter("test", logs)
 			item := listenerTestEnvelope(topic, "exception-in-process-"+id.New())
-			origin := "exception-in-process-origin-" + id.New()
-			outcome := deliveryOutcome{sessionID: recipient, exceptionReason: reason, fanoutRefusal: true, origin: origin}
-			want := bus.ErrTooLarge
-			if row.inProcess {
-				want = bus.ErrDuplicateInProcess
-				heard := rig.hear(t, lane)
-				before := rig.copies(t, lane)
-				thaw := rig.cluster.FreezeRoutes(t)
-				t.Cleanup(thaw)
-				other := make(chan error, 1)
-				go func() { other <- publishDeliveryException(rig.d.client, item, reason, recipient, origin) }()
-				awaitHanded(t, heard, 1)
-				applyDeliveryOutcome(cfg, item, outcome)
-				thaw()
-				if err := <-other; err != nil {
-					t.Fatalf("the other listener's publish of the exception: %v; want it stored", err)
-				}
-				rig.requireOneCopy(t, lane, before)
-			} else {
+			outcome := deliveryOutcome{sessionID: recipient, exceptionReason: reason, fanoutRefusal: true}
+			if row.tooLarge {
 				item.Payload = strings.Repeat("p", int(rig.d.client.Conn.MaxPayload()))
 				applyDeliveryOutcome(cfg, item, outcome)
-			}
-			var counted, refusals []string
-			for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
-				var record map[string]any
-				if json.Unmarshal([]byte(line), &record) != nil || record["topic"] != topic {
-					continue
+				var counted, refusals []string
+				for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+					var record map[string]any
+					if json.Unmarshal([]byte(line), &record) != nil || record["topic"] != topic {
+						continue
+					}
+					if record["level"] == "ERROR" && record["msg"] == exceptionPublishFailedLine {
+						counted = append(counted, line)
+					}
+					if text, _ := record["error"].(string); strings.Contains(text, bus.ErrTooLarge.Error()) {
+						refusals = append(refusals, line)
+					}
 				}
-				if record["level"] == "ERROR" && record["msg"] == "listener exception publish failed" {
-					counted = append(counted, line)
+				if len(refusals) != 1 || len(counted) != 1 || counted[0] != refusals[0] {
+					t.Fatalf("an exception the server refused as too large logged %d lines naming %q and %d lines the publish-failure filter counts, want one line that is both:\n%s",
+						len(refusals), bus.ErrTooLarge, len(counted), logs.String())
 				}
-				if text, _ := record["error"].(string); strings.Contains(text, want.Error()) {
-					refusals = append(refusals, line)
+				return
+			}
+			rig.requireLeader(t)
+			heard, before := rig.hear(t, lane), rig.copies(t, lane)
+			thaw := rig.cluster.FreezeRoutes(t)
+			t.Cleanup(thaw)
+			other := make(chan error, 1)
+			go func() { other <- publishDeliveryException(rig.d.client, item, reason, recipient) }()
+			applied := make(chan struct{})
+			go func() {
+				defer close(applied)
+				applyDeliveryOutcome(cfg, item, outcome)
+			}()
+			for n := range 2 {
+				msg, err := heard.NextMsg(10 * time.Second)
+				if err != nil {
+					t.Fatalf("the leader was handed %d of the 2 publishes: %v", n, err)
+				}
+				if msgID := msg.Header.Get(natsgo.MsgIdHdr); msgID != "" {
+					t.Errorf("an exception was published under Nats-Msg-Id %q, want none", msgID)
 				}
 			}
-			if len(refusals) != 1 {
-				t.Fatalf("logged %d lines naming %q, want 1:\n%s", len(refusals), want, logs.String())
+			thaw()
+			if err := <-other; err != nil {
+				t.Fatalf("the other listener's publish of the exception: %v; want it stored", err)
 			}
-			if row.inProcess && len(counted) != 0 {
-				t.Fatalf("an exception still in process under another listener's publish logged the line the publish-failure filter counts:\n%s", strings.Join(counted, "\n"))
+			<-applied
+			waitFor(t, "the stream to store both exceptions on "+lane, func() bool { return rig.copies(t, lane) >= before+2 })
+			if got := rig.copies(t, lane) - before; got != 2 {
+				t.Fatalf("the stream stored %d copies on %s, want 2: each exception is an event of its own", got, lane)
 			}
-			if !row.inProcess && (len(counted) != 1 || counted[0] != refusals[0]) {
-				t.Fatalf("an exception the server refused as too large logged %d lines the publish-failure filter counts, want its one failure line:\n%s", len(counted), logs.String())
+			if text := strings.TrimSpace(logs.String()); text != "" {
+				t.Fatalf("the exception the stream stored logged lines, want none:\n%s", text)
 			}
 		})
 	}

@@ -321,6 +321,7 @@ func TestTheTestersFailedClaimEndsItsLook(t *testing.T) {
 // of the look's claim ends it, and so does a failure that names no claim, which keeps the role's
 // rule.
 func TestOnlyTheFailureOfTheLooksClaimEndsTheLook(t *testing.T) {
+	t.Parallel()
 	const keyed, own = claim.Token("legion-legion-legion-209-implementer"), claim.Token("legion-legion-legion-209-tester")
 	for _, tc := range []struct {
 		name   string
@@ -742,9 +743,8 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 	}
 }
 
-// The check task is held to the retired phrases the composed prompts are held to
-// (internal/prompts' TestNoComposedPromptTeachesAnE2ELineOrAProofArray): what a look proves is a
-// result recorded against the issue's after_merge check, so each of the three verdicts asks for
+// The check task holds none of the retired phrases: what a look proves is a result recorded
+// against the issue's after_merge check, so each of the three verdicts asks for
 // `dispatch result` at the merge commit and none asks for the retired Production: line. The task
 // is prose for a pane, so it carries the phrases without their backticks.
 func TestTheCheckTaskAsksForARecordedResultAndNoRetiredLine(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -20,8 +21,16 @@ import (
 // last — the handoff record the implementer last named for a file-backed phase
 // (record.PhaseRow.LastHandoff), the phase entry the completing role's current phase is on
 // (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start that raised it
-// moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record, nil while none
-// is recorded, and its production check, nil while none was ever opened.
+// moved the issue back (record.PhaseRow.EntryMovedBack), whether that role's row records its
+// completion of its current phase (record.PhaseRow.Completed, which the owed route reads and the
+// completion route does not), its pull request record, nil while none is recorded — the
+// completion route judges the head a completion names against it, and the owed route reads it in
+// merging, where a merged pull request is what finishes the phase (workflow.PhaseFinished) — its
+// production check, nil while none was ever opened, and stepClaim, the claim the role's row names
+// while that row runs a step of the plan (record.PhaseRow.Claim, set with StepTask), "" for a row
+// that runs no step. The owed route holds the asking claim to stepClaim as the completion route
+// holds a completion to it (workflow's HANDOFF_NOT_THE_STEPS_WORKER), from the row it reads in
+// the same snapshot.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
@@ -30,15 +39,26 @@ type completionPosition struct {
 	pass           int
 	entry          int64
 	entryMovedBack bool
+	completed      bool
 	lastHandoff    string
 	pullRequest    *record.PullRequest
 	check          *record.ProductionCheck
+	stepClaim      claim.Token
 }
 
-// handoffPosition reads key's position (completionPosition) for the completing role, whose phases
-// row names the entry it was last raised to; an issue the workflow does not record is a position
-// with no issue and no error. The pull request is its row alone (record.Store.PullRequestRow): the
-// route reads its head and its state and writes nothing of it.
+// merged is whether the position's phase is merging and its pull request is merged: the fact
+// that finishes merging, read by the rule workflow.PhaseFinished applies, since the merger
+// merges and a merged root then stands in merging until the rest of its tree leaves.
+func (p completionPosition) merged() bool {
+	return p.issue != nil && p.issue.Phase == phase.Merging &&
+		p.pullRequest != nil && p.pullRequest.State == record.PullRequestMerged
+}
+
+// handoffPosition reads key's position (completionPosition) for role, the completing role or the
+// role asking what it owes, whose phases row names the entry it was last raised to and whether it
+// has completed; an issue the workflow does not record is a position with no issue and no error.
+// The pull request is its row alone (record.Store.PullRequestRow): each route reads its head and
+// its state and writes nothing of it.
 func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role) (completionPosition, error) {
 	var position completionPosition
 	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {
@@ -81,9 +101,13 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		if err != nil {
 			return err
 		}
+		var stepClaim claim.Token
+		if completing.StepTask != "" {
+			stepClaim = completing.Claim
+		}
 		position = completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, pass: counts.Pass,
 			lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
-			pullRequest: pr, check: check}
+			completed: completing.Completed(), pullRequest: pr, check: check, stepClaim: stepClaim}
 		return nil
 	})
 	return position, err

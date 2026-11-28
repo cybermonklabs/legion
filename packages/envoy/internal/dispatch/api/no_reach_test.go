@@ -100,10 +100,10 @@ func onePersonRead(t *testing.T) {
 	}
 	// What a caller may hand it: the login the path names, and the page. A node kind, a filter
 	// or an edge to walk is what this route exists not to take.
-	shape, shaped := routeShapes[personNodesRoute]
-	if !shaped {
+	if !read.Shape.stated() {
 		t.Fatalf("%s declares no shape", personNodesRoute)
 	}
+	shape := read.Shape
 	keys := queryTagsOf(shape.Params)
 	sort.Strings(keys)
 	if want := []string{"limit", "offset"}; !slices.Equal(keys, want) {
@@ -464,6 +464,9 @@ func threeBadRequests(t *testing.T) {
 	}
 
 	owned := seedTwoProjects(t, handler, database)
+	// The coverage route answers 503 SEARCH_COVERAGE_NOT_FILLED until a fill has ended, as a
+	// server's counts loop fills it after it listens.
+	fillCoverageCounts(t, database)
 	var probed []string
 	for _, route := range rows {
 		target, addressable := crossProjectPath(t, route, owned)
@@ -634,6 +637,7 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/machine-logins":                                         "the agent-secrets broker",
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
 	"GET /api/v1/artifacts/{id}/changes":                                 "two stored versions of one document",
+	"GET /api/v1/projects/{key}/results":                                 "a stored result of a spec check, which only a CI run's results token writes, and the commit it is read by (?commit=)",
 }
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the
@@ -739,7 +743,8 @@ func seededProbePath(pattern string, owned crossProject) string {
 // undeclaredTraversal is the traversal one route is sent: every traversal word the route does
 // not declare as a query parameter of its own, each with a value a traversal would take.
 func undeclaredTraversal(route string) string {
-	declared := queryTagsOf(routeShapes[route].Params)
+	declaration, _ := declaredRoute(route)
+	declared := queryTagsOf(declaration.Shape.Params)
 	query := url.Values{}
 	for _, word := range traversalWords {
 		if !slices.Contains(declared, word) {

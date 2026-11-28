@@ -1,0 +1,17 @@
+package api
+
+import (
+	"net/http"
+)
+
+var _ = declareRoute(routeDecl{
+	Method:      http.MethodGet,
+	Pattern:     "/api/v1/projects/{key}/legion/board",
+	Auth:        authAny,
+	Description: "The Legion board of the project its path names, from what Dispatch recorded of that project's daemon: thirteen columns (queue, design, planning, implementing, testing, reviewing, step, accepting, retro, merging, awaiting_children, awaiting_person, held, where step holds an issue at a step of a role the deployment defines), each card naming its issue's key, title, own priority, the priority it resolves to (resolved_priority: its own, else that of the nearest issue above it that has one) with the key of the issue that comes from (priority_from, null where it is the issue's own), phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the daemon's own number of P0 holders (p0_holders, which hold their slots outside the cap; null, never 0, where the daemon's newest recorded state gives none), the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+	Handler:     (*server).getLegionBoard,
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
+	Shape: routeShape{
+		Status: http.StatusOK, Response: legionBoardResponse{},
+	},
+})

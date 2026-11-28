@@ -14,7 +14,7 @@
 // `envoy_token_file`, `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
 // `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
-// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, the daemon's read of the
+// ReadSecretPointer, Config.ReadInstructions, ReadHookPrompt, the daemon's read of the
 // private-name rule file (internal/daemon's launchSecrets), and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
 // then reads them as boot does (daemon.CheckStart). The daemon reads an instructions file again
@@ -127,8 +127,14 @@ type Config struct {
 	// file the shim exports.
 	ProviderKeys []ProviderKey
 	// InstructionsPath is the operator's deployment instructions, "" when none; boot copies it to
-	// `<state_dir>/deployment-instructions.md` (MaterializeDeploymentInstructions).
+	// `<state_dir>/deployment-instructions.md` (WriteDeploymentInstructions) and reads it with
+	// ReadInstructions.
 	InstructionsPath string
+	// instructionsUnshaped is whether the file writes `instructions` in no path's shape
+	// (pathShape), so a refusal of the file names the key and never the path
+	// (readDeploymentInstructions). It is judged on the path as written, before it is joined to
+	// the file's directory, which is no value of the operator's.
+	instructionsUnshaped bool
 	// PrivateNameRulesFile is the deployment's private-name rule file, a gitleaks rule file the
 	// daemon reads and compiles at boot and hands every launch as the launch secret
 	// leakguard.RulesSecret, so that every role's leak guard runs it (internal/daemon's readBoot
@@ -448,7 +454,7 @@ var tossedKeys = map[string]string{
 // own text (Config.Warnings, readKeys), which boot logs and `legion config check`
 // prints, so the operator reads what the refusal would have said and the daemon runs.
 var warnedKeys = map[string]string{
-	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml. review_round_cap is the one cap left on an issue's review rounds, and it moves nothing: after that many counted review rounds (recordRound in internal/workflow/review.go counts them, less the conflict rounds) the daemon posts a message on the issue and sends the architect a pr-blocked notice, once for each value the cap holds, and the work goes on (dispatch://INFRA-956 R4)",
 	"pod_update_retask_hours": "no update round asks a worker again, since the round publishes its ask once to the topic of each claim it asks rather than queueing it as a task, and the round ends at its bound whatever the claims answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
 	"pod_update_notice_hours": "the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://INFRA-2981 R6)",
 }
@@ -676,23 +682,42 @@ var keyHexRun = regexp.MustCompile(`[0-9a-f]{8,}`)
 // configuration holds one: its words are joined by "_", and none of 10 letters holds a digit.
 var keyAlphanumericRun = regexp.MustCompile(`[a-z0-9]{10,}`)
 
-// keyShape reports whether name has a key's shape: keyGrammar's, holding no keyHexRun and no
-// keyAlphanumericRun that holds a digit. An unknown key of that shape is named as written, so a
+// keyShape reports whether name has a key's shape: keyGrammar's, holding no token's run
+// (tokenShaped). An unknown key of that shape is named as written, so a
 // typo keeps its help (`unknown key dispach_url`); any other name, one holding an upper-case
 // letter, a "-", a ":", a "/", an "@", a space, a run of hex digits or a long run of letters and
 // digits, as a token (`sk-ant-…`, `ghp_…`, a hex key, a base36 token) or a URL does, is named by
 // its line alone (unknownKeyAt). A typo holding a "-" or an upper-case letter is named by its line
 // too; a short token of the grammar's letters (`abc_0123456`) is still named as written.
 func keyShape(name string) bool {
-	if !keyGrammar.MatchString(name) || keyHexRun.MatchString(name) {
-		return false
+	return keyGrammar.MatchString(name) && !tokenShaped(name)
+}
+
+// tokenShaped reports whether name holds a token's run: a keyHexRun, or a keyAlphanumericRun that
+// holds a digit. No key of the configuration and no name of a role holds one. Both runs are of
+// lower-case letters and digits, so it finds a lower-case token, a hex key or a base36 token,
+// and seldom a token of mixed case (`ghp_…`, `sk-ant-…`, a base64 token), which rarely holds
+// such a run. So it is never a reader's guard alone: a reader names a name as written only when
+// it fits that reader's grammar too, the key grammar (keyShape) or the role grammar
+// (roleWordShape), neither of which a token holding an upper-case letter fits; tokenShaped refuses
+// the lower-case token that fits one, such as a 32-hex API key that starts with a letter, which
+// fits the role grammar (claim.IsRole).
+func tokenShaped(name string) bool {
+	if keyHexRun.MatchString(name) {
+		return true
 	}
 	for _, run := range keyAlphanumericRun.FindAllString(name, -1) {
 		if strings.ContainsAny(run, "0123456789") {
-			return false
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+// roleName reports whether role is a role's name a reader takes: a name of the role grammar
+// (claim.IsRole) that holds no token's run (tokenShaped).
+func roleName(role claim.Role) bool {
+	return claim.IsRole(role) && !tokenShaped(string(role))
 }
 
 // keyShapeWords is keyShape as a refusal says it.
@@ -708,6 +733,71 @@ func unknownKeyAt(node *yaml.Node, under string) string {
 		return fmt.Sprintf("unknown key at line %d, whose name has no key's shape (%s)", node.Line, keyShapeWords)
 	}
 	return fmt.Sprintf("unknown key at line %d under %s, whose name has no key's shape (%s)", node.Line, under, keyShapeWords)
+}
+
+// shapelessWord is the refusal of a word of no key's shape (keyShape) written where a key takes
+// one of a few words, each of a key's shape (`off or tester`, `tree or issue`, want): its place,
+// never its text. place is the key and, where the reader holds it, its line (lineOf). Such a word
+// is no typo of one the key takes; it can be a token pasted where the word goes, which no rule
+// that reads a URL or a token's run finds whole, so it is named by its place alone. A word of a
+// key's shape that the key does not take is named as written, by the key's own refusal.
+func shapelessWord(place, want string) error {
+	return fmt.Errorf("%s has no key's shape (%s): it must be %s", place, keyShapeWords, want)
+}
+
+// lineOf is field and the line of node, the value the file writes there, as a refusal names its
+// place: `hooks[0].on at line 18`.
+func lineOf(field string, node *yaml.Node) string {
+	return fmt.Sprintf("%s at line %d", field, node.Line)
+}
+
+// wordNamed is field and word, the value a reader refuses there, as the refusal names them: field
+// and the word quoted where the word has a key's shape (keyShape), and field alone where it has
+// none. It names a value whose grammar a token can fit or miss alike (a project's key, a bucket's,
+// a ServiceAccount's, a claim's or a variant's name, a metadata member of GKE's form): a word a
+// reader refuses that has no key's shape can be a token pasted where the word goes, while one that
+// has it is a typo the operator reads back.
+func wordNamed(field, word string) string {
+	if keyShape(word) {
+		return field + " " + strconv.Quote(word)
+	}
+	return field
+}
+
+// entryNamed is wordNamed for word, the entry at index (from 0) of the list field: `field entry
+// "word"` where the word has a key's shape, and `field entry 2` where it has none.
+func entryNamed(field string, index int, word string) string {
+	if keyShape(word) {
+		return fmt.Sprintf("%s entry %q", field, word)
+	}
+	return fmt.Sprintf("%s entry %d", field, index+1)
+}
+
+// pathWord is the characters of a path a refusal may name as written: lower-case letters, digits,
+// ".", "_", "-" and "/".
+var pathWord = regexp.MustCompile(`^[a-z0-9._/-]+$`)
+
+// pathShape reports whether a refusal may name path, a path the file writes, as written: a path
+// of pathWord's characters that holds no token's run (tokenShaped). It is keyShape's rule for a
+// path. A token of mixed case (`ghp_…`, `sk-ant-…`), a base64 one (which holds a "+" or an "="
+// beside its capitals) and one holding white space each fall outside pathWord, and tokenShaped
+// refuses a lower-case one that fits it, such as a hex key; a path of capitals, white space or a
+// control character goes with them, and its refusal names its key alone. A key whose own grammar
+// a path must fit (a clean absolute path, cleanAbsolutePath) names no path that falls outside that
+// grammar, whatever its shape; pathShape is for the keys whose path the reader holds to no
+// grammar, read only once the file is loaded: a role's `prompt_file` (CheckRolePrompts),
+// `instructions` (readDeploymentInstructions) and a hook's `prompt_file` (ReadHookPrompt).
+func pathShape(path string) bool {
+	return pathWord.MatchString(path) && !tokenShaped(path)
+}
+
+// nameShape reports whether a refusal may name name, the name of a thing the reader holds to no
+// grammar of its own (a hook's), as written: a name of a key's shape (keyShape) or of the role
+// grammar (roleWordShape), lower-case letters and digits joined by "_" or by "-", holding no
+// token's run. Any other name, one of capitals or another sign, can be a token pasted where the
+// name goes, and is named by its place.
+func nameShape(name string) bool {
+	return keyShape(name) || roleWordShape(name)
 }
 
 // readRuntime reads `runtime`: the `tmux` scalar (no block), or a one-key mapping, `{kubernetes:
@@ -793,14 +883,16 @@ func stringOf(value *yaml.Node, key string) (string, error) {
 // starts, where a relative path resolves against no directory of the operator's. A key written
 // with no value at all never reaches it, since describedMembers leaves a null member out and the
 // key then reads as unset. The `memory` block's `instructions` and a variant's read through it
-// alike, so the two keys answer one refusal.
+// alike, so the two keys answer one refusal. The refusal names the key alone, never the value: a
+// value that is no clean absolute path need not be a path at all, and a token pasted where the
+// path goes is one.
 func cleanAbsolutePath(value *yaml.Node, key string) (string, error) {
 	path, err := stringOf(value, key)
 	if err != nil {
 		return "", err
 	}
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return "", fmt.Errorf("%s %q must be a clean absolute path: the daemon reads it at boot from wherever it starts", key, path)
+		return "", fmt.Errorf("%s must be a clean absolute path: the daemon reads it at boot from wherever it starts", key)
 	}
 	return path, nil
 }
@@ -999,13 +1091,18 @@ func websocketURL(raw string) bool {
 // by then, so `/mcp/` is caught too. Its scheme must be http or https: anything else — a typo such
 // as `htp` — is a misconfiguration `legion config check` should catch now, rather than reaching the
 // daemon's HTTP client as "unsupported protocol scheme", which the boot's readiness gate would
-// otherwise wait out forever as if Dispatch were merely unreachable (LEGION-580).
+// otherwise wait out forever as if Dispatch were merely unreachable (LEGION-580). A scheme of no
+// key's shape is refused by the key alone (shapelessWord): url.Parse takes a scheme of letters,
+// digits, "+", "-" and ".", which a lower-case token pasted before a `://` is.
 func dispatchBase(value, key string) (string, error) {
 	parsed, err := validURL(value, key)
 	if err != nil {
 		return "", err
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		if !keyShape(parsed.Scheme) {
+			return "", shapelessWord(key+"'s scheme", "http or https")
+		}
 		return "", fmt.Errorf("%s must be http or https, not %q", key, parsed.Scheme)
 	}
 	base, err := trimmedBase(parsed, key)
@@ -1381,12 +1478,30 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {
 		return Config{}, errors.New("project is required")
 	}
+	// The key's shape is refused before any other setting is resolved (CheckProjectKey says why).
+	if err := CheckProjectKey(*file.Project); err != nil {
+		return Config{}, err
+	}
 	cfg.Project = *file.Project
 
 	if file.StateDir == nil || strings.TrimSpace(*file.StateDir) == "" {
 		return Config{}, errors.New("state_dir is required")
 	}
-	cfg.StateDir = underConfig(*file.StateDir, configDir)
+	// The state directory is absolute from the load on, made so against the configuration file's
+	// directory and then the working directory, and every reader takes this path: the start's
+	// registry, the worker stream socket, the panes' files and their home, and the tmux workspace
+	// directory each phase task's working copy line names. So the line break the line ends at is
+	// refused here, in the very path the daemon uses. Each refusal names the key alone, never the
+	// path: a path holding a line break is no clean path, and one may be a secret of several lines
+	// pasted where the path goes.
+	absolute, err := filepath.Abs(underConfig(*file.StateDir, configDir))
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve state_dir: %w", err)
+	}
+	if strings.ContainsAny(absolute, "\n\r") {
+		return Config{}, errors.New("state_dir, as the daemon resolves it, holds a line break, which a state directory may not hold: under tmux the working copy line every phase task opens with names a workspace directory under it and ends at its line break")
+	}
+	cfg.StateDir = absolute
 
 	cfg.PostgresDSN = env("LEGION_POSTGRES_DSN")
 	postgresKey := "LEGION_POSTGRES_DSN"
@@ -1572,7 +1687,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 // the controller's default reservation whether or not the file named it.
 // runtime.kubernetes.pod.controller_service_account names the ServiceAccount that same pod runs as,
 // so the operator's launch refuses it too, as a key that names the account of no pod; a named one
-// is never blank, since the loader refuses a blank value (optionalString).
+// is never blank, since the loader refuses a blank value (optionalString). A word the key does not
+// take is named only where it has a key's shape, and refused by the key alone otherwise
+// (shapelessWord).
 func resolveControllerLaunch(file fileConfig, cfg *Config) error {
 	cfg.ControllerLaunch = ControllerLaunchOperator
 	if file.Controller != nil {
@@ -1584,6 +1701,9 @@ func resolveControllerLaunch(file fileConfig, cfg *Config) error {
 			}
 			cfg.ControllerLaunch = launch
 		default:
+			if !keyShape(*file.Controller) {
+				return shapelessWord("controller", "'operator' or 'daemon'")
+			}
 			return fmt.Errorf("controller must be 'operator' or 'daemon' (got %q)", *file.Controller)
 		}
 	}
@@ -1706,6 +1826,7 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 	cfg.ProviderKeys = file.ProviderKeys
 	if file.Instructions != nil {
 		cfg.InstructionsPath = underConfig(*file.Instructions, configDir)
+		cfg.instructionsUnshaped = !pathShape(*file.Instructions)
 	}
 
 	switch {

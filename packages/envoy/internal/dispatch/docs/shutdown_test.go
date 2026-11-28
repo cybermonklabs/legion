@@ -407,6 +407,7 @@ func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T
 // pending-settlement row, says so at WARN, and counts no settlement failure, which three of would
 // fail the room.
 func TestShutdownLeavesASettlementThatMustWriteIntoItsRoomToResume(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newShutdownTestService(t, database, nil)
@@ -462,7 +463,7 @@ func newShutdownTestServiceOn(t *testing.T, database *store.Store, appends Versi
 	t.Helper()
 	service := New(Deps{
 		Store: database, Persistence: appends, Events: events.NewBroker(),
-		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
+		Identity: identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
 		Settle:   time.Hour,
 		Clock:    serviceClock,
 	})

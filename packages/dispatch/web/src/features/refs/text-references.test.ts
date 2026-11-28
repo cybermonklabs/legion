@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { DISPATCH_TEXT_REFERENCES, isIdPrefix } from "@legion/contracts";
 
+import { referenceReads, referenceReadsSince } from "./reference-reads";
 import { referenceHref } from "./routes";
 import { readTextReferences } from "./text-references";
 
@@ -41,35 +42,37 @@ function citedInCode(body: string, facts: Parameters<typeof readTextReferences>[
 // prefix writes included, read against what the row says exists. The Go reader `text.Mentions`
 // walks the same rows, so neither where a reference ends nor what it names can change on one
 // side alone.
-test.each(
-  DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin, row] as const)
-)("%s cites, read against %s, its row's references", (body, server, row) => {
-  expect(
-    cited(body, {
-      issues: row.issues,
-      items: row.items,
-      origin: server,
-      questions: row.questions,
-    })
-  ).toEqual([...row.refs]);
-});
+test.each(DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin, row] as const))(
+  "%s cites, read against %s, its row's references",
+  (body, server, row) => {
+    expect(
+      cited(body, {
+        issues: row.issues,
+        items: row.items,
+        origin: server,
+        questions: row.questions,
+      })
+    ).toEqual([...row.refs]);
+  }
+);
 
 // The `inCode` column of the same table, row for row: which of a row's references a fenced
 // block, an indented block or a code span holds. The Go reader is held to the very same column
 // (`TestExtractMatchesTheSharedTextTable`), so where a code context begins and ends cannot
 // change on one side alone - and that is what decides, on both, who a write is delivered to.
-test.each(
-  DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin, row] as const)
-)("%s reads, against %s, its row's references in code", (body, server, row) => {
-  expect(
-    citedInCode(body, {
-      issues: row.issues,
-      items: row.items,
-      origin: server,
-      questions: row.questions,
-    })
-  ).toEqual([...(row.inCode ?? [])]);
-});
+test.each(DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin, row] as const))(
+  "%s reads, against %s, its row's references in code",
+  (body, server, row) => {
+    expect(
+      citedInCode(body, {
+        issues: row.issues,
+        items: row.items,
+        origin: server,
+        questions: row.questions,
+      })
+    ).toEqual([...(row.inCode ?? [])]);
+  }
+);
 
 // A body that writes the same reference inside code and outside it marks each occurrence on its
 // own, which is what keeps the party that body names a delivering one (`draftParties`).
@@ -190,4 +193,59 @@ test.each([
   // loaded pod can fail it by being slow.
   expect(performance.now() - start).toBeLessThan(BACKTRACKING_BUDGET_MS);
   expect(found).toEqual([...refs]);
+});
+
+// A reading hands each span of a body to `referenceRouteFromHref` once, so it costs one pass over
+// the body's spans whatever they hold, counted rather than timed (`reference-reads.ts`). The
+// spans here take its longest way: a `dispatch://` reference to an ask's part pinned to a revision
+// (the fragment read apart, the reference before it parsed again), and a 65,536-character id that
+// parses as far as the extra segment after it. A caller that handed it the body, or the rest of
+// it, for every span reads about the square of the body.
+test("a body of many references hands each span to referenceRouteFromHref once", () => {
+  const count = 4096;
+  const pinned = Array.from(
+    { length: count },
+    (_, index) => `dispatch://CORE-1/ask/q${index}#b-q${index}@v1`
+  );
+  const long = `dispatch://CORE-1/ask/${"a".repeat(1 << 16)}/x`;
+  const body = `${pinned.join(" ")} ${long}`;
+  const before = referenceReads();
+  const found = cited(body, { origin });
+  const read = referenceReadsSince(before);
+  expect(found).toEqual(pinned);
+  expect(read.referenceRouteFromHref.calls).toBe(count + 1);
+  expect(read.referenceRouteFromHref.characters).toBe(body.length - count);
+});
+
+// A reading hands each address it finds to `readAddress` as the author wrote it and, when it
+// ends in `_` or `-`, once more without them (`trimmedMention`), and `readAddress` hands it to
+// `referenceRouteFromHref` once: two passes over the addresses of a body at most, counted rather
+// than timed (`reference-reads.ts`). The last address holds a 65,536-character run of `-`
+// before a letter, the text `trimmedMention`'s end-anchored `/[_-]+$/` tried from every position
+// of the run (1.7 s for a run of 32,768 in a 2-CPU pod, four times that for each doubling); its
+// walk back reads only the letter that stops it. The pattern read nothing the count could see,
+// so that version fails the call count below. A reader that handed the body to `readAddress`
+// again for each address reads about the square of it.
+test("a reading hands each address to readAddress at most twice and trims its tail walking back", () => {
+  const trailed = `${origin}/issues/CORE-1?x=${"-".repeat(64)}`;
+  const long = `${origin}/issues/CORE-2?x=${"-".repeat(1 << 16)}y`;
+  const count = 1024;
+  const body = `${Array.from({ length: count }, () => trailed).join(" ")} ${long}`;
+  const before = referenceReads();
+  const { references } = readTextReferences(body, { origin });
+  const read = referenceReadsSince(before);
+  expect(references.map((found) => [found.reference, found.named])).toEqual([
+    ...Array.from({ length: count }, () => ["dispatch://CORE-1", trailed.length - 64]),
+    ["dispatch://CORE-2", undefined],
+  ]);
+  // Each trailed address is read as written and without its run of `-`; the long one, which
+  // ends in a letter, only as written.
+  expect(read.readAddress.calls).toBe(2 * count + 1);
+  expect(read.readAddress.characters).toBeLessThanOrEqual(2 * body.length);
+  expect(read.referenceRouteFromHref.calls).toBe(2 * count + 1);
+  expect(read.referenceRouteFromHref.characters).toBeLessThanOrEqual(2 * body.length);
+  // The walk back reads each trailed address's run and the `=` that stops it, and the long
+  // address's last letter.
+  expect(read.trimmedMention.calls).toBe(count + 1);
+  expect(read.trimmedMention.characters).toBe(count * 65 + 1);
 });

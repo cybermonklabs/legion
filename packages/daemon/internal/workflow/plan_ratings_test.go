@@ -63,12 +63,13 @@ func planWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.PlanRec
 }
 
 // defaultPlanNamed is the default plan the test expects for the run named name ("<key>/<generation>")
-// at generation: the oracle of a plan record's id and body, computed apart from PlanID and
-// defaultPlan.
+// at generation, whose one task needs none: the oracle of a plan record's id and body, computed
+// apart from PlanID, defaultRows and planNode, which write the plan node of a run whose owner gave
+// no plan.
 func defaultPlanNamed(name string, generation uint64) record.PlanRecord {
 	namespace := uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-plan-record"))
 	return record.PlanRecord{ID: uuid.NewSHA1(namespace, []byte(name)).String(), Generation: generation, Source: "default",
-		Tasks: []record.PlanRecordTask{{ID: "default", Steps: slices.Clone(todaysDefaultSteps)}}}
+		Tasks: []record.PlanRecordTask{{ID: "default", Steps: slices.Clone(todaysDefaultSteps), Needs: &[]string{}}}}
 }
 
 // retroPlace is the place of an issue's retro, which no list of steps holds.

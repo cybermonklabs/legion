@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { NO_ROUTE_ROLLING_RELEASE_MESSAGE } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
@@ -71,9 +72,10 @@ let answeredAsk: string | null = null;
 /** Whether the stub answers the versioned review route as a build without it does: no route. */
 let noRoute = false;
 
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
+  fetch: keyedLayer(async (request: Request) => {
     const { pathname } = new URL(request.url);
     const text = await request.text();
     const body: unknown = text === "" ? undefined : JSON.parse(text);
@@ -123,7 +125,7 @@ const server = Bun.serve({
       );
     }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+  }),
 });
 
 afterAll(() => server.stop(true));
@@ -272,19 +274,22 @@ describe("dispatch review", () => {
       "this request's credential acts for service system:serviceaccount:legion:legion-worker and no person, so there is nobody to record this write under; run `agent-secrets login` on this machine and try again",
       {},
     ],
-  ])("a %i %s is printed with Dispatch's code and words, and exits 1", async (status, code, error, headers) => {
-    refusal = { status, code, error, headers };
+  ])(
+    "a %i %s is printed with Dispatch's code and words, and exits 1",
+    async (status, code, error, headers) => {
+      refusal = { status, code, error, headers };
 
-    const result = await run(["review", "DSP-1", "--version", "3", "--verdict", "approved"]);
+      const result = await run(["review", "DSP-1", "--version", "3", "--verdict", "approved"]);
 
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe(`${code}: ${error}\n`);
-    // Dispatch's own refusal is final: the review was sent once, to the versioned route, and not
-    // again.
-    expect(posted()).toEqual([
-      { path: "/api/v1/artifacts/artifact-spec/versions/3/reviews", body: { state: "approved" } },
-    ]);
-  });
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe(`${code}: ${error}\n`);
+      // Dispatch's own refusal is final: the review was sent once, to the versioned route, and not
+      // again.
+      expect(posted()).toEqual([
+        { path: "/api/v1/artifacts/artifact-spec/versions/3/reviews", body: { state: "approved" } },
+      ]);
+    }
+  );
 
   test("a review that answered an open approval request says so, for every document the request named, and that the answer carries this document alone", async () => {
     answeredAsk = "ask-9";

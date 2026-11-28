@@ -3,7 +3,7 @@ name: CI job envoy-go-race
 # The steps of `.github/workflows/ci.yaml#envoy-go-race` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so no `if:` here selects the suite: the ones
-# this file carries run the forced-order steps in the last leg alone (`matrix.leg == 5`), and let
+# this file carries run the forced-order steps in the last leg alone (`matrix.leg == 6`), and let
 # the job envoy-go-race report a failed leg (`!cancelled()`).
 #
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
@@ -50,7 +50,7 @@ jobs:
       # One leg's failure leaves the others running, so each reports its own packages.
       fail-fast: false
       matrix:
-        leg: [1, 2, 3, 4, 5]
+        leg: [1, 2, 3, 4, 5, 6]
     # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the leg's race
     # binaries, then the step's own 30 minutes, which is 36. In the last leg each forced-order step
@@ -59,7 +59,8 @@ jobs:
     # of them also compiles cmd/listener, the heaviest package of the race step, against that
     # hooked server, which took 58 s of the step's 70 s on a dev box: 5 minutes more for the
     # runner, so 71. The script's own test compiles one more hooked build, of a fixture with one
-    # test that skips, up to 5 minutes, and runs it at once, so 76 in all.
+    # test that skips, up to 5 minutes, and runs it at once, so 76; the connections report's own
+    # minute makes 77 in all.
     timeout-minutes: 85
     services:
       postgres:
@@ -118,8 +119,9 @@ jobs:
       # a database and pools of its own, beside the step's other packages, so this samples the
       # service's client connections every 2 s while the next step runs and the step after it prints
       # the peak against max_connections: a change that makes the tests open more at once shows here
-      # before it shows as a 53300 refusal. Postgres's own background processes are not counted. The
-      # loop runs in the background past its own step, until the runner ends the job.
+      # before it shows as a 53300 refusal. Postgres's own background processes are not counted, and
+      # each sample counts one connection of the sampler's own. The loop runs in the background past
+      # its own step, until the runner ends the job.
       - name: Sample the service's connections while the race tests run
         run: |
           # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments, expanded there
@@ -128,23 +130,31 @@ jobs:
       # the packages of ENVOY_RACE_LANE's envoy-go-race (.github/scripts/ci_job_reads.py, which
       # holds the two to one set). go_legs.py prints them only once `go list ./...` and the file
       # agree, every package in one place, and `set -o pipefail` fails the step when it refuses.
-      # Legs 1 and 2 each run a group of cmd/listener's tests: go_legs.py prints that group's
-      # anchored -run and the package, after it has held the groups file
-      # (.github/go-legs/packages/envoy/cmd/listener.yaml) to `go test -list . -race`, which is why
-      # it is given -race, the step's own build.
+      # Legs 1 and 2 each run a group of cmd/listener's tests, and legs 5 and 6 a group of the
+      # Dispatch store's: go_legs.py prints that group's anchored -run and the package, after it has
+      # held the groups file (.github/go-legs/packages/envoy/cmd/listener.yaml,
+      # .github/go-legs/packages/envoy/internal/dispatch/store.yaml) to `go test -list . -race`,
+      # which is why it is given -race, the step's own build.
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs go test -count=1 -race -timeout 30m
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 30m
         working-directory: packages/envoy
       - name: Report the service's peak connections
         if: always()
+        # It only measures, so it may neither fail nor hold the job: each read falls back to
+        # UNKNOWN; the read of max_connections gets TERM after 10 s and KILL 5 s later; and a step
+        # that still reaches its minute shows red without failing the job (continue-on-error).
+        timeout-minutes: 1
+        continue-on-error: true
         run: |
-          allowed=$(docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "show max_connections")
-          if [ -s "$RUNNER_TEMP/pg-connections.txt" ]; then
-            echo "pg connections: the peak of $(sort -n "$RUNNER_TEMP/pg-connections.txt" | tail -n 1) over $(wc -l < "$RUNNER_TEMP/pg-connections.txt") samples, max_connections ${allowed}"
+          allowed=$(timeout -k 5 10 docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "show max_connections" 2>/dev/null) || allowed=""
+          peak=$(sort -n "$RUNNER_TEMP/pg-connections.txt" 2>/dev/null | tail -n 1) || peak=""
+          samples=$(wc -l 2>/dev/null < "$RUNNER_TEMP/pg-connections.txt") || samples=0
+          if [ -n "$peak" ]; then
+            echo "pg connections: the peak of ${peak} over ${samples} samples, max_connections ${allowed:-UNKNOWN}"
           else
-            echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed})"
+            echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed:-UNKNOWN})"
           fi
 
       # The forced-order tests (packages/envoy/scripts/forced-order.sh): every TestForcedOrder
@@ -164,15 +174,15 @@ jobs:
       # step sets an environment variable: check-ci-filters.sh reduces no go command of a job one
       # of whose steps sets a GO* name.
       - name: Test forced-order.sh's refusals
-        if: matrix.leg == 5
+        if: matrix.leg == 6
         run: scripts/forced-order.test.sh
         working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server the module links
-        if: matrix.leg == 5
+        if: matrix.leg == 6
         run: scripts/forced-order.sh ./internal/testnats/hooktest/ ./cmd/listener/
         working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server v2.10.29
-        if: matrix.leg == 5
+        if: matrix.leg == 6
         run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
         working-directory: packages/envoy
 

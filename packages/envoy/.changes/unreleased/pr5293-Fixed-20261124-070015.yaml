@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The pre-deploy census's reading of the tables a migration locks took
+  `create trigger … after truncate on t` for a truncate of a table named `on`. It now reads the
+  trigger's table, `t`, alone.
+time: 2026-11-24T07:00:15Z
+custom:
+    Issue: pr5293

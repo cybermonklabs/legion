@@ -1,14 +1,19 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { LegionState } from "@legion/contracts/legion-api";
+import {
+  type LegionOwed,
+  type LegionState,
+  LegionStateResponse,
+} from "@legion/contracts/legion-api";
 import {
   EnvoyApiError,
   type KeyTakenResult,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
+import type { OwedInput } from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { EnvoyPublish } from "@legion/pi-shared/phase-reminder";
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs } from "@legion/pi-shared/stall-limits";
@@ -19,7 +24,9 @@ import {
   type StallWatchdog,
   type StallWatchdogTeller,
 } from "@legion/pi-shared/stall-watchdog";
+import { turn } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { until } from "@legion/test-fixtures/wait";
 // The import above is this file's merge-base check: on the merge base there is no
 // `./stall-evidence`, so every test here fails to resolve rather than passing vacuously.
 import type { LegionSessionKind } from "./classify";
@@ -54,14 +61,28 @@ afterEach(() => {
 
 /** One real child of this process, with the environment the case needs, left running until the
  * case ends. `sh -c` is what makes a process of its own: a command Oh My Pi runs in its own shell
- * has none (measured). */
-async function child(environment: Record<string, string>): Promise<number> {
+ * has none (measured). With `startedFile`, the child first writes its own reading of the clock
+ * there (epoch milliseconds), its own record of a moment after it started. */
+async function child(environment: Record<string, string>, startedFile?: string): Promise<number> {
   // `exec`, so the process the case reads is the one `kill` ends: a shell that forks `sleep`
   // leaves it running when the shell is killed, reparented to pid 1 (measured).
-  const running = Bun.spawn(["sh", "-c", "exec sleep 300"], {
-    env: { ...process.env, ...environment },
-    stdio: ["ignore", "ignore", "ignore"],
-  });
+  const running = Bun.spawn(
+    [
+      "sh",
+      "-c",
+      startedFile === undefined
+        ? "exec sleep 300"
+        : 'date +%s%3N > "$STALL_TEST_STARTED_FILE"; exec sleep 300',
+    ],
+    {
+      env: {
+        ...process.env,
+        ...environment,
+        ...(startedFile === undefined ? {} : { STALL_TEST_STARTED_FILE: startedFile }),
+      },
+      stdio: ["ignore", "ignore", "ignore"],
+    }
+  );
   spawned.push(running);
   // The pid is live the moment `spawn` returns, but the kernel carries the process and its
   // environment a moment later. What is awaited is that reading, not a guessed delay: this case
@@ -69,75 +90,89 @@ async function child(environment: Record<string, string>): Promise<number> {
   // `exec` leaves, `sleep 300` exactly: the shell's own line, `sh -c exec sleep 300`, names it
   // too and is read first (252 of 300 spawns, measured), and a reading taken while `exec` runs
   // has no argv at all, so the case would read the process as `[sh]`.
-  await until(async () => {
-    const scan = await readStallProcesses();
-    if (!scan.read) return false;
-    const found = scan.processes.find((candidate) => candidate.pid === running.pid);
-    return (
-      found !== undefined &&
-      found.environment.PI_TOOL_CALL_ID === environment.PI_TOOL_CALL_ID &&
-      found.command === "sleep 300"
-    );
-  });
+  await until(
+    "the child in this process's tree as `sleep 300`, with the case's environment",
+    async () => {
+      const scan = await readStallProcesses();
+      if (!scan.read) return false;
+      const found = scan.processes.find((candidate) => candidate.pid === running.pid);
+      return (
+        found !== undefined &&
+        found.environment.PI_TOOL_CALL_ID === environment.PI_TOOL_CALL_ID &&
+        found.command === "sleep 300"
+      );
+    }
+  );
   return running.pid;
-}
-
-/** Waits for one reading of the machine to come true, up to ten seconds. */
-async function until(ready: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 1_000; attempt += 1) {
-    if (await ready()) return;
-    await Bun.sleep(10);
-  }
-  throw new Error("the machine never reached the state the case needs");
 }
 
 test("the tree names every process of the agent, read from this pod's own /proc", async () => {
   const claimSecret = fixtureSecret("claim");
-  const pid = await child({
-    PI_TOOL_CALL_ID: "toolu_stuck",
-    // A credential of the kind an environment routinely holds: the reader keeps two names and
-    // this is not one of them, so nothing downstream can write it anywhere.
-    LEGION_CLAIM_SECRET: claimSecret,
-  });
+  const scratch = mkdtempSync(path.join(tmpdir(), "stall-started-"));
+  const startedFile = path.join(scratch, "started");
+  try {
+    const pid = await child(
+      {
+        PI_TOOL_CALL_ID: "toolu_stuck",
+        // A credential of the kind an environment routinely holds: the reader keeps two names
+        // and this is not one of them, so nothing downstream can write it anywhere.
+        LEGION_CLAIM_SECRET: claimSecret,
+      },
+      startedFile
+    );
+    const ownRecord = await until("the child's own record of a moment after it started", () => {
+      try {
+        return Number(readFileSync(startedFile, "utf8"));
+      } catch {
+        return 0;
+      }
+    });
 
-  const scan = await readStallProcesses();
-  if (!scan.read) throw new Error(`this pod's /proc could not be read: ${scan.reason}`);
-  const agent = scan.processes[0];
-  expect(agent?.pid).toBe(process.pid);
-  // Measurement 1: the agent's own environment is the one `/proc` will not hand it here, so the
-  // reader reads other pids only.
-  expect(agent?.environment).toEqual({});
+    const scan = await readStallProcesses();
+    if (!scan.read) throw new Error(`this pod's /proc could not be read: ${scan.reason}`);
+    const agent = scan.processes[0];
+    expect(agent?.pid).toBe(process.pid);
+    // Measurement 1: the agent's own environment is the one `/proc` will not hand it here, so the
+    // reader reads other pids only.
+    expect(agent?.environment).toEqual({});
 
-  const found = scan.processes.find((candidate) => candidate.pid === pid);
-  expect(found).toBeDefined();
-  expect(found?.ppid).toBe(process.pid);
-  expect(found?.command).toContain("sleep 300");
-  // The identifier, the start time, the state and the processor time, as the kernel reports them.
-  expect(found?.startedAt).toBeGreaterThan(Date.now() - 60 * SECOND);
-  expect(found?.startedAt).toBeLessThanOrEqual(Date.now());
-  expect(found?.state).toMatch(/^[A-Za-z]$/);
-  expect(found?.cpuMs).toBeGreaterThanOrEqual(0);
-  // The call its environment names, which is exactly the frame's `toolCallId` (measured).
-  expect(found?.toolCallId).toBe("toolu_stuck");
-  // And nothing else of that environment is kept, whatever else the process inherited.
-  expect(
-    Object.keys(found?.environment ?? {}).filter(
-      (name) => !STALL_READ_ENVIRONMENT.some((wanted) => wanted === name)
-    )
-  ).toEqual([]);
+    const found = scan.processes.find((candidate) => candidate.pid === pid);
+    expect(found).toBeDefined();
+    expect(found?.ppid).toBe(process.pid);
+    expect(found?.command).toContain("sleep 300");
+    // The identifier, the start time, the state and the processor time, as the kernel reports
+    // them. The start time is placed by the records of the two processes, not by a clock this
+    // case reads: the child started after this process recorded its own start
+    // (`performance.timeOrigin`), less the second the kernel's boot moment drops (`/proc/stat`'s
+    // `btime` is whole seconds), and no later than the moment the child read the clock itself.
+    expect(found?.startedAt).toBeGreaterThanOrEqual(performance.timeOrigin - SECOND);
+    expect(found?.startedAt).toBeLessThanOrEqual(ownRecord);
+    expect(found?.state).toMatch(/^[A-Za-z]$/);
+    expect(found?.cpuMs).toBeGreaterThanOrEqual(0);
+    // The call its environment names, which is exactly the frame's `toolCallId` (measured).
+    expect(found?.toolCallId).toBe("toolu_stuck");
+    // And nothing else of that environment is kept, whatever else the process inherited.
+    expect(
+      Object.keys(found?.environment ?? {}).filter(
+        (name) => !STALL_READ_ENVIRONMENT.some((wanted) => wanted === name)
+      )
+    ).toEqual([]);
 
-  // What the evidence carries: the same processes, with no environment and no parent.
-  const tree = stallProcessTree(scan);
-  if (!tree.read) throw new Error("the tree was read and then reported unread");
-  expect(JSON.stringify(tree)).not.toContain(claimSecret);
-  expect(tree.processes.find((candidate) => candidate.pid === pid)).toEqual({
-    pid,
-    command: found?.command as string,
-    startedAt: found?.startedAt as number,
-    state: found?.state as string,
-    cpuMs: found?.cpuMs as number,
-    toolCallId: "toolu_stuck",
-  });
+    // What the evidence carries: the same processes, with no environment and no parent.
+    const tree = stallProcessTree(scan);
+    if (!tree.read) throw new Error("the tree was read and then reported unread");
+    expect(JSON.stringify(tree)).not.toContain(claimSecret);
+    expect(tree.processes.find((candidate) => candidate.pid === pid)).toEqual({
+      pid,
+      command: found?.command as string,
+      startedAt: found?.startedAt as number,
+      state: found?.state as string,
+      cpuMs: found?.cpuMs as number,
+      toolCallId: "toolu_stuck",
+    });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });
 
 test("a machine whose /proc cannot be read records that, never an empty tree", async () => {
@@ -297,8 +332,11 @@ interface TellerRig {
   envoy: boolean;
   /** Whether `pi.appendEntry` takes the record. */
   transcriptWritable: boolean;
-  /** The daemon's answer to the record check; a string makes the read throw. */
-  state: LegionState | string;
+  /** What the daemon answers the claim owes, which names the architect that owns it; a string
+   * makes the read throw that message. */
+  owed: LegionOwed | string;
+  /** Every question the teller asked the owed route, in order. */
+  readonly asked: OwedInput[];
   /** The session's claim as the teller reads it at each moment. */
   claim: ClaimCapability | undefined;
   /** The publisher's build, which settles before the publisher is handed over; the publisher is at
@@ -323,7 +361,8 @@ function tellerRig(
     nextAnswers: [],
     envoy: true,
     transcriptWritable: true,
-    state: daemonState("working"),
+    owed: owedNaming("legion-legion-infra-1274-architect"),
+    asked: [],
     claim: "claim" in options ? options.claim : claimOf(),
     buildPublisher: undefined,
   };
@@ -345,9 +384,10 @@ function tellerRig(
       },
     claim: () => state.claim,
     project: options.project ?? "legion",
-    readRecord: async (issue) => {
-      if (typeof state.state === "string") throw new Error(state.state);
-      return state.state.issues[issue];
+    readOwed: async (input) => {
+      state.asked.push(input);
+      if (typeof state.owed === "string") throw new Error(state.owed);
+      return state.owed;
     },
     publisher: async () => {
       await state.buildPublisher?.();
@@ -362,7 +402,7 @@ function tellerRig(
       debug: () => {},
       warn: (message, context) => state.warnings.push({ message, ...(context ? { context } : {}) }),
     },
-    recordBoundMs: 200,
+    owedBoundMs: 200,
     sleep: async (ms) => {
       state.waits.push(ms);
     },
@@ -370,17 +410,21 @@ function tellerRig(
   return Object.assign(state, { teller });
 }
 
-/** The daemon's state with this issue's own architect claim in `state`. */
-function daemonState(architect: string | undefined): LegionState {
+/** The daemon's owed answer for the implementer of INFRA-1274, naming `architect` as the
+ * architect that owns its claim, or naming none when it is undefined. */
+function owedNaming(architect: string | undefined): LegionOwed {
   return {
-    issues: {
-      "INFRA-1274": {
-        ...(architect === undefined
-          ? {}
-          : { architect: { session: "ses_architect", state: architect, pluginContract: 57 } }),
-      },
-    },
-  } as unknown as LegionState;
+    owes: true,
+    work: "the implementing phase of INFRA-1274",
+    ...(architect === undefined ? {} : { architect }),
+  };
+}
+
+/** The daemon's state golden, which its own projection writes over a seeded record
+ * (`packages/contracts/fixtures/daemon-api/state.json`), read through the state route's schema. */
+function stateGolden(): LegionState {
+  const file = path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/state.json");
+  return LegionStateResponse.parse(JSON.parse(readFileSync(file, "utf8")));
 }
 
 test("a phase worker's session tells the issue's own live architect, with the evidence", async () => {
@@ -393,7 +437,8 @@ test("a phase worker's session tells the issue's own live architect, with the ev
   expect(written.kind).toBe("evidence");
   expect(written.tool).toBe("bash");
   expect(written.arguments).toBe('command="sleep 100000" pty=true');
-  // And into the message: the same record, as the payload the listener takes.
+  // And into the message: the same record, as the payload the listener takes. The topic is the
+  // architect the daemon names as the claim's owner, asked with the claim's own credential.
   expect(rig.published).toHaveLength(1);
   const notice = rig.published[0] as PublishInput;
   expect(notice.topic).toBe("notifications.role.legion-legion-infra-1274-architect");
@@ -403,6 +448,9 @@ test("a phase worker's session tells the issue's own live architect, with the ev
   expect(notice.idempotencyKey).toBe("legion-stall:toolu_stuck");
   expect(notice).not.toHaveProperty("keep");
   expect("sourceSessionID" in notice && notice.sourceSessionID).toBe("ses_worker");
+  expect(rig.asked).toEqual([
+    { claimToken: "claim-token", sessionId: "ses_worker", secret: CLAIM_SECRET },
+  ]);
 });
 
 // The publisher's first build can run Envoy's token command, and the event loop goes on serving
@@ -449,18 +497,63 @@ test("a notice whose claim changed while the publisher was built is not sent und
   );
 });
 
+// An issue whose own architect is not live is owned by the architect above it, and the notice
+// tells the owner the daemon names, as the reminder does. The daemon's state golden holds such a
+// child: LEGION-220, of LEGION-208's tree, whose implementer works while its own architect's claim
+// has failed (workflow's claimFailed tells the architect above it). The daemon's owner walk
+// (record.OwnerWalk.Architect, which the owed route answers with) passes over a failed or retired
+// architect and names the one above it, here the tree's, so its owed answer for that implementer
+// names LEGION-208's architect. The control is the answer for the same child with its own
+// architect live, which names that architect: a teller that always told the tree's architect would
+// pass the first. An answer that names none, and a daemon that does not answer inside the bound,
+// leave the notice to the tree's architect too.
 test("a phase worker falls back to the tree's architect, as the reminder does", async () => {
-  for (const architect of ["retired", "failed", undefined]) {
-    const rig = tellerRig();
-    rig.state = daemonState(architect);
-    await rig.teller.tellOverdue(evidenceOf());
-    expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+  const golden = stateGolden();
+  const child = golden.issues["LEGION-220"];
+  const architect = child?.architect;
+  if (child === undefined || architect === undefined) {
+    throw new Error("the state golden holds no LEGION-220 with an architect claim of its own");
   }
-  // A daemon that does not answer inside the bound is the same: the tree's architect is told.
+  expect(child.tree).toBe("LEGION-208");
+  expect(architect.state).toBe("failed");
+  const toldWith = async (owner: string) => {
+    const rig = tellerRig({
+      session: {
+        kind: "phase-worker",
+        role: "implementer",
+        tree: "LEGION-208",
+        issue: "LEGION-220",
+      },
+      claim: claimOf({ tree: "LEGION-208", issue: "LEGION-220" }),
+    });
+    rig.owed = { owes: true, work: "the implementing phase of LEGION-220", architect: owner };
+    await rig.teller.tellOverdue(evidenceOf());
+    return rig.published[0]?.topic;
+  };
+  expect(await toldWith("legion-legion-legion-208-architect")).toBe(
+    "notifications.role.legion-legion-legion-208-architect"
+  );
+  expect(await toldWith("legion-legion-legion-220-architect")).toBe(
+    "notifications.role.legion-legion-legion-220-architect"
+  );
+  const unnamed = tellerRig();
+  unnamed.owed = owedNaming(undefined);
+  await unnamed.teller.tellOverdue(evidenceOf());
+  expect(unnamed.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
   const silent = tellerRig();
-  silent.state = "the daemon is unreachable";
+  silent.owed = "the daemon is unreachable";
   await silent.teller.tellOverdue(evidenceOf());
   expect(silent.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+});
+
+test("a phase worker on its tree's root issue tells that tree's architect too", async () => {
+  const rig = tellerRig({
+    session: { kind: "phase-worker", role: "tester", tree: "INFRA-1000", issue: "INFRA-1000" },
+    claim: claimOf({ issue: "INFRA-1000", role: "tester" }),
+  });
+  rig.owed = owedNaming("legion-legion-infra-1000-architect");
+  await rig.teller.tellOverdue(evidenceOf());
+  expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
 });
 
 /** A root architect's own session, on its root. */
@@ -487,6 +580,8 @@ test("a root architect's ladder that stops short tells the controller role", asy
   expect(rig.published).toHaveLength(1);
   expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-controller");
   expect(rig.published[0]?.message).toContain("The architect of INFRA-1000");
+  // The controller is told without a question of the daemon: only a phase worker's notice asks.
+  expect(rig.asked).toEqual([]);
 });
 
 // The notice sends no `keep` field, so a listener keeps it for an owner's role that no live
@@ -536,7 +631,8 @@ test("the controller's own session publishes nothing and writes its evidence ins
 });
 
 test("a session never publishes to the role its own session holds", async () => {
-  // A sub-architect is a phase worker whose own claim is its issue's live architect.
+  // A sub-architect is a phase worker session whose claim is an architect's, so an answer naming
+  // its own role as the owner would hand it its own message.
   const rig = tellerRig({
     session: { kind: "phase-worker", role: "architect", tree: "INFRA-1000", issue: "INFRA-1300" },
     claim: claimOf({
@@ -546,13 +642,28 @@ test("a session never publishes to the role its own session holds", async () => 
       sessionID: "ses_sub",
     }),
   });
-  rig.state = {
-    issues: {
-      "INFRA-1300": { architect: { session: "ses_sub", state: "working", pluginContract: 57 } },
-    },
-  } as unknown as LegionState;
+  rig.owed = owedNaming("legion-legion-infra-1300-architect");
   await rig.teller.tellOverdue(evidenceOf());
   expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+
+  // A session whose claim is its tree's own architect holds the only architect role its notice
+  // could reach, and is told nothing rather than handed its own message.
+  expect(
+    stallNoticeTopic({
+      session: { kind: "phase-worker", role: "architect", tree: "INFRA-1000", issue: "INFRA-1000" },
+      claim: claimOf({
+        claimToken: "legion-legion-infra-1000-architect",
+        issue: "INFRA-1000",
+        role: "architect",
+      }),
+      project: "legion",
+      owner: "legion-legion-infra-1000-architect",
+      notice: "overdue",
+    })
+  ).toEqual({
+    kind: "none",
+    why: "this session holds the only architect role its notice could reach",
+  });
 
   // And the controller's own session, which holds the only role its notice could reach.
   expect(
@@ -560,7 +671,7 @@ test("a session never publishes to the role its own session holds", async () => 
       session: { kind: "controller" },
       claim: undefined,
       project: "legion",
-      liveArchitect: true,
+      owner: undefined,
       notice: "overdue",
     })
   ).toEqual({
@@ -571,10 +682,11 @@ test("a session never publishes to the role its own session holds", async () => 
 
 // A session's own token is the one the daemon registered its claim with, which names its agent;
 // the claim's role is the role of the step it runs now. So a session whose claim is its issue's
-// architect still never tells itself while it runs another role's step, and a claim of the agent
-// implementer that runs a tester's step tells its issue's architect. The fault: the own token
-// spelled from the claim's role (`…-infra-2-tester`), a claim the session does not hold, which
-// misses the architect role the session does hold and publishes to it.
+// architect still never tells itself while it runs another role's step, though the daemon names
+// that architect claim as its owner, and a claim of the agent implementer that runs a tester's
+// step tells the architect the daemon names. The fault: the own token spelled from the claim's
+// role (`…-infra-2-tester`), a claim the session does not hold, which misses the architect role
+// the session does hold and publishes to it.
 test("a session's own token is the one it registered, whatever role its claim holds now", () => {
   expect(
     stallNoticeTopic({
@@ -586,7 +698,7 @@ test("a session's own token is the one it registered, whatever role its claim ho
         role: "tester",
       }),
       project: "p",
-      liveArchitect: true,
+      owner: "legion-p-infra-2-architect",
       notice: "overdue",
     })
   ).toEqual({ kind: "topic", topic: "notifications.role.legion-p-infra-1-architect" });
@@ -600,7 +712,7 @@ test("a session's own token is the one it registered, whatever role its claim ho
         role: "tester",
       }),
       project: "p",
-      liveArchitect: true,
+      owner: "legion-p-infra-1-architect",
       notice: "overdue",
     })
   ).toEqual({ kind: "topic", topic: "notifications.role.legion-p-infra-1-architect" });
@@ -660,9 +772,11 @@ test("a refused publish and a session with Envoy off leave a line in the log", a
     ownerTold: true,
   });
 
-  // A claim whose issue key no role token can be built from is one owner not told, and the
-  // evidence is written all the same.
-  const unbuildable = tellerRig({ claim: claimOf({ issue: "not-an-issue-key" }) });
+  // A claim whose tree key no role token can be built from is one owner not told, and the
+  // evidence is written all the same. The teller builds no token from the claim's issue: the
+  // session's own token is its claim's, and the one token it builds is the tree's architect's,
+  // from `tree`, whatever owner the daemon names.
+  const unbuildable = tellerRig({ claim: claimOf({ tree: "not-an-issue-key" }) });
   expect(await unbuildable.teller.tellOverdue(evidenceOf())).toEqual({
     evidenceWritten: true,
     ownerTold: false,
@@ -720,10 +834,14 @@ function refusal429(body: Record<string, unknown>): EnvoyApiError {
   });
 }
 
-/** Lets the teller's detached resends run to their end. The rig's `sleep` and publish resolve at
- * once, so the resends are microtasks only, and every microtask runs before a timer's callback. */
-function resendsSettled(): Promise<void> {
-  return Bun.sleep(0);
+/** Waits for the line a resend of the teller writes last, the one that holds `ending`: a resend
+ * ends with one line, that the owner was told, that the notice was given up or that it was
+ * refused, written after every send and wait of its own. The rig's `sleep` and publish resolve at
+ * once, so the wait ends as soon as the detached resend has run. */
+function resendEnded(rig: TellerRig, ending: string): Promise<unknown> {
+  return until(`the resend's last line, that ${ending}`, () =>
+    rig.warnings.find((line) => line.message.includes(ending))
+  );
 }
 
 const GIVEN_UP = "it was given up after 4 sends";
@@ -736,7 +854,7 @@ test("a stall notice rate limited by the listener is sent again under its key af
     evidenceWritten: true,
     ownerTold: false,
   });
-  await resendsSettled();
+  await resendEnded(rig, "its owner was told");
 
   expect(rig.waits).toEqual([2 * SECOND]);
   expect(rig.published).toHaveLength(2);
@@ -763,7 +881,7 @@ test("a stall notice rate limited 4 times is sent 4 times and then given up", as
   // Each refusal names its own wait, and each wait is that refusal's.
   rig.nextAnswers = [2, 3, 5, 7].map(senderRateLimited);
   await rig.teller.tellOverdue(evidenceOf());
-  await resendsSettled();
+  await resendEnded(rig, GIVEN_UP);
 
   expect(rig.published).toHaveLength(4);
   for (const input of rig.published) expect(input).toEqual(rig.published[0] as PublishInput);
@@ -789,10 +907,12 @@ test("a 429 rate limited for another reason is not sent again", async () => {
       evidenceWritten: true,
       ownerTold: false,
     });
-    await resendsSettled();
-
-    expect(rig.published).toHaveLength(1);
+    // A resend's first act is its wait, which it takes before `tellOverdue` returns, and the rig's
+    // `sleep` and publish resolve at once: a resend started at all has taken its wait by the end of
+    // the turn after it, so a wait recorded by then is the state that shows a resend started.
+    await turn();
     expect(rig.waits).toEqual([]);
+    expect(rig.published).toHaveLength(1);
     expect(rig.warnings.map((line) => line.message)).toContain(
       "legion: the owner was not told about this session's stuck tool call"
     );

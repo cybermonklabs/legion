@@ -443,6 +443,7 @@ func TestStrandedReadsRoleRunsInBatches(t *testing.T) {
 // an earlier version of the plan. Only the step's worker is a worker a start of the phase brings
 // back, so only it is stranded; the other works nothing.
 func TestStrandedNamesTheStepsWorkerAndNotAnotherClaimOfItsRole(t *testing.T) {
+	t.Parallel()
 	issue := strandedIssue("LEGION-1", "LEGION-1", phase.Testing)
 	keyedToken, err := claim.AgentToken("legion", "LEGION-1", "implementer")
 	if err != nil {

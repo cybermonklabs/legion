@@ -20,6 +20,7 @@ import (
 // whose task stands at step 2 of `implementer checker` reads checker in both, one at step 1 reads
 // implementer in both, and an issue with no plan rows reads none in both.
 func TestTheIdleViewAndTheIssueReadOneRunningRole(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	records := record.NewStore()
@@ -89,6 +90,7 @@ func TestTheIdleViewAndTheIssueReadOneRunningRole(t *testing.T) {
 // a's agent on step 2, which works the tester's step, and the implementer's names another agent
 // with no step, so the implementer's worker is the role's own token.
 func TestTheIdleViewCarriesEachRolesPhasesRow(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	records := record.NewStore()

@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // A backstop of an issue that waits for its admission slot fires and wakes no one. The issue owes
@@ -18,28 +19,47 @@ import (
 // backstop wakes the worker as before. A start of an earlier phase or generation silences nothing:
 // admission finishes it without acting (finishFencedStarts), so it brings no worker back, and a
 // backstop it silenced would leave the released worker with nothing to wake it.
+//
+// At step the judgement reads the role of the running step too (record.Issue.HoldsQueued): with
+// the task of `implementer checker` at the checker's step, a start of the checker's step waits for
+// the slot and silences the checker's backstop, while the same start of the implementer's step,
+// which the task has left, is one admission finishes without acting, and the backstop wakes the
+// checker. The store answers both starts alike (store's
+// TestTheStartsThatWaitForTheirSlotAreAnsweredWhateverStepTheTaskStandsAt), so the role is this
+// judgement's alone to read.
 func TestABackstopWakesNoWorkerOfAnIssueThatWaitsForItsSlot(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name       string
+		atStep     bool
+		role       claim.Role
 		phase      string
 		generation int
 		slot       bool
 		wantWake   bool
 	}{
-		{name: "no slot of the issue stands", phase: "implementing", generation: wakeIssueGeneration, wantWake: false},
-		{name: "the issue holds its slot again", phase: "implementing", generation: wakeIssueGeneration, slot: true, wantWake: true},
-		{name: "the waiting start is of an earlier generation", phase: "implementing", generation: wakeIssueGeneration - 1, wantWake: true},
-		{name: "the waiting start is of an earlier phase", phase: "testing", generation: wakeIssueGeneration, wantWake: true},
+		{name: "no slot of the issue stands", role: claim.RoleImplementer, phase: "implementing", generation: wakeIssueGeneration, wantWake: false},
+		{name: "the issue holds its slot again", role: claim.RoleImplementer, phase: "implementing", generation: wakeIssueGeneration, slot: true, wantWake: true},
+		{name: "the waiting start is of an earlier generation", role: claim.RoleImplementer, phase: "implementing", generation: wakeIssueGeneration - 1, wantWake: true},
+		{name: "the waiting start is of an earlier phase", role: claim.RoleImplementer, phase: "testing", generation: wakeIssueGeneration, wantWake: true},
+		{name: "at step, the waiting start is of the running step", atStep: true, role: deploymentChecker, phase: "step", generation: wakeIssueGeneration, wantWake: false},
+		{name: "at step, the waiting start is of a step the task has left", atStep: true, role: claim.RoleImplementer, phase: "step", generation: wakeIssueGeneration, wantWake: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			rig := newWakeRig(t)
 			ctx := context.Background()
+			woken := claim.RoleImplementer
+			if tc.atStep {
+				issue := standAtStep(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+					Tree: "LEGION-208", Project: "LEGION", Title: "root", Generation: wakeIssueGeneration, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}, false)
+				seedReleasedClaim(t, rig.pool, deploymentChecker, "session-checker")
+				woken = issue.StepRole
+			}
 			if _, err := rig.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 				values ('supervise', 'LEGION-208', $1, 0, now(), '')`,
-				fmt.Sprintf(`{"op":"start","tree":"LEGION-208","role":"implementer","generation":%d,"phase":%q,"task":"Continue.","needsSlot":true}`,
-					tc.generation, tc.phase)); err != nil {
+				fmt.Sprintf(`{"op":"start","tree":"LEGION-208","role":%q,"generation":%d,"phase":%q,"task":"Continue.","needsSlot":true}`,
+					tc.role, tc.generation, tc.phase)); err != nil {
 				t.Fatalf("queue the start that waits for the slot: %v", err)
 			}
 			if tc.slot {
@@ -47,7 +67,7 @@ func TestABackstopWakesNoWorkerOfAnIssueThatWaitsForItsSlot(t *testing.T) {
 					t.Fatalf("give the issue its slot: %v", err)
 				}
 			}
-			fact := armBackstop(t, rig.pool, wakeToken(t, claim.RoleImplementer), claim.RoleImplementer, wakeAt.Add(-time.Minute))
+			fact := armBackstop(t, rig.pool, wakeToken(t, woken), woken, wakeAt.Add(-time.Minute))
 			rig.apply("backstop", fact)
 
 			var fired bool
@@ -59,10 +79,10 @@ func TestABackstopWakesNoWorkerOfAnIssueThatWaitsForItsSlot(t *testing.T) {
 			}
 			resumes := wakeResumes(t, rig.pool)
 			switch {
-			case tc.wantWake && (len(resumes) != 1 || resumes[0] != [2]string{string(claim.RoleImplementer), pods.WakeBackstop}):
-				t.Fatalf("pod resumes = %v, want the one backstop wake of the implementer", resumes)
+			case tc.wantWake && (len(resumes) != 1 || resumes[0] != [2]string{string(woken), pods.WakeBackstop}):
+				t.Fatalf("pod resumes = %v, want the one backstop wake of the %s", resumes, woken)
 			case !tc.wantWake && len(resumes) != 0:
-				t.Fatalf("pod resumes = %v, want none: the issue waits for its admission slot, whose start brings the implementer back", resumes)
+				t.Fatalf("pod resumes = %v, want none: the issue waits for its admission slot, whose start brings the %s back", resumes, tc.role)
 			}
 			wantStarts, what := 1, "the start that waits for the slot alone"
 			if tc.wantWake {

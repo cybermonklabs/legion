@@ -118,7 +118,8 @@ func TestOneLeakCheckValueWithoutTheOtherIsRefused(t *testing.T) {
 // A malformed value is refused naming where it came from: a repository that is no owner/name, a
 // manifest digest that is not 64 lowercase hex digits — one of capitals, one a digit short, one
 // that is no hex at all — an empty member, a member the block does not have, and a block that is
-// no mapping.
+// no mapping. A repository is named as written only where it has a key's shape or a repository's
+// (parseRepository), and a digest never, since a near miss of one is a run of hex digits.
 func TestAMalformedLeakCheckValueIsRefused(t *testing.T) {
 	both := func(repository, sha string) string {
 		return "leak_check:\n  repository: " + repository + "\n  manifest_sha256: " + sha + "\n"
@@ -142,7 +143,7 @@ func TestAMalformedLeakCheckValueIsRefused(t *testing.T) {
 			says: "leak_check.manifest_sha256" + malformed},
 		{name: "the environment's malformed repository", env: map[string]string{
 			leakguard.RepositoryVar: "example-org", leakguard.ManifestVar: theManifestSHA256,
-		}, says: `LEGION_LEAK_CHECK_REPOSITORY must be "owner/name" (got "example-org")`},
+		}, says: `LEGION_LEAK_CHECK_REPOSITORY must be "owner/name": an owner of at most 39 ASCII letters`},
 		{name: "the environment's malformed digest", env: map[string]string{
 			leakguard.RepositoryVar: theLeakCheckRepository, leakguard.ManifestVar: "sha256:" + theManifestSHA256,
 		}, says: "LEGION_LEAK_CHECK_MANIFEST_SHA256" + malformed},

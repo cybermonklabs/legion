@@ -27,7 +27,8 @@
         "otherClaims.*.claim.state",
         "otherClaims.*.claim.token",
         "otherClaims.*.claim.updateState",
-        "otherClaims.*.role"
+        "otherClaims.*.role",
+        "workers.*.claim.token"
       ],
       "addValues": {
         "otherClaims.*.claim.failure.cause": [
@@ -123,6 +124,7 @@
         "issues.*.otherClaims.*.claim.token",
         "issues.*.otherClaims.*.claim.updateState",
         "issues.*.otherClaims.*.role",
+        "issues.*.workers.*.claim.token",
         "strandedClaims.*.token"
       ],
       "addValues": {

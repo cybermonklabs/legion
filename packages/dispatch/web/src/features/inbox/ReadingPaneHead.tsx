@@ -9,6 +9,7 @@ import {
   secondaryButtonCompact,
   textMutedOnCanvas,
 } from "../../theme/classes";
+import { EarlierApproval } from "../ask-body/EarlierApproval";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
@@ -19,7 +20,6 @@ import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";
 import { askIssueKey } from "./ask-name";
 import { DismissControl } from "./DismissControl";
-import { EarlierApproval } from "./EarlierApproval";
 import { threadReferenceRoute } from "./list-row";
 import { SnoozeControl } from "./SnoozeControl";
 import { isUnassigned } from "./sections";
@@ -188,7 +188,7 @@ export function ReadingPaneHead({
         </Link>
       )}
       {ask.issue_key === null ? null : (
-        <PriorityControl issueKey={ask.issue_key} priority={issuePriority(ask.priority)} />
+        <PriorityControl issueKey={ask.issue_key} priority={issuePriority(ask)} />
       )}
       {ask.issue_key !== null &&
       viewer !== undefined &&

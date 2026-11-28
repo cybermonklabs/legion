@@ -118,7 +118,7 @@ export async function phase<T>(
  *  opening to put the focus on a row of it (`expectOpeningLanded`), so a row that leaves the
  *  focus for the page after this (`focusThePage`, `unfoldEveryBranch`) leaves it for good. */
 export async function openIssue(page: Page, key: string): Promise<void> {
-  await page.goto(`/issues/${key}`);
+  await page.goto(`/issues/${key}/conversation`);
   await expectIssuePageDrawn(page);
   await expectOpeningLanded(page);
 }
@@ -1016,7 +1016,7 @@ export function longWords(lead: string, count: number): string {
   return paragraphs.join("\n\n");
 }
 
-/** The node id of block `block` of the document `slug` (`tree-drafts.ts`'s `blockNodeId`). */
+/** The node id of block `block` of the document `slug` (`statement-rules.ts`'s `blockNodeId`). */
 export function blockNode(slug: string, block: string): string {
   return `${slug}#b-${block}`;
 }
@@ -1241,8 +1241,8 @@ export async function seedRows(): Promise<RowSeed> {
     },
     asPlanner
   );
-  // The outline draws a message thread only once a person wrote in it (`agents-only.ts`), so the
-  // reader answers each of the planner's two messages.
+  // The reader answers each of the planner's two messages, so the outline draws a person's reply
+  // under each.
   const replies: string[] = [];
   for (const message of [longMessage, linked]) {
     replies.push((await createMessage(key, { body: "Read.", in_reply_to: message.id })).id);

@@ -41,6 +41,7 @@ func deploymentRig(t *testing.T) *rig {
 // an overlay of a role the deployment defines is taken, the image probe is told it, and two
 // runtimes built in one process each keep their own list, so no package variable holds it.
 func TestTheRuntimeTakesADeploymentRolesOverlays(t *testing.T) {
+	t.Parallel()
 	withChecker := testOptions()
 	withChecker.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Review}
 	withChecker.RoleConfigFiles = map[claim.Role][]string{"checker": {"/etc/checker.yml"}}
@@ -74,6 +75,7 @@ func TestTheRuntimeTakesADeploymentRolesOverlays(t *testing.T) {
 // for each of the eight, each holding the gh files of the App its role acts as (the render path
 // writeLauncherSecrets, gitHubBundles, GitHubCredential, AppRoleFor).
 func TestANewIssuePodBindsEachRoleOfTheDeploymentWithItsApp(t *testing.T) {
+	t.Parallel()
 	g := deploymentRig(t)
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	name := loc.Sandbox.Name
@@ -123,6 +125,7 @@ func TestANewIssuePodBindsEachRoleOfTheDeploymentWithItsApp(t *testing.T) {
 // The launcher of a role of the deployment is accepted on its issue's pod as one of Legion's is,
 // and a role neither Legion nor the deployment defines is refused.
 func TestALauncherOfADeploymentRoleIsAccepted(t *testing.T) {
+	t.Parallel()
 	g := deploymentRig(t)
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	name := loc.Sandbox.Name
@@ -143,6 +146,7 @@ func TestALauncherOfADeploymentRoleIsAccepted(t *testing.T) {
 }
 
 func TestALauncherOfADroppedRoleCanReconnectAndStop(t *testing.T) {
+	t.Parallel()
 	g := deploymentRig(t)
 	const checker claim.Role = "checker"
 	token, err := claim.NewToken(testProject, testTree, checker)
@@ -187,6 +191,7 @@ func TestALauncherOfADroppedRoleCanReconnectAndStop(t *testing.T) {
 // own, and the bound of a launch counts the calls of every role of the runtime's issue pods: a
 // runtime with one role more than Legion's six has a bound longer by that role's calls.
 func TestAPodsLogAndBoundCountItsDeploymentsRoles(t *testing.T) {
+	t.Parallel()
 	roles := append(slices.Clone(claim.Roles), "checker")
 	if got := containerLines("checker: a\nlauncher: b\n", 10, roles); got != "launcher: b" {
 		t.Errorf("the launcher's own lines = %q, want %q", got, "launcher: b")
@@ -210,6 +215,7 @@ func TestAPodsLogAndBoundCountItsDeploymentsRoles(t *testing.T) {
 // deployment, as it may not take one of Legion's own roles': the role's launcher volume in the
 // pod would collide with it.
 func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
+	t.Parallel()
 	pod := Pod{Volumes: []corev1.Volume{{Name: "launcher-checker", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
 	legion := append(slices.Clone(claim.Roles), claim.RoleController)
 	want := "runtime.kubernetes.pod.volumes[0].name launcher-checker is a volume Legion puts in every pod"
@@ -224,6 +230,7 @@ func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
 // The launcher credential a runtime holds for a role of the deployment's Secret goes with its
 // Sandbox, as each of Legion's roles' does: no deleted Sandbox's role keeps a credential cached.
 func TestTheLauncherCredentialOfADeploymentRoleIsForgottenWithItsSandbox(t *testing.T) {
+	t.Parallel()
 	opts := testOptions()
 	opts.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Review}
 	r, err := configure(opts)
@@ -249,6 +256,7 @@ func TestTheLauncherCredentialOfADeploymentRoleIsForgottenWithItsSandbox(t *test
 // (deleteIssueSecrets over Runtime.issueRoles). The control is the same release with the loop over
 // Legion's six alone, which leaves the checker's and the critic's Secrets behind.
 func TestTheReleaseOfAKeptVolumeDeletesEachDeploymentRolesSecret(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil,
 		withOptions(func(o *Options) {
 			o.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}
@@ -286,6 +294,7 @@ func TestTheReleaseOfAKeptVolumeDeletesEachDeploymentRolesSecret(t *testing.T) {
 // (deleteIssueSecrets over the stored template's roles, builtRoles, as well as Runtime.issueRoles).
 // The control is the loop over the runtime's roles alone, which leaves the checker's Secret behind.
 func TestTheReleaseOfAKeptVolumeDeletesTheSecretOfARoleTheDeploymentLost(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil,
 		withOptions(func(o *Options) {
 			o.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}

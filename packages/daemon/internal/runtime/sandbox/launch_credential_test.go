@@ -33,6 +33,7 @@ const waitLine = "sandbox runtime: the start waits for its slot's gh files to ho
 // already wrote for its new App still logs the line, since its files may not hold the credential
 // yet whoever wrote it. A launch that builds its pod names no credential.
 func TestALaunchOfAReroledClaimWritesItsSlotsCredentialAtOnce(t *testing.T) {
+	t.Parallel()
 	keyed := claim.Token("legion-legion-legion-208-implementer")
 	refreshed := claim.Token("legion-legion-legion-208-planner")
 	logs := &lockedLog{}
@@ -135,6 +136,7 @@ func TestALaunchOfAReroledClaimWritesItsSlotsCredentialAtOnce(t *testing.T) {
 // refuse the refresh's write over. The control is the refresher's next tick after the start,
 // which writes the newer token as usual.
 func TestARefreshLeavesTheSlotOfAKeptPodsLaunchOnTheStartsToken(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// spec is the launch into the kept pod. early is whether it lands inside the refresh, in

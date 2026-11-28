@@ -2,6 +2,7 @@ import {
   type BlockInvalidEventPayload,
   type CommentDeliveryEventPayload,
   DELETED_POST_DELIVERY_ERROR,
+  type IssueEventPayload,
   type MessageDeliveryEventPayload,
 } from "@legion/contracts";
 import type { DispatchEvent } from "../../api/types";
@@ -15,6 +16,25 @@ import { capabilityLabel } from "../conversation/delivery";
 import type { AgentPart } from "../refs/AgentName";
 import { type DeletablePost, postDeletion } from "../refs/post-marks";
 import { textSourceOf } from "../refs/text-references";
+import { inheritedPriorityWords, issuePriority } from "./issue-priority";
+
+/** The line of an `issue.updated` whose `changed` names only `resolved_priority` and
+ *  `priority_from`: Dispatch appends one on each issue whose inherited priority another write
+ *  moved, with the priority it works at now and the issue that comes from - "Priority now P0,
+ *  from ACME-1", or "Priority now none" - since "Issue updated" would say nothing of what
+ *  changed. Undefined for every other `issue.updated`. */
+function inheritedPriorityLine(payload: IssueEventPayload): string | undefined {
+  const changed = payload.changed ?? [];
+  const inheritedOnly = changed.every(
+    (field) => field === "resolved_priority" || field === "priority_from"
+  );
+  if (changed.length === 0 || !inheritedOnly) return undefined;
+  const { from, level } = issuePriority(payload);
+  if (level === null) return "Priority now none";
+  return from === null
+    ? `Priority now P${level}`
+    : `Priority now ${inheritedPriorityWords(level, from)}`;
+}
 
 /** An event's line in the Pinned tab, as `SentencePart`s: an agent it names keeps its identity
  *  until `EventBody` draws it through `AgentName`, and a text of the record it quotes stays a
@@ -190,7 +210,7 @@ function describe(event: DispatchEvent): string | SentencePart[] {
     case "issue.created":
       return "Issue created";
     case "issue.updated":
-      return "Issue updated";
+      return inheritedPriorityLine(event.payload) ?? "Issue updated";
     case "issue.closed":
       return "Issue closed";
     case "issue.claimed":
@@ -201,6 +221,10 @@ function describe(event: DispatchEvent): string | SentencePart[] {
       return event.payload.reason === "closed" ? "Claim released on close" : "Claim released";
     case "issue.deployed":
       return `Deployed by run ${event.payload.run_id}`;
+    case "issue.role_holders_changed":
+      return event.payload.holders.length === 0
+        ? "Role holders cleared"
+        : `Roles given: ${event.payload.holders.map((holder) => `${holder.role} ${holder.session}`).join(", ")}`;
     case "deploy.recorded":
       return `Recorded a deploy of ${event.payload.program} in ${event.payload.repo} at ${event.payload.commit}, deployed ${event.payload.deployed_at}.`;
     case "handoff.recorded":
@@ -255,6 +279,15 @@ function describe(event: DispatchEvent): string | SentencePart[] {
       return `Check ${event.payload.check_block_id}'s result at ${event.payload.commit_sha} was retracted: ${event.payload.reason}`;
     case "issue.pull_request_attribution_changed":
       return `Pull request ${event.payload.repo}#${event.payload.number} moved from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;
+    // Dispatch's outbox writes it, as a system actor, when an event's copy for a role reached no
+    // session: each keep of the copy ended its hour untaken, or Envoy no longer held the copy to
+    // keep it again.
+    case "role.undelivered": {
+      const kept = `Not delivered to role ${event.payload.role}: event ${event.payload.event_id} (${event.payload.event_type}) was kept ${event.payload.keeps} time${event.payload.keeps === 1 ? "" : "s"}`;
+      return event.payload.reason === "expired"
+        ? `${kept} for an hour and no session took it`
+        : `${kept} and Envoy no longer held it to keep again`;
+    }
   }
   return event satisfies never;
 }

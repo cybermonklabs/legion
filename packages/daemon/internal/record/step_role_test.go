@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // checkerPlan is the plan `implementer checker` of issue at generation, its one task a in state at
@@ -121,4 +122,42 @@ func TestAnIssueReadsTheRoleOfItsRunningStep(t *testing.T) {
 			t.Errorf("an issue held from step keeps no slot, want it to keep the slot of step")
 		}
 	})
+}
+
+// DeliveryHolds is the one choice of the judge of what the supervisor asks about: at step, with the
+// checker's step running, a task of the implementer's step, which the task has left, holds no
+// longer, and a start that brings the implementer back and hands it nothing holds, since it is
+// judged by its phase and run alone (BroughtBackHolds). Such a start of an earlier run, or of a
+// phase the issue has left, holds no longer; the checker's own task holds; and a claim of no
+// recorded issue holds every delivery.
+func TestDeliveryHoldsJudgesAStartThatBringsARoleBackByItsPhaseAndRunAlone(t *testing.T) {
+	t.Parallel()
+	atChecker := &Issue{Key: "LEGION-208", Phase: phase.Step, Generation: 3, StepRole: "checker"}
+	for _, tc := range []struct {
+		name  string
+		issue *Issue
+		role  claim.Role
+		d     supervise.Delivery
+		want  bool
+	}{
+		{name: "a task of a step the task has left", issue: atChecker, role: claim.RoleImplementer,
+			d: supervise.Delivery{Phase: phase.Step, Generation: 3}, want: false},
+		{name: "a start that brings back the role of a step the task has left", issue: atChecker, role: claim.RoleImplementer,
+			d: supervise.Delivery{Phase: phase.Step, Generation: 3, BringsBack: true}, want: true},
+		{name: "a start that brings a role back on an earlier run", issue: atChecker, role: claim.RoleImplementer,
+			d: supervise.Delivery{Phase: phase.Step, Generation: 2, BringsBack: true}, want: false},
+		{name: "a start that brings a role back to a phase the issue has left", issue: atChecker, role: claim.RoleImplementer,
+			d: supervise.Delivery{Phase: phase.Implementing, Generation: 3, BringsBack: true}, want: false},
+		{name: "a task of the running step", issue: atChecker, role: "checker",
+			d: supervise.Delivery{Phase: phase.Step, Generation: 3}, want: true},
+		{name: "a claim of no recorded issue", issue: nil, role: claim.RoleImplementer,
+			d: supervise.Delivery{Phase: phase.Step, Generation: 3}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := DeliveryHolds(tc.issue, tc.role, tc.d); got != tc.want {
+				t.Fatalf("DeliveryHolds(%+v, %s, %+v) = %t, want %t", tc.issue, tc.role, tc.d, got, tc.want)
+			}
+		})
+	}
 }

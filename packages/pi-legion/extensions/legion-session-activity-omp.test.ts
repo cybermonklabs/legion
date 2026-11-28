@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
-import type { LegionState } from "@legion/contracts/legion-api";
 import {
   LegionActivityRequest,
   type LegionSessionActivityBody,
@@ -12,6 +11,7 @@ import {
   type Cleanup,
   call,
   deliveryFor,
+  isRequestOf,
   isSelfCheck,
   messageStream,
   ompNatsGuard,
@@ -21,7 +21,9 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { span, until } from "@legion/test-fixtures/wait";
 
 // What the pinned Oh My Pi reports of a role session's own background work (INFRA-945), which is
 // the whole input to the daemon's idle rule: a claim that reports background work keeps its pod,
@@ -56,7 +58,11 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 // where the pi-legion job supplies both (`ompNatsGuard`).
 const { skip, setup } = ompNatsGuard();
 
-/** The pane's role, tree and issue; the daemon's state below moves the issue past this phase. */
+/** How often the pane reads the host's snapshot of its background work
+ *  (`SESSION_ACTIVITY_PERIOD_MS`, a constant of extensions/legion.ts's entry). */
+const SESSION_ACTIVITY_PERIOD_MS = 5_000;
+
+/** The pane's role, tree and issue; the stand-in daemon answers that this claim owes nothing. */
 const ROLE = "implementer";
 const TREE = "ACT-1";
 const ISSUE = "ACT-2";
@@ -71,10 +77,6 @@ const REGISTRATION_SECRET = fixtureSecret("reg");
  */
 const ASSIGNMENT = `Implement ${ISSUE}. ACT-ROLE-ASSIGNMENT.`;
 
-/** The first line of agents/deep-worker.md's body, which Oh My Pi puts in the subagent's system
- *  prompt: the one thing that tells the subagent's own Messages request from a role turn. */
-const DEEP_WORKER_SYSTEM = "You are an autonomous coding worker";
-
 /** The name of the service the case starts, which the host requires to be unique in the session. */
 const SERVICE_NAME = "activity-service";
 
@@ -82,32 +84,31 @@ const SERVICE_NAME = "activity-service";
  *  reading the case makes of what the session reports. */
 const ASYNC_JOB_SECONDS = 600;
 
-/** How long the case waits for one thing the pane owes it before failing on it. */
-const DEADLINE_MS = 90_000;
-
-/**
- * The reporting period the pane's own interval runs on (`SESSION_ACTIVITY_PERIOD_MS` in
- * extensions/legion.ts), and how long the case watches for a report that must not come. Three
- * periods and a margin: a report of the service would have to arrive inside one of them, since
- * the pane reads the host's snapshot once a period and sends whenever the reading changed.
- */
-const REPORT_PERIOD_MS = 5_000;
-const QUIET_WATCH_MS = 3 * REPORT_PERIOD_MS + 2_000;
+// The one row of this file starts a cold role pane (a pinned Oh My Pi binary spawning and
+// registering over NATS, which reads 5-6 s) and then watches it over several of its 5 s activity
+// periods, so it needs more than Bun's 5000 ms default in every mode: `bun run test`'s workers
+// declare 300000 ms (`test-timeout-preload.ts`), but a run of this file alone takes no worker and
+// keeps 5000 ms. It takes a guard of its own, as the cases of `legion-stall-watchdog-omp.test.ts`
+// do: the row calls `useRowGuard` for the shared wait's deadline and passes the same value as
+// `test`'s third argument for Bun's row kill, and the afterEach, whose cleanup kills a real Oh My
+// Pi, passes it as its own hook timeout.
+const COLD_PANE_GUARD_MS = 300_000;
 
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, COLD_PANE_GUARD_MS);
 
 /** A Messages request's whole conversation, as one string to find texts in. */
 function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
 }
 
-/** Whether a Messages request is the subagent's own: only its system prompt is deep-worker's. */
-function isSubagentRequest(request: Request): boolean {
-  return JSON.stringify(request.body.system ?? null).includes(DEEP_WORKER_SYSTEM);
-}
+/** Whether a Messages request is the subagent's own: only its system prompt carries the body of
+ *  agents/deep-worker.md, which the pane loads from this package's root. */
+const isSubagentRequest = isRequestOf(
+  path.resolve(import.meta.dir, "..", "agents", "deep-worker.md")
+);
 
 /**
  * Whether a Messages request is a turn of the role's own conversation: it carries the daemon's
@@ -127,20 +128,18 @@ interface Held {
   reply(blocks: readonly Block[]): void;
 }
 
-/** Polls `probe` until it returns a value, failing on `what` at the deadline or when omp exits. */
-async function until<T>(
+/** Waits through the shared wait until `probe` returns a value; omp's exit ends it at once. */
+async function waitFor<T>(
   what: string,
   probe: () => T | undefined | Promise<T | undefined>,
   closed: { readonly error?: unknown }
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
-  for (;;) {
+  const answered = await until(what, async () => {
     if (closed.error !== undefined) throw closed.error;
     const value = await probe();
-    if (value !== undefined) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await Bun.sleep(50);
-  }
+    return value === undefined ? undefined : { value };
+  });
+  return answered.value;
 }
 
 /** The role pane the case runs, and what it lets the case do to it. */
@@ -153,20 +152,22 @@ interface RolePane {
   readonly workspace: string;
   /** Waits for a held Messages request `match` accepts that the case has not taken yet. */
   next(what: string, match: (request: Request) => boolean): Promise<Held>;
-  /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
+  /** Waits through the shared wait until `probe` returns a value, failing at the row's deadline
+   * or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
 }
 
 /**
  * Starts one Legion role pane on the real Oh My Pi: pi-envoy's extension and this package's root,
  * the role's LEGION_* environment against a stand-in that is the model gateway, the daemon's
- * claim, grant, state and activity routes and the Envoy listener. The daemon's state reports the
- * issue past this role's phase, so the phase-stall follow-up (src/phase-stall.ts) puts no reminder
- * in front of the pane, adds no turn of its own, and leaves the report's `phase` half closed and
- * unchanging — so a report the pane sends between turns is one its background work changed. Every
- * Messages request is held for the case except a side request — the task label, a self-check, a
- * skill's routing-hint compression — which is answered at once with one word, since none of them
- * is a turn and a held one would stall the host inside the work the case is reading.
+ * claim, grant, owed and activity routes and the Envoy listener. The daemon answers that the claim
+ * owes nothing (`POST /legion/v1/claims/owed`), so the phase reminder (src/phase-reminder.ts)
+ * puts no reminder in front of the pane, adds no turn of its own, and arms no timer once the
+ * first turn has started — so the report's `phase` half is null and unchanging from then on, and
+ * a report the pane sends between turns is one its background work changed. Every Messages
+ * request is held for the case except a side request — the task label, a self-check, a skill's
+ * routing-hint compression — which is answered at once with one word, since none of them is a
+ * turn and a held one would stall the host inside the work the case is reading.
  */
 async function startRolePane(): Promise<RolePane> {
   const { binary, nats } = setup();
@@ -231,10 +232,7 @@ async function startRolePane(): Promise<RolePane> {
       grants += 1;
       return Response.json({ grantId: `act-grant-${grants}`, expiresAt: "2099-01-01T00:00:00Z" });
     }
-    // The reminder's record check reads one issue's record (dispatch://INFRA-2694).
-    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
-      return Response.json(MOVED_ON.issues[ISSUE]);
-    }
+    if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: false, work: "" });
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
@@ -297,7 +295,7 @@ async function startRolePane(): Promise<RolePane> {
   });
   rpc.send({ type: "prompt", message: ASSIGNMENT });
 
-  await until(
+  await waitFor(
     "the pane's registration with the Envoy listener",
     () => requests.find((request) => request.path === "/v1/interests/subscribe"),
     closed
@@ -309,7 +307,7 @@ async function startRolePane(): Promise<RolePane> {
     malformed,
     workspace,
     async next(what, match) {
-      const request = await until(
+      const request = await waitFor(
         what,
         () => held.find((candidate) => !taken.has(candidate) && match(candidate.request)),
         closed
@@ -317,50 +315,14 @@ async function startRolePane(): Promise<RolePane> {
       taken.add(request);
       return request;
     },
-    until: (what, probe) => until(what, probe, closed),
+    until: (what, probe) => waitFor(what, probe, closed),
   };
 }
-
-/**
- * The daemon's state with the issue past this pane's phase: the reviewer works it now, so the
- * phase-stall follow-up has no reminder for this role and the case's turns are its own.
- */
-const MOVED_ON = {
-  daemon: {
-    project: "ACT",
-    schemaVersion: 1,
-    boots: 1,
-    firstBootAt: "2026-10-30T14:03:27Z",
-    startedAt: "2026-10-31T09:15:02Z",
-  },
-  admission: { cap: 1, active: [TREE], waiting: [], blocked: [] },
-  issues: {
-    [ISSUE]: {
-      key: ISSUE,
-      generation: 1,
-      phase: "reviewing",
-      status: "in_progress",
-      repo: "acme/widgets",
-      defaultBranch: "main",
-      workers: {},
-    },
-  },
-  pendingStatusWrites: [],
-  heldOutboxRows: [],
-  strandedClaims: [],
-  capabilities: [],
-  repositories: {
-    live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
-    withoutWebhookApp: [],
-    caches: [],
-  },
-  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
-  consumers: [],
-} satisfies LegionState;
 
 test.skipIf(skip)(
   "what a role session reports of its background work on the real Oh My Pi: a backgrounded bash job and a task subagent reach the daemon, a named bash service does not",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const pane = await startRolePane();
     const heartbeat = path.join(pane.workspace, "service-heartbeat.log");
     /** How many ticks the service has written, which is how the case knows it is running. */
@@ -390,14 +352,26 @@ test.skipIf(skip)(
 
     // Nothing else of the session is running — the role's turn is held by the stand-in, which is
     // the host waiting on the model, not background work of the session's own. The pane reads the
-    // host's snapshot once a period and sends only what changed, so a service the host reported
-    // would show here as a new report naming a kind. A real clock is what shows it: the
-    // proposition is that the host reported nothing new over three of its own periods, and a
-    // host that reports nothing emits no signal to await.
-    await Bun.sleep(QUIET_WATCH_MS);
+    // host's snapshot once a period (`SESSION_ACTIVITY_PERIOD_MS`, 5 s, extensions/legion.ts) and
+    // sends a report between turns only when the reading changed, so a service the host reported
+    // would change the reading and be sent within a period of the service's start. Whether it is
+    // reported is an absence: no state of the pane says the service was read and left out, and no
+    // later action of the case reaches the period's tick, so the case holds three periods and two
+    // seconds from the service's first heartbeat, and then reads every report since. One that came
+    // before the service started tells nothing of it.
+    await span(
+      3 * SESSION_ACTIVITY_PERIOD_MS + 2_000,
+      "three of the pane's 5 s activity periods from the named service's start, in which a service the host reported would change the reading and be sent; no state or later action reaches that tick"
+    );
+    // The service is running all the while: it wrote a heartbeat after its first, and more by the
+    // end.
     const serviceTicks = await ticks();
     expect(serviceTicks).toBeGreaterThan(started);
-    expect(pane.reports.length).toBeGreaterThan(0);
+    // The pane sends its first report once a period, which a loaded machine stretches, so the
+    // case waits for that report rather than reading it is already there.
+    await pane.until("the session's first activity report", () =>
+      pane.reports.length > 0 ? pane.reports.length : undefined
+    );
     for (const report of pane.reports.slice(beforeTheService)) {
       expect(report.backgroundWork).toEqual({ running: false, kinds: [] });
     }
@@ -460,5 +434,5 @@ test.skipIf(skip)(
         `across ${pane.reports.length} reports`
     );
   },
-  300_000
+  COLD_PANE_GUARD_MS
 );

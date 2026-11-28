@@ -267,12 +267,14 @@ func pluginsLine(cfg config.Config) string {
 // top level — in the words boot logs it with: what the key would have been refused for, and what
 // to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
 // since such a key is ignored and never refused.
-// Then two lines per project, in key order: one naming its `production_check` and what the word
+// Then per project, in key order: one line naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
-// check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads
-// back the steps an issue runs when its owner gives no plan. Then one line per role the
-// deployment defines in `roles`, in the file's order (roleLine): its type, its model, the GitHub
-// App it works as and its prompt file, which the check reads as the start does
+// check at a merge, one naming its `default_steps` (defaultStepsLine), so an operator reads back
+// the steps an issue runs when its owner gives no plan, and, for a project whose
+// `watched_workflows` names entries, one naming each entry with the events it resolved to
+// (watchedWorkflowsLine); a project that names none prints no such line. Then one line per role
+// the deployment defines in `roles`, in the file's order (roleLine): its type, its model, the
+// GitHub App it works as and its prompt file, which the check reads as the start does
 // (config.CheckRolePrompts). After them, one line per configured
 // repository rename
 // (`repository_renames`), so an operator reads back what the daemon will treat as one repository
@@ -338,6 +340,9 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))
 		fmt.Fprintln(stdout, defaultStepsLine(key, cfg.Projects[key]))
+		if line := watchedWorkflowsLine(key, cfg.Projects[key]); line != "" {
+			fmt.Fprintln(stdout, line)
+		}
 	}
 	for _, role := range cfg.Roles {
 		fmt.Fprintln(stdout, roleLine(role))
@@ -440,6 +445,22 @@ func defaultStepsLine(key string, project config.Project) string {
 		key, strings.Join(plan.Words(project.RunsByDefault()), ", "))
 }
 
+// watchedWorkflowsLine is `legion config check`'s line for one project's `watched_workflows`:
+// each entry with the events it resolved to (`schedule` for an entry that named none), quoted so
+// its commas stay inside it, and what they decide. A project that names none gets no line, so
+// every configuration without the key prints what it printed before.
+func watchedWorkflowsLine(key string, project config.Project) string {
+	if len(project.WatchedWorkflows) == 0 {
+		return ""
+	}
+	entries := make([]string, len(project.WatchedWorkflows))
+	for i, workflow := range project.WatchedWorkflows {
+		entries[i] = fmt.Sprintf("%q", workflow.String())
+	}
+	return fmt.Sprintf("projects.%s.watched_workflows: [%s] — the project's controller hears each workflow's completed runs on its repository's default branch, of the events after its @, and no run a pull request names",
+		key, strings.Join(entries, ", "))
+}
+
 // reservedUnder is a cpu or memory reservation as `legion config check` names it: the one quantity when
 // the request is the limit, as at the defaults, and `<request> under <limit>` when the file set a
 // lower request.
@@ -508,11 +529,8 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	}
 	// The state directory is where the worker stream socket, the panes' secret files, and their
 	// home live; the registry refuses a second live legion on it, which only holds if every
-	// start names it the same way.
-	if cfg.StateDir, err = filepath.Abs(cfg.StateDir); err != nil {
-		printRefusal(stderr, "legion start: resolve state_dir", err)
-		return 1
-	}
+	// start names it the same way. The load makes it absolute (config's resolve), so every start
+	// names it so.
 	legions, err := registryPath()
 	if err != nil {
 		printRefusal(stderr, "legion start", err)

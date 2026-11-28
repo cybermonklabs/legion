@@ -396,8 +396,8 @@ func TestAnIssuesLegionRead(t *testing.T) {
 	observe("FULL", "FULL-11", legion.FieldPhase, `"planning"`, hour(1))
 	observe("FULL", "FULL-11", legion.FieldPhase, `null`, hour(2))
 	observe("FULL", "FULL-11", legion.FieldPhase, `"planning"`, hour(3))
-	// FULL-12 left the daemon's state: every field it held is written null, as the sampler
-	// writes a field the newest read no longer carries.
+	// FULL-12 left the daemon's state: every field it held is written null, as the Legion
+	// intake writes a field the newest whole read no longer carries.
 	observe("FULL", "FULL-12", legion.FieldPhase, `"reviewing"`, hour(1))
 	observe("FULL", "FULL-12", claim+"reviewer", `"working"`, hour(1))
 	observe("FULL", "FULL-12", legion.FieldPhase, `null`, hour(2))

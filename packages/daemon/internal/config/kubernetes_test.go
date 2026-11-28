@@ -67,7 +67,7 @@ func withSessionStore(lines string) string { return kubernetesWith(sessionStoreL
 // included: a file session would die with the pod's disk.
 const sessionStoreRefusal = "runtime.kubernetes.session_store must name a store that keeps sessions in a database, and is required (INFRA-80):" +
 	" an issue pod's disk is the pod's own ephemeral volume, deleted with the pod, so a session kept as a file on it ('pvc', also what an omitted session_store means) dies with it," +
-	" the next launch's resume fails on the missing file (internal/launcher's sessionWritten), and three such failures fail the claim"
+	" and the next launch finds no session to resume, so the claim starts a fresh agent without that conversation (internal/supervise's startFresh)"
 
 func TestLoadForValidationSettlesEveryMemberOfTheKubernetesBlock(t *testing.T) {
 	path := writeConfigFile(t, kubernetesFile+`    issue_volume: 30Gi
@@ -430,7 +430,8 @@ func TestTheRepositoryCacheCanRequestLessMemoryThanItsLimit(t *testing.T) {
 // read as written. One without the other is refused naming the missing key, a blank value and an
 // unfilled `${…}` placeholder naming the key itself, a bucket that is no bucket's name naming the
 // shape, and an account that is no ServiceAccount's name (a capital or an underscore, a slash, or
-// past 253 characters) naming the key and the value. A cache account that is the one the issue
+// past 253 characters) naming the key; the bucket or the account is named as written only where it
+// has a key's shape. A cache account that is the one the issue
 // pods run as is refused: the configured runtime.kubernetes.pod.service_account, or, where that is
 // unset, the namespace's `default`, which is what every issue pod then runs as. The bucket's grant
 // goes to the cache's account, and on that account it would reach every issue pod. So is the
@@ -460,21 +461,25 @@ func TestRepositoryCacheBucketSettings(t *testing.T) {
 		{name: "a blank bucket", body: cache(`bucket: "", service_account: legion-cache`), want: key + ".bucket must not be empty"},
 		{name: "a blank account", body: cache(`bucket: example-legion-packs, service_account: " "`), want: key + ".service_account must not be empty"},
 		{name: "a placeholder bucket", body: cache(`bucket: "${CACHE_BUCKET}", service_account: legion-cache`),
-			want: key + `.bucket "${CACHE_BUCKET}" is an unfilled placeholder: put the Cloud Storage bucket's name in its place`},
+			want: key + `.bucket is an unfilled placeholder: put the Cloud Storage bucket's name in its place`},
 		{name: "a placeholder account", body: cache(`bucket: example-legion-packs, service_account: "${CACHE_SERVICE_ACCOUNT}"`),
-			want: key + `.service_account "${CACHE_SERVICE_ACCOUNT}" is an unfilled placeholder: put the ServiceAccount the cache pods run as in its place`},
+			want: key + `.service_account is an unfilled placeholder: put the ServiceAccount the cache pods run as in its place`},
 		{name: "a bucket's address rather than its name", body: cache("bucket: gs://example-legion-packs, service_account: legion-cache"),
-			want: key + `.bucket "gs://example-legion-packs" must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
+			want: key + `.bucket must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
 		{name: "a bucket in capitals", body: cache("bucket: Example-Legion-Packs, service_account: legion-cache"),
-			want: key + `.bucket "Example-Legion-Packs" must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
+			want: key + `.bucket must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
 		{name: "a bucket part past 63 between two dots", body: cache("bucket: example." + strings.Repeat("p", 64) + ", service_account: legion-cache"),
-			want: key + `.bucket "example.` + strings.Repeat("p", 64) + `" must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
+			want: key + `.bucket must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
+		{name: "a bucket of a key's shape and two characters", body: cache("bucket: ab, service_account: legion-cache"),
+			want: key + `.bucket "ab" must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
 		{name: "an account in capitals with an underscore", body: cache("bucket: example-legion-packs, service_account: Legion_Cache"),
-			want: serviceAccountRefusal(key+".service_account", "Legion_Cache")},
+			want: serviceAccountRefusal(key + ".service_account")},
+		{name: "an account of a key's shape with an underscore", body: cache("bucket: example-legion-packs, service_account: legion_cache"),
+			want: serviceAccountRefusal(key + `.service_account "legion_cache"`)},
 		{name: "an account holding a slash", body: cache("bucket: example-legion-packs, service_account: a/b"),
-			want: serviceAccountRefusal(key+".service_account", "a/b")},
+			want: serviceAccountRefusal(key + ".service_account")},
 		{name: "an account past 253 characters", body: cache("bucket: example-legion-packs, service_account: " + strings.Repeat("a", 300)),
-			want: serviceAccountRefusal(key+".service_account", strings.Repeat("a", 300))},
+			want: serviceAccountRefusal(key + ".service_account")},
 		{name: "the configured pod account", body: withPodAccount("legion-worker", "bucket: example-legion-packs, service_account: legion-worker"),
 			want: key + `.service_account "legion-worker" must differ from runtime.kubernetes.pod.service_account, the account the issue pods run as: the bucket's grant to it would reach every issue pod`},
 		{name: "default where no pod account is set", body: cache("bucket: example-legion-packs, service_account: default"),
@@ -507,10 +512,11 @@ func TestRepositoryCacheBucketSettings(t *testing.T) {
 	}
 }
 
-// serviceAccountRefusal is the loader's refusal of key's value, which is no ServiceAccount's name.
-func serviceAccountRefusal(key, value string) string {
-	return fmt.Sprintf("%s %q is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.',"+
-		" starting and ending with a letter or digit, in at most 253 characters", key, value)
+// serviceAccountRefusal is the loader's refusal of a value that is no ServiceAccount's name, named
+// is the key, and the value quoted where it has a key's shape.
+func serviceAccountRefusal(named string) string {
+	return named + " is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.'," +
+		" starting and ending with a letter or digit, in at most 253 characters"
 }
 
 // A cpu or memory request settles to the file's request where it set one, else to the file's limit
@@ -1652,7 +1658,12 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "a claim name no claim can have",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: share, persistent_volume_claim: {name: Team_Share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].persistent_volume_claim.name "Team_Share" is no PersistentVolumeClaim's name: a claim is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters`,
+			want: `runtime.kubernetes.pod.volumes[0].persistent_volume_claim.name is no PersistentVolumeClaim's name: a claim is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters`,
+		},
+		{
+			name: "a claim name of a key's shape no claim can have",
+			body: kubernetesFile + "    pod:\n      volumes: [{name: share, persistent_volume_claim: {name: team_share}}]\n",
+			want: `runtime.kubernetes.pod.volumes[0].persistent_volume_claim.name "team_share" is no PersistentVolumeClaim's name: a claim is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters`,
 		},
 		{
 			name: "a claim that sets read_only on the source",
@@ -1753,12 +1764,12 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "an NFS export path that is relative",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 10.0.0.2, path: share}}]\n",
-			want: "runtime.kubernetes.pod.volumes[0].nfs.path share must be a clean absolute path",
+			want: "runtime.kubernetes.pod.volumes[0].nfs.path must be a clean absolute path",
 		},
 		{
 			name: "an NFS export path that is not clean",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 10.0.0.2, path: /share/../etc}}]\n",
-			want: "runtime.kubernetes.pod.volumes[0].nfs.path /share/../etc must be a clean absolute path",
+			want: "runtime.kubernetes.pod.volumes[0].nfs.path must be a clean absolute path",
 		},
 		{
 			name: "two volumes naming one claim",
@@ -1895,12 +1906,12 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "a relative mount path",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds, mount_path: etc/legion-operator}]\n",
-			want: "runtime.kubernetes.pod.volume_mounts[0].mount_path etc/legion-operator must be a clean absolute path",
+			want: "runtime.kubernetes.pod.volume_mounts[0].mount_path must be a clean absolute path",
 		},
 		{
 			name: "a mount path that is not clean",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds, mount_path: /etc/x/../../var/run/legion/boot}]\n",
-			want: "runtime.kubernetes.pod.volume_mounts[0].mount_path /etc/x/../../var/run/legion/boot must be a clean absolute path",
+			want: "runtime.kubernetes.pod.volume_mounts[0].mount_path must be a clean absolute path",
 		},
 		{
 			name: "two mounts at one path",
@@ -1916,17 +1927,17 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "a pod account in capitals with an underscore",
 			body: kubernetesFile + "    pod: {service_account: Legion_Cache}\n",
-			want: serviceAccountRefusal("runtime.kubernetes.pod.service_account", "Legion_Cache"),
+			want: serviceAccountRefusal("runtime.kubernetes.pod.service_account"),
 		},
 		{
 			name: "a pod account holding a slash",
 			body: kubernetesFile + "    pod: {service_account: a/b}\n",
-			want: serviceAccountRefusal("runtime.kubernetes.pod.service_account", "a/b"),
+			want: serviceAccountRefusal("runtime.kubernetes.pod.service_account"),
 		},
 		{
 			name: "a pod account past 253 characters",
 			body: kubernetesFile + "    pod: {service_account: " + strings.Repeat("a", 300) + "}\n",
-			want: serviceAccountRefusal("runtime.kubernetes.pod.service_account", strings.Repeat("a", 300)),
+			want: serviceAccountRefusal("runtime.kubernetes.pod.service_account"),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2028,7 +2039,7 @@ func operatorRoutePod(t *testing.T, audience, account string) string {
 // model call refused.
 func TestLoadForValidationRefusesTheOperatorRouteWithItsAudienceUnfilled(t *testing.T) {
 	_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    pod:\n"+operatorRoutePod(t, "", "")), noEnv)
-	if err == nil || !strings.Contains(err.Error(), `.service_account_token.audience "${MODEL_TOKEN_AUDIENCE}" is an unfilled placeholder`) {
+	if err == nil || !strings.Contains(err.Error(), `.service_account_token.audience is an unfilled placeholder`) {
 		t.Fatalf("LoadForValidation = %v, want the unfilled audience placeholder refused", err)
 	}
 }
@@ -2040,7 +2051,7 @@ func TestLoadForValidationRefusesTheOperatorRouteWithItsAudienceUnfilled(t *test
 // expands the placeholder, and the API server admits no pod for an account that does not exist.
 func TestLoadForValidationRefusesTheOperatorRouteWithItsAccountUnfilled(t *testing.T) {
 	_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    pod:\n"+operatorRoutePod(t, operatorRouteAudience, "")), noEnv)
-	if err == nil || !strings.Contains(err.Error(), `runtime.kubernetes.pod.service_account "${POD_SERVICE_ACCOUNT}" is an unfilled placeholder: put the ServiceAccount the pods run as in its place`) {
+	if err == nil || !strings.Contains(err.Error(), `runtime.kubernetes.pod.service_account is an unfilled placeholder: put the ServiceAccount the pods run as in its place`) {
 		t.Fatalf("LoadForValidation = %v, want the unfilled ServiceAccount placeholder refused", err)
 	}
 }
@@ -2222,6 +2233,12 @@ func TestExchangeAudienceNeedsAgentSecrets(t *testing.T) {
 		"the default audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      exchange_audience: cipher\n", "runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both cipher)"},
 		"the named audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: broker\n      exchange_audience: broker\n",
 			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both broker)"},
+		// A shared audience is named only where it has an audience's shape: a key's, a Workload
+		// Identity pool's or a writer audience's; any other is named by the two keys alone.
+		"a named audience of a pool's shape": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: example-project.svc.id.goog\n      exchange_audience: example-project.svc.id.goog\n",
+			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both example-project.svc.id.goog)"},
+		"a named audience of no audience's shape": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: legion-broker\n      exchange_audience: legion-broker\n",
+			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (the two are one value)"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)

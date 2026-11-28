@@ -95,6 +95,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -174,7 +175,7 @@ type Reconciler struct {
 	// runs the pass on. A pass that has not covered every head by then ends where it stands,
 	// logs its one line and leaves the next pass the cursor it reached. Zero is unbounded. A
 	// rate limit GitHub answers as the bound falls is still written to the shared ledger after
-	// it, for up to githubapp's limitRecordTimeout (5 s), so a pass's last write can end that
+	// it, for up to githubapp's LimitRecordTimeout (5 s), so a pass's last write can end that
 	// much past PassTimeout.
 	PassTimeout time.Duration
 	// Instance answers this process's row in the registry of live server processes, the id
@@ -201,6 +202,8 @@ type Reconciler struct {
 	// which is every Reconciler but a test's: a test of how long an answer is held moves its
 	// own clock rather than waiting out AbsentAppRecheck.
 	now func() time.Time
+	// passClock owns pass deadlines, pacing gaps and query durations. Nil uses clock.Real.
+	passClock clock.Clock
 
 	// rows is what the last pass learned of each repository the pass read, keyed by the canonical
 	// name it read it under, which an old name and the name it was renamed to share as one entry:
@@ -344,6 +347,15 @@ func (r *Reconciler) clock() time.Time {
 		return r.now()
 	}
 	return time.Now()
+}
+
+// deadlineClock supplies pass deadlines, pacing gaps and query durations. A test can set
+// passClock to advance them together; nil preserves the real clock and its timer semantics.
+func (r *Reconciler) deadlineClock() clock.Clock {
+	if r.passClock != nil {
+		return r.passClock
+	}
+	return clock.Real()
 }
 
 // forget drops every entry of held the cycle that has just closed did not reach, so what the

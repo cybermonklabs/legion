@@ -46,7 +46,8 @@ func planRecordsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.Plan
 // otherwise (the move TriggerGateOpened makes). The carry writes the run's plan itself, the plan
 // the carried run walks, under that run's own id, so the project's read shows this run's plan and
 // not the run before's: the default plan where the run walked the project's default steps, and
-// its owner's plan, with the document and the version Legion took, where its owner gave one. The
+// its owner's plan, with the document and the version Legion took, where its owner gave one; each
+// task with the tasks it needs, [] for the one task of either.
 // root here is carried at accepting, as the hand-over runs in production: the old root's linger
 // ends, its fence names the child, and the daemon's labelled todo re-admits it carrying its run.
 func TestACarriedRootsNewRunWritesItsPlan(t *testing.T) {
@@ -59,10 +60,10 @@ func TestACarriedRootsNewRunWritesItsPlan(t *testing.T) {
 		want   record.PlanRecord
 	}{
 		{name: "the default steps", want: record.PlanRecord{ID: workflow.PlanID(root, 2), Generation: 2, Source: "default",
-			Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}},
+			Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}, Needs: &[]string{}}}}},
 		{name: "the owner's plan", owners: true, want: record.PlanRecord{ID: workflow.PlanID(root, 2), Generation: 2, Source: "owner",
 			PlanDocument: &record.PlanDocument{ArtifactID: "plan-artifact", Version: 2},
-			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer", "acceptance:owner"}}}}},
+			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer", "acceptance:owner"}, Needs: &[]string{}}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

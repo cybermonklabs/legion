@@ -155,6 +155,16 @@ func (rec *requestRecord) refuse(w http.ResponseWriter, status int, outcome requ
 	rec.write(status, outcome)
 }
 
+// refuseBody answers a body the route could not read (readAPIBody) and records it: too_large for a
+// body past apiBodyLimit, and invalid_request for a body that is not JSON.
+func (rec *requestRecord) refuseBody(w http.ResponseWriter, status int, message string) {
+	outcome := outcomeInvalidRequest
+	if status == http.StatusRequestEntityTooLarge {
+		outcome = outcomeTooLarge
+	}
+	rec.refuse(w, status, outcome, message)
+}
+
 // refuseWith writes a refusal whose body says more than writeJSONError's - a confirmed send's 403
 // naming the holder or its 504 naming who did not confirm (confirmed.go) - and records it under
 // outcome.
@@ -216,9 +226,10 @@ func (rec *requestRecord) refuseRoleHolder(w http.ResponseWriter, role string, r
 	rec.write(http.StatusNotFound, outcome)
 }
 
-// refuseRoleNoSourceSession answers a role send that names no source session, to a role with no
-// live holder, with the 404 refuseRoleHolder writes (roleHolderRefusal), whose error also says that
-// nothing was kept and why (noSourceSessionNotKept), and records it under
+// refuseRoleNoSourceSession answers a role send whose keep would tell nobody
+// (roleSend.keepTellsNobody: it names no source session and delivers no Dispatch post), to a role
+// with no live holder, with the 404 refuseRoleHolder writes (roleHolderRefusal), whose error also
+// says that nothing was kept and why (noSourceSessionNotKept), and records it under
 // outcomeRoleNoSourceSession, carrying a lapsed holder as refuseRoleHolder does.
 func (rec *requestRecord) refuseRoleNoSourceSession(w http.ResponseWriter, role string, result roles.Resolution) {
 	refusal := roleHolderRefusal(role, result)

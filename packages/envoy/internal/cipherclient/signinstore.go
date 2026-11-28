@@ -115,6 +115,14 @@ func (s SignInStore) Path(person string) string {
 	return filepath.Join(s.Dir, hex.EncodeToString(sum[:])+".json")
 }
 
+// RenewalDir is the directory beside one person's record that agent-secrets keeps the renewal of
+// that person's sign-in enrollment in: the renewer's lock, the time a command last used the
+// sign-in, and the requests still waiting for a person. List reads no directory, so it is no
+// record.
+func (s SignInStore) RenewalDir(person string) string {
+	return strings.TrimSuffix(s.Path(person), ".json") + ".renewal"
+}
+
 // Write keeps a record, making the directory 0700 and the file 0600 so the person's own user
 // alone reads the key and the refresh token in it. A second sign-in as the same person replaces
 // that person's record and leaves every other person's alone.
@@ -129,7 +137,7 @@ func (s SignInStore) Write(record SignInRecord) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(s.Path(record.Person), append(raw, '\n'), 0o600); err != nil {
+	if err := writeFileAtomic(s.Path(record.Person), append(raw, '\n')); err != nil {
 		return fmt.Errorf("keep %s's sign-in in %s: %w", record.Person, SignInStoreName, redact.File(err))
 	}
 	return nil
@@ -218,8 +226,8 @@ func namesOf(records []SignInRecord) string {
 
 // writeFileAtomic writes data to path by renaming a finished temporary file into place, so no
 // reader ever sees path half-written: a sign-in record is read back by the next command while
-// this one is still running.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+// this one is still running. The file it writes is 0600.
+func writeFileAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
@@ -229,7 +237,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(perm); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
 		return err
 	}

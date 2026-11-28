@@ -16,11 +16,12 @@ import (
 
 // The release of a waiting parent's quiet pod arms no backstop for any role of it
 // (dispatch://INFRA-3320 R11): the phase no role works has no worker whose wake is due
-// (workflow.OpenPhaseRole answers none for awaiting_children), so the release's arming
+// (workflow.OpenRoleOf answers none for awaiting_children), so the release's arming
 // (outbox.armBackstops) cancels the backstops an earlier release armed, as every arming does,
 // and arms none. The control is the same release of the same issue in implementing, which arms
 // the released implementer's.
 func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase
@@ -92,9 +93,10 @@ func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
 // the role stop and the teardown — and the drain leaves its implementer suspended by `released`
 // and its Sandbox torn down by the release's own teardown. That teardown arms no backstop for
 // the waiting parent, since no role works awaiting_children (outbox.armBackstops,
-// workflow.OpenPhaseRole), where the same release in implementing, the control, arms the released
+// workflow.OpenRoleOf), where the same release in implementing, the control, arms the released
 // implementer's.
 func TestAWaitingParentsQuietPodIsReleasedAsAnyQuietPodAndArmsNoBackstop(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase

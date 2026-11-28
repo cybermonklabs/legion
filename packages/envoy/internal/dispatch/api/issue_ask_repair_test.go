@@ -47,7 +47,14 @@ func newRepairFixture(t *testing.T) repairFixture {
 // settle.
 func newRepairFixtureSettlingAfter(t *testing.T, settle time.Duration) repairFixture {
 	t.Helper()
-	return newRepairFixtureOn(t, settle, nil)
+	return newRepairFixtureWith(t, settle, nil, "")
+}
+
+// newRepairFixtureFrom is newRepairFixtureSettlingAfter on a server whose setting names specRoots
+// as the roots of The Spec (DISPATCH_SPEC_ROOTS), "" for none.
+func newRepairFixtureFrom(t *testing.T, settle time.Duration, specRoots string) repairFixture {
+	t.Helper()
+	return newRepairFixtureWith(t, settle, nil, specRoots)
 }
 
 // repairRoomsNeverIdleOut is the repair fixture's room idle timeout (docs.Deps.RoomIdleTimeout):
@@ -59,6 +66,13 @@ const repairRoomsNeverIdleOut = time.Duration(1<<63 - 1)
 // tracer leaves the pool untraced. Its rooms never idle out (repairRoomsNeverIdleOut), so a room
 // of the fixture leaves residency only through a close.
 func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTracer) repairFixture {
+	t.Helper()
+	return newRepairFixtureWith(t, settle, tracer, "")
+}
+
+// newRepairFixtureWith is the fixture on a pool tracer traces (nil for none) and a server whose
+// setting names specRoots as the roots of The Spec ("" for none).
+func newRepairFixtureWith(t *testing.T, settle time.Duration, tracer pgx.QueryTracer, specRoots string) repairFixture {
 	t.Helper()
 	database := storetest.Open(t)
 	if tracer != nil {
@@ -76,6 +90,7 @@ func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTrac
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
 		Docs:        documents,
 		ServerURL:   "https://dispatch.example",
+		SpecForm:    specFormOn(t, specRoots, "https://dispatch.example", documents),
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -383,6 +398,7 @@ func TestTwoRepairsAtOnceWithdrawEachAskOnce(t *testing.T) {
 // A closed issue with no issue.closed event has no closer to name: the repair logs it and leaves
 // its asks open, writing nothing.
 func TestRepairSkipsAClosedIssueWithNoClosingEvent(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault).
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closed with no event", "Context\n")
 	ask := createSessionAsk(t, f.handler, issue.Key, "Which region?")

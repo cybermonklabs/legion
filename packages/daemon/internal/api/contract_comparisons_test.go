@@ -71,11 +71,25 @@ var contractComparisonRows = []contractComparisonRow{
 		{"internal/api/plan.go", "OwnerPlanContract"},
 	}},
 	// The release records' strip of the claims' tokens below the stranded token's entry is the
-	// same answer's own row of shapeAnswer as the pause's strip of a resume's `pause`.
+	// same answer's own row of shapeAnswer as the pause's strip of a resume's `pause`. The
+	// running-step entry's row of shapeAnswer takes `running` off register_plan's answer for a
+	// caller below the entry, as the two refusals' rows take their bodies' newer parts off.
 	{row: "The pause and plan refusals", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < pauseContract"),
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < OwnerPlanContract"),
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(strandedTokenContract)"),
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(runningStepContract)"),
+	}},
+	// The replaces entry's two rows of shapeAnswer (contract_20261125170509_replaces.go), which take
+	// `replaces` off both registration answers; the Design's table predates the entry.
+	{row: "The registrations' replaced session", compares: []comparisonSite{
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(replacesContract)"),
+	}},
+	// The watched-workflows entry's row of shapeAnswer (contract_20261127193422_watched-workflows.go),
+	// which takes `watchedWorkflows` off the controller's registration; the Design's table predates
+	// the entry.
+	{row: "The controller registration's watched workflows", compares: []comparisonSite{
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(watchedWorkflowsContract)"),
 	}},
 	{row: "A caller's recorded contract", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "recordedContractAtOrBelow", "n >= DaemonAPIVersion()"),
@@ -108,6 +122,14 @@ var contractComparisonRows = []contractComparisonRow{
 	}},
 	{row: "A fresh session's stop read as a failure", compares: []comparisonSite{
 		comparedIn("internal/api/freshsession.go", "server.readsTheStopAsAFailure", "at.restore < processReadContract"),
+	}},
+	// The claim start entry's row (contract_20261127094305_claim-start.go), which answers a caller
+	// below it a start that waits for its issue's slot, or one refused after the fresh session's
+	// forget, as before, and serves it the agent actions' answer without `phaseNotRestarted`
+	// (dispatch://INFRA-5649 R3); the Design's table predates the entry.
+	{row: "A claim's start answered as before", compares: []comparisonSite{
+		comparedIn("internal/api/freshsession.go", "server.answersAsBefore", "at.restore < entryNumber(claimStartContract)"),
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(claimStartContract)"),
 	}},
 	{row: "A plan rating is required", compares: []comparisonSite{
 		comparedIn("internal/api/handoff.go", "server.answerCompletion", "c.PluginContract >= PlanRatingContract"),

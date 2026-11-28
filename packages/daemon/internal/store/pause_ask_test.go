@@ -175,6 +175,7 @@ func TestAPauseAsksTheStopOfALiveClaimOfAnotherProjectsIssueUnderItsProjectsKey(
 // `pause_stop` row, which names it, and leaves the other's row waiting for that claim's own turn.
 // A row the release before wrote names no claim, and is made due for each claim of its role.
 func TestTheExpediteOfAClaimsStopMovesThatClaimsRowsAlone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	seedPauseClaims(t, st)

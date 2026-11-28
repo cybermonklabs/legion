@@ -44,7 +44,7 @@ func socketURL(serverURL, id string) string {
 // sent the first frame of its sync, so the socket's admission, and a cold room's load, are done.
 func admitSocket(t *testing.T, serverURL, id, what string) *gws.Conn {
 	t.Helper()
-	connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
+	connection, response, err := documentDialer(t).Dial(socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		status := "no response"
 		if response != nil {
@@ -72,10 +72,12 @@ type openedSocket struct {
 // and answers on the channel it returns. A test dials this way when the open it is about to make
 // holds inside the service - in an admission's rendering, in a room's load - where a dial on the
 // test's own goroutine would wait for the very hold that goroutine has to release.
-func dialSocketAsync(serverURL, id string) <-chan openedSocket {
+func dialSocketAsync(t *testing.T, serverURL, id string) <-chan openedSocket {
+	t.Helper()
 	opened := make(chan openedSocket, 1)
+	dialer := documentDialer(t)
 	go func() {
-		connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
+		connection, response, err := dialer.Dial(socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
 		if err != nil {
 			status := "no response"
 			if response != nil {
@@ -92,7 +94,7 @@ func dialSocketAsync(serverURL, id string) <-chan openedSocket {
 // ServiceUnavailable before any upgrade, as a cap refuses one.
 func refuseSocket(t *testing.T, serverURL, id, what string) {
 	t.Helper()
-	connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
+	connection, response, err := documentDialer(t).Dial(socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if connection != nil {
 		leaveDocument(connection)
 	}
@@ -134,7 +136,7 @@ func (s *Service) addConnection(room string, id uint64, actor model.Actor) {
 // really is: its id as Dispatch writes it, canonical.
 func refuseSpelling(t *testing.T, serverURL, spelling, canonical, what string) {
 	t.Helper()
-	connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, spelling), http.Header{"X-Dispatch-User": []string{"alice"}})
+	connection, response, err := documentDialer(t).Dial(socketURL(serverURL, spelling), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if connection != nil {
 		leaveDocument(connection)
 	}
@@ -226,7 +228,7 @@ func TestAWarmSocketOpenRendersNothingAndAColdOpenRendersOnce(t *testing.T) {
 	}
 
 	writeSchemaInvalidElement(t, service, artifactID)
-	connection, response, err := gws.DefaultDialer.Dial(socketURL(server.URL, artifactID), http.Header{"X-Dispatch-User": []string{"alice"}})
+	connection, response, err := documentDialer(t).Dial(socketURL(server.URL, artifactID), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		t.Fatalf("open the room an update took outside the schema: response=%v err=%v, want an upgrade the server closes", response, err)
 	}
@@ -272,7 +274,7 @@ func TestAPreloadOvertakenByTheRoomsLoadIsReleasedWhileItsSocketStaysOpen(t *tes
 		<-release
 	}
 
-	cold := dialSocketAsync(server.URL, artifactID)
+	cold := dialSocketAsync(t, server.URL, artifactID)
 	select {
 	case <-rendered:
 	case <-time.After(roomWait(t)):
@@ -466,7 +468,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 			go func() {
 				defer dials.Done()
 				<-start
-				connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, ids[i%len(ids)]), http.Header{"X-Dispatch-User": []string{"alice"}})
+				connection, response, err := documentDialer(t).Dial(socketURL(serverURL, ids[i%len(ids)]), http.Header{"X-Dispatch-User": []string{"alice"}})
 				mu.Lock()
 				defer mu.Unlock()
 				if err == nil {
@@ -598,7 +600,7 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 		close(rendered)
 		<-release
 	}
-	cold := dialSocketAsync(server.URL, artifactID)
+	cold := dialSocketAsync(t, server.URL, artifactID)
 	select {
 	case <-rendered:
 	case <-time.After(roomWait(t)):
@@ -682,7 +684,7 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 		t.Fatal("the room's load never read the store, so nothing here is tested")
 	}
 
-	cold := dialSocketAsync(server.URL, artifactID)
+	cold := dialSocketAsync(t, server.URL, artifactID)
 	select {
 	case <-offered:
 	case <-time.After(roomWait(t)):
@@ -734,7 +736,7 @@ func TestTheUpgradeThroughTheProcessHeaderWriterNamesTheProcess(t *testing.T) {
 	server.Listener = listener
 	server.Start()
 	testcleanup.Add(t, server.Close)
-	connection, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/ws/doc/room", nil)
+	connection, response, err := documentDialer(t).Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/ws/doc/room", nil)
 	if err != nil {
 		t.Fatalf("dial the socket: %v", err)
 	}
