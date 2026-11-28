@@ -2819,12 +2819,17 @@ func (f *lookIDFixture) boardStatus(key string) string {
 // (upgradedLook) and a report with both is answered 200 (reportUpgraded). Part 6 runs in both
 // orders, the older start row after the boot's row, as the check names it, and before it.
 //
-// The way back keeps the look id of every open check, whatever the state of its issue, and parts
-// 4 and 9 read that it did (wayBackKept) on a root that stays out of the workflow, as its merge
-// left it. Part 9 holds that the boot gives such a root's look a new id and a new task where the
-// task its tester holds gives the kept id in a delivery that holds none (the boot's
-// lookTaskGivesAnotherID), and part 10 that a root that runs again keeps the id, so the report its
-// tester makes with it is taken.
+// The way back keeps the look id of every open check, whatever the state of its issue. The seed of
+// parts 1, 2, 3, 5, 6 and 8 then leaves the check with no look id, as the release before leaves the
+// check of a look it opened, since that release makes no look id, so where those parts leave a
+// look open the boot finds it with no look id of its own (lookIDSeed). Part 7's seed leaves the
+// check with the look id of the check a later merge replaced. Parts 4 and 9 keep the id the way
+// back kept in their seed (lookIDSeed.keepsID) and read that it did (wayBackKept) on a root that
+// stays out of the workflow, as its merge left it. Part 9 holds that the boot gives such a root's
+// look a new id and a new task where the task its tester holds gives the kept id in a delivery
+// that holds none (the boot's lookTaskGivesAnotherID), and part 10, which runs the way back with
+// no seed, that a root that runs again keeps the id, so the report its tester makes with it is
+// taken.
 //
 // At the base commit, whose schema has no look-id column, parts 4, 7, 9 and 10, which hold the
 // boot to a stored look id, do not run, and the driver writes and reads no look-id column. Each
@@ -2884,14 +2889,17 @@ func lookIDOldContract() int {
 // of the release before this change leaves it (seedOlder): task, the text of the tester's pending
 // task, in a delivery that holds no look id, and look, the look it is the task of; then, the words
 // the part's note gives what that release did after the way back and before it left that task (""
-// for nothing the note names); and, at the head, stored, the look id the check holds, made for look
-// storedLook of the check opened at storedOpened ("" for none): what that release's write of a
-// later merge's check leaves of the check it replaced (part 7), written after the way back
-// (seedOlder).
+// for nothing the note names); and, at the head, what the check's look-id columns hold after the
+// way back. Where stored is not "", the check holds stored, made for look storedLook of the check
+// opened at storedOpened: what that release's write of a later merge's check leaves of the check
+// it replaced (part 7). Else, where keepsID, the check keeps the look id the way back kept (parts 4
+// and 9, which read it, wayBackKept). Else the check holds no look id, as a check whose look that
+// release opened holds none, since that release makes no look id.
 type lookIDSeed struct {
 	task         string
 	look         int
 	then         string
+	keepsID      bool
 	stored       string
 	storedLook   int
 	storedOpened time.Time
@@ -2931,24 +2939,33 @@ const lookIDMigration = 20261127171352
 // operator runs it once every daemon of the database has stopped and before the release before
 // starts: no supervise row carries a look id or the mark of a reissue, no row retires a look's
 // task, no check keeps the generation it opened in, and every open check keeps its look id,
-// whatever the state of its issue. Then, where seed stores one, the check is left holding the look
-// id made for look 1 of the check a later merge replaced (part 7), as the release before's write
-// of the later merge's check leaves in place the look id of the check it replaced, which holds the
-// boot to whatever look-id columns it finds. Last, the tester's pending task holds seed's text, a
-// task of seed's look of the check, in a delivery that holds no look id — a claim that holds none,
-// whose look ended and took its task with it (part 5), is given one — and the tester's claim is
-// registered on that release's contract (lookIDOldContract). The base commit has none of the
-// look-id columns and no such migration, so there only the task and the contract are written.
+// whatever the state of its issue. Then the check's three look-id columns are left as the release
+// before leaves them. Where seed stores one, they hold the look id made for look 1 of the check a
+// later merge replaced (part 7), as the release before's write of the later merge's check leaves
+// in place the look id of the check it replaced, which holds the boot to whatever look-id columns
+// it finds. Where seed keeps the id (keepsID), they hold the id the way back kept (parts 4 and 9,
+// which read it, wayBackKept). Else they are null, as a check whose look the release before opened
+// holds them, since that release makes no look id: the boot finds an open look of the check with
+// no look id of its own (record.ProductionCheck.CurrentLookID is ""). Last, the tester's pending
+// task holds seed's text, a task of seed's look of the check, in a delivery that holds no look id
+// — a claim that holds none, whose look ended and took its task with it (part 5), is given one —
+// and the tester's claim is registered on that release's contract (lookIDOldContract). The base
+// commit has none of the look-id columns and no such migration, so there only the task and the
+// contract are written.
 func (f *lookIDFixture) seedOlder(seed lookIDSeed) {
 	f.t.Helper()
 	ctx := context.Background()
 	token := string(f.token(claim.RoleTester))
 	if !f.r.base {
 		f.wayBack()
-		if seed.stored != "" {
+		switch {
+		case seed.stored != "":
 			f.exec("leave the check with the look id the release before leaves",
 				"update production_checks set look_id = $2, look_id_look = $3, look_id_opened_at = $4 where issue = $1",
 				f.key, seed.stored, seed.storedLook, seed.storedOpened)
+		case !seed.keepsID:
+			f.exec("leave the check with no look id, as the release before leaves the check of a look it opened",
+				"update production_checks set look_id = null, look_id_look = null, look_id_opened_at = null where issue = $1", f.key)
 		}
 	}
 	tag, err := f.st.Pool().Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, check_look, check_opened_at)
@@ -3244,7 +3261,8 @@ func (r *lookIDLive) refusedOtherID(f *lookIDFixture, a *lookIDAgent, assertion 
 
 // upgradeOpenLook is parts 1, 2 and 8: look 1 opens and its task reaches the idle tester, whose
 // agent does not answer it. With the daemon stopped, the store is left as the release before leaves
-// it (bootOver), the tester's pending task the text of look 1 that release wrote — with
+// it (bootOver), the check with no look id, since that release opened the look and makes no look
+// id (seedOlder), the tester's pending task the text of look 1 that release wrote — with
 // check_opened_at (namesCheck), as the base writes it, or with none, as an earlier daemon wrote it
 // before its task named the check's opening time — and, where last, the look marked the last of
 // its check. Once the boot has given the look an id, the stale-plugin lane relaunches the tester,
@@ -3280,11 +3298,12 @@ func (r *lookIDLive) upgradeOpenLook(where string, last, namesCheck bool) {
 
 // upgradeHeldLook is part 3: look 1's task reaches the tester, which the operator suspends in a
 // turn of its own (holdInATurn). With the daemon stopped, the store is left as the release before
-// leaves it, the held tester's pending task that release's text of look 1. The boot gives the look an
-// id and a start row of its new task, which meets the operator's hold and waits on it, the look kept
-// open (reissueWaitsOnTheHold). The operator then resumes the tester, its agent comes up on this
-// change's contract, the waiting row is brought due, and the look's task with its id reaches the
-// agent; a pending with that id is answered 200.
+// leaves it, the check with no look id, since that release opened the look and makes no look id
+// (seedOlder), and the held tester's pending task that release's text of look 1. The boot gives the
+// look an id and a start row of its new task, which meets the operator's hold and waits on it, the
+// look kept open (reissueWaitsOnTheHold). The operator then resumes the tester, its agent comes up
+// on this change's contract, the waiting row is brought due, and the look's task with its id
+// reaches the agent; a pending with that id is answered 200.
 func (r *lookIDLive) upgradeHeldLook() {
 	f, tester, check := r.firstLook("upgrade part 3", nil)
 	task := tester.prompt("the look-1 task", checkTaskLeadText)
@@ -3343,13 +3362,14 @@ func (r *lookIDLive) reissueWaitsOnTheHold(f *lookIDFixture, opened time.Time) {
 // upgradeRolledBackLook is part 4, which the base does not run, on a root's check: look 1's task
 // reaches the tester, whose turn reports it pending with a wake and its look id. The root stays
 // out of the workflow, as its merge left it. With the daemon stopped, the way back runs and keeps
-// look 1's id, as it keeps the look id of every open check (seedOlder, wayBackKept); the store is
-// then left as the release before leaves it once the wake starts look 2: the check open at look 2
-// and still holding look 1's id, made for look 1, since that release makes no look id
-// (olderLookStarts), and the tester's pending task that release's text of look 2. The boot gives
-// look 2 an id of its own and a new start, which resumes the tester the pending report suspended,
-// on this change's contract, and look 2's task reaches it; from its turn a pass with look 1's id is
-// answered 409 CHECK_LOOK_NOT_OPEN, and a pending with look 2's new id 200.
+// look 1's id, as it keeps the look id of every open check, and the seed keeps that id (seedOlder,
+// keepsID, wayBackKept); the store is then left as the release before leaves it once the wake
+// starts look 2: the check open at look 2 and still holding look 1's id, made for look 1, since
+// that release makes no look id (olderLookStarts), and the tester's pending task that release's
+// text of look 2. The boot gives look 2 an id of its own and a new start, which resumes the tester
+// the pending report suspended, on this change's contract, and look 2's task reaches it; from its
+// turn a pass with look 1's id is answered 409 CHECK_LOOK_NOT_OPEN, and a pending with look 2's new
+// id 200.
 func (r *lookIDLive) upgradeRolledBackLook() {
 	f, tester, check := r.rootLook("upgrade part 4", nil)
 	first := tester.prompt("the look-1 task", checkTaskLeadText)
@@ -3368,7 +3388,7 @@ func (r *lookIDLive) upgradeRolledBackLook() {
 	reason := f.wakeReason()
 	older := f.olderTask(check, 2, "the wake named at the last look — "+reason, false, true)
 	stopped, launched := r.bootOver(f, nil, lookIDSeed{task: older, look: 2,
-		then: "once its wake started look 2 on the check, which holds the look id made for look 1 that the way back kept while the root was out of the workflow"},
+		then: "once its wake started look 2 on the check, which holds the look id made for look 1 that the way back kept while the root was out of the workflow", keepsID: true},
 		func() {
 			r.wayBackKept(f, 1, check.OpenedAt, one.id)
 			f.olderLookStarts(check, 2, reason)
@@ -3395,12 +3415,12 @@ func (r *lookIDLive) upgradeRolledBackLook() {
 // (supervise.Claim.DeliveredRows), so the run reaches the same store this way: this release runs
 // the row before the daemon stops, and its task reaches the tester's connection then, and the
 // tester does not answer it; with the daemon stopped the way back runs and keeps look 1's id, as it
-// keeps the look id of every open check (seedOlder, wayBackKept), and the seed writes the claim's
-// delivery as the release before writes it, with no look id. The boot gives look 1 a new look id
-// and a new start (the boot's lookTaskGivesAnotherID, whose reason its log line gives), and the
-// look's task with the new id reaches the tester relaunched on this change's contract; from its
-// turn a pass with the kept id is answered 409 CHECK_LOOK_NOT_OPEN and records nothing, and a
-// pending with the new id is answered 200 and recorded against look 1.
+// keeps the look id of every open check (seedOlder, wayBackKept), and the seed keeps that id
+// (keepsID) and writes the claim's delivery as the release before writes it, with no look id. The
+// boot gives look 1 a new look id and a new start (the boot's lookTaskGivesAnotherID, whose reason
+// its log line gives), and the look's task with the new id reaches the tester relaunched on this
+// change's contract; from its turn a pass with the kept id is answered 409 CHECK_LOOK_NOT_OPEN and
+// records nothing, and a pending with the new id is answered 200 and recorded against look 1.
 func (r *lookIDLive) upgradeStrippedLookTask() {
 	f, tester, check := r.rootLook("upgrade part 9", nil)
 	task := tester.prompt("the look-1 task", checkTaskLeadText)
@@ -3412,7 +3432,7 @@ func (r *lookIDLive) upgradeStrippedLookTask() {
 	r.note("look 1's task, which gives the look id this release made for it, reached the tester, which does not answer it")
 	r.note("%s stays out of the workflow, as its merge left it", f.key)
 	stopped, launched := r.bootOver(f, tester, lookIDSeed{task: given, look: 1,
-		then: "when it runs a start row of look 1 that this release queued and the way back stripped of its look id, the root out of the workflow, the row's text giving the id the way back kept"},
+		then: "when it runs a start row of look 1 that this release queued and the way back stripped of its look id, the root out of the workflow, the row's text giving the id the way back kept", keepsID: true},
 		func() { r.wayBackKept(f, 1, check.OpenedAt, kept.id) })
 	r.lookGivenAnID(f, 1, check.OpenedAt, kept.id)
 	why := "none"
@@ -3474,10 +3494,11 @@ func (r *lookIDLive) upgradeRunningRoot() {
 // upgradeEndedLook is part 5: look 1's task reaches the tester, which the operator suspends in a
 // turn of its own (holdInATurn); look 1 ends at its bound and look 2's start meets the operator's
 // hold, which ends look 2 (secondLookMeetsTheHold). With the daemon stopped, the store is left as
-// the release before leaves it, the held tester's pending task that release's text of look 1. After
-// the boot the operator resumes the tester, which comes up on this change's contract, and no text of
-// a look reaches it (olderTextStaysAway); the wake of look 3, brought due now, starts look 3, whose
-// task with its look id reaches the tester, and a pending with that id is answered 200.
+// the release before leaves it, the check with no look id, since that release makes none
+// (seedOlder), and the held tester's pending task that release's text of look 1. After the boot
+// the operator resumes the tester, which comes up on this change's contract, and no text of a look
+// reaches it (olderTextStaysAway); the wake of look 3, brought due now, starts look 3, whose task
+// with its look id reaches the tester, and a pending with that id is answered 200.
 func (r *lookIDLive) upgradeEndedLook() {
 	f, tester, check := r.firstLook("upgrade part 5", nil)
 	task := tester.prompt("the look-1 task", checkTaskLeadText)
@@ -3498,7 +3519,8 @@ func (r *lookIDLive) upgradeEndedLook() {
 
 // upgradeOlderStart is the two halves of part 6, each named by who: look 1's task reaches the idle
 // tester, whose agent does not answer it. With the daemon stopped, the store is left as the release
-// before leaves it, the tester's pending task that release's text of look 1, and beside it that
+// before leaves it, the check with no look id, since that release opened the look and makes no look
+// id (seedOlder), the tester's pending task that release's text of look 1, and beside it that
 // release's own start row of look 1, which waits on that task (olderStart), due at due from the stop:
 // an hour out, so the boot's start row runs first and the older row is brought due once the boot's
 // task has reached the tester, or a minute before, so the older row runs first. The boot gives the
