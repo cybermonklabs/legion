@@ -3,11 +3,13 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	neturl "net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -1717,33 +1719,66 @@ func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testi
 // a database migrated through N-1, and the set cut at N, so N is the one pending migration. The
 // census refuses a census naming what its schema lacks, so a shipped one that did would refuse
 // every deploy carrying it; this catches it at review instead.
+//
+// One database walking every census in turn took 111.6 s on CI and ended its leg alone
+// (INFRA-6349), so the censuses are split into storeTestParallelism runs of consecutive ones, each
+// a parallel subtest named by the versions of its first and last census. A run's database is a
+// copy of the ladder's template migrated through its first census's version less one
+// (openMigratedTestStore), and it walks as the one database did: before each census it applies the
+// migrations below that census's version that it has not applied, so each census is still taken on
+// a database carrying exactly the shipped migrations below its own. Every census is in exactly one
+// run, and a run applies each migration once.
+//
+// Each run holds as many censuses as the others, but the last, which holds the rest. Alone, in an
+// issue pod under -race, a step (a census and the migrations a run applies before it) took 139 ms
+// plus 1.09 ms per shipped migration through the census's version, which the census loads
+// (pgmigrate.Load); with the runs at once it took 1.9 s at about the 70th migration and 2.4 s at
+// about the 350th, so runs of as many censuses take about as long.
+//
+// Each run asks the ladder for its template before it waits for the others (t.Parallel), so the
+// asks come in version order and each template is built from the one of the run before; asked
+// once the runs start, in whatever order they start, a template could be built from an empty
+// database, applying the history again. answered counts the censuses of every run, and is read
+// once they have all ended: when no run failed, it is every census the set declares, so a census
+// no run took fails the test.
 func TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	migrations := shippedMigrations(t)
-	store := openEmptyTestStore(t)
-	url := store.Pool.Config().ConnString()
-	answered := 0
-	// The one database moves forward from census to census, applying only the migrations
-	// between, so each migration of the history is applied once rather than judged again before
-	// every later census.
-	through := 0
-	for _, migration := range migrations {
-		if migration.Census == "" {
-			continue
+	var censused []pgmigrate.Migration
+	for _, migration := range shippedMigrations(t) {
+		if migration.Census != "" {
+			censused = append(censused, migration)
 		}
-		migrateAbove(t, store, through, migration.Version-1)
-		through = migration.Version - 1
-		report, err := census(ctx, url, migrationsThrough(t, migration.Version), pgmigrate.CensusOptions{})
-		if err != nil {
-			t.Fatalf("census of %s: %v", migration.CensusName, err)
-		}
-		if len(report.Pending) != 1 || report.Pending[0].Count == nil || report.Refused() {
-			t.Errorf("%s did not answer one integer at schema %d:\n%s", migration.CensusName, migration.Version-1, reportText(report))
-		}
-		answered++
 	}
-	if answered == 0 {
+	var answered atomic.Int64
+	t.Run("runs", func(t *testing.T) {
+		for run := range slices.Chunk(censused, max(1, (len(censused)+storeTestParallelism-1)/storeTestParallelism)) {
+			first, last := run[0], run[len(run)-1]
+			t.Run(fmt.Sprintf("%d-%d", first.Version, last.Version), func(t *testing.T) {
+				migratedTemplates.template(t, adminDatabaseURL(t), first.Version-1)
+				t.Parallel()
+				ctx := context.Background()
+				store := openMigratedTestStore(t, first.Version-1)
+				url := store.Pool.Config().ConnString()
+				through := first.Version - 1
+				for _, migration := range run {
+					migrateAbove(t, store, through, migration.Version-1)
+					through = migration.Version - 1
+					report, err := census(ctx, url, migrationsThrough(t, migration.Version), pgmigrate.CensusOptions{})
+					if err != nil {
+						t.Fatalf("census of %s: %v", migration.CensusName, err)
+					}
+					if len(report.Pending) != 1 || report.Pending[0].Count == nil || report.Refused() {
+						t.Errorf("%s did not answer one integer at schema %d:\n%s", migration.CensusName, migration.Version-1, reportText(report))
+					}
+					answered.Add(1)
+				}
+			})
+		}
+	})
+	if got := answered.Load(); !t.Failed() && got != int64(len(censused)) {
+		t.Fatalf("the runs answered %d censuses, but the set declares %d", got, len(censused))
+	}
+	if answered.Load() == 0 {
 		t.Fatal("the set declares no census")
 	}
 }
