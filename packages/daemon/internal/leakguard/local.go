@@ -45,9 +45,9 @@ const execPathVar = "GIT_EXEC_PATH"
 //     architect on 2026-11-13).
 //   - The push can write only to url (writesOnlyToItsURL): the guard's environment carries no
 //     mark of the git wrapper's, git's exec path is its own, and every GIT_ name of that
-//     environment and every remote.<name>.<variable> key of the configuration is one the guard
-//     knows (knowsEveryInput), which leaves out a remote's own receive-pack program and remote
-//     helper.
+//     environment and every key of the configuration's section remote is one the guard knows
+//     (knowsEveryInput), which leaves out a remote's own receive-pack program and remote helper,
+//     and every key of that section with no remote's name or an empty one.
 //   - Every remote of the repository has a URL, and each URL `git remote get-url --all` and `git
 //     remote get-url --push --all` print for it is one localURL takes. Those print the URL after
 //     url.<base>.insteadOf, pushInsteadOf and remote.<name>.pushurl, which is the URL git hands
@@ -110,17 +110,18 @@ func (g *Guard) StaysLocal(ctx context.Context, dir, url string) bool {
 //     with `git --exec-path=<dir> push`, a `<dir>/git-receive-pack` that ran the real one on a
 //     second bare repository made `git push <bare A> main:e1` write e1 there, while the hook got
 //     bare A's path and saw GIT_EXEC_PATH=<dir>.
-//   - Every name of the guard's environment that begins GIT_ is one knownGitNames holds, and the
-//     variable of every key remote.<name>.<variable> of the push's configuration, as
-//     Guard.pushConfiguration reads it, is one knownRemoteKeys holds (knowsEveryInput, R1 (e) of
-//     dispatch://INFRA-3524's spec). That configuration holds every scope down to the command
-//     line's (GIT_CONFIG_PARAMETERS, which `git -c` hands the hook, and a GIT_CONFIG_COUNT
-//     block). knownRemoteKeys holds neither receivepack nor vcs: remote.<name>.receivepack writes
-//     where its program writes, as `--receive-pack` does (measured by both reviews of
-//     dispatch://INFRA-3309's spec), and remote.<name>.vcs makes git push through a remote helper
-//     whatever the URL holds. Each review round of cybermonklabs/legion#5914 found one more input
-//     of that kind, so the guard takes only the inputs it knows, and one it does not know, or one
-//     a later git adds, can only keep the push guarded.
+//   - Every name of the guard's environment that begins GIT_ is one knownGitNames holds, and
+//     every key of the section remote of the push's configuration, as Guard.pushConfiguration
+//     reads it, is remote.<name>.<variable> with a name that is not empty and a variable
+//     knownRemoteKeys holds (knowsEveryInput, R1 (e) of dispatch://INFRA-3524's spec). That
+//     configuration holds every scope down to the command line's (GIT_CONFIG_PARAMETERS, which
+//     `git -c` hands the hook, and a GIT_CONFIG_COUNT block). knownRemoteKeys holds neither
+//     receivepack nor vcs: remote.<name>.receivepack writes where its program writes, as
+//     `--receive-pack` does (measured by both reviews of dispatch://INFRA-3309's spec), and
+//     remote.<name>.vcs makes git push through a remote helper whatever the URL holds. Each review
+//     round of cybermonklabs/legion#5914 found one more input of that kind, so the guard takes
+//     only the inputs it knows, and one it does not know, or one a later git adds, can only keep
+//     the push guarded.
 //
 // Its first git is ownExecPath's (receivesAtItsURL), which does not go through Guard.git: it runs
 // the git it looks up itself, by its absolute path, under base's PATH with GIT_EXEC_PATH's entries
@@ -284,14 +285,23 @@ func (g *Guard) remoteStaysLocal(ctx context.Context, dir, name string) bool {
 }
 
 // knowsEveryInput is R1 (e) of dispatch://INFRA-3524's spec: whether every name of env, the
-// guard's environment, that begins GIT_ is one knownGitNames holds (knownGitName), and the
-// variable of every key remote.<name>.<variable> of config, the push's configuration as `git
-// config -z --list` writes it (Guard.pushConfiguration), is one knownRemoteKeys holds. A remote's
-// name can hold dots, so the key is read by its first and its last dot-part (keyParts), the
-// section without case and the variable as git writes it, in lower case; a key of the section
-// remote with no subsection, such as remote.pushDefault, is no remote's own and is not asked of.
-// Guard.StaysLocal clears no push it answers false for (writesOnlyToItsURL), and
-// Guard.readsReachItsRepository makes neither read of what the destination holds for one.
+// guard's environment, that begins GIT_ is one knownGitNames holds (knownGitName), and every key
+// of config, the push's configuration as `git config -z --list` writes it
+// (Guard.pushConfiguration), whose section is remote is one it can place as
+// remote.<name>.<variable>: a key with a subsection, the remote's name, that is not empty, and a
+// variable knownRemoteKeys holds. A remote's name can hold dots, so the key is read by its first
+// and its last dot-part (keyParts), the section without case and the variable as git writes it,
+// in lower case. Every other key of the section remote is an input the guard does not know, and
+// answers false: a key with no subsection, such as remote.pushDefault or an invented
+// remote.inventedtop, and a key whose subsection is empty, which git does not skip but applies to
+// the remote named by what follows `remote.`, a dot and the variable (config.c's
+// parse_config_key gives the name a length of 0, which remote.c's make_remote reads to the end of
+// the key). The review of cybermonklabs/legion#5914 measured that with git 2.47.3: with
+// remote..receivepack.url at a local path and remote..receivepack a receive-pack program that
+// wrote to another repository, `git push .receivepack` wrote there, and a guard that skipped the
+// key cleared the push. Guard.StaysLocal clears no push it answers false for
+// (writesOnlyToItsURL), and Guard.readsReachItsRepository makes neither read of what the
+// destination holds for one.
 func knowsEveryInput(env []string, config string) bool {
 	for _, entry := range env {
 		if name, _, _ := strings.Cut(entry, "="); strings.HasPrefix(name, "GIT_") && !knownGitName(name) {
@@ -300,8 +310,11 @@ func knowsEveryInput(env []string, config string) bool {
 	}
 	for entry := range strings.SplitSeq(config, "\x00") {
 		name, _, _ := strings.Cut(entry, "\n")
-		key, ok := keyParts(name)
-		if ok && strings.EqualFold(key.section, "remote") && key.subsection != "" && !slices.Contains(knownRemoteKeys, key.variable) {
+		key, subsectioned, ok := keyParts(name)
+		if !ok || !strings.EqualFold(key.section, "remote") {
+			continue
+		}
+		if !subsectioned || key.subsection == "" || !slices.Contains(knownRemoteKeys, key.variable) {
 			return false
 		}
 	}

@@ -92,8 +92,9 @@ It carries:
 
   - no key of the repository's configuration, in any scope down to the command line's, is `remote.<name>.vcs` or `remote.<name>.receivepack`;
 
-  - every name of the hook's environment that begins with `GIT_` is one the leak guard knows, and so is the variable of every `remote.<name>.<variable>` key of that configuration (`knownGitNames` and `knownRemoteKeys` in `local.go`):
-    a name or a key it does not know, `GIT_CONFIG`, `GIT_NAMESPACE` and `remote.<name>.proxy` among them, keeps the push guarded, and the guard reads the configuration as the push reads it, with no `GIT_CONFIG`, which `git config` alone reads;
+  - every name of the hook's environment that begins with `GIT_` is one the leak guard knows, and every key of that configuration's section `remote` is a `remote.<name>.<variable>` key with a name that is not empty and a variable the leak guard knows (`knownGitNames` and `knownRemoteKeys` in `local.go`):
+    a name or a key it does not know, `GIT_CONFIG`, `GIT_NAMESPACE` and `remote.<name>.proxy` among them, keeps the push guarded, as does a key of that section with no name, such as `remote.pushDefault`, or with an empty one, such as `remote..receivepack`, which git applies to the remote named `.receivepack`;
+    the guard reads the configuration as the push reads it, with no `GIT_CONFIG`, which `git config` alone reads;
 
   - the git wrapper did not mark the push as one that names its own receive-pack program: it exports `LEGION_PUSH_NAMES_RECEIVE_PACK=1` for a push with a word after the subcommand that is `--<P>` or `--<P>=<value>`, `<P>` a prefix of `receive-pack` or of `exec` of one letter or more, and the hook clears no push that carries that variable;
 

@@ -110,9 +110,12 @@ func (g *Guard) destinationHolds(ctx context.Context, dir, url string, tips []st
 //     (knowsEveryInput, R1 (e) of the spec, which decides the reads too): a GIT_ name that
 //     knownGitNames does not hold, among them GIT_CONFIG, under which `git config` reads another
 //     configuration than the push's, and GIT_PROXY_COMMAND, a program between git and a git://
-//     server; or a remote.<name>.<variable> key whose variable knownRemoteKeys does not hold, among
-//     them receivepack and vcs, by which the push can write somewhere other than url, and proxy
-//     and proxyauthmethod, which a push by that remote's name applies and a read of a URL does not.
+//     server; or a key of the section remote that is not remote.<name>.<variable> with a name
+//     that is not empty and a variable knownRemoteKeys holds: a key with no name or an empty one,
+//     such as remote..receivepack, which git applies to the remote named .receivepack, or a
+//     variable such as receivepack and vcs, by which the push can write somewhere other than url,
+//     and proxy and proxyauthmethod, which a push by that remote's name applies and a read of a
+//     URL does not.
 //   - The push can write somewhere other than url, as writesOnlyToItsURL reads it, by
 //     Guard.receivesAtItsURL: a receive-pack program the git wrapper marked, a remote helper or
 //     another exec path's git-receive-pack writes where that program writes, and what url holds
@@ -201,7 +204,7 @@ func gitServesItsTransport(url string) bool {
 
 // configKey is a key of git's configuration in its three parts, as `git config -z --list` writes
 // one (keyParts): its section, its subsection and its variable. In routedKeys a subsection of "*"
-// stands for any subsection, and "" for none.
+// stands for any subsection, and "" for none or an empty one (setsKeyOf).
 type configKey struct{ section, subsection, variable string }
 
 // routedKeys are the configuration keys under which the two reads of what a push's destination
@@ -237,27 +240,35 @@ var routedNames = []string{
 
 // keyParts is key, a key as `git config -z --list` writes it, in its three parts: its first
 // dot-part the section, its last the variable, and what lies between them the subsection, which
-// can hold dots, "" where there is none. git writes the section and the variable in lower case
-// and the subsection as it was written. A key with no dot is none git writes, and answers false.
-func keyParts(key string) (configKey, bool) {
-	section, rest, ok := strings.Cut(key, ".")
-	if !ok {
-		return configKey{}, false
+// can hold dots and can be empty. subsectioned is whether key has a subsection part at all, as a
+// key with a second dot has: git reads remote..receivepack, whose subsection is empty (a
+// `[remote ""]` section), apart from remote.pushdefault, which has none (config.c's
+// parse_config_key), and applies the first to the remote named .receivepack (knowsEveryInput).
+// git writes the section and the variable in lower case and the subsection as it was written. A
+// key with no dot is none git writes, and answers false.
+func keyParts(key string) (parts configKey, subsectioned, ok bool) {
+	section, rest, found := strings.Cut(key, ".")
+	if !found {
+		return configKey{}, false, false
 	}
 	last := strings.LastIndexByte(rest, '.')
 	if last < 0 {
-		return configKey{section: section, variable: rest}, true
+		return configKey{section: section, variable: rest}, false, true
 	}
-	return configKey{section: section, subsection: rest[:last], variable: rest[last+1:]}, true
+	return configKey{section: section, subsection: rest[:last], variable: rest[last+1:]}, true, true
 }
 
 // setsKeyOf is whether config, the output of `git config -z --list`, holds a key one of keys
 // names: the same section and variable, each read without case as git reads them, and a
-// subsection where keys has "*", none where it has "".
+// subsection where keys has "*", none or an empty one where it has "". git applies neither
+// core..gitproxy nor http..proxy, whose subsections are empty (measured with git 2.47.3 on
+// 2026-11-28: under the first, git ls-remote of a git:// URL ran no proxy program, and under the
+// second, that of an http:// URL went through no proxy), so reading an empty subsection as none
+// can only keep the reads unmade.
 func setsKeyOf(config string, keys []configKey) bool {
 	for entry := range strings.SplitSeq(config, "\x00") {
 		name, _, _ := strings.Cut(entry, "\n")
-		key, ok := keyParts(name)
+		key, _, ok := keyParts(name)
 		if !ok {
 			continue
 		}
@@ -291,11 +302,15 @@ func setsNameOf(env, names []string) bool {
 // https://example.invalid/fork, url.<real.git>.pushInsteadOf that URL and url.<fake.git>.insteadOf
 // <real.git>, the push landed in real.git, the hook was handed real.git, and a git ls-remote of it
 // in the clone listed fake.git's refs. The section and the variable are read without case, and
-// the base is any.
+// the base is any, an empty one and none included: git applies url..insteadOf, whose base is
+// empty, and not url.insteadOf, which has none (measured with git 2.47.3 on 2026-11-28: under the
+// first, git ls-remote of http://example.invalid/<path> listed the repository at <path>, and under
+// the second it tried to reach example.invalid), so reading the second as a rewrite can only keep
+// the reads unmade.
 func rewritesURL(config, url string) bool {
 	for entry := range strings.SplitSeq(config, "\x00") {
 		name, value, _ := strings.Cut(entry, "\n")
-		key, ok := keyParts(name)
+		key, _, ok := keyParts(name)
 		if ok && strings.EqualFold(key.section, "url") && strings.EqualFold(key.variable, "insteadof") && strings.HasPrefix(url, value) {
 			return true
 		}
@@ -316,15 +331,24 @@ func rewritesURL(config, url string) bool {
 //
 // url names a remote where a key of config, the output of `git config -z --list`, is
 // remote.<url>.<variable> for any variable, the subsection compared exactly, as git compares a
-// remote's name. Where url is a name git reads the legacy files for (valid_remote_nick: not
-// empty, not `.` or `..`, and no `/`), it also names one where remotes/<url> or branches/<url>
-// exists under the repository's git directory, the two paths read with one
-// `git rev-parse --path-format=absolute --git-path remotes/<url> --git-path branches/<url>` in
-// dir, and only then. A read that fails answers true, which keeps the push to the base's bound.
+// remote's name, or remote..<variable> where url is .<variable>: git applies a key whose
+// subsection is empty to the remote named by what follows `remote.`, a dot and the variable
+// (remote.c's make_remote reads a name of length 0 to the end of the key). Measured with git
+// 2.47.3 on 2026-11-28: with remote..uploadpack of `git-upload-pack '…/other.git' #`, git
+// ls-remote .uploadpack listed other.git's main. Where url is a name git reads the legacy files
+// for (valid_remote_nick: not empty, not `.` or `..`, and no `/`), it also names one where
+// remotes/<url> or branches/<url> exists under the repository's git directory, the two paths read
+// with one `git rev-parse --path-format=absolute --git-path remotes/<url> --git-path
+// branches/<url>` in dir, and only then. A read that fails answers true, which keeps the push to
+// the base's bound.
 func (g *Guard) urlNamesARemote(ctx context.Context, dir, config, url string) bool {
 	for entry := range strings.SplitSeq(config, "\x00") {
 		name, _, _ := strings.Cut(entry, "\n")
-		if key, ok := keyParts(name); ok && strings.EqualFold(key.section, "remote") && key.subsection == url {
+		key, subsectioned, ok := keyParts(name)
+		if !ok || !strings.EqualFold(key.section, "remote") {
+			continue
+		}
+		if key.subsection == url || (subsectioned && key.subsection == "" && "."+key.variable == url) {
 			return true
 		}
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"os"
 	"os/exec"
@@ -822,6 +823,19 @@ func (r localPush) holding(t *testing.T) string {
 	return r.local
 }
 
+// pushElsewhere makes the push of main by remote under runner, as git makes it once its hook exits
+// 0, and answers what root/other.git, a bare repository the row's receive-pack program writes to
+// and the hook's URL does not name, then holds, "" for nothing.
+func (r localPush) pushElsewhere(t *testing.T, runner fixturegit.Runner, remote string) string {
+	t.Helper()
+	other := filepath.Join(r.root, "other.git")
+	runner.Run(r.dir, "git", "-c", "core.hooksPath=/dev/null", "push", "--quiet", remote, "main")
+	if refs := r.fixture.Run(other, "git", "for-each-ref"); refs != "" {
+		return other + " took " + refs
+	}
+	return ""
+}
+
 // Every push the hook does not clear gets the guard it got on the base this change merges onto,
 // its exit status and its whole text (R2 of dispatch://INFRA-3524's spec). Each row's commit adds
 // a line the fixture rule file refuses, and each row runs with no shared check under a deployment
@@ -833,20 +847,22 @@ func (r localPush) holding(t *testing.T) string {
 // remote.<name>.vcs and remote.<name>.receivepack in the repository's configuration and on git's
 // command line, the git wrapper's mark, GIT_EXEC_PATH at another directory, a legacy remote file
 // at a host, and inputs the guard does not know (R1 (e)): GIT_CONFIG=/dev/null over a
-// remote.origin.receivepack that writes to another bare repository, a GIT_ name and a
-// remote.origin. key; and every URL that is not one of the four spellings of a local path the hook
-// clears. The rows of a push that can write somewhere other than its URL, or that holds an input
-// the guard does not know, push to a bare clone of the repository (localPush.holding), whose
-// answers to the guard's reads of what a destination holds would pass the push. Where the hook
-// clears the GIT_CONFIG row's push, which the base never did, the row makes the push as git makes
-// it once its hook exits 0, and fails where that push wrote to the other repository. Each expected
-// text is the one the same row printed with the base's code (f57cfa7e, and 2e7e4bda for the rows
-// of R1 (e)), which clears no push, but for one: with the stand-in that passes, the push to `.`
-// exits 0 and prints nothing, where the base's guard refused it. That verdict is R10's
-// (dispatch://INFRA-3524's spec, under its plan's decision 18): the destination is the repository
-// itself, whose refs the guard's reads of what a destination holds answer, so the push adds no
-// commit to it and the rules read no commit, as they read none of a push the destination holds
-// whole.
+// remote.origin.receivepack that writes to another bare repository, a GIT_ name, a remote.origin.
+// key, a remote..receivepack that writes to another bare repository, which git applies to the
+// remote named .receivepack, and remote.inventedtop, a key of the section remote with no remote's
+// name; and every URL that is not one of the four spellings of a local path the hook clears. The
+// rows of a push that can write somewhere other than its URL, or that holds an input the guard
+// does not know, push to a bare clone of the repository (localPush.holding), whose answers to the
+// guard's reads of what a destination holds would pass the push. Where the hook clears the push of
+// the GIT_CONFIG row or of the remote..receivepack row, which the base never did, the row makes
+// the push as git makes it once its hook exits 0, and fails where that push wrote to the other
+// repository. Each expected text is the one the same row printed with the base's code (f57cfa7e,
+// and 2e7e4bda for the rows of R1 (e)), which clears no push, but for one: with the stand-in that
+// passes, the push to `.` exits 0 and prints nothing, where the base's guard refused it. That
+// verdict is R10's (dispatch://INFRA-3524's spec, under its plan's decision 18): the destination
+// is the repository itself, whose refs the guard's reads of what a destination holds answer, so
+// the push adds no commit to it and the rules read no commit, as they read none of a push the
+// destination holds whole.
 func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	for _, tc := range []struct {
@@ -854,6 +870,8 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 		// push adds to r what the row's repository holds, sets what the push's environment
 		// holds, and answers the URL git hands the hook.
 		push func(t *testing.T, r localPush) string
+		// remote is the remote's name git hands the hook, origin where it is "".
+		remote string
 		// github is whether the URL names a repository on GitHub, whose push the passing
 		// stand-in would hand to a visibility read.
 		github bool
@@ -924,12 +942,7 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 			t.Setenv("GIT_CONFIG", os.DevNull)
 			return url
 		}, cleared: func(t *testing.T, r localPush) string {
-			other := filepath.Join(r.root, "other.git")
-			r.fixture.With("GIT_CONFIG="+os.DevNull).Run(r.dir, "git", "-c", "core.hooksPath=/dev/null", "push", "--quiet", "origin", "main")
-			if refs := r.fixture.Run(other, "git", "for-each-ref"); refs != "" {
-				return other + " took " + refs
-			}
-			return ""
+			return r.pushElsewhere(t, r.fixture.With("GIT_CONFIG="+os.DevNull), "origin")
 		}},
 		{name: "GIT_INVENTED_NAME, a GIT_ name the guard does not know", push: func(t *testing.T, r localPush) string {
 			url := r.holding(t)
@@ -939,6 +952,23 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 		{name: "origin sets remote.origin.inventedkey, a key the guard does not know", push: func(t *testing.T, r localPush) string {
 			r.fixture.Run(r.dir, "git", "remote", "add", "origin", r.local)
 			r.fixture.Run(r.dir, "git", "config", "remote.origin.inventedkey", "invented")
+			return r.holding(t)
+		}},
+		{name: "remote..receivepack, which git applies to the remote named .receivepack, writes to another bare repository", remote: ".receivepack", push: func(t *testing.T, r localPush) string {
+			r.fixture.Run(r.root, fixturegit.InitBare(filepath.Join(r.root, "other.git"), "main")...)
+			url := r.holding(t)
+			// A key of the section remote whose remote's name is empty is one git applies to the
+			// remote named by what follows `remote.`, here .receivepack, whose URL is the hook's:
+			// `git push .receivepack` runs this receive-pack program (git 2.47.3).
+			r.fixture.Run(r.dir, "git", "config", "remote..receivepack.url", url)
+			r.fixture.Run(r.dir, "git", "config", "remote..receivepack", "git-receive-pack '"+filepath.Join(r.root, "other.git")+"' #")
+			return url
+		}, cleared: func(t *testing.T, r localPush) string {
+			return r.pushElsewhere(t, r.fixture, ".receivepack")
+		}},
+		{name: "remote.inventedtop, a key of the section remote with no remote's name", push: func(t *testing.T, r localPush) string {
+			r.fixture.Run(r.dir, "git", "remote", "add", "origin", r.local)
+			r.fixture.Run(r.dir, "git", "config", "remote.inventedtop", "invented")
 			return r.holding(t)
 		}},
 		{name: "the mark is set", push: func(t *testing.T, r localPush) string {
@@ -992,6 +1022,7 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 		{name: ".", holdsThePush: true, push: func(*testing.T, localPush) string { return "." }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			remote := cmp.Or(tc.remote, "origin")
 			for _, check := range []struct {
 				name string
 				// set names the row's shared check, after the repository is built, and answers
@@ -1005,20 +1036,20 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 					// The pointer file is the last place the guard looks, under the home noSharedCheck
 					// made, and the base's text names it.
 					pointer := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "public-leak-check", "path")
-					return 2, "LEAK CHECK SETUP ERROR: the push to origin: the shared public leak check could not be found: " +
+					return 2, "LEAK CHECK SETUP ERROR: the push to " + remote + ": the shared public leak check could not be found: " +
 						"PUBLIC_LEAK_CHECK names none, public-leak-check.sh is on no PATH entry, and the pointer file " + pointer +
 						" could not be read: no such file or directory\n"
 				}},
 				{name: "with a stand-in check that refuses", set: func(t *testing.T) (int, string) {
 					t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), leakguardtest.Refuses))
-					return 3, "LEAK CHECK: refusing the push to origin: the shared public leak check refused it\n  LEAK CHECK: refusing: one of ours\n"
+					return 3, "LEAK CHECK: refusing the push to " + remote + ": the shared public leak check refused it\n  LEAK CHECK: refusing: one of ours\n"
 				}},
 				{name: "with a stand-in check that passes", skip: tc.github, set: func(t *testing.T) (int, string) {
 					t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes))
 					if tc.holdsThePush {
 						return 0, ""
 					}
-					return 3, "LEAK CHECK: refusing the push to origin: the deployment's private-name rules match it\n" +
+					return 3, "LEAK CHECK: refusing the push to " + remote + ": the deployment's private-name rules match it\n" +
 						"  " + leakguardtest.ReportLine(refusedFile, leakguardtest.RulesHostClass, leakguardtest.RulesHost, 1, refusedLine) + "\n"
 				}},
 			} {
@@ -1033,9 +1064,9 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 					t.Chdir(dir)
 					code, want := check.set(t)
 					t.Setenv(leakguard.RulesFileVar, leakguardtest.WriteRules(t, t.TempDir()))
-					gotCode, printed := leakCheck(t, line, "pre-push", "origin", url)
+					gotCode, printed := leakCheck(t, line, "pre-push", remote, url)
 					if gotCode != code || printed != want {
-						t.Errorf("legion leak-check pre-push origin %s = exit %d, stderr\n%s\nwant exit %d and\n%s", url, gotCode, printed, code, want)
+						t.Errorf("legion leak-check pre-push %s %s = exit %d, stderr\n%s\nwant exit %d and\n%s", remote, url, gotCode, printed, code, want)
 					}
 					if gotCode != 0 || tc.cleared == nil {
 						return

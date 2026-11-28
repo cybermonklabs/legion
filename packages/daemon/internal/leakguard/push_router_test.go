@@ -128,22 +128,26 @@ func TestAPushThatNamesAProgramOrProxyBetweenGitAndTheServerKeepsTheBasesBound(t
 // A push that holds an input the guard does not know keeps the base's bound (R1 (e) of
 // dispatch://INFRA-3524's spec, which decides R10's reads too, and the seventeenth case of its
 // check c10): the guard makes neither read of what the hook's URL holds where a name of its
-// environment that begins GIT_ is not one of knownGitNames, or the variable of a
-// remote.<name>.<variable> key of the push's configuration is not one of knownRemoteKeys
-// (knowsEveryInput). The cases are built as the tenth case's are (guardsARoutedPush): the
-// destination holds a commit that adds the refused line, which no remote-tracking ref holds, and
-// the new branch starts from it, so reads that reached the destination would take that commit as
-// held and pass the push, while the base reads it and refuses the push.
+// environment that begins GIT_ is not one of knownGitNames, or a key of the section remote of the
+// push's configuration is not remote.<name>.<variable> with a name that is not empty and a
+// variable knownRemoteKeys holds (knowsEveryInput). The cases are built as the tenth case's are
+// (guardsARoutedPush): the destination holds a commit that adds the refused line, which no
+// remote-tracking ref holds, and the new branch starts from it, so reads that reached the
+// destination would take that commit as held and pass the push, while the base reads it and
+// refuses the push.
 //
 // The first case is the tenth case's http.proxy, which routes git-upload-pack to the destination
 // and git-receive-pack to a second repository, under GIT_CONFIG=/dev/null, which only `git config`
 // reads: a read of the configuration under it lists no http.proxy, while the push and the reads,
 // which do not read it, go through the proxy, so that reads made then would pass the push and land
 // the refused commit in the second repository. The review of cybermonklabs/legion#5914
-// reproduced that at 31a219d1. The other two reach the destination by its own URL, a server of the
+// reproduced that at 31a219d1. The others reach the destination by its own URL, a server of the
 // test's own on 127.0.0.1 with no router, so that git-receive-pack reaches the destination too and
-// the case shows only that no read is made: once under GIT_INVENTED_NAME=1, and once with
-// remote.origin.inventedkey in the clone's configuration.
+// the case shows only that no read is made: under GIT_INVENTED_NAME=1; with
+// remote.origin.inventedkey in the clone's configuration; with remote..receivepack.url at the
+// hook's URL and remote..receivepack, a key whose remote's name is empty, which git applies to the
+// remote named .receivepack; and with remote.inventedtop, a key of the section remote with no
+// remote's name.
 func TestAPushWithAnInputTheGuardDoesNotKnowKeepsTheBasesBound(t *testing.T) {
 	direct := func(t *testing.T, r routes) string {
 		t.Helper()
@@ -175,6 +179,19 @@ func TestAPushWithAnInputTheGuardDoesNotKnowKeepsTheBasesBound(t *testing.T) {
 			name: "remote.origin.inventedkey, a key the guard does not know",
 			route: func(t *testing.T, r routes) (string, []string, []string) {
 				return direct(t, r), []string{"remote.origin.inventedkey", "invented"}, []string{"GIT_ALLOW_PROTOCOL=file:http"}
+			},
+		},
+		{
+			name: "remote..receivepack, which git applies to the remote named .receivepack",
+			route: func(t *testing.T, r routes) (string, []string, []string) {
+				url := direct(t, r)
+				return url, []string{"remote..receivepack.url", url, "remote..receivepack", "git-receive-pack"}, []string{"GIT_ALLOW_PROTOCOL=file:http"}
+			},
+		},
+		{
+			name: "remote.inventedtop, a key of the section remote with no remote's name",
+			route: func(t *testing.T, r routes) (string, []string, []string) {
+				return direct(t, r), []string{"remote.inventedtop", "invented"}, []string{"GIT_ALLOW_PROTOCOL=file:http"}
 			},
 		},
 	} {
