@@ -284,9 +284,10 @@ type DispatchPost struct {
 // whose MsgId comes from the envelope's dedupe key whatever that key names, so a repeat under one
 // idempotency key gets it whoever minted the key. Its envelope then comes from the hand-off the
 // stream holds, read back on the hand-off's own subject (the listener's answerHandedOff) by the
-// rules above, as a live session's repeat's does, and its charge is the wake its send reported,
-// which the verdict does not cancel. Absent means false, which is what an older listener's answer
-// reads as.
+// rules above, as a live session's repeat's does. A send handed off reports no wake, and it is
+// charged what the verdict of the hand-off's publish marks (senderCharge.published), which is
+// nothing for a repeat the stream already held. Absent means false, which is what an older
+// listener's answer reads as.
 type SendResponse struct {
 	Envelope
 	// ExpectsReply is this answer's expects_reply: the answered envelope's, written in the
@@ -885,8 +886,8 @@ type LegionRoleAgentList struct {
 }
 
 // LegionAgentBatch is the body of PUT /v1/legion/agents, a batch of at most 256 entries
-// (legionagents.MaxBatch) in at most 1 MiB, and its 200's answer: the entries as stored, each
-// with its recorded_at.
+// (legionagents.MaxBatch) in at most 4 MiB, the /v1 body limit (apiBodyLimit in cmd/listener),
+// and its 200's answer: the entries as stored, each with its recorded_at.
 type LegionAgentBatch struct {
 	Entries []LegionAgentEntry `json:"entries"`
 }

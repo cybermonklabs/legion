@@ -28,15 +28,14 @@ import (
 // registry does not name, which is kept, stored or woken as before the hand-off existed and raises
 // the wake.
 //
-// The registry's entry carries no `released` any more. Each test writes the released agent's entry
-// as the daemon of 043f9c67 wrote the entry of a claim idle release suspended (putReleasedEntry):
-// the listener reads past the field, while the listener of 043f9c67 read it and handed the
-// agent's message to no daemon, which is what each test fails on with that code.
+// Each test writes the released agent's entry with an extra field the registry's entry does not
+// declare, "released": true, as a daemon that marked its idle-released claims might
+// (putReleasedEntry): the listener reads past the field and hands the agent's message off.
 
-// putReleasedEntry writes entry to the Legion agent registry as the daemon of 043f9c67 wrote the
-// entry of a session whose claim idle release suspended: the entry as the registry stores it
+// putReleasedEntry writes entry to the Legion agent registry with an extra, undeclared field, as a
+// daemon that marked its idle-released claims might: the entry as the registry stores it
 // (agents.Put, which writes its three keys and its recorded_at), then each of those keys again as
-// raw bytes carrying "released": true, a field the registry's entry no longer declares.
+// raw bytes carrying "released": true, a field the registry's entry does not declare.
 func putReleasedEntry(t *testing.T, client *bus.Client, agents *legionagents.Store, entry legionagents.Entry) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -60,7 +59,7 @@ func putReleasedEntry(t *testing.T, client *bus.Client, agents *legionagents.Sto
 		"issue." + stored.Issue + "." + stored.SessionID,
 	} {
 		if _, err := kv.Put(key, released); err != nil {
-			t.Fatalf("write %s as the daemon of 043f9c67 wrote a released entry: %v", key, err)
+			t.Fatalf("write %s carrying the undeclared field \"released\": true: %v", key, err)
 		}
 	}
 }

@@ -32,8 +32,7 @@ const (
 )
 
 // handoffRig is one listener's hand-off over its own connection, with the /v1 routes that write
-// the registry and the project's answering record beside it. liveWindow is how long a
-// registration counts as live, so a test can put a session that is unresponsive but not gone.
+// the registry and the project's answering record beside it.
 type handoffRig struct {
 	*legionListener
 	client   *bus.Client
@@ -42,6 +41,8 @@ type handoffRig struct {
 	handoff  *legionHandoff
 }
 
+// newHandoffRig builds a handoffRig. liveWindow is how long a registration counts as live, so a
+// test can put a session that is unresponsive but not gone.
 func newHandoffRig(t *testing.T, liveWindow time.Duration) *handoffRig {
 	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
@@ -123,8 +124,8 @@ func handoffs(t *testing.T, client *bus.Client, sessionID string) (uint64, []byt
 	return count, last.Data
 }
 
-// wireHandoff is a hand-off as LegionAgentHandoffSchema and intake.Handoff read it: exactly these
-// five fields.
+// wireHandoff is a hand-off as LegionAgentHandoffSchema (packages/contracts/src/legion-handoff.ts)
+// reads it: exactly these five fields.
 type wireHandoff struct {
 	OriginalTopic string          `json:"original_topic"`
 	TargetSession string          `json:"target_session"`

@@ -402,7 +402,7 @@ func TestNoBrokerTokenWritesTheLegionAgentRegistry(t *testing.T) {
 
 // v1RoutePatterns is how many patterns registerV1Routes registers today, each of which the walk
 // below must visit at least once.
-const v1RoutePatterns = 17
+const v1RoutePatterns = 18
 
 // walkSession is where a walk request's path or body names the session its token names.
 const walkSession = "<session>"

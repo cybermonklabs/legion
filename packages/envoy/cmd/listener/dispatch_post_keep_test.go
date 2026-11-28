@@ -29,10 +29,10 @@ import (
 
 // Dispatch's message or mention for a role no session holds, whose Legion agent registry holds no
 // entry for the role while its project answers, is published on the role's topic for the role's
-// first holder (publishForRole in internal/dispatch/api). It names no source session, and names
-// the Dispatch post it delivers (listenerwire.PublishRequest.DispatchPost), which the listener
-// takes from Dispatch's own principal alone: such a copy is kept, wakes the role, reaches the
-// role's first holder, and ends with an expiry notice to Dispatch rather than a dead letter.
+// first holder (publishForRole in cybermonklabs/legion#2230). It names no source session, and
+// names the Dispatch post it delivers (listenerwire.PublishRequest.DispatchPost), which the
+// listener takes from Dispatch's own principal alone: such a copy is kept, wakes the role, reaches
+// the role's first holder, and ends with an expiry notice to Dispatch rather than a dead letter.
 
 // deliveredPost is the Dispatch post these tests' publishes deliver.
 var deliveredPost = listenerwire.DispatchPost{Kind: listenerwire.DispatchPostMessage, ID: "6f1c2b9a-4d3e-4f5a-8b7c-9d0e1f2a3b4c"}
@@ -230,8 +230,7 @@ func TestRefuseDispatchPostRejectsInvalidPublishesWith400(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", bytes.NewReader(body))
-		r.Header.Set("Content-Type", "application/json")
+		r := postJSON("/v1/messages/publish", string(body))
 		r = r.WithContext(withVerifiedPrincipal(r.Context(), rigDispatchPrincipal))
 		recorder := httptest.NewRecorder()
 		publishHandler(d, listenerRigLogger(t, "listener")).ServeHTTP(recorder, r)
