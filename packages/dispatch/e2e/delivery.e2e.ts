@@ -391,6 +391,15 @@ test("on a phone a reconcile error arriving under the finger widens nothing @pho
 
 test("the Repository facet narrows the list through the server", async ({ browser }) => {
   await seedDeliveryFixture();
+  // A pull request of a second repository in the same window, so that a pick of acme/widgets has
+  // a row to take away.
+  await sql(
+    `INSERT INTO delivery_pull_requests (
+       repo, number, title, url, author, created_at, merged_at, additions, deletions, rework, issue_key, sessions, partial
+     ) VALUES
+       ('acme/gadgets', 3, 'feat: a gadget', 'https://github.com/acme/gadgets/pull/3', 'octocat',
+        '2024-06-01T04:00:00Z', '2024-06-01T05:00:00Z', 2, 1, false, null, ARRAY[]::text[], false)`
+  );
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await openTimeline(page);
@@ -399,17 +408,17 @@ test("the Repository facet narrows the list through the server", async ({ browse
   await expect(page).toHaveURL(/mode=list/);
   // The rows carry `data-pr-row`; their cells stand in whatever column order the reader kept.
   const listed = page.locator("tbody tr[data-pr-row]");
-  await expect(listed).toHaveCount(2);
+  await expect(listed).toHaveCount(3);
 
-  // The Repository facet narrows the list server-side; acme/widgets is the only repository
-  // seeded, so selecting it is a no-op on the result but proves the picker and the facet
-  // round-trip to the server run. Each option carries its count.
+  // The Repository facet narrows the list in Dispatch's answer: the pick rides in the address and
+  // the live view, and the acme/gadgets pull request leaves the list. Each option carries its count.
   await openFilterPanel(page);
   const repository = page.getByRole("button", { name: /^Repository:/ });
   await repository.click();
   await page.getByRole("option", { name: "acme/widgets, 2 PRs" }).click();
   await page.keyboard.press("Escape");
   await expect(repository).toHaveText("1 selected");
+  await expect(page).toHaveURL(/[?&]repo=acme(%2F|\/)widgets(&|$)/);
   await expect(listed).toHaveCount(2);
   await context.close();
 });
@@ -422,7 +431,8 @@ test("the list reaches a deploy's drill-down by keyboard, and Escape hands focus
   const page = await context.newPage();
   await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}&mode=list`);
 
-  // The rows are one tab stop: the first row takes focus, the arrow key moves to the next.
+  // No row is a Tab stop: the first row takes the focus by script here, and the arrow key moves
+  // it to the next.
   const rows = page.locator("tbody tr[data-pr-row]");
   await expect(rows).toHaveCount(2);
   await rows.first().focus();
