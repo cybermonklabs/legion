@@ -12,15 +12,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // keptHandover is one forward a drain of a kept lane made: the session it reached, the dedupe
@@ -36,7 +39,9 @@ type keptHandover struct {
 // config whose role forwards the test stands in for, and the /v1/roles/set route over them. A
 // drain is started in one of the ways production starts one - by a claim through that route, by a
 // keep (keepForNextHolder) or by the sweep (sweepKeptRoleLanes) - rather than by calling the drain
-// itself, since what these tests are about is what happens after one walk of the lane ends.
+// itself, since what these tests are about is what happens after one walk of the lane ends. A test
+// that drives the handover's pauses (clock) or sets its walk's bounds (keptDrainMax) sets them on
+// deps.delivery before the claim, since the claim route hands its handover a copy of it.
 type keptLaneUnderClaim struct {
 	harness listenerDeliveryHarness
 	deps    *listenerDeps
@@ -143,21 +148,57 @@ func (l *keptLaneUnderClaim) claim(t *testing.T, sessionID, role string) {
 	}
 }
 
-// await collects the next count forwards, within window, and fails with the listener's log when
-// fewer arrive.
-func (l *keptLaneUnderClaim) await(t *testing.T, count int, window time.Duration) []keptHandover {
+// await collects the next count forwards, each through the shared wait, which fails naming how
+// many had arrived; the harness prints the listener's log for a test that failed.
+func (l *keptLaneUnderClaim) await(t *testing.T, count int) []keptHandover {
 	t.Helper()
 	collected := make([]keptHandover, 0, count)
-	deadline := time.After(window)
 	for len(collected) < count {
-		select {
-		case handed := <-l.forwards:
-			collected = append(collected, handed)
-		case <-deadline:
-			t.Fatalf("the drain forwarded %d of %d copies within %s: %+v\n%s", len(collected), count, window, collected, l.harness.logs.String())
-		}
+		collected = append(collected, testwait.Receive(t,
+			fmt.Sprintf("forward %d of the %d copies the drain hands over, after %+v", len(collected)+1, count, collected), l.forwards))
 	}
 	return collected
+}
+
+// awaitHandoverPause waits until the handover under test has armed its pause of pause on clk, the
+// clock of its configuration (handOverKeptRole waits each pause with cfg.clk().Sleep), a pause
+// begun at clk's present. The handover then waits in it until the test moves clk past it. Every
+// read a handover bounds on clk is bounded by roleHolderReadTimeout and has ended before the pause
+// after it begins, so a test whose pause is as long as that bound calls this only once it has seen
+// the work the pause follows (a forward that failed): the deadline found is then the pause's own.
+func awaitHandoverPause(t *testing.T, clk *clocktest.Fake, pause time.Duration) {
+	t.Helper()
+	clk.AwaitArmedAt(t, fmt.Sprintf("the handover's pause of %s before its next walk", pause), clk.Now().Add(pause))
+}
+
+// handoverEnd is what endedOrPaused found: the handover returned with err, or it is waiting in
+// the pause it armed (paused), and the deadlines armed on its clock at that reading.
+type handoverEnd struct {
+	paused bool
+	err    error
+	armed  []time.Time
+}
+
+// endedOrPaused waits until the handover whose error comes on ended has returned, or has armed
+// its pause of pause on clk (awaitHandoverPause), whichever it does, and reports which. No pause
+// on clk ends until the test moves clk, so a handover that returned took no pause; and pause is
+// not roleHolderReadTimeout, the one bound the handover's reads arm on clk, so a deadline found at
+// the pause's moment is the pause. A handover found paused is still waiting in that pause.
+func endedOrPaused(t *testing.T, clk *clocktest.Fake, pause time.Duration, ended <-chan error) handoverEnd {
+	t.Helper()
+	if pause == roleHolderReadTimeout {
+		t.Fatalf("endedOrPaused cannot tell a pause of %s from a read bounded by roleHolderReadTimeout", pause)
+	}
+	at := clk.Now().Add(pause)
+	return testwait.Until(t, fmt.Sprintf("the handover to end or to arm its pause of %s", pause), func() (handoverEnd, bool) {
+		select {
+		case err := <-ended:
+			return handoverEnd{err: err}, true
+		default:
+		}
+		armed := clk.Armed()
+		return handoverEnd{paused: slices.Contains(armed, at), armed: armed}, slices.Contains(armed, at)
+	})
 }
 
 // keys is the dedupe key of each forward made so far, in order.
@@ -172,27 +213,31 @@ func (l *keptLaneUnderClaim) keys() []string {
 }
 
 // A role's kept lane is handed over whole, from the one claim that started it. One walk of the
-// lane forwards at most roleKeepDrainMax copies, and nothing starts another drain while the
-// holder stays live: a keep happens only while a role has no live holder, a live holder claims no
-// second time, and a heartbeat of a holder that was live already starts no handover, since only
-// the registration that makes a holder live again (subscribeHandler) and the claim route's
-// refresh of a claimant that was not live (roleSetHandler) start one. A lane of more copies than
-// one walk forwards therefore used to strand every copy past the twentieth until it aged out
-// unread, with every sender answered 202 kept.
+// lane forwards at most the configuration's drain bound of copies (keptDrainBound,
+// roleKeepDrainMax in the listener), and nothing starts another drain while the holder stays live:
+// a keep happens only while a role has no live holder, a live holder claims no second time, and a
+// heartbeat of a holder that was live already starts no handover, since only the registration that
+// makes a holder live again (subscribeHandler) and the claim route's refresh of a claimant that
+// was not live (roleSetHandler) start one. A lane of more copies than one walk forwards therefore
+// used to strand every copy past the walk's last until it aged out unread, with every sender
+// answered 202 kept. The walk here forwards a few copies (keptDrainMax), so a lane one walk's
+// budget and five longer is ten copies rather than roleKeepDrainMax and five.
 func TestOneClaimHandsOverAKeptLaneLongerThanOneWalkOfIt(t *testing.T) {
 	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-handover-budget"
 		holder = "ses_kept_handover_budget"
-		copies = roleKeepDrainMax + 5
+		walk   = 5
+		copies = walk + 5
 	)
 	lane := newKeptLaneUnderClaim(t, harness, func(int, string, contracts.Envelope) error { return nil })
+	lane.deps.delivery.keptDrainMax = walk
 	keys := lane.keep(t, role, "kept-handover-budget", copies)
 	lane.register(t, holder)
 
 	lane.claim(t, holder, role)
-	handed := lane.await(t, copies, 30*time.Second)
+	handed := lane.await(t, copies)
 
 	for _, forwarded := range handed {
 		if forwarded.holder != holder {
@@ -208,7 +253,8 @@ func TestOneClaimHandsOverAKeptLaneLongerThanOneWalkOfIt(t *testing.T) {
 // holder stays live nothing but the sweep starts one: no claim follows a holder that already holds
 // the role, no keep follows a role that has one, and a heartbeat of a holder that was live already
 // starts none (subscribeHandler). The handover walks the lane again itself, after a back-off, so
-// the copy reaches the holder its sender was told it was kept for.
+// the copy reaches the holder its sender was told it was kept for. The back-off is waited on the
+// handover's clock, which the test moves past it once the handover has armed it.
 func TestAKeptCopyWhoseForwardFailedReachesTheHolderWithNoSecondClaim(t *testing.T) {
 	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
@@ -216,17 +262,24 @@ func TestAKeptCopyWhoseForwardFailedReachesTheHolderWithNoSecondClaim(t *testing
 		role   = "kept-handover-retry"
 		holder = "ses_kept_handover_retry"
 	)
+	failed := make(chan int, 1)
 	lane := newKeptLaneUnderClaim(t, harness, func(attempt int, _ string, _ contracts.Envelope) error {
 		if attempt == 1 {
+			failed <- attempt
 			return fmt.Errorf("the forward this listener's first walk of the lane ended on")
 		}
 		return nil
 	})
+	clk := clocktest.New(time.Now())
+	lane.deps.delivery.clock = clk
 	keys := lane.keep(t, role, "kept-handover-retry", 1)
 	lane.register(t, holder)
 
 	lane.claim(t, holder, role)
-	handed := lane.await(t, 1, 30*time.Second)
+	testwait.Receive(t, "the first walk's forward, which fails", failed)
+	awaitHandoverPause(t, clk, roleKeepDrainRetryPause)
+	clk.Advance(roleKeepDrainRetryPause)
+	handed := lane.await(t, 1)
 
 	if handed[0].holder != holder || handed[0].key != keys[0] {
 		t.Fatalf("the copy that reached a holder is %+v, want %s to %s", handed[0], keys[0], holder)
@@ -263,7 +316,7 @@ func TestADrainStopsWhenTheRoleChangesHolderUnderIt(t *testing.T) {
 	lane.register(t, second)
 
 	lane.claim(t, first, role)
-	handed := lane.await(t, copies, 30*time.Second)
+	handed := lane.await(t, copies)
 
 	for index, forwarded := range handed {
 		want := first
@@ -282,17 +335,21 @@ func TestADrainStopsWhenTheRoleChangesHolderUnderIt(t *testing.T) {
 // the lane up after roleKeepDrainIdleRounds of them: a role left unheld for long enough gathers
 // more expired copies than those walks read, and every copy behind them - each with a sender
 // answered 202 kept and a live holder waiting - was stranded until it expired too. A walk that
-// moved the role's cursor made progress, so the handover goes on to the copies behind them.
+// moved the role's cursor made progress, so the handover goes on to the copies behind them. Each
+// walk here reads a few copies (keptScanMax), so more expired copies than its idle walks read is
+// a few dozen rather than roleKeepScanMax for each walk.
 func TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow(t *testing.T) {
 	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role    = "kept-handover-expired"
 		holder  = "ses_kept_handover_expired"
-		expired = (roleKeepDrainIdleRounds + 1) * roleKeepScanMax
+		scan    = 4
+		expired = (roleKeepDrainIdleRounds + 1) * scan
 		fresh   = 3
 	)
 	cfg := harness.config
+	cfg.keptScanMax = scan
 	var forwarded []string
 	cfg.forwardRole = inlineForward(func(_ string, item contracts.Envelope, _ string, _ time.Duration) error {
 		forwarded = append(forwarded, item.DedupeKey)
@@ -322,9 +379,7 @@ func TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow(t *testing.T) 
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	if err := drainKeptRole(ctx, cfg, role, now); err != nil {
+	if err := drainKeptRole(testwait.Context(t), cfg, role, now); err != nil {
 		t.Fatalf("drain role %s's kept lane: %v", role, err)
 	}
 
@@ -337,7 +392,9 @@ func TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow(t *testing.T) 
 // that is not answering is a reason to walk the lane again rather than to leave it: the copies on
 // it have senders answered 202 kept and a live holder waiting, and no claim and no keep will start
 // another handover while that holder holds the role. The handover retries on a cadence that widens
-// instead (roleKeepDrainBackoff), for longer than roleKeepDrainIdleRounds walks.
+// instead (roleKeepDrainBackoff), for longer than roleKeepDrainIdleRounds walks. Each pause of that
+// cadence is waited on the handover's clock, which the test moves past it once the walk before it
+// has failed and the handover has armed it.
 func TestAHandoverRetriesMoreFailedWalksThanItsIdleWalksAllow(t *testing.T) {
 	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
@@ -346,17 +403,28 @@ func TestAHandoverRetriesMoreFailedWalksThanItsIdleWalksAllow(t *testing.T) {
 		holder   = "ses_kept_handover_failures"
 		failures = roleKeepDrainIdleRounds + 1
 	)
+	failed := make(chan int, failures)
 	lane := newKeptLaneUnderClaim(t, harness, func(attempt int, _ string, _ contracts.Envelope) error {
 		if attempt <= failures {
+			failed <- attempt
 			return fmt.Errorf("forward %d, which this listener's bus did not take", attempt)
 		}
 		return nil
 	})
+	clk := clocktest.New(time.Now())
+	lane.deps.delivery.clock = clk
 	keys := lane.keep(t, role, "kept-handover-failures", 1)
 	lane.register(t, holder)
 
 	lane.claim(t, holder, role)
-	handed := lane.await(t, 1, 90*time.Second)
+	var pause time.Duration
+	for walk := 1; walk <= failures; walk++ {
+		testwait.Receive(t, fmt.Sprintf("the forward of failed walk %d of %d", walk, failures), failed)
+		pause = roleKeepDrainBackoff(pause)
+		awaitHandoverPause(t, clk, pause)
+		clk.Advance(pause)
+	}
+	handed := lane.await(t, 1)
 
 	if handed[0].holder != holder || handed[0].key != keys[0] {
 		t.Fatalf("the copy that reached a holder is %+v, want %s to %s after %d failed walks", handed[0], keys[0], holder, failures)
@@ -370,7 +438,8 @@ func TestAHandoverRetriesMoreFailedWalksThanItsIdleWalksAllow(t *testing.T) {
 // session had lost it sent the copies to a session that had released the role, moving the cursor
 // past them. The walk also reads the role's claim record before each copy now
 // (roleKeepDrainHolds), so either check ends it: no copy reaches the session that released the
-// role inside the pause.
+// role inside the pause. The pause is waited on the handover's clock: the role is released once
+// the handover has armed it and before the test moves the clock past it.
 func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
 	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
@@ -379,8 +448,7 @@ func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
 		holder = "ses_kept_handover_released"
 		copies = 2
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-handover-released-%02d", i))
 		if _, err := keepRoleMessage(harness.config, role, item); err != nil {
@@ -390,8 +458,10 @@ func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
 
 	var attempts []string
-	failed, released := make(chan struct{}), make(chan struct{})
+	failed := make(chan struct{})
+	clk := clocktest.New(time.Now())
 	cfg := harness.config
+	cfg.clock = clk
 	cfg.forwardRole = inlineForward(func(_ string, item contracts.Envelope, _ string, _ time.Duration) error {
 		attempts = append(attempts, item.DedupeKey)
 		if len(attempts) > 1 {
@@ -401,21 +471,20 @@ func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
 		close(failed)
 		return errors.New("the forward this listener's first walk of the lane ended on")
 	})
+	ended := make(chan error, 1)
+	go func() { ended <- drainKeptRole(ctx, cfg, role, time.Now) }()
+
+	testwait.Receive(t, "the first walk's forward, which fails", failed)
+	awaitHandoverPause(t, clk, roleKeepDrainRetryPause)
 	// The holder releases the role inside that pause, which is where a handover that had resolved
 	// its holder before the pause could not see it. Its claim names no process, so the release
 	// is the forced one DELETE /v1/interests/<session_id> makes
 	// (store.RoleReleaseAuthority.Force).
-	go func() {
-		defer close(released)
-		<-failed
-		time.Sleep(roleKeepDrainRetryPause / 2)
-		if _, err := harness.registry.Remove(ctx, holder, []string{contracts.RoleTopicPrefix + role}, store.RoleReleaseAuthority{Force: true}); err != nil {
-			t.Errorf("release %s's claim of %s: %v", holder, role, err)
-		}
-	}()
-
-	err := drainKeptRole(ctx, cfg, role, time.Now)
-	<-released
+	if _, err := harness.registry.Remove(ctx, holder, []string{contracts.RoleTopicPrefix + role}, store.RoleReleaseAuthority{Force: true}); err != nil {
+		t.Fatalf("release %s's claim of %s: %v", holder, role, err)
+	}
+	clk.Advance(roleKeepDrainRetryPause)
+	err := testwait.Receive(t, "the handover to end after its pause", ended)
 
 	if len(attempts) != 1 {
 		t.Fatalf("the handover forwarded %v; only the first was attempted while %s held the role, and the copies behind it belong to whoever claims it next", attempts, holder)
@@ -459,9 +528,7 @@ func sweepOnce(ctx context.Context, cfg listenerDeliveryHandlerConfig) {
 // alone.
 func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.Envelope {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	reports, err := readStored(ctx, client, bus.LegionWakeTopic)
+	reports, err := readStored(testwait.Context(t), client, bus.LegionWakeTopic)
 	if err != nil {
 		t.Fatalf("read the wake reports: %v", err)
 	}
@@ -516,8 +583,7 @@ func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	if _, err := keepRoleMessage(cfg, unheld, unheldItem); err != nil {
 		t.Fatalf("keep the copy of the role no session claims; the listener log says why:\n%s", harness.logs.String())
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	first, err := harness.client.NextStoredMessage(ctx, bus.KeptRoleSubject(role), 1)
 	if err != nil {
 		t.Fatalf("read the first copy on role %s's kept lane: %v", role, err)
@@ -533,17 +599,15 @@ func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 
 	sweepOnce(ctx, cfg)
 
+	// sweepOnce returns once every handover its pass started has ended, so every forward the pass
+	// made is on forwards already.
 	left := map[string]bool{keys[1]: true, keys[2]: true}
-	for deadline := time.After(listenerWaitBound(t)); len(left) > 0; {
-		select {
-		case key := <-forwards:
-			if key == keys[0] {
-				t.Fatalf("the sweep's handover forwarded %s, the copy the cursor was already finished with", key)
-			}
-			delete(left, key)
-		case <-deadline:
-			t.Fatalf("the sweep left %d of the copies behind role %s's cursor on its lane:\n%s", len(left), role, harness.logs.String())
+	for len(left) > 0 {
+		key := testwait.Receive(t, fmt.Sprintf("the sweep's forwards of the %d copies left behind role %s's cursor", len(left), role), forwards)
+		if key == keys[0] {
+			t.Fatalf("the sweep's handover forwarded %s, the copy the cursor was already finished with", key)
 		}
+		delete(left, key)
 	}
 	select {
 	case key := <-forwards:
@@ -574,8 +638,7 @@ func TestAHandoverOfAnEmptyKeptLaneResolvesNoHolder(t *testing.T) {
 		holder = "ses_kept_empty_lane"
 	)
 	lane := newKeptLaneUnderClaim(t, harness, func(int, string, contracts.Envelope) error { return nil })
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	// The holder is registered through a session registry of its own, with this listener's cache
 	// no longer watching the bucket, so resolving either role's holder must read the session
 	// bucket itself: the read a handover of a lane with nothing on it is not to make.
@@ -631,7 +694,7 @@ func TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder(t *testing.T
 	lane.register(t, holder)
 	lane.claim(t, holder, role)
 
-	handed := lane.await(t, 1, 30*time.Second)
+	handed := lane.await(t, 1)
 	if handed[0].holder != holder || handed[0].key != roleForwardDedupePrefix+item.DedupeKey {
 		t.Fatalf("the Dispatch event reached %+v, want %s to %s", handed[0], roleForwardDedupePrefix+item.DedupeKey, holder)
 	}
@@ -655,8 +718,7 @@ func TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder(t *testing.T
 // goroutine on its guard. It ends with one WARN that it left the lane to the role's next claim,
 // naming the read that failed; the claimed row, whose lane is not left, writes none.
 func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T) {
-	// Not parallel: its unclaimed row requires the handover (drainKeptRole), which ends at its
-	// first lane read that fails, to end inside roleKeepDrainRetryPause (1 s).
+	t.Parallel()
 	for _, test := range []struct {
 		name           string
 		claimed        bool
@@ -669,6 +731,7 @@ func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T
 		{name: "unclaimed", wantLeftLines: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			harness := newListenerDeliveryHarness(t)
 			role := "kept-head-read-" + test.name
 			holder := "ses_kept_head_read_" + test.name
@@ -676,8 +739,7 @@ func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T
 			if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 				t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			cursorSeq, writeErr := harness.client.PublishCursorAt(ctx, bus.KeptRoleCursorSubject(role), []byte("{"), 0)
 			if writeErr != nil {
 				t.Fatalf("write the cursor no read can decode: %v", writeErr)
@@ -686,22 +748,35 @@ func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T
 				claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
 			}
 
-			// Every read fails, so a handover that retries is ended by its own window: three of
-			// its first pause hold the first read, the pause after it and the read behind that
-			// one. A handover that does not retry ends on its first read, in milliseconds.
-			handoverCtx, cancelHandover := context.WithTimeout(ctx, 3*roleKeepDrainRetryPause)
+			// Every read fails, so a handover that retries is ended by its own window. The window
+			// runs on the handover's clock, as its pauses do: two of its first pause hold the first
+			// read, the pause after it and the read behind that one, and end before anything that
+			// second read arms (its reads' bound and the pause after it). A handover that does not
+			// retry ends on its first read, with no pause armed.
+			clk := clocktest.New(time.Now())
+			cfg := harness.config
+			cfg.clock = clk
+			window := 2 * roleKeepDrainRetryPause
+			handoverCtx, cancelHandover := clk.WithTimeout(ctx, window)
 			defer cancelHandover()
-			started := time.Now()
-			err := drainKeptRole(handoverCtx, harness.config, role, time.Now)
-			elapsed := time.Since(started)
+			ended := make(chan error, 1)
+			go func() { ended <- drainKeptRole(handoverCtx, cfg, role, time.Now) }()
+
+			end := endedOrPaused(t, clk, roleKeepDrainRetryPause, ended)
+			err := end.err
+			if end.paused {
+				clk.Advance(roleKeepDrainRetryPause)
+				clk.Advance(window - roleKeepDrainRetryPause)
+				err = testwait.Receive(t, "the handover to end with its window", ended)
+			}
 
 			if (err != nil) != test.wantErr {
 				t.Fatalf("the handover of role %s reported %v, want an error reported: %v\n%s",
 					role, err, test.wantErr, harness.logs.String())
 			}
-			if retried := elapsed >= roleKeepDrainRetryPause; retried != test.wantRetried {
-				t.Fatalf("the handover of role %s ended %s in, so it read the lane again: %v; want %v, the first pause a retry earns being %s",
-					role, elapsed, retried, test.wantRetried, roleKeepDrainRetryPause)
+			if end.paused != test.wantRetried {
+				t.Fatalf("the handover of role %s armed its first pause of %s, so it read the lane again: %v (its clock held %v); want %v",
+					role, roleKeepDrainRetryPause, end.paused, end.armed, test.wantRetried)
 			}
 			// What that error is for: the one line every start of a handover writes for one that
 			// failed, which is the whole of what either handover says at Error.
@@ -738,8 +813,7 @@ func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T
 // otherwise answer for it.
 func claimRoleBeyondTheSessionCache(t *testing.T, harness listenerDeliveryHarness, holder string, roles ...string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := harness.sessions.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("warm the session cache: %v", err)
 	}
@@ -773,17 +847,18 @@ func TestAHandoverOfAClaimedRoleRetriesAHolderResolutionThatFailed(t *testing.T)
 		holder = "ses_kept_holder_read_failed"
 	)
 	lane := newKeptLaneUnderClaim(t, harness, func(int, string, contracts.Envelope) error { return nil })
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	keys := lane.keep(t, role, "kept-holder-read", 1)
 	claimRoleBeyondTheSessionCache(t, harness, holder, role)
 	failed := failTheNextSessionRead(t, harness.sessions)
 
-	started := time.Now()
-	if err := drainKeptRole(ctx, *lane.deps.delivery, role, time.Now); err != nil {
-		t.Fatalf("hand over role %s's kept lane: %v\n%s", role, err, harness.logs.String())
-	}
-	elapsed := time.Since(started)
+	clk := clocktest.New(time.Now())
+	cfg := *lane.deps.delivery
+	cfg.clock = clk
+	ended := make(chan error, 1)
+	go func() { ended <- drainKeptRole(ctx, cfg, role, time.Now) }()
+	end := endedOrPaused(t, clk, roleKeepDrainRetryPause, ended)
 
 	if !failed.Load() {
 		t.Fatalf("the handover of role %s resolved its holder with no bucket read, so no resolution of it failed:\n%s",
@@ -792,11 +867,16 @@ func TestAHandoverOfAClaimedRoleRetriesAHolderResolutionThatFailed(t *testing.T)
 	// That a read of the bucket failed is not that this handover's own resolution was the read
 	// that took it: any other reader of the session registry could spend that one failure, and
 	// the handover would forward the copy below having retried nothing. The pause a failed read
-	// earns is the handover's own (roleKeepDrainBackoff), so a handover that spent one is a
-	// handover whose own resolution failed and read again.
-	if elapsed < roleKeepDrainRetryPause {
-		t.Fatalf("the handover of role %s ended %s in, inside the first pause of %s a failed read earns: the read that failed was another reader's, not its own resolution of the holder:\n%s",
-			role, elapsed, roleKeepDrainRetryPause, harness.logs.String())
+	// earns is the handover's own (roleKeepDrainBackoff), armed on its clock, so a handover that
+	// armed one is a handover whose own resolution failed and reads again, and one that ended
+	// with none armed retried nothing.
+	if !end.paused {
+		t.Fatalf("the handover of role %s ended (%v) with no pause armed on its clock, inside the first pause of %s a failed read earns: the read that failed was another reader's, not its own resolution of the holder:\n%s",
+			role, end.err, roleKeepDrainRetryPause, harness.logs.String())
+	}
+	clk.Advance(roleKeepDrainRetryPause)
+	if err := testwait.Receive(t, "the handover to end after its pause", ended); err != nil {
+		t.Fatalf("hand over role %s's kept lane: %v\n%s", role, err, harness.logs.String())
 	}
 	if handed := lane.keys(); !slices.Equal(handed, keys) {
 		t.Fatalf("the handover forwarded %v, want %v: a resolution that did not answer is retried, not read as a role nobody holds:\n%s",
@@ -807,15 +887,21 @@ func TestAHandoverOfAClaimedRoleRetriesAHolderResolutionThatFailed(t *testing.T)
 // sessionBucketThatStalls is a session bucket whose first read, a direct get or a read from the
 // stream's leader, fails at once and whose reads after it answer nothing until done is closed:
 // the request a bus leaves unanswered until the context of the handover making it has passed.
+// Each read that stalls says so on stalled first, when nothing waits there yet.
 type sessionBucketThatStalls struct {
 	natsgo.KeyValue
-	failed atomic.Bool
-	done   <-chan struct{}
+	failed  atomic.Bool
+	stalled chan<- struct{}
+	done    <-chan struct{}
 }
 
 func (kv *sessionBucketThatStalls) Get(string) (natsgo.KeyValueEntry, error) {
 	if kv.failed.CompareAndSwap(false, true) {
 		return nil, errors.New("the session bucket's read did not answer")
+	}
+	select {
+	case kv.stalled <- struct{}{}:
+	default:
 	}
 	<-kv.done
 	return nil, context.DeadlineExceeded
@@ -853,6 +939,7 @@ func TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled(t *t
 		{name: "stalled", stalled: true, wantErr: true, wantErrorLines: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			harness := newListenerDeliveryHarness(t)
 			role := "kept-shutdown-" + test.name
 			holder := "ses_kept_shutdown_" + test.name
@@ -862,25 +949,42 @@ func TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled(t *t
 			}
 			claimRoleBeyondTheSessionCache(t, harness, holder, role)
 
-			// The window is three of the first pause a failed read earns, so the handover that
-			// retries one ends in seconds rather than in roleKeepHandoverWindow. The cancelled
-			// handover ends its own window from inside the read, as the listener's shutdown
-			// cancels a sweep's handover in the middle of one; the stalled handover reads once,
-			// fails, waits its pause out and spends the rest of that window inside its second
-			// read, which is where a handover's window usually ends.
-			handoverCtx, cancelHandover := context.WithTimeout(context.Background(), 3*roleKeepDrainRetryPause)
+			// The window runs on the handover's clock, as its pauses and its reads' bounds do:
+			// two of the first pause a failed read earns, which ends before anything the
+			// handover's second read arms (that read's bound and the pause after it). The
+			// cancelled handover ends its own window from inside the read, as the listener's
+			// shutdown cancels a sweep's handover in the middle of one; the failed handover reads
+			// once, fails, waits its pause out and reads again before the window ends; the
+			// stalled handover does the same and is inside its second read when the window ends,
+			// which is where a handover's window usually ends.
+			clk := clocktest.New(time.Now())
+			cfg := harness.config
+			cfg.clock = clk
+			window := 2 * roleKeepDrainRetryPause
+			handoverCtx, cancelHandover := clk.WithTimeout(testwait.Context(t), window)
 			defer cancelHandover()
+			stalls := make(chan struct{}, 1)
 			swapSessionBucket(t, harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
 				switch {
 				case test.shutdown:
 					return bucketThatFails{KeyValue: kv, before: cancelHandover, err: context.Canceled}
 				case test.stalled:
-					return &sessionBucketThatStalls{KeyValue: kv, done: handoverCtx.Done()}
+					return &sessionBucketThatStalls{KeyValue: kv, stalled: stalls, done: handoverCtx.Done()}
 				}
 				return bucketThatFails{KeyValue: kv, err: errors.New("the session bucket's read did not answer")}
 			})
 
-			err := drainKeptRole(handoverCtx, harness.config, role, time.Now)
+			ended := make(chan error, 1)
+			go func() { ended <- drainKeptRole(handoverCtx, cfg, role, time.Now) }()
+			if !test.shutdown {
+				awaitHandoverPause(t, clk, roleKeepDrainRetryPause)
+				clk.Advance(roleKeepDrainRetryPause)
+				if test.stalled {
+					testwait.Receive(t, "the handover's second read of its holder's session, which stalls", stalls)
+				}
+				clk.Advance(window - roleKeepDrainRetryPause)
+			}
+			err := testwait.Receive(t, "the handover to end", ended)
 
 			if (err != nil) != test.wantErr {
 				t.Fatalf("the handover of role %s reported %v, want an error reported: %v\n%s",
@@ -903,44 +1007,47 @@ func TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled(t *t
 // was a plain Lock, and only the handover ahead of it could end it.
 func TestAKeptLaneGuardStopsWaitingWhenTheHandoversContextEnds(t *testing.T) {
 	t.Parallel()
-	guards := newRoleKeepGuards()
-	const role = "kept-guard-cancel"
+	// The guard is channels and a context, all inside one synctest bubble, so the test reads
+	// whether the second hold is waiting once every goroutine of the bubble is durably blocked
+	// (synctest.Wait) rather than holding a span for it.
+	testwait.Bubble(t, func(t testing.TB) {
+		guards := newRoleKeepGuards()
+		const role = "kept-guard-cancel"
 
-	held, taken := guards.hold(context.Background(), role)
-	if !taken {
-		t.Fatalf("the first hold of role %s's guard did not take it", role)
-	}
-	defer held()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	waited := make(chan bool, 1)
-	go func() {
-		release, ok := guards.hold(ctx, role)
-		if ok {
-			release()
+		held, taken := guards.hold(context.Background(), role)
+		if !taken {
+			t.Fatalf("the first hold of role %s's guard did not take it", role)
 		}
-		waited <- ok
-	}()
+		defer held()
 
-	select {
-	case ok := <-waited:
-		t.Fatalf("the second hold answered %v while the first still held the guard, so it never waited", ok)
-	case <-time.After(100 * time.Millisecond):
-	}
+		ctx, cancel := context.WithCancel(context.Background())
+		waited := make(chan bool, 1)
+		go func() {
+			release, ok := guards.hold(ctx, role)
+			if ok {
+				release()
+			}
+			waited <- ok
+		}()
 
-	cancel()
-	select {
-	case ok := <-waited:
-		if ok {
+		// Every goroutine of the bubble is durably blocked here: a second hold that answered
+		// while the first holds the guard has sent its answer by now.
+		synctest.Wait()
+		select {
+		case ok := <-waited:
+			t.Fatalf("the second hold answered %v while the first still held the guard, so it never waited", ok)
+		default:
+		}
+
+		cancel()
+		if ok := testwait.Receive(t, "the hold of role "+role+"'s guard to return once its context ended", waited); ok {
 			t.Fatalf("the cancelled hold of role %s reported that it took the guard, which the first hold still holds", role)
 		}
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatalf("the hold of role %s's guard did not return in time of its context ending", role)
-	}
 
-	// The guard is the first holder's throughout: a release the cancelled wait never made would
-	// free a guard it never took, and the next holder would run beside the first.
-	if _, free := guards.tryHold(role); free {
-		t.Fatalf("role %s's guard is free while its first hold still holds it", role)
-	}
+		// The guard is the first holder's throughout: a release the cancelled wait never made
+		// would free a guard it never took, and the next holder would run beside the first.
+		if _, free := guards.tryHold(role); free {
+			t.Fatalf("role %s's guard is free while its first hold still holds it", role)
+		}
+	})
 }

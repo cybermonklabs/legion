@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The case of two drains at once - each kept copy reaches exactly one holder - is
@@ -50,12 +52,14 @@ func TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain(t *testi
 	}
 
 	entry := session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	claimRoleWith(t, harness, holder, role, entry)
 
 	var attempted []string
+	failedForward := make(chan struct{}, 1)
+	clk := clocktest.New(time.Now())
 	failing := harness.config
+	failing.clock = clk
 	failing.forwardRole = inlineForward(func(_ string, forwarded contracts.Envelope, _ string, _ time.Duration) error {
 		attempted = append(attempted, forwarded.DedupeKey)
 		if len(attempted) < 2 {
@@ -69,13 +73,23 @@ func TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain(t *testi
 		if _, err := harness.registry.Remove(ctx, holder, []string{contracts.RoleTopicPrefix + role}, store.RoleReleaseAuthority{Force: true}); err != nil {
 			t.Errorf("release %s's claim of %s: %v", holder, role, err)
 		}
+		select {
+		case failedForward <- struct{}{}:
+		default:
+		}
 		return errors.New("the forward this listener ended on")
 	})
 	// The handover ends on the walk its pass after that failure makes with no live holder, which
 	// stops at the copy the failed forward left and fails nothing, so it reports no error. That
-	// its first walk ended on that forward is what attempted says below, and what the next drain
-	// is handed.
-	if err := drainKeptRole(ctx, failing, role, time.Now); err != nil {
+	// pass comes after the pause the failed walk earns, waited on the handover's clock, which the
+	// test moves past it once it is armed. That its first walk ended on that forward is what
+	// attempted says below, and what the next drain is handed.
+	ended := make(chan error, 1)
+	go func() { ended <- drainKeptRole(ctx, failing, role, time.Now) }()
+	testwait.Receive(t, "the first walk's second forward, which fails", failedForward)
+	awaitHandoverPause(t, clk, roleKeepDrainRetryPause)
+	clk.Advance(roleKeepDrainRetryPause)
+	if err := testwait.Receive(t, "the drain whose second forward failed to end", ended); err != nil {
 		t.Fatalf("the drain whose second forward failed reported %v; want none: its last walk had no live holder and stopped at the copy that forward left", err)
 	}
 	if !slices.Equal(attempted, keys[:2]) {
@@ -128,8 +142,7 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 	entry := session.SessionEntry{MachineID: "test-machine", Port: 1}
 	subject := contracts.LegacyAgentSubject(holder)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	claimRoleWith(t, harness, holder, role, entry)
 	var handed []string
 	record := func(cfg listenerDeliveryHandlerConfig, after func()) func(string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
@@ -148,7 +161,7 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 		}
 	}
 
-	dying, cancelDying := context.WithTimeout(ctx, 60*time.Second)
+	dying, cancelDying := context.WithCancel(ctx)
 	defer cancelDying()
 	lost := harness.config
 	// The listener ends here: its forward is published and stored, and the confirm it would
@@ -210,8 +223,7 @@ func TestAClaimNoDrainReleasedHoldsTheLaneUntilItsWindowHasPassed(t *testing.T) 
 	}
 	key := roleForwardDedupePrefix + item.DedupeKey
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	stored, err := harness.client.LastStoredMessage(ctx, bus.KeptRoleSubject(role))
 	if err != nil {
 		t.Fatalf("read role %s's kept lane: %v", role, err)
@@ -232,11 +244,19 @@ func TestAClaimNoDrainReleasedHoldsTheLaneUntilItsWindowHasPassed(t *testing.T) 
 		return nil
 	})
 	// The handover leaves the lane to the drain holding the claim and waits
-	// bus.KeptRoleClaimWindow to walk it again; this context ends it there, since the lane it
-	// left alone is the point.
-	heldCtx, cancelHeld := context.WithTimeout(ctx, 3*time.Second)
+	// bus.KeptRoleClaimWindow to walk it again. That pause, waited on the handover's clock, is
+	// armed only for a walk that found the lane busy, and once it is armed the handover is ended
+	// there, since the lane it left alone is the point.
+	clk := clocktest.New(time.Now())
+	held := cfg
+	held.clock = clk
+	heldCtx, cancelHeld := context.WithCancel(ctx)
 	defer cancelHeld()
-	if err := drainKeptRole(heldCtx, cfg, role, time.Now); err != nil {
+	ended := make(chan error, 1)
+	go func() { ended <- drainKeptRole(heldCtx, held, role, time.Now) }()
+	awaitHandoverPause(t, clk, bus.KeptRoleClaimWindow)
+	cancelHeld()
+	if err := testwait.Receive(t, "the drain that found the claim outstanding to end", ended); err != nil {
 		t.Fatalf("the drain that found the claim outstanding: %v", err)
 	}
 	if len(handed) != 0 {

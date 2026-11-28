@@ -152,7 +152,7 @@ func TestAnEventDispatchRoutedToAnUnheldRoleReachesTheRolesNextHolder(t *testing
 
 	lane.register(t, holder)
 	lane.claim(t, holder, role)
-	handed := lane.await(t, 1, 30*time.Second)
+	handed := lane.await(t, 1)
 
 	if handed[0].holder != holder {
 		t.Fatalf("the copy reached %s, want the role's next holder %s", handed[0].holder, holder)
@@ -283,7 +283,7 @@ func TestAKeptCopyOfAFailedMentionReachesThatSessionUnderTheMentionsKey(t *testi
 
 	lane.register(t, holder)
 	lane.claim(t, holder, role)
-	handed := lane.await(t, 1, 30*time.Second)
+	handed := lane.await(t, 1)
 
 	if handed[0].holder != holder {
 		t.Fatalf("the copy reached %s, want the mentioned session %s, which claimed the role", handed[0].holder, holder)
@@ -427,7 +427,7 @@ func TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote(t *testing.T
 	firstKept := waitForKeptRoleMessage(t, harness.client, role, fmt.Sprintf("dispatch-%d", first.ID))
 	lane.register(t, holder)
 	lane.claim(t, holder, role)
-	lane.await(t, 1, 30*time.Second)
+	lane.await(t, 1)
 	var drained bus.StoredKeptRoleCursor
 	waitFor(t, "the listener's drain to write role "+role+"'s cursor", func() bool {
 		var err error

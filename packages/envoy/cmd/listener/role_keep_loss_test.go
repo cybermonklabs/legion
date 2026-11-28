@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A kept copy whose drain never forwarded it must still reach the role's holder. The drain claims
@@ -37,21 +39,27 @@ func TestAKeptCopyItsDrainNeverForwardedStillReachesTheRolesHolder(t *testing.T)
 	key := roleForwardDedupePrefix + item.DedupeKey
 
 	entry := session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	claimRoleWith(t, harness, holder, role, entry)
 
 	// The drain that ends between its claim and its forward. Its claim has already advanced the
-	// role's cursor past this copy when the forward it never completes is attempted. Its window
-	// is the whole of that listener's life: a handover whose holder is live walks the lane again
-	// after a pause of its own, and this one is gone before it can.
-	lostCtx, cancelLost := context.WithTimeout(ctx, 2*time.Second)
+	// role's cursor past this copy when the forward it never completes is attempted. Its life
+	// ends inside the pause its failed walk earns: a handover whose holder is live walks the lane
+	// again after a pause of its own, waited here on the handover's clock, and this one is gone,
+	// once that pause is armed, before it can.
+	clk := clocktest.New(time.Now())
+	lostCtx, cancelLost := context.WithCancel(ctx)
 	defer cancelLost()
 	lost := harness.config
+	lost.clock = clk
 	lost.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
 		return errors.New("this listener ended between its claim of the copy and its forward")
 	})
-	if err := drainKeptRole(lostCtx, lost, role, time.Now); err == nil {
+	ended := make(chan error, 1)
+	go func() { ended <- drainKeptRole(lostCtx, lost, role, time.Now) }()
+	awaitHandoverPause(t, clk, roleKeepDrainRetryPause)
+	cancelLost()
+	if err := testwait.Receive(t, "the drain whose forward never completed to end", ended); err == nil {
 		t.Fatalf("the drain whose forward never completed reported no error, so this test no longer reaches the moment it is about")
 	}
 

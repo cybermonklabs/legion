@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // keptRoleLeftLine is the WARN a handover writes where a read failed and no claim record names a
@@ -75,8 +75,7 @@ func TestAHandoverWhoseHolderLookupFailedSaysSoWhereItsWalkDrainedTheLane(t *tes
 				})
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			// The copy's hour ended a minute ago and its sender is owed a dead letter for it.
 			pastItsHour := func() time.Time { return time.Now().Add(roleKeepWindow + time.Minute) }
 			handover, err := handOverKeptRole(ctx, harness.config, role, pastItsHour)

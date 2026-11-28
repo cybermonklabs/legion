@@ -19,6 +19,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
@@ -2889,19 +2890,29 @@ func TestBindListenerDurablePassesARefusalThrough(t *testing.T) {
 // bus.ErrPublishDenied.
 func deniedGrantClient(t *testing.T, deny ...string) *bus.Client {
 	t.Helper()
+	return deniedGrantClientWith(t, nil, deny...)
+}
+
+// deniedGrantClientWith is deniedGrantClient with options of the caller's own on the listener's
+// client, such as the clock its publishes wait for their acknowledgement on
+// (bus.WithPublishAcknowledgementClock) or the logger its connection's reports are written to
+// (bus.WithLogger). The user's seed reaches the client through bus.WithEnvironment rather than the
+// process's environment, so a test that builds one can run beside other tests. Each client is
+// closed through the shared wait (bustest.Close) once the test is over.
+func deniedGrantClientWith(t *testing.T, options []bus.ConnectOption, deny ...string) *bus.Client {
+	t.Helper()
 	seed, public := testnats.User(t)
 	uri := testnats.StartNkeyDenied(t, public, deny...)
 	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("the admin creates the stream: %v", err)
 	}
-	t.Cleanup(owner.Close)
-	t.Setenv("NATS_NKEY_SEED", seed)
-	client, err := bus.Connect([]string{uri})
+	t.Cleanup(func() { bustest.Close(t, owner) })
+	client, err := bus.Connect([]string{uri}, append([]bus.ConnectOption{bus.WithEnvironment(testnats.SeedOnly(seed))}, options...)...)
 	if err != nil {
 		t.Fatalf("connect the listener's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	return client
 }
 
@@ -2910,8 +2921,7 @@ func deniedGrantClient(t *testing.T, deny ...string) *bus.Client {
 // interval until the deadline: the grant refuses it again however often it is sent. It once ended
 // after 2m15s and 69 attempts with "listener durable bind exhausted".
 func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv in
-	// deniedGrantClient).
+	t.Parallel()
 	const consumer = "listener-bind-denied"
 	create := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer
 	client := deniedGrantClient(t, create, create+".>", "$JS.API.CONSUMER.DURABLE.CREATE."+bus.Stream+"."+consumer)
@@ -2934,8 +2944,7 @@ func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
 // A rebuild's wait for its durable ends at once when the grant refuses the durable's read, naming
 // the refusal, rather than reading it again every interval until the deadline.
 func TestAwaitDurableBoundEndsAtTheGrantsRefusal(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv in
-	// deniedGrantClient).
+	t.Parallel()
 	const consumer = "listener-await-denied"
 	info := "$JS.API.CONSUMER.INFO." + bus.Stream + "." + consumer
 	client := deniedGrantClient(t, info)
