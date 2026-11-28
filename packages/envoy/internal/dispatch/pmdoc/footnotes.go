@@ -20,7 +20,7 @@ import (
 
 // CalledFootnoteLabels is the label of every footnote reference inside block, each once, in
 // document order and as the reference holds it, but for a label a footnote definition inside
-// block defines, by the label or up to case (footnoteLabelKey): block's own markdown holds that
+// block defines, by the label or up to case (FootnoteLabelKey): block's own markdown holds that
 // definition, and its reading resolves the reference to it as the document's does. Each label
 // left is one the document defines outside block, so block's markdown read apart from the
 // document reads a call of it as text unless a definition of it stands beside that markdown
@@ -161,7 +161,7 @@ func footnoteHash(key string) uint64 {
 
 // KeyFootnoteLabels is the FootnoteLabelKeys of labels, the labels a document defines as
 // FootnoteDefinitionLabels gives them: each label under the key of the label as a call writes it,
-// written as the renderer writes one (escapeFootnoteLabel) and folded (footnoteLabelKey), two
+// written as the renderer writes one (escapeFootnoteLabel) and folded (FootnoteLabelKey), two
 // labels equal only up to case under the same key, each key under its byte length and hash
 // (footnoteKeyHash), and the byte length of the longest key. It folds and hashes each label once,
 // and is made once for the document, each block of which is read against it (Written).
@@ -196,7 +196,7 @@ func KeyFootnoteLabels(labels []string) FootnoteLabelKeys {
 
 // Written is each of the labels of keys that markdown writes as a footnote call, `[^label]`, the
 // label written as the renderer writes one (escapeFootnoteLabel) and compared up to case
-// (footnoteLabelKey), as a reference resolves to a definition whose label matches it only up to
+// (FootnoteLabelKey), as a reference resolves to a definition whose label matches it only up to
 // case: each label once, in the order of the labels, which is the order the document defines them
 // in, and nil where markdown writes none. It reads markdown's characters, not its parse, so it also
 // answers a label markdown writes in a call that is escaped or in code, which reads as text, and
@@ -338,7 +338,7 @@ func (calls *footnoteCalls) close(markdown string, starts []int, end int) {
 	}
 }
 
-// footnoteKeyer makes the keys of footnote labels (footnoteLabelKey) with one caser lowering and
+// footnoteKeyer makes the keys of footnote labels (FootnoteLabelKey) with one caser lowering and
 // one uppercasing, which it makes on the first label it needs them for: a label all ASCII has its
 // ASCII upper case as its key, which is what lowering and then uppercasing it under language.Und
 // makes of it. A caser holds state while it maps, so a keyer is not safe for concurrent use, and
@@ -348,7 +348,7 @@ type footnoteKeyer struct {
 	made         bool
 }
 
-// key is label's footnoteLabelKey.
+// key is label's FootnoteLabelKey.
 func (keyer *footnoteKeyer) key(label string) string {
 	if !allASCII(label) {
 		return keyer.caseKey(label)
@@ -356,7 +356,7 @@ func (keyer *footnoteKeyer) key(label string) string {
 	return strings.ToUpper(label)
 }
 
-// appendKey is dst with label's footnoteLabelKey appended: the ASCII upper case of a label all
+// appendKey is dst with label's FootnoteLabelKey appended: the ASCII upper case of a label all
 // ASCII, appended byte by byte, which allocates nothing while dst has room, and what the casers
 // make of any other label (caseKey).
 func (keyer *footnoteKeyer) appendKey(dst []byte, label string) []byte {
@@ -423,7 +423,7 @@ func WithStandInDefinitions(markdown string, labels []string) string {
 // bang, and resolves its label from maps of the parse's definitions built once
 // (footnoteDefinitionsOf): a label equal byte for byte to a definition's resolves to the first such
 // definition, as goldmark's footnote parser resolves it, and one that matches a definition's only
-// up to case (footnoteLabelKey) to the first definition with that key, as the browser editor's
+// up to case (FootnoteLabelKey) to the first definition with that key, as the browser editor's
 // parser resolves it, where goldmark read `[^A]` as text beside `[^a]: `. Such a reference carries
 // its label as written (referenceLabelAttr), which the browser editor keeps on it. It is a parser
 // of its own, not goldmark's wrapped: goldmark's found the definition by walking every one of them
@@ -436,11 +436,11 @@ type footnoteReferenceParser struct{}
 // Trigger is the bytes a reference starts with: the label's opener, or an image's bang before it.
 func (footnoteReferenceParser) Trigger() []byte { return []byte{'!', '['} }
 
-// footnoteLabelKey is a footnote label as the browser editor's parser compares it: with full case
+// FootnoteLabelKey is a footnote label as the browser editor's parser compares it: with full case
 // mapping, lowered and then uppercased, so `ß` matches `SS` and `İ` matches `i̇`, which simple case
 // folding keeps apart. It folds label through a keyer of its own (footnoteKeyer), so the fold is
 // written once; a reading that keys many labels keeps one keyer for all of them.
-func footnoteLabelKey(label string) string {
+func FootnoteLabelKey(label string) string {
 	var keyer footnoteKeyer
 	return keyer.key(label)
 }
@@ -470,7 +470,7 @@ func (footnoteReferenceParser) Parse(parent ast.Node, block gmtext.Reader, pc pa
 	written := block.Value(gmtext.NewSegment(segment.Start+start+1, segment.Start+start+1+closure))
 	definition, exact := definitions.byLabel[string(written)], true
 	if definition == nil {
-		definition, exact = definitions.byKey[footnoteLabelKey(string(label))], false
+		definition, exact = definitions.byKey[FootnoteLabelKey(string(label))], false
 	}
 	if definition == nil {
 		return nil
@@ -492,7 +492,7 @@ func (footnoteReferenceParser) Parse(parent ast.Node, block gmtext.Reader, pc pa
 }
 
 // footnoteDefinitions is each footnote definition in goldmark's list by its label as written
-// (byLabel) and by its label's key (byKey, footnoteLabelKey), the first in the list where two share
+// (byLabel) and by its label's key (byKey, FootnoteLabelKey), the first in the list where two share
 // one: goldmark's list holds them in the order they close, which is the order of their slots.
 type footnoteDefinitions struct {
 	byLabel, byKey map[string]*extensionast.Footnote
@@ -524,7 +524,7 @@ func footnoteDefinitionsOf(pc parser.Context) footnoteDefinitions {
 		if _, seen := definitions.byLabel[string(definition.Ref)]; !seen {
 			definitions.byLabel[string(definition.Ref)] = definition
 		}
-		key := footnoteLabelKey(string(definition.Ref))
+		key := FootnoteLabelKey(string(definition.Ref))
 		if _, seen := definitions.byKey[key]; !seen {
 			definitions.byKey[key] = definition
 		}
