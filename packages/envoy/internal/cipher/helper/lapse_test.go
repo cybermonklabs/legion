@@ -375,14 +375,16 @@ func registerEnrolled(t *testing.T, r *rig) Response {
 
 // startRegister sends a `register --wait` from this process for sessionID (nil names none) on a
 // goroutine of its own and returns the channel its answer comes on. The wait it asks the helper
-// for and the call's own deadline both run to the test binary's deadline (testwait.Remaining), so
-// no timer of the helper's wait or of Call's whole-call deadline ends the call while the test
-// runs: the helper answers once registerReply's wait ends on a fact (the session enrolls, the
-// broker refuses it, it is retired) or, for a helper with no launcher credential, once the
-// confirmation in flight when it arrived is answered or reaches the helper's own
-// DefaultFirstConfirmBound, which the lapse rows never meet, since their rig holds a credential.
-// The test's own wait for that answer gives up first, at testwait's margin, naming what it waited
-// for. A fixed wait would race the test's own reads: with 10 s asked, a poll the machine held past
+// for runs to the test binary's deadline (testwait.Remaining), and the call's own deadline to the
+// moment the shared wait gives up (sendCall), so no timer of the helper's wait ends the call: the
+// helper answers once registerReply's wait ends on a fact (the session enrolls, the broker refuses
+// it, it is retired) or, for a helper with no launcher credential, once the confirmation in flight
+// when it arrived is answered or reaches the helper's own DefaultFirstConfirmBound, which the
+// lapse rows never meet, since their rig holds a credential. Call's whole-call deadline and the
+// test's own wait for the answer give up at the same moment, testwait's margin, so either can end
+// a call the helper never answers: the test's wait names what it waited for, and the call's
+// deadline comes back as the call's error.
+// A fixed wait would race the test's own reads: with 10 s asked, a poll the machine held past
 // those 10 s read the helper's answer to the wait running out, still enrolling, before it ever saw
 // the call waiting.
 func startRegister(t *testing.T, r *rig, sessionID *string) <-chan callAnswer {

@@ -5,7 +5,9 @@ package helper
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +23,8 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -31,9 +35,15 @@ type rig struct {
 	srv    *Server
 	sock   string
 	cancel context.CancelFunc
+	// clock is the fake the server's own timers run on, for a rig built by newRigOn, and nil
+	// for one whose server keeps the wall clock.
+	clock *clocktest.Fake
 	// served is closed once Serve has returned, so a test that stops the helper (cancel) can
 	// order what Serve does before it returns against what the test reads.
 	served <-chan struct{}
+	// serving is the id of the goroutine Serve runs on (goroutinetest.ID), set before Serve
+	// starts, so a row that must know what a stopping Serve waits on reads that goroutine's state.
+	serving atomic.Uint64
 	// callerPID is the pid PeerOf presents for the next connection; 0 means the real peer.
 	// Atomic: the server goroutine reads it while the test goroutine writes it.
 	callerPID atomic.Int64
@@ -60,18 +70,39 @@ func newRig(t *testing.T, statePath string) *rig {
 	return newLoggedRig(t, statePath, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 }
 
+// newRigOn is newRig with the server's own timers — a register's wait, the enroll retry's
+// ladder, the first confirming renew's bound, the renew cadence — on a fake of the row's own,
+// so a row fires them rather than waiting them out, and a wait the helper takes that the row
+// never fires is a wait that never ends. The Broker keeps the wall clock: its login and
+// refresh are the fake broker's real HTTP, and the records it signs are verified against it.
+func newRigOn(t *testing.T, statePath string) *rig {
+	t.Helper()
+	return newLoggedRigOn(t, statePath, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+}
+
+// newLoggedRigOn is newRigOn with log as the helper's logger, as newLoggedRig is newRig with it.
+func newLoggedRigOn(t *testing.T, statePath string, log *slog.Logger) *rig {
+	t.Helper()
+	fake := clocktest.New(time.Now())
+	r := newLoggedRig(t, statePath, log, func(s *Server) { s.Clock = fake })
+	r.clock = fake
+	return r
+}
+
 // newLoggedRig is newRig with log as both the Server's and the Broker's logger, as
-// cmd/cipher-helper wires them, so a test can read every line the helper writes.
-func newLoggedRig(t *testing.T, statePath string, log *slog.Logger) *rig {
+// cmd/cipher-helper wires them, so a test can read every line the helper writes. Each tune runs
+// on the Server before it recovers or serves (serveBroker), so a field it sets is set before any
+// goroutine of the server reads it.
+func newLoggedRig(t *testing.T, statePath string, log *slog.Logger, tune ...func(*Server)) *rig {
 	t.Helper()
 	f := newFakeBroker(t)
 	of := operatorFile(t, "ada@example.com")
-	r := serveBroker(t, &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log}, statePath, log)
+	r := serveBroker(t, &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log}, statePath, log, tune...)
 	r.fake = f
 	return r
 }
 
-func serveBroker(t *testing.T, broker *Broker, statePath string, log *slog.Logger) *rig {
+func serveBroker(t *testing.T, broker *Broker, statePath string, log *slog.Logger, tune ...func(*Server)) *rig {
 	t.Helper()
 	r := &rig{}
 	if statePath == "" {
@@ -95,6 +126,9 @@ func serveBroker(t *testing.T, broker *Broker, statePath string, log *slog.Logge
 			return PinPID(int(pid))
 		}
 		return PeerOf(conn)
+	}
+	for _, apply := range tune {
+		apply(r.srv)
 	}
 	r.sock = filepath.Join(shortTempDir(t), "helper.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: r.sock, Net: "unix"})
@@ -136,7 +170,11 @@ func serveBroker(t *testing.T, broker *Broker, statePath string, log *slog.Logge
 		<-served
 	})
 	r.srv.Recover(ctx)
-	go func() { defer close(served); _ = r.srv.Serve(ctx, ln) }()
+	go func() {
+		defer close(served)
+		r.serving.Store(goroutinetest.ID())
+		_ = r.srv.Serve(ctx, ln)
+	}()
 	return r
 }
 
@@ -167,11 +205,7 @@ func (r *rig) login(t *testing.T) {
 // a wait_seconds the helper honours, never a span of the test's own, bounds an answer it gives.
 func (r *rig) call(t *testing.T, req Request) Response {
 	t.Helper()
-	got := testwait.Receive(t, "the helper's answer to "+strconv.Quote(req.Op), sendCall(t, r.sock, req))
-	if got.err != nil {
-		t.Fatal(got.err)
-	}
-	return got.resp
+	return replyOf(t, sendCall(t, r.sock, req), "the helper's answer to "+strconv.Quote(req.Op))
 }
 
 // callAnswer is a helper call's reply, or the error that ended the call.
@@ -181,19 +215,50 @@ type callAnswer struct {
 }
 
 // sendCall sends req to the helper at sock on a goroutine of its own and returns the channel its
-// one answer comes on. The call's own deadline is the test binary's (testwait.Remaining, read here
-// on the test's goroutine), so no span of the test's ends it; its caller waits for the answer with
-// testwait.Receive, which gives up first, at testwait's margin, naming what it waited for. A call
-// the helper never answers outlives its test on that goroutine and ends with the binary.
+// one answer comes on. The call's own deadline is the moment the shared wait gives up
+// (testwait.GiveUpAt, read here on the test's goroutine), and under -timeout 0, where no wait has
+// an end, it has none, so no span of the test's ends it; its caller waits for the answer with
+// testwait.Receive, which gives up at that same moment, naming what it waited for. A call the
+// helper never answers ends there on that goroutine.
 func sendCall(t *testing.T, sock string, req Request) <-chan callAnswer {
 	t.Helper()
-	deadline := testwait.Remaining(t, 0)
+	deadline := time.Duration(math.MaxInt64)
+	if at, bounded := testwait.GiveUpAt(t); bounded {
+		deadline = time.Until(at)
+	}
 	answers := make(chan callAnswer, 1)
 	go func() {
 		resp, err := Call(sock, req, deadline)
 		answers <- callAnswer{resp, err}
 	}()
 	return answers
+}
+
+// replyOf waits for the answer on replies (sendCall), and fails the row when the call ended in
+// an error.
+func replyOf(t *testing.T, replies <-chan callAnswer, what string) Response {
+	t.Helper()
+	reply := testwait.Receive(t, what, replies)
+	if reply.err != nil {
+		t.Fatalf("%s: %v", what, reply.err)
+	}
+	return reply.resp
+}
+
+// goroutineState is the trace of the goroutine whose id is id (goroutinetest.ID), read from one
+// dump of every goroutine, and the state its header names ("chan receive", "sync.Mutex.Lock", …)
+// without how long it has been in it; both are empty once that goroutine has returned. A row reads
+// it to know that a goroutine waits where nothing but the row's own next action can wake it.
+func goroutineState(id uint64) (trace, state string) {
+	header := fmt.Sprintf("goroutine %d [", id)
+	for _, trace := range goroutinetest.Traces() {
+		if rest, ok := strings.CutPrefix(trace, header); ok {
+			state, _, _ = strings.Cut(rest, "]")
+			state, _, _ = strings.Cut(state, ",")
+			return trace, state
+		}
+	}
+	return "", ""
 }
 
 // TestDrainRefusesARegisterThatArrivesAfterIt: a drain that finds no sessions leaves a helper
@@ -239,37 +304,43 @@ func TestUndrainTakesSessionsAgain(t *testing.T) {
 // died, or its restart reached another process — ends by itself once its bound passes, and the
 // helper logs that it did and takes registrations again. Before, such a helper refused every
 // registration on the machine until something restarted it (36 minutes on 2026-11-16,
-// dispatch://INFRA-3950). No clock decides the row. First, with the product's own timer
-// (time.AfterFunc), a drain of a 1 s bound must end by itself and log so, and no sooner than its
-// bound: the row waits for that end, bounded only by the test binary's deadline, so a drain whose
-// timer is never armed fails it by name, and then requires that at least the bound has passed
-// since just before the drain was asked for. A timer never fires early and a stall only lengthens
-// the wait, so a correct helper passes this on any host, and a timer armed with less than the bound
-// fails it. A drain that ended early would let a session register in the gap before the install
-// restarts the helper, and that session would lose its grants. Then the test holds the drain's
-// timer itself (setDrainTimer), so both limits are the product's own: the drain arms one timer, of
-// exactly its bound, and holds until that timer fires (the lower limit), and ends the moment it
-// fires (the upper limit).
+// dispatch://INFRA-3950). No clock decides the row. First, with the product's own timer, which
+// runs on the server's clock, a fake the row moves: a drain of a 1 s bound arms that timer for
+// exactly its bound, still holds a moment short of it, and ends by itself and logs so when the
+// fake reaches it. A drain that ended early would let a session register in the gap before the
+// install restarts the helper, and that session would lose its grants. Then the test holds the
+// drain's timer itself (setDrainTimer), so both limits are the product's own: the drain arms one
+// timer, of exactly its bound, and holds until that timer fires (the lower limit), and ends the
+// moment it fires (the upper limit).
 func TestADrainNoRestartFollowsEndsAtItsBound(t *testing.T) {
 	t.Parallel()
 	logs := &logtest.Buffer{}
-	r := newLoggedRig(t, "", slog.New(slog.NewTextHandler(logs, nil)))
+	r := newLoggedRigOn(t, "", slog.New(slog.NewTextHandler(logs, nil)))
 	r.login(t)
 	ended := func() int { return strings.Count(logs.Lines(DrainEndedMessage), "\n") }
 	const bound = time.Second
 
 	r.srv.SetDrainBound(bound)
-	begun := time.Now()
+	drained := r.clock.Now()
 	if d := r.call(t, Request{Op: "drain"}); !d.OK || len(d.Sessions) != 0 || !strings.Contains(logs.Lines("draining: refusing new sessions until restart"), "bound=1s") {
 		t.Fatalf("drain with the product's own timer: %+v; want it answered with no sessions, and the drain begun with its bound 1s in:\n%s", d, logs.String())
 	}
-	testwait.Until(t, "the drain to end by its own timer and log that it did", func() (string, bool) {
-		return logs.Lines(DrainEndedMessage), !r.srv.Registry.Draining() && ended() == 1
-	})
-	if took := time.Since(begun); took < bound {
-		t.Fatalf("the drain ended by its own timer %s after it was asked for, before its bound %s", took, bound)
+	// The drain arms its bound before it answers.
+	if armed := r.clock.Armed(); !slices.ContainsFunc(armed, drained.Add(bound).Equal) {
+		t.Fatalf("the server's clock holds %v after the drain; want its bound armed for %s, %s after it", armed, drained.Add(bound), bound)
 	}
-	if line := logs.Lines(DrainEndedMessage); !strings.Contains(line, "level=WARN") || !strings.Contains(line, "bound=1s") {
+	// Nothing but the bound ends a drain no undrain follows, and a move of the fake returns once
+	// every timer it fired has run (clocktest), so each read below is the drain's state then.
+	const short = time.Millisecond
+	r.clock.Advance(bound - short)
+	if !r.srv.Registry.Draining() || ended() != 0 {
+		t.Fatalf("the drain ended %s after it began, before its bound of %s", bound-short, bound)
+	}
+	r.clock.Advance(short)
+	if r.srv.Registry.Draining() {
+		t.Fatalf("the drain still holds at its bound of %s", bound)
+	}
+	if line := logs.Lines(DrainEndedMessage); ended() != 1 || !strings.Contains(line, "level=WARN") || !strings.Contains(line, "bound=1s") {
 		t.Fatalf("log line %q; want one WARN line %q naming the bound 1s", line, DrainEndedMessage)
 	}
 
@@ -301,8 +372,8 @@ func TestADrainNoRestartFollowsEndsAtItsBound(t *testing.T) {
 	}
 }
 
-// armed is one call of a Server's timer seam (setDrainTimer, setFirstConfirmTimer): the bound the
-// timer was armed with, and the function that ends it, which the row calls when it chooses.
+// armed is one call of a Server's timer seam (setDrainTimer): the bound the timer was armed with,
+// and the function that ends it, which the row calls when it chooses.
 type armed struct {
 	bound time.Duration
 	end   func()
@@ -477,16 +548,11 @@ func TestExitRevokesAndUnregisterRevokes(t *testing.T) {
 	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
 	_ = child.Process.Kill()
 	_ = child.Wait()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		r.fake.mu.Lock()
-		n := len(r.fake.deletes)
-		r.fake.mu.Unlock()
-		if n == 1 {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		defer r.fake.mu.Unlock()
+		return len(r.fake.deletes) == 1
+	})
 	_, deletes, _ := r.fake.snapshot()
 	if len(deletes) != 1 || deletes[0] != reg.EnrollmentID {
 		t.Fatalf("the exit must revoke the enrollment: %v", deletes)
@@ -503,9 +569,9 @@ func TestExitRevokesAndUnregisterRevokes(t *testing.T) {
 	}
 	// unregister answers before its revoke ends (retire fires the revoke off), so the DELETE is
 	// waited for rather than read at once.
-	testwait.Holds(5*time.Second, testwait.Poll, func() bool {
+	testwait.Until(t, "the DELETE of the revoke unregister fired off", func() ([]string, bool) {
 		_, deletes, _ := r.fake.snapshot()
-		return len(deletes) == 2
+		return deletes, len(deletes) == 2
 	})
 	_, deletes, _ = r.fake.snapshot()
 	if len(deletes) != 2 || deletes[1] != reg2.EnrollmentID {
@@ -520,7 +586,8 @@ func TestExitRevokesAndUnregisterRevokes(t *testing.T) {
 
 func TestEnrollRetriesUntilTheBrokerAnswers(t *testing.T) {
 	t.Parallel()
-	r := startRig(t, "")
+	r := newRigOn(t, "")
+	r.login(t)
 	r.fake.mu.Lock()
 	r.fake.failFirst = 2
 	r.fake.mu.Unlock()
@@ -532,54 +599,76 @@ func TestEnrollRetriesUntilTheBrokerAnswers(t *testing.T) {
 	if signed.OK || signed.Code != CodeNotEnrolled {
 		t.Fatalf("before enrollment: %+v", signed)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) && r.srv.Registry.Get(os.Getpid()).snapshot().State != "enrolled" {
-		time.Sleep(100 * time.Millisecond)
+	// Two 503s, each retried on the ladder's own wait — 1 s, then 2 s — armed on the server's
+	// clock and fired here, and then the 201.
+	for _, wait := range []time.Duration{time.Second, 2 * time.Second} {
+		fireArmedAt(t, r.clock, r.clock.Now().Add(wait), fmt.Sprintf("the enroll retry's wait after a 503, %s from now", wait))
 	}
-	if r.srv.Registry.Get(os.Getpid()).snapshot().State != "enrolled" {
-		t.Fatal("two 503s then a 201 must end enrolled within 10 s (1 s + 2 s backoff)")
-	}
+	waitUpTo(t, func() bool { return r.srv.Registry.Get(os.Getpid()).snapshot().State == "enrolled" },
+		"two 503s then a 201 must end enrolled (1 s + 2 s backoff)")
 }
 
+// TestRenewRunsAndARefusedRenewReenrolls: the helper renews a session's enrollment at a third
+// of the lease the broker gave it, and a renew the broker refuses as not live has the helper
+// enroll again, under a new enrollment for the same runtime id. The server's timers and the
+// fake's leases run on the rig's one clock, which only the row moves: each renew comes when the
+// row fires it, and no lease can end under the row, however slow the host is. The only refusal
+// is the one the row makes, by having the fake forget the enrollment.
 func TestRenewRunsAndARefusedRenewReenrolls(t *testing.T) {
 	t.Parallel()
-	r := startRig(t, "")
-	// A 150 ms lease: the helper renews at a third of it (floored by MinRenew = 50 ms). Poll
-	// for the first renew instead of guessing how long that takes under load — enrollment
-	// alone has been observed to take longer than a fixed 300 ms wait under a starved
-	// scheduler. Production leases are 900 s → one renew per 300 s.
+	r := newRigOn(t, "")
 	r.fake.mu.Lock()
-	r.fake.lease = 150 * time.Millisecond
+	r.fake.clock = r.clock.Now
+	r.fake.lease = 900 * time.Second // the production lease: one renew per 300 s
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
-	renewDeadline := time.Now().Add(5 * time.Second)
-	var renews int
-	for time.Now().Before(renewDeadline) {
+	r.login(t)
+	if reg := r.call(t, Request{Op: "register"}); !reg.OK {
+		t.Fatalf("register: %+v", reg)
+	}
+	sess := r.srv.Registry.Get(os.Getpid())
+	id := testwait.Until(t, "the session to enroll", func() (string, bool) {
+		id := sess.identity().EnrollmentID
+		return id, id != ""
+	})
+	runtimeID := sess.RuntimeID()
+
+	// fireRenew waits until the rig's clock holds one timer, the renew renewLoop arms for the
+	// lease the fake last gave, which ends 900 s on, at a third of it, 300 s on, and fires it. The
+	// deadline of the row's own register connection is no longer among them by then: its handler
+	// disarms it once done.
+	fireRenew := func(what string) {
+		t.Helper()
+		want := r.clock.Now().Add(300 * time.Second)
+		testwait.Until(t, fmt.Sprintf("%s: one timer on the rig's clock, the renew at %s, a third of the 900 s lease", what, want), func() ([]time.Time, bool) {
+			armed := r.clock.Armed()
+			return armed, len(armed) == 1 && armed[0].Equal(want)
+		})
+		r.clock.Set(want)
+	}
+	renews := func() int {
 		r.fake.mu.Lock()
-		renews = r.fake.renews
-		r.fake.mu.Unlock()
-		if renews > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+		defer r.fake.mu.Unlock()
+		return r.fake.renews
 	}
-	if renews == 0 {
-		t.Fatal("the helper renews the lease")
-	}
-	// The broker forgets the enrollment (lease lapsed during an outage): renew is 401, the
-	// helper enrolls again and gets a new enrollment for the same runtime_id.
+
+	fireRenew("the session's first renew")
+	waitFor(t, func() bool { return renews() == 1 })
+
+	// The broker forgets the enrollment (its lease lapsed during an outage): the next renew is
+	// refused 401 ENROLLMENT_NOT_LIVE, and the helper enrolls again.
 	r.fake.mu.Lock()
-	delete(r.fake.enrolled, reg.EnrollmentID)
-	delete(r.fake.byTP, r.srv.Registry.Get(os.Getpid()).identity().Thumbprint)
+	delete(r.fake.enrolled, id)
+	delete(r.fake.byTP, sess.identity().Thumbprint)
 	r.fake.mu.Unlock()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID; id != "" && id != reg.EnrollmentID {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+	fireRenew("the renew after the fake forgot the enrollment")
+	next := testwait.Until(t, "the session to enroll again after its renew was refused", func() (string, bool) {
+		next := sess.identity().EnrollmentID
+		return next, next != "" && next != id
+	})
+	if renews() != 1 || sess.RuntimeID() != runtimeID {
+		t.Fatalf("after the refused renew: %d renews, runtime id %q, enrollment %q; want the one renew, runtime id %q kept, an enrollment other than %q",
+			renews(), sess.RuntimeID(), next, runtimeID, id)
 	}
-	t.Fatal("a refused renew must re-enroll")
 }
 
 func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
@@ -597,27 +686,7 @@ func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
 	// srv2.Recover below reads only what's on disk, and quiescing the old session first (next)
 	// removes it from the in-memory registry, so if s.save() runs after that Remove, it snapshots
 	// an already-empty registry and overwrites the state file with nothing to recover.
-	saveDeadline := time.Now().Add(5 * time.Second)
-	for {
-		recs, err := LoadRecords(state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		saved := false
-		for _, rec := range recs {
-			if rec.PID == child.Process.Pid && rec.EnrollmentID == first.EnrollmentID {
-				saved = true
-				break
-			}
-		}
-		if saved {
-			break
-		}
-		if time.Now().After(saveDeadline) {
-			t.Fatal("the enrolled record must be saved to disk before the old session is quiesced")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	awaitSaved(t, state, child.Process.Pid, first.EnrollmentID)
 	// Quiesce the old session's watchExit before simulating the helper's death: r.cancel() only
 	// stops enrollLoop/renewLoop (they select on ctx.Done()), never watchExit (which only ends
 	// via Registry.Remove closing sess.stop, by design — see retire's doc comment). Left running,
@@ -630,7 +699,10 @@ func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
 		oldSess.peer.Close()
 	}
 	r.cancel() // the helper dies; keys are gone with it
-	time.Sleep(100 * time.Millisecond)
+	// And it saves nothing more: a save the old helper still had in flight finishes, and any
+	// later one writes nothing, so srv2 below reads the state the old helper left and no save
+	// of the old one lands over it afterwards. Close is what guarantees that, not a pause.
+	r.srv.Registry.Close()
 	// A second helper on the same state and the same fake broker.
 	of := operatorFile(t, "ada@example.com")
 	srv2 := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: cipheraddr.New(r.fake.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: r.fake.srv.Client()},
@@ -642,17 +714,10 @@ func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srv2.Recover(ctx)
-	deadline := time.Now().Add(5 * time.Second)
-	var sess *Session
-	for time.Now().Before(deadline) {
-		if sess = srv2.Registry.Get(child.Process.Pid); sess != nil && sess.snapshot().State == "enrolled" {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if sess == nil || sess.snapshot().State != "enrolled" {
-		t.Fatal("the live session must be re-pinned and enrolled")
-	}
+	sess := testwait.Until(t, "the live session to be re-pinned and enrolled", func() (*Session, bool) {
+		sess := srv2.Registry.Get(child.Process.Pid)
+		return sess, sess != nil && sess.snapshot().State == "enrolled"
+	})
 	if sess.identity().Thumbprint == oldTP || sess.identity().EnrollmentID == first.EnrollmentID || sess.RuntimeID() != first.RuntimeID {
 		t.Fatalf("recovery uses a fresh key and a new enrollment for the same runtime_id: %+v", sess.Info())
 	}
@@ -660,26 +725,10 @@ func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
 	// call (Recover's ordering, from a review of the helper; enrollLoop revokes the session's
 	// lapsed id first): by the time sess reads "enrolled" above, the old id must already be
 	// revoked, so this poll should already find it on the first check.
-	revokeDeadline := time.Now().Add(5 * time.Second)
-	for {
-		r.fake.mu.Lock()
-		revoked := false
-		for _, id := range r.fake.deletes {
-			if id == first.EnrollmentID {
-				revoked = true
-				break
-			}
-		}
-		deletes := append([]string(nil), r.fake.deletes...)
-		r.fake.mu.Unlock()
-		if revoked {
-			break
-		}
-		if time.Now().After(revokeDeadline) {
-			t.Fatalf("the old enrollment must be revoked: %v", deletes)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.Until(t, "the old enrollment must be revoked", func() ([]string, bool) {
+		_, deletes, _ := r.fake.snapshot()
+		return deletes, slices.Contains(deletes, first.EnrollmentID)
+	})
 	// Quiesce srv2's own recovered session too, synchronously, before this test returns: its
 	// watchExit is still pinning the same child pid and would otherwise still be live when
 	// t.Cleanup kills the child and t.TempDir() removes this test's directories — an async
@@ -708,10 +757,12 @@ func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
 // (launcher_credential_id, runtime_id), not thumbprint — a fresh key for a runtime that still
 // has a live row is refused outright (fakeBroker's runtimeIDToID models exactly that; byTP
 // alone, keyed on the recovered session's brand-new thumbprint, cannot). fakeBroker's
-// revokeFirstDelay holds the old row "live" for a window so a concurrent (buggy) enroll would
-// hit that conflict if one were ever attempted; the fixed enrollLoop revokes synchronously
-// before its first Broker.EnrollIdentity call, so no enroll is ever attempted during that window
-// and conflicts stays zero however long the delay runs.
+// revokeFirstGate holds the old row "live" while the revoke waits, so a concurrent (buggy)
+// enroll would hit that conflict if one were ever attempted; the fixed enrollLoop revokes
+// synchronously before its first Broker.EnrollIdentity call, so no enroll is ever attempted
+// while the gate holds and conflicts stays zero. The row reads that from the enrollLoop's own
+// state: once the goroutine Recover started it on (adopt) is inside the held revoke, read from
+// the goroutine dump, it can send no enroll until the row lets the revoke go.
 func TestRecoverRevokesThePriorEnrollmentBeforeReenrolling(t *testing.T) {
 	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
@@ -721,38 +772,19 @@ func TestRecoverRevokesThePriorEnrollmentBeforeReenrolling(t *testing.T) {
 	first := r.call(t, Request{Op: "register", WaitSeconds: 5})
 	// Wait for the enrolled record to actually reach disk before quiescing the old session —
 	// see TestRecoverRepinsLiveSessionsWithFreshKeys's identical wait for why this is needed.
-	saveDeadline := time.Now().Add(5 * time.Second)
-	for {
-		recs, err := LoadRecords(state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		saved := false
-		for _, rec := range recs {
-			if rec.PID == child.Process.Pid && rec.EnrollmentID == first.EnrollmentID {
-				saved = true
-				break
-			}
-		}
-		if saved {
-			break
-		}
-		if time.Now().After(saveDeadline) {
-			t.Fatal("the enrolled record must be saved to disk before the old session is quiesced")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	awaitSaved(t, state, child.Process.Pid, first.EnrollmentID)
 	oldSess := r.srv.Registry.Get(child.Process.Pid)
 	r.srv.Registry.Remove(oldSess)
 	if oldSess.peer != nil {
 		oldSess.peer.Close()
 	}
-	r.cancel() // the helper dies; keys are gone with it
-	time.Sleep(100 * time.Millisecond)
-	// Hold the old row "live" for 300ms once srv2.Recover asks to revoke it: nothing has issued
-	// a DELETE for this broker yet, so this is that first (and only) one.
+	r.cancel()             // the helper dies; keys are gone with it
+	r.srv.Registry.Close() // and saves nothing more (TestRecoverRepinsLiveSessionsWithFreshKeys)
+	// Hold the old row "live" once srv2.Recover asks to revoke it: nothing has issued a DELETE
+	// for this broker yet, so this is that first (and only) one.
+	gate, open := testGate(t)
 	r.fake.mu.Lock()
-	r.fake.revokeFirstDelay = 300 * time.Millisecond
+	r.fake.revokeFirstGate = gate
 	r.fake.mu.Unlock()
 	of := operatorFile(t, "ada@example.com")
 	srv2 := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: cipheraddr.New(r.fake.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: r.fake.srv.Client()},
@@ -763,18 +795,34 @@ func TestRecoverRevokesThePriorEnrollmentBeforeReenrolling(t *testing.T) {
 	waitFor(t, func() bool { return srv2.Broker.LoginStatus().State == "issued" })
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	enrolledBefore := func() int { posts, _, _ := r.fake.snapshot(); return len(posts) }()
+	// Recover runs on this goroutine, so adopt starts the recovered session's loops from it.
+	created := fmt.Sprintf(".(*Server).adopt in goroutine %d\n", goroutinetest.ID())
 	srv2.Recover(ctx)
-	deadline := time.Now().Add(5 * time.Second)
-	var sess *Session
-	for time.Now().Before(deadline) {
-		if sess = srv2.Registry.Get(child.Process.Pid); sess != nil && sess.snapshot().State == "enrolled" {
-			break
+	// The revoke reaches the fake and waits at the gate, with the old row still live. The
+	// session's enroll comes only from the enrollLoop adopt started for it, which revokes the
+	// lapsed id before it enrolls: once that loop is inside the held revoke, it can send no enroll
+	// until the row opens the gate. An enroll that arrives first, or a loop that goes on to enroll
+	// without waiting for its revoke, fails the row by name.
+	testwait.Until(t, "the recovered session's enrollLoop to wait in the revoke of its prior enrollment, held at the fake's gate", func() (string, bool) {
+		if posts, _, _ := r.fake.snapshot(); len(posts) != enrolledBefore {
+			t.Fatalf("the helper sent %d enrolls while the revoke of the prior enrollment was still waiting; it must revoke first", len(posts)-enrolledBefore)
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if sess == nil || sess.snapshot().State != "enrolled" {
-		t.Fatal("the live session must be re-pinned and enrolled despite the delayed revoke")
-	}
+		r.fake.mu.Lock()
+		reached := r.fake.revokeAttempts >= 1
+		r.fake.mu.Unlock()
+		for _, trace := range goroutinetest.Traces() {
+			if strings.Contains(trace, ".(*Server).enrollLoop(") && strings.Contains(trace, created) {
+				return trace, reached && strings.Contains(trace, ".(*Server).revokeLapsed(")
+			}
+		}
+		return "no enrollLoop adopt started from this row's goroutine", false
+	})
+	open()
+	sess := testwait.Until(t, "the live session to be re-pinned and enrolled once the held revoke lands", func() (*Session, bool) {
+		sess := srv2.Registry.Get(child.Process.Pid)
+		return sess, sess != nil && sess.snapshot().State == "enrolled"
+	})
 	r.fake.mu.Lock()
 	conflicts := r.fake.conflicts
 	deletes := append([]string(nil), r.fake.deletes...)
@@ -782,26 +830,31 @@ func TestRecoverRevokesThePriorEnrollmentBeforeReenrolling(t *testing.T) {
 	if conflicts != 0 {
 		t.Fatalf("enrollLoop must revoke the prior enrollment before its first enroll call, never race it: %d runtime_id-keyed conflicts", conflicts)
 	}
-	revoked := false
-	for _, id := range deletes {
-		if id == first.EnrollmentID {
-			revoked = true
-			break
-		}
-	}
-	if !revoked {
+	if !slices.Contains(deletes, first.EnrollmentID) {
 		t.Fatalf("the old enrollment must be revoked: %v", deletes)
 	}
 	// Quiesce srv2's own recovered session, synchronously, before this test returns — see
 	// TestRecoverRepinsLiveSessionsWithFreshKeys's identical teardown for why this is needed.
-	if sess != nil {
-		srv2.Registry.Remove(sess)
-		if sess.peer != nil {
-			sess.peer.Close()
-		}
+	srv2.Registry.Remove(sess)
+	if sess.peer != nil {
+		sess.peer.Close()
 	}
 	srv2.Registry.Close()
 	srv2.Broker.Close()
+}
+
+// awaitSaved waits until the state file at state holds pid's record with enrollment id. A
+// register's WaitSeconds waits only on the session's ready, which enrollLoop's setEnrolled closes
+// BEFORE its s.save(), so a register returning does not mean the enrolled record is on disk.
+func awaitSaved(t *testing.T, state string, pid int, id string) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("the record of pid %d enrolled as %s to be saved to %s", pid, id, state), func() ([]Record, bool) {
+		recs, err := LoadRecords(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return recs, slices.ContainsFunc(recs, func(rec Record) bool { return rec.PID == pid && rec.EnrollmentID == id })
+	})
 }
 
 // TestRecoverFallsBackToIndependentRevokeIfTheRepinnedSessionEndsMidBackoff is the regression for
@@ -827,15 +880,7 @@ func TestRecoverFallsBackToIndependentRevokeIfTheRepinnedSessionEndsMidBackoff(t
 	first := registerEnrolled(t, r)
 	// Wait for the enrolled record to actually reach disk before quiescing the old session —
 	// see TestRecoverRepinsLiveSessionsWithFreshKeys's identical wait for why this is needed.
-	testwait.Until(t, "the enrolled record to reach disk before the old session is quiesced", func() ([]Record, bool) {
-		recs, err := LoadRecords(state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return recs, slices.ContainsFunc(recs, func(rec Record) bool {
-			return rec.PID == child.Process.Pid && rec.EnrollmentID == first.EnrollmentID
-		})
-	})
+	awaitSaved(t, state, child.Process.Pid, first.EnrollmentID)
 	// The old helper writes the state file no more from here (Registry.Close lets a save in flight
 	// finish first), so the record Recover reads below is the one just read, whatever the old
 	// helper's goroutines do as they stop; then its session ends and it stops serving.
@@ -898,16 +943,11 @@ func TestRecoverDropsDeadRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := startRig(t, state)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		r.fake.mu.Lock()
-		n := len(r.fake.deletes)
-		r.fake.mu.Unlock()
-		if n == 1 {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		defer r.fake.mu.Unlock()
+		return len(r.fake.deletes) == 1
+	})
 	_, deletes, _ := r.fake.snapshot()
 	if len(deletes) != 1 || deletes[0] != "enr-dead" || len(r.srv.Registry.List()) != 0 {
 		t.Fatalf("a recorded session whose process is gone is revoked and dropped: %v %d", deletes, len(r.srv.Registry.List()))
@@ -924,19 +964,21 @@ func TestRecoverDropsDeadRecords(t *testing.T) {
 // before enrolling again, and this proves it does: within a bounded time the session ends up
 // enrolled under a genuinely NEW id, having explicitly revoked the old one, never spinning.
 //
-// The lapse is the fake's genuine expiry path, with nothing timed against it: the fake holds the
-// session's first renew at its renew gate until the test has seen the enrollment's stored lease
-// pass, and only then lets it through, so the renew is refused because the lease has passed
-// however slow the host is. The first enrollment's short lease is the fake's nextLease, so the
-// fresh enrollment gets the fake's 900 s default and cannot lapse again under the assertions.
+// The lapse is the fake's genuine expiry path, with nothing timed against it: the fake's leases
+// and the server's renew cadence run on the rig's one clock, which only the row moves. The row
+// moves it to the end of the enrollment's stored lease, which fires the session's first renew, a
+// third of the way in, and the fake holds that renew at its renew gate until the clock stands at
+// the lease's end, so the renew is refused because the lease has passed however slow the host is.
+// The fresh enrollment's lease runs from there, and the row moves the clock no further.
 func TestRenewRefusedRevokesTheLapsedEnrollmentBeforeReenrolling(t *testing.T) {
 	t.Parallel()
-	r := startRig(t, "")
+	r := newRigOn(t, "")
 	gate, open := testGate(t)
 	r.fake.mu.Lock()
-	r.fake.nextLease = 60 * time.Millisecond
+	r.fake.clock = r.clock.Now
 	r.fake.renewGate = gate
 	r.fake.mu.Unlock()
+	r.login(t)
 	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
@@ -944,28 +986,16 @@ func TestRenewRefusedRevokesTheLapsedEnrollmentBeforeReenrolling(t *testing.T) {
 	r.fake.mu.Lock()
 	expiry := r.fake.leaseExpiry[reg.EnrollmentID]
 	r.fake.mu.Unlock()
-	time.Sleep(time.Until(expiry) + 20*time.Millisecond)
+	// The renew is armed only once the enrollment has started its renew loop; a move made before
+	// that would leave the loop's first wait armed past the clock's last move, never fired.
+	r.clock.AwaitArmedAt(t, "the session's first renew, a third of the way into its lease", r.clock.Now().Add(expiry.Sub(r.clock.Now())/3))
+	r.clock.Set(expiry)
 	open()
-	deadline := time.Now().Add(5 * time.Second)
-	var newID string
-	for time.Now().Before(deadline) {
-		if id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID; id != "" && id != reg.EnrollmentID {
-			newID = id
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if newID == "" {
-		t.Fatal("a renew refused because the lease lapsed must eventually revoke the old id and re-enroll with a new one, within a reasonable bounded time")
-	}
-	_, deletes, _ := r.fake.snapshot()
-	revoked := false
-	for _, id := range deletes {
-		if id == reg.EnrollmentID {
-			revoked = true
-		}
-	}
-	if !revoked {
+	testwait.Until(t, "a renew refused because the lease lapsed to revoke the old id and re-enroll with a new one", func() (string, bool) {
+		id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID
+		return id, id != "" && id != reg.EnrollmentID
+	})
+	if _, deletes, _ := r.fake.snapshot(); !slices.Contains(deletes, reg.EnrollmentID) {
 		t.Fatalf("the lapsed enrollment must be explicitly revoked before re-enrolling: deletes=%v old=%q", deletes, reg.EnrollmentID)
 	}
 	r.fake.mu.Lock()
@@ -1069,20 +1099,24 @@ func TestUnregisterRejectsAPeerWhosePIDChangedDuringTheAncestryWalk(t *testing.T
 	}
 }
 
-// delayingTransport delays a request whose path contains match, letting a test hold the fake's
-// token endpoint poll open long enough to observe a machine login sit "pending" past a second
-// socket round trip.
-type delayingTransport struct {
+// gatedTransport holds a request whose path contains match until gate closes, letting a test
+// keep the fake's token endpoint poll open while it observes a machine login sit "pending"
+// across a second socket round trip, and let it through when the test says.
+type gatedTransport struct {
 	http.RoundTripper
-	delay time.Duration
+	gate  <-chan struct{}
 	match string
 }
 
-func (d *delayingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if strings.Contains(req.URL.Path, d.match) {
-		time.Sleep(d.delay)
+func (g *gatedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.Path, g.match) {
+		select {
+		case <-g.gate:
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		}
 	}
-	return d.RoundTripper.RoundTrip(req)
+	return g.RoundTripper.RoundTrip(req)
 }
 
 // TestLoginOverTheSocketReturnsTheCodeAndEnrollSessionKeyWorksAfterIssue drives the socket
@@ -1096,9 +1130,10 @@ func (d *delayingTransport) RoundTrip(req *http.Request) (*http.Response, error)
 func TestLoginOverTheSocketReturnsTheCodeAndEnrollSessionKeyWorksAfterIssue(t *testing.T) {
 	t.Parallel()
 	r := newRig(t, "")
-	r.srv.Broker.HTTP = &http.Client{Transport: &delayingTransport{
+	gate, open := testGate(t)
+	r.srv.Broker.HTTP = &http.Client{Transport: &gatedTransport{
 		RoundTripper: r.fake.srv.Client().Transport,
-		delay:        300 * time.Millisecond,
+		gate:         gate,
 		match:        "/v1/oauth/token",
 	}}
 	before := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"})
@@ -1113,6 +1148,7 @@ func TestLoginOverTheSocketReturnsTheCodeAndEnrollSessionKeyWorksAfterIssue(t *t
 	if !login2.OK || login2.Code != login1.Code || login2.LoginState != "pending" {
 		t.Fatalf("a repeat login while pending must return the same code: %+v vs %+v", login1, login2)
 	}
+	open() // the token poll the gate held answers now, and the login is issued
 	waitFor(t, func() bool { return r.srv.Broker.LoginStatus().State == "issued" })
 	status := r.call(t, Request{Op: "login-status"})
 	if !status.OK || status.LoginState != "issued" {

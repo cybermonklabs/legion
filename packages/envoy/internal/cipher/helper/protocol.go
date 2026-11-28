@@ -371,8 +371,7 @@ const BrokerCallWait = 30 * time.Second
 // and 8 s.
 const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
 
-// DefaultBrokerCallSlack is how long after an op's bound brokerCall's timer answers it, when the
-// Server names no other (Server.brokerCallSlack, which only tests set).
+// DefaultBrokerCallSlack is how long after an op's bound brokerCall's timer answers it.
 const DefaultBrokerCallSlack = time.Second
 
 // InstallRestartTimeout bounds the `systemctl --user restart` of the helper that

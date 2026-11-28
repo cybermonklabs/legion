@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -26,7 +27,7 @@ type stoppedLoopRig struct {
 	helper *Broker
 	served *rig
 	out    *syncBuffer
-	expiry *expiryTimers
+	expiry *expiryWatch
 	waits  *tradeWaits
 	trades func() int
 	// requests counts every request to the token endpoint, whatever it is answered: a trade the
@@ -60,7 +61,9 @@ func newStoppedLoopRig(t *testing.T, first *stopAnswer) *stoppedLoopRig {
 		t.Fatal(err)
 	}
 	trader := http.NewServeMux()
-	r.trades = serveTokenExchange(t, r.broker, trader, thumbprint)
+	// The helper reads each credential's expiry on its clock, the expiry watch's fake once
+	// installExpiryTimers has set it, so the stand-in mints each on that clock too.
+	r.trades = serveTokenExchange(t, r.broker, trader, thumbprint, func() time.Time { return r.expiry.fake.Now() })
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/token", func(w http.ResponseWriter, request *http.Request) {
 		r.requests.Add(1)
@@ -199,7 +202,7 @@ func TestAStoppedTradeLoopHoldingACredentialPromisesNoRenewal(t *testing.T) {
 		t.Fatalf("login-status's line while the stopped loop holds a credential reads %q; want it to promise no renewal", lapse)
 	}
 
-	r.expiry.fire(t, first, 0)
+	fireArmedAt(t, r.expiry.fake, first.expiresAt, "the drop at the credential's expiry")
 	waitFor(t, func() bool { return !r.helper.HasCredential() })
 	waitForRecord(t, r.out, dropExpired+"; cleared: no session can enroll under this machine's credential; "+cipherclient.Hint(cipherclient.FailureIdentityStopped))
 	stopped := "no machine credential; " + cipherclient.Hint(cipherclient.FailureIdentityStopped)

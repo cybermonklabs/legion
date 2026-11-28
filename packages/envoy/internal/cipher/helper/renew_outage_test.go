@@ -19,56 +19,14 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// outageUnit is what one second of BROKER_LEASE_SECONDS and BROKER_SWEEP_SECONDS lasts in the
-// rows below, every wait of the model shortened by the same factor (leasetime.Model.Scale). The
-// rows run in virtual time (virtualClock), so the unit no longer has to outlast a loaded machine's
-// lateness; it stays the one the margins below were set at.
-const outageUnit = 10 * time.Millisecond
-
-// virtualClock is renewLoop's clock in the rows below (Server.testClock), and the outage
-// broker's. The loop and the broker are the only things in the row that spend time, and they
-// take turns: the loop waits, then renews, and the broker answers. So time moves only when one of
-// them spends it: After moves it on by its wait at once and fires, and the broker moves it on by
-// a refused renewal's delay. A renewal therefore lands on the model's own instant, whatever the
-// machine's load, and the row takes milliseconds. Once frozen (a renewal got through), After
-// never fires again, so the loop waits on the row's context, as the real one would wait out a
-// fresh lease.
-type virtualClock struct {
-	mu     sync.Mutex
-	now    time.Time
-	frozen bool
-}
-
-func (c *virtualClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *virtualClock) After(d time.Duration) <-chan time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	fired := make(chan time.Time, 1)
-	if !c.frozen {
-		c.now = c.now.Add(max(d, 0))
-		fired <- c.now
-	}
-	return fired
-}
-
-func (c *virtualClock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(max(d, 0))
-}
-
-func (c *virtualClock) freeze() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.frozen = true
-}
+// The rows below run renewLoop on the server's own clock, a fake the row moves, at the
+// production lease, sweep and floor: each renewal goes out on the instant the loop armed it for,
+// and each failure takes its delay on that same clock, so the rig walks the model's own instants
+// and no lateness of the machine can move a verdict.
 
 // outageBroker is a broker that stops serving between gapStart and gapEnd, counted from the
 // renewal that granted the lease, on clock. Each renewal it refuses takes the delay at that
@@ -80,7 +38,7 @@ func (c *virtualClock) freeze() {
 // while nothing served, ENROLLMENT_NOT_LIVE — the answer the broker's first sweep leaves
 // behind, since a gap this short counts as a broker serving and is given back to nobody.
 type outageBroker struct {
-	clock            *virtualClock
+	clock            *clocktest.Fake
 	start            time.Time
 	gapStart, gapEnd time.Duration
 	delays           []time.Duration
@@ -99,6 +57,9 @@ func (b *outageBroker) renewed() bool {
 	return b.renewedOK
 }
 
+// RoundTrip answers one renewal at the instant the server's clock reads. A refused renewal that
+// takes a delay to fail moves that clock by it before answering: the call took that long, and
+// nothing of renewLoop is armed while it is in the call.
 func (b *outageBroker) RoundTrip(*http.Request) (*http.Response, error) {
 	at := b.clock.Now().Sub(b.start)
 	b.mu.Lock()
@@ -111,7 +72,9 @@ func (b *outageBroker) RoundTrip(*http.Request) (*http.Response, error) {
 		if i < len(b.delays) {
 			delay = min(max(b.delays[i], 0), b.timeout)
 		}
-		b.clock.advance(delay)
+		if delay > 0 {
+			b.clock.Advance(delay)
+		}
 		if delay >= b.timeout {
 			return nil, &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
 		}
@@ -122,7 +85,6 @@ func (b *outageBroker) RoundTrip(*http.Request) (*http.Response, error) {
 		b.mu.Lock()
 		b.renewedOK = true
 		b.mu.Unlock()
-		b.clock.freeze()
 		return reply(http.StatusOK, map[string]any{"lease_expires_at": b.clock.Now().Add(b.lease)}), nil
 	}
 }
@@ -143,33 +105,27 @@ func reply(status int, body any) *http.Response {
 // outage of leasetime.NotServingSweeps sweeps, beginning at the worst instant for it, at a
 // lease the model says it cannot outlive and one it says it can. At the first the renewal that
 // gets through finds the enrollment gone and the loop answers "enroll again"; at the second it
-// renews and goes on holding the session. Both run at outageUnit to the second, on a virtual
-// clock that the loop and the broker alone move, so no scheduler's lateness reaches the verdict.
+// renews and goes on holding the session. Both run on the server's clock at the production
+// scale, so the rig's renewals land on the model's own instants.
 //
 // In a pod this row runs -run-filtered: the package's contract rows need SO_PEERPIDFD, which
 // gVisor does not answer, and fail PEER_UNIDENTIFIED. CI's envoy-go job runs the whole package.
 func TestRenewLoopOutlivesAnOutageOnlyAboveTheLeaseBound(t *testing.T) {
 	t.Parallel()
-	model := leasetime.Production().Scale(outageUnit)
-	sweep := 5 * outageUnit
-	// minMargin is how far from the boundary each lease below has to be: the row decides the
-	// same way the model does only while the loop and the model agree to within it.
-	const minMargin = 40 * outageUnit
+	model := leasetime.Production()
+	const sweep = 5 * time.Second
 	for _, c := range []struct {
 		what      string
 		lease     time.Duration
 		wantLapse bool
 	}{
-		{"a lease the outage runs out", 45 * outageUnit, true},
-		{"a lease that outlives it", 180 * outageUnit, false},
+		{"a lease the outage runs out", 45 * time.Second, true},
+		{"a lease that outlives it", 180 * time.Second, false},
 	} {
 		t.Run(c.what, func(t *testing.T) {
 			want := model.WorstFor(leasetime.RenewerHelper, c.lease, sweep)
 			if want.Survived() == c.wantLapse {
 				t.Fatalf("the model renews a lease of %v at %v, which survives %v; this row wants a lapse: %v", c.lease, want.Renewed, want.Survived(), c.wantLapse)
-			}
-			if margin := want.Lease - want.Renewed; margin < minMargin && -margin < minMargin {
-				t.Fatalf("a lease of %v renews %v from its end, closer to the boundary than the %v this row needs to decide", c.lease, margin, minMargin)
 			}
 			var delays []time.Duration
 			for _, a := range want.Attempts {
@@ -177,48 +133,65 @@ func TestRenewLoopOutlivesAnOutageOnlyAboveTheLeaseBound(t *testing.T) {
 					delays = append(delays, a.Delay())
 				}
 			}
-			// The model's worst outage ends one instant after the renewal it refuses last goes
-			// out; in the two rows below that renewal is the first, which goes out on the very
-			// instant the gap begins. On the virtual clock the loop's renewal lands on that
-			// instant; the rig still holds the gap open margin longer, so a renewal the loop
-			// times a little differently from the model still meets the outage, while the
-			// renewal that gets through is still well outside it. The guard below measures that
-			// against this phase rather than assuming it.
-			const margin = 10 * outageUnit
-			if slack := want.Renewed - want.GapEnd; slack < 4*margin {
-				t.Fatalf("a gap held open %v longer leaves %v before the renewal that gets through (%v); this row needs the margin well inside that", margin, slack, want.Renewed)
-			}
 			sess, err := newSession(os.Getpid(), 0, "runtime-1", "", nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			sess.setEnrolledAt("enrollment-1", sess.identity().Generation)
-			clock := &virtualClock{now: time.Now()}
-			start := clock.Now()
-			broker := &outageBroker{clock: clock, start: start, gapStart: want.GapStart, gapEnd: want.GapEnd + margin, delays: delays, timeout: model.ClientTimeout, lease: c.lease}
+			fake := clocktest.New(time.Now())
+			start := fake.Now()
+			broker := &outageBroker{clock: fake, start: start, gapStart: want.GapStart, gapEnd: want.GapEnd, delays: delays, timeout: model.ClientTimeout, lease: c.lease}
 			srv := &Server{
-				Broker:    &Broker{URL: cipheraddr.New("http://broker.invalid"), HTTP: &http.Client{Transport: broker}},
-				Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-				MinRenew:  model.HelperMinRenew,
-				testClock: clock,
+				Broker:   &Broker{URL: cipheraddr.New("http://broker.invalid"), HTTP: &http.Client{Transport: broker}},
+				Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+				MinRenew: model.HelperMinRenew,
+				Clock:    fake,
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			lapsed := make(chan bool, 1)
 			go func() { lapsed <- srv.renewLoop(ctx, sess, start.Add(c.lease), sess.identity().Generation) }()
-			if c.wantLapse {
-				select {
-				case got := <-lapsed:
-					if !got {
-						t.Fatal("the renew loop gave up on the session instead of enrolling it again")
+			// Fire each renewal the loop arms, one at a time, until the loop ends (the lease
+			// ran out) or a renewal gets through (the lease outlived the outage). A renewal
+			// that got through is read before the next one is fired, so the rig launches no
+			// renewal the model does not walk.
+			ended, got := false, false
+			for !ended && !(!c.wantLapse && broker.renewed()) {
+				next := testwait.Until(t, "the renew loop to arm its next renewal, end, or renew", func() (time.Time, bool) {
+					select {
+					case got = <-lapsed:
+						ended = true
+						return time.Time{}, true
+					default:
 					}
-				case <-time.After(renewOutageBound):
-					t.Fatalf("the renew loop neither lapsed nor renewed within %v", renewOutageBound)
+					if !c.wantLapse && broker.renewed() {
+						return time.Time{}, true
+					}
+					armed := fake.Armed()
+					if len(armed) == 0 {
+						return time.Time{}, false
+					}
+					return armed[0], true
+				})
+				if !next.IsZero() {
+					fake.Set(next)
+				}
+			}
+			if c.wantLapse {
+				if !got {
+					t.Fatal("the renew loop gave up on the session instead of enrolling it again")
 				}
 			} else {
-				waitFor(t, broker.renewed)
+				// A loop that ended before a renewal got through has given its answer: the
+				// lease ran out under it, or it gave the session up.
+				if ended {
+					if got {
+						t.Fatal("the renew loop lapsed the session, want it renewed and held")
+					}
+					t.Fatal("the renew loop gave up on the session before a renewal got through, want it renewed and held")
+				}
 				cancel()
-				if got := <-lapsed; got {
+				if got := testwait.Receive(t, "the renew loop to return once its context ended", lapsed); got {
 					t.Fatal("the renew loop lapsed the session, want it renewed and held")
 				}
 			}
@@ -233,7 +206,3 @@ func TestRenewLoopOutlivesAnOutageOnlyAboveTheLeaseBound(t *testing.T) {
 		})
 	}
 }
-
-// renewOutageBound is how long a row waits for a loop that should have ended long before: the
-// longest walk below renews at 120 units, and this is the same five seconds waitFor keeps.
-const renewOutageBound = 5 * time.Second
