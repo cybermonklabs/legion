@@ -30,17 +30,22 @@ It has no options of its own: everything after the script name is the command. R
 sets the limit in kB, 8388608 (8 GiB) when it is unset or empty. The command's stdout is read
 line by line, so a `go test -json` stream is unwrapped back into the test log it carries and the
 running tests are known; the command's stderr is not touched and goes straight to this script's.
+The same test2json lines are kept as they arrive in
+$RUNNER_TEMP/go-test-events/race-memory-*.jsonl for the job's artifact, or in a temporary
+file removed on exit. Lines that are not test2json events go only to the log.
 """
 
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 # Half of a 16 GiB runner, so a run that grows past it but still fits on the runner turns the
 # step red after it ends, with the peak and the tests named, rather than passing unnoticed.
@@ -253,7 +258,24 @@ class Log:
         self._mid_line = not text.endswith("\n")
 
 
-def pump(stream: Iterable[str], tests: RunningTests, log: Log) -> None:
+class Events:
+    """Keep the test events and remember the first write error."""
+
+    def __init__(self, file: TextIO) -> None:
+        self._file = file
+        self.error: OSError | None = None
+
+    def write(self, line: str) -> None:
+        if self.error is not None:
+            return
+        try:
+            self._file.write(line if line.endswith("\n") else line + "\n")
+        except OSError as error:
+            # Keep draining stdout so a failed artifact write cannot stall the command.
+            self.error = error
+
+
+def pump(stream: Iterable[str], tests: RunningTests, log: Log, events: Events) -> None:
     """Pass the command's stdout through, unwrapping a `go test -json` stream as it goes.
 
     A line that parses as a JSON object with an `Action` key is a -json event: its `Output`, when
@@ -272,6 +294,7 @@ def pump(stream: Iterable[str], tests: RunningTests, log: Log) -> None:
         if event is None:
             log.write(line)
             continue
+        events.write(line)
         tests.record(event)
         output = event.get("Output")
         if output:
@@ -329,6 +352,24 @@ def main(argv: list[str]) -> int:
         print(f"race memory: {problem}", file=sys.stderr)
         return 2
 
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    directory = Path(runner_temp) / "go-test-events" if runner_temp else None
+    try:
+        if directory is not None:
+            directory.mkdir(parents=True, exist_ok=True)
+        event_file = tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", buffering=1, dir=directory,
+            prefix="race-memory-", suffix=".jsonl", delete=directory is None,
+        )
+    except OSError as error:
+        print(f"race memory: cannot keep the test events: {error}", file=sys.stderr)
+        return 1
+
+    with event_file:
+        return run(argv, limit_kb, source, Events(event_file))
+
+
+def run(argv: list[str], limit_kb: int, source: str, events: Events) -> int:
     log = Log()
     log.line(f"race memory: the limit is {limit_kb} kB ({source})")
 
@@ -339,7 +380,7 @@ def main(argv: list[str]) -> int:
         return 127
 
     tests = RunningTests()
-    reader = threading.Thread(target=pump, args=(process.stdout, tests, log), daemon=True)
+    reader = threading.Thread(target=pump, args=(process.stdout, tests, log, events), daemon=True)
     reader.start()
 
     # The peak and the highest sample are folded in walk by walk rather than kept as every text
@@ -380,6 +421,8 @@ def main(argv: list[str]) -> int:
 
     if peak_kb > limit_kb:
         log.line(decision_line(peak_kb, field, limit_kb, highest))
+    if events.error is not None:
+        print(f"race memory: cannot keep the test events: {events.error}", file=sys.stderr)
 
     # The exit rule, decided here and not before, because the command has ended by now: a
     # command that failed on its own keeps its status, since the tests' own failure is what the
@@ -388,7 +431,7 @@ def main(argv: list[str]) -> int:
     if status != 0:
         # A signalled command has a negative returncode; report it as a shell does.
         return status if status > 0 else 128 - status
-    if peak_kb > limit_kb:
+    if peak_kb > limit_kb or events.error is not None:
         return 1
     return 0
 
