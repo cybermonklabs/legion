@@ -9,6 +9,7 @@ import {
   type Preset,
 } from "../web/src/features/issue-page/page-words";
 import { buildIssuePath } from "../web/src/features/refs/routes";
+import { getIssue } from "./api";
 import { withIssuePage } from "./issue-page-option";
 import { editNoticesSent } from "./issue-page-t-rows";
 import {
@@ -750,6 +751,83 @@ export const test = base.extend<Record<never, never>, { readonly loadSeeds: Load
     },
     { scope: "worker", timeout: SEED_MS },
   ],
+});
+
+/** Whether the database still holds `seeded`: its issue is there and its spec is the seed's own
+ *  artifact. The artifact's id is a UUID, so an issue that another row's seed gave the same key
+ *  after a reset does not pass. It reads with the agents' shared token, which no reset and no
+ *  sign-out of a person's session changes. */
+async function holdsSeed(seeded: LargestShapeSeed): Promise<boolean> {
+  try {
+    const issue = await getIssue(seeded.key, { as: "agent" });
+    return issue.primary_artifact_id === seeded.specArtifactId;
+  } catch (error) {
+    // `e2e/api.ts`'s request names the status after "failed:"; only a missing issue is an answer.
+    if (error instanceof Error && / failed: 404 /.test(error.message)) return false;
+    throw error;
+  }
+}
+
+/** One seed kept for rows that run one after another in a worker and write nothing another of
+ *  them reads (`keptSeed`). */
+export interface KeptSeed<T extends LargestShapeSeed> {
+  /** The override of the automatic `freshDatabase` for those rows: it empties the database, as
+   *  `e2e/test.ts`'s does, unless the database still holds the kept seed (`holdsSeed`, one read);
+   *  a row of another file that ran between two of them emptied it, and so did a failed row's
+   *  worker, which starts again with nothing kept. */
+  freshDatabase(
+    fixtures: Record<never, never>,
+    use: (value: undefined) => Promise<void>
+  ): Promise<void>;
+  /** The kept seed, made by `seed` where none is kept. */
+  shape(seed: () => Promise<T>): Promise<T>;
+}
+
+/**
+ * A seed for rows that share one, kept in this worker process's memory between them, where the
+ * load rows' `loadSeeds` above is a worker fixture.
+ *
+ * A worker fixture gives its `test` a worker hash of its own, and Playwright 1.64.1 queues every
+ * group of another hash after all the groups of its project's other hash (`createTestGroups`,
+ * node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2385), so a
+ * file of the parallel projects that took one ran last in its leg: in shard 2 of run 46129937068,
+ * `issue-page-load-same.e2e.ts`'s chromium rows started 11.5 minutes into the leg, one after
+ * another, and the leg's 18-minute guard stopped their last row. A seed kept here leaves the
+ * rows' `test` the hash of every other file, so their group is queued in file order. The rows
+ * that share it run in one group (`mode: "default"`), so no other row runs between two of them.
+ */
+export function keptSeed<T extends LargestShapeSeed>(): KeptSeed<T> {
+  let kept: T | undefined;
+  return {
+    // Playwright refuses a first argument that is not a destructuring pattern.
+    // biome-ignore lint/correctness/noEmptyPattern: the reset takes no other fixture.
+    freshDatabase: async ({}, use) => {
+      if (kept !== undefined && !(await holdsSeed(kept))) kept = undefined;
+      if (kept === undefined) await resetDatabase();
+      await use(undefined);
+    },
+    shape: async (seed) => {
+      kept ??= await seed();
+      return kept;
+    },
+  };
+}
+
+const keptShape = keptSeed<LargestShapeSeed>();
+
+/**
+ * The `test` of the same-page rows (`e2e/issue-page-load-same.e2e.ts`): `e2e/test.ts`'s, with the
+ * shape the load rows read (`seedLargestShape`, settled as `loadSeeds` settles it) kept for the
+ * worker's rows (`keptSeed`) rather than held by a worker fixture. Its `loadSeeds` is the load
+ * rows' `shape()` alone, and a row seeds through it under its own limit.
+ */
+export const sameSeedTest = base.extend<{ readonly loadSeeds: Pick<LoadSeeds, "shape"> }>({
+  freshDatabase: keptShape.freshDatabase,
+  loadSeeds: async ({ browser }, use) => {
+    await use({
+      shape: () => keptShape.shape(() => settledSeed(browser, seedLargestShape)),
+    });
+  },
 });
 
 // ---------------------------------------------------------------------------------------------

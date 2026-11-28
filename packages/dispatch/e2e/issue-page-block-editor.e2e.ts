@@ -32,6 +32,7 @@ import {
 import {
   EDITOR_BOX_SELECTOR,
   HEADER_SELECTORS,
+  keptSeed,
   LOAD_ROW_SELECTOR,
   VIEW_ROW_SELECTOR,
 } from "./issue-page-load";
@@ -295,78 +296,192 @@ async function inSeed<T>(
   return await inReader(browser, "alice", true, (page) => use(seed, page));
 }
 
+/** The seed the rows below that share one keep (`keptSeed`). */
+const keptBlockSeed = keptSeed<LargestShapeSeed>();
+
+/** `inSeed` on the kept seed (`keptBlockSeed`), seeded first where none is kept. */
+async function inKeptSeed<T>(
+  browser: Browser,
+  use: (seed: LargestShapeSeed, page: Page) => Promise<T>
+) {
+  const seed = await keptBlockSeed.shape(seedLargestShape);
+  return await inReader(browser, "alice", true, (page) => use(seed, page));
+}
+
 function firstRow(page: Page) {
   return rowOf(page, FIRST);
 }
 
-// SLOW(>=2s): the real seed and three cold loads, one quiet and two with input at the first rows.
-test("the block editor opens one room and reads nothing @phone", async ({ browser }) => {
-  test.setTimeout(ROW_TIMEOUT);
-  const seed = await seedLargestShape();
-  // Let seed writes finish before measuring the page's own request window.
-  await inReader(browser, "alice", false, async (page) => {
-    const traffic = watchApiRequests(page);
-    await seedEventsLanded(page);
-    await editNoticesSent(seed.key, traffic);
-  });
-  for (const act of ["after-ready", "enter", "click"] as const) {
-    await inReader(browser, "alice", true, async (page) => {
-      const tree = outlineAnswerOf(page, "conversation");
-      const api = watchApiRequests(page);
-      const load = watchLoadRequests(page);
-      const frames = roomFrames(page);
-      await installInstruments(page, {
-        boxes: "none",
-        header: HEADER_SELECTORS,
-        named: null,
-        rows: LOAD_ROW_SELECTOR,
-        viewRows: VIEW_ROW_SELECTOR,
-      });
-      await openOutline(page, seed.key, FIRST);
-      const row = firstRow(page);
-      if (act === "after-ready") {
-        const end = await waitForLoadEnd(page, load);
-        const { timeOrigin } = await recordOf(page);
-        api.reset();
-        await ready(page);
-        await enter(page, row);
-        expect(forbiddenReadsIn(api.requests.map(({ path }) => path))).toEqual([]);
-        expect(frames.sockets[0]?.start, "room opened after the load ended").toBeGreaterThan(
-          timeOrigin + end
-        );
-      } else {
-        await expect(row).toBeVisible();
-        expect(
-          await readMark(page, BLOCK_EDITOR_START_MARK),
-          "work had not started before the early act"
-        ).toBeNull();
-        if (act === "enter") {
-          await row.focus();
-          await page.keyboard.press("Enter");
-        } else {
-          await clickAt(page, row.locator(WORDS), 2);
-        }
-        await waitForMark(page, BLOCK_EDITOR_START_MARK);
-        await frames.frame();
-        await ready(page);
-        await expect(rowEditor(row)).toBeFocused();
-      }
-      const { converted } = await heldAnswer(tree, "the seed's Conversation tree");
-      console.log(`block-editor ${act} converted=${converted}`);
-      expect(converted, "the seed's documents must share one converted room").toBe(true);
-      await leaveEditor(page, row);
-      const second = rowOf(page, SECOND);
-      await enter(page, second);
-      await leaveEditor(page, second);
-      if (act === "click") {
-        await switchView(page, seed.key, "Spec");
-        await switchView(page, seed.key, "Conversation");
-      }
-      expect(frames.sockets.map(({ path, closed }) => ({ path, closed }))).toEqual([
-        { path: `/ws/doc/${seed.specArtifactId}`, closed: false },
-      ]);
+// The rows of this group write no block another of them reads or writes, so they share one seed
+// in each worker (`keptBlockSeed`), one after another: `default` runs the group in one worker in
+// the order written, where `serial` would skip every row after one that failed. What each writes:
+// - `the block editor opens one room and reads nothing` enters r1 and r2 and leaves each, and
+//   types nothing.
+// - `the block editor keeps the comment-on-selection chord` selects r1's words and opens the
+//   comment composer, and sends nothing.
+// - `a click on a row's text opens the block editor with the caret at the pressed place` puts the
+//   caret in r1 by a click and by Enter, and types nothing.
+// - `ArrowDown keeps the caret in the block after a hard break` inserts r-hard-break, a block of
+//   its own that no other row reads, and runs last.
+// Every other row of this file writes r1 or r2, which these read, and so seeds an issue of its own.
+test.describe(() => {
+  test.describe.configure({ mode: "default" });
+  test.use({ freshDatabase: keptBlockSeed.freshDatabase });
+
+  // SLOW(>=2s): the real seed and three cold loads, one quiet and two with input at the first rows.
+  test("the block editor opens one room and reads nothing @phone", async ({ browser }) => {
+    test.setTimeout(ROW_TIMEOUT);
+    const seed = await keptBlockSeed.shape(seedLargestShape);
+    // Let seed writes finish before measuring the page's own request window.
+    await inReader(browser, "alice", false, async (page) => {
+      const traffic = watchApiRequests(page);
+      await seedEventsLanded(page);
+      await editNoticesSent(seed.key, traffic);
     });
-  }
+    for (const act of ["after-ready", "enter", "click"] as const) {
+      await inReader(browser, "alice", true, async (page) => {
+        const tree = outlineAnswerOf(page, "conversation");
+        const api = watchApiRequests(page);
+        const load = watchLoadRequests(page);
+        const frames = roomFrames(page);
+        await installInstruments(page, {
+          boxes: "none",
+          header: HEADER_SELECTORS,
+          named: null,
+          rows: LOAD_ROW_SELECTOR,
+          viewRows: VIEW_ROW_SELECTOR,
+        });
+        await openOutline(page, seed.key, FIRST);
+        const row = firstRow(page);
+        if (act === "after-ready") {
+          const end = await waitForLoadEnd(page, load);
+          const { timeOrigin } = await recordOf(page);
+          api.reset();
+          await ready(page);
+          await enter(page, row);
+          expect(forbiddenReadsIn(api.requests.map(({ path }) => path))).toEqual([]);
+          expect(frames.sockets[0]?.start, "room opened after the load ended").toBeGreaterThan(
+            timeOrigin + end
+          );
+        } else {
+          await expect(row).toBeVisible();
+          expect(
+            await readMark(page, BLOCK_EDITOR_START_MARK),
+            "work had not started before the early act"
+          ).toBeNull();
+          if (act === "enter") {
+            await row.focus();
+            await page.keyboard.press("Enter");
+          } else {
+            await clickAt(page, row.locator(WORDS), 2);
+          }
+          await waitForMark(page, BLOCK_EDITOR_START_MARK);
+          await frames.frame();
+          await ready(page);
+          await expect(rowEditor(row)).toBeFocused();
+        }
+        const { converted } = await heldAnswer(tree, "the seed's Conversation tree");
+        console.log(`block-editor ${act} converted=${converted}`);
+        expect(converted, "the seed's documents must share one converted room").toBe(true);
+        await leaveEditor(page, row);
+        const second = rowOf(page, SECOND);
+        await enter(page, second);
+        await leaveEditor(page, second);
+        if (act === "click") {
+          await switchView(page, seed.key, "Spec");
+          await switchView(page, seed.key, "Conversation");
+        }
+        expect(frames.sockets.map(({ path, closed }) => ({ path, closed }))).toEqual([
+          { path: `/ws/doc/${seed.specArtifactId}`, closed: false },
+        ]);
+      });
+    }
+  });
+
+  // SLOW(>=2s): the real seed, a live selection, and the outline's comment composer.
+  test("the block editor keeps the comment-on-selection chord @phone", async ({ browser }) => {
+    test.setTimeout(ROW_TIMEOUT);
+    await inKeptSeed(browser, async ({ key }, page) => {
+      await openOutline(page, key, FIRST);
+      await ready(page);
+      await enter(page, firstRow(page));
+      const quote = (await rowEditor(firstRow(page)).innerText()).trim().split(/\s+/, 4).join(" ");
+      expect(quote).not.toBe("");
+      await selectEditorText(page, quote);
+      await page.keyboard.press("ControlOrMeta+Alt+KeyM");
+      const form = composer(page);
+      await expect(form).toContainText(quote);
+      await expect(form.getByLabel("Comment", { exact: true })).toBeFocused();
+    });
+  });
+
+  // SLOW(>=2s): the seed and both a placed click and Enter on a prepared live editor.
+  test("a click on a row's text opens the block editor with the caret at the pressed place @phone", async ({
+    browser,
+  }) => {
+    test.setTimeout(ROW_TIMEOUT);
+    await inKeptSeed(browser, async ({ key }, page) => {
+      await openOutline(page, key, FIRST);
+      await ready(page);
+      const row = firstRow(page);
+      await clickAt(page, row.locator(WORDS), 5);
+      await expect(rowEditor(row)).toBeFocused();
+      await expect.poll(() => caretIn(rowEditor(row))).toBe(5);
+      await leaveEditor(page, row);
+      await enter(page, row);
+      await expect.poll(() => caretIn(rowEditor(row))).toBe(0);
+    });
+  });
+
+  // SLOW(>=2s): seed the real hard break and compare the editor's arrow with the outline's arrow.
+  test("ArrowDown keeps the caret in the block after a hard break @phone", async ({ browser }) => {
+    test.setTimeout(ROW_TIMEOUT);
+    await inKeptSeed(browser, async (seed, page) => {
+      // Under the post r1 answers, beside r1, so the outline draws rows below it as below r1: a
+      // statement that answers nothing stands under the issue, where it was the outline's last row.
+      const parent = seed.origins[FIRST];
+      if (parent === undefined) throw new Error(`the seed's ${FIRST} answers no post`);
+      await editArtifact(seed.specArtifactId, {
+        ops: [
+          {
+            after: `block:${FIRST}`,
+            markdown: `:::requirement{#r-hard-break parent="${parent}"}\nFirst line.  \nLast line.\n:::\n`,
+            op: "insert",
+          },
+        ],
+      });
+      await openOutline(page, seed.key, "r-hard-break");
+      await ready(page);
+      const row = rowOf(page, "r-hard-break");
+      await enter(page, row);
+      const editor = rowEditor(row);
+      // A `<br>` has no width, which Playwright reads as hidden whatever draws it.
+      await expect(editor.locator("br")).toHaveCount(1);
+      await editor.evaluate((element) => {
+        const afterBreak = element.querySelector("br")?.nextSibling;
+        if (!afterBreak) throw new Error("no text after the hard break");
+        document.getSelection()?.collapse(afterBreak, 0);
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+      expect(await caretIn(editor)).toBe("First line.".length);
+      await page.keyboard.press("ArrowDown");
+      await expect(editor).toBeFocused();
+      expect(await caretIn(editor)).not.toBeNull();
+      await leaveEditor(page, row);
+      const next = await row.evaluate((element) => {
+        const rows = [...document.querySelectorAll("[data-issue-body] [data-node-row]")].filter(
+          (row) => row.getClientRects().length > 0
+        );
+        return rows[rows.indexOf(element) + 1]?.getAttribute("data-row-key");
+      });
+      expect(next, "a visible outline row stands below the block").toBeTruthy();
+      await page.keyboard.press("ArrowDown");
+      await expect(page.locator("[data-node-row]:focus")).toHaveAttribute(
+        "data-row-key",
+        next ?? ""
+      );
+    });
+  });
 });
 
 // SLOW(>=2s): the seeded outline, a prepared live room, and frames on both sides of the first bind.
@@ -554,41 +669,6 @@ test("the room differs only inside the block after an edit @phone", async ({ bro
   });
 });
 
-// SLOW(>=2s): the real seed, a live selection, and the outline's comment composer.
-test("the block editor keeps the comment-on-selection chord @phone", async ({ browser }) => {
-  test.setTimeout(ROW_TIMEOUT);
-  await inSeed(browser, async ({ key }, page) => {
-    await openOutline(page, key, FIRST);
-    await ready(page);
-    await enter(page, firstRow(page));
-    const quote = (await rowEditor(firstRow(page)).innerText()).trim().split(/\s+/, 4).join(" ");
-    expect(quote).not.toBe("");
-    await selectEditorText(page, quote);
-    await page.keyboard.press("ControlOrMeta+Alt+KeyM");
-    const form = composer(page);
-    await expect(form).toContainText(quote);
-    await expect(form.getByLabel("Comment", { exact: true })).toBeFocused();
-  });
-});
-
-// SLOW(>=2s): the seed and both a placed click and Enter on a prepared live editor.
-test("a click on a row's text opens the block editor with the caret at the pressed place @phone", async ({
-  browser,
-}) => {
-  test.setTimeout(ROW_TIMEOUT);
-  await inSeed(browser, async ({ key }, page) => {
-    await openOutline(page, key, FIRST);
-    await ready(page);
-    const row = firstRow(page);
-    await clickAt(page, row.locator(WORDS), 5);
-    await expect(rowEditor(row)).toBeFocused();
-    await expect.poll(() => caretIn(rowEditor(row))).toBe(5);
-    await leaveEditor(page, row);
-    await enter(page, row);
-    await expect.poll(() => caretIn(rowEditor(row))).toBe(0);
-  });
-});
-
 // SLOW(>=2s): the seed, a second browser, and controlled delivery of two live removal cases.
 test("the block editor ends and reports when another writer deletes or merges the held block @phone", async ({
   browser,
@@ -696,53 +776,6 @@ test("an open block editor stays writable when the block schema changes @phone",
       await restoreStoreSchema();
       await expect.poll(() => servesAddedType()).toBe(false);
     }
-  });
-});
-
-// SLOW(>=2s): seed the real hard break and compare the editor's arrow with the outline's arrow.
-test("ArrowDown keeps the caret in the block after a hard break @phone", async ({ browser }) => {
-  test.setTimeout(ROW_TIMEOUT);
-  await inSeed(browser, async (seed, page) => {
-    // Under the post r1 answers, beside r1, so the outline draws rows below it as below r1: a
-    // statement that answers nothing stands under the issue, where it was the outline's last row.
-    const parent = seed.origins[FIRST];
-    if (parent === undefined) throw new Error(`the seed's ${FIRST} answers no post`);
-    await editArtifact(seed.specArtifactId, {
-      ops: [
-        {
-          after: `block:${FIRST}`,
-          markdown: `:::requirement{#r-hard-break parent="${parent}"}\nFirst line.  \nLast line.\n:::\n`,
-          op: "insert",
-        },
-      ],
-    });
-    await openOutline(page, seed.key, "r-hard-break");
-    await ready(page);
-    const row = rowOf(page, "r-hard-break");
-    await enter(page, row);
-    const editor = rowEditor(row);
-    // A `<br>` has no width, which Playwright reads as hidden whatever draws it.
-    await expect(editor.locator("br")).toHaveCount(1);
-    await editor.evaluate((element) => {
-      const afterBreak = element.querySelector("br")?.nextSibling;
-      if (!afterBreak) throw new Error("no text after the hard break");
-      document.getSelection()?.collapse(afterBreak, 0);
-      document.dispatchEvent(new Event("selectionchange"));
-    });
-    expect(await caretIn(editor)).toBe("First line.".length);
-    await page.keyboard.press("ArrowDown");
-    await expect(editor).toBeFocused();
-    expect(await caretIn(editor)).not.toBeNull();
-    await leaveEditor(page, row);
-    const next = await row.evaluate((element) => {
-      const rows = [...document.querySelectorAll("[data-issue-body] [data-node-row]")].filter(
-        (row) => row.getClientRects().length > 0
-      );
-      return rows[rows.indexOf(element) + 1]?.getAttribute("data-row-key");
-    });
-    expect(next, "a visible outline row stands below the block").toBeTruthy();
-    await page.keyboard.press("ArrowDown");
-    await expect(page.locator("[data-node-row]:focus")).toHaveAttribute("data-row-key", next ?? "");
   });
 });
 

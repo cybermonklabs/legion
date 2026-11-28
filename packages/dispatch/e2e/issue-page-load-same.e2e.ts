@@ -16,7 +16,7 @@ import {
   type LoadOptions,
   oneLoad,
   rowAddress,
-  test,
+  sameSeedTest as test,
 } from "./issue-page-load";
 import { OWED_BY, owedUnless } from "./issue-page-t-tree";
 import { waitForLoadEnd } from "./load-instruments";
@@ -41,9 +41,10 @@ import {
 /**
  * The rows of `c-same-page` and `c-late-row` (Verification v4), in the parallel projects:
  * `chromium` at 1440 by 900 and `iphone` at 390 by 844 with the phone's emulation, the viewports
- * the record is made at (`test.use` below; `chromium`'s own is 1280 by 720). They read the load
- * rows' worker seed (`seedLargestShape`, the `test` of `e2e/issue-page-load.ts`), so they run in
- * the order they are written, in one worker of each project.
+ * the record is made at (`test.use` below; `chromium`'s own is 1280 by 720). They read one seed of
+ * the load rows' shape (`seedLargestShape`, settled), kept for the worker's rows (`sameSeedTest`
+ * and `keptSeed`, `e2e/issue-page-load.ts`), so they run in the order they are written, in one
+ * worker of each project.
  *
  * - `record the rows the base draws @phone` makes the record, at the base, only where
  *   `ISSUE_PAGE_LOAD_RECORD=1`: one load of each view the base draws, read once its load has
