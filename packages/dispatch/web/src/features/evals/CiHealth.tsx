@@ -28,6 +28,7 @@ import { EvalChart } from "./EvalChart";
 import { EvalTable } from "./EvalTable";
 import { releaseJobList } from "./firstPaint";
 import { type JobListId, jobListView, SLOWEST_JOBS } from "./jobLists";
+import { useHoldBox } from "./sectionDraw";
 import { useDrawnMark } from "./useDrawnMark";
 import type { EvalsScope, EvalsViewState } from "./useEvalsViews";
 
@@ -267,7 +268,8 @@ function CiChart({
  *  its table, or what it says while the view is out, refused, or answers no job. Its words and
  *  its empty line are read from its answer (`note`, `empty`), which names the floor a list ranked
  *  by. The commit in which it first draws its answer or its refusal is marked
- *  `dispatch:evals-job-list:<id>` on the page's performance timeline (`useDrawnMark`). The Evals
+ *  `dispatch:evals-job-list:<id>` on the page's performance timeline (`useDrawnMark`); until then
+ *  it holds the section's box back (`useHoldBox`), since its answer sets its size. The Evals
  *  tab's route opened its view as it matched (`holdFirstPaint`); once the list's own observer
  *  holds it, the list lets go of the route's hold (`releaseJobList`), from an effect, which runs
  *  after the query's own. */
@@ -290,7 +292,9 @@ function JobList({
   const items = useQuery(itemsViewQuery(jobListView(id, scope.project, scope.window, scope.repos)));
   useEffect(() => releaseJobList(queryClient, id), [queryClient, id]);
   const rows = useMemo(() => items.data?.items ?? [], [items.data]);
-  useDrawnMark(`dispatch:evals-job-list:${id}`, items.data !== undefined || items.isError);
+  const answered = items.data !== undefined || items.isError;
+  useHoldBox(!answered);
+  useDrawnMark(`dispatch:evals-job-list:${id}`, answered);
   return (
     <section aria-label={title} className="flex flex-col gap-1" data-job-list={id}>
       <h3 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>{title}</h3>

@@ -16,12 +16,7 @@ import {
 } from "react";
 
 import { EVALS_VIEW_LIMIT, evalDetailQuery, itemsViewQuery } from "../../api/queries";
-import type {
-  EvalDetailResponse,
-  EvalItemsResponse,
-  EvalListItem,
-  EvalListResponse,
-} from "../../api/types";
+import type { EvalItemsResponse, EvalListItem, EvalListResponse } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { textMutedOnSurface, textPrimaryOnSurface } from "../../theme/classes";
 import { type ChartModel, type ChartRenderer, evalName } from "./chart-model";
@@ -30,7 +25,7 @@ import {
   chartTexts,
   type DeclaredInput,
   type DeclaredSpec,
-  specObject,
+  declaredCharts,
   specText,
 } from "./charts/kind";
 import { isNumberModel, type NumberSectionPart, numberParts } from "./charts/number-model";
@@ -40,13 +35,6 @@ import { chartKinds } from "./charts/registry";
 import { EvalChart } from "./EvalChart";
 import { EvalTitle } from "./EvalPanel";
 import { type EvalsScope, laterOffsets } from "./useEvalsViews";
-
-/** The charts an eval's newest version declares, as its detail read answers them (plan D10): none
- *  until the detail has answered, or where the eval declares none. */
-export function declaredCharts(detail: EvalDetailResponse | undefined): readonly DeclaredSpec[] {
-  const charts = detail?.items?.[0]?.charts;
-  return Array.isArray(charts) ? charts.map(specObject) : [];
-}
 
 /** The kind a declared chart names, where the tab draws it. */
 function kindOf(spec: DeclaredSpec) {

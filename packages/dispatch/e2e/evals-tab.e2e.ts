@@ -67,7 +67,13 @@ import {
   windowFigure,
   windowQuery,
 } from "./evals-seed";
-import { evalsSection, openEvalsTimeline, openMergeTimeline, paintedSection } from "./evals-tab";
+import {
+  evalsSection,
+  graphValues,
+  openEvalsTimeline,
+  openMergeTimeline,
+  paintedSection,
+} from "./evals-tab";
 import { sql } from "./psql";
 import { expect, type Locator, type Page, test, type WebSocketRoute } from "./test";
 
@@ -378,9 +384,7 @@ test("every chart takes Graph or Table and Compare, and its table holds what it 
   for (const figure of await figures.all()) {
     await expect(figure.getByRole("button", { exact: true, name: "Graph" })).toBeVisible();
     await expect(figure.getByRole("checkbox", { name: "Compare" })).toBeChecked();
-    const drawn = await figure
-      .locator("[data-value]")
-      .evaluateAll((values) => values.map((value) => value.getAttribute("data-value")));
+    const drawn = await graphValues(figure);
     await showChart(figure, "Table");
     const table = figure.getByRole("table");
     const tabled = await table

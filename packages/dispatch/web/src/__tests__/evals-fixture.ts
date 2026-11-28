@@ -152,3 +152,33 @@ export function itemsPage(
 ): EvalItemsResponse {
   return { compare: null, items: rows, limit, min_n: null, offset, total, window: WINDOW };
 }
+
+/** One value a chart's graph draws, as the DOM names it. */
+export interface DrawnValue {
+  readonly series: string | null;
+  readonly statistic: string | null;
+  readonly range: string | null;
+  readonly x: string | null;
+  readonly value: string | null;
+}
+
+/** Every value the graphs under `root` draw: a node of one value names it with `data-x` and
+ *  `data-value`, and the group of a range of a per-day chart, whose days one path draws, names
+ *  its values with `data-xs` and `data-values`, one place for each value
+ *  (`features/delivery/Sparkbars.tsx`'s `valueList`). */
+export function drawnValues(root: Element): DrawnValue[] {
+  return [...root.querySelectorAll("[data-value], [data-values]")].flatMap((element) => {
+    const named = (x: string | null, value: string | null): DrawnValue => ({
+      range: element.getAttribute("data-range"),
+      series: element.getAttribute("data-series"),
+      statistic: element.getAttribute("data-statistic"),
+      value,
+      x,
+    });
+    if (element.hasAttribute("data-value"))
+      return [named(element.getAttribute("data-x"), element.getAttribute("data-value"))];
+    const places = (element.getAttribute("data-xs") ?? "").split(" ");
+    const values = (element.getAttribute("data-values") ?? "").split(" ").filter(Boolean);
+    return values.map((value, index) => named(places[index] ?? null, value));
+  });
+}

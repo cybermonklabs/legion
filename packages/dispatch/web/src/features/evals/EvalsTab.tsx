@@ -19,6 +19,7 @@ import { keepLogged, LoggedEvals, UnnamedEvals } from "./EveryEval";
 import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
 import { releaseFirstPaint, releaseJobLists } from "./firstPaint";
 import { LegionSection } from "./LegionSection";
+import { SectionDrawing } from "./sectionDraw";
 import { TargetCards } from "./TargetCards";
 import { TimelineSection } from "./TimelineSection";
 import { narrowingQuery, useSettledSearch, useTimelineUrlState } from "./timeline-url";
@@ -236,7 +237,9 @@ function drawSection(
  * first paint (D25 step 2), and draws it once it lands (`useTabScopes`). A card's or a chart's
  * title opens the number's panel (plan D12). Where the server does not serve the tab's views, a
  * server of the release before (`useUnservedViews`), each section says so, and the rest of the
- * app works.
+ * app works. Its sections draw by one plan (`SectionDrawing`): those in the first screen draw
+ * their charts in the first paint, each other one its header and a box of its drawn size, and
+ * its charts after (INFRA-979's ruling (A) on where the first paint ends).
  *
  * The compare range a preset's default names moves at each UTC midnight the tab stays open past,
  * with the window the server moves (`useEvalsScope`).
@@ -282,32 +285,34 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
         ) : null}
       </div>
       <EvalPanelHost kinds={kinds} scope={scope}>
-        {sections.map((section) =>
-          section.id === "timeline" ? (
-            <TimelineSection
-              brush={state.brush}
-              key={section.id}
-              onBrush={(brush) => setState({ ...state, brush })}
-              project={project}
-              scope={scope}
-              unserved={unserved}
-            />
-          ) : (
-            <EvalsSection
-              id={section.id}
-              key={section.id}
-              kinds={section.kinds}
-              scope={section.id === "cards" ? cardsScope : scope}
-              select={section.select}
-              title={section.title}
-              unserved={unserved}
-              untilHeld={everySourceMissing}
-              windowOnly={section.windowOnly}
-            >
-              {drawSection(section.id, project, scope, delivery, days)}
-            </EvalsSection>
-          )
-        )}
+        <SectionDrawing>
+          {sections.map((section) =>
+            section.id === "timeline" ? (
+              <TimelineSection
+                brush={state.brush}
+                key={section.id}
+                onBrush={(brush) => setState({ ...state, brush })}
+                project={project}
+                scope={scope}
+                unserved={unserved}
+              />
+            ) : (
+              <EvalsSection
+                id={section.id}
+                key={section.id}
+                kinds={section.kinds}
+                scope={section.id === "cards" ? cardsScope : scope}
+                select={section.select}
+                title={section.title}
+                unserved={unserved}
+                untilHeld={everySourceMissing}
+                windowOnly={section.windowOnly}
+              >
+                {drawSection(section.id, project, scope, delivery, days)}
+              </EvalsSection>
+            )
+          )}
+        </SectionDrawing>
       </EvalPanelHost>
     </div>
   );

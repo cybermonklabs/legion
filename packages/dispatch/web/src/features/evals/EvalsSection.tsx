@@ -1,9 +1,10 @@
-import { type ReactNode, useId } from "react";
+import { type ReactNode, useId, useRef } from "react";
 
 import type { EvalKind } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { textMutedOnCanvas, textPrimaryOnCanvas } from "../../theme/classes";
 import { WINDOW_ONLY } from "./narrowing";
+import { SectionCharts, useSectionDraw } from "./sectionDraw";
 import { UnservedViews } from "./unserved";
 import { useDrawnMark } from "./useDrawnMark";
 import {
@@ -36,9 +37,17 @@ function sectionState(statuses: readonly EvalsViewStatus[]): SectionState {
  * their cards, each as its own view lands). A section of evals no facet narrows (`windowOnly`)
  * says "window and repository only" under its heading while a facet or the search is set (plan
  * D3). A section shown only once it holds an eval (`untilHeld`) draws nothing before, while its
- * views stay open, unless the server does not serve them or refuses them. The commit in which it
- * first draws every view painted is marked `dispatch:evals-section:<id>` on the page's performance
- * timeline (`useDrawnMark`).
+ * views stay open, unless the server does not serve them or refuses them.
+ *
+ * Once every view has answered or been refused (or none is served), and nothing in it holds its
+ * box back (a CI job list still out, `useHoldBox`), the section shows its header and its box:
+ * everything it draws, each chart's frame at its drawn size and none of the charts' marks
+ * (`ChartsDrawn`), marked `dispatch:evals-section-box:<id>` on the page's performance timeline.
+ * It draws its charts when the tab's plan says (`useSectionDraw`: at once where it lies in the
+ * viewport, else in the page's idle time or as it is scrolled into view, INFRA-979's ruling (A),
+ * dispatch://INFRA-2918/comment/75af800e-9db9-47d9-9c4d-427b0cff36c0), so nothing in its box moves
+ * when it does; `data-drawn` says whether it has. The commit in which it first draws every view
+ * painted with its charts is marked `dispatch:evals-section:<id>` (`useDrawnMark`).
  */
 export function EvalsSection({
   children,
@@ -69,19 +78,29 @@ export function EvalsSection({
   windowOnly?: boolean;
 }): ReactNode {
   const headingId = useId();
+  const element = useRef<HTMLElement>(null);
   const views = useEvalsViews(scope, kinds, select);
   const state = sectionState(views.map((view) => view.status));
   const notServed = unserved && state !== "painted";
   const hidden =
     untilHeld && !notServed && state !== "failed" && views.every((view) => view.items.length === 0);
-  useDrawnMark(`dispatch:evals-section:${id}`, state === "painted" && !hidden);
+  // Its size is its last once every view has answered or been refused, or none is served.
+  const settled = state !== "subscribed" || notServed;
+  const draw = useSectionDraw(element, {
+    box: settled && !hidden,
+    boxMark: `dispatch:evals-section-box:${id}`,
+    settled,
+  });
+  useDrawnMark(`dispatch:evals-section:${id}`, state === "painted" && !hidden && draw.drawn);
   if (hidden) return null;
   return (
     <section
       aria-labelledby={headingId}
       className="flex flex-col gap-2"
+      data-drawn={draw.drawn}
       data-section={id}
       data-state={state}
+      ref={element}
     >
       <h2 className={`text-[15px] font-semibold ${textPrimaryOnCanvas}`} id={headingId}>
         {title}
@@ -105,7 +124,7 @@ export function EvalsSection({
           {title}: loading…
         </p>
       ) : null}
-      {children(views)}
+      <SectionCharts draw={draw}>{children(views)}</SectionCharts>
     </section>
   );
 }

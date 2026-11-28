@@ -2,6 +2,7 @@ import { afterEach, test as bunTest, expect } from "bun:test";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { drawnValues } from "../../__tests__/evals-fixture";
 import {
   type ChartModel,
   type ChartRenderer,
@@ -181,10 +182,8 @@ function figure(): HTMLElement {
 
 /** Each value drawn under `root`, by what it names: series, statistic, place, range and value. */
 function drawn(root: Element): string[] {
-  return [...root.querySelectorAll("[data-value]")].map((element) =>
-    ["data-series", "data-statistic", "data-x", "data-range", "data-value"]
-      .map((name) => element.getAttribute(name))
-      .join(" ")
+  return drawnValues(root).map(({ range, series, statistic, value, x }) =>
+    [series, statistic, x, range, value].join(" ")
   );
 }
 
@@ -340,7 +339,7 @@ test("a compare range with no data shows an empty second series", async () => {
   );
   const second = figure().querySelector('[data-series-range="compare"]');
   expect(second).not.toBeNull();
-  expect(second?.querySelectorAll("[data-value]")).toHaveLength(0);
+  expect(second?.getAttribute("data-values")).toBe("");
   expect(figure().querySelector("[data-compare-legend]")?.textContent).toBe(
     "compare 2026-10-29 to 2026-10-31: no data"
   );

@@ -6,9 +6,14 @@ import {
   type PaginationState,
   type SortingState,
 } from "@tanstack/react-table";
-import { type KeyboardEvent, type ReactNode, useMemo, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useMemo, useState } from "react";
 
-import { DataTable, type RowNoun, useDataTable } from "../../components/DataTable";
+import {
+  DataTable,
+  type DataTableProps,
+  type RowNoun,
+  useDataTable,
+} from "../../components/DataTable";
 import { focusVisibleRing, surfaceMutedBg, surfaceMutedHoverBg } from "../../theme/classes";
 import { type LayoutColumns, useTableLayout } from "../project/issues-table-layout";
 import { ALL_ROWS } from "../project/issues-table-model";
@@ -40,7 +45,10 @@ const ROW_MOVES: Readonly<Record<string, (index: number, count: number) => numbe
  * A table of the Evals tab, a chart's or a list's: the one table core (`components/DataTable.tsx`,
  * plan D5) for rows that are no issues. It draws every row, in a box as tall as its rows, on one
  * page with no pager, and binds none of the issue tables' row keys; each row carries `data-row`.
- * The reader sorts, filters and lays out its columns as in any table of the core.
+ * The reader sorts, filters and lays out its columns as in any table of the core. Its rows are
+ * drawn once for each `rows` (a caller keeps one array for each answer) and each way the reader
+ * orders, filters and lays them out: a render for anything else, its box or a header measured or
+ * a frame of another view, draws none of them again (dispatch://INFRA-2918, T33).
  *
  * A table whose rows open something (`select`) is one keyboard stop: arrow up and down move
  * between its rows, Home and End jump to the ends, and a click or Enter on a row opens it.
@@ -112,33 +120,24 @@ export function EvalTable<Row>({
   });
   const drawn = table.displayRows;
   const tabStop = drawn.some((entry) => entry.row.id === focusId) ? focusId : drawn[0]?.row.id;
-  // Moves the keyboard from the row `event` is on to the row its key reaches, every row being
-  // drawn.
-  const moveFocus = (event: KeyboardEvent<HTMLTableRowElement>) => {
-    const move = ROW_MOVES[event.key];
-    const body = event.currentTarget.parentElement;
-    if (move === undefined || body === null) return false;
-    const lines = [...body.children].filter(
-      (line): line is HTMLElement => line instanceof HTMLElement && line.hasAttribute(EVAL_ROW)
-    );
-    const next = lines[move(lines.indexOf(event.currentTarget), lines.length)];
-    if (next === undefined) return false;
-    next.focus();
-    setFocusId(next.getAttribute(EVAL_ROW) ?? undefined);
-    return true;
-  };
-  return (
-    <DataTable
-      empty={empty}
-      filterCounts={NO_COUNTS}
-      label={label}
-      model={table}
-      noun={noun}
-      onOpenFilterChange={setOpenFilter}
-      openFilter={openFilter}
-      pager={false}
-      renderGroup={() => null}
-      renderRow={({ index, measure, row }) => (
+  const renderRow = useCallback<DataTableProps<Row>["renderRow"]>(
+    ({ index, measure, row }) => {
+      // Moves the keyboard from the row `event` is on to the row its key reaches, every row
+      // being drawn.
+      const moveFocus = (event: KeyboardEvent<HTMLTableRowElement>) => {
+        const move = ROW_MOVES[event.key];
+        const body = event.currentTarget.parentElement;
+        if (move === undefined || body === null) return false;
+        const lines = [...body.children].filter(
+          (line): line is HTMLElement => line instanceof HTMLElement && line.hasAttribute(EVAL_ROW)
+        );
+        const next = lines[move(lines.indexOf(event.currentTarget), lines.length)];
+        if (next === undefined) return false;
+        next.focus();
+        setFocusId(next.getAttribute(EVAL_ROW) ?? undefined);
+        return true;
+      };
+      return (
         <tr
           aria-selected={select === undefined ? undefined : row.id === select.selectedId}
           className={
@@ -180,9 +179,29 @@ export function EvalTable<Row>({
             </td>
           ))}
         </tr>
-      )}
+      );
+    },
+    [cells, select, tabStop]
+  );
+  return (
+    <DataTable
+      empty={empty}
+      filterCounts={NO_COUNTS}
+      label={label}
+      model={table}
+      noun={noun}
+      onOpenFilterChange={setOpenFilter}
+      openFilter={openFilter}
+      pager={false}
+      renderGroup={renderNoGroup}
+      renderRow={renderRow}
       rowAttribute={EVAL_ROW}
       scrollTestId={scrollTestId}
     />
   );
+}
+
+/** A table of the Evals tab groups no rows, so it draws no group's heading. */
+function renderNoGroup(): ReactNode {
+  return null;
 }

@@ -23,6 +23,7 @@ import type {
 } from "./chart-model";
 import { EvalTitle } from "./EvalPanel";
 import { EvalTable } from "./EvalTable";
+import { useChartsDrawn } from "./sectionDraw";
 
 /** A drawn value's colour by its state: its own verdict, or muted where there is nothing to
  *  measure. */
@@ -245,6 +246,21 @@ function ChartTable({
   );
 }
 
+/** A chart's graph through its renderer: its marks, or, while the section around holds its charts
+ *  back, its frame alone (`ChartsDrawn`). Reading that here, rather than in `EvalChart`, draws only
+ *  the graph again when the section draws its charts. */
+function ChartGraph({
+  compare,
+  model,
+  renderer: Renderer,
+}: {
+  compare: boolean;
+  model: ChartModel;
+  renderer: ChartRenderer;
+}): ReactNode {
+  return <Renderer compare={compare} drawn={useChartsDrawn()} model={model} />;
+}
+
 /**
  * The one chart component of the Evals tab (dispatch://INFRA-2918/artifact/plan-md, D4; spec R7):
  * it draws `model` through `renderer`, the renderer of its kind, under two controls. Graph or
@@ -331,7 +347,7 @@ export function EvalChart({
         </p>
       ) : null}
       {mode === "graph" ? (
-        <Renderer compare={compare} model={model} />
+        <ChartGraph compare={compare} model={model} renderer={Renderer} />
       ) : (
         <ChartTable
           compare={compare}

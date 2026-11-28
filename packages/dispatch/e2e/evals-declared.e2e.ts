@@ -26,7 +26,7 @@ import {
   subscribedViews,
   windowQuery,
 } from "./evals-seed";
-import { paintedSection } from "./evals-tab";
+import { graphValues, paintedSection } from "./evals-tab";
 import { fakeBrokerToken } from "./fake-broker-token";
 import { sql } from "./psql";
 import { sqlLiteral } from "./seed";
@@ -374,10 +374,11 @@ function stepSeries(spec: ChartSpec): string[] {
   );
 }
 
-/** The numbers `figure` draws, in its graph or in its table's window columns. */
+/** The numbers `figure` draws, in its graph (`graphValues`) or in its table's window columns. */
 function drawnValues(figure: Locator, scope: "graph" | "table"): Promise<string[]> {
+  if (scope === "graph") return graphValues(figure);
   return figure
-    .locator(scope === "graph" ? "[data-value]" : 'table [data-range="window"][data-value]')
+    .locator('table [data-range="window"][data-value]')
     .evaluateAll((values) => values.map((value) => value.getAttribute("data-value") ?? ""));
 }
 

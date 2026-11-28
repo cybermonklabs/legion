@@ -2,7 +2,14 @@ import { afterEach, beforeEach, test as bunTest, expect } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 
-import { evalItem, evalSeries, evalsView, itemRow, itemsPage } from "../../__tests__/evals-fixture";
+import {
+  drawnValues,
+  evalItem,
+  evalSeries,
+  evalsView,
+  itemRow,
+  itemsPage,
+} from "../../__tests__/evals-fixture";
 import {
   type FakeLiveSocket,
   type FakeLiveSockets,
@@ -297,7 +304,7 @@ test('a staging chart whose eval has no data reads "no data", never 0, and an ev
   }
   expect(within(chart("Staging end-to-end gate")).queryByText(/^0/)).toBeNull();
   expect(
-    chart("Staging end-to-end gate").querySelectorAll('[data-range="window"][data-value]')
+    drawnValues(chart("Staging end-to-end gate")).filter((value) => value.range === "window")
   ).toHaveLength(0);
 });
 

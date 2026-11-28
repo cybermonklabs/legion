@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { lazy, type ReactNode, Suspense } from "react";
 
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
@@ -18,7 +18,6 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { ArchitecturePage } from "../architecture/ArchitecturePage";
 import { EvalsTab } from "../evals/EvalsTab";
 import { BlockedOnYou } from "../inbox/BlockedOnYou";
 import { buildProjectPath, parseProjectPath } from "../refs/routes";
@@ -26,11 +25,26 @@ import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
-import { DeliverySettingsSection } from "./DeliverySettingsSection";
 import { DocumentList } from "./DocumentList";
-import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
+
+// The tabs' code that the Evals tab's first paint draws none of, each loaded as its tab draws it,
+// so the route's chunk holds none of them (dispatch://INFRA-2918, T33): the architecture page, the
+// issue board with its drag and drop, and the delivery settings with their editors.
+const ArchitecturePage = lazy(() =>
+  import("../architecture/ArchitecturePage").then((module) => ({
+    default: module.ArchitecturePage,
+  }))
+);
+const IssueBoard = lazy(() =>
+  import("./IssueBoard").then((module) => ({ default: module.IssueBoard }))
+);
+const DeliverySettingsSection = lazy(() =>
+  import("./DeliverySettingsSection").then((module) => ({
+    default: module.DeliverySettingsSection,
+  }))
+);
 
 type ProjectTab = "architecture" | "issues" | "documents" | "evals" | "settings";
 
@@ -290,7 +304,11 @@ export function ProjectPage(): ReactNode {
           id="project-architecture-panel"
           role="tabpanel"
         >
-          {activeTab === "architecture" ? <ArchitecturePage project={route.project} /> : null}
+          {activeTab === "architecture" ? (
+            <Suspense fallback={null}>
+              <ArchitecturePage project={route.project} />
+            </Suspense>
+          ) : null}
         </div>
       ) : null}
       <div
@@ -312,12 +330,14 @@ export function ProjectPage(): ReactNode {
                   project's issue, so another project's board is drawn with none of it. The key
                   names the board too: the filters beside it are keyed by the same project, and
                   siblings are told apart by their keys. */}
-              <IssueBoard
-                key={`board:${route.project}`}
-                lanes={lanes}
-                project={route.project}
-                showEdges={showEdges}
-              />
+              <Suspense fallback={null}>
+                <IssueBoard
+                  key={`board:${route.project}`}
+                  lanes={lanes}
+                  project={route.project}
+                  showEdges={showEdges}
+                />
+              </Suspense>
             </>
           )
         ) : null}
@@ -352,11 +372,13 @@ export function ProjectPage(): ReactNode {
         {activeTab === "settings" ? (
           // A project with no default repository carries no `default_repo`. Keyed by the project,
           // so another project's tab starts with none of this one's draft, save or refusal.
-          <DeliverySettingsSection
-            defaultRepo={project.default_repo ?? null}
-            key={route.project}
-            project={route.project}
-          />
+          <Suspense fallback={null}>
+            <DeliverySettingsSection
+              defaultRepo={project.default_repo ?? null}
+              key={route.project}
+              project={route.project}
+            />
+          </Suspense>
         ) : null}
       </div>
     </section>

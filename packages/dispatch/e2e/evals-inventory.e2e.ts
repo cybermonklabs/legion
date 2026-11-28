@@ -25,7 +25,7 @@ import {
   showP0Link,
   TAB_QUERY,
 } from "./evals-seed";
-import { openMergeTimeline, paintedSection } from "./evals-tab";
+import { graphValues, openMergeTimeline, paintedSection } from "./evals-tab";
 import { expect, type Locator, test } from "./test";
 
 /** A brush window inside the tab's window, which the timeline's address carries as the Delivery
@@ -110,9 +110,7 @@ test("every chart of the tab has both controls @evals", async ({ page }) => {
       compares ? 1 : 0
     );
 
-    const drawn = await chart
-      .locator("[data-value]")
-      .evaluateAll((values) => values.map((value) => value.getAttribute("data-value")));
+    const drawn = await graphValues(chart);
     await showChart(chart, "Table");
     const tabled = await chart
       .getByRole("table")

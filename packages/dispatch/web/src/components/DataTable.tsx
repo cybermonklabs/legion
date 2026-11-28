@@ -26,7 +26,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
-import { Fragment, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ColumnFilter, IssueTablePager } from "../features/project/issues-table-controls";
 import { useRowKeymap } from "../features/project/issues-table-keys";
 import type { TableLayoutModel } from "../features/project/issues-table-layout";
@@ -257,33 +257,39 @@ export function useDataTable<Row>({
   table.setOptions((options) => ({ ...options, state: { ...options.state, columnSizing } }));
 
   const pageRows = table.getRowModel().rows;
-  const continued =
-    pageRows[0] !== undefined && !pageRows[0].getIsGrouped()
-      ? pageRows[0].getParentRow()
-      : undefined;
   // A page is a flat slice of leaves, so its last heading can be one whose rows all start on
   // the next page. A heading with nothing under it here is left for the page that holds its
   // rows; the ones that stay say how many of their rows this page shows. A collapsed group
-  // keeps its heading whatever the page holds — it is the only way back to its rows.
-  const onThisPage = new Map<string, number>();
-  const leafIds: string[] = [];
-  for (const row of pageRows)
-    if (!row.getIsGrouped()) {
-      leafIds.push(row.id);
-      const group = row.getParentRow()?.id;
-      if (group !== undefined) onThisPage.set(group, (onThisPage.get(group) ?? 0) + 1);
-    }
-  const displayRows: DisplayRow<Row>[] = [
-    ...(continued === undefined
-      ? []
-      : [{ row: continued, continued: true, shown: onThisPage.get(continued.id) }]),
-    ...pageRows.flatMap((row) => {
-      if (!row.getIsGrouped()) return [{ row }];
-      if (!row.getIsExpanded()) return [{ row }];
-      const here = onThisPage.get(row.id) ?? 0;
-      return here === 0 ? [] : [{ row, shown: here }];
-    }),
-  ];
+  // keeps its heading whatever the page holds — it is the only way back to its rows. TanStack
+  // keeps the page's rows one array while nothing that orders, filters, groups or opens them
+  // changes, so the lines are one array too, and a box that draws every row draws none of them
+  // again for a render of anything else (`EveryLine`).
+  const { displayRows, leafIds } = useMemo(() => {
+    const continued =
+      pageRows[0] !== undefined && !pageRows[0].getIsGrouped()
+        ? pageRows[0].getParentRow()
+        : undefined;
+    const onThisPage = new Map<string, number>();
+    const leaves: string[] = [];
+    for (const row of pageRows)
+      if (!row.getIsGrouped()) {
+        leaves.push(row.id);
+        const group = row.getParentRow()?.id;
+        if (group !== undefined) onThisPage.set(group, (onThisPage.get(group) ?? 0) + 1);
+      }
+    const lines: DisplayRow<Row>[] = [
+      ...(continued === undefined
+        ? []
+        : [{ row: continued, continued: true, shown: onThisPage.get(continued.id) }]),
+      ...pageRows.flatMap((row) => {
+        if (!row.getIsGrouped()) return [{ row }];
+        if (!row.getIsExpanded()) return [{ row }];
+        const here = onThisPage.get(row.id) ?? 0;
+        return here === 0 ? [] : [{ row, shown: here }];
+      }),
+    ];
+    return { displayRows: lines, leafIds: leaves };
+  }, [pageRows]);
   // The box measures itself: `useTableLayout` observes its size and the section around it, so
   // neither the rows this page holds nor a notice above the table is measured from here. What it
   // is told is which rows the page holds - its leaves, gathered in the walk above - whose cells
@@ -414,6 +420,35 @@ export interface DataTableProps<Row> {
 /** A line drawn outside the virtualizer, whose height nothing measures. */
 const NO_MEASURE = (): void => undefined;
 
+/** What draws every line of a box that draws all its rows (`EveryLine`). */
+interface EveryLineProps<Row> {
+  readonly displayRows: readonly DisplayRow<Row>[];
+  /** The table's column definitions: a row object stays the same when the caller gives new
+   *  ones, while each cell draws through its column's own (a cell that reads the caller's state,
+   *  a run picked, does so through it). */
+  readonly columns: readonly ColumnDef<Row>[];
+  /** The columns shown, in order, by id: a row object stays the same when they change, its
+   *  cells do not. */
+  readonly shown: string;
+  readonly renderGroup: DataTableProps<Row>["renderGroup"];
+  readonly renderRow: DataTableProps<Row>["renderRow"];
+}
+
+/** Every line of a box that draws all its rows, drawn again only when the lines, the columns'
+ *  definitions, the columns shown or how a line is drawn change: a render of the table for
+ *  anything else, its box or a header measured, draws none of its rows again. */
+function EveryLineOf<Row>({ displayRows, renderGroup, renderRow }: EveryLineProps<Row>): ReactNode {
+  return displayRows.map((entry, index) => (
+    <Fragment key={`${entry.continued ? "continued-" : ""}${entry.row.id}`}>
+      {entry.row.getIsGrouped()
+        ? renderGroup({ entry, index, measure: NO_MEASURE })
+        : renderRow({ index, measure: NO_MEASURE, row: entry.row })}
+    </Fragment>
+  ));
+}
+
+const EveryLine = memo(EveryLineOf) as typeof EveryLineOf;
+
 /**
  * The table `useDataTable` describes: its scroll box, with the headers that sort, filter,
  * resize and reorder the columns, the rows the caller draws (the virtual ones, or every one), and
@@ -446,18 +481,15 @@ export function DataTable<Row>({
   // The space the rows above and below the drawn window would take.
   const first = virtualRows[0];
   const last = virtualRows.at(-1);
-  // Every line the box draws: the virtual ones, or each of the page's.
+  // Every line the box draws: the virtual ones. A box that draws every row draws them through
+  // `EveryLine`.
   const lines = model.virtual
     ? virtualRows.map((row) => ({
         index: row.index,
         key: row.key,
         measure: virtualizer.measureElement,
       }))
-    : displayRows.map((entry, index) => ({
-        index,
-        key: `${entry.continued ? "continued-" : ""}${entry.row.id}`,
-        measure: NO_MEASURE,
-      }));
+    : [];
 
   return (
     <>
@@ -521,18 +553,31 @@ export function DataTable<Row>({
             </thead>
             <tbody>
               {first ? <tr aria-hidden style={{ height: first.start }} /> : null}
-              {lines.map(({ index, key, measure }) => {
-                const entry = displayRows[index];
-                if (entry === undefined) return null;
-                const line = { index, measure };
-                return (
-                  <Fragment key={key}>
-                    {entry.row.getIsGrouped()
-                      ? renderGroup({ ...line, entry })
-                      : renderRow({ ...line, row: entry.row })}
-                  </Fragment>
-                );
-              })}
+              {model.virtual ? (
+                lines.map(({ index, key, measure }) => {
+                  const entry = displayRows[index];
+                  if (entry === undefined) return null;
+                  const line = { index, measure };
+                  return (
+                    <Fragment key={key}>
+                      {entry.row.getIsGrouped()
+                        ? renderGroup({ ...line, entry })
+                        : renderRow({ ...line, row: entry.row })}
+                    </Fragment>
+                  );
+                })
+              ) : (
+                <EveryLine
+                  columns={table.options.columns}
+                  displayRows={displayRows}
+                  renderGroup={renderGroup}
+                  renderRow={renderRow}
+                  shown={table
+                    .getVisibleLeafColumns()
+                    .map((column) => column.id)
+                    .join("\n")}
+                />
+              )}
               {last ? (
                 <tr aria-hidden style={{ height: virtualizer.getTotalSize() - last.end }} />
               ) : null}

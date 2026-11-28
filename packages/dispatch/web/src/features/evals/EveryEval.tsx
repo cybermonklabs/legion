@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { memo, type ReactNode, useMemo, useState } from "react";
+import { lazy, memo, type ReactNode, Suspense, useMemo, useState } from "react";
 
 import { type EvalKind, evalDetailQuery } from "../../api/queries";
 import type { EvalListItem, EvalListResponse } from "../../api/types";
@@ -15,14 +15,22 @@ import { targetLabel } from "../delivery/lib/target";
 import { CI_CHARTS } from "./CiHealth";
 import { evalName, everyEvalModel, targetOf } from "./chart-model";
 import { PerDayLine } from "./chart-renderers";
-import { DeclaredEval, declaredCharts } from "./DeclaredEval";
+import { declaredCharts } from "./charts/kind";
 import { DEPLOY_CHARTS } from "./DeploysSection";
 import { EvalChart } from "./EvalChart";
 import { EvalTitle } from "./EvalPanel";
-import { EvalRows } from "./EvalRows";
 import { LEGION_CHARTS } from "./LegionSection";
+import { useChartsDrawn } from "./sectionDraw";
 import { TARGET_CARDS } from "./TargetCards";
 import type { EvalsScope, EvalsViewState } from "./useEvalsViews";
+
+// What a box draws only once its eval declares charts and its section draws them, or once the
+// reader opens its rows, each loaded then, so the Evals route's first paint loads neither: the
+// declared charts' kinds and the rows (dispatch://INFRA-2918, T33).
+const DeclaredEval = lazy(() =>
+  import("./DeclaredEval").then((module) => ({ default: module.DeclaredEval }))
+);
+const EvalRows = lazy(() => import("./EvalRows").then((module) => ({ default: module.EvalRows })));
 
 /** How many of a logged eval's rows its box lists a page. */
 const LOGGED_ROWS = 10;
@@ -78,18 +86,19 @@ interface EvalBoxProps {
  * closed until the reader opens them, as a computed eval's rows open in its panel, so the first
  * paint opens no items view (plan D25 step 4). An eval whose list item counts declared charts
  * (`declared_charts`) reads its detail, which holds them, once the views it is drawn from have
- * landed (`landed`), and draws them in place of the line (`DeclaredEval`, plan D10, D25 step 3);
- * one that declares none reads no detail. The detail is read at the version the evals view
- * answers, so a register write that declares charts reads it again (D11a), the box drawing what
- * the version before declared until the new detail lands. Of its view's answer it reads the window
- * and the compare range alone (`EvalBox`).
+ * landed (`landed`) and its section draws its charts (`useChartsDrawn`), and draws them in place
+ * of the line (`DeclaredEval`, plan D10, D25 step 3); one that declares none reads no detail. The
+ * detail is read at the version the evals view answers, so a register write that declares charts
+ * reads it again (D11a), the box drawing what the version before declared until the new detail
+ * lands. Of its view's answer it reads the window and the compare range alone (`EvalBox`).
  */
 function EvalBoxOf({ answer, item, landed, rows, scope }: EvalBoxProps): ReactNode {
   const { slug, unit, version } = item.definition;
   const declares = item.declared_charts > 0;
+  const drawn = useChartsDrawn();
   const detail = useQuery({
     ...evalDetailQuery(scope.project, slug, version),
-    enabled: declares && landed,
+    enabled: declares && landed && drawn,
     placeholderData: keepPreviousData,
   });
   const [rowsOpen, setRowsOpen] = useState(false);
@@ -100,6 +109,18 @@ function EvalBoxOf({ answer, item, landed, rows, scope }: EvalBoxProps): ReactNo
   );
   const target = useMemo(() => targetOf(item.verdict), [item.verdict]);
   const name = evalName(item);
+  // The eval's per-day line, or "no data" where it lists no series.
+  const line =
+    model === null ? (
+      <>
+        <span className={`text-xs ${textMutedOnSurface}`}>
+          <EvalTitle slug={slug} title={name} />
+        </span>
+        <p className={`text-sm ${textMutedOnSurface}`}>no data</p>
+      </>
+    ) : (
+      <EvalChart model={model} opensPanel={slug} renderer={PerDayLine} />
+    );
   return (
     <article
       aria-label={name}
@@ -107,16 +128,12 @@ function EvalBoxOf({ answer, item, landed, rows, scope }: EvalBoxProps): ReactNo
       data-eval={slug}
     >
       {declares && declaredCharts(detail.data).length > 0 ? (
-        <DeclaredEval answer={answer} item={item} scope={scope} />
-      ) : model === null ? (
-        <>
-          <span className={`text-xs ${textMutedOnSurface}`}>
-            <EvalTitle slug={slug} title={name} />
-          </span>
-          <p className={`text-sm ${textMutedOnSurface}`}>no data</p>
-        </>
+        // The line stands while the declared charts' code loads.
+        <Suspense fallback={line}>
+          <DeclaredEval answer={answer} item={item} scope={scope} />
+        </Suspense>
       ) : (
-        <EvalChart model={model} opensPanel={slug} renderer={PerDayLine} />
+        line
       )}
       {detail.isError ? (
         <QueryError
@@ -137,13 +154,15 @@ function EvalBoxOf({ answer, item, landed, rows, scope }: EvalBoxProps): ReactNo
             textClassName={textMutedOnSurface}
           />
           {rowsOpen ? (
-            <EvalRows
-              label={`Rows of ${name}`}
-              limit={LOGGED_ROWS}
-              logged={isLogged(item)}
-              scope={scope}
-              slug={slug}
-            />
+            <Suspense fallback={null}>
+              <EvalRows
+                label={`Rows of ${name}`}
+                limit={LOGGED_ROWS}
+                logged={isLogged(item)}
+                scope={scope}
+                slug={slug}
+              />
+            </Suspense>
           ) : null}
         </div>
       ) : null}

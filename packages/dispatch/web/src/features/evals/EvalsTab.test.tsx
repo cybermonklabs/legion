@@ -846,7 +846,8 @@ const stateRows: [string, () => Promise<void>][] = [
       await user.click(
         within(region("Deploys and lead time")).getByRole("button", { name: "Deploy frequency" })
       );
-      const panel = screen.getByRole("dialog", { name: "deploy-frequency" });
+      // The panel's code loads as it first opens (`EvalPanelDialog`).
+      const panel = await screen.findByRole("dialog", { name: "deploy-frequency" });
       await waitFor(() => expect(reads).toHaveLength(1));
       act(() => reads[0]?.(detailOf("Deploys a day, as version 1 counts them.")));
       await waitFor(() =>
@@ -1465,4 +1466,195 @@ test("in Table mode the tab holds no [data-issue-row]", async () => {
   expect(document.querySelectorAll("figure table")).toHaveLength(toggles.length);
   expect(document.querySelector("[data-issue-row]")).toBeNull();
   expect(document.querySelectorAll("table [data-row]").length).toBeGreaterThan(0);
+});
+
+// INFRA-979's ruling (A) on where the first paint ends
+// (dispatch://INFRA-2918/comment/75af800e-9db9-47d9-9c4d-427b0cff36c0): a section with any part
+// in the first screen draws its charts at once; every other one shows its header and a box of its
+// drawn size, and draws its charts in the page's idle time, in the order of the page, or as it is
+// scrolled into view; and nothing in a box moves when it draws (`sectionDraw.tsx`).
+
+/** Where each section lies, from the viewport's top (happy-dom's is 768 px tall), as the page
+ *  would lay it out: every element the stub does not name lies nowhere. */
+function placeSections(tops: Readonly<Record<string, number>>): void {
+  const spy = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const top = tops[this.getAttribute("data-section") ?? ""];
+    return top === undefined ? new DOMRect() : new DOMRect(0, top, 1000, 300);
+  });
+  spies.push(spy);
+}
+
+/** Holds every idle callback the page asks for, for the row to run one at a time. */
+function holdIdleCallbacks(): { run: () => void; held: () => number } {
+  const held: IdleRequestCallback[] = [];
+  const page = globalThis as { requestIdleCallback?: unknown; cancelIdleCallback?: unknown };
+  page.requestIdleCallback = (run: IdleRequestCallback) => held.push(run);
+  page.cancelIdleCallback = () => undefined;
+  spies.push({
+    mockRestore: () => {
+      page.requestIdleCallback = undefined;
+      page.cancelIdleCallback = undefined;
+    },
+  });
+  return {
+    held: () => held.length,
+    run: () => act(() => held.shift()?.({ didTimeout: false, timeRemaining: () => 50 })),
+  };
+}
+
+/** Dispatch answers both of the CI section's job lists, each with no job. */
+async function answerJobLists(socket: FakeLiveSocket): Promise<void> {
+  for (const sort of ["median", "failures"]) {
+    const frame = await waitFor(() => {
+      const sent = socket
+        .subscribes()
+        .filter(
+          (one) =>
+            one.view.kind === "items" && new URLSearchParams(one.view.query).get("sort") === sort
+        )
+        .at(-1);
+      if (sent === undefined) throw new Error(`no job list sorted by ${sort} was subscribed`);
+      return sent;
+    });
+    const body: EvalItemsResponse = {
+      compare: null,
+      items: [],
+      limit: 5,
+      min_n: null,
+      offset: 0,
+      total: 0,
+      window: WINDOW,
+    };
+    serve(socket, snapshotFrame(frame.sub, body));
+  }
+}
+
+/** The four views, each with an eval its section draws a chart of. */
+async function answerCharted(socket: FakeLiveSocket, kinds: readonly EvalKind[]): Promise<void> {
+  const timing = { median: 12, n: 4, p90: 20, success_rate: 0.5 };
+  const bodies: Record<EvalKind, EvalListResponse> = {
+    ci: answer([charted(evalItem("pr-ci", "ci"), "minutes", "minutes", timing)]),
+    delivery: answer([
+      charted(evalItem("deploy-frequency", "delivery"), "deploys", "deploys", {
+        deploys: 3,
+        per_day: 3,
+      }),
+    ]),
+    experiment: ANSWERS.experiment,
+    legion: answer([charted(evalItem("legion-work-time", "legion"), "hours", "hours", timing)]),
+  };
+  for (const kind of kinds) await answerView(socket, kind, bodies[kind]);
+}
+
+/** A section's markup with its charts' marks taken out and whether it has drawn them: what it
+ *  lays out, which its box and its drawing share. */
+function laidOut(section: Element): string {
+  const copy = section.cloneNode(true) as Element;
+  copy.removeAttribute("data-drawn");
+  for (const chart of copy.querySelectorAll("svg")) chart.replaceChildren();
+  return copy.outerHTML;
+}
+
+/** Whether every chart of a section draws its marks, none does, or some do. */
+function charts(section: Element): "drawn" | "frames" | "some" {
+  const all = [...section.querySelectorAll("svg")];
+  if (all.length === 0) throw new Error("the section draws no chart");
+  if (all.every((chart) => chart.childElementCount > 0)) return "drawn";
+  return all.every((chart) => chart.childElementCount === 0) ? "frames" : "some";
+}
+
+const marked = (name: string) => performance.getEntriesByName(name, "mark").length;
+
+test("a section below the first screen shows its box at its drawn size, then draws its charts in the page's idle time in page order; one in it draws at once", async () => {
+  placeSections({ cards: 0, ci: 1000, deploys: 1400, legion: 400, logged: 2200, timeline: 1800 });
+  const idle = holdIdleCallbacks();
+  renderTab();
+  const socket = await openSocket();
+  await answerCharted(socket, ["delivery", "legion", "ci", "experiment"]);
+  await answerJobLists(socket);
+  const ci = region("CI health");
+  await waitFor(() => expect(marked("dispatch:evals-section-box:ci")).toBe(1));
+
+  // The first screen: the cards and the Legion measures draw their charts at once.
+  for (const name of ["Target cards", "Legion measures"]) {
+    expect(region(name)).toHaveAttribute("data-drawn", "true");
+    expect(charts(region(name))).toBe("drawn");
+  }
+  expect(marked("dispatch:evals-section:cards")).toBe(1);
+  expect(marked("dispatch:evals-section:legion")).toBe(1);
+  // Below it: the CI section's header, its numbers and its job lists, each chart's frame empty.
+  expect(ci).toHaveAttribute("data-state", "painted");
+  expect(ci).toHaveAttribute("data-drawn", "false");
+  expect(charts(ci)).toBe("frames");
+  expect(ci.querySelector('[data-window-statistic="median"]')?.textContent).toBe("12m");
+  expect(ci.querySelectorAll("[data-job-list]")).toHaveLength(2);
+  expect(marked("dispatch:evals-section:ci")).toBe(0);
+  const box = laidOut(ci);
+  const deploys = region("Deploys and lead time");
+  expect(deploys).toHaveAttribute("data-drawn", "false");
+
+  // The page's idle time draws one section a callback, in the order of the page.
+  idle.run();
+  expect(ci).toHaveAttribute("data-drawn", "true");
+  expect(charts(ci)).toBe("drawn");
+  expect(marked("dispatch:evals-section:ci")).toBe(1);
+  expect(laidOut(ci)).toBe(box);
+  expect(deploys).toHaveAttribute("data-drawn", "false");
+  idle.run();
+  expect(deploys).toHaveAttribute("data-drawn", "true");
+  expect(charts(deploys)).toBe("drawn");
+  idle.run();
+  expect(region("Logged")).toHaveAttribute("data-drawn", "true");
+  expect(idle.held()).toBe(0);
+});
+
+test("a section lies in the first screen only once the sections above it have answered, and one scrolled into view draws as it comes", async () => {
+  placeSections({ cards: 0, ci: 500, deploys: 1400, legion: 300, logged: 2200, timeline: 1800 });
+  const idle = holdIdleCallbacks();
+  const screens = installIntersectionObserver();
+  spies.push({ mockRestore: screens.restore });
+  renderTab();
+  const socket = await openSocket();
+  await answerCharted(socket, ["legion", "ci", "experiment"]);
+  await answerJobLists(socket);
+  const ci = region("CI health");
+  await waitFor(() => expect(marked("dispatch:evals-section-box:ci")).toBe(1));
+  // The cards above are still out, so where the CI section will lie is not known: it waits,
+  // and the page's idle time waits for every section to answer.
+  expect(ci).toHaveAttribute("data-drawn", "false");
+  expect(idle.held()).toBe(0);
+
+  // The cards answer: the CI section lies in the first screen and draws at once.
+  await answerCharted(socket, ["delivery"]);
+  await waitFor(() => expect(ci).toHaveAttribute("data-drawn", "true"));
+  expect(charts(ci)).toBe("drawn");
+  const deploys = region("Deploys and lead time");
+  expect(deploys).toHaveAttribute("data-drawn", "false");
+
+  // The reader scrolls the deploys into view before the idle time reaches them.
+  act(() => screens.show(deploys));
+  expect(deploys).toHaveAttribute("data-drawn", "true");
+  expect(charts(deploys)).toBe("drawn");
+  expect(region("Logged")).toHaveAttribute("data-drawn", "false");
+});
+
+test("a view that never answers keeps no section from drawing: a second after the first box, the page's idle time draws the waiting ones", async () => {
+  placeSections({ cards: 0, ci: 1000, deploys: 1400, legion: 400, logged: 2200, timeline: 1800 });
+  const idle = holdIdleCallbacks();
+  renderTab();
+  const socket = await openSocket();
+  // The CI view never answers, so the sections below it never learn where they stay.
+  await answerCharted(socket, ["delivery", "legion", "experiment"]);
+  const deploys = region("Deploys and lead time");
+  await waitFor(() => expect(marked("dispatch:evals-section-box:deploys")).toBe(1));
+  expect(region("CI health")).toHaveAttribute("data-state", "subscribed");
+  expect(deploys).toHaveAttribute("data-drawn", "false");
+  expect(idle.held()).toBe(0);
+
+  await waitFor(() => expect(idle.held()).toBe(1));
+  idle.run();
+  expect(deploys).toHaveAttribute("data-drawn", "true");
+  expect(charts(deploys)).toBe("drawn");
 });

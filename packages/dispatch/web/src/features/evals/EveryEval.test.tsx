@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { deliverySettings } from "../../__tests__/delivery-settings";
 import {
+  drawnValues,
   evalItem,
   evalSeries,
   evalsAnswer,
@@ -217,10 +218,9 @@ test("a logged eval with readings and no registry row draws its chart, its table
   const chart = within(box).getByRole("figure", { name: "widget-size" });
   expect(chart).toHaveAttribute("data-chart", "widget-size");
   expect(chart).toHaveAttribute("data-chart-kind", "line");
-  const drawn = [...chart.querySelectorAll('[data-series="widgets"][data-value]')].map((value) => [
-    value.getAttribute("data-x"),
-    value.getAttribute("data-value"),
-  ]);
+  const drawn = drawnValues(chart)
+    .filter((value) => value.series === "widgets")
+    .map((value) => [value.x, value.value]);
   expect(drawn).toEqual(
     expect.arrayContaining([
       ["2026-11-01", "3"],

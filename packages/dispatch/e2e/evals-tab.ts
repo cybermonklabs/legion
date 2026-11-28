@@ -24,11 +24,29 @@ export function evalsSection(page: Page, id: string): Locator {
   return page.locator(`[data-section="${id}"]`);
 }
 
-/** Waits for section `id` to paint: every view it reads has answered (`data-state`). */
+/** Waits for section `id` to paint and draw: every view it reads has answered (`data-state`),
+ *  and its charts are drawn, not the box of their size it shows below the first screen until the
+ *  page draws them (`data-drawn`, `EvalsSection.tsx`). */
 export async function paintedSection(page: Page, id: string): Promise<Locator> {
   const section = evalsSection(page, id);
   await expect(section).toHaveAttribute("data-state", "painted");
+  await expect(section).not.toHaveAttribute("data-drawn", "false");
   return section;
+}
+
+/** Every value `scope`'s graphs draw, as each names it: a node of one value's `data-value`, and
+ *  each value a group of a whole range names in its `data-values` (the per-day charts, whose days
+ *  one path draws, `features/delivery/Sparkbars.tsx`'s `valueList`). */
+export function graphValues(scope: Locator): Promise<string[]> {
+  return scope
+    .locator("[data-value], [data-values]")
+    .evaluateAll((nodes) =>
+      nodes.flatMap((node) =>
+        node.hasAttribute("data-value")
+          ? [node.getAttribute("data-value") ?? ""]
+          : (node.getAttribute("data-values") ?? "").split(" ").filter((value) => value !== "")
+      )
+    );
 }
 
 /** Opens the merge timeline, which the tab keeps closed on its first paint (spec R13), and waits

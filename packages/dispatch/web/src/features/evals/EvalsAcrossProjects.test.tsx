@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-import { COMPARE, evalItem, evalSeries, WINDOW } from "../../__tests__/evals-fixture";
+import { COMPARE, drawnValues, evalItem, evalSeries, WINDOW } from "../../__tests__/evals-fixture";
 import { api } from "../../api/client";
 import { evalsViewQuery } from "../../api/queries";
 import type { EvalListItem, EvalListResponse } from "../../api/types";
@@ -143,9 +143,8 @@ test("each item is read as a project tab reads its items, and drawn from its own
     expect(chart).toHaveAttribute("data-chart", item.definition.slug);
     const values = item.series?.[0];
     expect(
-      chart
-        .querySelector('[data-x="2026-11-01"][data-range="window"][data-value]')
-        ?.getAttribute("data-value")
+      drawnValues(chart).find((value) => value.x === "2026-11-01" && value.range === "window")
+        ?.value
     ).toBe(String(values?.days?.[0]?.statistics?.value));
     expect(chart.querySelector('[data-window-statistic="value"]')?.textContent).toBe(
       String(values?.window?.value)

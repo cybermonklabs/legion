@@ -2,6 +2,8 @@
 // items views its spec reads, a pure model function from the spec and those readings to the model
 // `EvalChart` draws, and the renderer that draws that model; with the readers of a spec's fields,
 // the texts every kind draws around its chart, and the colour each group of a chart takes. Pure.
+
+import type { EvalDetailResponse } from "../../../api/types";
 import {
   chartGroup,
   chartGroupOther,
@@ -59,6 +61,13 @@ export function specObject(value: unknown): DeclaredSpec {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as DeclaredSpec)
     : {};
+}
+
+/** The charts an eval's newest version declares, as its detail read answers them (plan D10): none
+ *  until the detail has answered, or where the eval declares none. */
+export function declaredCharts(detail: EvalDetailResponse | undefined): readonly DeclaredSpec[] {
+  const charts = detail?.items?.[0]?.charts;
+  return Array.isArray(charts) ? charts.map(specObject) : [];
 }
 
 /** A spec field that is text, else null. */

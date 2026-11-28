@@ -121,10 +121,15 @@ export interface ChartModel {
   readonly comparable: boolean;
 }
 
-/** What draws a chart's graph: its model, and whether the compare range is shown. */
+/** What draws a chart's graph: its model, whether the compare range is shown, and whether it draws
+ *  its marks or only its frame (`drawn`). */
 export interface ChartRendererProps {
   readonly model: ChartModel;
   readonly compare: boolean;
+  /** False: only the chart's frame, the elements it draws at the size it draws them with no bar,
+   *  line or point in them, while the section around holds its charts back (`ChartsDrawn`). A
+   *  renderer with no frame of its own draws whole either way. Absent: drawn. */
+  readonly drawn?: boolean;
 }
 
 /** A renderer of one kind of chart. */

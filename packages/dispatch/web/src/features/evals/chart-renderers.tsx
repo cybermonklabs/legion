@@ -2,14 +2,24 @@
 // through the delivery pages' `Sparkbars`, the per-day spread of a median and its p90 through
 // `SpreadBars`, a per-day line, a job's timing (its median and p90 a day, and how often it
 // succeeded), and one bar per category (a Legion role) over the whole window. Each draws every
-// series of its model, names every value it draws in the DOM (`data-chart`, `data-series`,
-// `data-x`, `data-value`), and, while the compare range is shown, draws it as a muted second
-// series at the same places, empty where the range has no data.
+// series of its model, names every value it draws in the DOM (`data-chart`, `data-series`, and
+// each value's place and value: `data-x` and `data-value` on a node of one value, `data-xs` and
+// `data-values` on the group that draws a whole range of a per-day chart, whose days one path
+// draws, dispatch://INFRA-2918, T33), and, while the compare range is shown, draws it as a muted
+// second series at the same places, empty where the range has no data. Each draws only its frame,
+// the same elements at the same size with no mark in them, while the section around holds its
+// charts back (`drawn`, `ChartRendererProps`).
 import type { ReactNode } from "react";
 
 import { chartBar, chartLine, chartSegment } from "../../theme/classes";
 import { barScale } from "../delivery/lib/barScale";
-import { Sparkbars, type ValueMarks, valueMarks } from "../delivery/Sparkbars";
+import {
+  Sparkbars,
+  usePlaceUnderPointer,
+  type ValueMarks,
+  valueList,
+  valueMarks,
+} from "../delivery/Sparkbars";
 import { SpreadBars } from "../delivery/SpreadBars";
 import {
   type ChartModel,
@@ -42,13 +52,14 @@ function valuesOf(
 
 /** One bar per day of each series' first statistic, toned by the series' target where it judges a
  *  day's value of it. A share is drawn on a scale up to 100%. */
-export function PerDayBars({ model, compare }: ChartRendererProps): ReactNode {
+export function PerDayBars({ model, compare, drawn }: ChartRendererProps): ReactNode {
   return model.series.map((series) => {
     const statistic = series.statistics[0]?.id;
     if (statistic === undefined) return null;
     return (
       <Sparkbars
         compare={compare ? valuesOf(series, statistic, "compare") : undefined}
+        drawn={drawn}
         judged={
           series.target === null
             ? undefined
@@ -73,7 +84,7 @@ export function PerDayBars({ model, compare }: ChartRendererProps): ReactNode {
 }
 
 /** Each series' median and p90 a day (`SpreadBars`), its days' counts in each day's title. */
-export function PerDaySpread({ model, compare }: ChartRendererProps): ReactNode {
+export function PerDaySpread({ model, compare, drawn }: ChartRendererProps): ReactNode {
   return model.series.map((series) => (
     <SpreadBars
       compare={
@@ -91,6 +102,7 @@ export function PerDaySpread({ model, compare }: ChartRendererProps): ReactNode 
         p90_minutes: point.values.p90?.value ?? null,
         partial: point.partial,
       }))}
+      drawn={drawn}
       judged={series.target === null ? undefined : { evalSlug: model.name, target: series.target }}
       key={series.name}
       marks={marksOf(model, series, "median")}
@@ -102,120 +114,145 @@ export function PerDaySpread({ model, compare }: ChartRendererProps): ReactNode 
 
 const STEP = 10;
 const HEIGHT = 28;
+/** A point's radius on the line. */
+const POINT = 1.5;
 
-/** The runs of consecutive values a line joins: a day with no value breaks it. */
-function segments(values: readonly (number | null)[]): { index: number; value: number }[][] {
-  const runs: { index: number; value: number }[][] = [];
-  let run: { index: number; value: number }[] = [];
+/** One range's line as two paths: a stroke through each run of consecutive days with a value, a
+ *  day with no value breaking it, and a point on each day with one. */
+function linePaths(
+  values: readonly (number | null)[],
+  y: (value: number) => number
+): { stroke: string; points: string } {
+  let stroke = "";
+  let points = "";
+  let joined = false;
   values.forEach((value, index) => {
     if (value === null) {
-      if (run.length > 0) runs.push(run);
-      run = [];
+      joined = false;
       return;
     }
-    run.push({ index, value });
+    const cx = Math.round((index * STEP + STEP / 2) * 100) / 100;
+    const cy = Math.round(y(value) * 100) / 100;
+    stroke += `${joined ? "L" : "M"}${cx} ${cy}`;
+    joined = true;
+    points += `M${cx - POINT} ${cy}a${POINT} ${POINT} 0 1 0 ${2 * POINT} 0a${POINT} ${POINT} 0 1 0 ${-2 * POINT} 0`;
   });
-  if (run.length > 0) runs.push(run);
-  return runs;
+  return { points, stroke };
 }
 
-/** One series' line: a stroke through each run of days with a value, and a point on each. */
+/** One range's line: its stroke and its points, the range's values named on its group. */
 function Line(props: {
   className: { stroke: string; point: string };
   dashed: boolean;
   marks: ValueMarks;
   range: "window" | "compare";
   values: readonly (number | null)[];
-  write: (value: number) => string;
   y: (value: number) => number;
 }): ReactNode {
-  const { values, y } = props;
-  const at = (index: number) => index * STEP + STEP / 2;
+  const { points, stroke } = linePaths(props.values, props.y);
   return (
-    <>
-      {segments(values).map((run) => (
-        <polyline
-          className={`fill-none ${props.className.stroke}`}
-          key={run[0]?.index}
-          points={run.map(({ index, value }) => `${at(index)},${y(value)}`).join(" ")}
-          strokeDasharray={props.dashed ? "2 2" : undefined}
-          strokeWidth={1.5}
-          vectorEffect="non-scaling-stroke"
-        />
-      ))}
-      {values.map((value, index) =>
-        value === null ? null : (
-          <circle
-            className={props.className.point}
-            cx={at(index)}
-            cy={y(value)}
-            key={props.marks.x[index]}
-            r={1.5}
-            {...valueMarks(props.marks, index, value, props.range)}
-          >
-            <title>{`${props.marks.x[index]}${props.range === "compare" ? ", compare" : ""}: ${props.write(value)}`}</title>
-          </circle>
-        )
-      )}
-    </>
+    <g data-series-range={props.range} {...valueList(props.marks, props.values, props.range)}>
+      <path
+        className={`fill-none ${props.className.stroke}`}
+        d={stroke}
+        strokeDasharray={props.dashed ? "2 2" : undefined}
+        strokeWidth={1.5}
+        vectorEffect="non-scaling-stroke"
+      />
+      <path className={props.className.point} d={points} />
+    </g>
   );
 }
 
-/** A line through each series' first statistic a day, a day with no value breaking it; the
- *  compare range's line muted and dashed under it. */
-export function PerDayLine({ model, compare }: ChartRendererProps): ReactNode {
-  return model.series.map((series) => {
-    const statistic = series.statistics[0]?.id;
-    if (statistic === undefined) return null;
-    const values = valuesOf(series, statistic, "values");
-    const compared = compare ? valuesOf(series, statistic, "compare") : undefined;
-    const y = barScale(1, undefined, [...values, ...(compared ?? [])], HEIGHT - 4);
-    const write = writerOf(series.unit, statistic);
-    const marks = marksOf(model, series, statistic);
-    return (
-      <svg
-        aria-label="per-day line"
-        className="block h-7 w-full"
-        key={series.name}
-        preserveAspectRatio="none"
-        role="img"
-        viewBox={`0 -2 ${values.length * STEP} ${HEIGHT}`}
-      >
-        {compared === undefined ? null : (
-          <g data-series-range="compare">
+/** One series' line of its first statistic a day, the compare range's muted and dashed under it,
+ *  and the day under the pointer, with both ranges' values there, as its title. */
+function SeriesLine({
+  compared,
+  drawn,
+  marks,
+  values,
+  write,
+}: {
+  compared: readonly (number | null)[] | undefined;
+  drawn: boolean;
+  marks: ValueMarks;
+  values: readonly (number | null)[];
+  write: (value: number) => string;
+}): ReactNode {
+  const hover = usePlaceUnderPointer(values.length);
+  const y = barScale(1, undefined, [...values, ...(compared ?? [])], HEIGHT - 4);
+  const written = (value: number | null | undefined) =>
+    value === null || value === undefined ? NO_DATA : write(value);
+  return (
+    <svg
+      aria-label="per-day line"
+      className="block h-7 w-full"
+      onPointerLeave={hover.onPointerLeave}
+      onPointerMove={hover.onPointerMove}
+      preserveAspectRatio="none"
+      role="img"
+      viewBox={`0 -2 ${values.length * STEP} ${HEIGHT}`}
+    >
+      {!drawn ? null : (
+        <>
+          {hover.place === null ? null : (
+            <title>
+              {`${marks.x[hover.place] ?? ""}: ${written(values[hover.place])}${compared === undefined ? "" : `; compare ${written(compared[hover.place])}`}`}
+            </title>
+          )}
+          {compared === undefined ? null : (
             <Line
               className={{ point: chartLine.comparePoint, stroke: chartLine.compareStroke }}
               dashed
               marks={marks}
               range="compare"
               values={compared}
-              write={(value) => write(value)(0)}
               y={y}
             />
-          </g>
-        )}
-        <Line
-          className={{ point: chartLine.point, stroke: chartLine.stroke }}
-          dashed={false}
-          marks={marks}
-          range="window"
-          values={values}
-          write={(value) => write(value)(0)}
-          y={y}
-        />
-      </svg>
+          )}
+          <Line
+            className={{ point: chartLine.point, stroke: chartLine.stroke }}
+            dashed={false}
+            marks={marks}
+            range="window"
+            values={values}
+            y={y}
+          />
+        </>
+      )}
+    </svg>
+  );
+}
+
+/** A line through each series' first statistic a day, a day with no value breaking it; the
+ *  compare range's line muted and dashed under it. */
+export function PerDayLine({ model, compare, drawn = true }: ChartRendererProps): ReactNode {
+  return model.series.map((series) => {
+    const statistic = series.statistics[0]?.id;
+    if (statistic === undefined) return null;
+    const write = writerOf(series.unit, statistic);
+    return (
+      <SeriesLine
+        compared={compare ? valuesOf(series, statistic, "compare") : undefined}
+        drawn={drawn}
+        key={series.name}
+        marks={marksOf(model, series, statistic)}
+        values={valuesOf(series, statistic, "values")}
+        write={(value) => write(value)(0)}
+      />
     );
   });
 }
 
 /** A job's timing (the Pipeline page's timing card): each day's median and p90 with its count of
  *  runs in the day's title, and each day's success rate under them. */
-export function Timing({ model, compare }: ChartRendererProps): ReactNode {
+export function Timing({ model, compare, drawn }: ChartRendererProps): ReactNode {
   return model.series.map((series) => (
     <div className="flex flex-col gap-1" key={series.name}>
-      <PerDaySpread compare={compare} model={{ ...model, series: [series] }} />
+      <PerDaySpread compare={compare} drawn={drawn} model={{ ...model, series: [series] }} />
       <Sparkbars
         compare={compare ? valuesOf(series, "success_rate", "compare") : undefined}
+        drawn={drawn}
         marks={marksOf(model, series, "success_rate")}
         max={1}
         points={series.points.map((point) => ({
@@ -242,8 +279,9 @@ export const PHASE_SEGMENTS: readonly (ChartStatistic & { id: keyof typeof chart
 /** One bar per place on the axis (a Legion role) of each series' first statistic over the whole
  *  window, as long as its share of the longest bar, its value written after it. A series whose
  *  statistics hold the phase-time segments (`PHASE_SEGMENTS`) splits each bar into them, each
- *  segment its own value; the compare range's value is a muted bar behind it. */
-export function CategoryBars({ model, compare }: ChartRendererProps): ReactNode {
+ *  segment its own value; the compare range's value is a muted bar behind it. Its frame is each
+ *  place's row, its label and its value, with an empty bar. */
+export function CategoryBars({ model, compare, drawn = true }: ChartRendererProps): ReactNode {
   return model.series.map((series) => {
     const statistic = series.statistics[0]?.id;
     if (statistic === undefined) return null;
@@ -278,45 +316,49 @@ export function CategoryBars({ model, compare }: ChartRendererProps): ReactNode 
                 role="img"
                 viewBox="0 0 100 10"
               >
-                {before === null ? null : (
-                  <rect
-                    className={chartBar.compare}
-                    height={10}
-                    width={length(before)}
-                    {...valueMarks(marks, index, before, "compare")}
-                  >
-                    <title>{`${point.label}, compare: ${write(before)(0)}`}</title>
-                  </rect>
+                {!drawn ? null : (
+                  <>
+                    {before === null ? null : (
+                      <rect
+                        className={chartBar.compare}
+                        height={10}
+                        width={length(before)}
+                        {...valueMarks(marks, index, before, "compare")}
+                      >
+                        <title>{`${point.label}, compare: ${write(before)(0)}`}</title>
+                      </rect>
+                    )}
+                    {value === null || segments.length > 0 ? null : (
+                      <rect className={chartBar.neutral} height={6} width={length(value)} y={2} />
+                    )}
+                    {value === null
+                      ? null
+                      : segments.map((segment) => {
+                          const hours = point.values[segment.id]?.value ?? null;
+                          if (hours === null) return null;
+                          const x = offset;
+                          offset += length(hours);
+                          return (
+                            <rect
+                              className={chartSegment[segment.id]}
+                              height={6}
+                              key={segment.id}
+                              width={length(hours)}
+                              x={x}
+                              y={2}
+                              {...valueMarks(
+                                marksOf(model, series, segment.id),
+                                index,
+                                hours,
+                                "window"
+                              )}
+                            >
+                              <title>{`${point.label}, ${segment.label.toLowerCase()}: ${writerOf(series.unit, segment.id)(hours)(0)}`}</title>
+                            </rect>
+                          );
+                        })}
+                  </>
                 )}
-                {value === null || segments.length > 0 ? null : (
-                  <rect className={chartBar.neutral} height={6} width={length(value)} y={2} />
-                )}
-                {value === null
-                  ? null
-                  : segments.map((segment) => {
-                      const hours = point.values[segment.id]?.value ?? null;
-                      if (hours === null) return null;
-                      const x = offset;
-                      offset += length(hours);
-                      return (
-                        <rect
-                          className={chartSegment[segment.id]}
-                          height={6}
-                          key={segment.id}
-                          width={length(hours)}
-                          x={x}
-                          y={2}
-                          {...valueMarks(
-                            marksOf(model, series, segment.id),
-                            index,
-                            hours,
-                            "window"
-                          )}
-                        >
-                          <title>{`${point.label}, ${segment.label.toLowerCase()}: ${writerOf(series.unit, segment.id)(hours)(0)}`}</title>
-                        </rect>
-                      );
-                    })}
               </svg>
               <span
                 className="text-right tabular-nums"

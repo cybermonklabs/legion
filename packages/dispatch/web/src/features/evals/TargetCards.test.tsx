@@ -4,6 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
+import { drawnValues } from "../../__tests__/evals-fixture";
 import { installFakeLiveSockets, snapshotFrame } from "../../__tests__/live-socket-harness";
 import { api } from "../../api/client";
 import type { EvalListItem, EvalListResponse, LiveSubscribe } from "../../api/types";
@@ -229,7 +230,7 @@ test('a card reads "no data" for absent day rows and never 0', async () => {
   expect(within(card("deploy-frequency")).queryByText(/^0/)).toBeNull();
   // No day of the window holds a row: the graph draws no value at all.
   expect(
-    card("deploy-frequency").querySelectorAll('[data-range="window"][data-value]')
+    drawnValues(card("deploy-frequency")).filter((value) => value.range === "window")
   ).toHaveLength(0);
   // An eval the view does not hold reads the same.
   expect(within(card("deployment-rework-rate")).getByText("no data")).toBeInTheDocument();
