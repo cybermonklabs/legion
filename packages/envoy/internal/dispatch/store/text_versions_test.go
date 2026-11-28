@@ -107,7 +107,7 @@ func TestTheKeywordRelationAnswersTheContractColumns(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := openTestStore(t)
-	rows, err := store.Pool.Query(ctx, `select * from `+TextVersions{Cut: time.Now()}.SQL()+` v limit 0`)
+	rows, err := store.Pool.Query(ctx, `select * from `+TextVersions{Cut: time.Date(2026, 11, 19, 21, 0, 0, 0, time.UTC)}.SQL()+` v limit 0`)
 	if err != nil {
 		t.Fatalf("select from the relation: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestTextVersionsAtRefusesACutPastTheReach(t *testing.T) {
 	}
 
 	store := openMigratedTestStore(t, latestVersion)
-	reach := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	reach := databaseNow(t, store.Pool).UTC().Add(-time.Hour).Truncate(time.Microsecond)
 	past := reach.Add(time.Microsecond)
 
 	// No cursor row: the fill has reached no time.
@@ -488,7 +488,8 @@ func TestTextVersionsAtRefusesACutPastTheReach(t *testing.T) {
 		t.Fatalf("TextVersionsAt one microsecond past the stored reach, with nothing left unwritten: %v", err)
 	}
 	computed, reached, err := store.TextVersionsReach(ctx)
-	if err != nil || !reached || !computed.After(past) || !computed.Before(time.Now()) {
+	now := databaseNow(t, store.Pool)
+	if err != nil || !reached || !computed.After(past) || !computed.Before(now) {
 		t.Fatalf("TextVersionsReach with nothing left unwritten = %s, reached %v, %v; want a time after %s and before now",
 			computed, reached, err, past)
 	}

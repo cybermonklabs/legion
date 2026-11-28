@@ -25,17 +25,17 @@ func TestMigrateJudgesTheRecordedIdentityOfEveryVersion(t *testing.T) {
 // records a version for every file of the shipped set and no name: the first boot of this runner
 // fills every row and refuses none (pgmigratetest.CheckVersionsOfAnEarlierRunner, which simulates
 // that table's shape with this runner and does not run main's). The check is the one
-// `envoy-dispatch versions` runs.
+// `envoy-dispatch versions` runs. The database is a copy of the newest template, whose every row
+// this runner recorded as it applied the set (openMigratedTestStore), so the check's first boot
+// applies nothing and the whole history is applied once per test binary, not again here;
+// TestMigrateCreatesEmptySchemaAndIsIdempotent is the boot that applies it to an empty database.
 func TestTheShippedSetMatchesADatabaseAnEarlierRunnerMigrated(t *testing.T) {
 	t.Parallel()
-	store := openEmptyTestStore(t)
-	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
-	if err != nil {
-		t.Fatalf("load the shipped set: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
+	files := len(shippedMigrations(t))
 	databaseURL := store.Pool.Config().ConnString()
 	pgmigratetest.CheckVersionsOfAnEarlierRunner(t, versionTable, store.Pool, store.Migrate,
-		func(ctx context.Context) (*pgmigrate.VersionCheck, error) { return CheckVersions(ctx, databaseURL) }, len(migrations))
+		func(ctx context.Context) (*pgmigrate.VersionCheck, error) { return CheckVersions(ctx, databaseURL) }, files)
 }
 
 // Dispatch's runner gives its advisory key back between its first judgment of schema_migrations

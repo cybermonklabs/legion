@@ -13,6 +13,7 @@ import (
 // minute is set first and read back; the millisecond is set last and not read back, since every
 // later statement of the transaction would run under it and could be ended by it.
 func TestStatementTimeoutSettingWritesWholeMilliseconds(t *testing.T) {
+	t.Parallel()
 	for bound, want := range map[time.Duration]string{
 		15 * time.Second:               "set local statement_timeout = 15000",
 		time.Minute:                    "set local statement_timeout = 60000",

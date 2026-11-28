@@ -54,6 +54,7 @@ func (*probeReadDeadline) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQue
 // parent's (clocktest's deadline contexts), so the read starts under a deadline other than the
 // row's own context's, which a tracer on the probe's pool reads as the read starts.
 func TestHealthyOnEndsItsProbeAtTheBoundArmedOnItsClock(t *testing.T) {
+	t.Parallel()
 	start := time.Date(2026, time.November, 28, 7, 0, 0, 0, time.UTC)
 	for _, row := range []struct {
 		name  string
@@ -68,15 +69,12 @@ func TestHealthyOnEndsItsProbeAtTheBoundArmedOnItsClock(t *testing.T) {
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			// A database of the row's own, so the lock it takes on schema_migrations holds no other row,
-			// on a pool whose tracer the health pool copies.
+			// A database of the row's own at the newest schema, so the lock it takes on
+			// schema_migrations holds no other row, on a pool whose tracer the health pool copies.
 			read := &probeReadDeadline{seen: make(chan readDeadline, 1)}
-			database := openIsolatedStoreWithPool(t, func(config *pgxpool.Config) { config.ConnConfig.Tracer = read })
+			database := openTestStoreWithPool(t, func(config *pgxpool.Config) { config.ConnConfig.Tracer = read })
 			t.Cleanup(database.Pool.Close)
 			ctx := testwait.Context(t)
-			if err := database.Migrate(ctx); err != nil {
-				t.Fatalf("migrate: %v", err)
-			}
 			holder, err := database.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatalf("begin the lock's transaction: %v", err)
@@ -130,10 +128,8 @@ func TestHealthyOnEndsItsProbeAtTheBoundArmedOnItsClock(t *testing.T) {
 // so production, which installs no such tracer, never marks a transaction. The next transaction
 // on the same context starts outside its window again.
 func TestAnXidWindowIsOpenFromItsHookToTheEndOfItsTransaction(t *testing.T) {
-	database := openEmptyTestStore(t)
-	if err := database.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	t.Parallel()
+	database := openTestStore(t)
 	ctx := WithTransactionTracking(context.Background())
 	if OpenXidWindow(ctx) || InXidWindow(ctx) {
 		t.Fatal("a context that holds no connection had an xid window opened")

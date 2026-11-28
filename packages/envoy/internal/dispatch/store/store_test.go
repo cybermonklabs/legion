@@ -74,6 +74,19 @@ func randomDatabaseSuffix(t *testing.T) string {
 	return hex.EncodeToString(bytes[:])
 }
 
+// databaseNow is the database's clock as clock_timestamp() reads it on pool: the clock that stamps
+// what a statement, a default or a trigger writes with now(), and that judges an expiry stored for
+// it. A moment a test compares such a stamp with, or stages for the database to judge, is read
+// here rather than off this process's clock, so no skew between the two clocks decides the row.
+func databaseNow(t *testing.T, pool *Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(context.Background(), `select clock_timestamp()`).Scan(&now); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	return now
+}
+
 // A connection string that asks for a pool size is refused rather than quietly overridden,
 // and the question is put to pgx's own parser rather than to the string. Every row here is a
 // shape pgx accepts: a keyword may be separated from its "=" by whitespace, and a value may be
@@ -715,26 +728,37 @@ func TestMigrateRecordsTheVersionUnderTheValuesResetGives(t *testing.T) {
 	}
 }
 
-// openIsolatedStoreWithPool opens a database of its own and a pool to it, built as the shared pool
-// is (scanTimestampsInUTC on each connection), so a test can hold every connection the pool can
-// give and read each one. configure is given the pool's config before it opens, for the size a
-// test needs (MaxConns) or a tracer of its own.
+// openIsolatedStoreWithPool opens an empty database of its own and a pool to it (storeWithPool).
 func openIsolatedStoreWithPool(t *testing.T, configure func(*pgxpool.Config)) *Store {
 	t.Helper()
-	ctx := context.Background()
-	baseURL, err := url.Parse(testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
-	}
-	adminURL := *baseURL
-	adminURL.Path = "/postgres"
-	config, err := pgxpool.ParseConfig(testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	admin := adminDatabaseURL(t)
+	return storeWithPool(t, testdb.DatabaseOn(t, admin.String(), "dispatch_test"), configure)
+}
+
+// openTestStoreWithPool is openTestStore on a pool built as openIsolatedStoreWithPool builds its
+// own (storeWithPool): a copy of the newest template, for a test that needs the newest schema on a
+// pool whose config it sets (a tracer of its own) and whose subject is not the runner. On an empty
+// database such a test would apply the whole history again through Migrate for setup alone.
+func openTestStoreWithPool(t *testing.T, configure func(*pgxpool.Config)) *Store {
+	t.Helper()
+	admin := adminDatabaseURL(t)
+	template := migratedTemplates.template(t, admin, latestVersion)
+	return storeWithPool(t, copyOfTemplate(t, admin, "dispatch_test_"+randomDatabaseSuffix(t), template), configure)
+}
+
+// storeWithPool is a store on databaseURL whose pool is built as the shared pool is
+// (scanTimestampsInUTC on each connection), so a test can hold every connection the pool can give
+// and read each one. configure is given the pool's config before it opens, for the size a test
+// needs (MaxConns) or a tracer of its own.
+func storeWithPool(t *testing.T, databaseURL string, configure func(*pgxpool.Config)) *Store {
+	t.Helper()
+	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		t.Fatalf("parse the isolated database's URL: %v", err)
 	}
 	config.AfterConnect = scanTimestampsInUTC
 	configure(config)
-	pool, err := pgxpool.NewWithConfig(ctx, config)
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		t.Fatalf("open the isolated pool: %v", err)
 	}
@@ -1284,20 +1308,26 @@ func (l *templateLadder) dropAll(admin url.URL) error {
 	return errors.Join(failures...)
 }
 
-// openDatabaseCopy creates name as a copy of template's files (strategy file_copy, as
-// testdb.DatabaseOn's empty databases are), drops it when the test ends, and returns a store on it.
+// openDatabaseCopy is a store on name, a copy of template (copyOfTemplate).
 func openDatabaseCopy(t *testing.T, admin url.URL, name, template string) *Store {
 	t.Helper()
-	adminExec(t, admin, "create database "+name+" template "+template+" strategy file_copy")
-	// `with (force)` ends any backend still attached, as testdb.DatabaseOn's drop does.
-	t.Cleanup(func() { adminExec(t, admin, "drop database if exists "+name+" with (force)") })
-	adminExec(t, admin, testdb.WithoutJIT(name))
-	store, err := Open(context.Background(), databaseOn(admin, name))
+	store, err := Open(context.Background(), copyOfTemplate(t, admin, name, template))
 	if err != nil {
 		t.Fatalf("open the copy of %s: %v", template, err)
 	}
 	t.Cleanup(store.Pool.Close)
 	return store
+}
+
+// copyOfTemplate creates name as a copy of template's files (strategy file_copy, as
+// testdb.DatabaseOn's empty databases are), drops it when the test ends, and returns its URL.
+func copyOfTemplate(t *testing.T, admin url.URL, name, template string) string {
+	t.Helper()
+	adminExec(t, admin, "create database "+name+" template "+template+" strategy file_copy")
+	// `with (force)` ends any backend still attached, as testdb.DatabaseOn's drop does.
+	t.Cleanup(func() { adminExec(t, admin, "drop database if exists "+name+" with (force)") })
+	adminExec(t, admin, testdb.WithoutJIT(name))
+	return databaseOn(admin, name)
 }
 
 // databaseOn is the server admin names with its path set to database.
