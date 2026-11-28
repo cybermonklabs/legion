@@ -17,7 +17,9 @@ import (
 // own, whose Fill writes one row the clone must hold, so the setting read is a clone of that
 // template's, not of Open's. Open's template and the filled template refuse connections, so each
 // one's own setting is read from the server's catalog (pg_db_role_setting), where WithoutJIT
-// writes it.
+// writes it. Open's template is the server's, which TestMain may have found rather than made: a
+// process that made it under the same name turned JIT off on its build too, since that step is
+// part of what names it (templateForm), and the setting stays with the build through its rename.
 func TestEveryDatabaseRunsWithoutJIT(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

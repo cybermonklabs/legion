@@ -138,7 +138,7 @@ readonly backup="dispatch-pg-${old_pin_id:7:12}"
 readonly spaced_tmp="${temporary_dir}/tmp dir"
 mkdir -p "$spaced_tmp"
 readonly dump="${spaced_tmp}/${backup}.sql"
-readonly list_databases="docker exec dispatch-pg psql -U postgres -Atc 'select datname from pg_database where not datistemplate order by 1'"
+readonly list_databases="docker exec dispatch-pg psql -U postgres -Atc 'select datname from pg_database where not datistemplate and datallowconn and datconnlimit <> -2 order by 1'"
 readonly count_dispatch="docker exec dispatch-pg psql -U postgres -d dispatch -Atc 'select count(*), coalesce(sum((xpath('\''/row/c/text()'\'', query_to_xml(format('\''select count(*) as c from %I.%I'\'', schemaname, tablename), false, true, '\'''\'')))[1]::text::bigint), 0) from pg_tables where schemaname = '\''public'\'''"
 readonly dump_command="docker exec dispatch-pg pg_dumpall -U postgres --clean --if-exists > '$dump'"
 readonly trailer_command="grep -c -x -- '-- PostgreSQL database cluster dump complete' '$dump'"
@@ -184,6 +184,7 @@ run_case TMPDIR="$spaced_tmp" FAKE_IMAGE_ID="$old_pin_id" FAKE_CONFIG_IMAGE="$ol
 for want in \
   "dev-postgres: dispatch-pg runs $old_pin (image $old_pin_id), not the pinned $pinned, which is pgvector on PostgreSQL 18, the version Dispatch's tests and dev databases run." \
   "Keep the output of this" \
+  "It leaves out each database that refuses connections or that a cut-off drop left invalid, which pg_dumpall does not dump: the templates the Go tests keep are such databases, and the next test run makes them again." \
   "It counts the dispatch database alone; the check after the dump covers every database." \
   "Stop anything that writes to this container (a Dispatch server, a test run) before these counts and the dump" \
   "This prints 1 when pg_dumpall finished every database; if it prints 0 (a failed, cut or empty dump), stop here: the old container is still running and untouched." \
@@ -246,7 +247,7 @@ replayed_dump="$(replay "$printed_dump" </dev/null)"
 replayed_trailer="$(replay "$printed_trailer" </dev/null)"
 replayed_run="$(replay "$printed_run" </dev/null)"
 replayed_restore="$(replay "$printed_restore" </dev/null)"
-want_list="$(printf '%s\n' exec dispatch-pg psql -U postgres -Atc 'select datname from pg_database where not datistemplate order by 1')"
+want_list="$(printf '%s\n' exec dispatch-pg psql -U postgres -Atc 'select datname from pg_database where not datistemplate and datallowconn and datconnlimit <> -2 order by 1')"
 want_dump="$(printf '%s\n' exec dispatch-pg pg_dumpall -U postgres --clean --if-exists)"
 want_run="$(printf '%s\n' run -d --name dispatch-pg --cpus 2 --memory 2g -e POSTGRES_PASSWORD=dispatch -e POSTGRES_DB=dispatch -p 127.0.0.1:55432:5432 "$pinned" -c shared_preload_libraries=pg_stat_statements)"
 want_restore="$(printf '%s\n' exec -i dispatch-pg psql -h 127.0.0.1 -U postgres -q -f - "$want_dump")"
@@ -448,12 +449,13 @@ esac
 EOF
   chmod +x "${temporary_dir}/bin-pg/docker"
 
-  # Builds the old cluster (a dispatch database holding 25 rows), prints the refusal and replays
-  # every line it prints, in order, with the dump $1 (whole, empty or cut) makes. Writes what the
-  # dump check printed to move-$1.trailer, what the listing and the count printed against the old
-  # container before the dump to move-$1.before and against the new one after the restore to
-  # move-$1.after, and the rows the new container's issues table holds (none: no such table) to
-  # move-$1.rows.
+  # Builds the old cluster (a dispatch database holding 25 rows, and a database that refuses
+  # connections, as each template Dispatch's Go tests keep on the server does), prints the refusal
+  # and replays every line it prints, in order, with the dump $1 (whole, empty or cut) makes.
+  # Writes what the dump check printed to move-$1.trailer, what the listing and the count printed
+  # against the old container before the dump to move-$1.before and against the new one after the
+  # restore to move-$1.after, and the rows the new container's issues table holds (none: no such
+  # table) to move-$1.rows.
   replay_move() {
     local rig="${temporary_dir}/move-$1" line output restored=false cluster
     mkdir -p "${rig}/old" "${rig}/new" "${rig}/names"
@@ -465,6 +467,10 @@ EOF
     "${pg_bindir}/psql" -h "${rig}/old" -U postgres -qc "create database dispatch"
     "${pg_bindir}/psql" -h "${rig}/old" -U postgres -d dispatch -qc \
       "create table issues (key text primary key); insert into issues select 'DEV-' || g from generate_series(1, 25) g"
+    # pg_dumpall dumps no database that refuses connections, so a listing that named this one
+    # before the dump would miss it after the restore of a whole dump.
+    "${pg_bindir}/psql" -h "${rig}/old" -U postgres -q -c "create database kept_test_template" \
+      -c "alter database kept_test_template with allow_connections false"
     echo old >"${rig}/names/dispatch-pg"
     run_case TMPDIR="$rig" FAKE_IMAGE_ID="$old_pin_id" FAKE_CONFIG_IMAGE="$old_pin"
     while IFS= read -r line; do

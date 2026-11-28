@@ -1,7 +1,7 @@
 // advances_inheritance_test.go reads the `advances` relation as an issue below the one that
 // states it answers it: the inheritance walk every issue read climbs (issueAdvancesTerms) and
 // the descent the listing's filter makes of the same rule (issueAdvancesFilterTerms), on the
-// database store/storetest's Open clones from this package's migrated template, through the
+// database store/storetest's Open clones from the server's migrated template, through the
 // handler the neighbouring tests drive (newTestHandlerWithStore, dispatchRequest).
 //
 // A relation is stated on one issue and read on every issue below it, in any project, so the

@@ -3,7 +3,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -183,6 +185,34 @@ func MigrationText(version int) (string, error) {
 		return "", fmt.Errorf("read migration %d: %w", version, err)
 	}
 	return string(text), nil
+}
+
+// MigrationsDigest is the SHA-256, in hex, of every embedded migration file's path, length and
+// bytes, in path order: the set Migrate applies digests the same wherever it is built, and any edit
+// to a file, or a file added or removed, moves the digest. It covers the files alone, not the
+// runner's Go code (prepareVersionTable, pgmigrate): a change to how Migrate applies them that
+// leaves every file as it is keeps the digest. storetest names the template it migrates once on a
+// server, and clones for each test, by it, so a tree with other migrations never clones a template
+// migrated by a different set; a template the earlier runner built is dropped by hand where the
+// runner changes (docs/testing.md, "A database a Go test creates").
+func MigrationsDigest() (string, error) {
+	h := sha256.New()
+	err := fs.WalkDir(migrationFiles, "migrations", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		data, err := migrationFiles.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00", path, len(data))
+		h.Write(data)
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("digest the embedded migrations: %w", err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // versionTable is the table this runner records each applied migration in.

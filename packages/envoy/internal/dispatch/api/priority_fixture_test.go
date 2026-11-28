@@ -1,7 +1,7 @@
 // priority_fixture_test.go writes, in bulk, the rows the priority reads are read and measured
 // over: projects, issues, their events, the priority nodes and the `advances` tuples that relate
-// the two. Every write here is one COPY into the database storetest.Open cloned from this
-// package's migrated template, because these corpora are thousands of rows and a route per row
+// the two. Every write here is one COPY into the database storetest.Open cloned from the
+// server's migrated template, because these corpora are thousands of rows and a route per row
 // would spend the measurement's own minutes writing them.
 //
 // No row it writes is one a route would not: an issue carries the columns issue_create.go

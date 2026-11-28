@@ -17,8 +17,8 @@ import (
 // reads api/priority_speed_test.go, and a reader asking what was in the database when it was
 // taken reads this one.
 //
-// The whole corpus is five COPY statements into the database storetest.Open cloned from this
-// package's migrated template (priority_fixture_test.go): 2,500 open issues over 18 projects,
+// The whole corpus is five COPY statements into the database storetest.Open cloned from the
+// server's migrated template (priority_fixture_test.go): 2,500 open issues over 18 projects,
 // two events on every one of them, 20 priorities and 400 `advances` relations, one chain as deep
 // as the parent-depth cap, and the cap of 20 relations on one issue. Written through the routes
 // it would be some 8,000 requests and the minutes they cost. One VACUUM (ANALYZE) follows the

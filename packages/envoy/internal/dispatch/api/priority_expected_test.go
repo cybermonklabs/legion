@@ -1,6 +1,6 @@
 // priority_expected_test.go drives the precondition of PATCH /api/v1/priorities/{id}
 // (priorities.go, patchPriorityInput.Expected) against the database store/storetest's Open
-// clones from this package's migrated template, through the handler the neighbouring tests drive
+// clones from the server's migrated template, through the handler the neighbouring tests drive
 // (newTestHandlerWithStore, dispatchRequest).
 //
 // What it reads is the write a reader's edit makes as they type: its title or description,

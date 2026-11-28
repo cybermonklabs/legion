@@ -1,5 +1,5 @@
 // priority_history_test.go drives GET /api/v1/priorities/{id}/history (priorities.go) against
-// the database store/storetest's Open clones from this package's migrated template, through the
+// the database store/storetest's Open clones from the server's migrated template, through the
 // handler the neighbouring tests drive (newTestHandlerWithStore, dispatchRequest).
 //
 // What it reads is the margin of the priority page: every act stated about one priority, newest

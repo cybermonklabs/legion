@@ -105,17 +105,23 @@ if [ "$running" != "true" ]; then
   )
 fi
 # The same listing runs against the old container before the dump and the new one after the
-# restore, so the two outputs compare line for line. The same count runs on both too, of the tables
-# in the dispatch database (the one POSTGRES_DB in run_flags names) and of the rows they hold,
-# printed as <tables>|<rows>: after an empty dump restores nothing, the new container still lists
-# postgres and dispatch, which it creates itself, but its dispatch database holds no table, and
-# after a dump that stopped once its schema was written, it holds every table and none of their rows.
+# restore, so the two outputs compare line for line. It lists the databases the dump carries:
+# pg_dumpall dumps only a database that allows connections and is valid (pg_dumpall.c: datallowconn
+# and datconnlimit != -2, the mark a drop that was cut off leaves), so the listing leaves out a
+# database that refuses connections, as each template Dispatch's Go tests keep on the server does
+# (internal/dispatch/store/storetest), and an invalid one, either of which would otherwise be
+# listed before the dump and missing after the restore. The next test run makes such a template
+# again. The same count runs on both too, of the tables in the dispatch database (the one
+# POSTGRES_DB in run_flags names) and of the rows they hold, printed as <tables>|<rows>: after an
+# empty dump restores nothing, the new container still lists postgres and dispatch, which it
+# creates itself, but its dispatch database holds no table, and after a dump that stopped once its
+# schema was written, it holds every table and none of their rows.
 # The count covers the dispatch database alone; the whole dump is checked by its last comment,
 # which pg_dumpall writes only once it has dumped every database, before the old container stops.
-list_databases=(docker exec "$container" psql -U postgres -Atc 'select datname from pg_database where not datistemplate order by 1')
+list_databases=(docker exec "$container" psql -U postgres -Atc 'select datname from pg_database where not datistemplate and datallowconn and datconnlimit <> -2 order by 1')
 count_dispatch=(docker exec "$container" psql -U postgres -d dispatch -Atc "select count(*), coalesce(sum((xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', schemaname, tablename), false, true, '')))[1]::text::bigint), 0) from pg_tables where schemaname = 'public'")
 steps+=(
-  "Keep the output of this: the databases the old container holds, every one of which the new container must list after the restore."
+  "Keep the output of this: the databases the old container holds that the dump carries, every one of which the new container must list after the restore. It leaves out each database that refuses connections or that a cut-off drop left invalid, which pg_dumpall does not dump: the templates the Go tests keep are such databases, and the next test run makes them again."
   "  $(quote "${list_databases[@]}")"
   "Keep the output of this too: the number of tables in the old container's dispatch database and the rows they hold. It counts the dispatch database alone; the check after the dump covers every database. Stop anything that writes to this container (a Dispatch server, a test run) before these counts and the dump, or the counts after the restore cannot match them."
   "  $(quote "${count_dispatch[@]}")"

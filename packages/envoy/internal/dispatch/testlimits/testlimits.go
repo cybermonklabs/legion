@@ -43,8 +43,11 @@ const MaxProcessesAtOnce = 8
 const RequiredConnections = MaxProcessesAtOnce * store.ConnectionsPerProcess
 
 // SuiteHeadroom is the connections a test suite opens outside any Dispatch process: each
-// package's own pool and the harness's reads. Nothing counts these at run time. A lane whose
-// Postgres log shows a 53300 refusal that no guard refused first needs more.
+// package's own pool and the harness's reads. Among those reads, each storetest test binary, a
+// copy of itself that a test starts included, holds one connection for its whole run: its
+// template connection, on which it keeps its hold on the server's template (storetest's
+// templateConn). Nothing counts these at run time. A lane whose Postgres log shows a 53300 refusal
+// that no guard refused first needs more.
 const SuiteHeadroom = 20
 
 // ServerConnections is what a test server must allow beyond its superuser reserve
