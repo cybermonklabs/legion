@@ -102,6 +102,9 @@ const (
 // Dispatch-As-Of-Absent header only when it leaves that member out, and it names only members
 // this table holds for its route (WriteHeaders, which tests check with ValidAbsent).
 //
+// The members beside the plan's list include /pull_request for an issue read.
+// pull_request_heads keeps only the present state of each pull request (reasonPullRequest).
+//
 // The comment beside a route whose entry names no member of an ask's wording says why the route
 // gives none that can be unknown at the cut.
 var AbsentFields = map[string][]AbsentField{

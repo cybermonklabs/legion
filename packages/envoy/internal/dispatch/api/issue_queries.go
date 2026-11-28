@@ -1041,9 +1041,9 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // (invalidateCachesOnBatchResultsError), so one 404 would cost that connection the whole read's
 // prepared statements. The other callbacks run against an issue with no row, answer empty lists,
 // and readIssue drops them with the rest of the read.
-// Batch 1 also reads the issue's pull request (issuePullRequestStatement). An issue with none
-// answers no row, and its callback takes that row's pgx.ErrNoRows as no pull request rather than
-// returning it, for the reason above.
+// Outside a cut, batch 1 also reads the issue's pull request (issuePullRequestStatement).
+// An issue with none answers no row, and its callback takes that row's pgx.ErrNoRows as no
+// pull request rather than returning it, for the reason above.
 //
 // Batch 2 is what only batch 1's answers name: every artifact's versions in one statement, the
 // documents' latest reviews and open approval requests, and the open asks' identity events and
@@ -1159,6 +1159,8 @@ type issuePullRequest struct {
 // texts and the attachment's reason for touching no component, which only the dashboard reads.
 // At a cut it does not read the design gates or the issue's backlink count, which keep no history
 // and which the answer leaves out (issueAtTheCut).
+// It does not read the pull request either, since pull_request_heads keeps only the present
+// state of each pull request.
 //
 // One statement of the first batch has no sequential loader beside it: the issue's pull request
 // (issuePullRequestStatement), which this read alone answers.
