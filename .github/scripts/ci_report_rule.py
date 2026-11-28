@@ -1,13 +1,14 @@
 """Rule 26 of check-ci-filters.sh: a job of any workflow that runs the results action makes its go
 test -json report with no -v but -json's own test2json, with the reader of a run: script's bash that
-it reads each go test command with. ci_filter_coverage.main() runs it.
+it reads each go test command with. ci_filter_coverage.main() runs it over the workflows of the
+directory, as ci_workflow_rules.directory_workflows read them once for every rule that walks it.
 """
 
 import json
 import re
 
 from ci_filter_coverage import error, script_lines, step_label
-from ci_workflow_rules import RACE_TEST, directory_workflows
+from ci_workflow_rules import RACE_TEST
 
 
 # ------------------------------------------- the report the results step reads
@@ -260,8 +261,9 @@ def go_test_commands(script: str) -> list:
     return commands
 
 
-def check_report_steps(problems: list) -> list:
-    """A job of any workflow that runs RESULTS_ACTION makes its report with no -v but -json's own
+def check_report_steps(workflows: dict, problems: list) -> list:
+    """A job of any of workflows ({a repository-relative path: its parsed document}) that runs
+    RESULTS_ACTION makes its report with no -v but -json's own
     test2json. Each `go test` command in a run: script of the job is held to no flag that
     verbose_flags names (a -v or -test.v of go test before -args, and a -test.v of the test binary
     after it, one dash or two, bare or with any value but test2json), since the report the action
@@ -275,7 +277,7 @@ def check_report_steps(problems: list) -> list:
     its one report line, which says how many jobs and commands it read, so a run that read none
     says so."""
     jobs = commands = 0
-    for path, document in directory_workflows().items():
+    for path, document in workflows.items():
         for job_id, job in ((document or {}).get("jobs") or {}).items():
             steps = [s for s in (job or {}).get("steps") or [] if isinstance(s, dict)]
             if not any(str(s.get("uses", "")).split("@")[0].rstrip("/") == RESULTS_ACTION for s in steps):

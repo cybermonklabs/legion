@@ -690,9 +690,10 @@ export CI_FILTERS_MODE="${1:-check}"
 
 # The engine (ci_filter_coverage.py), its data (ci_job_reads.py, which reads the files of
 # .github/ci-gates and the //ci: lines of the Go files through ci_filter_sources.py), the rules
-# that read no filter and no go command's closure (ci_workflow_rules.py: rules 10 to 14, 16, 25
-# and 26 above, the workspace one given that data's WORKSPACES by main() rather than importing the
-# data itself, the merge-group and report ones reading .github/workflows themselves) and the path
+# that read no filter and no go command's closure (ci_workflow_rules.py: rules 10 to 14, 16 and 25
+# above, the workspace one given that data's WORKSPACES by main() rather than importing the data
+# itself, the merge-group one reading .github/workflows itself; ci_report_rule.py: rule 26, given
+# the workflows of .github/workflows by main() as ci_workflow_rules read them) and the path
 # model (workflow_paths.py) sit beside this script in the repository it checks. The engine is
 # imported, not run as a script, so the data's `from ci_filter_coverage import ...` binds the
 # same classes. A gate file or a //ci: line the import cannot read ends the run with one

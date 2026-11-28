@@ -52,7 +52,9 @@ GATE = gate("ci_filters", "ci-filters", runs=[
     (".github/workflows/**", "ci_workflow_rules.py reads every workflow of the directory: "
                              "check_one_merge_group_workflow, which refuses a new one and so has to run on the change "
                              "that adds it, check_cache_round_trip, which holds every restore of a filled family to "
-                             "the fill's key, and ci_only_documents, which finds the files only ci.yaml calls"),
+                             "the fill's key, and ci_only_documents, which finds the files only ci.yaml calls; so does "
+                             "ci_report_rule.py's check_report_steps, which holds a job of any of them that runs the "
+                             "results action to a go test -json report with no -v"),
     # Every filter is computed from two sets this check reads in every Go file: the //ci: lines
     # of the tests, and the repository's Go test files the `!` patterns keep a filter off. A test
     # file added, deleted or given a //ci: line anywhere changes what the changes job computes, so

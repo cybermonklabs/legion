@@ -58,7 +58,8 @@
 # filters in .github/ci-gates, a //ci:reads line in the one test that reads outside its package, a
 # root package.json with one workspace, and a ci_job_reads.py that loads them - and symlinks the
 # real script, its engine (ci_filter_coverage.py), the loader of the gates and the //ci: lines
-# (ci_filter_sources.py), the rules of ci.yaml it runs (ci_workflow_rules.py), the path model they
+# (ci_filter_sources.py), the rules of ci.yaml it runs (ci_workflow_rules.py), the report rule
+# (ci_report_rule.py), the path model they
 # import (workflow_paths.py), the generation's fail-open wrapper (ci-filters-generate.sh) and the
 # fetch it takes a base it lacks through (fetch-depth-if-shallow.sh) into it,
 # so the code under test is the code CI runs. It needs go and a python3 with PyYAML.
