@@ -556,7 +556,9 @@ function HeaderLabels({
       countTop !== undefined &&
       countTop >= element.getBoundingClientRect().bottom
     ) {
-      element.style.minWidth = `min(${Math.ceil(first.getBoundingClientRect().width)}px, 100%)`;
+      // The first chip stands after the line's gap the box took back, so the box takes that too.
+      const lead = -Number.parseFloat(getComputedStyle(element).marginLeft) || 0;
+      element.style.minWidth = `min(${Math.ceil(first.getBoundingClientRect().width + lead)}px, calc(100% + ${lead}px))`;
       fits = labelsThatFit(element);
     }
     // The count drawn next names fewer labels and can be narrower: at its own width it would
@@ -606,13 +608,17 @@ function HeaderLabels({
           high - 20 px, the chip's 18 px line and its two borders, at any root size - wrapping
           and clipped: a chip that does not fit goes onto a line that is not drawn. A line always
           holds its first item, so that item is an empty one the height of a chip, which takes no
-          width and, by its margin, no gap: the first chip wraps too when it does not fit. */}
+          width: the first chip wraps too when it does not fit. The box takes back the line's gap
+          before it (`-ml-2.5`, `-ml-3`, the line's `gap-x-2.5` and `gap-x-3`), and that first item
+          gives it to the first chip by its margin and the box's own gap (4 or 6 px and 6 px), so
+          a chip stands where it would after the line's gap, and a box that draws no chip costs the
+          line no gap: the count after it fits where it and its own gap do. */}
       <div
-        className="relative flex h-[20px] min-w-0 flex-[1_1_0] flex-wrap gap-1.5 overflow-hidden"
+        className="relative -ml-2.5 flex h-[20px] min-w-0 flex-[1_1_0] flex-wrap gap-1.5 overflow-hidden min-[761px]:-ml-3"
         data-testid="issue-header-labels"
         ref={box}
       >
-        <span aria-hidden="true" className="-mr-1.5 h-[20px] w-0 shrink-0" />
+        <span aria-hidden="true" className="mr-1 h-[20px] w-0 shrink-0 min-[761px]:mr-1.5" />
         {labels.slice(0, shown ?? labels.length).map((label) => (
           <span
             className={`inline-flex shrink-0 items-center rounded-md border px-[7px] text-xs leading-[18px] font-medium whitespace-nowrap ${pageLabelChip}`}
