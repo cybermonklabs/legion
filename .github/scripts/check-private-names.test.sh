@@ -872,7 +872,8 @@ for list in comments reviews threads; do
   check "$name: three reads asked for them" "$(is "$(grep -c "^graphql PrText .*\"$list\":true" "$work/calls")" 3)"
   # 201 over three pages, the first page saying no more follow (cut.<list>): the first read counts
   # 200 and lists 100, and the second and third count all 201 and still list 100, so a refusal that
-  # named the first read's counts would fail here, where the cases above give every read the same.
+  # named the first read's counts would fail here, where the run above that counts the list one
+  # short at all three reads gives every read the same.
   clean_pr
   jq -nc --argjson author "$app" '[range(1; 101) | {id: (9300 + .), body: "fine"} + $author]' \
     > "$work/$pages.1"

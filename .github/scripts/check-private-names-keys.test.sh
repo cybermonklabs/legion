@@ -77,11 +77,12 @@ marker_on_main() {
   jq -nc --arg sha "$marker_sha" '[{sha: $sha, commit: {committer: {date: "2026-11-18T00:00:00Z"}}}]' \
     > "$work/cutoff-commits"
 }
-# marker_on_second_page: the commits route names 100 later commits that touch the marker, then the
-# marker commit, the oldest, so it is on the history's second page; all dated before every release.
-marker_on_second_page() {
+# marker_after <n>: the commits route names n later commits that touch the marker, later-0 to
+# later-<n - 1>, then the marker commit, the oldest; all dated before every release. The history
+# lists 100 a page, so the marker is on its page n / 100 + 1: the second at 100, the third at 200.
+marker_after() {
   history_remote
-  jq -nc --arg sha "$marker_sha" '[range(100) | {sha: "later-\(.)"}] + [{sha: $sha}]
+  jq -nc --arg sha "$marker_sha" --argjson n "$1" '[range($n) | {sha: "later-\(.)"}] + [{sha: $sha}]
     | map(. + {commit: {committer: {date: "2026-11-18T00:00:00Z"}}})' > "$work/cutoff-commits"
 }
 # key_rule_on: the fixtures of an active rule: the marker commit on main, and legion-v9.0.0, the
@@ -360,7 +361,7 @@ echo "case: the marker commit is found past the first page of its history"
 # touch it too, so it is on the second page.
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
-marker_on_second_page
+marker_after 100
 key_run
 check "the rule is active since the release that holds it" \
   "$(contains "$out" "^check-pr-text: the issue-key rule is active since legion-v9.0.0, published $cutoff_at\$")"
@@ -391,7 +392,7 @@ check "the refusal names the history and both counts" \
   "$(contains "$out" "^::error::GitHub's GraphQL API reports 0 commits on main that touch .github/issue-key-cutoff but listed 1, so not every one can be checked")"
 check "after three reads of the history" "$(is "$(grep -c '^graphql PrText .*"history":true' "$work/calls")" 3)"
 # A history of two pages is read again whole: here both pages of its first read are counted short.
-marker_on_second_page
+marker_after 100
 echo 2 > "$work/miscount.history"
 key_run
 history_reads=$(grep '^graphql PrText .*"history":true' "$work/calls" || true)
@@ -403,10 +404,9 @@ check "and then for the second page by its cursor" \
   "$(contains "$(sed -n 4p <<< "$history_reads")" '"historyAfter":"1"')"
 # A history of three pages, the marker last, whose first page says no more follow (cut.history):
 # its first read counts 200 of its 201 commits and its later reads all 201, each listing 100, so a
-# refusal that named the first read's counts would fail here, where the case above gives every
-# read the same.
-jq -nc --arg sha "$marker_sha" '[range(200) | {sha: "later-\(.)"}] + [{sha: $sha}]
-  | map(. + {commit: {committer: {date: "2026-11-18T00:00:00Z"}}})' > "$work/cutoff-commits"
+# refusal that named the first read's counts would fail here, where the case above that counts the
+# history one short at all three reads gives every read the same.
+marker_after 200
 echo 1 > "$work/cut.history"
 echo 1 > "$work/miscount.history"
 key_run
