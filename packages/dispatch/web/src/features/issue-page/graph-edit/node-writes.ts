@@ -25,6 +25,7 @@ import {
 } from "../tree-read/tree-read";
 import {
   bandOf,
+  childrenOf,
   type Entry,
   type GreyReason,
   holdsPlace,
@@ -445,17 +446,37 @@ export function readAfterRoomWrite(client: QueryClient, issue: string, node: str
   else chain.reads = true;
 }
 
-/** The index after the subtree of `nodes[at]` in the walk: the run of nodes after it that stand
- *  under it, which the walk keeps together, as every parent comes before its children. */
+/** The index after the subtree of `nodes[at]` in the walk: past the last node after it that
+ *  stands under it, as every parent comes before its children. On a read of several pages the
+ *  subtree can go on to the next page, past the read's context nodes that end each page, which
+ *  are no part of it; the subtree ends at the first other node. */
 function subtreeEnd(nodes: readonly TreeAnswerNode[], at: number): number {
   const inside = new Set([nodes[at]?.id]);
   let end = at + 1;
-  for (; end < nodes.length; end += 1) {
-    const node = nodes[end];
-    if (node === undefined || node.parent === null || !inside.has(node.parent.id)) break;
+  for (let next = at + 1; next < nodes.length; next += 1) {
+    const node = nodes[next];
+    if (node === undefined) break;
+    if (node.role === "context") continue;
+    if (node.parent === null || !inside.has(node.parent.id)) break;
     inside.add(node.id);
+    end = next + 1;
   }
   return end;
+}
+
+/** The subtree of `nodes[at]`, on every page it stands on (`subtreeEnd`), and `nodes` without it:
+ *  the read's context nodes that end a page inside the subtree's run stay where they stand. */
+function cutSubtree(
+  nodes: readonly TreeAnswerNode[],
+  at: number
+): { readonly rest: TreeAnswerNode[]; readonly subtree: TreeAnswerNode[] } {
+  const end = subtreeEnd(nodes, at);
+  const run = nodes.slice(at, end);
+  const context = run.filter((node) => node.role === "context");
+  return {
+    rest: [...nodes.slice(0, at), ...context, ...nodes.slice(end)],
+    subtree: run.filter((node) => node.role !== "context"),
+  };
 }
 
 /** The parent reference the read gives `parent` on a node under it; where it holds none, one made
@@ -476,49 +497,47 @@ export function parentRefOf(parent: TreeAnswerNode): NonNullable<TreeAnswerNode[
   return { first_line: "", id, kind, supertag, ...(issue === undefined ? {} : { issue }) };
 }
 
-/** The index in `rest` a subtree of `band` goes to under the parent at `rest[from]`: right after
- *  the subtree of the child `after` names; first in its band where `after` is null, before the
- *  first ranked child of that band or a later one (dispatch://INFRA-1253 R7); and last under the
- *  parent where no child it holds is the one `after` names: one past the loaded pages, or a gone
- *  one, which no read holds. */
-function placeIn(
-  rest: readonly TreeAnswerNode[],
-  from: number,
-  after: string | null,
-  band: number
-): number {
-  const parent = rest[from]?.id;
-  const end = subtreeEnd(rest, from);
-  for (let at = from + 1; at < end; at += 1) {
-    const child = rest[at];
-    if (child === undefined || child.parent?.id !== parent) continue;
-    if (after !== null && names(child, after)) return subtreeEnd(rest, at);
-    if (after === null && typeof child.rank === "string" && bandOf(child) >= band) return at;
+/** The index in `held.nodes` a subtree of `band` goes to under the parent at `held.nodes[from]`,
+ *  among all of the parent's children that `held` holds, on every page (`childrenOf`): right after
+ *  the subtree of the child `after` names, wherever that child stands; first in its band where
+ *  `after` is null, before the first ranked child of that band or a later one; and last under the
+ *  parent where no child it holds is the one `after` names - one past the loaded pages, or a gone
+ *  one, which no read holds: right after the parent's own subtree, which ends with the subtree of
+ *  its last child that `held` holds, and is the parent alone where it holds none. */
+function placeIn(held: TreeAnswer, from: number, after: string | null, band: number): number {
+  const nodes = held.nodes ?? [];
+  const parent = nodes[from];
+  if (parent === undefined) return nodes.length;
+  for (const child of childrenOf(held, parent.id)) {
+    if (after !== null && names(child, after)) return subtreeEnd(nodes, nodes.indexOf(child));
+    if (after === null && typeof child.rank === "string" && bandOf(child) >= band) {
+      return nodes.indexOf(child);
+    }
   }
-  return end;
+  return subtreeEnd(nodes, from);
 }
 
-/** `held` with the taken move of `node` written into it: the node's subtree under the answer's
- *  `parent`, after its `after`, in the walk's order, so each later body reads it there, and the
- *  node's `placement_seq` the answer's. Where the read holds no such parent, the node keeps its
- *  place and takes the sequence alone. */
+/** `held` with the taken move of `node` written into it: the node's whole subtree, on every page
+ *  it stands on (`cutSubtree`), under the answer's `parent`, after its `after` among all of that
+ *  parent's children the pages hold (`placeIn`), in the walk's order, so each later body reads it
+ *  there, and the node's `placement_seq` the answer's. Where the read holds no such parent, the
+ *  node keeps its place and takes the sequence alone. */
 function movedIn(held: TreeAnswer, node: string, answer: NodeMoved): TreeAnswer {
   const nodes = held.nodes ?? [];
   const at = nodes.findIndex((each) => each.id === node);
   const own = nodes[at];
   if (own === undefined) return held;
   const renewed = { ...own, placement_seq: answer.placement_seq };
-  const end = subtreeEnd(nodes, at);
-  const rest = [...nodes.slice(0, at), ...nodes.slice(end)];
+  const { rest, subtree } = cutSubtree(nodes, at);
   const from = rest.findIndex((each) => names(each, answer.parent));
   const parent = rest[from];
   if (parent === undefined) {
     return { ...held, nodes: [...nodes.slice(0, at), renewed, ...nodes.slice(at + 1)] };
   }
   const ref = own.parent?.id === parent.id ? own.parent : parentRef(rest, parent);
-  const subtree = [{ ...renewed, parent: ref }, ...nodes.slice(at + 1, end)];
-  const to = placeIn(rest, from, answer.after, bandOf(own));
-  return { ...held, nodes: [...rest.slice(0, to), ...subtree, ...rest.slice(to)] };
+  const to = placeIn({ ...held, nodes: rest }, from, answer.after, bandOf(own));
+  const placed = [{ ...renewed, parent: ref }, ...subtree.slice(1)];
+  return { ...held, nodes: [...rest.slice(0, to), ...placed, ...rest.slice(to)] };
 }
 
 /** Writes `answer` as Graph's held read of `issue`, keeping the stale mark an event or a write
@@ -547,17 +566,17 @@ function lacksPlace(held: TreeAnswer, node: string, place: Place): boolean {
 }
 
 /** `held` without the copy of `node`'s subtree that `movedIn` placed after the last child the
- *  pages held before a next page merged into it, where that page holds the node too: the run of
- *  the subtree from the node's first place, where that stands before `before`, the length of the
- *  answer held before the page was read, and the node stands again at or past it. Undefined where
- *  `held` holds no such copy. No other node held twice is touched: a node placed in two places is
- *  held twice. */
+ *  pages held before a next page merged into it, where that page holds the node too: the subtree
+ *  of the node's first place (`cutSubtree`), where that stands before `before`, the length of the
+ *  answer held before the page was read, and the node stands again at or past it. The read's
+ *  context nodes stay. Undefined where `held` holds no such copy. No other node held twice is
+ *  touched: a node placed in two places is held twice. */
 function withoutMovedCopy(held: TreeAnswer, node: string, before: number): TreeAnswer | undefined {
   const nodes = held.nodes ?? [];
   const first = nodes.findIndex((each) => each.id === node);
   if (first < 0 || first >= before) return undefined;
   if (!nodes.some((each, at) => at >= before && each.id === node)) return undefined;
-  return { ...held, nodes: [...nodes.slice(0, first), ...nodes.slice(subtreeEnd(nodes, first))] };
+  return { ...held, nodes: cutSubtree(nodes, first).rest };
 }
 
 /** Sets the line of `node` on `issue`'s rows, or clears it, and tells each hook. A line that says

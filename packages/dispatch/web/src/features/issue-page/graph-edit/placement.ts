@@ -392,6 +392,14 @@ function rankedChildren(walk: Walk, parent: string): readonly TreeAnswerNode[] {
   return walk.ranked.get(parent) ?? NONE;
 }
 
+/** The children of the node of read id `parent` that `held` holds, on every page it holds, in the
+ *  walk's order (`Walk.children`): no context and nothing gone. A parent's children are no one run
+ *  of `held.nodes` where the read has several pages: each page ends with the read's context, and
+ *  the parent's children go on past it on the next. */
+export function childrenOf(held: TreeAnswer, parent: string): readonly TreeAnswerNode[] {
+  return walkOf(held).children.get(parent) ?? NONE;
+}
+
 /** The band of `node` among its parent's children (INFRA-1253 R7). */
 export function bandOf(node: TreeAnswerNode): number {
   const slug = node.document?.slug;

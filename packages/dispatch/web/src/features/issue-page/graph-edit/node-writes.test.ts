@@ -26,6 +26,7 @@ import { plainWrite, Writes } from "../../writes/write-store";
 import { KEY } from "../decisions-filter/decisions-fixtures";
 import { waitInAct } from "../outline-fixtures";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
+import { mergeTreePages } from "../tree-read/tree-nodes";
 import { outlineQuery, readNextTreePage, type TreeAnswer } from "../tree-read/tree-read";
 import { fixture, nodeOf, renamed, signedIn } from "./graph-edit-fixtures";
 import {
@@ -1754,6 +1755,192 @@ test("a second Move down on a read of two pages goes from where the first left t
     { after: "<tree/heading>", parent },
     { after: "<tree/bullet_list>", parent },
   ]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// A subtree on a read of two pages (R4, R7): the fixture's two pages as the server answered them,
+// merged as the page merges a next page into the read it holds (`mergeTreePages`). The first page
+// ends with the read's context nodes, which stand under no parent; the second goes on with more
+// children of the issue and of the criterion, which the first page holds. So a subtree that the
+// first page holds can go on past those context nodes on the second, and each taken move is
+// written into the held read with the whole of each subtree it moves or follows.
+// ---------------------------------------------------------------------------------------------
+
+/** The fixture's two pages, merged as the page merges them. */
+const twoPages = mergeTreePages([firstPage, secondPage]);
+
+/** The read ids of the two pages, in the read's order. */
+const twoPageIds = (twoPages.nodes ?? []).map((node) => node.id);
+
+/** The criterion's block of the issue's own fragment: the first node of the second page. */
+const UNDER_CRITERION = "<prose-under-criterion>";
+
+/** The statement's subtree, which the first page holds whole: its lens, the lens's risk and
+ *  finding, and its comment with that comment's block. */
+const STATEMENT_SUBTREE = [
+  STATEMENT,
+  "<lens>",
+  "<risk>",
+  "<finding>",
+  "<comment-on-statement-3>",
+  "comment/<comment-on-statement-3>#b1",
+];
+
+/** The read ids of the held read's nodes, in the read's order. */
+function heldIds(client: QueryClient): string[] {
+  return (heldRead(client, KEY)?.nodes ?? []).map((node) => node.id);
+}
+
+/** `ids` with the run `subtree` taken out and put back right after `anchor`. */
+function placedAfter(ids: readonly string[], subtree: readonly string[], anchor: string): string[] {
+  const others = ids.filter((id) => !subtree.includes(id));
+  const at = others.indexOf(anchor) + 1;
+  return [...others.slice(0, at), ...subtree, ...others.slice(at)];
+}
+
+// Outdent on the statement goes under the question, after the criterion. The criterion's subtree
+// goes on to the second page, past the first page's context nodes, with its block of the issue's
+// own fragment, so the statement's subtree stands right after that block, on the second page.
+test("a taken move after a block whose subtree goes on to the next page stands after the whole of that subtree", async () => {
+  const [start] = secondPage.nodes ?? [];
+  expect(
+    { id: start?.id, parent: start?.parent?.id },
+    "the second page starts with no child of the criterion"
+  ).toEqual({ id: UNDER_CRITERION, parent: "<criterion>" });
+  // R7's re-read is held out, so the case reads the held read the answer was written into.
+  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  const parent = "ask/<question>";
+  const patches = answerPatches({
+    body: { after: "<criterion>", parent, placement_seq: "<seq:statement-3>@2" },
+    status: 200,
+  });
+  const { client, writes } = mount(twoPages);
+  let outcome: unknown;
+  await act(async () => {
+    outcome = await writes().move(STATEMENT, "outdent");
+  });
+  expect(outcome).toMatchObject({ status: "taken" });
+  expect(patches.calls.map((call) => call.body)).toEqual([{ after: "<criterion>", parent }]);
+  expect(
+    heldIds(client),
+    "the statement's subtree stands right after the criterion's last block, on the second page"
+  ).toEqual(placedAfter(twoPageIds, STATEMENT_SUBTREE, UNDER_CRITERION));
+  expect(heldNode(client, STATEMENT)?.parent?.id).toBe("<question>");
+});
+
+// Outdent on the criterion goes under the issue, last of the spec's blocks: the server answers
+// after the decision, which the second page holds. The criterion's subtree goes on to the second
+// page with its block of the issue's own fragment, which moves with it: the whole subtree stands
+// right after the decision's reading, and no child of the criterion is left behind.
+test("a taken move of a block whose children go on to the next page takes all of them along", async () => {
+  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  const parent = `issue/${KEY}`;
+  const patches = answerPatches({
+    body: { after: "<decision>", parent, placement_seq: "<seq:criterion>@2" },
+    status: 200,
+  });
+  const { client, writes } = mount(twoPages);
+  let outcome: unknown;
+  await act(async () => {
+    outcome = await writes().move("<criterion>", "outdent");
+  });
+  expect(outcome).toMatchObject({ status: "taken" });
+  expect(patches.calls.map((call) => call.body)).toEqual([{ parent }]);
+  const subtree = [
+    "<criterion>",
+    "<statement-1>",
+    "<check-shared>",
+    "<result>",
+    "<child-check>",
+    "<plan-task>",
+    "<statement-2>",
+    "<check-agent>",
+    ...STATEMENT_SUBTREE,
+    UNDER_CRITERION,
+  ];
+  expect(
+    heldIds(client),
+    "the criterion's whole subtree stands right after the decision's reading"
+  ).toEqual(placedAfter(twoPageIds, subtree, "<reading>"));
+  expect(heldNode(client, "<criterion>")?.parent?.id).toBe(KEY);
+});
+
+const STATEMENT_SEQ = "<seq:statement-3>@3";
+
+/** The server's second page once the statement is outdented twice, under the issue after the
+ *  decision: the statement's subtree, as the first page holds it, right after the decision's
+ *  reading, the statement under the issue with its next placement_seq. The page starts where the
+ *  first page's cursor names, so it holds the statement again. */
+const outdentedStatementSecond: TreeAnswer = {
+  ...secondPage,
+  nodes: (secondPage.nodes ?? []).flatMap((node) =>
+    node.id === "<reading>"
+      ? [
+          node,
+          ...firstNodes
+            .filter((each) => STATEMENT_SUBTREE.includes(each.id))
+            .map((each) =>
+              each.id === STATEMENT
+                ? {
+                    ...each,
+                    parent: nodeOf(secondPage, "<decision>").parent,
+                    placement_seq: STATEMENT_SEQ as unknown as number,
+                  }
+                : each
+            ),
+        ]
+      : [node]
+  ),
+};
+
+// On the first page alone, Outdent twice on the statement: under the question after the
+// criterion, then under the issue, where the server answers after the decision, which only the
+// second page holds. The second answer puts the statement's subtree after the last child of the
+// issue the first page holds; the second page, read for the place, holds the subtree again, so
+// that copy is taken out whole, and the first page's context nodes and every node of the second
+// page stay.
+test("a moved block's copy is taken out whole once the next page holds the block, and nothing else is", async () => {
+  const reread = Promise.withResolvers<void>();
+  const reads = answerOutdentedReads(outdentedStatementSecond, reread.promise);
+  const question = "ask/<question>";
+  const issue = `issue/${KEY}`;
+  const patches = answerPatches(
+    {
+      body: { after: "<criterion>", parent: question, placement_seq: "<seq:statement-3>@2" },
+      status: 200,
+    },
+    { body: { after: "<decision>", parent: issue, placement_seq: STATEMENT_SEQ }, status: 200 }
+  );
+  const { client, writes } = mount(firstPage);
+  try {
+    await act(async () => {
+      const outcomes = await Promise.all([
+        writes().move(STATEMENT, "outdent"),
+        writes().move(STATEMENT, "outdent"),
+      ]);
+      expect(outcomes).toEqual([{ status: "taken" }, { status: "taken" }]);
+    });
+    expect(patches.calls.map((call) => call.body)).toEqual([
+      { after: "<criterion>", parent: question },
+      { parent: issue },
+    ]);
+    await waitFor(() =>
+      expect(reads.cursors, "the reads after the outdents").toEqual([firstPage.cursor, null])
+    );
+    expect(heldIds(client), "the copy is not taken out whole, or more is").toEqual([
+      ...firstNodes.flatMap((node) => (STATEMENT_SUBTREE.includes(node.id) ? [] : [node.id])),
+      ...(outdentedStatementSecond.nodes ?? []).map((node) => node.id),
+    ]);
+    expect(heldNode(client, STATEMENT)?.parent?.id).toBe(KEY);
+  } finally {
+    reread.resolve();
+  }
+  await waitFor(() =>
+    expect(
+      client.getQueryState(outlineQuery(KEY, "graph").queryKey)?.fetchStatus,
+      "R7's re-read never landed"
+    ).toBe("idle")
+  );
 });
 
 // A refused next page ends the reads, and R7's re-read still goes, of the first page alone since
