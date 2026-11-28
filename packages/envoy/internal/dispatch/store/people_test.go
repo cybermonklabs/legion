@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A sign-in and a confirmation are each dated by the database's now(), and Membership answers the
@@ -596,29 +597,25 @@ func TestPgPeopleStoreEndsTheSessionsOfAConcurrentFirstSignIn(t *testing.T) {
 	}
 	second := make(chan error, 1)
 	go func() { second <- people.SignInSubject(ctx, email, "subject-2", "refresh-2") }()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, "the second sign-in to wait on the first (a backend of the test's database blocked by another)", func() (int, bool) {
 		var waiting int
 		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting > 0 {
-			break
+			return waiting, true
 		}
 		select {
 		case err := <-second:
 			t.Fatalf("the second sign-in finished while the first was uncommitted: %v", err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the second sign-in never waited on the first")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return waiting, false
+	})
 	if err := first.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-second; err != nil {
+	if err := testwait.Receive(t, "the second sign-in's answer once the first committed", second); err != nil {
 		t.Fatalf("the second sign-in: %v", err)
 	}
 	if generation, found := sessionGeneration(t, sessions, email); !found || generation != 1 {

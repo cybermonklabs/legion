@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/pgdsn"
@@ -31,6 +32,21 @@ type Store struct {
 	// whether it held a transaction around it. Nil, which every Store Open makes leaves it,
 	// runs nothing.
 	afterNonTransactionalStatement func(ctx context.Context, conn *pgx.Conn) error
+	// clock is what the timers of the store's own code run on, read through clk: each timer
+	// moves onto it together with the test that depends on it, and a timer not moved yet reads the
+	// time package itself. Nil, which every Store Open makes leaves it, is the real clock. Only a
+	// test sets it, to a clocktest.Fake that it moves past the timer it waits out, so how long the
+	// machine takes decides nothing.
+	clock clock.Clock
+}
+
+// clk is the clock the store's own timers run on: the clock a test set, or clock.Real where none
+// is set, as in every Store Open returns.
+func (s *Store) clk() clock.Clock {
+	if s.clock == nil {
+		return clock.Real()
+	}
+	return s.clock
 }
 
 // Every file in migrations, so the store's tests judge each one with pgmigrate.Load

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // recordedMachineLoginRevocation records, in a transaction of its own, that Dispatch owes the
@@ -217,8 +219,7 @@ func TestARecordOfAMachineLoginRevocationTakesThePersonsApprovalLock(t *testing.
 		t.Fatalf("an approval of erin's with nothing owed = owed %t, %v; want it to hold her approval lock", owed, err)
 	}
 	// The bound only ends a record that waits; one that does not answers at once.
-	bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	bounded := testwait.Context(t)
 	if err := RecordMachineLoginRevocation(bounded, begin(), email); !errors.Is(err, ErrMachineLoginApprovalInFlight) {
 		t.Fatalf("a record while an approval of erin's holds her approval lock = %v, want ErrMachineLoginApprovalInFlight at once", err)
 	}

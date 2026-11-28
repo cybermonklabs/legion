@@ -13,9 +13,11 @@
   - TestAConcurrentWorkerKeepsAMarkOfItsOwn  # 0.0 s
   - TestADeletedProjectTakesItsSessionRowsWithIt  # 4.5 s
   - TestAFailedBuildEndsThePartAtItsStatement  # 0.0 s
+  - TestALadderAskWaitsForNoBuildItDoesNotStartFrom  # 0.0 s
   - TestAMultiVersionInsertReVectorsItsIssueOnce  # 4.7 s
   - TestARowInsertedAsTheReleaseBeforeThisOneInsertsItCarriesItsProject  # 10.9 s
   - TestASecondRenamePassOnAWrittenDatabaseRunsNoLine  # 4.5 s
+  - TestAStoreOpenReturnsKeepsTheRealClock  # 0.0 s
   - TestATextCutToFitIsIndexedByWholeWords  # 0.7 s
   - TestAWritePhasePastTheSendBoundRunsEveryStatementInOrder  # 0.5 s
   - TestAWriteThatClearsTheOwnerIsRefused  # 4.6 s
@@ -133,6 +135,9 @@
   - TestTheKeywordRelationAnswersTheContractColumns  # 1.7 s
   - TestTheKeywordRelationGivesOneVersionPerItemAtEachTime  # 11.8 s
   - TestTheKeywordRelationUsesItsIndexes  # 11.4 s
+  - TestTheLadderBuildsOneTemplateForTwoAsksOfOneVersion  # 0.0 s
+  - TestTheLadderDropLeavesNoTemplateAndNamesOneItCannotDrop  # 0.0 s
+  - TestTheLadderRecordsTheCensusTablesOfEachMigrationItApplies  # 0.0 s
   - TestTheLeasePoolIsCompleteOnlyAtOneCallerPerConnection  # 0.1 s
   - TestTheLeasePoolRefusesACallerNameTwice  # 0.0 s
   - TestTheLockAuditAcceptsWhatTheCensusReads  # 1.4 s
@@ -153,6 +158,7 @@
   - TestTheStorePrintsNoPartOfTheDatabasePassword  # 8.7 s
   - TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle  # 12.9 s
   - TestTouchedTablesOfEveryMigrationAreTheTablesItLocks  # 6.2 s
+  - TestTwoOpenTestStoresAreTwoDatabases  # 0.0 s
   - TestTwoPresentationsOfOneProofAtOnceLeaveExactlyOneUnused  # 10.8 s
   - TestTwoTitledWritesOfOneSessionInOppositeLockOrdersBothCommit  # 0.3 s
   - TestUserThreadsCatchUpCountsAReplyTheSeedRaced  # 14.4 s
