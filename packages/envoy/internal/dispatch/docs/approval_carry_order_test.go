@@ -189,25 +189,29 @@ func TestAPreCutoverRestoreCarriesOnce(t *testing.T) {
 	}
 
 	// before is what a connection of its own reads of the carry at the start of the fill, once the
-	// write has committed: the carry's review, the digest it pins and the digest every gate reads
-	// it standing on (reviewPin), its row of artifact_review_carries, and what the log holds.
+	// write has committed: the newest review, the digest it pins and the digest every gate reads
+	// it standing on (reviewPin), its row of artifact_review_carries, how many reviews of the
+	// version are carried (each one a row of artifact_review_carries), and what the log holds. A
+	// second carry reads as a count, not as an error of the read.
 	type reading struct {
-		review, pinned, standing, rowRecord *string
-		reviews, approvals, digests         int
-		owed                                bool
+		review, pinned, standing, rowRecord  *string
+		reviews, carried, approvals, digests int
+		owed                                 bool
 	}
 	read := func(number int) reading {
 		var got reading
 		if err := database.Pool.QueryRow(ctx, `
-			select (select id::text from artifact_reviews where artifact_id = $1 and version = $2 order by created_at desc, id desc limit 1),
-			       (select content_sha256 from artifact_reviews where artifact_id = $1 and version = $2 order by created_at desc, id desc limit 1),
-			       (select `+reviewPin+` from artifact_reviews where artifact_id = $1 and version = $2 order by created_at desc, id desc limit 1),
-			       (select c.record_sha256 from artifact_review_carries c join artifact_reviews r on r.id = c.review_id where r.artifact_id = $1 and r.version = $2),
+			with newest as (select * from artifact_reviews where artifact_id = $1 and version = $2 order by created_at desc, id desc limit 1)
+			select (select id::text from newest),
+			       (select content_sha256 from newest),
+			       (select `+reviewPin+` from newest artifact_reviews),
+			       (select c.record_sha256 from artifact_review_carries c join newest r on r.id = c.review_id),
 			       (select count(*) from artifact_reviews where artifact_id = $1 and version = $2),
+			       (select count(*) from artifact_review_carries c join artifact_reviews r on r.id = c.review_id where r.artifact_id = $1 and r.version = $2),
 			       (select count(*) from events where type = 'artifact.approved' and payload->>'artifact_id' = $1::text and (payload->>'version')::int = $2),
 			       (select count(*) from events where type = 'artifact.digest' and payload->>'artifact_id' = $1::text and (payload->>'version')::int = $2),
 			       coalesce((select r.digest_owed from version_renders r where r.artifact_id = $1 and r.number = $2), false)`,
-			spec, number).Scan(&got.review, &got.pinned, &got.standing, &got.rowRecord, &got.reviews, &got.approvals, &got.digests, &got.owed); err != nil {
+			spec, number).Scan(&got.review, &got.pinned, &got.standing, &got.rowRecord, &got.reviews, &got.carried, &got.approvals, &got.digests, &got.owed); err != nil {
 			t.Fatalf("read the carry to version %d: %v", number, err)
 		}
 		return got
@@ -224,9 +228,9 @@ func TestAPreCutoverRestoreCarriesOnce(t *testing.T) {
 		t.Fatalf("the restore wrote version %d storing %q, want version %d storing %q", number, storedVersionMarkdown(t, database, spec, number), restored, approvedText)
 	}
 
-	if before.reviews != 1 || before.approvals != 1 || before.digests != 0 || !before.owed {
-		t.Fatalf("at the start of the fill version %d holds %d reviews, %d artifact.approved events and %d artifact.digest events, owed %t, want the one carry its write's batch made, no digest event yet, and its digest owed: the write's own pass carried again",
-			restored, before.reviews, before.approvals, before.digests, before.owed)
+	if before.reviews != 1 || before.carried != 1 || before.approvals != 1 || before.digests != 0 || !before.owed {
+		t.Fatalf("at the start of the fill version %d holds %d carried reviews of %d reviews, %d artifact.approved events and %d artifact.digest events, owed %t, want the one carry its write's batch made, no digest event yet, and its digest owed: the write's own pass carried again",
+			restored, before.carried, before.reviews, before.approvals, before.digests, before.owed)
 	}
 	if before.pinned == nil || *before.pinned != reviewTextHash(approvedText) || before.standing == nil || *before.standing != reviewTextHash(approvedText) || before.rowRecord != nil {
 		t.Fatalf("at the start of the fill the carry pins %v, stands on %v and holds record_sha256 %v on its row, want the sha256 of its stored markdown, %s, twice, and none",

@@ -132,44 +132,46 @@ func (r *hashGateRig) counts(t *testing.T, artifactID string) (approved, digests
 	return len(r.eventsOf(t, "artifact.approved", artifactID)), len(r.eventsOf(t, "artifact.digest", artifactID)), len(listReviews(t, r.handler, artifactID))
 }
 
-// requireDigestEvent fails, naming what, unless the version number of the document artifactID
-// holds exactly one artifact.digest, after the version's artifact.version, whose members are the
-// ones the fill writes: the record's digest, which is no stored markdown's, whether the approval
-// of approved stands, and the version and the digest that approval stands on.
+// requireDigestEvent fails, naming what and the document by its ref_key, unless the version number
+// of the document artifactID holds exactly one artifact.digest, after the version's
+// artifact.version, whose members are the ones the fill writes: the record's digest, which is no
+// stored markdown's, whether the approval of approved stands, and the version and the digest that
+// approval stands on.
 func (r *hashGateRig) requireDigestEvent(t *testing.T, what, artifactID string, number int, approved model.ArtifactReview, wantCurrent bool) {
 	t.Helper()
+	ref := refKeyOf(t, r.database, artifactID)
 	version, digests := r.versionEventOf(t, artifactID, number)
 	if version == nil {
-		t.Fatalf("%s: no artifact.version for %s@v%d", what, artifactID, number)
+		t.Fatalf("%s: no artifact.version for %s@v%d", what, ref, number)
 	}
 	if len(digests) != 1 {
-		t.Fatalf("%s: no artifact.digest for %s@v%d after its fill: %d events, want exactly one", what, artifactID, number, len(digests))
+		t.Fatalf("%s: no artifact.digest for %s@v%d after its fill: %d events, want exactly one", what, ref, number, len(digests))
 	}
 	event := digests[0]
 	record := versionDigestOf(t, r.database, artifactID, number)
 	if event.id <= version.id {
-		t.Errorf("%s: the artifact.digest of %s@v%d (event %d) comes before its artifact.version (event %d)", what, artifactID, number, event.id, version.id)
+		t.Errorf("%s: the artifact.digest of %s@v%d (event %d) comes before its artifact.version (event %d)", what, ref, number, event.id, version.id)
 	}
 	if record == r.markdownDigest(t, artifactID, number) {
-		t.Errorf("%s: %s@v%d answers the digest of its stored markdown, %s, after its fill, want its record's", what, artifactID, number, record)
+		t.Errorf("%s: %s@v%d answers the digest of its stored markdown, %s, after its fill, want its record's", what, ref, number, record)
 	}
 	if got, _ := event.payload["content_sha256"].(string); got != record {
-		t.Errorf("%s: the artifact.digest of %s@v%d carries content_sha256 %q, want the record's %s", what, artifactID, number, got, record)
+		t.Errorf("%s: the artifact.digest of %s@v%d carries content_sha256 %q, want the record's %s", what, ref, number, got, record)
 	}
 	if got, present := event.payload["approval_current"].(bool); !present || got != wantCurrent {
-		t.Errorf("%s: the artifact.digest of %s@v%d carries approval_current %v, want %t", what, artifactID, number, event.payload["approval_current"], wantCurrent)
+		t.Errorf("%s: the artifact.digest of %s@v%d carries approval_current %v, want %t", what, ref, number, event.payload["approval_current"], wantCurrent)
 	}
 	if got, _ := event.payload["approved_version"].(float64); int(got) != approved.Version {
-		t.Errorf("%s: the artifact.digest of %s@v%d carries approved_version %v, want %d", what, artifactID, number, event.payload["approved_version"], approved.Version)
+		t.Errorf("%s: the artifact.digest of %s@v%d carries approved_version %v, want %d", what, ref, number, event.payload["approved_version"], approved.Version)
 	}
 	if got, _ := event.payload["approved_sha256"].(string); approved.ContentSHA256 == nil || got != *approved.ContentSHA256 {
-		t.Errorf("%s: the artifact.digest of %s@v%d carries approved_sha256 %q, want the approval's %v", what, artifactID, number, got, approved.ContentSHA256)
+		t.Errorf("%s: the artifact.digest of %s@v%d carries approved_sha256 %q, want the approval's %s", what, ref, number, got, valueOrNone(approved.ContentSHA256))
 	}
 	if got, _ := event.payload["name"].(string); got == "" {
-		t.Errorf("%s: the artifact.digest of %s@v%d names no document", what, artifactID, number)
+		t.Errorf("%s: the artifact.digest of %s@v%d names no document", what, ref, number)
 	}
 	if got, _ := event.payload["artifact_id"].(string); got != artifactID {
-		t.Errorf("%s: the artifact.digest of %s@v%d names the document %q", what, artifactID, number, got)
+		t.Errorf("%s: the artifact.digest of %s@v%d names the document %q, want %s", what, ref, number, got, artifactID)
 	}
 }
 
@@ -207,11 +209,11 @@ func (r *hashGateRig) requireWriteUnderApproval(t *testing.T, what string, want 
 	read := r.approvalOf(t, r.spec)
 	if read.Approval == nil || read.Approval.DigestOwed == nil || *read.Approval.DigestOwed || read.Approval.CurrentSHA256 == nil ||
 		*read.Approval.CurrentSHA256 != versionDigestOf(t, r.database, r.spec, number) {
-		t.Errorf("%s: GET /api/v1/artifacts/%s answers %+v after the fill, want digest_owed false and current_sha256 the record's digest of version %d", what, r.spec, read.Approval, number)
+		t.Errorf("%s: GET /api/v1/artifacts/%s answers %s after the fill, want digest_owed false and current_sha256 the record's digest of version %d", what, r.spec, approvalText(read), number)
 	}
 	if wantCurrent && (read.Approval == nil || read.Approval.State != "approved" ||
 		read.Approval.Version == nil || *read.Approval.Version != approved.Version || approved.Version >= read.Approval.LatestVersion) {
-		t.Errorf("%s: approval %+v must stand at reviewed version %d, before latest version %d", what, read.Approval, approved.Version, number)
+		t.Errorf("%s: approval %s must stand at reviewed version %d, before latest version %d", what, approvalText(read), approved.Version, number)
 	}
 	return number
 }
@@ -317,8 +319,11 @@ func (r *hashGateRig) nextWords() (from, to string) {
 // the fill with approval_current true. One write that adds a criterion and changes an ask attribute
 // emits zero artifact.approved and artifact.digest with approval_current false. POST /reviews on a
 // version whose digest is owed fills that digest before it records, so the review pins the record's
-// digest. Recording a result on an approved Verification document leaves its approval current with
-// zero carried review. GET /api/v1/artifacts/{id} answers current_sha256 and digest_owed.
+// digest, and the fill's artifact.digest comes before the review's artifact.approved or
+// artifact.changes_requested. Recording a result on an approved Verification document leaves its
+// approval current with zero carried review. GET /api/v1/artifacts/{id} (the artifact-read)
+// answers current_sha256 and digest_owed beside content_sha256; a non-query document and an
+// unconverted issue's query document omit digest_owed.
 func TestHashGateEmitsDigestAndDropsSyntheticCarries(t *testing.T) {
 	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	rig := newHashGateRig(t)
@@ -327,6 +332,29 @@ func TestHashGateEmitsDigestAndDropsSyntheticCarries(t *testing.T) {
 		from, to := rig.nextWords()
 		number := rig.requireWriteUnderApproval(t, "a prose edit", http.StatusOK, true, rig.edit(t, replaceOpOf(from, to)))
 		rig.requireWireFixtures(t, number)
+	})
+	t.Run("artifact-read answers current_sha256 and digest_owed beside content_sha256", func(t *testing.T) {
+		ref, number := refKeyOf(t, rig.database, rig.spec), newestVersionOf(t, rig.database, rig.spec)
+		response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/artifacts/"+rig.spec, nil, "alice")
+		succeeded(t, "the artifact read of "+ref, response)
+		approval, _ := decodeBody[map[string]any](t, response)["approval"].(map[string]any)
+		if approval == nil {
+			t.Fatalf("the artifact-read of %s@v%d answers no approval", ref, number)
+		}
+		for _, member := range []string{"content_sha256", "current_sha256", "digest_owed"} {
+			if _, present := approval[member]; !present {
+				t.Errorf("the artifact-read of %s@v%d: approval.%s is absent from Dispatch JSON", ref, number, member)
+			}
+		}
+		if got, _ := approval["current_sha256"].(string); got != versionDigestOf(t, rig.database, rig.spec, number) {
+			t.Errorf("the artifact-read of %s@v%d: approval.current_sha256 is %v, want the record's digest %s", ref, number, approval["current_sha256"], versionDigestOf(t, rig.database, rig.spec, number))
+		}
+		if owed, present := approval["digest_owed"].(bool); !present || owed {
+			t.Errorf("the artifact-read of %s@v%d: approval.digest_owed is %v, want false once the fill has run", ref, number, approval["digest_owed"])
+		}
+		if got, _ := approval["content_sha256"].(string); got == "" {
+			t.Errorf("the artifact-read of %s@v%d: approval.content_sha256 is %v, want the digest the approval pins", ref, number, approval["content_sha256"])
+		}
 	})
 	t.Run("an ask-attribute rewrite", func(t *testing.T) {
 		latest := newestVersionOf(t, rig.database, rig.spec)
@@ -429,23 +457,23 @@ func TestHashGateEmitsDigestAndDropsSyntheticCarries(t *testing.T) {
 		number := newestVersionOf(t, rig.database, rig.spec)
 		markdown := rig.markdownDigest(t, rig.spec, number)
 		if row := versionFillRowOf(t, rig.database, rig.spec, number); !row.owed || row.digest != nil {
-			t.Fatalf("version %d of the spec holds digest_owed %t and record %v while its fill is held, want it owed", number, row.owed, row.digest)
+			t.Fatalf("version %d of the spec holds digest_owed %t and record %s while its fill is held, want it owed", number, row.owed, valueOrNone(row.digest))
 		}
 		read := rig.approvalOf(t, rig.spec)
 		if read.Approval == nil || read.Approval.DigestOwed == nil || !*read.Approval.DigestOwed || read.Approval.CurrentSHA256 == nil || *read.Approval.CurrentSHA256 != markdown {
-			t.Errorf("GET /api/v1/artifacts/%s answers %+v while version %d's fill is held, want digest_owed true and current_sha256 the stored markdown's, %s", rig.spec, read.Approval, number, markdown)
+			t.Errorf("GET /api/v1/artifacts/%s answers %s while version %d's fill is held, want digest_owed true and current_sha256 the stored markdown's, %s", rig.spec, approvalText(read), number, markdown)
 		}
 		approvedBefore, _, _ := rig.counts(t, rig.spec)
 		review := reviewDocument(t, rig.handler, rig.spec, "alice", "approved", "")
 		record := versionDigestOf(t, rig.database, rig.spec, number)
 		if row := versionFillRowOf(t, rig.database, rig.spec, number); row.owed || row.digest == nil || *row.digest != record {
-			t.Errorf("version %d of the spec holds digest_owed %t and record %v after the review, want the route to have filled it", number, row.owed, row.digest)
+			t.Errorf("version %d of the spec holds digest_owed %t and record %s after the review, want the route to have filled it", number, row.owed, valueOrNone(row.digest))
 		}
 		switch {
 		case review.Version != number:
 			t.Errorf("the review records version %d, want %d", review.Version, number)
 		case review.ContentSHA256 == nil || *review.ContentSHA256 == markdown:
-			t.Errorf("approval of %s@v%d pinned the markdown digest while its digest was owed: the review pins %v, want the record's digest %s", rig.spec, number, review.ContentSHA256, record)
+			t.Errorf("approval of %s@v%d pinned the markdown digest while its digest was owed: the review pins %s, want the record's digest %s", rig.spec, number, valueOrNone(review.ContentSHA256), record)
 		case *review.ContentSHA256 != record:
 			t.Errorf("the review of %s@v%d pins %s, want the record's digest %s", rig.spec, number, *review.ContentSHA256, record)
 		}
@@ -472,7 +500,39 @@ func TestHashGateEmitsDigestAndDropsSyntheticCarries(t *testing.T) {
 		read = rig.approvalOf(t, rig.spec)
 		if read.Approval == nil || read.Approval.State != "approved" || read.Approval.DigestOwed == nil || *read.Approval.DigestOwed ||
 			read.Approval.CurrentSHA256 == nil || *read.Approval.CurrentSHA256 != record {
-			t.Errorf("GET /api/v1/artifacts/%s answers %+v after the review, want approved with digest_owed false and current_sha256 %s", rig.spec, read.Approval, record)
+			t.Errorf("GET /api/v1/artifacts/%s answers %s after the review, want approved with digest_owed false and current_sha256 %s", rig.spec, approvalText(read), record)
+		}
+	})
+	t.Run("POST /reviews fills an owed digest before it records a request for changes", func(t *testing.T) {
+		defer rig.service.HoldFills(nil)
+		hold := versionFillPause(t, rig.service, rig.issue.Key)
+		from, to := rig.nextWords()
+		done := versionFillEdit(t, rig.handler, rig.spec, from, to)
+		testwait.Receive(t, "the fill of the edit's version", hold.held)
+		number := newestVersionOf(t, rig.database, rig.spec)
+		if row := versionFillRowOf(t, rig.database, rig.spec, number); !row.owed || row.digest != nil {
+			t.Fatalf("version %d of the spec holds digest_owed %t and record %s while its fill is held, want it owed", number, row.owed, valueOrNone(row.digest))
+		}
+		requestsBefore := len(rig.eventsOf(t, "artifact.changes_requested", rig.spec))
+		review := reviewDocument(t, rig.handler, rig.spec, "alice", "changes_requested", "The paragraph needs another pass.")
+		record := versionDigestOf(t, rig.database, rig.spec, number)
+		if row := versionFillRowOf(t, rig.database, rig.spec, number); row.owed || row.digest == nil || *row.digest != record {
+			t.Errorf("version %d of the spec holds digest_owed %t and record %s after the request for changes, want the route to have filled it", number, row.owed, valueOrNone(row.digest))
+		}
+		if review.Version != number || review.State != "changes_requested" {
+			t.Errorf("the review records %s at version %d, want changes_requested at %d", review.State, review.Version, number)
+		}
+		hold.release()
+		if response := testwait.Receive(t, "the edit's answer", done); response.Code != http.StatusOK {
+			t.Fatalf("the held edit answered %d: %s", response.Code, response.Body.String())
+		}
+		version, digests := rig.versionEventOf(t, rig.spec, number)
+		requests := rig.eventsOf(t, "artifact.changes_requested", rig.spec)
+		if version == nil || len(digests) != 1 || len(requests) != requestsBefore+1 {
+			t.Fatalf("version %d holds artifact.version %v, %d digests and %d new artifact.changes_requested; want one of each", number, version, len(digests), len(requests)-requestsBefore)
+		}
+		if request := requests[len(requests)-1]; version.id >= digests[0].id || digests[0].id >= request.id {
+			t.Errorf("version %d event order: artifact.version %d, artifact.digest %d, artifact.changes_requested %d; want strictly increasing", number, version.id, digests[0].id, request.id)
 		}
 	})
 	t.Run("a result on an approved Verification document", func(t *testing.T) {
@@ -487,6 +547,16 @@ func TestHashGateEmitsDigestAndDropsSyntheticCarries(t *testing.T) {
 		result := decodeBody[recordedResult](t, recorded).Result
 		requireStands := func(what string) {
 			t.Helper()
+			// A result moves no check, so no fill states that the approval stopped standing: every
+			// artifact.digest of the Verification document after the result carries
+			// approval_current true, and there is none.
+			ref, digests := refKeyOf(t, rig.database, rig.verification), rig.eventsOf(t, "artifact.digest", rig.verification)
+			for _, event := range digests[min(digestsBefore, len(digests)):] {
+				if current, _ := event.payload["approval_current"].(bool); !current {
+					t.Errorf("%s: the artifact.digest of %s@v%v reads approval_current: %v, want true: a result moved the approved Verification record",
+						what, ref, event.payload["version"], event.payload["approval_current"])
+				}
+			}
 			if newest := newestVersionOf(t, rig.database, rig.verification); newest != latest {
 				t.Errorf("%s: the Verification document holds version %d, want version %d: the result moved no check, so no drained version", what, newest, latest)
 			}
@@ -501,7 +571,7 @@ func TestHashGateEmitsDigestAndDropsSyntheticCarries(t *testing.T) {
 			read := rig.approvalOf(t, rig.verification)
 			if read.Approval == nil || read.Approval.State != "approved" || read.Approval.Version == nil || *read.Approval.Version != approved.Version ||
 				read.Approval.DigestOwed == nil || *read.Approval.DigestOwed || read.Approval.CurrentSHA256 == nil || *read.Approval.CurrentSHA256 != digest {
-				t.Errorf("%s: GET /api/v1/artifacts/%s answers %+v, want the approval of version %d standing (approval_current true) at digest %s", what, rig.verification, read.Approval, approved.Version, digest)
+				t.Errorf("%s: GET /api/v1/artifacts/%s answers %s, want the approval of version %d standing (approval_current true) at digest %s", what, rig.verification, approvalText(read), approved.Version, digest)
 			}
 		}
 		requireStands("a recorded result")
@@ -514,8 +584,8 @@ func TestHashGateEmitsDigestAndDropsSyntheticCarries(t *testing.T) {
 		notes := uncoveredDocument(t, rig.handler, rig.issue.Key, "Some notes.\n")
 		latest := newestVersionOf(t, rig.database, notes)
 		agentEdit(t, rig.handler, notes, latest+1, replaceOp("Some notes.", "Updated notes."))
-		if approval := rig.approvalOf(t, notes).Approval; approval == nil || approval.DigestOwed != nil {
-			t.Errorf("the notes approval is %+v, want digest_owed absent on a non-query document", approval)
+		if read := rig.approvalOf(t, notes); read.Approval == nil || read.Approval.DigestOwed != nil {
+			t.Errorf("the notes approval is %s, want digest_owed absent on a non-query document", approvalText(read))
 		}
 		version, digests := rig.versionEventOf(t, notes, latest+1)
 		if version == nil || len(digests) != 0 {
@@ -523,6 +593,27 @@ func TestHashGateEmitsDigestAndDropsSyntheticCarries(t *testing.T) {
 		}
 		if value, present := version.payload["digest_owed"]; present {
 			t.Errorf("notes artifact.version carries digest_owed %v, want it absent", value)
+		}
+	})
+	t.Run("an unconverted issue's spec omits the hash gate flag", func(t *testing.T) {
+		// The spec of an issue that has not converted: the document the spec query covers once
+		// the issue converts, whose node the create writes as a document's until then
+		// (issue_create.go), so no version of it owes a record digest and the flag is absent from
+		// the approval and from each artifact.version.
+		unconverted := createDigestIssue(t, rig.handler, rig.database, "HASH", "An issue that has not converted",
+			":::requirement{#r1}\nThe unconverted list comes first.\n:::\n", true)
+		spec := unconverted.PrimaryArtifactID
+		latest := newestVersionOf(t, rig.database, spec)
+		agentEdit(t, rig.handler, spec, latest+1, replaceOp("The unconverted list comes first.", "The unconverted list comes first, always."))
+		if read := rig.approvalOf(t, spec); read.Approval == nil || read.Approval.DigestOwed != nil {
+			t.Errorf("the artifact read of the spec of %s, which has not converted, answers %s, want digest_owed absent on an unconverted issue's spec", unconverted.Key, approvalText(read))
+		}
+		version, _ := rig.versionEventOf(t, spec, latest+1)
+		if version == nil {
+			t.Fatalf("the edit of the spec of %s emitted no artifact.version for version %d", unconverted.Key, latest+1)
+		}
+		if value, present := version.payload["digest_owed"]; present {
+			t.Errorf("the artifact.version of the spec of %s, which has not converted, carries digest_owed %v, want it absent", unconverted.Key, value)
 		}
 	})
 }
