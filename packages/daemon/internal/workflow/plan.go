@@ -136,6 +136,12 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 	// again by itself (D7, B09): the owner's newest plan of another generation is the plan of the
 	// work that merged, so a generation that is a next change (record.OnNextChange) takes it not,
 	// and with no plan of its own it runs the project's default steps.
+	if stored != nil && record.OnNextChange(issue) {
+		if err := e.store.DeletePlan(ctx, tx, issue.Key, issue.Generation); err != nil {
+			return err
+		}
+		stored = nil
+	}
 	if stored == nil && !record.OnNextChange(issue) {
 		if stored, err = record.OwnersNewestPlan(ctx, e.store, tx, issue); err != nil {
 			return err
