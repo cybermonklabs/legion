@@ -64,7 +64,10 @@ func readsRepo(t *testing.T) string {
 // readsRepo. The base commit holds fixtures/data.json; the head deletes it and adds
 // fixtures/other.json, so a tie at the base that read the clone's own index or work tree would name
 // other.json. The tie at the base must be known and name data.json and not other.json. The control
-// is the tie at the head, from the clone itself, which names other.json.
+// is the tie at the head, from the clone itself, which names other.json. Once both commits are
+// made, the control and the tie at the base run as two parallel subtests: neither writes into the
+// clone (Checkout changes nothing of it, and go-test-reads.sh writes no file into the tree that it
+// reads).
 func TestTheBaseTieReadsGitsListOfTheBase(t *testing.T) {
 	t.Parallel()
 	repo := readsRepo(t)
@@ -77,17 +80,23 @@ func TestTheBaseTieReadsGitsListOfTheBase(t *testing.T) {
 	check := specgraph.Check{ID: "the-data-is-read", Procedure: specgraph.ProcedureProgram,
 		Test: &specgraph.Test{Runner: "go", Selector: "example.com/m/lib TestData", Job: "go-checks"}}
 
-	head := newDerivedTies(repo, nil).tie(check)
-	if !head.Known || !slices.Contains(head.Paths, "fixtures/other.json") || slices.Contains(head.Paths, "fixtures/data.json") {
-		t.Fatalf("the control: the tie at the head = %+v; want a known tie that names fixtures/other.json and not fixtures/data.json", head)
-	}
-	atBase := &baseCheckout{repo: repo, commit: base}
-	defer atBase.close()
-	got := atBase.tie(check)
-	if !got.Known || !slices.Contains(got.Paths, "fixtures/data.json") || slices.Contains(got.Paths, "fixtures/other.json") ||
-		!got.Covers("mod/lib/lib.go") || !got.Covers("mod/lib/lib_test.go") {
-		t.Errorf("the tie at the base = %+v; want the fixture and compiled source reads, but not fixtures/other.json", got)
-	}
+	t.Run("the control, the tie at the head", func(t *testing.T) {
+		t.Parallel()
+		head := newDerivedTies(repo, nil).tie(check)
+		if !head.Known || !slices.Contains(head.Paths, "fixtures/other.json") || slices.Contains(head.Paths, "fixtures/data.json") {
+			t.Fatalf("the control: the tie at the head = %+v; want a known tie that names fixtures/other.json and not fixtures/data.json", head)
+		}
+	})
+	t.Run("the tie at the base", func(t *testing.T) {
+		t.Parallel()
+		atBase := &baseCheckout{repo: repo, commit: base}
+		defer atBase.close()
+		got := atBase.tie(check)
+		if !got.Known || !slices.Contains(got.Paths, "fixtures/data.json") || slices.Contains(got.Paths, "fixtures/other.json") ||
+			!got.Covers("mod/lib/lib.go") || !got.Covers("mod/lib/lib_test.go") {
+			t.Errorf("the tie at the base = %+v; want the fixture and compiled source reads, but not fixtures/other.json", got)
+		}
+	})
 }
 
 // go-test-reads.sh runs go list with the packages it is given after go's own flags, so a package
@@ -97,18 +106,27 @@ func TestTheBaseTieReadsGitsListOfTheBase(t *testing.T) {
 // as an import path, and refuses one that starts with "-". Each row asks the script of readsRepo
 // for the reads of go test of one planted package in mod/lib, the directory of a package: it must
 // answer an error that names go's refusal of the import path. The control is the package of
-// mod/lib by its path, whose reads the script answers.
+// mod/lib by its path, whose reads the script answers. The two rows and the control run as
+// parallel subtests over one readsRepo: no run of the script writes a file into it (it writes no
+// Python bytecode, and its engine keeps its own files in a temporary directory of its own).
 func TestGoTestReadsPassesEachPackageToGoAsAPackage(t *testing.T) {
 	t.Parallel()
 	reads := specgraph.ScriptTestReads(readsRepo(t), nil)
 	for _, planted := range []string{"-toolexec=/bin/false", "-exec=/bin/false"} {
-		got, err := reads("mod/lib", []string{planted}, nil)
-		if want := `malformed import path "` + planted + `": leading dash`; err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("the reads of go test %s in mod/lib = %q, %v; want no reads and an error that holds %q", planted, got, err, want)
+		name, _, _ := strings.Cut(planted, "=")
+		t.Run("the planted package "+name, func(t *testing.T) {
+			t.Parallel()
+			got, err := reads("mod/lib", []string{planted}, nil)
+			if want := `malformed import path "` + planted + `": leading dash`; err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("the reads of go test %s in mod/lib = %q, %v; want no reads and an error that holds %q", planted, got, err, want)
+			}
+		})
+	}
+	t.Run("the control", func(t *testing.T) {
+		t.Parallel()
+		got, err := reads("mod/lib", []string{"example.com/m/lib"}, nil)
+		if tie, tieErr := specgraph.NewTie(got); err != nil || tieErr != nil || !tie.Covers("mod/lib/lib_test.go") {
+			t.Errorf("the control: the reads of go test example.com/m/lib in mod/lib = %q, %v; want reads that cover mod/lib/lib_test.go", got, err)
 		}
-	}
-	got, err := reads("mod/lib", []string{"example.com/m/lib"}, nil)
-	if tie, tieErr := specgraph.NewTie(got); err != nil || tieErr != nil || !tie.Covers("mod/lib/lib_test.go") {
-		t.Errorf("the control: the reads of go test example.com/m/lib in mod/lib = %q, %v; want reads that cover mod/lib/lib_test.go", got, err)
-	}
+	})
 }

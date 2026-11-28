@@ -16,62 +16,82 @@ import (
 // the run leaves them, never a mix of the two, since it opens the
 // directory one time and reads each file through it. The test reads a directory of 40 spec files
 // again and again while another goroutine exchanges it with a directory of the same names and
-// other texts, as print does, and requires each read to hold the texts of one of the two. The
-// instrument must have seen the exchange: the reads hold each of the two trees at least once.
+// other texts, as print does, and requires each read to hold the texts of one of the two. It reads
+// 2,000 times in all, in eight parallel subtests of 250 reads, each over two directories of its own
+// with an exchanger of its own. The instrument of each must have seen the exchange: its reads hold
+// each of the two trees at least once. The group of subtests returns once each has ended, so the
+// test then logs the reads of all eight.
 func TestAReaderReadsTheTreeBeforeAnExchangeOrAfterIt(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	dir, other := filepath.Join(root, "spec"), filepath.Join(root, "other")
-	const files = 40
-	for _, d := range []struct{ path, text string }{{dir, "old"}, {other, "new"}} {
-		if err := os.MkdirAll(d.path, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		for i := range files {
-			writeFile(t, filepath.Join(d.path, fmt.Sprintf("x-%02d.yaml", i)), []byte(d.text+"\n"))
-		}
-	}
-	var stop atomic.Bool
-	var wg sync.WaitGroup
-	var exchanges atomic.Int64
-	wg.Go(func() {
-		for !stop.Load() {
-			if err := (osFileSystem{}).exchange(other, dir); err != nil {
-				t.Errorf("exchange: %v", err)
-				return
-			}
-			exchanges.Add(1)
+	const files, trees, reads = 40, 8, 250
+	var mu sync.Mutex
+	var allExchanges int64
+	allReads := map[string]int{}
+	t.Run("trees", func(t *testing.T) {
+		for tree := range trees {
+			t.Run(fmt.Sprintf("tree %d", tree+1), func(t *testing.T) {
+				t.Parallel()
+				root := t.TempDir()
+				dir, other := filepath.Join(root, "spec"), filepath.Join(root, "other")
+				for _, d := range []struct{ path, text string }{{dir, "old"}, {other, "new"}} {
+					if err := os.MkdirAll(d.path, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					for i := range files {
+						writeFile(t, filepath.Join(d.path, fmt.Sprintf("x-%02d.yaml", i)), []byte(d.text+"\n"))
+					}
+				}
+				var stop atomic.Bool
+				var wg sync.WaitGroup
+				var exchanges atomic.Int64
+				wg.Go(func() {
+					for !stop.Load() {
+						if err := (osFileSystem{}).exchange(other, dir); err != nil {
+							t.Errorf("exchange: %v", err)
+							return
+						}
+						exchanges.Add(1)
+					}
+				})
+				seen := map[string]int{}
+				for range reads {
+					set, err := readSet(io.Discard, dir)
+					if err != nil {
+						seen["an error: "+err.Error()]++
+						continue
+					}
+					texts := map[string]int{}
+					for _, content := range set.Files {
+						texts[string(content)]++
+					}
+					switch {
+					case len(set.Files) != files:
+						seen[fmt.Sprintf("%d files", len(set.Files))]++
+					case texts["old\n"] == files:
+						seen["the tree before"]++
+					case texts["new\n"] == files:
+						seen["the tree after"]++
+					default:
+						seen["a mix of the two trees"]++
+					}
+				}
+				stop.Store(true)
+				wg.Wait()
+				mu.Lock()
+				allExchanges += exchanges.Load()
+				for read, n := range seen {
+					allReads[read] += n
+				}
+				mu.Unlock()
+				t.Logf("%d exchanges; the reads: %v", exchanges.Load(), seen)
+				if seen["the tree before"] == 0 || seen["the tree after"] == 0 {
+					t.Fatalf("the reads saw no exchange, so the test cannot see a mix: %v", seen)
+				}
+				if len(seen) != 2 {
+					t.Errorf("a read held a tree that never was: %v", seen)
+				}
+			})
 		}
 	})
-	seen := map[string]int{}
-	for range 2000 {
-		set, err := readSet(io.Discard, dir)
-		if err != nil {
-			seen["an error: "+err.Error()]++
-			continue
-		}
-		texts := map[string]int{}
-		for _, content := range set.Files {
-			texts[string(content)]++
-		}
-		switch {
-		case len(set.Files) != files:
-			seen[fmt.Sprintf("%d files", len(set.Files))]++
-		case texts["old\n"] == files:
-			seen["the tree before"]++
-		case texts["new\n"] == files:
-			seen["the tree after"]++
-		default:
-			seen["a mix of the two trees"]++
-		}
-	}
-	stop.Store(true)
-	wg.Wait()
-	t.Logf("%d exchanges; the reads: %v", exchanges.Load(), seen)
-	if seen["the tree before"] == 0 || seen["the tree after"] == 0 {
-		t.Fatalf("the reads saw no exchange, so the test cannot see a mix: %v", seen)
-	}
-	if len(seen) != 2 {
-		t.Errorf("a read held a tree that never was: %v", seen)
-	}
+	t.Logf("%d trees of %d reads: %d exchanges; the reads: %v", trees, reads, allExchanges, allReads)
 }

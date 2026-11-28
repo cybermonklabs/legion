@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -496,65 +497,95 @@ func TestPrintWritesNothingWhenOneFileCannotBeWritten(t *testing.T) {
 // files that the first wrote. Five trials of four runs, each with another term of about 12 KB, into
 // a directory that does not exist yet; after each trial the directory holds the four terms. A run
 // that cannot take the lock within its wait refuses by name and writes nothing.
+//
+// Each trial is a parallel subtest, and each of its runs a goroutine of the test process that calls
+// printApproved, print's own path after its arguments, with print's own bounds and an approved
+// spec of the trial's four terms. Each run opens the directory itself, and flock keeps out a
+// second open file of the directory in one process as it keeps out another process. The trials,
+// and the run that waits too long, run under testing/synctest: a run waits for the lock
+// (printLockWait, or 100 ms) on the clock of the bubble, which moves only while every goroutine of
+// the bubble is durably blocked, as a run is while it sleeps between two tries of the lock and
+// never while it works. So a slow run that holds the lock does not run out the wait of another,
+// and the test passes or fails on no reading of the machine's clock (INFRA-3149's R4). The trials
+// ran as processes of the built binary before, each waiting on the machine's clock; they run in
+// the test process as INFRA-3149's architect answered
+// (dispatch://INFRA-3149/comment/64d6112b-3323-456f-b30d-912609a640c4). TestTheBuiltBinary runs
+// the binary's own print.
 func TestPrintRunsOneAtATimeOnADirectory(t *testing.T) {
 	t.Parallel()
-	binary := cmdtest.Build(t, "spec-check")
-	documents := map[string]string{}
-	var ids []string
-	for i := range 20 {
-		id := fmt.Sprintf("term-%c%c", 'a'+i/10, 'a'+i%10)
+	// term is the document of the term id: 500 lines, about 12 KB.
+	term := func(id string) string {
 		var b strings.Builder
 		b.WriteString("---\ntype: term\nid: " + id + "\nname: term " + id + "\ndefinition:\n")
 		for line := range 500 {
 			fmt.Fprintf(&b, "  - Line %d of the term.\n", line)
 		}
-		documents[id] = b.String()
-		ids = append(ids, id)
+		return b.String()
 	}
-	approved := writeApproved(t, documents)
 	for trial := range 5 {
-		dir := filepath.Join(t.TempDir(), "spec")
-		var wg sync.WaitGroup
-		results := make([]result, 4)
-		for i := range 4 {
-			wg.Go(func() {
-				results[i] = runBinary(t, binary, "", "print", "--approved", approved, "--id", ids[4*trial+i], "--dir", dir)
+		t.Run(fmt.Sprintf("trial %d", trial+1), func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				documents := map[string]string{}
+				var ids []string
+				for i := range 4 {
+					n := 4*trial + i
+					id := fmt.Sprintf("term-%c%c", 'a'+n/10, 'a'+n%10)
+					documents[id] = term(id)
+					ids = append(ids, id)
+				}
+				approved := writeApproved(t, documents)
+				a := readApprovedFile(t, approved)
+				dir := filepath.Join(t.TempDir(), "spec")
+				var wg sync.WaitGroup
+				results := make([]result, 4)
+				for i, id := range ids {
+					wg.Go(func() {
+						var stderr strings.Builder
+						code := printApproved(io.Discard, &stderr, osFileSystem{}, approved, a, []string{id}, dir, printBounds{limit: notes.MaxFileSize, wait: printLockWait})
+						results[i] = result{code: code, stderr: stderr.String()}
+					})
+				}
+				wg.Wait()
+				for i, got := range results {
+					if got.code != 0 {
+						t.Errorf("trial %d, run %d: exit %d, stderr %q", trial+1, i, got.code, got.stderr)
+					}
+				}
+				held := yamlNodes(t, readDir(t, dir))
+				for _, id := range ids {
+					if len(held[id]) != 1 {
+						t.Errorf("trial %d: the directory holds %s %d times, want 1: a run wrote over the files of another", trial+1, id, len(held[id]))
+					}
+				}
 			})
-		}
-		wg.Wait()
-		for i, got := range results {
-			if got.code != 0 {
-				t.Errorf("trial %d, run %d: exit %d, stderr %q", trial, i, got.code, got.stderr)
-			}
-		}
-		held := yamlNodes(t, readDir(t, dir))
-		for _, id := range ids[4*trial : 4*trial+4] {
-			if len(held[id]) != 1 {
-				t.Errorf("trial %d: the directory holds %s %d times, want 1: a run wrote over the files of another", trial, id, len(held[id]))
-			}
-		}
+		})
 	}
 
 	t.Run("a run that waits too long refuses by name", func(t *testing.T) {
-		dir := t.TempDir()
-		lock, err := lockSpecDir(osFileSystem{}, dir, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		a := readApprovedFile(t, approved)
-		var stderr strings.Builder
-		if code := printApproved(io.Discard, &stderr, osFileSystem{}, approved, a, ids[:1], dir, printBounds{limit: notes.MaxFileSize, wait: 100 * time.Millisecond}); code != 2 ||
-			stderr.String() != "spec-check: "+dir+": another run of print holds the lock of the directory, and this run waited 100ms for it; run print again when that run ends\n" {
-			t.Errorf("print while another run holds the lock: exit %d, stderr %q", code, stderr.String())
-		}
-		if got := readDir(t, dir); len(got) != 0 {
-			t.Errorf("print wrote %q while another run held the lock", got)
-		}
-		lock.release(true)
-		stderr.Reset()
-		if code := printApproved(io.Discard, &stderr, osFileSystem{}, approved, a, ids[:1], dir, printBounds{limit: notes.MaxFileSize, wait: 100 * time.Millisecond}); code != 0 {
-			t.Errorf("print after the lock is released: exit %d, stderr %q", code, stderr.String())
-		}
+		synctest.Test(t, func(t *testing.T) {
+			id := "term-aa"
+			approved := writeApproved(t, map[string]string{id: term(id)})
+			dir := t.TempDir()
+			lock, err := lockSpecDir(osFileSystem{}, dir, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := readApprovedFile(t, approved)
+			var stderr strings.Builder
+			if code := printApproved(io.Discard, &stderr, osFileSystem{}, approved, a, []string{id}, dir, printBounds{limit: notes.MaxFileSize, wait: 100 * time.Millisecond}); code != 2 ||
+				stderr.String() != "spec-check: "+dir+": another run of print holds the lock of the directory, and this run waited 100ms for it; run print again when that run ends\n" {
+				t.Errorf("print while another run holds the lock: exit %d, stderr %q", code, stderr.String())
+			}
+			if got := readDir(t, dir); len(got) != 0 {
+				t.Errorf("print wrote %q while another run held the lock", got)
+			}
+			lock.release(true)
+			stderr.Reset()
+			if code := printApproved(io.Discard, &stderr, osFileSystem{}, approved, a, []string{id}, dir, printBounds{limit: notes.MaxFileSize, wait: 100 * time.Millisecond}); code != 0 {
+				t.Errorf("print after the lock is released: exit %d, stderr %q", code, stderr.String())
+			}
+		})
 	})
 }
 
