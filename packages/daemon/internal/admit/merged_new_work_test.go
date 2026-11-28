@@ -770,13 +770,16 @@ func TestAnIssueWithNoEvidenceWaitsUnread(t *testing.T) {
 }
 
 // Only a person confirms that closed work with no proof of its merge (PARTIAL or NONE) never merged:
-// a person's or the operator's backlog, then a todo, runs the child again as today and takes the
-// confirmation. The controller's, an architect's, the boot listing's and an event of no actor
-// cannot: their backlog, then todo, waits for the merge read, and the record keeps the issue closed
-// meanwhile. A rank or label edit at backlog confirms nothing. A confirmation allows one rerun: the
-// child closed again waits at its next request. A merge snapshot that comes before the todo wins:
-// it clears the confirmation and starts one next change. The class never moves for a
-// confirmation. A child the controller parked while it ran, and which never closed, runs as today.
+// a person's backlog in Dispatch, then a todo, runs the child again as today and takes the
+// confirmation. The operator's, the controller's, an architect's, the boot listing's and an event of
+// no actor cannot: their backlog, then todo, waits for the merge read, and the record keeps the
+// issue closed meanwhile. The operator's grant proves no person, since under `controller: operator`
+// the controller's agent holds the operator token too: a request through it is still a person's,
+// and its backlog confirms nothing. A rank or label edit at backlog confirms nothing. A confirmation
+// allows one rerun: the child closed again waits at its next request. A merge snapshot that comes
+// before the todo wins: it clears the confirmation and starts one next change. The class never
+// moves for a confirmation. A child the controller parked while it ran, and which never closed,
+// runs as today.
 func TestOnlyAPersonCanConfirmNeverMergedWork(t *testing.T) {
 	for _, partial := range []bool{false, true} {
 		class := map[bool]record.MergeHistoryClass{false: record.MergeHistoryNone, true: record.MergeHistoryPartial}[partial]
@@ -805,7 +808,7 @@ func TestOnlyAPersonCanConfirmNeverMergedWork(t *testing.T) {
 					mnwMoves(t, pool, admission, mnwMove(mnwChild, mnwRoot, "todo", mnwSeq+2, who))
 				}
 				switch who {
-				case "person", "operator":
+				case "person":
 					mnwRerun(t, pool, mnwChild, 2)
 				default:
 					requester := map[string]claim.Role{"controller": claim.RoleController, "architect": claim.RoleArchitect}[who]
