@@ -4786,7 +4786,7 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // failure_cause and held_for, decoded by the claim store's own decoder (supervise.DecodeCause),
 // so this read and the claim store's cannot disagree on whether one claim is held.
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
-	rows, err := tx.Query(ctx, `select c.token, c.state, c.failure_cause, c.held_for,
+	rows, err := tx.Query(ctx, `select c.token, c.state, c.generation, c.failure_cause, c.held_for,
 		c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
 		c.last_ready, c.handshake_entry, c.handshake_generation, c.handshake_queued_at, c.handshake_confirmed_at,
 		c.update_round, c.step_at, c.turn_started_at,
@@ -4820,7 +4820,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		// has no activity_next_reminder_at. The zero time left in each is what says so to the
 		// rule that reads them (workflow.SilentPhaseWorker).
 		var reported, reminder *time.Time
-		if err := rows.Scan(&token, &held.State, &cause, &heldFor, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
+		if err := rows.Scan(&token, &held.State, &held.Launch, &cause, &heldFor, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
 			&held.GivenEntry, &ready, &held.Handshake.Entry, &held.Handshake.Generation, &handshakeQueued, &handshakeConfirmed,
 			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
 			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted, &task.NewsOnly); err != nil {
