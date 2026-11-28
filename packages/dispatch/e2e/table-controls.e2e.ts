@@ -3668,8 +3668,10 @@ test("the control in the row carries what the banner carried, and narrows the In
   await setPendingCredentialRequests([
     {
       approver: "alice",
+      dispatch_scopes: null,
       identifiers: ["ANTHROPIC_API_KEY"],
       kind: "agent_secret",
+      reason: "",
       record_id: "record-table-controls",
       requested_at: "2026-09-27T00:00:00Z",
       session: { enrollment: null, request: null },

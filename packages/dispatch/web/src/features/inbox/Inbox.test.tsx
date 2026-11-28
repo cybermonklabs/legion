@@ -760,6 +760,7 @@ test("Blocked on you draws no number while the credential list is out, and the n
   const listed = Promise.withResolvers<{ pending: CredentialPendingRow[] }>();
   mocks.getCredentialPending.mockReturnValue(listed.promise);
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
   const { unmount } = renderInbox();
