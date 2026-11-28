@@ -5,7 +5,8 @@
 // form of an address is decided: where the proxy may dial for a command (DialRefusal) and what the
 // private destination may be (DestinationRefusal). It is also the one reading of the client
 // address a load balancer forwards (ForwardedClient), which an edge reached through Google's load
-// balancer keys its buckets on.
+// balancer keys its buckets on, and of a range of proxies whose forwarded address a server trusts
+// (TrustedRange), which Dispatch's boot and its gcp:Dispatch component judge alike.
 //
 // It exists because netip keeps two things a socket does not need. An IPv4-mapped IPv6 address
 // (::ffff:34.118.224.1) is the IPv4 address it holds, and netip's predicates answer differently
@@ -161,4 +162,36 @@ func ForwardedClient(lines []string) (string, error) {
 		return netip.PrefixFrom(addr, 64).Masked().String(), nil
 	}
 	return addr.String(), nil
+}
+
+// The ways a CIDR is no range of trusted proxies (TrustedRange).
+var (
+	ErrRangeNotCIDR    = errors.New("not a CIDR")
+	ErrRangeMapped     = errors.New("an IPv4-mapped IPv6 prefix")
+	ErrRangeNotNetwork = errors.New("not written as the network it names")
+	ErrRangeEveryPeer  = errors.New("a range of length 0")
+)
+
+// TrustedRange reads text as a range of proxies whose X-Forwarded-For a server trusts, the form
+// Dispatch's DISPATCH_TRUSTED_PROXY_RANGES and its gcp:Dispatch component's trustedProxyRanges take
+// for each entry: a CIDR netip.ParsePrefix reads (else ErrRangeNotCIDR), IPv4 or IPv6 but no
+// IPv4-mapped IPv6 prefix (ErrRangeMapped), which no peer's address is ever inside, since a peer's
+// address is read as Canonical reads it, the IPv4 address it holds; written as the network it names
+// (ErrRangeNotNetwork), so the setting trusts what it says; and longer than /0 (ErrRangeEveryPeer),
+// since 0.0.0.0/0 or ::/0 would trust every peer's X-Forwarded-For and let any caller pick the
+// address it is keyed by. The prefix is answered as read with every refusal but ErrRangeNotCIDR,
+// so a refusal can name its network. Each caller words its own refusal, by errors.Is.
+func TrustedRange(text string) (netip.Prefix, error) {
+	prefix, err := netip.ParsePrefix(text)
+	switch {
+	case err != nil:
+		return netip.Prefix{}, ErrRangeNotCIDR
+	case prefix.Addr().Is4In6():
+		return prefix, ErrRangeMapped
+	case prefix != prefix.Masked():
+		return prefix, ErrRangeNotNetwork
+	case prefix.Bits() == 0:
+		return prefix, ErrRangeEveryPeer
+	}
+	return prefix, nil
 }
