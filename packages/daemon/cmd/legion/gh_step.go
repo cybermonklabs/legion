@@ -22,7 +22,7 @@ const ghStepFileVar = "LEGION_GH_STEP_FILE"
 // The steps of a `legion gh` call, in their order, beside the guard's own three (leakguard's
 // StepCheck, StepVisibility and StepRules, which come between help and gh): config is the gh
 // directory's shape and the git configuration's reads, from the start of runGh; help is the
-// command's routing and the reads of gh's help it makes (ghTargetOf); gh is the real gh.
+// command's routing and the reads of gh's help it makes (ghroute.TargetOf); gh is the real gh.
 const (
 	ghStepConfig leakguard.Step = "config"
 	ghStepHelp   leakguard.Step = "help"

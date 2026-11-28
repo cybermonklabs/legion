@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
@@ -62,7 +63,7 @@ func visibilityReadRepository(env map[string]string) (ghrepo.Repository, bool) {
 // the environment such a `legion gh` would have had. wrapper is the wrapper first on PATH, and
 // LEGION_GH_PATH the real gh, each refused already where it is no such program (ghRunnable).
 //
-// Its token is that of the repository, routed by the one rule (ghConfigDirFor): a configured
+// Its token is that of the repository, routed by the one rule (ghroute.DirFor): a configured
 // rename serves the repository from the `to` owner's directory, and the `from` owner's token
 // cannot read it. The GraphQL read names its repository only in variables, so runGh reads its
 // owner and name from the variable PUBLIC_LEAK_CHECK_VISIBILITY_READ, which ghVisibilityRead
@@ -76,7 +77,7 @@ func visibilityReadRepository(env map[string]string) (ghrepo.Repository, bool) {
 // (ghVisibilityRead).
 //
 // With no caller token, a read of a repository whose owner the bundle holds no directory for is
-// refused with leakguard.OwnerNotServedError (ownerGHConfigDir), alone, and no gh runs: runGh
+// refused with leakguard.OwnerNotServedError (ghroute.DirFor), alone, and no gh runs: runGh
 // prints it as its line, and ghGuardRead answers it to the guard. The guard reads either exactly
 // so (leakguard.Guard.Visibility), and then reads the repository's visibility with no credential.
 // A configured rename whose `to` owner the bundle holds no directory for is refused with that
@@ -87,9 +88,9 @@ func visibilityReadRepository(env map[string]string) (ghrepo.Repository, bool) {
 // allowlist of environ (ghChildEnviron, withGitHubUseHTTPPath).
 func ghVisibilityReadChild(env map[string]string, environ []string, wrapper string, repo ghrepo.Repository) (leakguard.GhReadChild, error) {
 	dir := env["GH_CONFIG_DIR"]
-	if ghCallerToken(env) == "" {
+	if ghroute.CallerToken(env) == "" {
 		var err error
-		if dir, err = ghConfigDirFor(env["LEGION_GH_OWNERS_DIR"], strings.ToLower(repo.Owner()), repo.Name()); err != nil {
+		if dir, err = ghroute.DirFor(env["LEGION_GH_OWNERS_DIR"], strings.ToLower(repo.Owner()), repo.Name()); err != nil {
 			return leakguard.GhReadChild{}, err
 		}
 	}
@@ -122,8 +123,8 @@ func ghGuardRead(env map[string]string) func(slug string, environ []string) (lea
 		return nil
 	}
 	return func(slug string, environ []string) (leakguard.GhReadChild, error) {
-		// The slug is the guard's, which only a repository ghTargetOf routed reaches; one that
-		// names none is refused without the parse's words, which quote it, as
+		// The slug is the guard's, which only a repository ghroute.TargetOf routed reaches; one
+		// that names none is refused without the parse's words, which quote it, as
 		// visibilityReadRepository leaves the shared check's read with none.
 		repo, err := ghrepo.Parse(leakguard.VisibilityReadVar, slug)
 		if err != nil {
@@ -176,7 +177,7 @@ func answerVisibilityRead(ctx context.Context, repo ghrepo.Repository, stdout, s
 		return status
 	}
 	if err != nil {
-		printGhRefusal(stderr, err)
+		ghroute.PrintRefusal(stderr, err)
 		return 1
 	}
 	fmt.Fprintln(stdout, visibility)

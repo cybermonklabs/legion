@@ -111,7 +111,7 @@ func TestAGuardedGhCallStartsOneLegionGhAndReadsItsVisibilityWithTheRealGh(t *te
 // gh writes its whole environment for the guard's REST read of the repository, and a guarded call
 // on that repository, whose guard runs the read itself, gives it the same environment, under one
 // environment of the two calls and in one working directory. Read off the code, that is the gh
-// directory the repository routes to (ghConfigDirFor), the `to` owner's for a repository a
+// directory the repository routes to (ghroute.DirFor), the `to` owner's for a repository a
 // configured rename moved and the owner's own for its sibling; the wrapper as GH_PATH; the real
 // gh as LEGION_GH_RUN_BY_REAL_GH; cat as GH_PAGER; the names the guard gives each read of its own
 // that gh's allowlist keeps (leakguard's ghReadEnv and promptsNothing): NO_COLOR=1,

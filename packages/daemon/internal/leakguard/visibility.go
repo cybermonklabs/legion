@@ -586,9 +586,9 @@ func (g *Guard) ghReadChild(slug string, args []string) (child, error) {
 // *OwnerNotServedError alone, for slug's owner as `legion gh` names it and for the bundle the
 // guard's environment names, is the *unservedOwnerError the guard then reads with no credential
 // (readUnservedOwner). An OwnerNotServedError wrapped in a longer refusal, a configured rename's
-// whose new owner the bundle holds no directory for (cmd/legion's ghConfigDirFor), is no
-// such refusal, which is why this asserts the type rather than unwraps it, and neither is any
-// other error: each refuses the read, naming it.
+// whose new owner the bundle holds no directory for (ghroute.DirFor), is no such refusal, which is
+// why this asserts the type rather than unwraps it, and neither is any other error: each refuses
+// the read, naming it.
 func (g *Guard) ghReadRefused(slug string, err error) error {
 	if notServed, ok := err.(*OwnerNotServedError); ok {
 		if unserved := g.unservedOwner(2, ownerNotServedLine(notServed.Owner, notServed.OwnersDir)+"\n", slug); unserved != nil {
@@ -669,15 +669,14 @@ func (g *Guard) tellTLSTimeout(host string, event tlstimeout.Event) {
 }
 
 // OwnerNotServedError is the refusal `legion gh` makes of a call naming a repository of Owner, an
-// owner the project's gh bundle under OwnersDir holds no directory for (cmd/legion's
-// ownerGHConfigDir): the role's GitHub App is not installed on Owner, so no directory of the
-// bundle is Owner's own. `legion gh` prints it after `legion gh: `, alone, and exits 2, and the
-// GhRead of `legion gh` and `legion leak-check` answers it alone (Options.GhRead). It is exported
-// because the guard reads exactly that answer to its REST read as such an owner
-// (Guard.unservedOwner, Guard.ghReadRefused), and reads the repository's visibility with no
-// credential instead: words written from a second copy could part from the ones `legion gh`
-// prints, and a write to another owner's public repository would again be refused before it was
-// scanned.
+// owner the project's gh bundle under OwnersDir holds no directory for (ghroute's ownerDir): the
+// role's GitHub App is not installed on Owner, so no directory of the bundle is Owner's own.
+// `legion gh` prints it after `legion gh: `, alone, and exits 2, and the GhRead of `legion gh` and
+// `legion leak-check` answers it alone (Options.GhRead). It is exported because the guard reads
+// exactly that answer to its REST read as such an owner (Guard.unservedOwner,
+// Guard.ghReadRefused), and reads the repository's visibility with no credential instead: words
+// written from a second copy could part from the ones `legion gh` prints, and a write to another
+// owner's public repository would again be refused before it was scanned.
 type OwnerNotServedError struct {
 	Owner     string
 	OwnersDir string
@@ -703,8 +702,8 @@ func ownerNotServedLine(owner, ownersDir string) string {
 // in the guard's environment, which is the environment gh ran with. Anything else says nothing of
 // the owner and stays the failure it was: another refusal of `legion gh`, these words for another
 // owner or another bundle, these words beside other words in one line (the refusal of a
-// configured rename whose new owner the bundle holds no directory for, cmd/legion's
-// ghConfigDirFor), these words beside other output, and these words under another exit status.
+// configured rename whose new owner the bundle holds no directory for, ghroute.DirFor), these
+// words beside other output, and these words under another exit status.
 func (g *Guard) unservedOwner(status int, printed, slug string) *unservedOwnerError {
 	if status != 2 {
 		return nil

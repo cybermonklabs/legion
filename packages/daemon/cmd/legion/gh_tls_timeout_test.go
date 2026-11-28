@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/tlstimeout/tlstimeouttest"
 
 	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -332,13 +333,13 @@ func TestTheGuardsOwnBoundOnItsGhReadIsRecordedAsItsOwnTLSEvent(t *testing.T) {
 // that signal (endedBySignal), rather than with the status of the call it recorded: the record
 // runs once that call is over, and its probes would otherwise run on to their bound. Each row's
 // record is held in its curl probe, a stand-in that becomes a sleep of about a day of its own
-// (holdsStandIn), under a bound of two days (testTLSBoundEnv), while its Go probe waits on a peer
-// that never answers TLS, so only the signal ends the record before the row gives up. The signal
-// goes to the command's own pid, as a stop sends it. The record still writes its line, the last
-// the command prints, after the call's own output, and its curl is gone once the command has
-// exited. The rows are the three places a record is made: after the real gh's own timeout
-// (runGhChild), and after the leak guard's own gh read met one, once a `legion gh` call is over
-// and once a pre-push has been refused (recordGuardTLSTimeout).
+// (ghroutetest.HoldsStandIn), under a bound of two days (testTLSBoundEnv), while its Go probe
+// waits on a peer that never answers TLS, so only the signal ends the record before the row gives
+// up. The signal goes to the command's own pid, as a stop sends it. The record still writes its
+// line, the last the command prints, after the call's own output, and its curl is gone once the
+// command has exited. The rows are the three places a record is made: after the real gh's own
+// timeout (runGhChild), and after the leak guard's own gh read met one, once a `legion gh` call
+// is over and once a pre-push has been refused (recordGuardTLSTimeout).
 func TestASignalDuringATLSRecordEndsTheCommandWithTheSignalsStatus(t *testing.T) {
 	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
@@ -395,11 +396,11 @@ func TestASignalDuringATLSRecordEndsTheCommandWithTheSignalsStatus(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			pidFile := filepath.Join(t.TempDir(), "curl.pid")
-			killRecordedHelper(t, pidFile, tc.seconds)
+			ghroutetest.KillRecordedHelper(t, pidFile, tc.seconds)
 			// The record's curl probe is the run that asks for its timings (-w); every other run is
 			// the guard's read through curl, which reads the token on its standard input first.
 			curl := filepath.Join(t.TempDir(), "curl")
-			script := "#!/bin/sh\ncase \" $* \" in\n*\" -w \"*)\n" + holdsStandIn(pidFile, tc.seconds) + ";;\nesac\ncat >/dev/null\n" + tc.answer
+			script := "#!/bin/sh\ncase \" $* \" in\n*\" -w \"*)\n" + ghroutetest.HoldsStandIn(pidFile, tc.seconds) + ";;\nesac\ncat >/dev/null\n" + tc.answer
 			if err := execfile.Write(curl, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -447,7 +448,7 @@ func TestASignalDuringATLSRecordEndsTheCommandWithTheSignalsStatus(t *testing.T)
 				default:
 				}
 				var running bool
-				pid, running = recordedHelper(pidFile, tc.seconds)
+				pid, running = ghroutetest.RecordedHelper(pidFile, tc.seconds)
 				return running
 			})
 			select {
@@ -457,7 +458,7 @@ func TestASignalDuringATLSRecordEndsTheCommandWithTheSignalsStatus(t *testing.T)
 			}
 			// The signal must come while the curl holds the record: with no running pid recorded,
 			// the check of its end below would pass a signal that came before the record.
-			if pid <= 0 || !helperRunning(pid, tc.seconds) {
+			if pid <= 0 || !ghroutetest.HelperRunning(pid, tc.seconds) {
 				t.Fatalf("the record's curl had recorded no running pid (%d) in %s when the signal was to be sent", pid, pidFile)
 			}
 			if err := command.Process.Signal(syscall.SIGTERM); err != nil {
@@ -472,7 +473,7 @@ func TestASignalDuringATLSRecordEndsTheCommandWithTheSignalsStatus(t *testing.T)
 			if last := lines[len(lines)-1]; !strings.HasPrefix(last, tlsRecordLine(tc.host, "handshake_timeout")) || !strings.Contains(strings.Join(lines[:len(lines)-1], "\n"), tc.before) {
 				t.Errorf("legion %s printed %q; want %q and then the record line, naming %q", tc.args[0], out, tc.before, tlsRecordLine(tc.host, "handshake_timeout"))
 			}
-			if helperRunning(pid, tc.seconds) {
+			if ghroutetest.HelperRunning(pid, tc.seconds) {
 				t.Errorf("the record's curl (pid %d) still runs after legion %s exited; want it stopped with the record", pid, tc.args[0])
 			}
 		})

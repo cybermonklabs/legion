@@ -114,7 +114,7 @@ func TestAVisibilityReadRunsTheGhTheCallerAnswersWithTheEnvironmentItAnswers(t *
 // failure it was, naming the read and the refusal, and git never runs, although the stand-in git
 // would answer public: the refusal of another owner or of another bundle, the refusal where the
 // guard's environment names no bundle, a configured rename's refusal, which holds an
-// OwnerNotServedError inside a longer one (cmd/legion's ghConfigDirFor), and any other refusal.
+// OwnerNotServedError inside a longer one (ghroute.DirFor), and any other refusal.
 // No gh runs for any of them, and the GraphQL read is never asked for.
 func TestAVisibilityReadTheCallerRefusesForAnUnservedOwnerIsReadWithNoCredential(t *testing.T) {
 	const owners = "/var/run/invented/gh"
