@@ -154,7 +154,6 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err != nil {
 		return err
 	}
-	above := record.Above(issue, members)
 	var root *record.Issue
 	for i := range members {
 		if members[i].Key == issue.Tree {
@@ -178,31 +177,6 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	}
 	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: kind, Role: claim.RoleArchitect, Reason: leftNotice(issue, status, pr, members)}); err != nil {
 		return err
-	}
-	// This departure may be the last one any merged ancestor of the issue waited for, and not
-	// only the tree root's: the wait reads the issues beneath an issue (record.OpenBeneath), so a
-	// child that merged before the grandchild under it stands in verifying too. Each ancestor in
-	// verifying has its checks read again, which reads its children from Dispatch after this leave
-	// (D15), and is judged on what it holds now. Each ancestor's record is read again rather than
-	// taken from the snapshot above, because closing the nearest one leaves (closeOnChecks's own
-	// leave) and may close the ones above it on the way. The same departure may be the last one an
-	// ancestor held before its retro waited for, a parent whose last step is not the owner's
-	// acceptance (record.HoldForChildren): the fact's settle starts its retro (releaseHeldParents),
-	// as it does for every other change of what stands beneath it.
-	for _, ancestor := range above {
-		current, err := e.store.Issue(ctx, tx, ancestor.Key)
-		if err != nil {
-			return err
-		}
-		if current == nil || current.Phase != phase.Verifying {
-			continue
-		}
-		if err := e.askCloseRead(ctx, tx, *current); err != nil {
-			return err
-		}
-		if err := e.judgeClose(ctx, tx, *current); err != nil {
-			return err
-		}
 	}
 	if !merged {
 		return nil
