@@ -161,11 +161,12 @@ type chainRow struct {
 	// The answers of the Dispatch chain. notice is the architect a notice about the issue
 	// reaches and noticeAbove the one a notice that starts at its parent reaches
 	// (record.NoticeStartsAtParent), both "" for an issue the daemon does not record, which has
-	// no notice; place is where the state lists it after an admission pass and starts whether
-	// that pass starts it; repairs is the answer to a session's write of backlog on it, by the
-	// session of the architect claim of the issue each key names, or by a session no claim holds
-	// (outsideWriter); calls are the architect operations on it. The repair's judgment of a done
-	// and of a write by another role's session is k41's
+	// no notice; a child's close or status change whose noticeAbove is the issue itself reaches no
+	// architect (record.ErrNoArchitectAbove). place is where the state lists it after an admission
+	// pass and starts whether that pass starts it; repairs is the answer to a session's write of
+	// backlog on it, by the session of the architect claim of the issue each key names, or by a
+	// session no claim holds (outsideWriter); calls are the architect operations on it. The
+	// repair's judgment of a done and of a write by another role's session is k41's
 	// (admit's TestTheRepairTakesTheWriteOfAnArchitectAboveOnTheChain), not this fixture's.
 	notice, noticeAbove string
 	place               string
@@ -545,6 +546,12 @@ func (row chainRow) want() map[string]string {
 			want[probe.label] = row.key
 		case record.NoticeStartsAtParent(probe.notice.Kind, probe.notice.Role):
 			want[probe.label] = row.noticeAbove
+			if record.ChildNotice(probe.notice.Kind) && row.noticeAbove == row.key {
+				// A child's close or status change is for the architect above the issue alone,
+				// so one whose walk ends at the issue itself reaches no architect
+				// (record.NoticeArchitect).
+				want[probe.label] = "unroutable"
+			}
 		default:
 			want[probe.label] = row.notice
 		}

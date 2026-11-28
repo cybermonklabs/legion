@@ -89,9 +89,10 @@ type Admission struct {
 	catchingUp map[string]struct{}
 	// unknownChains is every key noted on a Dispatch chain the copy cannot read to its top since
 	// the daemon last took them (NoteUnknownChain, UnknownChains): an issue a pass found on one
-	// (noteUnknownChain), and the parent a waiting re-parent seed waits on, which the outbox notes
-	// (the daemon's seedReparent). It is guarded by mu, and unknownWake is what the daemon wakes
-	// its re-read with when a key is noted (OnUnknownChain), nil for none.
+	// (noteUnknownChain), the parent a waiting re-parent seed waits on, and the issue of a notice
+	// whose owner walk waits on one, which the outbox notes (the daemon's seedReparent and
+	// deliverNotice). It is guarded by mu, and unknownWake is what the daemon wakes its re-read
+	// with when a key is noted (OnUnknownChain), nil for none.
 	unknownChains map[string]struct{}
 	unknownWake   func()
 	// keeper keeps the tree lifecycles the stored trees name open for the release before, once a
@@ -655,7 +656,9 @@ func (a *Admission) noteUnknownChain(ctx context.Context, key string) {
 // waiting re-parent seed waits on (the daemon's seedReparent, workflow's ReparentChainPending)
 // after the read-only transaction that found the wait: the seed's issue can stand where no pass
 // reaches that parent, at phase done after the close that landed with its move. A seed a later
-// move superseded, one made out of Legion's work among them, waits on no parent.
+// move superseded, one made out of Legion's work among them, waits on no parent. The outbox also
+// notes the issue of a notice whose owner walk waits on such a chain (the daemon's deliverNotice):
+// that issue can stand at phase done, where no pass reaches it.
 func (a *Admission) NoteUnknownChain(key string) {
 	a.mu.Lock()
 	a.unknownChains[key] = struct{}{}

@@ -275,7 +275,8 @@ func routingIssue(key, tree, parent string) record.Issue {
 
 // routedTo is the key of the issue whose architect route sends notice about key to, the claims
 // running as claims says (holdsRole over each, as the outbox reads its machines), or "waits" for a
-// notice the router holds (errNoticeWaits), or the error.
+// notice the router holds (errNoticeWaits), or "no architect" for one it routes to nobody
+// (errNoticeUnroutable), or the error.
 func routedTo(t *testing.T, route noticeRoute, key string, notice record.Notice, claims map[string]routeClaim) string {
 	t.Helper()
 	states := map[claim.Token]routeClaim{}
@@ -293,6 +294,8 @@ func routedTo(t *testing.T, route noticeRoute, key string, notice record.Notice,
 	switch {
 	case errors.Is(err, errNoticeWaits):
 		return "waits"
+	case errors.Is(err, errNoticeUnroutable):
+		return "no architect"
 	case err != nil:
 		return err.Error()
 	}
@@ -307,18 +310,22 @@ func routedTo(t *testing.T, route noticeRoute, key string, notice record.Notice,
 // The fixture of the routing tables: a root LEGION-1 with LEGION-2, LEGION-3 and LEGION-4 under it
 // three deep; another root LEGION-50 with LEGION-51 under it; LEGION-5, stored in LEGION-1's tree
 // and under LEGION-51 in Dispatch; LEGION-6, stored in LEGION-1's tree and under LEGION-77, which
-// the daemon does not record; LEGION-7 under LEGION-88, whose row the copy lacks; and LEGION-9 at
-// work under LEGION-8, which Dispatch shows on the backlog under LEGION-1.
+// the daemon does not record; LEGION-7 under LEGION-88, whose row the copy lacks; LEGION-9 at
+// work under LEGION-8, which Dispatch shows on the backlog under LEGION-1; and LEGION-11 on the
+// backlog under LEGION-10, a root on the backlog too.
 func routingFixture(t *testing.T) noticeRoute {
 	t.Helper()
 	backlog := routingIssue("LEGION-8", "LEGION-1", "LEGION-1")
 	backlog.Phase, backlog.Status = phase.Done, "backlog"
+	stoppedRoot, stoppedChild := routingIssue("LEGION-10", "LEGION-10", ""), routingIssue("LEGION-11", "LEGION-10", "LEGION-10")
+	stoppedRoot.Status, stoppedChild.Status = "backlog", "backlog"
 	issues := []record.Issue{
 		routingIssue("LEGION-1", "LEGION-1", ""), routingIssue("LEGION-2", "LEGION-1", "LEGION-1"),
 		routingIssue("LEGION-3", "LEGION-1", "LEGION-2"), routingIssue("LEGION-4", "LEGION-1", "LEGION-3"),
 		routingIssue("LEGION-50", "LEGION-50", ""), routingIssue("LEGION-51", "LEGION-50", "LEGION-50"),
 		routingIssue("LEGION-5", "LEGION-1", "LEGION-51"), routingIssue("LEGION-6", "LEGION-1", "LEGION-77"),
 		routingIssue("LEGION-7", "LEGION-1", "LEGION-88"), backlog, routingIssue("LEGION-9", "LEGION-1", "LEGION-8"),
+		stoppedRoot, stoppedChild,
 	}
 	keys := make([]string, len(issues))
 	for i, issue := range issues {
@@ -383,9 +390,13 @@ func TestANoticeGoesToTheIssuesOwnArchitectFirst(t *testing.T) {
 // record.NoticeStartsAtParent): the architect above the issue hears it though the issue's own holds
 // its role, past one above that does not, else the gate root of the issue above; a notice about
 // the issue's phase worker goes to its own architect. An issue with nothing above it in Legion's
-// work, a root or one under an issue the daemon does not record, hears its own. The walk follows
-// the chain, not the stored tree, past a parent on the backlog, and waits on a chain the copy
-// cannot show to its top.
+// work, a root or one under an issue the daemon does not record, hears its own worker-died and
+// worker-stalled, but its own status or close goes to no architect (record.ErrNoArchitectAbove),
+// whether its own architect holds its role or not: that notice is for the architect above it
+// alone. A child on the backlog under a root on the backlog, with nothing above it in Legion's
+// work, has its close go to that root, the gate root its walk falls back to. The walk follows the
+// chain, not the stored tree, past a parent on the backlog, and waits on a chain the copy cannot
+// show to its top.
 func TestAChildStatusNoticeStartsAtTheParent(t *testing.T) {
 	t.Parallel()
 	route := routingFixture(t)
@@ -406,8 +417,12 @@ func TestAChildStatusNoticeStartsAtTheParent(t *testing.T) {
 			map[string]routeClaim{"LEGION-3": holds}, "LEGION-1"},
 		{"a worker-died about its planner", "LEGION-3", record.Notice{Kind: "worker-died", Role: claim.RolePlanner},
 			map[string]routeClaim{"LEGION-3": holds, "LEGION-2": holds}, "LEGION-3"},
-		{"a root's own status", "LEGION-1", childStatus, map[string]routeClaim{"LEGION-1": holds}, "LEGION-1"},
-		{"an issue under one the daemon does not record", "LEGION-6", childStatus, map[string]routeClaim{"LEGION-6": holds, "LEGION-1": holds}, "LEGION-6"},
+		{"a root's own status", "LEGION-1", childStatus, map[string]routeClaim{"LEGION-1": holds}, "no architect"},
+		{"a root's own close, its own architect retired", "LEGION-1", childClosed, map[string]routeClaim{"LEGION-1": retiredHere}, "no architect"},
+		{"a worker-died about a root's own architect", "LEGION-1", record.Notice{Kind: "worker-died", Role: claim.RoleArchitect},
+			map[string]routeClaim{"LEGION-1": failedHere}, "LEGION-1"},
+		{"an issue under one the daemon does not record", "LEGION-6", childStatus, map[string]routeClaim{"LEGION-6": holds, "LEGION-1": holds}, "no architect"},
+		{"a child's close under a root out of work", "LEGION-11", childClosed, map[string]routeClaim{"LEGION-11": holds, "LEGION-10": byAStop}, "LEGION-10"},
 		{"stored in one tree, under another tree's issue", "LEGION-5", childClosed, map[string]routeClaim{"LEGION-5": holds, "LEGION-51": holds, "LEGION-1": holds}, "LEGION-51"},
 		{"past a parent on the backlog", "LEGION-9", childClosed, map[string]routeClaim{"LEGION-9": holds, "LEGION-1": holds}, "LEGION-1"},
 		{"on a chain the copy cannot show to its top", "LEGION-7", childStatus, map[string]routeClaim{"LEGION-7": holds, "LEGION-1": holds}, "waits"},
@@ -1056,6 +1071,101 @@ func TestANoticeWaitsOrEndsByTheClaimsState(t *testing.T) {
 		}
 		if _, delivered := publisher.snapshot(); fmt.Sprint(deliveredKinds(t, delivered)) != "[design-approved to LEGION-1]" {
 			t.Fatalf("delivered %v once the claim was woken, want the notice to LEGION-1's architect", deliveredKinds(t, delivered))
+		}
+	})
+}
+
+// A notice whose owner walk meets a chain the copy cannot show to its top notes its issue for R16's
+// re-read at each attempt (outbox.noteUnknownChain): the re-read reads Dispatch again only for the
+// keys noted to it, and an issue at phase done, as LEGION-3 is here after its close, is in no
+// admission pass. A notice on a chain the copy knows notes nothing, whether it is delivered or
+// waits for its architect. Once a reading writes the missing row, the child's close goes to the
+// architect above the issue; where the known chain shows nothing above the issue, it finishes
+// undelivered (record.ErrNoArchitectAbove) and never reaches the issue's own architect, which here
+// holds its role.
+func TestANoticeOnAnUnknownChainNotesItsIssueForTheReread(t *testing.T) {
+	t.Parallel()
+	childClosed := record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-3 is done"}
+	// unknownChain records LEGION-1, a root whose architect works, and LEGION-3, closed at phase
+	// done under LEGION-2, whose row the copy lacks, with LEGION-3's own architect working;
+	// recorded says whether the daemon records LEGION-2, at work under LEGION-1. It runs the
+	// child-closed row of LEGION-3 twice while the chain is unknown, each attempt waiting on that
+	// chain, publishing nothing and noting LEGION-3, and answers the pool, the runner, the row,
+	// the publisher and the keys the runner noted.
+	unknownChain := func(t *testing.T, recorded bool) (*store.Pool, *outbox, record.OutboxRow, *holderPublisher, *[]string) {
+		t.Helper()
+		pool := isolatedOutboxPool(t)
+		records := record.NewStore()
+		putChainIssue(t, pool, records, routingIssue("LEGION-1", "LEGION-1", ""))
+		if recorded {
+			putOutboxIssue(t, pool, records, routingIssue("LEGION-2", "LEGION-1", "LEGION-1"))
+		}
+		closed := routingIssue("LEGION-3", "LEGION-1", "LEGION-2")
+		closed.Phase, closed.Status = phase.Done, "done"
+		putChainIssue(t, pool, records, closed)
+		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+		architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
+		architectClaim(t, sup, "LEGION-3", supervise.StateWorking)
+		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-3", childClosed, time.Now()))
+		publisher := &holderPublisher{}
+		noted := &[]string{}
+		runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion",
+			now: time.Now, noteUnknownChain: func(key string) { *noted = append(*noted, key) }}
+		for attempt := range 2 {
+			if err := runner.execute(context.Background(), row); !errors.Is(err, errNoticeWaits) || !errors.Is(err, record.ErrChainUnknown) {
+				t.Fatalf("attempt %d at the close of LEGION-3, whose parent's row the copy lacks, = %v; want a wait on the unknown chain", attempt, err)
+			}
+		}
+		if _, delivered := publisher.snapshot(); len(delivered) != 0 || !slices.Equal(*noted, []string{"LEGION-3", "LEGION-3"}) {
+			t.Fatalf("while the chain is unknown: delivered %v, noted %v; want nothing sent and LEGION-3 noted for the re-read at each attempt",
+				deliveredKinds(t, delivered), *noted)
+		}
+		return pool, runner, row, publisher, noted
+	}
+
+	t.Run("known later, with an architect above the issue", func(t *testing.T) {
+		pool, runner, row, publisher, noted := unknownChain(t, true)
+		putCopyRow(t, pool, "LEGION-2", "LEGION-1", "in_progress")
+		if err := runner.execute(context.Background(), row); err != nil {
+			t.Fatalf("executing the close once the chain is known: %v", err)
+		}
+		if _, delivered := publisher.snapshot(); fmt.Sprint(deliveredKinds(t, delivered)) != "[child-closed to LEGION-1]" || len(*noted) != 2 {
+			t.Fatalf("once the chain is known: delivered %v, noted %v; want the close to LEGION-1's architect and no further note", deliveredKinds(t, delivered), *noted)
+		}
+	})
+
+	t.Run("known later, with nothing above the issue", func(t *testing.T) {
+		pool, runner, row, publisher, noted := unknownChain(t, false)
+		putCopyRow(t, pool, "LEGION-2", "", "backlog")
+		if err := runner.execute(context.Background(), row); err != nil {
+			t.Fatalf("executing the close once the chain is known: %v, want it finished undelivered", err)
+		}
+		if _, delivered := publisher.snapshot(); len(delivered) != 0 || len(*noted) != 2 {
+			t.Fatalf("once the chain is known: delivered %v, noted %v; want nothing sent, not even to LEGION-3's own architect, and no further note",
+				deliveredKinds(t, delivered), *noted)
+		}
+	})
+
+	t.Run("on a chain the copy knows, waiting for its architect", func(t *testing.T) {
+		pool := isolatedOutboxPool(t)
+		records := record.NewStore()
+		noticeTree(t, pool, records, false)
+		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+		if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-1", claim.RoleArchitect), Project: "legion",
+			Tree: "LEGION-1", Issue: "LEGION-1", Role: claim.RoleArchitect, State: byAStop.state, SuspendedBy: byAStop.by}, ""); err != nil {
+			t.Fatalf("create the architect claim of LEGION-1: %v", err)
+		}
+		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}, time.Now()))
+		publisher := &holderPublisher{}
+		publisher.setAbsent(architectTopic(t, "LEGION-1"))
+		var noted []string
+		runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion",
+			now: time.Now, noteUnknownChain: func(key string) { noted = append(noted, key) }}
+		if err := runner.execute(context.Background(), row); !errors.Is(err, errNoticeWaits) || errors.Is(err, record.ErrChainUnknown) {
+			t.Fatalf("executing the close of LEGION-2 for LEGION-1's architect, suspended by a stop, = %v; want a wait for the architect", err)
+		}
+		if len(noted) != 0 {
+			t.Fatalf("noted %v for the re-read, want nothing: the chain is known", noted)
 		}
 	})
 }

@@ -41,10 +41,14 @@ import (
 // included, and nothing above or below it stops: an issue under it in Legion's work goes on, and
 // so does the issue above it.
 //
-// The architect above it, where an issue above it is in Legion's work, is told (child-status, or
-// child-closed at a close): the owner walk starts at the parent (record.NoticeStartsAtParent). The
-// notice names what the departure leaves for that architect to act on (leftNotice). An issue with
-// nothing above it in Legion's work has no architect above to tell. A root whose step
+// The architect above it is told (child-status, or child-closed at a close): the owner walk starts
+// at the parent (record.NoticeStartsAtParent). The notice names what the departure leaves for that
+// architect to act on (leftNotice). An issue whose chain the copy of Dispatch reads to its top with
+// nothing above it in Legion's work (record.Chains.IsRoot) has no architect above to tell. One on a
+// chain the copy cannot read to its top is told all the same, whatever the copy shows above it: the
+// delivery holds the notice until R16's re-read makes the chain known (the daemon's
+// noticeArchitect, record.ErrChainUnknown), so the daemon decides the recipient when it delivers
+// the notice, not when it queues it, by the owner walk over the chain known then. A root whose step
 // rests on an ancestor's approval ends here the wait that ancestor's sign-off and close hold for
 // it (dispatch://INFRA-3320, R8), whichever way it leaves, so that ancestor's architect is told,
 // and a step of it that waits on an ancestor's approval request ends that wait with nobody told,
@@ -136,7 +140,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		return err
 	}
 	above := chains.Above(issue.Key)
-	if len(above) > 0 {
+	if !chains.IsRoot(issue.Key) {
 		kind := record.NoticeKind("child-status")
 		if status == "done" {
 			kind = "child-closed"

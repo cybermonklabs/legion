@@ -156,7 +156,8 @@ type outbox struct {
 	podEnded func(context.Context, []string)
 	// noteUnknownChain has R16's re-read read a key's Dispatch chain (admit.Admission's
 	// NoteUnknownChain, which wakes rereadChains): a re-parent seed that waits on its parent's
-	// chain notes that parent (seedReparent). attach sets it; nil, in an outbox a test builds by
+	// chain notes that parent (seedReparent), and a notice whose owner walk waits on an unknown
+	// chain notes its issue (deliverNotice). attach sets it; nil, in an outbox a test builds by
 	// hand, notes nothing.
 	noteUnknownChain func(key string)
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
@@ -2574,7 +2575,8 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // lifts it), or released for being idle — the row is held for it; once nobody will hold that role
 // for this notice — the claim has failed or retired, or this daemon does not supervise it — the
 // row finishes undelivered with one log line. So does a row whose architect cannot be resolved
-// from the record (errNoticeUnroutable), which holds back no later notice either, and, before any
+// from the record, or a child's close or status change with no architect above its issue
+// (errNoticeUnroutable), which holds back no later notice either, and, before any
 // publish, a changes request the person's approval followed while it waited (changesSuperseded),
 // and a catch-up while its issue is out of the workflow by its status or its phase
 // (record.InWorkflow), whose next launch writes a fresh one. A person's spec decision in a notice
@@ -2736,9 +2738,26 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// A catch-up goes to the architect of its own issue and to no other (noticeArchitect), so it is
 	// judged against that architect's claim and that issue's generation: a child's catch-up is
 	// superseded by the child's architect's later launch, never by the one above it. A notice whose
-	// owner walk meets a chain the copy cannot show to its top waits (errNoticeWaits).
+	// owner walk meets a chain the copy cannot show to its top waits (errNoticeWaits), and a child's
+	// close or status change whose walk ends at its own issue finishes undelivered
+	// (errNoticeUnroutable).
 	architect, err := noticeArchitect(snapshot.noticeRoute, issue, payload, r.holdsItsRole)
+	if errors.Is(err, errNoticeUnroutable) {
+		r.log.Info("outbox notice finished undelivered: no architect stands above its issue", "row", row.ID, "kind", payload.Kind, "issue", row.Issue, "error", err)
+		return nil
+	}
 	if err != nil {
+		if errors.Is(err, record.ErrChainUnknown) && r.noteUnknownChain != nil {
+			// The wait ends only once R16's re-read makes the chain known, and the re-read reads
+			// Dispatch again only for the keys noted to it. An admission pass notes each live
+			// record it reads on such a chain (record.Store.LiveIssues), but only when a fact runs
+			// the pass, and an issue at phase done is in no pass at all: one whose merge's close
+			// took it out of Legion's work, say, whose child-closed the workflow queued on that
+			// chain (workflow's leave). So each attempt notes the row's issue, as a waiting
+			// re-parent seed notes its parent (seedReparent); the re-read holds a noted key once,
+			// on its own backoff, so a note at each attempt adds no Dispatch read.
+			r.noteUnknownChain(row.Issue)
+		}
 		return fmt.Errorf("the architect of %s: %w", row.Issue, err)
 	}
 	if payload.CatchUp != nil {

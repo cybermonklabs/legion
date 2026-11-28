@@ -269,8 +269,8 @@ type workflowRuntime struct {
 	backfillPending                                                    atomic.Bool
 	// chainWake is the re-read of the Dispatch chains the copy cannot read to their top
 	// (rereadChains), one wake held at most: a note of such a chain sends it
-	// (admit.Admission.OnUnknownChain), the admission pass's and the waiting re-parent seed's
-	// (outbox.noteUnknownChain) alike.
+	// (admit.Admission.OnUnknownChain), the admission pass's, the waiting re-parent seed's and the
+	// waiting notice's (outbox.noteUnknownChain) alike.
 	chainWake chan struct{}
 	// heard is what GitHub intake hears (heardRepositories): the boot's set (heardAtBoot), each
 	// repository a record first names, a launch works or the refresher's backfill writes on a
@@ -2301,8 +2301,9 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
 // (queueMergeStateFollow). The outbox's branch create runs the private-name rules boot compiled
-// (privateNameRules). A re-parent seed that waits on its parent's chain notes that parent for
-// this runtime's re-read (noteUnknownChain, admission's NoteUnknownChain). All are set before the
+// (privateNameRules). A re-parent seed that waits on its parent's chain notes that parent, and a
+// notice whose owner walk waits on an unknown chain notes its issue, for this runtime's re-read
+// (noteUnknownChain, admission's NoteUnknownChain). All are set before the
 // records' wake can reach the outbox (outboxWake). Whether an issue still holds its workspace,
 // which a repository kept for an unrecorded issue is answered while (keptRepository), is read
 // from the runtime (workspaceHeldBy), and so is the rule the end of an issue's pod runs the rename

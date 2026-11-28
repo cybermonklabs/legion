@@ -127,8 +127,8 @@ func (e *Engine) opensNewRun(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // came from is started at a new phase entry, as every return's worker is, and any other status
 // leaves the hold to what ends it: the architect's retry of a failed claim, a later version of the
 // plan for a stopped task (record.HoldTaskStopped), and the last issue beneath a parent held
-// before its retro leaving the workflow (record.HoldForChildren). The architect above the issue,
-// where an issue above it is in Legion's work, is told the issue is back in work.
+// before its retro leaving the workflow (record.HoldForChildren). The architect above the issue is
+// told the issue is back in work (tellAbove).
 func (e *Engine) ReturnToWork(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	back, err := e.takeBack(ctx, tx, issue, fact, PhaseStatus(issue.Phase),
 		fmt.Sprintf("%s is %s again; it resumes %s at a new phase entry", issue.Key, fact.Status, issue.Phase))
@@ -202,8 +202,8 @@ func (e *Engine) ReturnMemberToWork(ctx context.Context, tx pgx.Tx, issue record
 // and tells, whatever it starts after: the record takes fact's observation and status, the status
 // queued to Dispatch where it differs from what Dispatch shows (Engine.status; "" keeps the
 // status Dispatch shows), the task its leave stopped runs again at its step (resumeStoppedTask),
-// and the architect above the issue, where an issue above it is in Legion's work, is told the
-// words told. It answers the record as it wrote it.
+// and the architect above the issue is told the words told (tellAbove). It answers the record as
+// it wrote it.
 func (e *Engine) takeBack(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue, status, told string) (record.Issue, error) {
 	back := observedIssue(issue, fact)
 	back.Status = fact.Status
@@ -447,15 +447,19 @@ func (e *Engine) reviveClaims(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return nil
 }
 
-// tellAbove tells the architect above issue, where an issue above it is in Legion's work, reason as
-// a child-status notice: the owner walk starts at the parent (record.NoticeStartsAtParent). An
-// issue with nothing above it in Legion's work has no architect above to tell.
+// tellAbove tells the architect above issue reason as a child-status notice: the owner walk starts
+// at the parent (record.NoticeStartsAtParent). An issue whose chain the copy of Dispatch reads to
+// its top with nothing above it in Legion's work (record.Chains.IsRoot) has no architect above to
+// tell. One on a chain the copy cannot read to its top is told all the same, whatever the copy
+// shows above it: the delivery holds the notice until R16's re-read makes the chain known (the
+// daemon's noticeArchitect, record.ErrChainUnknown), so the daemon decides the recipient when it
+// delivers the notice, not when it queues it, by the owner walk over the chain known then.
 func (e *Engine) tellAbove(ctx context.Context, tx pgx.Tx, issue record.Issue, reason string) error {
 	chains, err := record.ReadChainsOf(ctx, tx, e.store, issue.Project, []string{issue.Key})
 	if err != nil {
 		return err
 	}
-	if len(chains.Above(issue.Key)) == 0 {
+	if chains.IsRoot(issue.Key) {
 		return nil
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason})
@@ -493,8 +497,7 @@ func (e *Engine) tellAbove(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 // (record.Store.StartHandout), so an ask or a hand-back of the old run, delivered late, declares
 // nothing in this one, and its catch-up cursor starts again (record.Store.RestartCaughtUp). The
 // new generation is news of the issue whatever read brought it, so it is marked moved
-// (record.Store.MarkIssueMoved). The architect above the issue, where an issue above it is in
-// Legion's work, is told.
+// (record.Store.MarkIssueMoved). The architect above the issue is told (tellAbove).
 func (e *Engine) NewRun(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	if issue.Generation == ^uint64(0) {
 		return fmt.Errorf("open a new run of %s: generation overflows", issue.Key)

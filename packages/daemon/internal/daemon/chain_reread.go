@@ -38,10 +38,11 @@ type chainReread struct {
 // rereadChains reads Dispatch again, until ctx ends, for every key noted on a chain the copy cannot
 // read to its top — a row missing, a key repeated, more than record.MaxChainLinks links (R16 of
 // dispatch://INFRA-3320, admit.Admission.UnknownChains): an issue an admission pass found on one,
-// and the parent a waiting re-parent seed waits on, which the outbox notes (seedReparent) — outside
-// any transaction, until each chain is known: woken by each note (chainWake), and again at the due
-// time of the first key it holds, each key on a backoff of its own from chainRereadFirst to
-// chainRereadMost (rereadDue).
+// the parent a waiting re-parent seed waits on, which the outbox notes (seedReparent), and the
+// issue of a notice whose owner walk waits on one, which the outbox notes too (deliverNotice) —
+// outside any transaction, until each chain is known: woken by each note (chainWake), and again at
+// the due time of the first key it holds, each key on a backoff of its own from chainRereadFirst
+// to chainRereadMost (rereadDue).
 func (w *workflowRuntime) rereadChains(ctx context.Context) {
 	pending := map[string]*chainReread{}
 	timer := time.NewTimer(time.Hour)

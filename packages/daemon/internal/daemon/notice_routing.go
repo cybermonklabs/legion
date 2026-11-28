@@ -42,9 +42,10 @@ const noticeSummarySeparator = " on "
 var errNoticeWaits = wait.New("the notice waits for its architect")
 
 // errNoticeUnroutable is a notice whose architect cannot be resolved from the record: its issue is
-// not recorded, or its keys make no claim token. readNoticeTree decides it, once, when it reads
-// the route. Retrying cannot change the record and the outbox has no dead-letter path, so the row
-// finishes undelivered with one log line.
+// not recorded, or its keys make no claim token, which readNoticeTree decides, once, when it reads
+// the route; or it is a child's close or status change whose owner walk ends at its own issue
+// (record.ErrNoArchitectAbove), which noticeArchitect decides. The outbox has no dead-letter path,
+// so the row finishes undelivered with one log line.
 var errNoticeUnroutable = errors.New("the notice has no architect to go to")
 
 // errNoticeRowGone is a notice row, or a controller notice row, deleted while the runner held its
@@ -291,10 +292,15 @@ func earlierNoticeFor(snapshot noticeSnapshot, architect claim.Token, runs func(
 // its role again or, for a catch-up, once its issue is out of the workflow by its status or its
 // phase (deliverNotice's record.InWorkflow), since a stop leaves that claim suspended rather than
 // ended. Every other notice goes to the architect that owns its issue on the Dispatch chain
-// (record.OwningArchitect), by runs, from the issue above it for a notice the architect above it
-// must hear (record.NoticeStartsAtParent), and waits (errNoticeWaits) while that walk meets a
-// chain the copy cannot show to its top. The publish (deliverNotice), the fence (earlierNoticeFor)
-// and a ready's release (releaseWaiting) all ask this, so each finds a notice the same architect.
+// (record.NoticeArchitect, the owner walk record.OwningArchitect), by runs, from the issue above it
+// for a notice the architect above it must hear (record.NoticeStartsAtParent), and waits
+// (errNoticeWaits) while that walk meets a chain the copy cannot show to its top. A child's close
+// or status change whose walk ends at its own issue — nothing above it in Legion's work, and no
+// recorded gate root above it — goes to no architect (errNoticeUnroutable,
+// record.ErrNoArchitectAbove): it is for the architect above the issue alone, while a worker-died
+// or worker-stalled about a root's own architect still reaches that architect. The publish
+// (deliverNotice), the fence (earlierNoticeFor) and a ready's release (releaseWaiting) all ask
+// this, so each finds a notice the same architect.
 func noticeArchitect(route noticeRoute, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
 	switch {
 	case notice.CatchUp != nil:
@@ -302,9 +308,12 @@ func noticeArchitect(route noticeRoute, issue record.Issue, notice record.Notice
 	case notice.To != "":
 		return claim.NewToken(route.project, notice.To, claim.RoleArchitect)
 	}
-	architect, err := record.OwningArchitect(route.project, route.chains, issue.Key, record.NoticeStartsAtParent(notice.Kind, notice.Role), runs)
-	if errors.Is(err, record.ErrChainUnknown) {
+	architect, err := record.NoticeArchitect(route.project, route.chains, issue.Key, notice.Kind, notice.Role, runs)
+	switch {
+	case errors.Is(err, record.ErrChainUnknown):
 		return "", fmt.Errorf("%w: %w", errNoticeWaits, err)
+	case errors.Is(err, record.ErrNoArchitectAbove):
+		return "", fmt.Errorf("%w: %w", errNoticeUnroutable, err)
 	}
 	return architect, err
 }
