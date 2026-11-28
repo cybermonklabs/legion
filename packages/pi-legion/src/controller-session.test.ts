@@ -895,7 +895,7 @@ test("watched workflows: a watched topic Envoy takes after its 503s is told once
       expect(told[1]).toContain(named);
     }
     expect(told[1]).toContain(
-      "read acme/widgets/nightly.yaml's newest completed run of the schedule event now"
+      "read acme/widgets/nightly.yaml's newest completed run of the schedule event on its repository's default branch now, and take it as a delivered run."
     );
     expect(run.told.map(({ options }) => options)).toEqual([NO_TURN, NO_TURN]);
     expectTheClaimAsBefore(run);

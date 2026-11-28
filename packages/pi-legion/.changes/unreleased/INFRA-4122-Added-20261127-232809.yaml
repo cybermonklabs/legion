@@ -15,21 +15,22 @@ body: |-
   other than a 503 or after the controller comes back to it from another session that was told;
   the controller says once when Envoy takes the topic, also when a later claim's subscription of
   that topic is the one that lands, and that notice tells it to read that entry's newest
-  completed run of that event now, since a run that ended while the topic waited is not
-  delivered. A watched task made for a session that the pane has left
-  tells nothing and asks for nothing more: it checks the pane's session before each notice, and
-  no task starts for a claim whose session moved; the landed notice it owed is told by the next
-  session's claim. A topic Envoy refuses for another reason is logged, told to the session,
-  which may not hear its runs until the controller claims its role again, and given up, and the
-  other topics go on. The session is told as Envoy tells it its own notices, with no turn of its
-  own, and a notice the session refuses is logged and fails nothing. A controller process keeps
-  the list of its first registration for as long as it lives, as it keeps its Slack channels:
-  each later claim, after a `/new`, `/resume`, `/fork` or `/branch` too, subscribes that same
-  list again for its own session, and a later registration that names another list is one log
-  line saying that the changed list takes effect at the controller's next launch. Every
-  controller process sets the plugin interface's `watchedWorkflowsRoleOwned`, so a resumed
-  controller drops the watched topics its stored interest row holds before it claims. Plugin
-  interface version 7: install this release with the `@sjawhar/pi-envoy` released beside it.
+  completed run of that event on its repository's default branch now and take it as a delivered
+  run, since a run that ended while the topic waited is not delivered. A watched task made for a
+  session that the pane has left tells nothing and asks for nothing more: it checks the pane's
+  session before each notice, and no task starts for a claim whose session moved; the landed
+  notice it owed is told by the next session's claim. A topic Envoy refuses for another reason is
+  logged, told to the session, which may not hear its runs until the controller claims its role
+  again, and given up, and the other topics go on. The session is told as Envoy tells it its own
+  notices, with no turn of its own, and a notice the session refuses is logged and fails nothing.
+  A controller process keeps the list of its first registration for as long as it lives, as it
+  keeps its Slack channels: each later claim, after a `/new`, `/resume`, `/fork` or `/branch` too,
+  subscribes that same list again for its own session, and a later registration that names
+  another list is one log line saying that the changed list takes effect at the controller's next
+  launch. Every controller process sets the plugin interface's `watchedWorkflowsRoleOwned`, so a
+  resumed controller drops the watched topics its stored interest row holds before it claims.
+  Plugin interface version 7: install this release with the `@sjawhar/pi-envoy` released beside
+  it.
 time: 2026-11-27T23:28:09Z
 custom:
     Issue: INFRA-4122

@@ -215,7 +215,7 @@ async function subscribeWatchedTopic(
   if (toldWaiting.delete(topic)) {
     tellWatched(
       pi,
-      `legion: Envoy answered the subscription of ${watched} without a 503 at last; this session hears those runs now, unless Envoy's own "Envoy topics refused" notice names that topic. A run that ended while the topic waited is not delivered, so read ${entry}'s newest completed run of the ${event} event now.`
+      `legion: Envoy answered the subscription of ${watched} without a 503 at last; this session hears those runs now, unless Envoy's own "Envoy topics refused" notice names that topic. A run that ended while the topic waited is not delivered, so read ${entry}'s newest completed run of the ${event} event on its repository's default branch now, and take it as a delivered run.`
     );
   }
   return true;
