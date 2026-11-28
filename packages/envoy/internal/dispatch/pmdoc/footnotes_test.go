@@ -36,6 +36,57 @@ func TestABlockCallsTheLabelsItsOwnDefinitionsDoNotDefine(t *testing.T) {
 	}
 }
 
+// A typed block calls each label once however often it calls it, a call in its second paragraph
+// of a label its first paragraph called included, in the order it first calls it and as that
+// first reference holds it. Repeats compare byte for byte, so `A` and `a` are two labels, while a
+// label the block defines itself is left out up to case: its definition of `C` leaves out `c`.
+func TestABlockCallingEachLabelTwiceNamesEachOnceInTheOrderOfItsFirstCall(t *testing.T) {
+	t.Parallel()
+	text := func(value string) *Node { return &Node{Type: "text", Text: value} }
+	reference := func(label string) *Node { return &Node{Type: "footnote_reference", Attrs: Attrs{"label": label}} }
+	block := &Node{Type: "requirement", Attrs: Attrs{BlockIDAttr: "r1"}, Children: []*Node{
+		{Type: "paragraph", Children: []*Node{
+			text("Calls "), reference("b"), text(", "), reference("a"), text(", "), reference("c"),
+			text(" and "), reference("b"), text(" again."),
+		}},
+		{Type: "paragraph", Children: []*Node{
+			text("Then "), reference("A"), text(", "), reference("d"), text(", "), reference("a"),
+			text(" and "), reference("c"), text(" again."),
+		}},
+		footnoteDefinition("C", paragraph("Defined in the block.")),
+	}}
+	if got, want := CalledFootnoteLabels(block), []string{"b", "a", "A", "d"}; !slices.Equal(got, want) {
+		t.Errorf("CalledFootnoteLabels = %q, want %q", got, want)
+	}
+}
+
+// BenchmarkATypedBlockCallingEightThousandLabels times the labels one typed block calls
+// (CalledFootnoteLabels): a requirement whose 80 paragraphs call 8,000 distinct labels, `l0` to
+// `l7999`, 100 to a paragraph with text between the calls, and which defines `L0` itself, so that
+// `l0` is left out up to case and the check of each call against the block's own definitions runs
+// over every call. The block is built once, outside the timed loop.
+func BenchmarkATypedBlockCallingEightThousandLabels(b *testing.B) {
+	const labels, perParagraph = 8_000, 100
+	block := &Node{Type: "requirement", Attrs: Attrs{BlockIDAttr: "r1"}}
+	for first := 0; first < labels; first += perParagraph {
+		calls := &Node{Type: "paragraph"}
+		for index := first; index < first+perParagraph; index++ {
+			calls.Children = append(calls.Children,
+				&Node{Type: "text", Text: " calls "},
+				&Node{Type: "footnote_reference", Attrs: Attrs{"label": "l" + strconv.Itoa(index)}})
+		}
+		block.Children = append(block.Children, calls)
+	}
+	block.Children = append(block.Children, footnoteDefinition("L0", paragraph("Defined in the block.")))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if got := CalledFootnoteLabels(block); len(got) != labels-1 {
+			b.Fatalf("CalledFootnoteLabels answers %d labels, want %d", len(got), labels-1)
+		}
+	}
+}
+
 // Markdown with a stand-in definition of each label it calls reads each call as a reference to
 // that label, a label the renderer escapes included, and its last blocks are the stand-ins, one
 // footnote definition per label in the order given. With no label the markdown is as it stands.
