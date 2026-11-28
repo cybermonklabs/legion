@@ -1,18 +1,11 @@
 import { afterEach, beforeAll, expect } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { endianness } from "node:os";
 import { join } from "node:path";
 import { hostGate, hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "./arg-max-force";
-import { ownGroup, untilRunning } from "./own-group";
+import { ownGroup, untilExecDone, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
 import { libRowBoundMs, rowWaitMarginMs, rowWaits, stateOf, untilGone } from "./row-waits";
 
@@ -107,41 +100,6 @@ function spawn(argv: string[], options: { cwd: string; env?: Record<string, stri
   started.push(child.pid);
   return child.pid;
 }
-// untilExecDone resolves once PID has finished its exec of PROGRAM as far as a walk of the marks
-// reads it: its exe link (/proc/<pid>/exe) names PROGRAM and its /proc/<pid>/environ reads
-// non-empty. Inside an exec Linux gives the process its new memory, and the exe link with it,
-// before it sets where that memory's arguments and environment end (create_elf_tables in
-// fs/binfmt_elf.c): first the arguments' end, then a placeholder end of the environment, which lets
-// /proc/<pid>/cmdline read in full (get_mm_cmdline in fs/proc/base.c reads once that end is not 0),
-// and only after it has counted each variable the environment's real end. Until then environ reads
-// empty and a walk of the marks names nothing, so a wait on the exe link or on the command line can
-// end inside the exec. Nothing signals the end of another process's exec, so it reads both every
-// 50 ms, as untilGone and untilRunning do, until the row's waits end (waits.end()), and reads once
-// more then; past that it rejects naming the pid, what its exe link read and how many bytes its
-// environ held.
-async function untilExecDone(pid: number, program: string): Promise<void> {
-  const want = realpathSync(hostTool(program) ?? program);
-  const end = waits.end();
-  let exe = "";
-  let environ = 0;
-  for (;;) {
-    try {
-      exe = readlinkSync(`/proc/${pid}/exe`);
-      environ = exe === want ? readFileSync(`/proc/${pid}/environ`).length : 0;
-    } catch {
-      exe = "";
-      environ = 0;
-    }
-    if (exe === want && environ > 0) return;
-    const now = performance.now();
-    if (now >= end) break;
-    await Bun.sleep(Math.min(50, end - now));
-  }
-  throw new Error(
-    `pid ${pid} did not finish its exec of ${want} by the end of the row's waits (${(libRowBoundMs - rowWaitMarginMs) / 1000} s after the row began): its exe link read ${exe || "nothing"} and its environ ${environ} bytes`
-  );
-}
-
 // harness runs BODY in a bash with lib/rig.sh and lib/arg-max-force.sh sourced for the run
 // directory WORK, marked as a run marks itself (LEGION_E2E_RUN), under the drivers' `set -Eeuo
 // pipefail` and an ERR trap that prints, and answers its exit code and output. WORK comes in through
@@ -261,7 +219,7 @@ host.test(
     expect(forked.exitCode).toBe(0);
     const pid = Number(readFileSync(pidFile, "utf8").trim());
     started.push(pid);
-    await untilExecDone(pid, "sleep");
+    await untilExecDone(pid, "sleep", waits.end());
     // Its parent, the subshell, has ended, so nothing the test started is its parent any more.
     const parent = readFileSync(`/proc/${pid}/stat`, "utf8")
       .replace(/^[\s\S]*\) /, "")
@@ -590,7 +548,7 @@ host.test(
     started.push(escaped);
     // A sweep made inside the escaped process's exec of sleep reads no mark in its environment and
     // leaves it running, as the double-forked row's walk names nothing then (untilExecDone).
-    await untilExecDone(escaped, "sleep");
+    await untilExecDone(escaped, "sleep", waits.end());
     const shell = spawn(["sleep", "60"], { cwd: work });
     const tail = spawn(["tail", "-f", join(work, "transcript.log")], { cwd: work });
     const r = harness(work, `stop_marked_processes "$work"; echo "status $?"`);

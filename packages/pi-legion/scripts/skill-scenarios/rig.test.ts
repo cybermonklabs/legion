@@ -21,7 +21,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
-import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
+import { ownGroup, untilExecDone } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptAssignments, scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
@@ -31,7 +31,7 @@ import { RunRow } from "./scored-runs-contracts";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
 // takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
-// one minute, and a wait of a row on its processes (untilRunning) ends 20 s before that.
+// one minute, and a wait of a row on its processes (untilExecDone) ends 20 s before that.
 const waits = rowWaits(60_000);
 
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
@@ -860,9 +860,13 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   // Each row's run process and its harness shell run in process groups of their own (ownGroup,
   // scripts/e2e/lib/own-group.ts): stop_env_processes stops what it ends, and a stopped member of
   // the test runner's own group hangs the runner up where that group is orphaned, as in a Legion pod.
-  // A row that sweeps waits until its run process runs sleep (untilRunning), and so leads its own
-  // group, before it sweeps. The walk reads `proc_root`, a proc root of the row's run process alone
-  // (scripts/e2e/lib/proc-root.ts), so a row's time is its own and not the host's process count.
+  // A row that sweeps waits until its run process has finished its exec of sleep (untilExecDone):
+  // it then leads its own group, and its environment, where the walk finds the run's mark, is laid
+  // out. Inside the exec the exe link names sleep while the environment still reads empty, so a
+  // sweep after a wait on the exe link alone named nothing on a loaded CI runner, stopped nothing,
+  // and the row waited on its sleep until Bun's bound. The walk reads `proc_root`, a proc root of
+  // the row's run process alone (scripts/e2e/lib/proc-root.ts), so a row's time is its own and not
+  // the host's process count.
   const runProcess = (dir: string) =>
     Bun.spawn(ownGroup(["sleep", "60"]), {
       env: { PATH: process.env.PATH ?? "", SKILL_SCENARIO_RUN: path.join(dir, "run-1") },
@@ -910,7 +914,7 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   test("stops each process of the run its walk names, with the run's sweep's own loop", async () => {
     const dir = freshDir("env-stop");
     const run = runProcess(dir);
-    await untilRunning(run.pid, "sleep", waits.end());
+    await untilExecDone(run.pid, "sleep", waits.end());
     try {
       const rig = path.join(root, "scripts/e2e/lib/rig.sh");
       const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
