@@ -13,16 +13,18 @@ import (
 )
 
 // A person's edit notice is a row, not a timer: a process killed while the notice is still inside
-// its quiet window leaves it to the next process on the same database, which sends it once the
-// window ends. Both processes take one DISPATCH_SIGNING_KEY, as every process of a deployment
-// does: the killed process's registry row is still live when the second starts, and a key the
-// second minted in its own data dir would hold its start up to a live window, until that row
-// lapsed (processes.Register).
+// its quiet window leaves it to the next process on the same database, which sends it once. The
+// window here is an hour, so the first process cannot send the notice before the kill; the test
+// then makes the row due, and the second process sends it from its boot pass, on a row already
+// due. The wake at a row's due time is held in process by internal/dispatch/docs'
+// TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime. Both processes take one DISPATCH_SIGNING_KEY,
+// as every process of a deployment does: the killed process's registry row is still live when the
+// second starts, and a key the second minted in its own data dir would hold its start up to a live
+// window, until that row lapsed (processes.Register).
 func TestEditNoticeRestart(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break (the notice's 15 s deadline
-	// after the restart).
+	t.Parallel()
 	database := storetest.Open(t)
-	options := dispatchOptions{SigningKey: "edit-notice-restart-key", Env: map[string]string{"DISPATCH_TEST_EDIT_NOTICE_QUIET": "3s"}}
+	options := dispatchOptions{SigningKey: "edit-notice-restart-key", Env: map[string]string{"DISPATCH_TEST_EDIT_NOTICE_QUIET": "1h"}}
 	first := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	first.waitHealthy(t)
 	key, artifactID := first.createIssue(t)
@@ -47,6 +49,12 @@ func TestEditNoticeRestart(t *testing.T) {
 	}
 	if sentBeforeKill != 0 {
 		t.Fatalf("the first process sent %d notices before it was killed, want none: the quiet window had not ended", sentBeforeKill)
+	}
+
+	tag, err := database.Pool.Exec(context.Background(),
+		`update document_edit_notices set due_at = now() - interval '1 second' where artifact_id = $1`, artifactID)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("make the document's notice due: %v (rows %d, want 1)", err, tag.RowsAffected())
 	}
 
 	second := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)

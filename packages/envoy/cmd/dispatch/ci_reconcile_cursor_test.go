@@ -191,6 +191,7 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcessAfterAPassThatReadNoHead
 		{name: "GitHub holds the first pass's query", firstQuery: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			github := startCIReconcileCursorGitHub(t)
 			github.holdFirst(ciReconcileCursorSuitesPath(1))
 			if row.firstQuery {
@@ -283,8 +284,8 @@ func requireCIReconcileRecordedRun(t *testing.T, natsURL string, process *dispat
 
 // startCIReconcileCursorProcess starts the envoy-dispatch process the cursor tests read: one
 // project whose default repository's GitHub is github (seedCIReconcileDefault), a NATS server
-// holding the CI state bucket, and the reconcile loop on a one-second interval, which is each
-// pass's bound as well. It answers the process and that NATS server's URL.
+// holding the CI state bucket, and the reconcile loop ticking at startup and every second
+// after that. One second is each pass's bound as well. It returns the process and the NATS URL.
 func startCIReconcileCursorProcess(t *testing.T, github *cursorGitHub) (*dispatchProcess, string) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -302,6 +303,7 @@ func startCIReconcileCursorProcess(t *testing.T, github *cursorGitHub) (*dispatc
 			// The pass's bound as well as the loop's period: five minutes is longer than any
 			// test may wait for a pass.
 			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s",
+			"DISPATCH_TEST_CI_RECONCILE_AT_START": "1",
 		},
 	})
 	process.waitHealthy(t)

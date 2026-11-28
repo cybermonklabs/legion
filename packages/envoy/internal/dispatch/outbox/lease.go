@@ -375,6 +375,9 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 	var remaining time.Duration
 	held := false
 	if err == nil {
+		if o.deps.StoodBy != nil {
+			o.deps.StoodBy()
+		}
 		remaining, held, err = duty.Expiry(ctx, pool, publisherHold)
 	}
 	if err != nil {

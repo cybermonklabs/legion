@@ -34,6 +34,7 @@ func unreadableGitHubBases(host string) map[string]string {
 // database: the GitHub App client builds every request on it and names the request's URL, password
 // and all, on a failed call.
 func TestGitHubAPIBaseRefusesAValueThatIsNoHTTPURL(t *testing.T) {
+	t.Parallel()
 	const shape = "(expected an absolute http(s) URL with a host)"
 	for name, base := range unreadableGitHubBases("ghe.invalid") {
 		t.Run(name, func(t *testing.T) {
@@ -64,6 +65,7 @@ func TestGitHubAPIBaseRefusesAValueThatIsNoHTTPURL(t *testing.T) {
 // refused port must name none of the token. The clean bases must boot, so the row reads a client
 // error for at least them.
 func TestNoGitHubAPIBaseThatBootsPutsACredentialInTheAppClientsError(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)

@@ -30,6 +30,7 @@ const backfillDecision = ":::ask{#region urgency=\"low\" multiple=\"false\"}\nWh
 // her own Approve of version 2 would be refused. Each row also reads that the backfill wrote the
 // version, so a run that settled nothing carries nothing and fails the first row.
 func TestABackfillCarriesAnApprovalThroughTheFormGate(t *testing.T) {
+	// Not parallel: each subtest runs backfill-block-ids, which installs pmdoc's process-wide block schema.
 	for _, row := range []struct {
 		name      string
 		statement string

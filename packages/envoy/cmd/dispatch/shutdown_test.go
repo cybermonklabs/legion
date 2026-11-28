@@ -201,17 +201,27 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
 
-// A write in flight at SIGTERM can wait on a lock past the HTTP drain's share, the document
-// service's budget and the point a fixed shutdown bound would end it, here a title change behind
-// another writer that holds the issue for 27 seconds after the signal, 3 s inside the runtime's
-// kill. The database is answering, so Dispatch keeps the request's connection open until the write
-// commits and its answer is sent, and only then closes the pool, as the deferred close of the pool
-// before this shutdown order did.
+// A write in flight at SIGTERM can wait on a lock past the HTTP drain's share and the document
+// service's budget, here a title change behind another writer that holds the issue past both.
+// The database is answering, so Dispatch keeps the request's connection open until the write
+// commits and its answer is sent, and only then closes the pool. The child takes a
+// tenth of a deployment's drain and document budget, and the hold keeps a deployment's 11 : 14 : 27
+// ratio to them: the 27 s a deployment's hold would last ends 2 s past the latest of its bounds (25 s)
+// and 3 s inside the runtime's kill.
 func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.T) {
 	t.Parallel()
-	const lockHeldAfterSIGTERM = 27 * time.Second
+	const (
+		httpDrain            = httpDrainBeforeDocuments / 10
+		documentBudget       = documentShutdownTimeout / 10
+		lockHeldAfterSIGTERM = (stopGrace - 3*time.Second) / 10
+	)
 	database := storetest.Open(t)
-	process := startDispatchProcess(t, database.Pool.Config().ConnString())
+	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+		Env: map[string]string{
+			"DISPATCH_TEST_HTTP_DRAIN":        httpDrain.String(),
+			"DISPATCH_TEST_DOCUMENT_SHUTDOWN": documentBudget.String(),
+		},
+	})
 	process.waitHealthy(t)
 	key, artifactID := process.createIssue(t)
 	// The issue's spec settles on its own timer, which would queue behind the lock too.
@@ -235,23 +245,17 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 	storetest.WaitForLockWaiters(t, holder, 1)
 
 	signalled := process.Terminate(t)
-	select {
-	case <-process.Exited:
-		t.Errorf("Dispatch exited %v after SIGTERM, with the write still waiting on the lock", time.Since(signalled))
-	case <-time.After(time.Until(signalled.Add(lockHeldAfterSIGTERM))):
-	}
+	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
+	testwait.Quiet(t, "Dispatch's exit", process.Exited, time.Until(signalled.Add(lockHeldAfterSIGTERM)),
+		"releasing the lock ends the blocked write, and no state shows whether Dispatch would exit with the lock still held before the document budget ends")
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
 	process.WaitExit(t, "SIGTERM")
 	t.Logf("exited %v after SIGTERM", time.Since(signalled))
-	select {
-	case got := <-answered:
-		if got.err != nil || got.status != http.StatusOK {
-			t.Errorf("the title change answered %d (%v), want 200", got.status, got.err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Errorf("the title change had no answer 5s after Dispatch exited")
+	got := testwait.Receive(t, "the title change's answer", answered)
+	if got.err != nil || got.status != http.StatusOK {
+		t.Errorf("the title change answered %d (%v), want 200", got.status, got.err)
 	}
 	var title string
 	if err := database.Pool.QueryRow(context.Background(), `select title from issues where key = $1`, key).Scan(&title); err != nil {
@@ -262,9 +266,6 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 	}
 	if code := process.Cmd.ProcessState.ExitCode(); code != 0 {
 		t.Errorf("Dispatch exited %d after SIGTERM, want 0", code)
-	}
-	if t.Failed() {
-		t.Logf("Dispatch's output:\n%s", process.Output.String())
 	}
 }
 
@@ -569,7 +570,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 			close(entered)
 			<-release
 			background.Wait()
-		}, func() {}, func() {}, nil, httpDrainBeforeDocuments)
+		}, func() {}, func() {}, nil, httpDrainBeforeDocuments, documentShutdownTimeout)
 	}()
 	testwait.Receive(t, "shutdown to wait for delivery work", entered)
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
@@ -688,7 +689,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(fake, server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments)
+		shutdown(fake, server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments, documentShutdownTimeout)
 	}()
 	// The fake stands at the shutdown's start, so the wait for the outbox, once armed for its
 	// budget (waitForOutbox), is where the shutdown stands: no other timer on the fake is due then,
@@ -724,6 +725,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 // the shutdown then warns that it closes the pool with the outbox still stopping (waitForOutbox),
 // closes the pool and returns.
 func TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget(t *testing.T) {
+	// Not parallel: capturedLog replaces the process's default logger (logtest.SetDefault).
 	database := storetest.Open(t)
 	documentService := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
 	server := httptest.NewServer(http.NotFoundHandler())
@@ -737,7 +739,7 @@ func TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(fake, server.Config, documentService, database.Pool, func() {}, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments)
+		shutdown(fake, server.Config, documentService, database.Pool, func() {}, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments, documentShutdownTimeout)
 	}()
 	fake.AwaitArmedAt(t, "shutdown's wait for the outbox, outboxStopBudget after it began", budget)
 	select {
@@ -887,7 +889,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		// As main does: the stop of the intakes, which begins as ctx is cancelled, is what shutdown
 		// waits for beside the delivery sockets.
 		served <- serveUntilStopped(ctx, cancel, &http.Server{Handler: http.NotFoundHandler()}, listener, documentService,
-			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, httpDrainBeforeDocuments)
+			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, httpDrainBeforeDocuments, documentShutdownTimeout)
 	}()
 	cancel()
 	select {
@@ -2035,7 +2037,7 @@ func (p *dispatchProcess) openEditor(t *testing.T, artifactID, want string) *doc
 func (p *dispatchProcess) openEditorAs(t *testing.T, login, artifactID, want string) *docstest.Peer {
 	t.Helper()
 	editor := docstest.Dial(t, p.documentURL(artifactID), http.Header{"X-Dispatch-User": []string{login}}, artifactID, crdt.New())
-	if err := editor.WaitForText(markdown, want, 10*time.Second); err != nil {
+	if err := editor.AwaitText(t, markdown, want); err != nil {
 		t.Fatalf("%v:\n%s", err, p.Output.String())
 	}
 	return editor
@@ -2114,28 +2116,23 @@ func settlementMarkedAt(t *testing.T, database *store.Store, artifactID string) 
 	return marked
 }
 
+// waitForSettlementMarkedAfter waits for the editor's durable update to advance the pending
+// settlement marker past before. On failure it reports the last marker read.
 func waitForSettlementMarkedAfter(t *testing.T, database *store.Store, artifactID string, before time.Time) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !settlementMarkedAt(t, database, artifactID).After(before) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the editor's durable update did not advance the pending settlement marker within 10s")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, fmt.Sprintf("the pending settlement marker for %s to advance past %s", artifactID, before), func() (time.Time, bool) {
+		marked := settlementMarkedAt(t, database, artifactID)
+		return marked, marked.After(before)
+	})
 }
 
-// waitForSettlementOwed waits up to 10 s for the document's pending-settlement row to be there, or
-// gone.
+// waitForSettlementOwed waits for the document's pending-settlement row to be there, or gone.
 func waitForSettlementOwed(t *testing.T, database *store.Store, artifactID string, owed bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for settlementOwed(t, database, artifactID) != owed {
-		if time.Now().After(deadline) {
-			t.Fatalf("the document's pending-settlement row was not %s within 10s", map[bool]string{true: "there", false: "gone"}[owed])
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, "the document's pending-settlement row to be "+map[bool]string{true: "there", false: "gone"}[owed], func() (bool, bool) {
+		held := settlementOwed(t, database, artifactID)
+		return held, held == owed
+	})
 }
 
 // latestVersion is the number, markdown and authors (JSON) of the document's latest version.

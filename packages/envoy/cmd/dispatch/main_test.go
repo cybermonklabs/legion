@@ -6,10 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +24,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,6 +32,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -604,6 +609,7 @@ func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *te
 // query: a made-up token as the user name, as a password, in the query, after an "@" past the host,
 // and in the fragment. Each is refused now by the setting alone, before anything connects.
 func TestResolveBootConfigRefusesACredentialInAgentSecretsURLByTheSettingAlone(t *testing.T) {
+	t.Parallel()
 	const token = "madeUpBrokerToken0123"
 	for name, row := range map[string]struct{ brokerURL, want string }{
 		"a token as the user name": {"http://" + token + "@127.0.0.1:1", "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password, which the broker's URL has none of"},
@@ -636,6 +642,7 @@ func TestResolveBootConfigRefusesACredentialInAgentSecretsURLByTheSettingAlone(t
 // where net/url finds an opaque part and no user) prints in none: ENVOY_URL and the embeddings and
 // chat endpoints. Each still names its setting.
 func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
+	t.Parallel()
 	const secret = "madeUpEndpointSecret0123"
 	at := "@"
 	_, envoyErr := resolveBootConfig(envGetter(map[string]string{
@@ -665,6 +672,7 @@ func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
 // client's 503 and 502, the GitHub App client's 502) and, for the GitHub base, the GitHub read
 // record /healthz serves. A made-up token stands in each.
 func TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone(t *testing.T) {
+	t.Parallel()
 	const token = "madeUpURLToken0123"
 	at := "@"
 	shapes := map[string]struct{ value, refusal string }{
@@ -710,6 +718,7 @@ func TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone(t *testing.T) {
 // setting alone before it opens the database or connects to NATS: the DATABASE_URL here names a
 // database that does not exist, which the run never reaches. A made-up token stands in the base.
 func TestRedeliverWebhooksRefusesACredentialInTheGitHubAPIBase(t *testing.T) {
+	t.Parallel()
 	const token = "madeUpGitHubToken0123"
 	at := "@"
 	for name, base := range map[string]string{
@@ -740,6 +749,7 @@ func TestRedeliverWebhooksRefusesACredentialInTheGitHubAPIBase(t *testing.T) {
 // named through pgdsn.ConnectError, never by pgx's text, which quotes the DSN. Each password is
 // made up and built from parts.
 func TestDevSignInRefusesADatabaseURLPrintingNoPartOfItsPassword(t *testing.T) {
+	t.Parallel()
 	at := "@"
 	for name, row := range map[string]struct{ dsn, want string }{
 		"a password holding an @": {"postgres://dispatch:madeuphead0123" + at + "zqtail0123" + at + "127.0.0.1:5432/dispatch",
@@ -1342,7 +1352,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		handler http.Handler
 		stop    func()
 	}
-	start := func(database *store.Store) *process {
+	start := func(database *store.Store, stoodBy func()) *process {
 		t.Helper()
 		client, err := bus.ConnectOwningStream([]string{url})
 		if err != nil {
@@ -1355,6 +1365,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		}
 		publisher := outbox.New(outbox.Deps{
 			Store: &store.Store{Pool: pool}, Publisher: client, Broker: events.NewBroker(), Listen: database.Pool.Listener,
+			StoodBy: stoodBy,
 		})
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -1381,16 +1392,15 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		return publishing
 	}
 
-	first := start(database)
-	deadline := time.Now().Add(10 * time.Second)
-	for !probe(first) {
-		if time.Now().After(deadline) {
-			t.Fatal("healthz never reported the only outbox publishing")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	second := start(storetest.SecondProcess(t, database))
-	time.Sleep(time.Second)
+	first := start(database, nil)
+	testwait.Until(t, "healthz to report the only outbox publishing", func() (bool, bool) {
+		publishing := probe(first)
+		return publishing, publishing
+	})
+
+	stoodBy := make(chan struct{})
+	second := start(storetest.SecondProcess(t, database), sync.OnceFunc(func() { close(stoodBy) }))
+	testwait.Receive(t, "the second outbox to try the publisher hold and find it held", stoodBy)
 	if probe(second) || !probe(first) {
 		t.Fatalf("outbox_publisher: first %t, second %t, want only the first, which holds the publisher hold", probe(first), probe(second))
 	}
@@ -1399,13 +1409,12 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	if probe(first) {
 		t.Fatal("healthz reported a stopped outbox publishing")
 	}
-	deadline = time.Now().Add(10 * time.Second)
-	for !probe(second) {
-		if time.Now().After(deadline) {
-			t.Fatal("healthz never reported the standby publishing once the holder stopped")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// TestOneProcessPublishesTheOutboxAtATime (multiprocess) checks the take-over bound.
+	// Here only the publishing state after the hand-off decides the result.
+	testwait.Until(t, "healthz to report the standby publishing once the holder stops", func() (bool, bool) {
+		publishing := probe(second)
+		return publishing, publishing
+	})
 }
 
 // /healthz says this build judges a write's Idempotency-Key (INFRA-258), which the deploy check
@@ -1632,18 +1641,154 @@ func blackholePostgres(t *testing.T, upstream string, blackholed *atomic.Bool) s
 	return proxyPostgres(t, upstream, blackholed, 0)
 }
 
-// slowPostgres puts a proxy in front of upstream and returns its address. Every connection
-// through it reaches upstream dialDelay late and is then forwarded whole, and nothing is ever
-// black-holed: the only thing the proxy adds is that wait. It is how a test makes a process pay
-// for a cold dial what a loaded database charges for one, which a caller already holding a
-// connection pays nothing of.
-func slowPostgres(t *testing.T, upstream string, dialDelay time.Duration) string {
-	t.Helper()
-	return proxyPostgres(t, upstream, &atomic.Bool{}, dialDelay)
+// slowPostgresDials is what slowPostgres saw: the dials it delayed, and the SSLRequests it was
+// sent, each of which hides the startup message that names the connection's pool.
+type slowPostgresDials struct {
+	delayed     atomic.Int64
+	sslRequests atomic.Int64
 }
 
-// proxyPostgres is the listener both proxies above are: it accepts for as long as the test runs
-// and hands each connection to proxyPostgresConnection on their terms.
+// slowPostgres puts a proxy in front of upstream and returns its address. It reads each
+// connection's first message (slowPostgresFirstMessage) and lets only a connection of the health
+// probe's pool (application_name dispatch-health) reach upstream dialDelay late; every other
+// connection is forwarded at once, whole, and nothing is ever black-holed. It is how a test makes
+// a process pay for the health pool's cold dial what a loaded database charges for one.
+func slowPostgres(t *testing.T, upstream string, dialDelay time.Duration) (string, *slowPostgresDials) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the slow Postgres proxy: %v", err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	dials := new(slowPostgresDials)
+	go func() {
+		for {
+			client, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go slowPostgresConnection(client, upstream, dialDelay, dials)
+		}
+	}()
+	return listener.Addr().String(), dials
+}
+
+// maxPostgresFirstMessage is the longest first message the proxy reads: Postgres refuses a startup
+// packet over 10,000 bytes past its four-byte length field.
+const maxPostgresFirstMessage = 4 + 10_000
+
+// slowPostgresConnection reads client's first message whole, with no deadline of its own, and acts
+// on slowPostgresFirstMessage's answer: it holds a dispatch-health connection dialDelay (a stand-in
+// that answers late on purpose, testwait.Pause) before it dials upstream, records an SSLRequest and
+// closes the connection, and then forwards the bytes it read and pumps both ways.
+func slowPostgresConnection(client net.Conn, upstream string, dialDelay time.Duration, dials *slowPostgresDials) {
+	defer client.Close()
+	var length [4]byte
+	if _, err := io.ReadFull(client, length[:]); err != nil {
+		return
+	}
+	size := binary.BigEndian.Uint32(length[:])
+	if size < 8 || size > maxPostgresFirstMessage {
+		return
+	}
+	first := make([]byte, size)
+	copy(first, length[:])
+	if _, err := io.ReadFull(client, first[4:]); err != nil {
+		return
+	}
+	switch slowPostgresFirstMessage(first) {
+	case postgresDelay:
+		testwait.Pause(dialDelay)
+		dials.delayed.Add(1)
+	case postgresForward:
+	case postgresRejectSSL:
+		dials.sslRequests.Add(1)
+		return
+	default:
+		return
+	}
+	server, err := net.Dial("tcp", upstream)
+	if err != nil {
+		return
+	}
+	defer server.Close()
+	if _, err := server.Write(first); err != nil {
+		return
+	}
+	go func() {
+		_, _ = io.Copy(client, server)
+		_ = client.Close()
+	}()
+	_, _ = io.Copy(server, client)
+}
+
+// postgresFirstAction is what slowPostgres does with a connection, by its first message.
+type postgresFirstAction string
+
+const (
+	postgresForward   postgresFirstAction = "forward"
+	postgresDelay     postgresFirstAction = "delay"
+	postgresRejectSSL postgresFirstAction = "reject SSLRequest"
+	postgresInvalid   postgresFirstAction = "invalid first message"
+)
+
+// slowPostgresFirstMessage uses pgproto3 to decode a complete first message and selects the
+// proxy's action.
+func slowPostgresFirstMessage(message []byte) postgresFirstAction {
+	if len(message) < 8 || len(message) > maxPostgresFirstMessage ||
+		binary.BigEndian.Uint32(message[:4]) != uint32(len(message)) {
+		return postgresInvalid
+	}
+	startup, err := pgproto3.NewBackend(bytes.NewReader(message), nil).ReceiveStartupMessage()
+	if err != nil {
+		return postgresInvalid
+	}
+	switch startup := startup.(type) {
+	case *pgproto3.StartupMessage:
+		if startup.Parameters["application_name"] == "dispatch-health" {
+			return postgresDelay
+		}
+		return postgresForward
+	case *pgproto3.SSLRequest:
+		return postgresRejectSSL
+	case *pgproto3.CancelRequest:
+		return postgresForward
+	default:
+		return postgresInvalid
+	}
+}
+
+// The slow proxy delays a startup message naming the health pool and forwards startup messages
+// from other applications. It rejects SSLRequest and forwards CancelRequest without a delay.
+// The fixtures come from pgx v5.13.0 through a recording proxy (INFRA-6336's plan, "The fixtures of
+// the slow proxy"). The other application's message is the health message with dispatch-health
+// replaced by dispatch and its length field rewritten. Dispatch's shared pool sets no
+// application_name of its own.
+func TestTheSlowPostgresProxyReadsEachFirstMessagePgxWrites(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, wire string
+		want       postgresFirstAction
+	}{
+		{"health startup", "00000050000300006461746162617365006c6567696f6e5f74657374006170706c69636174696f6e5f6e616d650064697370617463682d6865616c74680075736572006c6567696f6e5f746573740000", postgresDelay},
+		{"another application's startup", "00000049000300006461746162617365006c6567696f6e5f74657374006170706c69636174696f6e5f6e616d650064697370617463680075736572006c6567696f6e5f746573740000", postgresForward},
+		{"SSLRequest", "0000000804d2162f", postgresRejectSSL},
+		{"CancelRequest", "0000001004d2162e000044ddd66b8be0", postgresForward},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			message, err := hex.DecodeString(tt.wire)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := slowPostgresFirstMessage(message); got != tt.want {
+				t.Fatalf("slowPostgresFirstMessage = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// proxyPostgres is the black-hole proxy's listener: it accepts for as long as the test runs and
+// hands each connection to proxyPostgresConnection on its terms.
 func proxyPostgres(t *testing.T, upstream string, blackholed *atomic.Bool, dialDelay time.Duration) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -2072,6 +2217,7 @@ func TestResolveBootConfigDevSignInRequiresCookieIdentity(t *testing.T) {
 // header as a person: any other name is refused, naming the one it reads, and every spelling of
 // that one is accepted.
 func TestResolveBootConfigHeaderIdentityReadsItsOwnHeaderAlone(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"Authorization", "Cookie", "Proxy-Authorization", "X-Forwarded-User"} {
 		_, err := resolveBootConfig(envGetter(headerIdentityEnvironment(map[string]string{"DISPATCH_IDENTITY": "header:" + name})))
 		if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "header:X-Dispatch-User") {
@@ -2737,12 +2883,6 @@ func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []
 	return ids
 }
 
-// keywordFillDeferredWatch is how long a process booted with DISPATCH_SEARCH_FILL=off is watched,
-// from its admission to the registry of live server processes, for a keyword fill that started
-// anyway: longer than the 10 s a standby waits between its tries for the hold, where a fill that
-// started takes the hold the moment its process serves and writes the waiting events' rows.
-const keywordFillDeferredWatch = 15 * time.Second
-
 // keywordFillTablesEmpty is the end of the deferral line of a process booted with
 // DISPATCH_SEARCH_FILL=off on a database where neither table the keyword fill writes holds a row
 // (searchFillTableRows).
@@ -2750,27 +2890,33 @@ const keywordFillTablesEmpty = "search_text_versions_rows=none search_text_versi
 
 // DISPATCH_SEARCH_FILL decides whether a serving process starts the keyword fill. Booted with it
 // off, a process that the registry of live server processes admitted, and so serves, logs once
-// that the fill is deferred, saying that neither table the fill writes holds a row, and for
-// keywordFillDeferredWatch takes no hold of the fill's and writes no row and no cursor row, though
-// 50 events wait for their rows and 50 more are written while it serves. Booted with it on, on a
-// database of its own holding the same events, a process takes the hold, writes every event's row
-// and the cursor row, and logs no deferral; the same read that finds none of them in the off row
-// counts each of them there.
+// that the fill is deferred, saying that neither table the fill writes holds a row, and for three
+// standby retries (DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY, shortened so that a fill that started
+// anyway and was refused the hold at first has tried again twice) takes no hold of the fill's and
+// writes no row and no cursor row, though 50 events wait for their rows and 50 more are written
+// while it serves. Booted with it on, on a database of its own holding the same events, a process
+// takes the hold, writes every event's row and the cursor row, and logs no deferral; the same read
+// that finds none of them in the off row counts each of them there.
 func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 	t.Parallel()
 	t.Run("off", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		textversionstest.SeedIssue(t, database)
 		writeKeywordFillComments(t, database, 50)
-		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+		// Half a second gives a retry time to reach Postgres without making the three-retry watch long.
+		const standbyRetry = 500 * time.Millisecond
+		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{
+			"DISPATCH_SEARCH_FILL":                    "off",
+			"DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY": standbyRetry.String(),
+		}})
 		process.waitHealthy(t)
 		awaitRegistryAdmission(t, database, process)
 		writeKeywordFillComments(t, database, 50)
-		admitted := time.Now()
-		for time.Since(admitted) < keywordFillDeferredWatch {
-			requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v after the process was admitted", time.Since(admitted).Round(time.Millisecond)))
-			time.Sleep(250 * time.Millisecond)
-		}
+		testwait.Span(t, 3*standbyRetry, "No test state can show that the fill never started. "+
+			"The child process is outside synctest. The off path writes nothing after its deferral "+
+			"line that a later action could read. A fill that starts anyway tries for the hold "+
+			"immediately and retries within one standby interval.")
 		requireNoKeywordFillWrite(t, database, "at the end of the watch")
 		if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 {
 			t.Fatalf("the process logged the deferral %d times; want once:\n%s", len(lines), process.Output.String())
@@ -2785,12 +2931,13 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 		}
 	})
 	t.Run("on", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		textversionstest.SeedIssue(t, database)
 		before := writeKeywordFillComments(t, database, 50)
 		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "on"}})
 		process.waitHealthy(t)
-		process.waitForLog(t, 30*time.Second, keywordFillTookLine)
+		process.awaitLog(t, keywordFillTookLine)
 		after := writeKeywordFillComments(t, database, 50)
 		textversionstest.AwaitRowsUntil(t, database, append(before, after...), nil)
 		if writes := readKeywordFillWrites(t, database); writes.holds == 0 || writes.rows == 0 || writes.cursors == 0 {

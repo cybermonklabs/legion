@@ -110,11 +110,12 @@ func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow 
 // NewCodeFlowOn is NewCodeFlow with each revocation's bound, TokenTimeout, armed on c: clock.Real
 // from NewCodeFlow, and a test's clocktest.Fake, which ends a revocation the issuer holds only
 // where the test moves it. Every other call keeps TokenTimeout on the wall clock (tokenClient).
-func NewCodeFlowOn(issuer, clientID, clientSecret, hostedDomain string, c clock.Clock) *CodeFlow {
+// WithDiscoveryRetry can shorten the default discovery waits.
+func NewCodeFlowOn(issuer, clientID, clientSecret, hostedDomain string, c clock.Clock, opts ...DiscoveryOption) *CodeFlow {
 	return &CodeFlow{
 		discovery: newDiscovery(issuer, func(ctx context.Context) (*codeFlowIssuer, error) {
 			return discoverCodeFlow(ctx, issuer, clientID, clientSecret)
-		}),
+		}, opts...),
 		hostedDomain: hostedDomain,
 		http:         tokenClient(),
 		revocation:   revocationClient(),

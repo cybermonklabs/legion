@@ -22,7 +22,8 @@ import (
 // when the pod's budget stops covering it).
 const stopGrace = 30 * time.Second
 
-// documentShutdownTimeout is the document service's own budget: docs.Service.Shutdown spends up to
+// documentShutdownTimeout is the document service's budget in a deployment. A test process can
+// shorten it (bootConfig.DocumentShutdown). In a deployment, docs.Service.Shutdown spends up to
 // its drain budget waiting for durable appends and running settlements, sized so a burst of writes
 // still landing when shutdown begins has room to finish, not only the ones already queued - and
 // keeps a 5 s reserve past it. That reserve is not just time to read back which settlements
@@ -61,12 +62,12 @@ const drainPollInterval = 250 * time.Millisecond
 
 // outboxStopBudget is how long after shutdown starts it waits, at most, for the events outbox to
 // stop before it closes the pool: until the latest the document service's budget can end, 5 s
-// inside stopGrace, since the drain before that budget is never longer than
-// httpDrainBeforeDocuments (resolveBootConfig refuses a longer DISPATCH_TEST_HTTP_DRAIN). The
-// outbox stops with the process context, which is cancelled before shutdown starts, once it has
-// recorded its batch in flight and released the publisher hold, each a statement bounded by the
-// outbox's own record timeout, so it is done well inside the budget unless its database has
-// stopped answering.
+// inside stopGrace. resolveBootConfig refuses a DISPATCH_TEST_HTTP_DRAIN longer than
+// httpDrainBeforeDocuments and a DISPATCH_TEST_DOCUMENT_SHUTDOWN longer than
+// documentShutdownTimeout. The outbox stops with the process context, which is cancelled before
+// shutdown starts, once it has recorded its batch in flight and released the publisher hold, each
+// a statement bounded by the outbox's own record timeout, so it is done well inside the budget
+// unless its database has stopped answering.
 const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 
 // processStarted is when this process started, as near as its Go code can say: the moment the
@@ -77,10 +78,10 @@ const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 var processStarted = time.Now()
 
 // serveUntilStopped serves on listener until ctx ends, then stops Dispatch (shutdown, with
-// httpDrain as its drain before the document service), deregistering it once HTTP has drained. It
-// logs the address listener is bound to, whether main bound it or inherited it
-// (DISPATCH_LISTEN_FD), so the line names the port a kernel chose, and the milliseconds since the
-// process started (processStarted). Two things end
+// httpDrain as its drain before the document service and documentBudget as the service's budget),
+// deregistering it once HTTP has drained. It logs the address listener is bound to, whether main
+// bound it or inherited it (DISPATCH_LISTEN_FD), so the line names the port a kernel chose, and
+// the milliseconds since the process started (processStarted). Two things end
 // serving before the signal does, each logged at ERROR and returned once shutdown has run, so main
 // exits 1 and a supervisor never reads either as a clean stop: serving failed, or the registry
 // refused to count this process as live again beside a live process whose signing keys it does not
@@ -88,7 +89,7 @@ var processStarted = time.Now()
 // makes: the listener closes at once, the requests in flight are answered, the intakes stop, and
 // the registry's row is deleted.
 func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *http.Server, listener net.Listener,
-	documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), lost <-chan error, outboxStopped <-chan struct{}, httpDrain time.Duration) error {
+	documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), lost <-chan error, outboxStopped <-chan struct{}, httpDrain, documentBudget time.Duration) error {
 	serveErr := make(chan error, 1)
 	go func() {
 		slog.Info("dispatch: listening", "addr", listener.Addr().String(), "since_start_ms", time.Since(processStarted).Milliseconds())
@@ -106,7 +107,7 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 		cancel()
 	}
 	slog.Info("dispatch: shutting down")
-	shutdown(clock.Real(), server, documentService, pool, waitBackground, waitIntakes, deregister, outboxStopped, httpDrain)
+	shutdown(clock.Real(), server, documentService, pool, waitBackground, waitIntakes, deregister, outboxStopped, httpDrain, documentBudget)
 	select {
 	case err := <-serveErr:
 		return err
@@ -117,10 +118,11 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 
 // shutdown stops Dispatch once its process context is cancelled. HTTP drains the requests in flight
 // first, with no deadline of its own: a message send among them finishes, bounded by the listener
-// client's receipt timeout. The document service settles the documents owed within
-// documentShutdownTimeout once those requests are done, or httpDrain after the signal with some
-// still running: httpDrainBeforeDocuments in a deployment, and no longer in a test process
-// (bootConfig.HTTPDrain, which resolveBootConfig refuses past httpDrainBeforeDocuments).
+// client's receipt timeout. The document service settles the documents owed within documentBudget
+// once those requests are done, or httpDrain after the signal with some still running:
+// documentShutdownTimeout and httpDrainBeforeDocuments in a deployment, or shorter values in a
+// test process (bootConfig.DocumentShutdown and bootConfig.HTTPDrain, which resolveBootConfig
+// refuses past the deployment's values).
 // waitBackground then waits for the delivery hub, every live socket and the subscriptions they ran
 // to finish their Lifetime-driven shutdown, and waitIntakes for the
 // intakes to finish their stop (the GitHub intakes' delivery.StartIntakes stop and the Legion state
@@ -158,7 +160,7 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // the outbox run on c, the wall clock in production (serveUntilStopped), so a test moves a fake
 // clock through them (TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget); the health probes
 // and the pauses between them (waitUntilIdle, closePool) run on the wall clock.
-func shutdown(c clock.Clock, server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), outboxStopped <-chan struct{}, httpDrain time.Duration) {
+func shutdown(c clock.Clock, server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), outboxStopped <-chan struct{}, httpDrain, documentBudget time.Duration) {
 	started := c.Now()
 	drained := make(chan struct{})
 	go func() {
@@ -172,7 +174,7 @@ func shutdown(c clock.Clock, server *http.Server, documentService *docs.Service,
 	case <-c.After(httpDrain):
 		slog.Warn("dispatch: settle documents with requests still in flight")
 	}
-	documentCtx, cancelDocuments := c.WithTimeout(context.Background(), documentShutdownTimeout)
+	documentCtx, cancelDocuments := c.WithTimeout(context.Background(), documentBudget)
 	defer cancelDocuments()
 	if err := documentService.Shutdown(documentCtx); err != nil {
 		slog.Warn("dispatch: shutdown document service", "error", err)

@@ -14,6 +14,7 @@ import (
 // oidc.IssuerRefusal refuses the first two at boot; the line holds whatever it is given. A plain
 // issuer is named as written.
 func TestTheServiceTokenBootLineNamesNoCredentialOfTheIssuer(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	const token = "madeUpIssuerToken0123456789"
 	for shape, issuer := range map[string]string{
 		"a token in the query":         "https://oidc.example/id/CLUSTER?token=" + token,

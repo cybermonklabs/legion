@@ -36,6 +36,10 @@ const (
 	caughtUpEvery = time.Minute
 )
 
+// StandbyRetryBound is standbyRetry, the interval a deployment's standby tries for the hold at,
+// for a caller that bounds Config.StandbyRetry by it: a test shortens the retry, never lengthens it.
+const StandbyRetryBound = standbyRetry
+
 // The lease pool's callers the fill reserves (ReserveLeases): its own goroutine, which takes and
 // releases its hold and runs its batches and its reads one at a time, and the hold's renewal
 // goroutine, which renews the hold beside them.
@@ -73,10 +77,13 @@ type Config struct {
 	// first of each hold and the horizon's own re-reads.
 	Events <-chan struct{}
 	// Released is signalled after a hold is released (the listener hub's wake on
-	// duty.HoldReleasedChannel): a standby tries for the hold on it, as well as every
-	// standbyRetry. Nil leaves the retry alone.
+	// duty.HoldReleasedChannel): a standby tries for the hold on it, as well as on its retry
+	// ticker. Nil leaves the retry alone.
 	Released <-chan struct{}
-	// retry, when set, stands in for the standby's ticker of standbyRetry: each value it receives
+	// StandbyRetry sets the interval between a standby's tries for the hold. Zero keeps
+	// standbyRetry (10 s).
+	StandbyRetry time.Duration
+	// retry, when set, stands in for the standby's ticker: each value it receives
 	// is one more try for the hold. A test of this package sets it, so the standby retries when the
 	// test says and the test's verdict waits on no ticker; nil, as every serving process leaves it,
 	// is the ticker.
@@ -90,8 +97,8 @@ type Config struct {
 // for cfg.Serving first, and takes nothing and writes nothing before.
 //
 // A process that does not hold the hold stands by: it tries for it at once, each time
-// cfg.Released is signalled and every standbyRetry, so it takes a released hold at once and a dead
-// holder's within 25 s. The holder runs a pass at once, and then each time cfg.Events is
+// cfg.Released is signalled and every standbyRetry by default, so it takes a released hold at once
+// and a dead holder's within 25 s. The holder runs a pass at once, and then each time cfg.Events is
 // signalled, each up to one read of the horizon (filler.pass); while the horizon stands below an
 // id a read of it saw, it reads it again 1 s and then up to 8 s later, and otherwise it holds no
 // timer, so a fill caught up with nothing written sends no statement but its hold's renewal.
@@ -181,13 +188,17 @@ func (r *runner) run(ctx context.Context) {
 }
 
 // standBy tries for the hold until it takes it, and answers it, or until ctx ends, and answers
-// nil: at once, then each time cfg.Released is signalled and every retry (a ticker of
-// standbyRetry, or cfg.retry where a test sets it). It says it stands by once, at the first
+// nil: at once, then each time cfg.Released is signalled and every retry (the ticker set by
+// cfg.StandbyRetry, or cfg.retry where a test sets it). It says it stands by once, at the first
 // refusal.
 func (r *runner) standBy(ctx context.Context) *duty.Hold {
 	retry := r.cfg.retry
 	if retry == nil {
-		ticker := time.NewTicker(standbyRetry)
+		interval := standbyRetry
+		if r.cfg.StandbyRetry > 0 {
+			interval = r.cfg.StandbyRetry
+		}
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		retry = ticker.C
 	}

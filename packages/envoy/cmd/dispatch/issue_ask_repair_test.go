@@ -91,6 +91,7 @@ func TestRepairIssueAsksAtBootWithdrawsAndLogsItsCounts(t *testing.T) {
 // restores the clean one. The process itself builds the dependencies the pass runs on, so only the
 // started binary shows which ones the pass gets.
 func TestTheStartedServersRepairPassJudgesTheFormOfTheSpec(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
 	options := dispatchOptions{Env: map[string]string{"DISPATCH_SPEC_ROOTS": "ACME-1"}}

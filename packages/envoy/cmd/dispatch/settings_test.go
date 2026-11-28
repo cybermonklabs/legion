@@ -1164,61 +1164,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			for _, value := range []string{"Operator@example.com", "operator", "operator@", "@example.com", "operator@example.com,carol@example.com", "op erator@example.com"} {
 				refusedWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": value}, "DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email")
 			}
-			// Its reader is the boot's owner check (store.EnsureProjectOwners): over a project
-			// with no owner a process refuses to serve, naming
-			// the project and both repairs, until the setting names a full member, whom the boot
-			// then makes the project's owner.
-			t.Run("boot", func(t *testing.T) {
-				ctx := context.Background()
-				database := storetest.Open(t)
-				if _, err := database.Pool.Exec(ctx, `
-					insert into people (email, member_kind) values ('operator@example.com', 'full');
-					alter table projects disable trigger projects_owner_from_default;
-					insert into projects (key, name, default_assignee) values ('STRAY', 'Its default never signed in', 'gone@example.com');
-					alter table projects enable trigger projects_owner_from_default;
-				`); err != nil {
-					t.Fatalf("seed a project with no owner: %v", err)
-				}
-				refused := startDispatchProcess(t, database.Pool.Config().ConnString())
-				refused.WaitExit(t, "its start over a project with no owner")
-				output := refused.Output.String()
-				if code := refused.Cmd.ProcessState.ExitCode(); code != 1 {
-					t.Errorf("unset: Dispatch exited %d over a project with no owner, want 1:\n%s", code, output)
-				}
-				for _, named := range []string{"STRAY", "DISPATCH_PROJECT_OWNER_FALLBACK", "envoy-dispatch project-owner <KEY> <email>"} {
-					if !strings.Contains(output, named) {
-						t.Errorf("unset: Dispatch refused its start without naming %q:\n%s", named, output)
-					}
-				}
-				served := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
-					Env: map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": "operator@example.com"},
-				})
-				served.waitHealthy(t)
-				var owner string
-				if err := database.Pool.QueryRow(ctx, `select owner from projects where key = 'STRAY'`).Scan(&owner); err != nil || owner != "operator@example.com" {
-					t.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK=operator@example.com: STRAY's owner after the boot = %q, %v; want the operator", owner, err)
-				}
-				// The grant is recorded as an operator's grant is: one project.access_changed of
-				// change owner on STRAY, by the fallback's system actor, and the server's record of
-				// it, naming no previous owner and the operator as the owner it left.
-				var appended, records int
-				var actor, payload, recordOwner string
-				if err := database.Pool.QueryRow(ctx, `
-					select count(*), coalesce(max(e.actor->>'kind') || ':' || max(e.actor->>'id'), '<none>'),
-						coalesce(max(e.payload::text), '<none>'), count(c.event_id),
-						coalesce(max(c.principal), '<none>') || '|' || coalesce(max(c.owner), '<none>')
-					from events e left join project_access_changes c on c.event_id = e.id
-					where e.project_key = 'STRAY' and e.type = 'project.access_changed'
-				`).Scan(&appended, &actor, &payload, &records, &recordOwner); err != nil {
-					t.Fatalf("read STRAY's access events: %v", err)
-				}
-				if appended != 1 || records != 1 || actor != "system:DISPATCH_PROJECT_OWNER_FALLBACK" ||
-					payload != `{"change": "owner", "project": "STRAY"}` || recordOwner != "|operator@example.com" {
-					t.Errorf("STRAY's grant: %d event(s) by %s carrying %s, %d record(s) %s; want one event of change owner by "+
-						"system:DISPATCH_PROJECT_OWNER_FALLBACK and one record naming no previous owner and the operator",
-						appended, actor, payload, records, recordOwner)
-				}
-			})
+			// Its reader, the boot's owner check (store.EnsureProjectOwners), is
+			// TestTheOwnerFallbackGrantsAnOwnerAtBoot, whose two process boots run beside the
+			// package's other tests.
 		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
 			if clientID, source, err := loadApp(t, map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env"}); err != nil || clientID != "Iv1.env" || source != "env" {
@@ -1465,31 +1413,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					t.Errorf("the people store main builds read %#v, %v; want the token sealed under the earlier key", membership, err)
 				}
 			})
-			// Unset, with an empty signing-key file in the data dir, the boot exits 1 naming the
-			// file, before the people store would panic on the empty key set.
-			t.Run("an empty signing-key file", func(t *testing.T) {
-				database := storetest.Open(t)
-				home := t.TempDir()
-				keyFile := filepath.Join(home, ".local", "share", "dispatch", "signing-key")
-				if err := os.MkdirAll(filepath.Dir(keyFile), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(keyFile, nil, 0o600); err != nil {
-					t.Fatal(err)
-				}
-				process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: map[string]string{"HOME": home}})
-				process.WaitExit(t, "its start with an empty signing-key file")
-				output := process.Output.String()
-				if code := process.Cmd.ProcessState.ExitCode(); code != 1 {
-					t.Errorf("the boot with an empty signing-key file exited %d, want 1:\n%s", code, output)
-				}
-				if !strings.Contains(output, `msg="dispatch: load signing key"`) || !strings.Contains(output, keyFile) || !strings.Contains(output, "is empty") {
-					t.Errorf("the boot with an empty signing-key file did not refuse it by name (%s):\n%s", keyFile, output)
-				}
-				if strings.Contains(output, "panic") {
-					t.Errorf("the boot with an empty signing-key file panicked:\n%s", output)
-				}
-			})
+			// The boot's refusal of an empty signing-key file, unset, is
+			// TestBootRefusesAnEmptySigningKeyFileWithoutPanicking, whose process boot runs beside
+			// the package's other tests.
+
 			// The key the router's sign-in seals the pool's refresh token under (main hands it to the
 			// people store): the row holds the sealed form, and past the hour the membership check
 			// opens it and renews the sign-in with the pool. A people store under another key, which
@@ -2121,6 +2048,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_CI_RECONCILE_AT_START": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.CIReconcileAtStart {
+				t.Error("DISPATCH_TEST_CI_RECONCILE_AT_START unset: CIReconcileAtStart true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_CI_RECONCILE_AT_START": "1"}); !boot.CIReconcileAtStart {
+				t.Error("DISPATCH_TEST_CI_RECONCILE_AT_START=1: CIReconcileAtStart false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_CI_RECONCILE_AT_START": "true"}); boot.CIReconcileAtStart {
+				t.Error("DISPATCH_TEST_CI_RECONCILE_AT_START=true: CIReconcileAtStart true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_CI_RECONCILE_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_CI_RECONCILE_AT_START")
+		},
 		"DISPATCH_TEST_CI_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CIReconcileInterval != 0 {
 				t.Errorf("DISPATCH_TEST_CI_RECONCILE_INTERVAL unset: CIReconcileInterval = %v, want 0 (cireconcile.Interval's five minutes)", boot.CIReconcileInterval)
@@ -2251,6 +2190,35 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_COVERAGE_FILL_BACKOFF": func(t *testing.T) {
+			const name = "DISPATCH_TEST_COVERAGE_FILL_BACKOFF"
+			t.Run("unset", func(t *testing.T) {
+				if boot := resolveWith(t, nil); boot.CoverageFillBackoff != 0 {
+					t.Errorf("%s unset: CoverageFillBackoff = %v, want 0 (embedqueue's own)", name, boot.CoverageFillBackoff)
+				}
+			})
+			for _, want := range []time.Duration{100 * time.Millisecond, 10 * time.Second} {
+				t.Run(want.String(), func(t *testing.T) {
+					boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: want.String()})
+					if boot.CoverageFillBackoff != want {
+						t.Errorf("%s: CoverageFillBackoff = %v, want %v", name, boot.CoverageFillBackoff, want)
+					}
+				})
+			}
+			t.Run("without_hooks", func(t *testing.T) {
+				refusedWith(t, map[string]string{name: "100ms"}, "DISPATCH_TEST_HOOKS=1 required with "+name)
+			})
+			t.Run("above_maximum", func(t *testing.T) {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "11s"},
+					name+`="11s" (expected at most 10s`)
+			})
+			t.Run("nonpositive", func(t *testing.T) {
+				for _, invalid := range []string{"0s", "-1s"} {
+					refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+						fmt.Sprintf("%s=%q (expected a positive Go duration)", name, invalid))
+				}
+			})
+		},
 		"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CoverageStatementTimeout != 0 {
 				t.Errorf("DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT unset: CoverageStatementTimeout = %v, want 0 (embedqueue's 10 s)", boot.CoverageStatementTimeout)
@@ -2308,6 +2276,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				`DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT="999us" (expected at least 1ms`)
 			refusedWith(t, map[string]string{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY": func(t *testing.T) {
+			const name = "DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY"
+			if boot := resolveWith(t, nil); boot.SearchFillStandbyRetry != 0 {
+				t.Errorf("%s unset: SearchFillStandbyRetry = %v, want 0 (the default interval)", name, boot.SearchFillStandbyRetry)
+			}
+			for _, want := range []time.Duration{500 * time.Millisecond, 10 * time.Second} {
+				if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: want.String()}); boot.SearchFillStandbyRetry != want {
+					t.Errorf("%s=%s: SearchFillStandbyRetry = %v, want %v", name, want, boot.SearchFillStandbyRetry, want)
+				}
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+					fmt.Sprintf("%s=%q (expected a positive Go duration)", name, invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "11s"},
+				name+`="11s" (expected at most 10s`)
+			refusedWith(t, map[string]string{name: "500ms"}, "DISPATCH_TEST_HOOKS=1 required with "+name)
+		},
 		"DISPATCH_TEST_HTTP_DRAIN": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.HTTPDrain != 0 {
 				t.Errorf("DISPATCH_TEST_HTTP_DRAIN unset: HTTPDrain = %v, want 0 (httpDrainBeforeDocuments' eleven seconds)", boot.HTTPDrain)
@@ -2328,6 +2314,70 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HTTP_DRAIN": "11.001s"},
 				`DISPATCH_TEST_HTTP_DRAIN="11.001s" (expected at most 11s`)
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HTTP_DRAIN": "2s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_DOCUMENT_SHUTDOWN": func(t *testing.T) {
+			const name = "DISPATCH_TEST_DOCUMENT_SHUTDOWN"
+			if boot := resolveWith(t, nil); boot.DocumentShutdown != 0 {
+				t.Errorf("%s unset: DocumentShutdown = %v, want 0 (documentShutdownTimeout's fourteen seconds)", name, boot.DocumentShutdown)
+			}
+			const quick = 1400 * time.Millisecond
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: quick.String()}); boot.DocumentShutdown != quick {
+				t.Errorf("%s: DocumentShutdown = %v, want %v", name, boot.DocumentShutdown, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+					fmt.Sprintf("%s=%q (expected a positive Go duration)", name, invalid))
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "14s"}); boot.DocumentShutdown != 14*time.Second {
+				t.Errorf("%s=14s: DocumentShutdown = %v, want 14s", name, boot.DocumentShutdown)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "14.001s"},
+				name+`="14.001s" (expected at most 14s`)
+			refusedWith(t, map[string]string{name: quick.String()}, "DISPATCH_TEST_HOOKS=1 required with "+name)
+		},
+		"DISPATCH_TEST_RATE_READING_BEFORE_RESET": func(t *testing.T) {
+			const name = "DISPATCH_TEST_RATE_READING_BEFORE_RESET"
+			if boot := resolveWith(t, nil); boot.RateReadingBeforeReset != 0 {
+				t.Errorf("%s unset: RateReadingBeforeReset = %v, want 0 (the default lead)", name, boot.RateReadingBeforeReset)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "60s"}); boot.RateReadingBeforeReset != time.Minute {
+				t.Errorf("%s=60s: RateReadingBeforeReset = %v, want 60s", name, boot.RateReadingBeforeReset)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+					fmt.Sprintf("%s=%q (expected a positive Go duration)", name, invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "61s"},
+				name+`="61s" (expected at most 1m0s`)
+			refusedWith(t, map[string]string{name: "60s"}, "DISPATCH_TEST_HOOKS=1 required with "+name)
+		},
+		"DISPATCH_TEST_OIDC_DISCOVERY_RETRY": func(t *testing.T) {
+			const name = "DISPATCH_TEST_OIDC_DISCOVERY_RETRY"
+			t.Run("unset", func(t *testing.T) {
+				if boot := resolveWith(t, nil); boot.OIDCDiscoveryRetry != 0 {
+					t.Errorf("%s unset: OIDCDiscoveryRetry = %v, want 0 (the default waits)", name, boot.OIDCDiscoveryRetry)
+				}
+			})
+			t.Run("accepted", func(t *testing.T) {
+				for _, want := range []time.Duration{100 * time.Millisecond, time.Second} {
+					if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: want.String()}); boot.OIDCDiscoveryRetry != want {
+						t.Errorf("%s=%s: OIDCDiscoveryRetry = %v, want %v", name, want, boot.OIDCDiscoveryRetry, want)
+					}
+				}
+			})
+			t.Run("requires hooks", func(t *testing.T) {
+				refusedWith(t, map[string]string{name: "100ms"}, "DISPATCH_TEST_HOOKS=1 required with "+name)
+			})
+			t.Run("rejects above bound", func(t *testing.T) {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "2s"},
+					name+`="2s" (expected at most 1s,`)
+			})
+			t.Run("rejects invalid", func(t *testing.T) {
+				for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+					refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+						fmt.Sprintf("%s=%q (expected a positive Go duration)", name, invalid))
+				}
+			})
 		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ROSTER_UNCACHED": "1"}); !boot.ListenerRosterUncached {
@@ -2498,35 +2548,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("unset: CreateStaged true")
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_CREATE_STAGED": "1"}, "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_CREATE_STAGED")
-			// Its reader: a process started with it takes a plan that puts parent, which its
-			// manifest stages for the next version, into a document that holds none. The same
-			// process started without it refuses that plan. A subprocess runs the shipped manifest
-			// alone, so this case writes the element that manifest stages now, and moves to the next
-			// staged element at each version that makes parent creatable; pmdoc's
-			// TestATestProcessCreatesAStagedElementOnlyWhenTold holds the hook on a made-up element.
-			t.Run("process", func(t *testing.T) {
-				plan, err := json.Marshal(map[string]string{
-					"name":    "plan.md",
-					"content": ":::plan_task{#default}\nShip it.\n:::\n\n:::plan_task{#t1 parent=\"dispatch://ACME-1/artifact/plan-md#b-default\"}\nWrite it.\n:::\n",
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, run := range []struct {
-					env    map[string]string
-					status int
-				}{
-					{env: nil, status: http.StatusBadRequest},
-					{env: map[string]string{"DISPATCH_TEST_CREATE_STAGED": "1"}, status: http.StatusCreated},
-				} {
-					database := storetest.Open(t)
-					process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: run.env})
-					process.waitHealthy(t)
-					process.createProject(t, "ACME", "Acme")
-					key, _ := process.createIssueIn(t, "ACME", "A plan under its task", "Ship it.")
-					process.call(t, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", string(plan), run.status)
-				}
-			})
+			// Its reader, a process that takes a plan putting the element its manifest stages into a
+			// document, is TestAProcessCreatesAStagedPlanElementOnlyWhenTold, whose two process boots
+			// run beside the package's other tests.
 		},
 	}
 	for _, row := range settings {
@@ -2566,6 +2590,128 @@ func TestTheNATSSOCKS5ProxyCarriesTheConnect(t *testing.T) {
 			t.Errorf("ENVOY_NATS_SOCKS5_PROXY=%s: the proxy received %+v, want every request for 127.0.0.1:1 as an IPv4 address (type 1)", proxy.Addr, got)
 			break
 		}
+	}
+}
+
+// TestAProcessCreatesAStagedPlanElementOnlyWhenTold checks that Dispatch rejects a plan with a
+// staged parent unless DISPATCH_TEST_CREATE_STAGED=1. It is the half of
+// TestEverySettingReachesItsReader's case for that setting that starts Dispatch processes, apart
+// so that it runs beside the other tests: it reads no process environment and no log.
+//
+// A subprocess runs the shipped manifest alone, so this test writes the element that manifest
+// stages now, and moves to the next staged element at each version that makes parent creatable.
+// The hook on a made-up element is pmdoc's TestATestProcessCreatesAStagedElementOnlyWhenTold.
+func TestAProcessCreatesAStagedPlanElementOnlyWhenTold(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
+	plan, err := json.Marshal(map[string]string{
+		"name":    "plan.md",
+		"content": ":::plan_task{#default}\nShip it.\n:::\n\n:::plan_task{#t1 parent=\"dispatch://ACME-1/artifact/plan-md#b-default\"}\nWrite it.\n:::\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range []struct {
+		env    map[string]string
+		status int
+	}{
+		{env: nil, status: http.StatusBadRequest},
+		{env: map[string]string{"DISPATCH_TEST_CREATE_STAGED": "1"}, status: http.StatusCreated},
+	} {
+		database := storetest.Open(t)
+		process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: run.env})
+		process.waitHealthy(t)
+		process.createProject(t, "ACME", "Acme")
+		key, _ := process.createIssueIn(t, "ACME", "A plan under its task", "Ship it.")
+		process.call(t, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", string(plan), run.status)
+	}
+}
+
+// TestTheOwnerFallbackGrantsAnOwnerAtBoot checks that a process refuses to serve a project with
+// no owner, and that DISPATCH_PROJECT_OWNER_FALLBACK gives it an owner and records the grant.
+// It is the half of TestEverySettingReachesItsReader's case for that setting that starts
+// Dispatch processes, apart so that it runs beside the other tests: it reads no process
+// environment and no log.
+func TestTheOwnerFallbackGrantsAnOwnerAtBoot(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database := storetest.Open(t)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into people (email, member_kind) values ('operator@example.com', 'full');
+		alter table projects disable trigger projects_owner_from_default;
+		insert into projects (key, name, default_assignee) values ('STRAY', 'Its default never signed in', 'gone@example.com');
+		alter table projects enable trigger projects_owner_from_default;
+	`); err != nil {
+		t.Fatalf("seed a project with no owner: %v", err)
+	}
+	refused := startDispatchProcess(t, database.Pool.Config().ConnString())
+	refused.WaitExit(t, "its start over a project with no owner")
+	output := refused.Output.String()
+	if code := refused.Cmd.ProcessState.ExitCode(); code != 1 {
+		t.Errorf("unset: Dispatch exited %d over a project with no owner, want 1:\n%s", code, output)
+	}
+	for _, named := range []string{"STRAY", "DISPATCH_PROJECT_OWNER_FALLBACK", "envoy-dispatch project-owner <KEY> <email>"} {
+		if !strings.Contains(output, named) {
+			t.Errorf("unset: Dispatch refused its start without naming %q:\n%s", named, output)
+		}
+	}
+	served := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+		Env: map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": "operator@example.com"},
+	})
+	served.waitHealthy(t)
+	var owner string
+	if err := database.Pool.QueryRow(ctx, `select owner from projects where key = 'STRAY'`).Scan(&owner); err != nil || owner != "operator@example.com" {
+		t.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK=operator@example.com: STRAY's owner after the boot = %q, %v; want the operator", owner, err)
+	}
+	// The grant is recorded as an operator's grant is: one project.access_changed of
+	// change owner on STRAY, by the fallback's system actor, and the server's record of
+	// it, naming no previous owner and the operator as the owner it left.
+	var appended, records int
+	var actor, payload, recordOwner string
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*), coalesce(max(e.actor->>'kind') || ':' || max(e.actor->>'id'), '<none>'),
+			coalesce(max(e.payload::text), '<none>'), count(c.event_id),
+			coalesce(max(c.principal), '<none>') || '|' || coalesce(max(c.owner), '<none>')
+		from events e left join project_access_changes c on c.event_id = e.id
+		where e.project_key = 'STRAY' and e.type = 'project.access_changed'
+	`).Scan(&appended, &actor, &payload, &records, &recordOwner); err != nil {
+		t.Fatalf("read STRAY's access events: %v", err)
+	}
+	if appended != 1 || records != 1 || actor != "system:DISPATCH_PROJECT_OWNER_FALLBACK" ||
+		payload != `{"change": "owner", "project": "STRAY"}` || recordOwner != "|operator@example.com" {
+		t.Errorf("STRAY's grant: %d event(s) by %s carrying %s, %d record(s) %s; want one event of change owner by "+
+			"system:DISPATCH_PROJECT_OWNER_FALLBACK and one record naming no previous owner and the operator",
+			appended, actor, payload, records, recordOwner)
+	}
+}
+
+// TestBootRefusesAnEmptySigningKeyFileWithoutPanicking checks that when DISPATCH_SIGNING_KEY
+// is unset and the signing-key file is empty, Dispatch exits 1 and names the file before the
+// people store would panic. It is the half of TestEverySettingReachesItsReader's case for that
+// setting that starts a Dispatch process, apart so that it runs beside the other tests:
+// it reads no process environment and no log.
+func TestBootRefusesAnEmptySigningKeyFileWithoutPanicking(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	home := t.TempDir()
+	keyFile := filepath.Join(home, ".local", "share", "dispatch", "signing-key")
+	if err := os.MkdirAll(filepath.Dir(keyFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: map[string]string{"HOME": home}})
+	process.WaitExit(t, "its start with an empty signing-key file")
+	output := process.Output.String()
+	if code := process.Cmd.ProcessState.ExitCode(); code != 1 {
+		t.Errorf("the boot with an empty signing-key file exited %d, want 1:\n%s", code, output)
+	}
+	if !strings.Contains(output, `msg="dispatch: load signing key"`) || !strings.Contains(output, keyFile) || !strings.Contains(output, "is empty") {
+		t.Errorf("the boot with an empty signing-key file did not refuse it by name (%s):\n%s", keyFile, output)
+	}
+	if strings.Contains(output, "panic") {
+		t.Errorf("the boot with an empty signing-key file panicked:\n%s", output)
 	}
 }
 

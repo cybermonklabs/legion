@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/githubrate"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -29,11 +30,12 @@ const rateReadingCaller = "rate_reading"
 // installation's permissions as the list named them, the used count, the limit and the reset of
 // its REST core counter and its GraphQL counter, and this process's own calls on each since its
 // last reset by caller kind (client.OwnCalls). The first pass runs at once and each next one at
-// githubrate.Next of the resets of every listed installation that the reading knows and has not
-// yet tried in their last minute: a pass that ends inside a counter's last minute it read the
-// installation outside of is followed by one at once, and a reset the reading tried in its last
-// minute asks for nothing more, whatever its header drifts to. A pass that fails to read a counter
-// keeps the reset read before it. Each installation's line says before_reset when it was written in
+// the time githubrate.NextWithin selects using the beforeReset lead (githubrate.BeforeReset in a
+// deployment) and the known resets of listed installations not yet tried in their last minute.
+// If a pass ends in a counter's last minute but read the installation before that minute, the next
+// pass runs at once. A reset the reading tried in its last minute asks for nothing more, whatever
+// its header drifts to. A pass that fails to read a counter keeps the reset read before it.
+// Each installation's line says before_reset when it was written in
 // the last minute before one of that installation's known resets, whether the pass was regular or
 // scheduled before a reset, and whether the reading succeeded or failed: a failed reading there is
 // a before_reset line carrying its error. It runs until ctx ends.
@@ -45,43 +47,17 @@ const rateReadingCaller = "rate_reading"
 // is every holder's, and each process's lines name it by its host name. A pass costs each
 // installation one core call, the workflows read; one more where the installation's repository
 // is listed again, at its first pass and after GitHub answered the remembered one 404.
-func runRateReading(ctx context.Context, client *githubapp.Client, log *slog.Logger) {
-	readRates(ctx, client, log, realClock())
+func runRateReading(ctx context.Context, client *githubapp.Client, log *slog.Logger, beforeReset time.Duration) {
+	readRates(ctx, client, log, nil, beforeReset)
 }
 
 // readRates is runRateReading on clock, which says what time it is and waits for the next pass.
-func readRates(ctx context.Context, client *githubapp.Client, log *slog.Logger, clock rateClock) {
+func readRates(ctx context.Context, client *githubapp.Client, log *slog.Logger, clk clock.Clock, beforeReset time.Duration) {
 	process, err := os.Hostname()
 	if err != nil {
 		slog.Warn("dispatch: the GitHub rate reading names no process: the host name could not be read", "error", err)
 	}
-	newRateReading(client, log, process, clock).run(ctx)
-}
-
-// rateClock is the rate reading's clock: now is the time a pass reads and schedules by, and wait
-// waits until until, answering false once ctx ended first. The reading's own resets and GitHub's
-// answers are compared on it, so a test that moves it runs a pass due at a reset's last minute at
-// once.
-type rateClock struct {
-	now  func() time.Time
-	wait func(ctx context.Context, until time.Time) bool
-}
-
-// realClock is the clock of the process: time.Now, and a timer.
-func realClock() rateClock {
-	return rateClock{
-		now: time.Now,
-		wait: func(ctx context.Context, until time.Time) bool {
-			timer := time.NewTimer(time.Until(until))
-			defer timer.Stop()
-			select {
-			case <-ctx.Done():
-				return false
-			case <-timer.C:
-				return true
-			}
-		},
-	}
+	newRateReading(client, log, process, clk, beforeReset).run(ctx)
 }
 
 // rateReading is what one process's reading keeps from pass to pass: the App's numeric id and
@@ -92,7 +68,8 @@ type rateReading struct {
 	client        *githubapp.Client
 	log           *slog.Logger
 	process       string
-	clock         rateClock
+	clock         clock.Clock
+	beforeReset   time.Duration
 	appID         string
 	appSlug       string
 	repositories  map[int64]repositoryName
@@ -142,20 +119,23 @@ func (k knownReset) untried(now time.Time) (time.Time, bool) {
 
 // newRateReading is a reading through client and log, named process, on clock, that knows nothing
 // of any installation yet.
-func newRateReading(client *githubapp.Client, log *slog.Logger, process string, clock rateClock) *rateReading {
+func newRateReading(client *githubapp.Client, log *slog.Logger, process string, clk clock.Clock, beforeReset time.Duration) *rateReading {
 	return &rateReading{
-		client: client, log: log, process: process, clock: clock,
+		client: client, log: log, process: process, clock: cmp.Or[clock.Clock](clk, clock.Real()),
+		beforeReset:  beforeReset,
 		repositories: map[int64]repositoryName{}, installations: map[int64]readingHeld{},
 	}
 }
 
-// run reads a pass at once and each next one when githubrate.Next says it is due, until ctx ends.
+// run reads a pass at once, then uses githubrate.NextWithin with r.beforeReset to schedule each
+// next pass until ctx ends.
 func (r *rateReading) run(ctx context.Context) {
 	ctx = githubrate.WithCaller(ctx, rateReadingCaller)
 	for {
 		resets := r.pass(ctx)
-		at, _ := githubrate.Next(r.clock.now(), resets)
-		if !r.clock.wait(ctx, at) {
+		now := r.clock.Now()
+		at, _ := githubrate.NextWithin(now, resets, r.beforeReset)
+		if r.clock.Sleep(ctx, at.Sub(now)) != nil {
 			return
 		}
 	}
@@ -171,7 +151,7 @@ type repositoryName struct {
 
 // pass reads every installation the App lists now and logs a line for each, and returns the
 // resets of the installations listed that are ahead and not yet tried in their last minute, for
-// githubrate.Next. It reads the installations with such a reset in its last minute first, so the
+// githubrate.NextWithin. It reads the installations with such a reset in its last minute first, so the
 // reading that must land before a reset is not kept behind the rest, and still reads every one. A
 // reading that fails logs its line with the error instead of the counters, so a pass logs as many
 // lines as the list held, and keeps the resets read before of every counter it did not read. A
@@ -199,7 +179,7 @@ func (r *rateReading) pass(ctx context.Context) []time.Time {
 		return r.untriedResets()
 	}
 	line.Installations = len(installations)
-	start := r.clock.now()
+	start := r.clock.Now()
 	slices.SortStableFunc(installations, func(a, b githubapp.Installation) int {
 		return lastMinuteFirst(r.inLastMinute(start, a.ID), r.inLastMinute(start, b.ID))
 	})
@@ -225,7 +205,7 @@ func (r *rateReading) pass(ctx context.Context) []time.Time {
 		// it did not read keeps the reset read before. The line says before_reset when the
 		// reading was taken in the last minute before one of them, so a failed reading in a last
 		// minute is a before_reset line carrying its error: that minute was tried and read nothing.
-		at := r.clock.now()
+		at := r.clock.Now()
 		held := r.installations[installation.ID]
 		held.resets.core.observe(reading.Core.Reset, at)
 		held.resets.graphql.observe(reading.GraphQL.Reset, at)
@@ -261,7 +241,7 @@ func (r *rateReading) refusedList(line githubrate.Reading, refusal string) {
 		githubrate.Write(r.log, line)
 		return
 	}
-	at := r.clock.now()
+	at := r.clock.Now()
 	line.Installations = len(r.installations)
 	for _, id := range slices.Sorted(maps.Keys(r.installations)) {
 		held := r.installations[id]
@@ -303,7 +283,7 @@ func lastMinuteFirst(a, b bool) int {
 // untriedResets is every known reset still ahead on the reading's clock and not yet tried in its
 // last minute; one that has passed is forgotten.
 func (r *rateReading) untriedResets() []time.Time {
-	now := r.clock.now()
+	now := r.clock.Now()
 	var untried []time.Time
 	for installation, held := range r.installations {
 		for _, known := range []*knownReset{&held.resets.core, &held.resets.graphql} {
@@ -377,7 +357,7 @@ func (r *rateReading) read(ctx context.Context, installation int64) (core, graph
 		return core, graphql, fmt.Errorf("read the GraphQL counter: %w", err)
 	}
 	core.Own, graphql.Own = r.client.OwnCalls(installation)
-	if at := r.clock.now(); !at.Before(core.Reset) || !at.Before(graphql.Reset) {
+	if at := r.clock.Now(); !at.Before(core.Reset) || !at.Before(graphql.Reset) {
 		return core, graphql, errors.New("a counter reset before its own-call snapshot; the reading spans two rate windows")
 	}
 	return core, graphql, nil
@@ -391,7 +371,7 @@ func (r *rateReading) read(ctx context.Context, installation int64) (core, graph
 // not seen here. A primary limit is not one: its refusal still names the spent counter, which is
 // what the reading reads.
 func (r *rateReading) held(installation int64) error {
-	if until := r.client.SecondaryUntil(installation); until.After(r.clock.now()) {
+	if until := r.client.SecondaryUntil(installation); until.After(r.clock.Now()) {
 		return fmt.Errorf("a GitHub secondary rate limit holds installation %d until %s, as GitHub answered this process; nothing was sent", installation, until.UTC().Format(time.RFC3339))
 	}
 	return nil

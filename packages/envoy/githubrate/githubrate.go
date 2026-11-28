@@ -488,17 +488,23 @@ func bucketAttrs(counter string, b Bucket) []slog.Attr {
 	}
 }
 
-// Next is when the next reading is due after one at now. resets are the resets its caller has read
+// Next is NextWithin with the default BeforeReset lead.
+func Next(now time.Time, resets []time.Time) (at time.Time, beforeReset bool) {
+	return NextWithin(now, resets, BeforeReset)
+}
+
+// NextWithin is when the next reading is due after one at now, leading each reset by lead, which is
+// positive and at most LastMinute. resets are the resets its caller has read
 // and not yet read in their last minute (InLastMinute at the read that named each); the caller
 // passes no other. A reset in the future and within LastMinute of now is due at once: at is now and
 // beforeReset true, so a pass that ended inside a counter's last minute it began outside of still
-// reads that counter there. Otherwise the earliest reset less BeforeReset, when that comes before
+// reads that counter there. Otherwise the earliest reset less lead, when that comes before
 // now+Interval, is due with beforeReset true, and otherwise the next reading is now+Interval. A
 // caller that passed a reset it had already read in its last minute would be told to read it again
 // at once, so it passes only those it has not; that also keeps a reset whose header drifts a second
 // later from asking for a second reading. A zero reset, a failed reading's, is none, and so is one
 // that is not in the future.
-func Next(now time.Time, resets []time.Time) (at time.Time, beforeReset bool) {
+func NextWithin(now time.Time, resets []time.Time, lead time.Duration) (at time.Time, beforeReset bool) {
 	at = now.Add(Interval)
 	for _, reset := range resets {
 		until := reset.Sub(now)
@@ -508,7 +514,7 @@ func Next(now time.Time, resets []time.Time) (at time.Time, beforeReset bool) {
 		if until <= LastMinute {
 			return now, true
 		}
-		if last := reset.Add(-BeforeReset); !last.After(at) {
+		if last := reset.Add(-lead); !last.After(at) {
 			at, beforeReset = last, true
 		}
 	}

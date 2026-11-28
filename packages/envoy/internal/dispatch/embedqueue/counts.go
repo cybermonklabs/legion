@@ -39,9 +39,13 @@ const (
 	coverageFoldInterval   = 10 * time.Second
 	coverageFoldJitter     = time.Second
 	coverageFoldTimeout    = coverageFoldInterval
-	coverageFirstBackoff   = 10 * time.Second
 	coverageBackoffCeiling = 10 * time.Minute
 )
+
+// CoverageFirstBackoff is the first bound of the wait after a failed fill or recount, which
+// coverageFirstBackoff starts at: a test can shorten it (ShortenCoverageBackoffForTest) but not
+// lengthen it, so cmd/dispatch refuses DISPATCH_TEST_COVERAGE_FILL_BACKOFF above it.
+const CoverageFirstBackoff = 10 * time.Second
 
 // The counts loop's settings, each a var so that a test can set it (setForTest) and restore it.
 //
@@ -62,6 +66,9 @@ const (
 var (
 	// coverageFillTimeout bounds the whole fill (FillCoverage); a fill that reaches it fails.
 	coverageFillTimeout = 160 * time.Second
+	// coverageFirstBackoff is the first bound of the wait after a failed fill or recount
+	// (backoffBound), CoverageFirstBackoff unless a test shortened it.
+	coverageFirstBackoff = CoverageFirstBackoff
 	// coverageRecountTimeout is T, the one deadline of a whole recount (recountCoverage).
 	coverageRecountTimeout = 80 * time.Second
 	// coverageRecountInterval and coverageRecountJitter space the recounts: each starts the interval

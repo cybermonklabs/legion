@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -191,6 +192,9 @@ type bootConfig struct {
 	// five minutes; only DISPATCH_TEST_CI_RECONCILE_INTERVAL, under the test hooks, sets it, since
 	// no process-level test can wait five minutes for a pass.
 	CIReconcileInterval time.Duration
+	// CIReconcileAtStart makes the CI reconcile loop tick at startup instead of waiting one
+	// interval. Only DISPATCH_TEST_CI_RECONCILE_AT_START=1, under the test hooks, sets it.
+	CIReconcileAtStart bool
 	// RedeliveryInterval is how often the webhook redelivery sweep runs, zero for
 	// redeliver.Interval's two minutes; only DISPATCH_TEST_REDELIVERY_INTERVAL, under the test
 	// hooks, sets it, since no process-level test can wait two minutes for a sweep.
@@ -222,6 +226,10 @@ type bootConfig struct {
 	// embedqueue's own, zero for that; only DISPATCH_TEST_COVERAGE_FILL_TIMEOUT, under the test
 	// hooks, sets it, so a test sees a fill reach its timeout without waiting a deployment's out.
 	CoverageFillTimeout time.Duration
+	// CoverageFillBackoff replaces embedqueue's initial 10 s retry bound so a test can see a
+	// failed fill retried promptly. Zero keeps the default. Only DISPATCH_TEST_COVERAGE_FILL_BACKOFF,
+	// under the test hooks, sets it.
+	CoverageFillBackoff time.Duration
 	// CoverageStatementTimeout bounds the search coverage route's statement in place of
 	// embedqueue's 10 s, zero for that; only DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT, under the
 	// test hooks, sets it, so a test sees the route's 503 SEARCH_COVERAGE_TIMEOUT at once.
@@ -237,12 +245,29 @@ type bootConfig struct {
 	// boot meets a locked or a slow table waits each bound out; resolveBootConfig refuses one below
 	// searchFillTableLockTimeoutFloor.
 	SearchFillLockTimeout time.Duration
+	// SearchFillStandbyRetry replaces the keyword fill's interval between tries for its hold.
+	// Zero keeps the default of 10 s. Only DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY, under the
+	// test hooks, sets it, so an end-to-end test can watch for an unexpected fill over several retries.
+	SearchFillStandbyRetry time.Duration
 	// HTTPDrain is how long shutdown waits for the requests in flight before the document service
 	// settles the documents owed with requests still running, zero for httpDrainBeforeDocuments'
 	// eleven seconds; only DISPATCH_TEST_HTTP_DRAIN, under the test hooks, sets it, since a test
 	// whose request holds the drain waits all of it out; resolveBootConfig refuses one longer than
 	// httpDrainBeforeDocuments (outboxStopBudget).
 	HTTPDrain time.Duration
+	// DocumentShutdown is the document service's budget as the process stops, zero for
+	// documentShutdownTimeout's fourteen seconds; only DISPATCH_TEST_DOCUMENT_SHUTDOWN, under the
+	// test hooks, sets it, since a test whose request is held past that budget waits all of it out;
+	// resolveBootConfig refuses one longer than documentShutdownTimeout (outboxStopBudget).
+	DocumentShutdown time.Duration
+	// RateReadingBeforeReset sets how early the GitHub rate reading aims before a reset.
+	// Zero keeps githubrate.BeforeReset; only DISPATCH_TEST_RATE_READING_BEFORE_RESET, under the
+	// test hooks, sets it.
+	RateReadingBeforeReset time.Duration
+	// OIDCDiscoveryRetry replaces the first background wait and the spacing between failed
+	// discovery attempts for both issuers. Zero keeps the production defaults. Only
+	// DISPATCH_TEST_OIDC_DISCOVERY_RETRY, under the test hooks, sets it.
+	OIDCDiscoveryRetry time.Duration
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
 	// the test hooks, sets it.
@@ -1290,10 +1315,15 @@ func main() {
 			slog.Info("dispatch: the CI reconcile pass leaves no App's check suites out: DISPATCH_VERDICT_APP_ID is unset; give it the listener's ENVOY_VERDICT_APP_ID")
 		}
 		reconciler.GitHubReads = recordGitHubRead
+		// ciReconcileFirstTick selects when the loop first tries to run a leased pass.
+		ciReconcileFirstTick := duty.TickAfterInterval
+		if boot.CIReconcileAtStart {
+			ciReconcileFirstTick = duty.TickAtStart
+		}
 		// The period argument is what makes one process serve each period (duty_passes): the
 		// lease alone only keeps two passes from overlapping, and the App's budget pays for every
 		// pass that runs.
-		go duty.RunLeased(ctx, ciReconcileLeases, cireconcile.Lease, ciReconcileInterval, duty.TickAfterInterval, reconciler.Pass)
+		go duty.RunLeased(ctx, ciReconcileLeases, cireconcile.Lease, ciReconcileInterval, ciReconcileFirstTick, reconciler.Pass)
 		// A listener with ENVOY_CI_VERIFY on publishes a head's settlement only after this loop has
 		// read the head from GitHub after it asked. It lists the requests every VerifyInterval with
 		// no lease, and answers any it finds under a lease of its own (VerifyLeases), so a pass with
@@ -1318,7 +1348,8 @@ func main() {
 	// App's private key.
 	if gitHub := appCtx.GitHub(); gitHub != nil {
 		slog.Info("dispatch: reading the GitHub rate counters of each installation of the App", "client_id", appCfg.ClientID, "interval", githubrate.Interval)
-		go runRateReading(ctx, gitHub, slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+		go runRateReading(ctx, gitHub, slog.New(slog.NewJSONHandler(os.Stderr, nil)),
+			cmp.Or(boot.RateReadingBeforeReset, githubrate.BeforeReset))
 	} else {
 		slog.Info("dispatch: GitHub rate reading off: it needs the GitHub App private key")
 	}
@@ -1449,12 +1480,13 @@ func main() {
 		go func() {
 			defer close(fillStopped)
 			if err := textversions.Run(ctx, textversions.Config{
-				Leases:   textVersionsLeases,
-				Horizon:  background.EventHorizon(),
-				Latency:  answersLatency,
-				Serving:  serving,
-				Events:   textVersionsEventsWake,
-				Released: textVersionsReleasedWake,
+				Leases:       textVersionsLeases,
+				Horizon:      background.EventHorizon(),
+				Latency:      answersLatency,
+				Serving:      serving,
+				Events:       textVersionsEventsWake,
+				Released:     textVersionsReleasedWake,
+				StandbyRetry: boot.SearchFillStandbyRetry,
 			}); err != nil {
 				slog.Error("dispatch: start the keyword fill", "error", err)
 			}
@@ -1472,11 +1504,14 @@ func main() {
 	// keyword fill it takes nothing and writes nothing until serving closes, so no start waits for a
 	// count and the route answers 503 SEARCH_COVERAGE_NOT_FILLED until the first fill ends. Every
 	// way out from here waits for it (waitCounts) before the pool closes: once ctx is cancelled it
-	// returns at once, rolling back the fill, fold or recount in flight. The three
+	// returns at once, rolling back the fill, fold or recount in flight. The four
 	// DISPATCH_TEST_COVERAGE_* settings, read only under DISPATCH_TEST_HOOKS=1, shorten the fill's
-	// timeout and the route's bound and make fills fail, for a test of each.
+	// timeout, its first retry bound and the route's bound, and make fills fail, for a test of each.
 	if boot.CoverageFillTimeout > 0 {
 		embedqueue.ShortenCoverageFillTimeoutForTest(boot.CoverageFillTimeout)
+	}
+	if boot.CoverageFillBackoff > 0 {
+		embedqueue.ShortenCoverageBackoffForTest(boot.CoverageFillBackoff)
 	}
 	if boot.CoverageStatementTimeout > 0 {
 		embedqueue.ShortenCoverageBoundForTest(boot.CoverageStatementTimeout)
@@ -1599,12 +1634,10 @@ func main() {
 		waitFill()
 		waitCounts()
 	}
-	httpDrain := httpDrainBeforeDocuments
-	if boot.HTTPDrain > 0 {
-		httpDrain = boot.HTTPDrain
-	}
+	httpDrain := cmp.Or(boot.HTTPDrain, httpDrainBeforeDocuments)
+	documentBudget := cmp.Or(boot.DocumentShutdown, documentShutdownTimeout)
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
-		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, httpDrain); err != nil {
+		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, httpDrain, documentBudget); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
 	}
@@ -1896,14 +1929,23 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
 		{"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT", &boot.CoverageFillTimeout},
+		{"DISPATCH_TEST_COVERAGE_FILL_BACKOFF", &boot.CoverageFillBackoff},
 		{"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT", &boot.CoverageStatementTimeout},
 		{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT", &boot.SearchFillLockTimeout},
 		{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT", &boot.SearchFillReadTimeout},
+		{"DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY", &boot.SearchFillStandbyRetry},
 		{"DISPATCH_TEST_HTTP_DRAIN", &boot.HTTPDrain},
+		{"DISPATCH_TEST_DOCUMENT_SHUTDOWN", &boot.DocumentShutdown},
+		{"DISPATCH_TEST_RATE_READING_BEFORE_RESET", &boot.RateReadingBeforeReset},
+		{"DISPATCH_TEST_OIDC_DISCOVERY_RETRY", &boot.OIDCDiscoveryRetry},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	if boot.CoverageFillBackoff > embedqueue.CoverageFirstBackoff {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_COVERAGE_FILL_BACKOFF=%q (expected at most %s, a deployment's first retry bound: a test shortens the wait after a failed fill, never lengthens it)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_COVERAGE_FILL_BACKOFF")), embedqueue.CoverageFirstBackoff)
 	}
 	if err := testHookCount(env, "DISPATCH_TEST_COVERAGE_FILL_FAILURES", boot.TestHooksEnabled, &boot.CoverageFillFailures); err != nil {
 		return bootConfig{}, err
@@ -1916,9 +1958,25 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=%q (expected longer than %s, the reads' statement timeout, so that Postgres's own timeouts still end a read before the client's deadline)",
 			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT")), statement)
 	}
+	if boot.SearchFillStandbyRetry > textversions.StandbyRetryBound {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY=%q (expected at most %s, a deployment's standby retry: a test shortens it, never lengthens it)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY")), textversions.StandbyRetryBound)
+	}
 	if boot.HTTPDrain > httpDrainBeforeDocuments {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_HTTP_DRAIN=%q (expected at most %s, a deployment's drain: what the %s stop grace leaves after the document service's %s budget and a 5s reserve)",
 			strings.TrimSpace(env.get("DISPATCH_TEST_HTTP_DRAIN")), httpDrainBeforeDocuments, stopGrace, documentShutdownTimeout)
+	}
+	if boot.DocumentShutdown > documentShutdownTimeout {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_DOCUMENT_SHUTDOWN=%q (expected at most %s, a deployment's document shutdown budget: a test can shorten it but cannot lengthen shutdown)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_DOCUMENT_SHUTDOWN")), documentShutdownTimeout)
+	}
+	if boot.RateReadingBeforeReset > githubrate.LastMinute {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_RATE_READING_BEFORE_RESET=%q (expected at most %s, the last-minute reading window)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_RATE_READING_BEFORE_RESET")), githubrate.LastMinute)
+	}
+	if boot.OIDCDiscoveryRetry > oidc.MaxDiscoveryRetryOverride {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_OIDC_DISCOVERY_RETRY=%q (expected at most %s, the default first discovery retry wait)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_OIDC_DISCOVERY_RETRY")), oidc.MaxDiscoveryRetryOverride)
 	}
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
@@ -1935,6 +1993,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_CREATE_STAGED", &boot.CreateStaged},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
+		{"DISPATCH_TEST_CI_RECONCILE_AT_START", &boot.CIReconcileAtStart},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -2790,7 +2849,8 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 	if boot.OIDCIssuer == "" {
 		return nil
 	}
-	return oidc.NewLazyVerifier(boot.OIDCIssuer, boot.OIDCAudience)
+	// A zero OIDCDiscoveryRetry, every deployment's, leaves discovery's waits as they are.
+	return oidc.NewLazyVerifier(boot.OIDCIssuer, boot.OIDCAudience, oidc.WithDiscoveryRetry(boot.OIDCDiscoveryRetry))
 }
 
 // brokerTokenVerifier decides callers presenting an access token the secrets broker issued, under

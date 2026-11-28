@@ -345,6 +345,16 @@ func (c *Fake) dueLocked(target time.Time) *timer {
 	return next
 }
 
+// Arms returns how many times a deadline has been armed since the fake was made. It counts each
+// NewTimer, After, AfterFunc, Sleep and Reset, and each deadline context whose parent has not
+// already ended. A wait of zero or less also counts: it fires as it is armed and never appears in
+// Armed.
+func (c *Fake) Arms() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return int(c.arms)
+}
+
 // Armed is the deadline of every pending timer, earliest first.
 func (c *Fake) Armed() []time.Time {
 	c.mu.Lock()

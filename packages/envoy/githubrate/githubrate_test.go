@@ -441,21 +441,31 @@ func TestNextReadsInTheLastMinuteBeforeAReset(t *testing.T) {
 		resets      []time.Time
 		at          time.Time
 		beforeReset bool
+		lead        time.Duration
 	}{
-		{"a reset inside the interval", []time.Time{now.Add(40 * time.Minute), core.Reset, {}}, soon.Add(-BeforeReset), true},
-		{"no reset inside the interval", []time.Time{now.Add(40 * time.Minute)}, now.Add(Interval), false},
-		{"a reset just outside the last minute", []time.Time{now.Add(70 * time.Second)}, now.Add(25 * time.Second), true},
-		{"a reset in its last minute, not yet read in it", []time.Time{now.Add(30 * time.Second)}, now, true},
-		{"a reset at the last minute's boundary", []time.Time{now.Add(LastMinute)}, now, true},
-		{"a reset in its last minute beside a later one", []time.Time{now.Add(5 * time.Minute), now.Add(20 * time.Second)}, now, true},
-		{"a reset at now", []time.Time{now}, now.Add(Interval), false},
-		{"a reset that passed", []time.Time{now.Add(-time.Second)}, now.Add(Interval), false},
-		{"no reset the caller has not read in its last minute", nil, now.Add(Interval), false},
+		{"a reset inside the interval", []time.Time{now.Add(40 * time.Minute), core.Reset, {}}, soon.Add(-BeforeReset), true, 0},
+		{"no reset inside the interval", []time.Time{now.Add(40 * time.Minute)}, now.Add(Interval), false, 0},
+		{"a reset just outside the last minute", []time.Time{now.Add(70 * time.Second)}, now.Add(25 * time.Second), true, 0},
+		{"a reset in its last minute, not yet read in it", []time.Time{now.Add(30 * time.Second)}, now, true, 0},
+		{"a reset at the last minute's boundary", []time.Time{now.Add(LastMinute)}, now, true, 0},
+		{"a reset in its last minute beside a later one", []time.Time{now.Add(5 * time.Minute), now.Add(20 * time.Second)}, now, true, 0},
+		{"a reset at now", []time.Time{now}, now.Add(Interval), false, 0},
+		{"a reset that passed", []time.Time{now.Add(-time.Second)}, now.Add(Interval), false, 0},
+		{"no reset the caller has not read in its last minute", nil, now.Add(Interval), false, 0},
+		{"a reset with a one-minute lead", []time.Time{now.Add(62 * time.Second)}, now.Add(2 * time.Second), true, time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			at, beforeReset := Next(now, tc.resets)
+			var at time.Time
+			var beforeReset bool
+			function := "Next"
+			if tc.lead == 0 {
+				at, beforeReset = Next(now, tc.resets)
+			} else {
+				function = "NextWithin"
+				at, beforeReset = NextWithin(now, tc.resets, tc.lead)
+			}
 			if !at.Equal(tc.at) || beforeReset != tc.beforeReset {
-				t.Fatalf("Next = %v, %v; want %v, %v", at, beforeReset, tc.at, tc.beforeReset)
+				t.Fatalf("%s = %v, %v; want %v, %v", function, at, beforeReset, tc.at, tc.beforeReset)
 			}
 		})
 	}

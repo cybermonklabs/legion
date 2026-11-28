@@ -43,10 +43,14 @@ const gitHubReadsSigningKey = "github-reads-signing-key"
 // negative control reads: a build without the member answers 200, ok true and no github at all.
 func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 	t.Parallel()
-	// Two Dispatch processes at once, the second started while the first runs.
+	// Two Dispatch processes at once: the one with no App runs while the App's process starts.
 	dispatchSlots.reserve(t, 2)
 	database := storetest.Open(t)
 	_, natsURL := testnats.Start(t)
+	withoutApp := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+		NATSURL: natsURL, SigningKey: gitHubReadsSigningKey,
+	})
+
 	// failure is the body GitHub answers the webhook's deliveries listing with, with a 503; nil
 	// answers it with no deliveries.
 	var failure atomic.Pointer[string]
@@ -80,8 +84,8 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 
 	env := githubAppEnv(t, github.URL)
 	env["DISPATCH_TEST_HOOKS"] = "1"
-	// Two minutes is longer than any test may wait for a second sweep.
-	env["DISPATCH_TEST_REDELIVERY_INTERVAL"] = "1s"
+	// Shorten the wait for the second sweep from the production interval of two minutes.
+	env["DISPATCH_TEST_REDELIVERY_INTERVAL"] = "100ms"
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		NATSURL: natsURL, SigningKey: gitHubReadsSigningKey, Env: env,
 	})
@@ -122,9 +126,6 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 		t.Fatalf("/healthz with every GitHub read answered = %d %s, want 200 with ok true", succeeded.status, succeeded.body)
 	}
 
-	withoutApp := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
-		NATSURL: natsURL, SigningKey: gitHubReadsSigningKey,
-	})
 	withoutApp.waitHealthy(t)
 	answer := withoutApp.readHealthz(t, testwait.Context(t))
 	t.Logf("/healthz of the process with no GitHub App: %d %s", answer.status, answer.body)
@@ -141,9 +142,8 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 // loop. A loop left without its recorder leaves its entry no_attempt, and two loops given each
 // other's names put a cause under the wrong key; either fails naming the entry.
 //
-// The test settings bring every loop's pass inside the test's window: the sweep's and the CI
-// reconcile's intervals, and a first pass at start for the delivery reconcile and the
-// architecture import, whose first ticks are otherwise jittered over five minutes.
+// The test settings shorten the sweep's and CI reconcile's intervals and make the CI reconcile,
+// delivery reconcile and architecture import tick at startup.
 func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -167,6 +167,7 @@ func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 	env["DISPATCH_TEST_HOOKS"] = "1"
 	env["DISPATCH_TEST_REDELIVERY_INTERVAL"] = "1s"
 	env["DISPATCH_TEST_CI_RECONCILE_INTERVAL"] = "1s"
+	env["DISPATCH_TEST_CI_RECONCILE_AT_START"] = "1"
 	env["DISPATCH_TEST_RECONCILE_AT_START"] = "1"
 	env["DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START"] = "1"
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{NATSURL: natsURL, Env: env})

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -158,6 +159,12 @@ func (p *dispatchProcess) health(t *testing.T) (int, healthBody) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	return p.healthUnder(t, ctx)
+}
+
+// healthUnder reads /healthz once under the caller's context.
+func (p *dispatchProcess) healthUnder(t *testing.T, ctx context.Context) (int, healthBody) {
+	t.Helper()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url("/healthz"), nil)
 	if err != nil {
 		t.Fatalf("build the /healthz request: %v", err)
@@ -358,6 +365,26 @@ func (p *dispatchProcess) waitForLog(t *testing.T, within time.Duration, parts .
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// awaitLog is waitForLog with no bound of its own.
+func (p *dispatchProcess) awaitLog(t *testing.T, parts ...string) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("Dispatch to log a line holding %q", parts), func() (*cmdtest.LockedBuffer, bool) {
+		if p.logged(parts...) {
+			return nil, true
+		}
+		select {
+		case <-p.Exited:
+			// Exited closes only once the output is whole, so this read is final.
+			if p.logged(parts...) {
+				return nil, true
+			}
+			t.Fatalf("Dispatch exited (%s) before logging a line holding %q:\n%s", p.Cmd.ProcessState, parts, p.Output.String())
+		default:
+		}
+		return p.Output, false
+	})
 }
 
 // readStreamFrom is every envelope the stream retains past head, in sequence order
