@@ -167,7 +167,7 @@ func reasonLines(reasons []record.Defect) []string {
 // goes on, and the controller can move it to backlog or icebox as it can any root.
 func (e *Engine) tellChangeCount(ctx context.Context, tx pgx.Tx, issue record.Issue, reasons []record.Defect) error {
 	every := e.cfg.ReviewRoundCap
-	if every <= 0 || issue.NextChanges%every != 0 {
+	if every <= 0 {
 		return nil
 	}
 	text := fmt.Sprintf("%s has started %d next changes of itself, and Legion stops none of them.", issue.Key, issue.NextChanges)
