@@ -261,7 +261,13 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
     type: "issue",
   };
   return (
-    <FocusedNodeFacts issueKey={issue.key} issueTitle={issue.title} node={node} state={state} />
+    <FocusedNodeFacts
+      isClosed={issue.closed_at !== null}
+      issueKey={issue.key}
+      issueTitle={issue.title}
+      node={node}
+      state={state}
+    />
   );
 }
 

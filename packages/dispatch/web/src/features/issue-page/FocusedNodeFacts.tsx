@@ -42,6 +42,7 @@ import { conversationItemId, isPinnedConversation, stateForIssue } from "../issu
 import { type PressWatch, watchPresses } from "../margin/details-focus-keeper";
 import { useCommentActionQueue } from "../margin/useCommentActionQueue";
 import { type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
+import { postDeletion } from "../refs/post-marks";
 import { standsFailed } from "../refs/reference-target";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
@@ -80,14 +81,20 @@ import { useThreadsOpen } from "./threads-open";
  * else, with who handed it on and when; on a comment that heads a thread its Resolve or Reopen,
  * and Accept and Reject on a suggestion not yet decided. They are ordinary controls of Details,
  * so Tab reaches each from the row's own facts; Reply and Answer are the row's own
- * (`NodeRow.tsx`).
+ * (`NodeRow.tsx`). A comment's controls are drawn where today's thread card draws them
+ * (`ThreadCard.tsx`), so none is drawn that Dispatch refuses, and none on a closed issue
+ * (`isClosed`).
  */
 export function FocusedNodeFacts({
+  isClosed,
   issueKey,
   issueTitle,
   node,
   state,
 }: {
+  /** Whether the issue is closed, which takes no Resolve, Reopen, Accept or Reject of a comment,
+   *  and on which today's thread card draws no Edit. */
+  isClosed: boolean;
   issueKey: string;
   /** The issue's title, drawn when the focused node is the issue itself. */
   issueTitle: string;
@@ -160,7 +167,7 @@ export function FocusedNodeFacts({
         />
       )}
       {node.item === undefined ? null : (
-        <ItemControls issueKey={issueKey} item={node.item} state={state} />
+        <ItemControls isClosed={isClosed} issueKey={issueKey} item={node.item} state={state} />
       )}
       {/* What references the row the reader is on, mentions included: read only when
           the reader opens it, so it costs nothing on load and nothing per row. */}
@@ -297,12 +304,15 @@ interface Delivery extends DeliveryOutcome {
 /** The pin of an ask, a comment or a message; an open question's hand-on; a thread head's Resolve
  *  or Reopen, Accept and Reject; the Edit of the reader's own comment, but under Threads, where
  *  the page mounts no box at the foot for it to aim (`useThreadsOpen`); and each delivery to an
- *  agent with its Retry. */
+ *  agent with its Retry. Resolve, Reopen, Accept, Reject and Edit are drawn where today's thread
+ *  card draws them (`ThreadCard.tsx`), so that none is drawn that does nothing (R7). */
 function ItemControls({
+  isClosed,
   issueKey,
   item,
   state,
 }: {
+  isClosed: boolean;
   issueKey: string;
   item: NonNullable<FocusedNode["item"]>;
   state: UserState | undefined;
@@ -373,10 +383,21 @@ function ItemControls({
     item.kind === "ask"
       ? asks.data?.find((one) => one.id === item.id && one.state === "open")
       : undefined;
-  const head = comment !== undefined && comment.reply_to === null;
+  // A thread's head answers no comment and is no comment under a question, whose thread is the
+  // question's: Dispatch refuses its Reopen ("reopen the thread root"). On a closed issue none of
+  // a comment's controls but Pin is drawn: Dispatch refuses Resolve, Reopen, Accept and Reject
+  // there (`refuseClosed`), and today's thread card draws no Edit there either.
+  const head = comment !== undefined && comment.reply_to === null && comment.ask_id === null;
   const undecided = comment?.suggestion !== null && comment?.suggestion?.accepted === null;
-  // The reader's own words by the page's one rule, as the outline's row tells them.
+  // A suggestion whose anchor is orphaned takes no Accept or Reject (409 ANCHOR_ORPHANED): Resolve
+  // closes its thread, as on the card. One tied to no text takes no Accept ("accept requires an
+  // anchored suggestion"), and takes its Reject.
+  const orphaned = comment?.anchor?.orphaned === true;
+  const anchored = comment?.anchor !== null && comment?.anchor !== undefined;
+  // The reader's own words by the page's one rule, as the outline's row tells them. A comment its
+  // author deleted takes no edit (409 POST_DELETED).
   const own = isReader(comment?.author, viewer);
+  const deleted = postDeletion(comment) !== null;
   const pending = actions.pendingActionIds.has(item.id) || reading.includes(item.id);
   // A control whose write is out, or the read that write set off, stays enabled, marked busy, as
   // the margin's thread cards keep theirs (`ThreadCard.tsx`): Chromium drops the focus of a
@@ -471,7 +492,7 @@ function ItemControls({
         >
           {pinned ? CONTROL_LABELS.unpin : CONTROL_LABELS.pin}
         </button>
-        {head && comment !== undefined ? (
+        {!isClosed && head && comment !== undefined ? (
           <button
             aria-busy={pending || undefined}
             className={control}
@@ -485,17 +506,19 @@ function ItemControls({
             {comment.resolved ? CONTROL_LABELS.reopen_thread : CONTROL_LABELS.resolve}
           </button>
         ) : null}
-        {head && undecided ? (
+        {!isClosed && head && undecided && !orphaned ? (
           <>
-            <button
-              aria-busy={pending || undefined}
-              className={control}
-              onClick={() => actions.mutateItem({ id: item.id, kind: "accept" })}
-              type="button"
-              {...pageChrome}
-            >
-              {CONTROL_LABELS.accept}
-            </button>
+            {anchored ? (
+              <button
+                aria-busy={pending || undefined}
+                className={control}
+                onClick={() => actions.mutateItem({ id: item.id, kind: "accept" })}
+                type="button"
+                {...pageChrome}
+              >
+                {CONTROL_LABELS.accept}
+              </button>
+            ) : null}
             <button
               aria-busy={pending || undefined}
               className={control}
@@ -507,7 +530,12 @@ function ItemControls({
             </button>
           </>
         ) : null}
-        {own && comment !== undefined && writer !== undefined && !threads ? (
+        {!isClosed &&
+        own &&
+        !deleted &&
+        comment !== undefined &&
+        writer !== undefined &&
+        !threads ? (
           <button
             className={control}
             onClick={() => writer.edit(comment.id, comment.body)}
