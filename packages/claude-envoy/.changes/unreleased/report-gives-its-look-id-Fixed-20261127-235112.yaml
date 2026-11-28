@@ -8,7 +8,12 @@ body: |-
     speaks the daemon API contract entry 20261127185859 (report-gives-its-look-id). The
     end-of-turn reminder tells a role whose check report is refused CHECK_LOOK_NOT_OPEN to report
     again with check_opened_at and look_id from its newest task of that check, and to do nothing
-    more only when it holds no newer task.
+    more only when it holds no newer task. For a check report refused CHECK_NOT_OPEN, it no longer
+    tells the role to do nothing more in every case: when the answer says that the check is open
+    but did not open at the check_opened_at the report gave, it tells the role to report again
+    from its newest task of that check, or to do nothing more when it holds no task of that check,
+    and when the answer says that the issue has no open production check, it tells the role to do
+    nothing more.
 time: 2026-11-27T23:51:12Z
 custom:
     Issue: report-gives-its-look-id

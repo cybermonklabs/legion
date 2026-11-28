@@ -112,12 +112,26 @@ const TOOL_CALL_SHAPED = /<(?:[\w-]+:)?(?:function_calls\b|invoke\s+name\s*=|par
  * (`src/phase-reminder.ts`): an answer that the claim owes nothing, and a read that fails
  * (`UNREAD_CHECK`), send no reminder. So every sentence of it is true of a role that owes work.
  *
- * Both kinds of work are finished by the `legion` tool's `handoff_complete`, and the three
+ * Both kinds of work are finished by the `legion` tool's `handoff_complete`, and the four
  * sentences on a refusal cover both. A phase's completion is refused `HANDOFF_NOT_CURRENT_PHASE`
- * when the role no longer works that phase (`packages/daemon/internal/api/handoff.go`). A report
- * on a production check is refused `CHECK_NOT_OPEN` once the check is closed (`checkReport`,
- * `packages/daemon/internal/api/handoff.go`). Each of these two moves nothing, and the daemon
- * sends any next task itself, so the role does nothing more for that work.
+ * when the role no longer works that phase (`packages/daemon/internal/api/handoff.go`). The
+ * refusal moves nothing, and the daemon sends any next task itself, so the role does nothing more
+ * for that work.
+ *
+ * A report on a production check is refused `CHECK_NOT_OPEN` with one of two answers
+ * (`checkReport`, `packages/daemon/internal/api/handoff.go`), and neither moves anything. When the
+ * issue has no open check (`check == nil || !check.Open()`), the answer says that it has no open
+ * production check opened at that time. No check is left to report on, so the role does nothing
+ * more. When the issue's check is open but did not open at the report's `check_opened_at` (a
+ * check that a later merge opened, or a time no check opened at), the answer names the current
+ * look and says to send the report again with the values from that look's task. That open check
+ * still waits on the role's report, so the role reports again with `check_opened_at` and
+ * `look_id` from its newest task of that check rather than doing nothing more. A role whose only
+ * task is of the check that a later merge replaced holds no task of the open check yet, and the
+ * daemon sends it the task of that check's current look itself, so such a role does nothing more,
+ * as a role with no newer task does after `CHECK_LOOK_NOT_OPEN`. So `CHECK_NOT_OPEN` has a
+ * sentence of its own that names both answers, apart from the sentence of
+ * `HANDOFF_NOT_CURRENT_PHASE`.
  *
  * A report is refused `CHECK_LOOK_NOT_OPEN` when the look id it gives is not the id of the check's
  * current look (`checkReport` and `namesCurrentLook`, `packages/daemon/internal/api/handoff.go`):
@@ -168,8 +182,13 @@ export function owedReminder(work: string): string {
     "fields your role's instructions give. If you are waiting on something (CI, a review, a " +
     "person), reply with a line starting WAITING that names what you are waiting on: that buys a " +
     "quiet wait, and then this reminder comes again. If the daemon refuses your " +
-    "`handoff_complete` `HANDOFF_NOT_CURRENT_PHASE` or `CHECK_NOT_OPEN`, do nothing more for " +
-    "that work: the daemon sends you any next task itself. If it refuses your check report " +
+    "`handoff_complete` `HANDOFF_NOT_CURRENT_PHASE`, do nothing more for that work: the daemon " +
+    "sends you any next task itself. If it refuses your check report `CHECK_NOT_OPEN`, read its " +
+    "answer: when the answer says that the issue has no open production check, do nothing more, " +
+    "and when the answer says that the check is open but did not open at the `check_opened_at` " +
+    "you gave, report again with `check_opened_at` and `look_id` from your newest task of that " +
+    "check, or, if you hold no task of that check, do nothing more, since the daemon sends you " +
+    "the task of its current look itself. If it refuses your check report " +
     "`CHECK_LOOK_NOT_OPEN`, the `look_id` you gave is not the id of the current look: report " +
     "again with `check_opened_at` and `look_id` from your newest task of that check, or, if you " +
     "hold no newer task, do nothing more, since the daemon sends you the task of the current " +

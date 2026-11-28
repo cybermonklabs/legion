@@ -240,20 +240,27 @@ test("a settle in a quiet wait earns none, and the wait ends on a reminder", () 
 
 // dispatch://INFRA-2746 R4: the reminder goes only to a role the daemon answers owes work, the
 // work of a phase or of a production check, so every sentence of it holds for both. A role whose
-// completion or report the daemon refuses as not current, or of a check that is not open, is told
-// to do nothing more for that work, since the daemon sends any next task itself. A report refused
+// completion the daemon refuses as not current (HANDOFF_NOT_CURRENT_PHASE) is told to do nothing
+// more for that work, since the daemon sends any next task itself. CHECK_NOT_OPEN has two answers
+// (checkReport in packages/daemon/internal/api/handoff.go), so that code has a sentence of its
+// own, outside the "do nothing more for that work" sentence, that names both: when the issue has
+// no open production check, do nothing more, and when the check is open but did not open at the
+// check_opened_at the report gave (a check that a later merge opened), report again from the
+// newest task of that check, as the daemon's answer says, or do nothing more when no task of that
+// check is held (a role whose only task is of the check a later merge replaced), since the daemon
+// sends the task of its current look itself (dispatch://INFRA-3518). A report refused
 // CHECK_LOOK_NOT_OPEN gave a look id that is not the id of the current look (checkReport and
 // namesCurrentLook in packages/daemon/internal/api/handoff.go), and the daemon's answer says to
 // send it again with the look id from the current look's task, so that code has a sentence of its
-// own, outside the "do nothing more for that work" sentence: report again from the newest task of
-// that check, or do nothing more when no newer task is held. A HANDOFF_ALREADY_RECORDED answer
-// while the reminder still comes means the daemon keeps the refusal of an earlier completion under
-// that key and took none, so that sentence names none of the others and tells the role to read
-// its record and that refusal, write a new version of its handoff and complete naming it, or tell
-// its architect if its phase writes no handoff. The opening and the last sentence are the live
-// proofs' needles: scripts/e2e/lib/claude-transcript.sh reads the last, and the real Oh My Pi's
-// case (packages/pi-legion/extensions/legion-phase-stall-omp.test.ts) reads the opening. The
-// WAITING sentence is dispatch://INFRA-2040's to change.
+// own too: report again from the newest task of that check, or do nothing more when no newer task
+// is held. A HANDOFF_ALREADY_RECORDED answer while the reminder still comes means the daemon keeps
+// the refusal of an earlier completion under that key and took none, so that sentence names none
+// of the others and tells the role to read its record and that refusal, write a new version of
+// its handoff and complete naming it, or tell its architect if its phase writes no handoff. The
+// opening and the last sentence are the live proofs' needles: scripts/e2e/lib/claude-transcript.sh
+// reads the last, and the real Oh My Pi's case
+// (packages/pi-legion/extensions/legion-phase-stall-omp.test.ts) reads the opening. The WAITING
+// sentence is dispatch://INFRA-2040's to change.
 test("the reminder text says what to do when handoff_complete is refused HANDOFF_NOT_CURRENT_PHASE", () => {
   const waiting =
     "If you are waiting on something (CI, a review, a person), reply with a line starting " +
@@ -270,11 +277,27 @@ test("the reminder text says what to do when handoff_complete is refused HANDOFF
       sentence.includes("do nothing more for that work")
     );
     expect(nothingMore).toHaveLength(1);
-    for (const code of ["HANDOFF_NOT_CURRENT_PHASE", "CHECK_NOT_OPEN"]) {
-      expect(nothingMore[0]).toContain(`\`${code}\``);
+    expect(nothingMore[0]).toContain("`HANDOFF_NOT_CURRENT_PHASE`");
+    for (const other of ["CHECK_", "HANDOFF_ALREADY_RECORDED"]) {
+      expect(nothingMore[0]).not.toContain(other);
     }
-    expect(nothingMore[0]).not.toContain("CHECK_LOOK_NOT_OPEN");
-    expect(nothingMore[0]).not.toContain("HANDOFF_ALREADY_RECORDED");
+
+    const checkNotOpen = sentences.filter((sentence) => sentence.includes("`CHECK_NOT_OPEN`"));
+    expect(checkNotOpen).toHaveLength(1);
+    for (const step of [
+      "when the answer says that the issue has no open production check, do nothing more",
+      "when the answer says that the check is open but did not open at the `check_opened_at` you gave",
+    ]) {
+      expect(checkNotOpen[0]).toContain(step);
+    }
+    expect(checkNotOpen[0]).toEndWith(
+      "report again with `check_opened_at` and `look_id` from your newest task of that check, " +
+        "or, if you hold no task of that check, do nothing more, since the daemon sends you the " +
+        "task of its current look itself."
+    );
+    for (const other of ["`CHECK_LOOK_NOT_OPEN`", "HANDOFF_", "for that work"]) {
+      expect(checkNotOpen[0]).not.toContain(other);
+    }
 
     const lookNotOpen = sentences.filter((sentence) => sentence.includes("`CHECK_LOOK_NOT_OPEN`"));
     expect(lookNotOpen).toHaveLength(1);
