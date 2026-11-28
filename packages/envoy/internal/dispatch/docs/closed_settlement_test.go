@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -52,8 +51,7 @@ const (
 )
 
 func TestAClosedIssuesOwedSettlementCompletes(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in its subtests
-	// settleAfterItsStoreWriteIsRefused and settleAfterTheRoomsPersistenceIsRefused).
+	t.Parallel()
 	t.Run("AppendInsideTheCloseMargin", settleAnAppendInsideTheCloseMargin)
 	t.Run("RoomLoad", settleOnARoomLoad)
 	t.Run("Resumption", settleOnTheResumption)
@@ -81,6 +79,14 @@ type closedSettlementFixture struct {
 
 func newClosedSettlementFixture(t *testing.T) closedSettlementFixture {
 	t.Helper()
+	return newClosedSettlementFixtureTo(t, nil)
+}
+
+// newClosedSettlementFixtureTo is newClosedSettlementFixture with the service, and the store it
+// holds, writing their lines to logger (Deps.Logger); nil writes them where the default logger
+// points as each is written.
+func newClosedSettlementFixtureTo(t *testing.T, logger *slog.Logger) closedSettlementFixture {
+	t.Helper()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
@@ -90,8 +96,10 @@ func newClosedSettlementFixture(t *testing.T) closedSettlementFixture {
 		t.Fatalf("seed project CORE: %v", err)
 	}
 	artifactID := uuid.NewString()
+	versioned := NewPgVersioned(database)
+	versioned.logger = logger
 	held := &heldStore{
-		VersionedStore: NewPgVersioned(database),
+		VersionedStore: versioned,
 		room:           artifactID,
 		entered:        make(chan struct{}),
 		release:        make(chan struct{}),
@@ -104,6 +112,7 @@ func newClosedSettlementFixture(t *testing.T) closedSettlementFixture {
 		Origins:     testOrigins,
 		Settle:      time.Hour,
 		TestHooks:   true,
+		Logger:      logger,
 	})
 	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
@@ -570,9 +579,8 @@ func (f closedSettlementFixture) requireOneRefusalClose(t *testing.T, watch *ref
 // append is refused too and starts no second close. Once the room has closed, the resumption
 // settles the document from the store, without the refused keystroke.
 func settleAfterItsStoreWriteIsRefused(t *testing.T) {
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	f := newClosedSettlementFixture(t)
+	logs, logger := testLogger(slog.LevelInfo)
+	f := newClosedSettlementFixtureTo(t, logger)
 	watch := f.watchRefusals(t)
 	alice := f.admitBeforeTheClose(t)
 	before := latestVersionNumber(t, f.service, f.artifactID)
@@ -611,9 +619,8 @@ func settleAfterItsStoreWriteIsRefused(t *testing.T) {
 // while the room stands. Once the room has closed, the resumption settles the document from the
 // store, without the refused keystroke.
 func settleAfterTheRoomsPersistenceIsRefused(t *testing.T) {
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	f := newClosedSettlementFixture(t)
+	logs, logger := testLogger(slog.LevelInfo)
+	f := newClosedSettlementFixtureTo(t, logger)
 	watch := f.watchRefusals(t)
 	var locked atomic.Int64
 	f.service.afterSettleLock = func(room string) {

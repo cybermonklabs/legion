@@ -200,7 +200,7 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 		}
 		// The unlock counts as a trip whether or not freeRoomLock sends it.
 		trips++
-		freeRoomLock(conn, room)
+		freeRoomLock(p.logger, conn, room)
 		if flush != nil {
 			flush.service.appendFigures.roundTrips.Add(uint64(trips))
 		}
@@ -258,7 +258,7 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 	head, admitted := read.latest, len(updates)
 	if gated {
 		var replaced bool
-		head, admitted, replaced, err = gateAppend(ctx, conn, room, heldThrough, appendBrowser, updates, read, p.maxPendingItems, p.closeMargin)
+		head, admitted, replaced, err = gateAppend(ctx, p.logger, conn, room, heldThrough, appendBrowser, updates, read, p.maxPendingItems, p.closeMargin)
 		if err != nil {
 			return 0, err
 		}

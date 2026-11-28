@@ -21,7 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -37,21 +36,19 @@ import (
 // room resident, while task A holds none.
 func newQueryProcesses(t *testing.T) processPair {
 	t.Helper()
-	pair := newSeededProcessPair(t, lostEditDocument)
+	return newQueryProcessesTo(t, nil)
+}
+
+// newQueryProcessesTo is newQueryProcesses with both processes writing their lines to logger
+// (newSeededProcessPairTo).
+func newQueryProcessesTo(t *testing.T, logger *slog.Logger) processPair {
+	t.Helper()
+	pair := newSeededProcessPairTo(t, lostEditDocument, logger)
 	pair.runRoomSync(t)
 	if err := pair.taskB.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
 		t.Fatalf("load task B's room: %v", err)
 	}
 	return pair
-}
-
-// captureWarnings sends every log line at WARN and above to the returned log until the test ends,
-// and gives the log package its output back then (logtest.SetDefault).
-func captureWarnings(t *testing.T) *storetest.LockedLog {
-	t.Helper()
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	return logs
 }
 
 // storedDocumentWith is the stored document's rendering with updates applied over it.
@@ -256,10 +253,11 @@ func TestAShareHoldsEveryQueuedUpdateOfAPendingBatch(t *testing.T) {
 // What a share holds past roomShareLimit is not sent: the answer says too_large, carries no
 // updates, and the asker logs a WARN and judges without them.
 func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings).
-	pair := newQueryProcesses(t)
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelWarn)
+	pair := newQueryProcessesTo(t, logger)
 	pair.heldEditOnB(t, 1, model.Actor{Kind: "user", ID: "bob"}, appendBlocks(t, strings.Repeat("Bob's huge paragraph. ", 4000)+"\n"))
-	logs := captureWarnings(t)
+	mark := logs.Len()
 
 	answers, _, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryShare)
 	if err != nil {
@@ -268,8 +266,8 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 	if len(answers) != 1 || !answers[0].holds || !answers[0].tooLarge || len(answers[0].updates) != 0 {
 		t.Fatalf("task A's share answers = %+v, want task B's one, holding the room, too large and with no updates", answers)
 	}
-	if warned := logs.Lines("more not-yet-stored updates than one query shares"); !strings.Contains(warned, pair.taskB.ProcessID()) {
-		t.Fatalf("task A logged no WARN naming task B for its too-large share; logged:\n%s", logs.String())
+	if warned := linesHolding(logs.String()[mark:], "more not-yet-stored updates than one query shares"); !strings.Contains(warned, pair.taskB.ProcessID()) {
+		t.Fatalf("task A logged no WARN naming task B for its too-large share; logged:\n%s", logs.String()[mark:])
 	}
 }
 
@@ -277,9 +275,9 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 // the wait and no more, and a WARN naming it. The silent member here holds the listener
 // connection's name, which is all membership reads, and listens to nothing.
 func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings), and it
-	// holds each query to roomQueryWait, 500 ms, and no more than 300 ms past it.
-	pair := newQueryProcesses(t)
+	// Not parallel: it holds each query to roomQueryWait, 500 ms, and no more than 300 ms past it.
+	logs, logger := testLogger(slog.LevelWarn)
+	pair := newQueryProcessesTo(t, logger)
 	// Production's wait, which this test holds: the pair's own is roomWait (newSeededProcessPair).
 	pair.taskA.roomQueries.wait = roomQueryWait
 	silent := uuid.NewString()
@@ -288,7 +286,7 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 		t.Fatalf("connect the silent member: %v", err)
 	}
 	testcleanup.Add(t, func() { _ = conn.Close(context.Background()) })
-	logs := captureWarnings(t)
+	mark := logs.Len()
 
 	for _, kind := range []string{roomQueryHolds, roomQueryFlush, roomQueryShare} {
 		started := time.Now()
@@ -304,7 +302,7 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 			t.Fatalf("%s answers = %+v, want task B's alone", kind, answers)
 		}
 	}
-	if warned := logs.Lines("did not answer a document room query"); strings.Count(warned, silent) != 3 {
+	if warned := linesHolding(logs.String()[mark:], "did not answer a document room query"); strings.Count(warned, silent) != 3 {
 		t.Fatalf("task A logged %q; want a WARN naming the silent member for each of its three queries", warned)
 	}
 }
@@ -313,10 +311,10 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 // process's append waits on: it would wait out every member. The query reads the lock from the
 // database, skips the flush at once and logs it at ERROR.
 func TestAFlushIsNeverSentUnderTheDocumentsAdvisoryLock(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings), and it
-	// holds the skipped flush to less than half of roomQueryWait, 250 ms.
-	pair := newQueryProcesses(t)
-	logs := captureWarnings(t)
+	// Not parallel: it holds the skipped flush to less than half of roomQueryWait, 250 ms.
+	logs, logger := testLogger(slog.LevelWarn)
+	pair := newQueryProcessesTo(t, logger)
+	mark := logs.Len()
 	ctx := context.Background()
 	tx, err := pair.database.Pool.Begin(ctx)
 	if err != nil {
@@ -344,8 +342,8 @@ func TestAFlushIsNeverSentUnderTheDocumentsAdvisoryLock(t *testing.T) {
 	if waited := time.Since(started); waited >= roomQueryWait/2 {
 		t.Fatalf("a flush under the lock took %v; want it skipped at once", waited)
 	}
-	if logged := logs.Lines("level=ERROR"); !strings.Contains(logged, "flush was asked for while holding") {
-		t.Fatalf("a flush under the lock logged no ERROR; logged:\n%s", logs.String())
+	if logged := linesHolding(logs.String()[mark:], "level=ERROR"); !strings.Contains(logged, "flush was asked for while holding") {
+		t.Fatalf("a flush under the lock logged no ERROR; logged:\n%s", logs.String()[mark:])
 	}
 }
 
@@ -532,7 +530,7 @@ func TestARoomAnswerTooLargeForOneNotificationIsSplitIntoParts(t *testing.T) {
 		actors = append(actors, model.Actor{Kind: "user", ID: fmt.Sprintf("reader-with-a-long-login-%03d", index)})
 	}
 	updates := []byte(strings.Repeat("an update's bytes ", 2000))
-	payloads, err := roomAnswerPayloads(roomAnswerPart{ID: "query", Process: "member", Holds: true}, actors, base64.StdEncoding.EncodeToString(updates))
+	payloads, err := roomAnswerPayloads(nil, roomAnswerPart{ID: "query", Process: "member", Holds: true}, actors, base64.StdEncoding.EncodeToString(updates))
 	if err != nil {
 		t.Fatalf("split the answer: %v", err)
 	}

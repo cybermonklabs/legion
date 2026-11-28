@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"runtime"
 	"runtime/debug"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests here hold the reuse of renderings (renderedReplica.changedBy, warmFork's forkMarkdown,
@@ -44,18 +46,36 @@ func renderReuseDocument() string {
 	}
 	b.WriteString("\n")
 	for section := 0; b.Len() < 400<<10; section++ {
-		fmt.Fprintf(&b, "## Section %d\n\n", section)
-		fmt.Fprintf(&b, "Paragraph %d opens the section with enough words to read like specification prose about the subject at hand.\n\n", section)
-		fmt.Fprintf(&b, "- Bullet %d alpha names one requirement of the section.\n- Bullet %d beta names another requirement of the section.\n\n", section, section)
-		fmt.Fprintf(&b, "1. Step %d one is taken first.\n2. Step %d two is taken next.\n\n", section, section)
-		if section%5 == 0 {
-			fmt.Fprintf(&b, ":::callout{#callout-%d kind=\"note\" title=\"\"}\nCallout %d holds a note the readers of the section need.\n:::\n\n", section, section)
-		}
-		if section%40 == 0 {
-			fmt.Fprintf(&b, ":::ask{#ask-%d urgency=\"high\" multiple=\"false\"}\nWhich option does section %d take?\n:::\n\n", section, section)
+		writeRenderReuseSection(&b, section)
+	}
+	return b.String()
+}
+
+// renderReuseSections writes section 0 first, then the other sections each case needs.
+// Section 0 gives the warm-up edit its paragraph and the room an ask.
+func renderReuseSections(sections ...int) string {
+	var b strings.Builder
+	b.WriteString("# Equivalence specification\n\n")
+	writeRenderReuseSection(&b, 0)
+	for _, section := range sections {
+		if section != 0 {
+			writeRenderReuseSection(&b, section)
 		}
 	}
 	return b.String()
+}
+
+func writeRenderReuseSection(b *strings.Builder, section int) {
+	fmt.Fprintf(b, "## Section %d\n\n", section)
+	fmt.Fprintf(b, "Paragraph %d opens the section with enough words to read like specification prose about the subject at hand.\n\n", section)
+	fmt.Fprintf(b, "- Bullet %d alpha names one requirement of the section.\n- Bullet %d beta names another requirement of the section.\n\n", section, section)
+	fmt.Fprintf(b, "1. Step %d one is taken first.\n2. Step %d two is taken next.\n\n", section, section)
+	if section%5 == 0 {
+		fmt.Fprintf(b, ":::callout{#callout-%d kind=\"note\" title=\"\"}\nCallout %d holds a note the readers of the section need.\n:::\n\n", section, section)
+	}
+	if section%40 == 0 {
+		fmt.Fprintf(b, ":::ask{#ask-%d urgency=\"high\" multiple=\"false\"}\nWhich option does section %d take?\n:::\n\n", section, section)
+	}
 }
 
 // renderPaths is a reading of the service's renderPathCounts.
@@ -692,13 +712,7 @@ func (sh *renderShadow) check(t *testing.T) {
 		if replica == nil {
 			t.Fatal("the room has no replica")
 		}
-		deadline := time.Now().Add(5 * time.Second)
-		for replica.hold() == nil {
-			if time.Now().After(deadline) {
-				t.Fatal("the replica never stood at the room's latest commit")
-			}
-			time.Sleep(time.Millisecond)
-		}
+		heldReplica(t, replica)
 		if !sameRendering(replicaMarkdown(replica), room.markdown) {
 			t.Errorf("the replica renders %s and the shadow %s", describeRendering(replicaMarkdown(replica)), describeRendering(room.markdown))
 		}
@@ -737,25 +751,37 @@ func sortedIDs(ids map[string]struct{}) []string {
 	return slices.Sorted(maps.Keys(ids))
 }
 
-// newRenderReuseService is a service whose settlement waits an hour and whose rooms stay resident
-// for the test's run (holdRoomsResident), with renders watched from before the document is seeded
-// with renderReuseDocument. No room holds the document yet.
+// newRenderReuseService seeds the full document for the nil-origin cases. No room holds it yet.
 func newRenderReuseService(t *testing.T) (*Service, string, *renderShadow) {
 	t.Helper()
-	service, artifactID := newTestService(t)
+	return newRenderReuseServiceTo(t, nil, renderReuseDocument())
+}
+
+// newRenderReuseServiceTo watches renders from before the seed. Settlement is staged so a test
+// controls when it runs. The rooms stay resident: an idle sweep could retire a room the shadow
+// must check, or stop its persistence worker while a test holds an append across a transaction.
+func newRenderReuseServiceTo(t *testing.T, logger *slog.Logger, document string) (*Service, string, *renderShadow) {
+	t.Helper()
+	service, artifactID := newTestServiceTo(t, logger)
 	service.settle = time.Hour
 	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
-	seedServiceText(t, service, artifactID, renderReuseDocument())
+	seedServiceText(t, service, artifactID, document)
 	return service, artifactID, sh
 }
 
-// newWarmRenderReuseRoom is newRenderReuseService with the document's room loaded and its replica
-// started by one browser edit, durable, so the replica stands at the room's latest commit with one
-// foreign update consumed.
-func newWarmRenderReuseRoom(t *testing.T) (*Service, string, *renderShadow) {
+// newWarmRenderReuseRoom loads the selected sections and starts the replica with one durable
+// browser edit in section 0.
+func newWarmRenderReuseRoom(t *testing.T, sections ...int) (*Service, string, *renderShadow) {
 	t.Helper()
-	service, artifactID, sh := newRenderReuseService(t)
+	return newWarmRenderReuseRoomTo(t, nil, sections...)
+}
+
+// newWarmRenderReuseRoomTo is newWarmRenderReuseRoom writing its lines to logger
+// (newTestServiceTo).
+func newWarmRenderReuseRoomTo(t *testing.T, logger *slog.Logger, sections ...int) (*Service, string, *renderShadow) {
+	t.Helper()
+	service, artifactID, sh := newRenderReuseServiceTo(t, logger, renderReuseSections(sections...))
 	editAsConnectedPeer(t, service, artifactID, 1, model.Actor{Kind: "user", ID: "carol"}, replaceRun("Paragraph 0 opens", "Paragraph 0 first opens"))
 	waitForLandedAppends(t, service, artifactID)
 	replica := service.replicaOf(service.srv.GetDoc(artifactID))
@@ -784,7 +810,7 @@ var (
 // after-render.
 func TestRenderReuseAWarmReplaceRendersOnlyItsResult(t *testing.T) {
 	t.Parallel()
-	service, artifactID, sh := newWarmRenderReuseRoom(t)
+	service, artifactID, sh := newWarmRenderReuseRoom(t, 7)
 	m := sh.measure()
 	write := sh.write(t, applyOps(service, artifactID, reuseAgent, model.EditOp{Op: "replace", Find: "Paragraph 7 opens", With: "Paragraph 7 now opens"}))
 	sh.check(t)
@@ -805,7 +831,7 @@ func TestRenderReuseAWarmReplaceRendersOnlyItsResult(t *testing.T) {
 // changes content.
 func TestRenderReuseAnAnchoredCommentRendersNothingTwice(t *testing.T) {
 	t.Parallel()
-	service, artifactID, sh := newWarmRenderReuseRoom(t)
+	service, artifactID, sh := newWarmRenderReuseRoom(t, 3)
 	m := sh.measure()
 	write := sh.write(t,
 		func(ctx context.Context) error {
@@ -867,18 +893,20 @@ func TestRenderReuseABrowserEditAfterTheForkReadIsRendered(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name       string
+		sections   []int
 		edit       func(t *testing.T) func(*pmdoc.Node) *pmdoc.Node
 		deleteOnly bool
 	}{
-		{name: "insert", edit: func(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
+		{name: "insert", sections: []int{11}, edit: func(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 			return appendBlocks(t, "A paragraph the browser typed.\n")
 		}},
-		{name: "delete only", deleteOnly: true, edit: func(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
+		{name: "delete only", sections: []int{9, 11}, deleteOnly: true, edit: func(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 			return dropBlock(t, "- Bullet 9 alpha")
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			service, artifactID, sh := newWarmRenderReuseRoom(t)
+			t.Parallel()
+			service, artifactID, sh := newWarmRenderReuseRoom(t, test.sections...)
 			edited := false
 			sh.onForkRead = func() {
 				if edited {
@@ -936,7 +964,8 @@ func serviceEdit(t *testing.T, service *Service, artifactID string, edit func(*p
 func TestRenderReuseAServiceCommitAfterTheForkReadIsRendered(t *testing.T) {
 	t.Parallel()
 	t.Run("service repair", func(t *testing.T) {
-		service, artifactID, sh := newWarmRenderReuseRoom(t)
+		t.Parallel()
+		service, artifactID, sh := newWarmRenderReuseRoom(t, 12, 13)
 		edited := false
 		sh.onForkRead = func() {
 			if !edited {
@@ -955,7 +984,8 @@ func TestRenderReuseAServiceCommitAfterTheForkReadIsRendered(t *testing.T) {
 		sh.versions(t, write)
 	})
 	t.Run("identity repair", func(t *testing.T) {
-		service, artifactID, sh := newWarmRenderReuseRoom(t)
+		t.Parallel()
+		service, artifactID, sh := newWarmRenderReuseRoom(t, 13)
 		first, _ := liveTree(t, service, artifactID).Children[0].Attrs[pmdoc.BlockIDAttr].(string)
 		if first == "" {
 			t.Fatal("the document's first block has no id to repeat")
@@ -1013,7 +1043,8 @@ func TestRenderReuseAReloadedRoomNeverTakesTheWritesRendering(t *testing.T) {
 			name = "after the commit"
 		}
 		t.Run(name, func(t *testing.T) {
-			service, artifactID, sh := newWarmRenderReuseRoom(t)
+			t.Parallel()
+			service, artifactID, sh := newWarmRenderReuseRoom(t, 21)
 			reload := func() {
 				closeDocumentRoom(t, service, artifactID)
 				if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
@@ -1079,7 +1110,7 @@ func TestRenderReuseAReloadedRoomNeverTakesTheWritesRendering(t *testing.T) {
 // fresh epoch, so the write's rendering is not taken: the publish is measured, and spliced in.
 func TestRenderReuseARecoveredReplicaRendersThePublish(t *testing.T) {
 	t.Parallel()
-	service, artifactID, sh := newWarmRenderReuseRoom(t)
+	service, artifactID, sh := newWarmRenderReuseRoom(t, 14)
 	recovered := false
 	var readEpoch uint64
 	sh.onForkRead = func() {
@@ -1135,7 +1166,8 @@ func TestRenderReuseAForeignCommitBetweenOperations(t *testing.T) {
 			name = "F consumed first"
 		}
 		t.Run(name, func(t *testing.T) {
-			service, artifactID, sh := newWarmRenderReuseRoom(t)
+			t.Parallel()
+			service, artifactID, sh := newWarmRenderReuseRoom(t, 15, 16, 17)
 			m := sh.measure()
 			var write *liveWrite
 			if err := joinedWrite(service, func(ctx context.Context) error {
@@ -1171,17 +1203,20 @@ func TestRenderReuseAForeignCommitBetweenOperations(t *testing.T) {
 func TestRenderReuseAColdWriteIsAlreadyInTheRoom(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name string
-		ops  []model.EditOp
-		want renderPaths
+		name     string
+		sections []int
+		ops      []model.EditOp
+		want     renderPaths
 	}{
 		{
-			name: "one operation",
-			ops:  []model.EditOp{{Op: "replace", Find: "Paragraph 18 opens", With: "Paragraph 18 now opens"}},
-			want: renderPaths{beforeRendered: 1},
+			name:     "one operation",
+			sections: []int{18},
+			ops:      []model.EditOp{{Op: "replace", Find: "Paragraph 18 opens", With: "Paragraph 18 now opens"}},
+			want:     renderPaths{beforeRendered: 1},
 		},
 		{
-			name: "two operations",
+			name:     "two operations",
+			sections: []int{18, 19},
 			ops: []model.EditOp{
 				{Op: "replace", Find: "Paragraph 18 opens", With: "Paragraph 18 now opens"},
 				{Op: "replace", Find: "Paragraph 19 opens", With: "Paragraph 19 now opens"},
@@ -1190,7 +1225,8 @@ func TestRenderReuseAColdWriteIsAlreadyInTheRoom(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			service, artifactID, sh := newRenderReuseService(t)
+			t.Parallel()
+			service, artifactID, sh := newRenderReuseServiceTo(t, nil, renderReuseSections(test.sections...))
 			m := sh.measure()
 			var ops []func(ctx context.Context) error
 			for _, op := range test.ops {
@@ -1218,8 +1254,11 @@ func TestRenderReuseAColdWriteIsAlreadyInTheRoom(t *testing.T) {
 // and spliced in, since it changes one paragraph.
 func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 	t.Parallel()
-	service, artifactID, sh := newRenderReuseService(t)
+	service, artifactID, sh := newRenderReuseServiceTo(t, nil, renderReuseSections(22))
 	entered, release := make(chan struct{}), make(chan struct{})
+	// A failure still releases the held load before service shutdown.
+	letLoad := sync.OnceFunc(func() { close(release) })
+	testcleanup.Add(t, letLoad)
 	var once sync.Once
 	load := service.srv.OnLoadDocument
 	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
@@ -1233,11 +1272,7 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 	}
 	loaded := make(chan error, 1)
 	go func() { loaded <- service.warmLiveDocument(context.Background(), artifactID) }()
-	select {
-	case <-entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's load never reached the window it is held in")
-	}
+	testwait.Receive(t, "the room's load to reach the held window", entered)
 	m := sh.measure()
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
@@ -1257,8 +1292,8 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 	if err := ledger.commit(ctx); err != nil {
 		t.Fatalf("commit the write: %v", err)
 	}
-	close(release)
-	if err := <-loaded; err != nil {
+	letLoad()
+	if err := testwait.Receive(t, "the held room load to return after release", loaded); err != nil {
 		t.Fatalf("load the room: %v", err)
 	}
 	instance := service.instanceOf(service.srv.GetDoc(artifactID))
@@ -1275,19 +1310,20 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 // document pushed outside the schema after the fork read renders, and WARNs, as before; a cold
 // repair is already in the room that loads after it committed, so nothing of it is classified.
 func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings).
+	t.Parallel()
 	const updatedOutside = "updated document outside Proof schema"
 	// Every write below repairs a tree outside the Proof schema, which renders no markdown and
 	// has no token for any caller to name (ReplaceText's one exception).
 	replaceWhole := func(service *Service, artifactID string) func(ctx context.Context) error {
 		return func(ctx context.Context) error {
-			_, err := service.ReplaceText(ctx, artifactID, renderReuseDocument(), reuseAgent, nil)
+			_, err := service.ReplaceText(ctx, artifactID, renderReuseSections(), reuseAgent, nil)
 			return err
 		}
 	}
 	t.Run("warm repair", func(t *testing.T) {
-		service, artifactID, sh := newWarmRenderReuseRoom(t)
-		logs := captureWarnings(t)
+		logs, logger := testLogger(slog.LevelWarn)
+		service, artifactID, sh := newWarmRenderReuseRoomTo(t, logger)
+		mark := logs.Len()
 		writeSchemaInvalidElement(t, service, artifactID)
 		m := sh.measure()
 		write := sh.write(t, replaceWhole(service, artifactID))
@@ -1296,13 +1332,14 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 		if stored := sh.versions(t, write); len(stored) != 1 || !stored[0] {
 			t.Errorf("content_changed = %v, want [true]", stored)
 		}
-		if warned := strings.Count(logs.String(), updatedOutside); warned != 1 {
-			t.Errorf("%d %q WARNs, want 1, the crafted element's:\n%s", warned, updatedOutside, logs.String())
+		if warned := strings.Count(logs.String()[mark:], updatedOutside); warned != 1 {
+			t.Errorf("%d %q WARNs, want 1, the crafted element's:\n%s", warned, updatedOutside, logs.String()[mark:])
 		}
 	})
 	t.Run("pushed outside after the fork read", func(t *testing.T) {
-		service, artifactID, sh := newWarmRenderReuseRoom(t)
-		logs := captureWarnings(t)
+		logs, logger := testLogger(slog.LevelWarn)
+		service, artifactID, sh := newWarmRenderReuseRoomTo(t, logger, 23)
+		mark := logs.Len()
 		pushed := false
 		sh.onForkRead = func() {
 			if !pushed {
@@ -1319,15 +1356,16 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 		sh.check(t)
 		m.expect(t, renderPaths{beforeFromReplica: 1, observerRendered: 2}, 0)
 		sh.versions(t, write)
-		if warned := strings.Count(logs.String(), updatedOutside); warned != 2 {
-			t.Errorf("%d %q WARNs, want 2:\n%s", warned, updatedOutside, logs.String())
+		if warned := strings.Count(logs.String()[mark:], updatedOutside); warned != 2 {
+			t.Errorf("%d %q WARNs, want 2:\n%s", warned, updatedOutside, logs.String()[mark:])
 		}
 	})
 	t.Run("cold repair", func(t *testing.T) {
-		service, artifactID, sh := newWarmRenderReuseRoom(t)
+		logs, logger := testLogger(slog.LevelWarn)
+		service, artifactID, sh := newWarmRenderReuseRoomTo(t, logger)
 		writeSchemaInvalidElement(t, service, artifactID)
 		closeDocumentRoom(t, service, artifactID)
-		logs := captureWarnings(t)
+		mark := logs.Len()
 		m := sh.measure()
 		write := sh.writeThenLoad(t, replaceWhole(service, artifactID))
 		sh.check(t)
@@ -1335,8 +1373,8 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 		if stored := sh.versions(t, write); len(stored) != 1 || !stored[0] {
 			t.Errorf("content_changed = %v, want [true]", stored)
 		}
-		if warned := strings.Count(logs.String(), "outside Proof schema"); warned != 0 {
-			t.Errorf("%d schema WARNs during the cold repair, want none:\n%s", warned, logs.String())
+		if warned := strings.Count(logs.String()[mark:], "outside Proof schema"); warned != 0 {
+			t.Errorf("%d schema WARNs during the cold repair, want none:\n%s", warned, logs.String()[mark:])
 		}
 	})
 }
@@ -1345,7 +1383,7 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 // with the publish (finishLiveWrite). TestAColdWriteLoadsNoRoom holds a cold write to the same.
 func TestRenderReuseACommittedWriteKeepsNoRendering(t *testing.T) {
 	t.Parallel()
-	service, artifactID, sh := newWarmRenderReuseRoom(t)
+	service, artifactID, sh := newWarmRenderReuseRoom(t, 24, 25)
 	m := sh.measure()
 	write := sh.write(t,
 		applyOps(service, artifactID, reuseAgent, model.EditOp{Op: "replace", Find: "Paragraph 24 opens", With: "Paragraph 24 now opens"}),
@@ -1370,8 +1408,10 @@ func TestRenderReuseARoomBehindTheHeadRendersThePublish(t *testing.T) {
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
 	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
+	holdRoomsResident(t, taskA)
+	holdRoomsResident(t, taskB)
 	sh := watchRenders(t, taskA, artifactID)
-	seedServiceText(t, taskA, artifactID, renderReuseDocument())
+	seedServiceText(t, taskA, artifactID, renderReuseSections(26))
 	if err := taskA.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load task A's room: %v", err)
 	}
@@ -1571,16 +1611,10 @@ func forceRecover(replica *renderedReplica) {
 // replica's lock held for the caller to release (renderedReplica.hold).
 func heldReplica(t *testing.T, replica *renderedReplica) *crdt.Doc {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if doc := replica.hold(); doc != nil {
-			return doc
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the replica never stood at the room's latest commit")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	return testwait.Until(t, "the replica to stand at the room's latest commit", func() (*crdt.Doc, bool) {
+		doc := replica.hold()
+		return doc, doc != nil
+	})
 }
 
 // heldReplicaMarkdown is the markdown of the rendering the replica keeps once it holds every
@@ -1816,11 +1850,14 @@ func TestRenderReuseAnUnreadableAskBlockKeepsTheRoomsAskAuthors(t *testing.T) {
 	// below is still measured as touching its own block alone.
 	replica := service.replicaOf(service.srv.GetDoc(artifactID))
 	replica.mu.Lock()
+	// The lookup can fail the test. Release the lock before the service shuts down.
+	unlockReplica := sync.OnceFunc(replica.mu.Unlock)
+	testcleanup.Add(t, unlockReplica)
 	ask := topLevelAskElement(t, replica.fragment)
 	replica.doc.Transact(func(txn *crdt.Transaction) {
 		docstest.WriteDeepChain(txn, &ask.YXmlFragment, pmdoc.MaxTreeDepth+1, "deeper than the schema nests")
 	})
-	replica.mu.Unlock()
+	unlockReplica()
 
 	before := readRenderPaths(service)
 	text := browser.text("The last paragraph")
@@ -1862,7 +1899,7 @@ func TestRenderReuseACatchUpTakesTheLoadsRendering(t *testing.T) {
 	// Not parallel: it turns the whole process's collector off (debug.SetGCPercent in
 	// pauseCollections) and forces a collection (runtime.GC).
 	t.Run("the first commit takes the load's rendering", func(t *testing.T) {
-		service, artifactID, sh := newRenderReuseService(t)
+		service, artifactID, sh := newRenderReuseServiceTo(t, nil, renderReuseSections())
 		m := sh.measure()
 		resume := pauseCollections(t)
 		replica := loadRoomForCatchUp(t, service, artifactID)
@@ -1876,7 +1913,7 @@ func TestRenderReuseACatchUpTakesTheLoadsRendering(t *testing.T) {
 		}
 	})
 	t.Run("a collection before the first commit leaves it to render", func(t *testing.T) {
-		service, artifactID, sh := newRenderReuseService(t)
+		service, artifactID, sh := newRenderReuseServiceTo(t, nil, renderReuseSections())
 		m := sh.measure()
 		replica := loadRoomForCatchUp(t, service, artifactID)
 		runtime.GC()
@@ -1887,7 +1924,7 @@ func TestRenderReuseACatchUpTakesTheLoadsRendering(t *testing.T) {
 		expectCatchUps(t, m, 0, 1)
 	})
 	t.Run("a run after a recover renders", func(t *testing.T) {
-		service, artifactID, sh := newRenderReuseService(t)
+		service, artifactID, sh := newRenderReuseServiceTo(t, nil, renderReuseSections(1))
 		m := sh.measure()
 		resume := pauseCollections(t)
 		replica := loadRoomForCatchUp(t, service, artifactID)
@@ -1905,7 +1942,7 @@ func TestRenderReuseACatchUpTakesTheLoadsRendering(t *testing.T) {
 		expectCatchUps(t, m, 0, 1)
 	})
 	t.Run("a recover before the first run drops the load's rendering", func(t *testing.T) {
-		service, artifactID, sh := newRenderReuseService(t)
+		service, artifactID, sh := newRenderReuseServiceTo(t, nil, renderReuseSections())
 		m := sh.measure()
 		resume := pauseCollections(t)
 		replica := loadRoomForCatchUp(t, service, artifactID)

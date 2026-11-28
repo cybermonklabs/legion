@@ -1,70 +1,92 @@
 package docs
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 	"weak"
+
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// The leak registry answers one question this package's tests cannot otherwise ask: when the test
-// binary ends, how many of the services its tests built are still alive? A test that builds a
-// service and never shuts it down keeps that service - and every room it loaded, with that room's
-// document in memory - for the rest of the binary's run, which is the memory this check exists to
-// catch. The registry holds each service through a weak pointer, so it pins nothing itself: what
-// stays alive stays alive because a test left it so.
+// The registry holds each service through a weak pointer. Only the test or the service's own
+// work can keep it alive. Shutdown counts tell the report whether a test ever tried to shut it
+// down and whether every call has returned, without reading the service's internal state.
 
-// leakWaitBudget bounds how long the report waits for a service its test never shut down to be
-// collected: one its test dropped is unreachable at once, but only reported collected once a GC
-// has cleared its weak pointer. A service its test did shut down is waited for until it is
-// collected, under the binary's own deadline (leakCheckDeadline), however long that takes: under
-// the race detector on a loaded runner a shut-down service has stayed reachable for more than this
-// budget with no goroutine, finalizer or cleanup holding it, and failing the run for it named a
-// test that had done what the report asks for.
-const leakWaitBudget = 30 * time.Second
+var (
+	// leakReportClock measures the report's elapsed time.
+	leakReportClock = clock.Real()
+	// leakReportAfterGC is a hook a child sets to run after a collection pass that still sees
+	// a live service and will keep waiting.
+	leakReportAfterGC func(elapsed time.Duration)
+)
 
-// leakWaitStep is how long the report sleeps between the pairs of collections it forces.
-const leakWaitStep = 250 * time.Millisecond
-
-// leakCheckMargin is how long before the binary's -test.timeout runs out the wait for shut-down
-// services gives up, unless that would give them less than leakWaitBudget (leakCheckDeadline).
-// The binary's own alarm cannot end the wait: m.Run stops it before it returns, and TestMain runs
-// this check after (stopAlarm in testing's M.Run). What ends a binary still running then is the go
-// command, which kills it at -timeout plus a minute (testKillTimeout in cmd/go/internal/test), and
-// either end of the wait comes before that.
-const leakCheckMargin = 30 * time.Second
-
-// binaryStarted is when this test binary began, from which its -test.timeout counts.
-var binaryStarted = time.Now()
-
-// leakCheckStarted is closed when the end-of-run check begins (reportLeakedServices), so a test
-// of the check can time what it holds from the check's start rather than from its own end: the
-// database drops storetest.Run waits for come between the two.
-var leakCheckStarted = make(chan struct{})
-
-// builtService is one service New built, named by the test that built it.
+// builtService records the test that built a service and the number of Shutdown calls that began
+// and returned.
 type builtService struct {
-	service weak.Pointer[Service]
-	test    string
+	service   weak.Pointer[Service]
+	test      string
+	shutdowns int
+	returned  int
+}
+
+func (entry *builtService) shutdownReturned() bool {
+	return entry.shutdowns > 0 && entry.returned == entry.shutdowns
 }
 
 var (
 	builtServicesMu sync.Mutex
-	builtServices   []builtService
+	builtServices   []*builtService
+	builtByService  = make(map[weak.Pointer[Service]]*builtService)
 )
 
-// New runs from tests that run in parallel, so the hook appends under the mutex.
-func init() { newServiceHook = recordBuiltService }
+// New and Shutdown can run in parallel. The hooks write under builtServicesMu.
+func init() {
+	newServiceHook = recordBuiltService
+	shutdownStartedHook = recordShutDownService
+	shutdownServiceHook = recordEndedService
+}
 
 func recordBuiltService(service *Service) {
-	entry := builtService{service: weak.Make(service), test: buildingTest()}
+	entry := &builtService{service: weak.Make(service), test: buildingTest()}
 	builtServicesMu.Lock()
 	defer builtServicesMu.Unlock()
 	builtServices = append(builtServices, entry)
+	builtByService[entry.service] = entry
+}
+
+// recordShutDownService counts each Shutdown at entry.
+func recordShutDownService(service *Service) {
+	builtServicesMu.Lock()
+	defer builtServicesMu.Unlock()
+	if entry := builtByService[weak.Make(service)]; entry != nil {
+		entry.shutdowns++
+	}
+}
+
+// recordEndedService counts each Shutdown at return.
+func recordEndedService(service *Service) {
+	builtServicesMu.Lock()
+	defer builtServicesMu.Unlock()
+	if entry := builtByService[weak.Make(service)]; entry != nil {
+		entry.returned++
+	}
+}
+
+// serviceEnded reports whether a service has had a Shutdown and all its calls returned.
+func serviceEnded(service *Service) bool {
+	builtServicesMu.Lock()
+	defer builtServicesMu.Unlock()
+	entry := builtByService[weak.Make(service)]
+	return entry != nil && entry.shutdownReturned()
 }
 
 // buildingTest names the nearest frame of the call to New that belongs to a test of this package:
@@ -87,100 +109,88 @@ func buildingTest() string {
 	}
 }
 
-// liveService is a service a weak pointer still resolves: the test that built it, and whether
-// that service was shut down. Shutdown sets stopping on each path it returns by, once its rooms'
-// workers have drained, so one whose context ran out counts as shut down too.
+// liveService is a snapshot of the shutdown state of a service the report has not cleared.
 type liveService struct {
-	test     string
-	shutDown bool
+	test      string
+	shutdowns int
+	returned  int
 }
 
-// liveServices reports how many services the tests built and the ones a weak pointer still
-// resolves, in the order they were built.
+func (s liveService) shutdownStarted() bool { return s.shutdowns > 0 }
+
+func (s liveService) why() string {
+	switch {
+	case !s.shutdownStarted():
+		return "its Shutdown never started"
+	case s.returned < s.shutdowns:
+		return "its Shutdown started and has not returned"
+	default:
+		return "its Shutdown returned and something still holds it"
+	}
+}
+
+// liveServices reads the registry in build order. A missing or in-flight Shutdown counts as
+// live from the call counts alone. After all calls return, only a resolving weak pointer counts.
 func liveServices() (built int, live []liveService) {
 	builtServicesMu.Lock()
 	defer builtServicesMu.Unlock()
 	for _, entry := range builtServices {
-		if service := entry.service.Value(); service != nil {
-			live = append(live, liveService{test: entry.test, shutDown: service.stopping.Load()})
+		if !entry.shutdownReturned() || entry.service.Value() != nil {
+			live = append(live, liveService{test: entry.test, shutdowns: entry.shutdowns, returned: entry.returned})
 		}
 	}
 	return len(builtServices), live
 }
 
-// testTimeout is the binary's -test.timeout, and false when it has none.
-func testTimeout() (time.Duration, bool) {
-	timeout := flag.Lookup("test.timeout")
-	if timeout == nil {
-		return 0, false
-	}
-	limit, ok := timeout.Value.(flag.Getter).Get().(time.Duration)
-	return limit, ok && limit > 0
+// collect runs twice because the first collection may queue a finalizer that holds a service.
+func collect() {
+	runtime.GC()
+	runtime.GC()
 }
 
-// leakCheckDeadline is when the wait for shut-down services gives up, for a check that began at
-// start: leakCheckMargin before the binary's -test.timeout runs out, or leakWaitBudget after start
-// when that is later, so no service is given less than leakWaitBudget however close to its
-// timeout the binary's tests ended. With no timeout there is no end, as testwait's waits have none
-// then.
-func leakCheckDeadline(start time.Time) (time.Time, bool) {
-	limit, ok := testTimeout()
-	if !ok {
-		return time.Time{}, false
-	}
-	deadline := binaryStarted.Add(limit - leakCheckMargin)
-	if budgetEnds := start.Add(leakWaitBudget); deadline.Before(budgetEnds) {
-		deadline = budgetEnds
-	}
-	return deadline, true
-}
-
-// reportLeakedServices forces collections until no service the tests built is still reachable,
-// prints what it found to stderr, and reports whether a service is still alive. It fails the run
-// for one: TestMain (persistence_test.go) turns a true here into a non-zero exit code when the
-// tests themselves passed. A service never shut down is given leakWaitBudget to be collected: one
-// still alive then means a test built a service and never shut it down, so that service, its rooms
-// and their documents stayed in memory for the rest of the binary's life, and the lines after the
-// count name the tests to fix, each by a testcleanup.Add that shuts the service it built down. A service
-// that was shut down is waited for until it is collected, or until the deadline (leakCheckDeadline,
-// never sooner than leakWaitBudget): one still reachable then is held by something after its
-// shutdown. Each shut-down service still reachable at leakWaitBudget is named once then, with how
-// long the wait may go on, so a long wait says what it waits for.
+// reportLeakedServices fails immediately if a test never started a service's Shutdown.
+// Otherwise, it waits for each Shutdown to return and each service to become unreachable.
+// The only bound is the binary's deadline less testwait's margin. With -timeout 0,
+// there is no deadline. TestMain turns a true result into a nonzero exit code.
 func reportLeakedServices() bool {
-	close(leakCheckStarted)
-	start := time.Now()
-	deadline, bounded := leakCheckDeadline(start)
+	start := leakReportClock.Now()
+	collect()
 	var built int
 	var live []liveService
-	told := false
-	for {
-		// Twice: the first collection can leave a service reachable from a finalizer it queued.
-		runtime.GC()
-		runtime.GC()
+	neverShutDown := func(s liveService) bool { return !s.shutdownStarted() }
+	done := func() bool {
 		built, live = liveServices()
-		if len(live) == 0 {
-			break
-		}
-		if neverShutDown(live) && time.Since(start) >= leakWaitBudget {
-			break
-		}
-		if !told && time.Since(start) >= leakWaitBudget {
-			told = true
-			tellWaiting(live, deadline, bounded)
-		}
-		if bounded && !time.Now().Before(deadline) {
-			break
-		}
-		time.Sleep(leakWaitStep)
+		return len(live) == 0 || slices.ContainsFunc(live, neverShutDown)
 	}
-	fmt.Fprintf(os.Stderr, "docs: %d services built, %d still alive after %s\n",
-		built, len(live), time.Since(start).Round(time.Millisecond))
-	for _, service := range live {
-		if service.shutDown {
-			fmt.Fprintf(os.Stderr, "docs: a service built by %s was shut down and is still reachable\n", service.test)
-		} else {
-			fmt.Fprintf(os.Stderr, "docs: a service built by %s is still alive and was never shut down\n", service.test)
+	asks := 0
+	// InMain already prints its error to stderr if the shared wait gives up.
+	_ = testwait.InMain("the document services to finish Shutdown and be collected", func() bool {
+		asks++
+		if done() {
+			return true
 		}
+		for _, service := range live {
+			if service.returned < service.shutdowns {
+				return false
+			}
+		}
+		// At testwait's 10 ms pace, 25 asks give one collection pair about every 250 ms.
+		if asks%25 != 0 {
+			return false
+		}
+		collect()
+		if done() {
+			return true
+		}
+		if leakReportAfterGC != nil {
+			leakReportAfterGC(leakReportClock.Now().Sub(start))
+		}
+		return false
+	})
+	fmt.Fprintf(os.Stderr, "docs: %d services built, %d still alive after %s\n",
+		built, len(live), leakReportClock.Now().Sub(start).Round(time.Millisecond))
+	for _, service := range live {
+		fmt.Fprintf(os.Stderr, "docs: a service built by %s is still alive: %s\n", service.test, service.why())
 	}
 	if len(live) == 0 {
 		return false
@@ -189,25 +199,53 @@ func reportLeakedServices() bool {
 	return true
 }
 
-// neverShutDown is whether any of live was never shut down.
-func neverShutDown(live []liveService) bool {
-	for _, service := range live {
-		if !service.shutDown {
-			return true
+// Hold the service across the end of the subtest so the test reads the constructor's cleanup,
+// not the collector. The constructor must not shut it down until the subtest ends.
+func TestAServiceTheTestConstructorBuildsHasEndedOnceItsTestEnds(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	var service *Service
+	t.Run("building a service", func(t *testing.T) {
+		service = newTestServiceOn(t, database)
+		if serviceEnded(service) {
+			t.Fatal("Shutdown returned before the subtest ended")
 		}
+	})
+	if !serviceEnded(service) {
+		t.Fatal("Shutdown had not returned when the subtest ended")
 	}
-	return false
 }
 
-// tellWaiting names each of live, every one shut down, as still reachable after leakWaitBudget, and
-// says until when the check waits for it to be collected.
-func tellWaiting(live []liveService, deadline time.Time, bounded bool) {
-	until := "with no end, since the binary has no -test.timeout"
-	if bounded {
-		until = "until " + deadline.Format(time.RFC3339)
+func TestTheLeakCheckNamesAServiceItsTestLeftRunning(t *testing.T) {
+	t.Parallel()
+	service := New(testServiceDeps(storetest.Open(t)))
+	testcleanup.Add(t, func() { shutdownLeakCheckService(t, service) })
+	_, live := liveServices()
+	const name = "docs.TestTheLeakCheckNamesAServiceItsTestLeftRunning"
+	if !slices.Contains(live, liveService{test: name}) {
+		t.Fatalf("live services: %+v, want %s with no Shutdown calls", live, name)
 	}
-	for _, service := range live {
-		fmt.Fprintf(os.Stderr, "docs: the service built by %s was shut down and is still reachable after %s; waiting for it to be collected %s\n",
-			service.test, leakWaitBudget, until)
+}
+
+func TestTheLeakCheckNamesAServiceSomethingHoldsAfterItsShutdown(t *testing.T) {
+	// Not parallel: it forces garbage collections for the whole process.
+	service := New(testServiceDeps(storetest.Open(t)))
+	shutdownLeakCheckService(t, service)
+	collect()
+	_, live := liveServices()
+	runtime.KeepAlive(service)
+	const name = "docs.TestTheLeakCheckNamesAServiceSomethingHoldsAfterItsShutdown"
+	if !slices.Contains(live, liveService{test: name, shutdowns: 1, returned: 1}) {
+		t.Fatalf("live services: %+v, want %s with one Shutdown that returned", live, name)
 	}
+}
+
+func shutdownLeakCheckService(t *testing.T, service *Service) {
+	t.Helper()
+	ctx := testwait.Context(t)
+	testwait.Returns(t, "document service Shutdown", func() {
+		if err := service.Shutdown(ctx); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
 }

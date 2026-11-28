@@ -287,7 +287,7 @@ func TestABufferedFoldEndsWithItsContext(t *testing.T) {
 		defer cancel()
 		replay := memoryUpdates(ctx, rows)
 		applied := 0
-		state, err := stateThrough(artifactID, 3, func(use func([]byte) error) error {
+		state, err := stateThrough(nil, artifactID, 3, func(use func([]byte) error) error {
 			return replay(func(update []byte) error {
 				applied++
 				if applied == 2 {

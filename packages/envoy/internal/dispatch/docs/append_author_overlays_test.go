@@ -73,7 +73,7 @@ func TestAnAppendsAskBlockAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
 			return err
 		}
 		if _, _, err := service.persistence.AppendRoomUpdatesTx(ctx, tx, artifactID, nil, []BrowserUpdate{
-			{Update: browserUpdateBytes(), ContentChanged: true, Credit: credit, Observed: time.Now()},
+			{Update: browserUpdateBytes(), ContentChanged: true, Credit: credit, Observed: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)},
 		}); err != nil {
 			return err
 		}
@@ -111,7 +111,7 @@ func TestAnAppendsPendingAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
 			return err
 		}
 		if _, _, err := service.persistence.AppendRoomUpdatesTx(ctx, tx, artifactID, nil, []BrowserUpdate{
-			{Update: browserUpdateBytes(), ContentChanged: true, Credit: credit, Observed: time.Now()},
+			{Update: browserUpdateBytes(), ContentChanged: true, Credit: credit, Observed: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)},
 		}); err != nil {
 			return err
 		}

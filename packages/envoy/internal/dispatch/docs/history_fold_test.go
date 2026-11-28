@@ -37,6 +37,7 @@ func TestAFoldedHistoryReadsAsTheMergedHistory(t *testing.T) {
 	ctx := context.Background()
 	for index, fixture := range fixtures {
 		t.Run(fixture.Name, func(t *testing.T) {
+			t.Parallel()
 			history := documentHistory(t, fixture.update, fixtures[(index+1)%len(fixtures)].update)
 			artifactID := createDocument(t, database, "history")
 			for _, update := range history {
@@ -44,14 +45,16 @@ func TestAFoldedHistoryReadsAsTheMergedHistory(t *testing.T) {
 					t.Fatalf("append update: %v", err)
 				}
 			}
-			want := readMerged(t, history)
+			prefixes := make([]documentReading, len(history)+1)
 			for version := 1; version <= len(history); version++ {
 				state, err := versioned.MaterializeAt(ctx, artifactID, persistence.Version(version))
 				if err != nil {
 					t.Fatalf("materialize version %d: %v", version, err)
 				}
-				requireReadsAs(t, fmt.Sprintf("version %d", version), state, readMerged(t, history[:version]))
+				prefixes[version] = readMerged(t, history[:version])
+				requireReadsAs(t, fmt.Sprintf("version %d", version), state, prefixes[version])
 			}
+			want := prefixes[len(history)]
 			requireLoadReadsAs(t, versioned, artifactID, "the head", want)
 
 			if _, err := versioned.Compact(ctx, artifactID, 2); err != nil {
@@ -62,7 +65,7 @@ func TestAFoldedHistoryReadsAsTheMergedHistory(t *testing.T) {
 				if err != nil {
 					t.Fatalf("materialize version %d after compaction: %v", version, err)
 				}
-				requireReadsAs(t, fmt.Sprintf("version %d after compaction to two", version), state, readMerged(t, history[:version]))
+				requireReadsAs(t, fmt.Sprintf("version %d after compaction to two", version), state, prefixes[version])
 			}
 			compactAged(t, versioned, database, artifactID)
 			if rows := storedUpdateCount(t, database, artifactID); rows != 1 {
@@ -83,23 +86,26 @@ func TestCompactionLeavesTheStateNotTheContentItDeleted(t *testing.T) {
 	ctx := context.Background()
 	artifactID := createDocument(t, database, "history")
 	const recordBytes = 64 << 10
+	const projections = 40
 	writer := crdt.New()
 	marks := writer.GetMap(marksMapName)
-	var history [][]byte
-	for projection := range 40 {
+	var history [projections][]byte
+	var updates [projections]BrowserUpdate
+	for projection := range history {
 		before := writer.StateVector()
 		writer.Transact(func(txn *crdt.Transaction) {
 			marks.Set(txn, "c1", map[string]any{"text": strings.Repeat(fmt.Sprint(projection%10), recordBytes)})
 		})
-		history = append(history, crdt.EncodeStateAsUpdateV1(writer, before))
+		update := crdt.EncodeStateAsUpdateV1(writer, before)
+		history[projection] = update
+		updates[projection] = BrowserUpdate{Update: update, ContentChanged: true}
 	}
-	for _, update := range history {
-		if _, err := versioned.AppendUpdate(ctx, artifactID, update); err != nil {
-			t.Fatalf("append update: %v", err)
-		}
+	// Store one row per projection without committing each projection separately.
+	if _, err := versioned.AppendUpdatesWithCredit(ctx, artifactID, updates[:]); err != nil {
+		t.Fatalf("append history: %v", err)
 	}
 	const bound = recordBytes + 16<<10
-	if stored := storedUpdateBytes(t, database, artifactID); stored < 40*recordBytes {
+	if stored := storedUpdateBytes(t, database, artifactID); stored < projections*recordBytes {
 		t.Fatalf("history stored %d bytes, want the forty projections it wrote", stored)
 	}
 	loaded, err := versioned.Load(ctx, artifactID)
@@ -109,7 +115,7 @@ func TestCompactionLeavesTheStateNotTheContentItDeleted(t *testing.T) {
 	if len(loaded.Update) > bound {
 		t.Fatalf("load returned %d bytes, want the one record's state, at most %d", len(loaded.Update), bound)
 	}
-	want := readMerged(t, history)
+	want := readMerged(t, history[:])
 	requireReadsAs(t, "the load", loaded.Update, want)
 	compactAged(t, versioned, database, artifactID)
 	if stored := storedUpdateBytes(t, database, artifactID); stored > bound {

@@ -25,9 +25,9 @@ import (
 // browser edit landed in its transaction would version, and refresh anchors against, a document
 // that never existed.
 //
-// The two writes run on two services with a database each, every flow on a document of its own,
-// seeded on both sides from the same bytes under the same ids, so the stored histories match byte
-// for byte before each flow and every difference after it is the write's. When
+// Each flow runs the two writes on two services with a database each. Both sides start with the
+// same bytes under the same ids, so the stored histories match byte for byte before each flow.
+// Flows of one source run in parallel, but sources run in turn to limit the live heap. When
 // DISPATCH_TEST_SPEC_CORPUS names a directory, every *.md in it is one more document. Those may be
 // private specs: the test logs only their size, sha256 and anchor count, and a difference on one
 // names only lengths and sha256s.
@@ -38,19 +38,18 @@ func TestAMarginWriteMatchesTheWholeDocumentWrite(t *testing.T) {
 		{name: "generated-600KiB", markdown: generatedSpec(600 << 10)},
 	}
 	sources = append(sources, corpusSpecs(t)...)
-	sides := [2]*equivalenceSide{
-		newEquivalenceSide(t, "margin write", true, projectMarginRecord),
-		newEquivalenceSide(t, "whole-document write", false, wholeDocumentWrite),
-	}
 	flows := equivalenceFlows()
-	number := 0
-	for _, source := range sources {
+	for sourceIndex, source := range sources {
 		t.Run(source.name, func(t *testing.T) {
 			document := prepareEquivalenceDocument(t, source)
-			for _, flow := range flows {
-				number++
-				ids := flowIDsFor(number)
+			for flowIndex, flow := range flows {
+				ids := flowIDsFor(sourceIndex*len(flows) + flowIndex + 1)
 				t.Run(flow.name, func(t *testing.T) {
+					t.Parallel()
+					sides := [2]*equivalenceSide{
+						newEquivalenceSide(t, "margin write", true, projectMarginRecord),
+						newEquivalenceSide(t, "whole-document write", false, wholeDocumentWrite),
+					}
 					compareFlow(t, sides, document, flow, ids)
 				})
 			}

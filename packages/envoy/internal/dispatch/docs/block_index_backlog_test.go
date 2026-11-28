@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -70,9 +71,9 @@ func dateOwedVersion(t *testing.T, database *store.Store, artifactID string, at 
 func TestTheBlockIndexTickReportsTheBacklogAndTheAgeOfItsOldestDocument(t *testing.T) {
 	t.Parallel()
 	database, service := blockIndexService(t)
-	// Postgres holds a timestamp to the microsecond. The test's own clock is rounded to it, so
-	// a nanosecond the database cannot store cannot make the comparisons below fail.
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	serviceClock := clocktest.New(time.Date(2026, time.January, 2, 0, 0, 0, 0, time.UTC))
+	service.now = serviceClock.Now
+	now := serviceClock.Now()
 	ages := []time.Duration{3 * time.Hour, 2 * time.Hour, time.Hour}
 	owed := make([]string, len(ages))
 	for index, age := range ages {
@@ -119,7 +120,7 @@ func TestADocumentWithNoVersionIsDatedByItsOwnCreation(t *testing.T) {
 	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
-	made := time.Now().UTC().Truncate(time.Microsecond).Add(-5 * time.Hour)
+	made := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	var artifactID string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, created_at)

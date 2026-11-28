@@ -162,10 +162,12 @@ var askOpeningWriterCensus = map[string]string{
 
 // approvalCallers is each call the gate's census rests on, by the functions that make it, one
 // entry for each call: the api package's calls, and the docs package's writer of a person's review,
-// the carry of an approval, beside its call of the form gate. approvalDocuments is the one function
-// that gives the documents an approval in a person's name covers and judges each, so a person's
-// review and the carry's gate each call it, and nothing else judges such an approval. The restore
-// writes the asks it opens again twice, the asks that are no approval request and then the
+// the carry of an approval, beside its call of the form gate. A person's review is written through
+// docs.QueueReview or a ledger's QueueReview (docs.Ledger), which hands the review's warning to the
+// logger of the ledger's service; both count as docs.QueueReview(person). approvalDocuments is the
+// one function that gives the documents an approval in a person's name covers and judges each, so a
+// person's review and the carry's gate each call it, and nothing else judges such an approval. The
+// restore writes the asks it opens again twice, the asks that are no approval request and then the
 // requests that its judgment passes (prepareRestoration).
 var approvalCallers = map[string][]string{
 	"openApprovalAsk":           {"requestArtifactApproval"},
@@ -215,7 +217,8 @@ func approvalCallerProblems(sources []moduleSource) []string {
 	callers := map[string][]string{}
 	for _, source := range sources {
 		var callee func(*ast.CallExpr) string
-		switch path.Dir(moduleRelative(source.path)) {
+		dir := path.Dir(moduleRelative(source.path))
+		switch dir {
 		case "internal/dispatch/api":
 			callee = approvalCallee
 		case "internal/dispatch/docs":
@@ -226,6 +229,12 @@ func approvalCallerProblems(sources []moduleSource) []string {
 		for _, declared := range source.file.Decls {
 			function, ok := declared.(*ast.FuncDecl)
 			if !ok || function.Body == nil {
+				continue
+			}
+			// docs.QueueReview and the ledger's QueueReview are the writer of a review, each handing
+			// it to queueReview with the logger its warning goes to: the census names who calls that
+			// writer, not the writer itself.
+			if dir == "internal/dispatch/docs" && function.Name.Name == "QueueReview" {
 				continue
 			}
 			ast.Inspect(function.Body, func(node ast.Node) bool {
@@ -249,8 +258,9 @@ func approvalCallerProblems(sources []moduleSource) []string {
 }
 
 // docsApprovalCallee is the entry of approvalCallers that call, in the docs package, makes, or "":
-// a write of a review whose kind can be a person's (personsReview), and a call of the form gate a
-// carry holds (gate).
+// a write of a review whose kind can be a person's (personsReview), through QueueReview or the
+// queueReview it hands on to, which a carry calls with its service's logger, and a call of the form
+// gate a carry holds (gate).
 func docsApprovalCallee(call *ast.CallExpr) string {
 	function, ok := call.Fun.(*ast.Ident)
 	if !ok {
@@ -259,7 +269,7 @@ func docsApprovalCallee(call *ast.CallExpr) string {
 	switch function.Name {
 	case "gate":
 		return "docs: gate"
-	case "QueueReview":
+	case "QueueReview", "queueReview":
 		if personsReview(call) {
 			return "docs: QueueReview(person)"
 		}
@@ -281,7 +291,9 @@ func approvalCallee(call *ast.CallExpr) string {
 			return "docs.WriteRestoredAsks"
 		}
 	case "QueueReview":
-		if qualifier, ok := selector.X.(*ast.Ident); ok && qualifier.Name == "docs" && personsReview(call) {
+		// docs.QueueReview, or a ledger's QueueReview: the api package holds no other method of the
+		// name, so the receiver need not be read.
+		if personsReview(call) {
 			return "docs.QueueReview(person)"
 		}
 	}
@@ -396,6 +408,9 @@ func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
 		{name: "a second caller of a person's review", names: "plantedApprove",
 			code: "func plantedApprove(b *store.WriteBatch, artifact model.Artifact, actor model.Actor) error {\n" +
 				"\treturn docs.QueueReview(b, nil, artifact, 1, \"approved\", docs.ReviewKindPerson, actor, nil, nil, nil)\n}\n"},
+		{name: "a second caller of a person's review through a ledger", names: "plantedLedgerApprove",
+			code: "func plantedLedgerApprove(ledger *docs.Ledger, b *store.WriteBatch, artifact model.Artifact, actor model.Actor) error {\n" +
+				"\treturn ledger.QueueReview(b, nil, artifact, 1, \"approved\", docs.ReviewKindPerson, actor, nil, nil, nil)\n}\n"},
 		{name: "a second restore of withdrawn asks", names: "plantedRestoreAll",
 			code: "func plantedRestoreAll(ctx context.Context, tx pgx.Tx, asks []model.Ask) error {\n" +
 				"\treturn docs.WriteRestoredAsks(ctx, tx, asks)\n}\n"},

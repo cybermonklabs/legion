@@ -9,12 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The document service's own write transactions under storetest's xid rig (INFRA-636, plan test
@@ -38,23 +39,18 @@ import (
 // rows, the API's issue-list bound and the auth service's storm, alone" runs them, judging shape
 // and gaps both.
 
-// xidService is a document service on a traced pool of a fresh database, settling after an hour so
-// only the settlement a test runs itself settles.
+// xidService is a document service on a traced pool of a fresh database. Its clock's timers
+// never fire because the test never advances it, so only the settlement a test runs itself settles.
 func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 	t.Helper()
 	tracer := storetest.NewXidTracer()
 	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
-	service := New(Deps{
+	service := newSeamService(t, Deps{
 		Store:    database,
 		Events:   events.NewBroker(),
 		Identity: headerIdentity(database),
 		Origins:  testOrigins,
-		Settle:   time.Hour,
-	})
-	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
+		Clock:    clocktest.Held(),
 	})
 	return service, database, tracer
 }
@@ -377,8 +373,7 @@ func settlementFixture(t *testing.T, service *Service, database *store.Store, ed
 	editAsConnectedPeer(t, service, artifactID, 1, editor, replaceRun("Revision token r0", "Revision token r1"))
 	before := latestVersionNumber(t, service, artifactID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for live updates to reach persistence: %v", err)
 	}

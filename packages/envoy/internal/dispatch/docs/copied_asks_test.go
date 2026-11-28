@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -538,9 +537,8 @@ func askEditsOf(t *testing.T, service *Service, ask string) int {
 // resolved ask's block leaves its row as it was decided, appends no ask.edited, and settlement
 // writes the decided wording back into the block beside its decision, logging that it did.
 func TestADocumentEditOfADecidedAsksWordingIsWrittenBackAndLeavesItsRow(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelInfo)
 	writes := map[string]func(t *testing.T, service *Service, document string){
 		"live edit": func(t *testing.T, service *Service, document string) {
 			editLiveTree(t, service, document, func(tree *pmdoc.Node) *pmdoc.Node {
@@ -556,7 +554,7 @@ func TestADocumentEditOfADecidedAsksWordingIsWrittenBackAndLeavesItsRow(t *testi
 	for _, closing := range []string{"answered", "resolved"} {
 		for name, write := range writes {
 			t.Run(closing+"/"+name, func(t *testing.T) {
-				service, original := newTestService(t)
+				service, original := newTestServiceTo(t, logger)
 				service.settle = time.Hour
 				seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 				settleCurrentGeneration(t, service, original)
@@ -634,12 +632,11 @@ func rewordAsAnEarlierRelease(t *testing.T, service *Service, document string, a
 // on, writes it back into the block, and logs the ask, its document and the restored question;
 // the boot's restoration then finds nothing left to restore.
 func TestASettlementRestoresADecidedAskAnEarlierReleaseReworded(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelInfo)
 	for _, closing := range []string{"answered", "resolved"} {
 		t.Run(closing, func(t *testing.T) {
-			service, original := newTestService(t)
+			service, original := newTestServiceTo(t, logger)
 			service.settle = time.Hour
 			seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 			settleCurrentGeneration(t, service, original)
@@ -807,10 +804,9 @@ func TestTheBootsRestorationSettlesTheRestoredAsksOwnDocument(t *testing.T) {
 // they are logs nothing more, and one that shows a change of a source's state logs that block
 // again.
 func TestASettlementLogsEachBlockItTakesForACopyOnce(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	service, original := newTestService(t)
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelInfo)
+	service, original := newTestServiceTo(t, logger)
 	service.settle = time.Hour
 	asks := copiedAskSource(t, service, original)
 	copied := createIssueDocument(t, service.store, 1, "# Copy")

@@ -11,17 +11,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
-
-// captureLogs sends the default logger's lines to the returned log until the test ends.
-func captureLogs(t *testing.T) *storetest.LockedLog {
-	t.Helper()
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
-	return logs
-}
 
 // seedUncountedIssue commits issue TP-<number> whose primary document's version 1 is markdown,
 // with no task count stored, as the migration that added the count left every row.
@@ -120,12 +111,12 @@ func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
 // to the retries after it, and the first of those after the writer lets go counts it; the
 // reconciliation then returns.
 func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in captureLogs).
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	free := seedUncountedIssue(t, database, 1, "- [x] a\n- [ ] b\n")
 	held := seedUncountedIssue(t, database, 2, "- [x] a\n- [x] b\n- [ ] c\n")
-	logs := captureLogs(t)
+	logs, logger := testLogger(slog.LevelInfo)
 	writer, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +127,7 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 	if err := store.LockOwner(ctx, writer, store.IssueOwner(held)); err != nil {
 		t.Fatalf("hold %s: %v", held, err)
 	}
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour, Logger: logger})
 	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 
 	done := runTaskProgress(t, service)

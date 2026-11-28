@@ -222,6 +222,8 @@ type awarenessHost interface {
 	coalesceAwareness(flush func())
 	// awarenessWindows are the windows a test opens in the relay's paths.
 	awarenessWindows() awarenessWindows
+	// log is the logger the relay's lines go to (Service.log), read at each line.
+	log() *slog.Logger
 	// countAwarenessChange is the test hooks' count of a change room's awareness made to client:
 	// a state or a removal another process's notification applied, or a removal the room made
 	// itself (RoomCounters.RelayedAwareness) - and nothing where they are off.
@@ -490,7 +492,7 @@ func (r *awarenessRelay) record(room string, aw *awareness.Awareness, entries []
 		held, listed := clients[entry.client]
 		if entry.removed {
 			if listed && entry.clock < held {
-				if _, live := awarenessClientStanding(aw, entry.client); live {
+				if _, live := awarenessClientStanding(r.host.log(), aw, entry.client); live {
 					continue
 				}
 				entry.clock, entry.raw = held, awarenessRemoval(entry.client, held)
@@ -504,7 +506,7 @@ func (r *awarenessRelay) record(room string, aw *awareness.Awareness, entries []
 		}
 		clock, state := entry.clock, entry.raw
 		if !listed || clock < held {
-			standing, live := awarenessClientStanding(aw, entry.client)
+			standing, live := awarenessClientStanding(r.host.log(), aw, entry.client)
 			if !live {
 				continue
 			}
@@ -540,11 +542,12 @@ func (r *awarenessRelay) record(room string, aw *awareness.Awareness, entries []
 // short of a bug - reads as a client the room does not hold, which sends the removal being
 // settled rather than dropping it, and drops a state the list cannot place rather than listing its
 // client: a cursor the relay takes away a moment early is put back by that client's own next
-// frame, where one it never takes away stays until it expires (awarenessExpiry, 30 s).
-func awarenessClientStanding(aw *awareness.Awareness, client uint64) (uint64, bool) {
+// frame, where one it never takes away stays until it expires (awarenessExpiry, 30 s). Such a
+// snapshot is logged to logger, the relay's host's (logTo).
+func awarenessClientStanding(logger *slog.Logger, aw *awareness.Awareness, client uint64) (uint64, bool) {
 	entries, err := decodeAwarenessEntries(aw.EncodeUpdate([]uint64{client}))
 	if err != nil || len(entries) != 1 {
-		slog.Debug("dispatch: read what a room's awareness holds of one client",
+		logTo(logger).Debug("dispatch: read what a room's awareness holds of one client",
 			"client", client, "entries", len(entries), "error", err)
 		return 0, false
 	}
@@ -625,7 +628,7 @@ func (r *awarenessRelay) send(room string, batch map[uint64]awarenessEntry) {
 	defer cancel()
 	for _, payload := range payloads {
 		if err := r.host.notifyAwareness(ctx, payload); err != nil {
-			slog.Warn("dispatch: relay a document room's awareness to the other processes", "room", room, "error", err)
+			r.host.log().Warn("dispatch: relay a document room's awareness to the other processes", "room", room, "error", err)
 			return
 		}
 	}
@@ -722,7 +725,7 @@ func (r *awarenessRelay) resolve(room string, batch map[uint64]awarenessEntry) {
 	}
 	entries, err := decodeAwarenessEntries(aw.EncodeUpdate(held))
 	if err != nil {
-		slog.Debug("dispatch: drop the awareness states of a room the relay cannot read", "room", room, "error", err)
+		r.host.log().Debug("dispatch: drop the awareness states of a room the relay cannot read", "room", room, "error", err)
 		for _, client := range held {
 			delete(batch, client)
 		}
@@ -747,7 +750,7 @@ func (r *awarenessRelay) resolve(room string, batch map[uint64]awarenessEntry) {
 		if !recorded || !gone.removed || gone.clock >= entry.clock {
 			continue
 		}
-		if _, live := awarenessClientStanding(aw, entry.client); live {
+		if _, live := awarenessClientStanding(r.host.log(), aw, entry.client); live {
 			delete(waiting, entry.client)
 			if len(waiting) == 0 {
 				delete(r.pending, room)
@@ -774,7 +777,7 @@ func (r *awarenessRelay) resolve(room string, batch map[uint64]awarenessEntry) {
 func (r *awarenessRelay) awarenessNotifications(room string, batch map[uint64]awarenessEntry) []string {
 	framing, err := json.Marshal(awarenessMessage{Sender: r.host.relaySender(), Room: room, Data: "-"})
 	if err != nil {
-		slog.Error("dispatch: frame a document room's awareness notification", "room", room, "error", err)
+		r.host.log().Error("dispatch: frame a document room's awareness notification", "room", room, "error", err)
 		return nil
 	}
 	// budget is what the base64 of one update may take: the payload less its framing, whose
@@ -796,7 +799,7 @@ func (r *awarenessRelay) awarenessNotifications(room string, batch map[uint64]aw
 		update := encodeAwarenessEntries(group)
 		payload, err := json.Marshal(awarenessMessage{Sender: r.host.relaySender(), Room: room, Data: base64.StdEncoding.EncodeToString(update)})
 		if err != nil {
-			slog.Error("dispatch: encode a document room's awareness notification", "room", room, "error", err)
+			r.host.log().Error("dispatch: encode a document room's awareness notification", "room", room, "error", err)
 		} else {
 			payloads = append(payloads, string(payload))
 		}
@@ -806,7 +809,7 @@ func (r *awarenessRelay) awarenessNotifications(room string, batch map[uint64]aw
 		entry := batch[client].raw
 		if !fits(1, len(entry)) {
 			dropped := r.oversized.Add(1)
-			slog.Warn("dispatch: drop an awareness state too large to relay to the other processes",
+			r.host.log().Warn("dispatch: drop an awareness state too large to relay to the other processes",
 				"room", room, "client", client, "bytes", len(entry), "limit", roomSyncPayloadLimit, "dropped_total", dropped)
 			continue
 		}
@@ -825,7 +828,7 @@ func (r *awarenessRelay) awarenessNotifications(room string, batch map[uint64]aw
 func (r *awarenessRelay) query(room string) {
 	payload, err := json.Marshal(awarenessMessage{Sender: r.host.relaySender(), Room: room, Query: true})
 	if err != nil {
-		slog.Error("dispatch: encode a document room's awareness query", "room", room, "error", err)
+		r.host.log().Error("dispatch: encode a document room's awareness query", "room", room, "error", err)
 		return
 	}
 	r.mu.Lock()
@@ -839,7 +842,7 @@ func (r *awarenessRelay) query(room string) {
 		ctx, cancel := context.WithTimeout(context.Background(), roomSyncSendTimeout)
 		defer cancel()
 		if err := r.host.notifyAwareness(ctx, string(payload)); err != nil {
-			slog.Warn("dispatch: ask the other processes for a document room's awareness", "room", room, "error", err)
+			r.host.log().Warn("dispatch: ask the other processes for a document room's awareness", "room", room, "error", err)
 		}
 	}()
 }
@@ -913,7 +916,7 @@ func (r *awarenessRelay) localRemoval(room string, aw *awareness.Awareness) []by
 func (r *awarenessRelay) received(ctx context.Context, payload string) {
 	var message awarenessMessage
 	if err := json.Unmarshal([]byte(payload), &message); err != nil || message.Room == "" {
-		slog.Debug("dispatch: drop an awareness notification that does not parse", "error", err)
+		r.host.log().Debug("dispatch: drop an awareness notification that does not parse", "error", err)
 		return
 	}
 	if message.Sender == r.host.relaySender() {
@@ -925,7 +928,7 @@ func (r *awarenessRelay) received(ctx context.Context, payload string) {
 	}
 	update, err := base64.StdEncoding.DecodeString(message.Data)
 	if err != nil {
-		slog.Debug("dispatch: drop an awareness notification that does not decode", "room", message.Room, "error", err)
+		r.host.log().Debug("dispatch: drop an awareness notification that does not decode", "room", message.Room, "error", err)
 		return
 	}
 	if !r.host.holdsRoomForReaders(message.Room) {
@@ -933,7 +936,7 @@ func (r *awarenessRelay) received(ctx context.Context, payload string) {
 	}
 	entries, err := decodeAwarenessEntries(update)
 	if err != nil {
-		slog.Debug("dispatch: drop an awareness notification the relay cannot read", "room", message.Room, "error", err)
+		r.host.log().Debug("dispatch: drop an awareness notification the relay cannot read", "room", message.Room, "error", err)
 		return
 	}
 	defer r.mark(message.Room, entries, -1)
@@ -944,10 +947,10 @@ func (r *awarenessRelay) received(ctx context.Context, payload string) {
 	// few microseconds between the two calls, against a sweep that waits a minute.
 	err = r.host.injectAwareness(ctx, message.Room, update)
 	if err != nil && !errors.Is(err, context.Canceled) {
-		slog.Debug("dispatch: apply another process's awareness to a document room", "room", message.Room, "error", err)
+		r.host.log().Debug("dispatch: apply another process's awareness to a document room", "room", message.Room, "error", err)
 	}
 	if aw, resident := r.host.roomAwareness(message.Room); resident {
-		reclaimAwarenessSlots(message.Room, aw)
+		reclaimAwarenessSlots(r.host.log(), message.Room, aw)
 	}
 }
 
@@ -976,7 +979,7 @@ func (r *awarenessRelay) answer(room string) {
 	}
 	entries, err := decodeAwarenessEntries(aw.EncodeUpdate(slices.Collect(maps.Keys(clients))))
 	if err != nil {
-		slog.Debug("dispatch: drop an awareness update the relay cannot read", "room", room, "error", err)
+		r.host.log().Debug("dispatch: drop an awareness update the relay cannot read", "room", room, "error", err)
 		return
 	}
 	entries = slices.DeleteFunc(entries, func(entry awarenessEntry) bool { return entry.removed })
@@ -1014,7 +1017,7 @@ func (r *awarenessRelay) watchRoomAwareness(room string, aw *awareness.Awareness
 		}
 		r.record(room, aw, entries)
 		if len(event.Removed) > 0 {
-			reclaimAwarenessSlots(room, aw)
+			reclaimAwarenessSlots(r.host.log(), room, aw)
 		}
 	})
 }
@@ -1109,7 +1112,7 @@ func (r *awarenessRelay) touched(room string, aw *awareness.Awareness, event awa
 	// here.
 	snapshot, err := decodeAwarenessEntries(aw.EncodeUpdate(departed))
 	if err != nil {
-		slog.Debug("dispatch: read the awareness of a room's departed clients", "room", room, "error", err)
+		r.host.log().Debug("dispatch: read the awareness of a room's departed clients", "room", room, "error", err)
 	}
 	read := make(map[uint64]awarenessEntry, len(snapshot))
 	for _, entry := range snapshot {
@@ -1170,10 +1173,10 @@ func (r *awarenessRelay) mark(room string, entries []awarenessEntry, delta int) 
 // is taken for a new client, and shows that cursor until it expires (awarenessExpiry); the
 // relay's own order makes it rare, since a room's changes are coalesced and sent in order and a
 // removal takes its client off the list a query is answered from (localClients) before the send
-// that carries it.
-func reclaimAwarenessSlots(room string, aw *awareness.Awareness) {
+// that carries it. What it frees is logged to logger, the relay's host's (logTo).
+func reclaimAwarenessSlots(logger *slog.Logger, room string, aw *awareness.Awareness) {
 	if freed := aw.PurgeTombstones(awarenessTombstoneAge); freed > 0 {
-		slog.Debug("dispatch: free the entries of a document room's departed awareness clients",
+		logTo(logger).Debug("dispatch: free the entries of a document room's departed awareness clients",
 			"room", room, "freed", freed)
 	}
 }
@@ -1273,6 +1276,6 @@ func (s *Service) removeLocalAwareness(room string) {
 		return
 	}
 	if err := aw.ApplyUpdate(removal, nil); err != nil {
-		slog.Warn("dispatch: remove a closing document room's awareness", "room", room, "error", err)
+		s.log().Warn("dispatch: remove a closing document room's awareness", "room", room, "error", err)
 	}
 }

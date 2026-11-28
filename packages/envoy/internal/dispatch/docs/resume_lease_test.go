@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // Two envoy-dispatch processes run the settlement resumption, each through
@@ -19,7 +18,7 @@ import (
 // it, the other skips, so the owed settlement is resumed once in the period rather than once per
 // process (plan D9, audit finding 9).
 func TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -30,10 +29,10 @@ func TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod(t *testing.T) {
 	`, artifactID); err != nil {
 		t.Fatalf("owe the document's settlement: %v", err)
 	}
-	first, _ := newTestServiceInstance(t, database)
-	other, _ := newTestServiceInstance(t, second)
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
+	logs, logger := testLogger(slog.LevelInfo)
+	first, _ := newTestServiceInstanceTo(t, database, logger)
+	other, _ := newTestServiceInstanceTo(t, second, logger)
+	mark := logs.Len()
 
 	// Both first ticks land in one period of the database's clock, not on either side of a
 	// boundary, where each would serve a period of its own.
@@ -53,19 +52,19 @@ func TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod(t *testing.T) {
 		}()
 	}
 	ran := func() int {
-		return countExcerptLeaseLines(logs, "dispatch duty: leased pass ran", settlementResumptionLease)
+		return countExcerptLeaseLines(logs.String()[mark:], "dispatch duty: leased pass ran", settlementResumptionLease)
 	}
 	skipped := func() int {
-		return countExcerptLeaseLines(logs, "dispatch duty: leased pass skipped", settlementResumptionLease)
+		return countExcerptLeaseLines(logs.String()[mark:], "dispatch duty: leased pass skipped", settlementResumptionLease)
 	}
 	waitFor(t, roomWait(t), "both runners' first tick to run or skip", func() bool { return ran()+skipped() >= 2 })
 	stop()
 	<-done
 	<-done
 
-	resumed := strings.Count(logs.String(), `msg="dispatch: resumed owed document settlements"`)
+	resumed := strings.Count(logs.String()[mark:], `msg="dispatch: resumed owed document settlements"`)
 	if ran() != 1 || skipped() != 1 || resumed != 1 {
 		t.Fatalf("two resumption runners in one period: %d passes ran, %d skipped, the owed settlement resumed %d times; want one, one and once:\n%s",
-			ran(), skipped(), resumed, logs.Lines("lease="))
+			ran(), skipped(), resumed, linesHolding(logs.String()[mark:], "lease="))
 	}
 }

@@ -375,7 +375,7 @@ func foldHistoryPastRoom(t *testing.T, holder pgx.Tx, artifactID string, head in
 	t.Helper()
 	ctx := context.Background()
 	through := persistence.Version(head)
-	stored, err := documentThrough(artifactID, through, storedUpdates(ctx, holder, artifactID, through), maxUpdateItems)
+	stored, err := documentThrough(nil, artifactID, through, storedUpdates(ctx, holder, artifactID, through), maxUpdateItems)
 	if err != nil {
 		t.Fatalf("read the stored document: %v", err)
 	}

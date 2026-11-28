@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -83,10 +84,11 @@ const skippedFlush = "the flush is skipped"
 
 // markedPair is the pair the tests below anchor on: the lost-edit document with a comment mark on
 // its first paragraph, written while no other room held the document, both processes' room sync
-// running, and task B's room resident and holding that mark. Task A holds no room.
-func markedPair(t *testing.T, markID string) processPair {
+// running, and task B's room resident and holding that mark. Task A holds no room. Both processes
+// write their lines to logger (newSeededProcessPairTo).
+func markedPair(t *testing.T, markID string, logger *slog.Logger) processPair {
 	t.Helper()
-	pair := newSeededProcessPair(t, lostEditDocument)
+	pair := newSeededProcessPairTo(t, lostEditDocument, logger)
 	if _, err := commentAnchor(pair.taskA, pair.artifactID, markID, "Alpha", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("the mark the later comment anchors to: %v", err)
 	}
@@ -101,9 +103,9 @@ func markedPair(t *testing.T, markID string) processPair {
 // before it takes any lock of the document's, so task B's held append is durable before the
 // version is captured, and the version the anchor pins holds both the mark and task B's text.
 func TestAMarkAnchorFlushesTheOtherProcessesRoomBeforeTheDocumentsLock(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings).
-	logs := captureWarnings(t)
-	pair := markedPair(t, "c1")
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelWarn)
+	pair := markedPair(t, "c1", logger)
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	pair.heldEditOnB(t, 1, bob, replaceRun("Bravo paragraph.", "Bravo paragraph, by bob."))
 	if stored := storedMarkdown(t, pair.database, pair.artifactID); strings.Contains(stored, "by bob") {
@@ -152,9 +154,9 @@ func TestAMarkAnchorFlushesTheOtherProcessesRoomBeforeTheDocumentsLock(t *testin
 // updates, but the write it joins still asks the other process for its room's flush - and asks it
 // before the lock, not under it.
 func TestAMarkAnchorOnAClosedIssueAsksItsFlushBeforeTheDocumentsLock(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings).
-	logs := captureWarnings(t)
-	pair := markedPair(t, "c1")
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelWarn)
+	pair := markedPair(t, "c1", logger)
 	closeIssueAgo(t, pair.database, "DOC-1", closeMargin+30*time.Second)
 
 	anchored, snapshot, err := anchorToAMark(pair.taskA, pair.artifactID, "c1", model.Actor{Kind: "user", ID: "carol"}, joinBeforeTheVersion)
@@ -189,9 +191,9 @@ func TestAMarkAnchorOnAClosedIssueAsksItsFlushBeforeTheDocumentsLock(t *testing.
 // what the ERROR says. This is the test above's control: it fails if asking a flush under the
 // lock ever stops being a mistake, and the two together pin the order.
 func TestAMarkAnchorThatJoinsItsWriteOnlyAfterTheVersionSkipsTheFlush(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings).
-	logs := captureWarnings(t)
-	pair := markedPair(t, "c1")
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelWarn)
+	pair := markedPair(t, "c1", logger)
 
 	anchored, snapshot, err := anchorToAMark(pair.taskA, pair.artifactID, "c1", model.Actor{Kind: "user", ID: "carol"}, joinAfterTheVersion)
 

@@ -60,8 +60,9 @@ type serverRewrite struct {
 // and the ask keeps the answer; a later settlement of a document with room for it writes it back.
 // A repair that then changes nothing is dropped with its block.repaired. A document that does not
 // render cannot be weighed, so its answers all stay out, and the settlement that renders it next
-// fails as it would have.
-func (r *settlementReconciliation) withholdAnswers(artifactID string, tree *pmdoc.Node, before string) {
+// fails as it would have. The warning of answers withheld goes to logger, the settling service's
+// (logTo).
+func (r *settlementReconciliation) withholdAnswers(logger *slog.Logger, artifactID string, tree *pmdoc.Node, before string) {
 	var answered []int
 	for index, rewrite := range r.rewrites {
 		if rewrite.answer {
@@ -90,7 +91,7 @@ func (r *settlementReconciliation) withholdAnswers(artifactID string, tree *pmdo
 	if rendered {
 		returned = r.returnAnswersWithRoom(tree, before, answered)
 	}
-	slog.Warn("dispatch: settlement withholds restored answers from their blocks", "room", artifactID,
+	logTo(logger).Warn("dispatch: settlement withholds restored answers from their blocks", "room", artifactID,
 		"withheld", len(answered)-len(returned), "answers", len(answered), "reason", err)
 	droppedRepairs, droppedEvents := map[int]bool{}, map[int]bool{}
 	for _, index := range answered {

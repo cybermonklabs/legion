@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A browser whose client id is lower than the server's writes 150,000 blocks into a paragraph the
@@ -86,11 +87,12 @@ func TestAStoredHistoryLoadsEveryItemOneClientWroteAheadOfItsParent(t *testing.T
 	live.Transact(func(txn *crdt.Transaction) {
 		liveFragment.InsertElement(txn, 0, crdt.NewYXmlElement("paragraph"))
 	})
-	if _, err := persist.AppendUpdate(ctx, artifactID, crdt.EncodeStateAsUpdateV1(live, nil)); err != nil {
-		t.Fatalf("store the server's paragraph: %v", err)
+	seed := crdt.EncodeStateAsUpdateV1(live, nil)
+	if _, err := persist.AppendUpdate(ctx, artifactID, seed); err != nil {
+		t.Fatalf("store the server's paragraph on %s: %v", artifactID, err)
 	}
 	browser := crdt.New(crdt.WithClientID(5))
-	if err := crdt.ApplyUpdateV1(browser, crdt.EncodeStateAsUpdateV1(live, nil), nil); err != nil {
+	if err := crdt.ApplyUpdateV1(browser, seed, nil); err != nil {
 		t.Fatalf("open the document in the browser: %v", err)
 	}
 	browserFragment := browser.GetXmlFragment(fragmentName)
@@ -104,7 +106,7 @@ func TestAStoredHistoryLoadsEveryItemOneClientWroteAheadOfItsParent(t *testing.T
 			}
 		})
 		if _, err := persist.AppendUpdate(ctx, artifactID, crdt.EncodeStateAsUpdateV1(browser, before)); err != nil {
-			t.Fatalf("store the browser's paragraphs: %v", err)
+			t.Fatalf("store the browser's paragraphs on %s: %v", artifactID, err)
 		}
 	}
 	want, err := renderDocument(browser)
@@ -112,6 +114,8 @@ func TestAStoredHistoryLoadsEveryItemOneClientWroteAheadOfItsParent(t *testing.T
 		t.Fatalf("render the browser's document: %v", err)
 	}
 
+	// Each subtest decodes the full history. Run them serially on one document so
+	// setup decodes it once and the subtests do not hold decoded histories at once.
 	t.Run("reads with no room resident", func(t *testing.T) {
 		if service.srv.GetDoc(artifactID) != nil {
 			t.Fatal("the document's room is resident before the read")
@@ -256,12 +260,18 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 		}
 	})
 	t.Run("a transaction appends it", func(t *testing.T) {
+		t.Parallel()
+		// The append uses the same parent items, on a document the room subtest never opens.
+		transactionID := createIssueDocument(t, service.store, 2, "# First")
+		if _, err := persist.AppendUpdate(ctx, transactionID, seeded.Update); err != nil {
+			t.Fatalf("store the browser's starting document for the transaction: %v", err)
+		}
 		tx, err := service.store.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin the append: %v", err)
 		}
 		defer tx.Rollback(ctx)
-		if _, err := persist.AppendUpdateTx(ctx, tx, artifactID, update, true); err != nil {
+		if _, err := persist.AppendUpdateTx(ctx, tx, transactionID, update, true); err != nil {
 			t.Fatalf("append the browser's update in a transaction: %v", err)
 		}
 	})
@@ -275,12 +285,13 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 // (reearth/ygo#268, in the pinned fork); a decode of it at ygo's default queue refuses it, which
 // fails the room on every reload, and the document is never stamped.
 func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
-	// Not parallel: under the race detector this test grows the binary by about 2.7 GB
-	// (envoy-go-race-docs job 137302424274, whose memory sampler ran it alone), and beside
-	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB.
+	// Not parallel: this test added 891 MiB of live heap in the pod without -race.
+	// Under -race its baseline grew the binary by about 2.7 GB (job 137302424274).
 	service, artifactID := newTestService(t)
 	// The settlement runs below, once, on the test's own goroutine.
 	service.settle = time.Hour
+	// Keep the room resident through the live check, even if the version write is slow.
+	holdRoomsResident(t, service)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
 	const blocks = 150_000
@@ -310,18 +321,31 @@ func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 	if after := versions(); after != before+1 {
 		t.Fatalf("the settlement wrote %d versions, want 1", after-before)
 	}
+	if service.srv.GetDoc(artifactID) == nil {
+		t.Fatal("the settled room is no longer resident")
+	}
 	if stamped, err := service.Blocks(ctx, artifactID); err != nil || len(stamped) != blocks+1 {
 		t.Fatalf("the settled document has %d blocks with ids (%v), want %d", len(stamped), err, blocks+1)
 	}
-	stored, err := NewPgVersioned(service.store).Load(ctx, artifactID)
+	persist := NewPgVersioned(service.store)
+	head, err := persist.Head(ctx, artifactID)
 	if err != nil {
-		t.Fatalf("load the stored history: %v", err)
+		t.Fatalf("read the head after settlement: %v", err)
 	}
-	durable := newDocumentCopy()
-	if err := crdt.ApplyUpdateV1(durable, stored.Update, nil); err != nil {
-		t.Fatalf("decode the stored history: %v", err)
+	// Release the live copy before decoding the durable one. Closing the room must not
+	// supply a stamp that the settlement failed to store.
+	if err := service.Evict(testwait.Context(t), artifactID); err != nil {
+		t.Fatalf("evict the settled room: %v", err)
 	}
-	tree, err := treeOf(durable)
+	// LoadDocument uses the fold's decoded read-back instead of decoding it again.
+	stored, err := persist.LoadDocument(ctx, artifactID)
+	if err != nil {
+		t.Fatalf("load and decode the stored history: %v", err)
+	}
+	if stored.Stamp.Version != int64(head) {
+		t.Fatalf("eviction moved the stored head from %d to %d", head, stored.Stamp.Version)
+	}
+	tree, err := treeOf(stored.Doc)
 	if err != nil {
 		t.Fatalf("read the stored document: %v", err)
 	}

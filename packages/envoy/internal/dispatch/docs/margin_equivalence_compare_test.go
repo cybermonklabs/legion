@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -228,9 +229,6 @@ func (side *equivalenceSide) run(t *testing.T, document *equivalenceDocument, fl
 	t.Helper()
 	ctx := context.Background()
 	var observed flowObservation
-	if side.classes == nil {
-		t.Fatal("no room of the side was loaded with the class recorder (recordClasses), which a flow that starts from the browser edit installs")
-	}
 	side.classes.mu.Lock()
 	classesFrom := len(side.classes.classes)
 	side.classes.mu.Unlock()
@@ -338,8 +336,12 @@ func (side *equivalenceSide) rowEffects(t *testing.T, document *equivalenceDocum
 	if len(appended) != len(versions) {
 		t.Fatalf("the transaction appended %d rows, the store holds %d of them", len(versions), len(appended))
 	}
-	doc := newDocumentCopy()
-	for _, row := range history {
+	if len(history) == 0 || !bytes.Equal(history[0].update, document.seed) {
+		t.Fatalf("the stored history for %s does not start with the seed (%d rows)", artifactID, len(history))
+	}
+	// Clone the decoded seed and replay the browser edit and any remaining updates as stored.
+	doc := document.replayedSeed.Clone(documentCopyOptions(maxUpdateItems)...)
+	for _, row := range history[1:] {
 		if err := crdt.ApplyUpdateV1(doc, row.update, nil); err != nil {
 			t.Fatalf("decode the stored history: %v", err)
 		}

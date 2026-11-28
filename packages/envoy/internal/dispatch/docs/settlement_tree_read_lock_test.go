@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/reearth/ygo/crdt"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // treePoint walks the room's replica (treeOfUnshared), and only a holder of the replica's mu may
@@ -53,5 +55,5 @@ func TestTheSettlementTreeReadWalksTheReplicaUnderItsLock(t *testing.T) {
 			break
 		}
 	}
-	wg.Wait()
+	testwait.Returns(t, "the room's commits and the replica's observations of them to finish", wg.Wait)
 }

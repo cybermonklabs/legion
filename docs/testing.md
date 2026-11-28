@@ -676,10 +676,15 @@ process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), th
 (`t.Setenv`), a package variable, flags, the GC or `GOMAXPROCS`, heap statistics or goroutine
 counts, or pmdoc's schema manifest, display tree version or block ID generator
 (`pmdoc.UseManifestForTest`, `pmdoc.UseStagedBlockForTest`, `pmdoctest.UseBlockSchema`,
-`pmdoc.SetDisplayTreeVersionForTest`, `pmdoc.SetBlockIDGenerator`). go test runs every serial
-test before it starts the parallel ones, so such a test runs alone. A serial test whose reason is
-not a call in its own body or a helper of the package's says why on its first line: a wall-clock
-bound that missed under parallel load, or a write through another package's test hook.
+`pmdoc.SetDisplayTreeVersionForTest`, `pmdoc.SetBlockIDGenerator`). A docs test that reads the
+document service's lines gives each service it builds a logger of its own (`Deps.Logger`, which
+also reaches the store `New` builds, the service's ygo server and its duty loops), sets its own in
+the `logger` field of each store it builds itself, and runs beside the others; only a test of the
+default itself sets the default logger
+(`TestAServiceWithNoLoggerWritesWhereTheDefaultPointsAtEachLine`). go test runs every serial test
+before it starts the parallel ones, so such a test runs alone. A serial test whose reason is not a
+call in its own body or a helper of the package's says why on its first line: a wall-clock bound
+that missed under parallel load, or a write through another package's test hook.
 
 A test that reads `pg_locks` or `pg_stat_activity` names its own database in the predicate
 (`database = (select oid from pg_database where datname = current_database())`, or
@@ -995,8 +1000,13 @@ CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs
 The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
 Both are slow suites: the merge queue runs each when the queue's own generator selects it against the queue's base, which is where their result normally comes from, and a pull request runs one only under that suite's `lane:` label, for a need the pull request names (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
-The race run streams the test binary's own output (`go test -json`) and so carries a second check Go's detector does not make:
-the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
+The race run streams the test binary's own output (`go test -json`) and carries a check Go's detector does not make.
+After the tests, `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>`.
+For each service in that count, it prints the test that built it and whether shutdown never started, is still running, or returned.
+A service whose shutdown never started fails the run before the report waits for collection.
+Otherwise the report waits for shutdown and collection through `testwait.InMain`.
+Its only bound is 30 s before the test binary's deadline.
+With `-timeout 0`, the wait has no deadline.
 A test that builds a `*Service` registers a cleanup that shuts it down, with `testcleanup.Add`.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
 A service that was shut down is still alive at the end of the run when a callback of one of its stopped timers holds it.
@@ -1268,20 +1278,17 @@ Such a hold in another database delays nothing now. What a wait rides out is an 
 
 `settleCurrentGeneration` (`packages/envoy/internal/dispatch/docs/service_test.go`) waits for a room's live updates to reach its persistence and land, and then settles the room.
 That wait is a queue.
-A room's appends go through the service's room-appends pool of 8 connections, and a test whose subtests run in parallel drives one room per CPU on a single service.
-So the wait is as long as that queue, which grows with the machine's CPU count, its load and the other tests running beside it.
+A room's appends go through the service's room-appends pool of 8 connections.
+The queue grows with the number of rooms sharing the pool and with the machine's load.
 A fixed 10 s clock on it failed `TestSetAskBlockTextRefusalOfEveryBrokenBodyLeadsToAValidDecision` (2026-11-16, 288 CPUs).
 At the timeout all 8 connections were in use, with 1449 s of acquire waiting in total, and the same wait issued again returned at once.
 
-`awaitRoomAppends` therefore waits on the room's idle signal and sets no span of its own, so the bound is a signal rather than a clock.
-It fails when the appends have stopped: no append lands anywhere in the service, and the room's own counts do not change, for `appendStall`.
-That bound is 16 s, three times the longest such stall measured: with it lifted to 10 min, the package as CI runs it (`GODEBUG=checkfinalizers=1 go test -v -count=1`, 288 CPUs, load 230 when it began, 2026-11-16) had 927 of these waits go more than 1 s with no append landing and the room's counts unchanged, 231 more than 3 s and 22 for 5 s or more, and the longest went 5.363 s.
-The 9 s of `ShutdownDrainBudget` it was before, the time Shutdown gives the rooms' appends to land, was 1.7 times that stall.
-It also fails 30 s before the run's own deadline, so that the failure names the wait.
-Two scratch tests checked it, each with the 10 s clock and with this wait:
+`awaitRoomAppends` waits on the room's idle signal, with `testwait.Context(t)` as its only bound.
+That context ends 30 s before the test binary's deadline, so a failure names the append wait instead of the binary timing out.
+Under `-timeout 0`, the wait has no deadline.
 
-- 24 rooms whose appends were each held 4 s on their connection settled in about 12 s. The clock failed 8 of the rooms in each of 2 runs, and this wait passed 3 of 3 with the 9 s bound and 1 of 1 with the 16 s one.
-- An append that another transaction's hold on the document's lock kept from landing failed both: the clock at 10 s, and this wait at 9.1 s with the 9 s bound and at 16.0 and 16.2 s with the 16 s one, naming the stall and the room's counts.
+In a scratch test, 24 rooms whose appends each held their connection for 4 s settled in about 12 s.
+The old 10 s clock failed 8 rooms in each of 2 runs.
 
 ## A test that reads a model request's messages
 

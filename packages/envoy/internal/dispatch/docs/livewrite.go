@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"weak"
 
 	"github.com/reearth/ygo/crdt"
@@ -319,7 +318,7 @@ func (s *Service) openLiveWrite(ctx context.Context, ledger *Ledger, artifactID 
 		state := s.lockState(artifactID)
 		if state.reloading {
 			s.unlockState(artifactID, state)
-			slog.Warn("dispatch: refuse a write on a document room closing on a replaced stored history", "room", artifactID)
+			s.log().Warn("dispatch: refuse a write on a document room closing on a replaced stored history", "room", artifactID)
 			return nil, fmt.Errorf("%w: room %s", errRoomReloading, artifactID)
 		}
 		if retiring := state.retiring; retiring != nil {
@@ -913,7 +912,7 @@ func (s *Service) creditLiveWrite(write *liveWrite, actor model.Actor) {
 // error, and every write to the document until it recovered again would be refused.
 func (s *Service) publishLiveWrite(write *liveWrite) {
 	defer s.finishLiveWrite(write)
-	s.hooks.parkLiveWrite(write.artifactID, PauseAfterCommit)
+	s.hooks.parkLiveWrite(s.logger, write.artifactID, PauseAfterCommit)
 	defer s.closeShadow(write)
 	if s.beforePublish != nil {
 		s.beforePublish(write)
@@ -939,7 +938,7 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 		if err == nil {
 			continue
 		}
-		slog.Error("dispatch: publish committed live document write", "room", write.artifactID, "error", err)
+		s.log().Error("dispatch: publish committed live document write", "room", write.artifactID, "error", err)
 		if s.afterPublishRefused != nil {
 			s.afterPublishRefused(write.artifactID)
 		}

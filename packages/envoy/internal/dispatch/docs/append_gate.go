@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -259,8 +260,9 @@ func updateAge(observed time.Time) time.Duration {
 // room's cursor once for the run (markReplaced), and once the append is stored the room is closed
 // and reloaded at the head (Service.closeRoomOnReplacedHistory), rather than taking every later
 // update of its browsers down this path, a decode of the whole stored document under the
-// document's lock each.
-func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind appendKind, updates []BrowserUpdate, read appendGateRead, maxPending int, margin time.Duration) (latest int64, admitted int, replaced bool, err error) {
+// document's lock each. logger is the store's, which a decode of that history writes to when the
+// history does not fold (documentThrough).
+func gateAppend(ctx context.Context, logger *slog.Logger, q Queryer, room string, through int64, kind appendKind, updates []BrowserUpdate, read appendGateRead, maxPending int, margin time.Duration) (latest int64, admitted int, replaced bool, err error) {
 	if len(updates) == 0 {
 		return 0, 0, false, fmt.Errorf("append document updates: no update to append")
 	}
@@ -281,7 +283,7 @@ func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind
 	switch {
 	case historyReplaced(through, latest, read.historyIntact(through)):
 		if kind == appendBrowser && latest > through {
-			holds, holdsErr := storedHistoryHolds(ctx, q, room, latest, updates, maxPending)
+			holds, holdsErr := storedHistoryHolds(ctx, logger, q, room, latest, updates, maxPending)
 			if holdsErr != nil {
 				return 0, 0, false, holdsErr
 			}
@@ -305,10 +307,11 @@ func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind
 // decoded once for the whole run, not once per update. A compaction's fold keeps every item it
 // folds, so it holds what a room's update was made on; a rebuild's seed is a document of other
 // items, which a room's update parks on. A history that already parks something answers false, as
-// does a run it cannot apply: the run is admitted whole or not at all.
-func storedHistoryHolds(ctx context.Context, q Queryer, room string, head int64, updates []BrowserUpdate, maxPending int) (bool, error) {
+// does a run it cannot apply: the run is admitted whole or not at all. logger is the store's
+// (documentThrough).
+func storedHistoryHolds(ctx context.Context, logger *slog.Logger, q Queryer, room string, head int64, updates []BrowserUpdate, maxPending int) (bool, error) {
 	version := persistence.Version(head)
-	doc, err := documentThrough(room, version, storedUpdates(ctx, q, room, version), maxPending)
+	doc, err := documentThrough(logger, room, version, storedUpdates(ctx, q, room, version), maxPending)
 	if err != nil || doc == nil {
 		return false, err
 	}

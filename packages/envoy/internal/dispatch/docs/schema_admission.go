@@ -2,7 +2,6 @@ package docs
 
 import (
 	"context"
-	"log/slog"
 	"net/url"
 	"strconv"
 	"sync"
@@ -180,7 +179,7 @@ func (s *Service) RunSchemaAdmission(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := s.recheckSchemaAdmissions(ctx); err != nil && ctx.Err() == nil {
-				slog.Warn("dispatch: re-check the document sockets' schema admission", "error", err)
+				s.log().Warn("dispatch: re-check the document sockets' schema admission", "error", err)
 			}
 		}
 	}
@@ -196,7 +195,7 @@ func (s *Service) recheckSchemaAdmissions(ctx context.Context) error {
 		return err
 	}
 	for _, admission := range s.schemaAdmissions.revokeUnless(fleet) {
-		slog.Info("dispatch: close a writable document socket the live server processes no longer admit; the provider reconnects",
+		s.log().Info("dispatch: close a writable document socket the live server processes no longer admit; the provider reconnects",
 			"room", admission.key.room, "schema_version", admission.page.version, "schema_creatable", admission.page.creatable,
 			"fleet_min_schema_version", fleet.minVersion, "fleet_max_schema_creatable", fleet.maxCreatable)
 	}

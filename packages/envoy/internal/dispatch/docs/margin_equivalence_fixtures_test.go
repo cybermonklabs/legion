@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -177,14 +178,15 @@ func generatedSpec(size int) string {
 	return b.String()
 }
 
-// equivalenceDocument is one source made ready for the flows: the seed both sides store, the
-// anchors it holds, and the two browser edits.
+// equivalenceDocument is one source made ready for the flows. Flows only read it.
+// Each row replay clones the decoded seed before applying the remaining stored updates.
 type equivalenceDocument struct {
 	name    string
 	private bool
 	// markdown is the seed's rendering, its first version.
-	markdown string
-	seed     []byte
+	markdown     string
+	seed         []byte
+	replayedSeed *crdt.Doc
 	// edit is the browser edit that lands before each flow, from the seed; lateEdit the one that
 	// lands inside the stale flow's transaction, from the seed and edit.
 	edit     []byte
@@ -306,6 +308,10 @@ func prepareEquivalenceDocument(t *testing.T, source equivalenceSource) *equival
 		t.Fatalf("render the seeded document: %s", document.shown(err.Error()))
 	}
 	document.seed = crdt.EncodeStateAsUpdateV1(doc, nil)
+	document.replayedSeed = newDocumentCopy()
+	if err := crdt.ApplyUpdateV1(document.replayedSeed, document.seed, nil); err != nil {
+		t.Fatalf("decode the seed for row replay: %s", document.shown(err.Error()))
+	}
 	var edited []byte
 	document.edit, edited = browserEdit(t, document, document.seed, editClient, func(tree *pmdoc.Node) {
 		for _, index := range revisedAnchors {
@@ -473,8 +479,7 @@ type equivalenceSide struct {
 	write    marginWriter
 	database *store.Store
 	service  *Service
-	// classes records the class the side's rooms record for each update they apply, installed at
-	// the side's first room load (recordClasses).
+	// classes records what the room's update observer classified, even on a side that starts cold.
 	classes *recordedClasses
 	// refreshes counts the rows every anchor refresh of the side has refreshed
 	// (Service.afterAnchorRefresh); an operation's own refreshes are the rise in it over that
@@ -488,20 +493,59 @@ func newEquivalenceSide(t *testing.T, name string, margin bool, write marginWrit
 	t.Helper()
 	database := storetest.Open(t)
 	service, _ := newTestServiceInstance(t, database)
-	// A flow's room is loaded in its set-up and written in its run, two rounds of parallel
-	// subtests (inParallel), and among the package's parallel tests the run's subtests can wait
-	// minutes for a slot: past roomIdleTimeout ygo's idle sweep evicted the warm room, the write
-	// met a reloaded one, and the side counted no margin-only update (build-cluster runs
-	// legion-race-docshead6-1 and -2, where the subtest waited 826 s around 4 s of work). Rooms
-	// here leave residency only through the flow's own close, so the idle window never ends. ygo
-	// reads it when the first room starts its sweeper, so it is set before any room loads.
+	// The set-up and run subtests share the flow's slot (inParallel). Keep the idle sweep
+	// from evicting the warmed room between them even on a loaded runner. ygo reads this
+	// setting when the first room loads.
 	service.srv.RoomIdleTimeout = time.Hour
 	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ('EQ', 'Equivalence', 'alice')`); err != nil {
 		t.Fatalf("create the %s's project: %v", name, err)
 	}
 	side := &equivalenceSide{name: name, margin: margin, write: write, database: database, service: service}
 	service.afterAnchorRefresh = func(_ string, refreshed int) { side.refreshes.Add(int64(refreshed)) }
+	side.classes = installClassRecorder(service)
 	return side
+}
+
+// installClassRecorder observes the classes of updates applied to rooms loaded after it is
+// installed. It does not load or evict a room. A caller that needs an observation of a room
+// already resident must reload it after installing the recorder.
+func installClassRecorder(service *Service) *recordedClasses {
+	recorded := &recordedClasses{}
+	load := service.srv.OnLoadDocument
+	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
+		if err := load(ctx, room, doc); err != nil {
+			return err
+		}
+		// ygo runs this after the service's observer and before persistence consumes the class.
+		doc.OnUpdate(func(update []byte, origin any) {
+			var read recordedClass
+			switch published := origin.(type) {
+			case *liveWriteOrigin:
+				read.origin, read.marginOnly = publishedWriteClass, published.marginOnly
+			case string:
+				read.origin = published
+			default:
+				read.origin = fmt.Sprintf("%T", origin)
+			}
+			if state := service.lockExistingState(room); state != nil {
+				for _, class := range state.updateClasses {
+					if bytes.Equal(class.update, update) {
+						read.found = true
+						read.contentChanged = class.contentChanged
+						read.durable = class.durable
+						read.credited = class.credit != nil
+						break
+					}
+				}
+				service.unlockState(room, state)
+			}
+			recorded.mu.Lock()
+			recorded.classes = append(recorded.classes, read)
+			recorded.mu.Unlock()
+		})
+		return nil
+	}
+	return recorded
 }
 
 // execer is a pool or a transaction.
@@ -562,9 +606,7 @@ func (side *equivalenceSide) setUp(t *testing.T, document *equivalenceDocument, 
 	if flow.corrupt != nil {
 		return
 	}
-	if side.classes == nil {
-		side.classes, _ = recordClasses(t, side.service, ids.artifact)
-	} else if err := side.service.warmLiveDocument(ctx, ids.artifact); err != nil {
+	if err := side.service.warmLiveDocument(ctx, ids.artifact); err != nil {
 		t.Fatalf("load the flow's room: %v", err)
 	}
 	side.applyBrowserEdit(t, ids.artifact, document.edit, browserEditor)
@@ -617,14 +659,11 @@ func (side *equivalenceSide) applyBrowserEdit(t *testing.T, artifactID string, u
 	}
 }
 
-// cleanUp closes the flow's room and deletes its comment rows, whose ids the next flow reuses.
+// cleanUp closes the flow's room. The database cleanup discards its comment rows.
 func (side *equivalenceSide) cleanUp(t *testing.T, ids flowIDs) {
 	t.Helper()
 	if err := side.service.Evict(context.Background(), ids.artifact); err != nil {
 		t.Errorf("close the %s's room: %v", side.name, err)
-	}
-	if _, err := side.database.Pool.Exec(context.Background(), `delete from comments where issue_key = $1`, ids.issue); err != nil {
-		t.Errorf("delete the %s's comments: %v", side.name, err)
 	}
 }
 

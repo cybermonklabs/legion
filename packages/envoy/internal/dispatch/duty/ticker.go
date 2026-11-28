@@ -13,6 +13,7 @@ package duty
 
 import (
 	"context"
+	"log/slog"
 	"math/rand/v2"
 	"time"
 )
@@ -117,9 +118,26 @@ const (
 // was due, and only the ticks after it are dropped, so due times stay whole intervals apart and
 // overrun ticks are not run late one after another.
 //
-// ctx ending returns at once from a wait, and from a tick once its pass returns.
+// ctx ending returns at once from a wait, and from a tick once its pass returns. Exclusive's lines
+// go to the default logger as it is when each is written; RunLeasedTo sends them elsewhere.
 func RunLeased(ctx context.Context, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
-	runLeased(ctx, leases, name, interval, first, Exclusive, pass)
+	RunLeasedTo(ctx, nil, leases, name, interval, first, pass)
+}
+
+// RunLeasedTo is RunLeased with every line of its Exclusive calls - a skip, a pass that ran or was
+// cut short, a failure to take, read, record or give back the lease - going to logger. A nil
+// logger is the default logger as it is when the line is written (logTo).
+func RunLeasedTo(ctx context.Context, logger *slog.Logger, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
+	runLeased(ctx, leases, name, interval, first, exclusiveTo(logger), pass)
+}
+
+// exclusiveTo is Exclusive with its lines going to logger, whatever logger its caller hands it:
+// runLeased hands its gate none, so a test of the schedule needs no logger, and RunLeasedTo's
+// logger reaches Exclusive through the gate instead.
+func exclusiveTo(logger *slog.Logger) ExclusiveFunc {
+	return func(ctx context.Context, _ *slog.Logger, leases Leases, name string, due time.Time, period time.Duration, pass func(context.Context)) bool {
+		return Exclusive(ctx, logger, leases, name, due, period, pass)
+	}
 }
 
 // runLeased is RunLeased with the gate handed in (ExclusiveFunc), so the schedule above - the
@@ -161,13 +179,21 @@ func runLeased(ctx context.Context, leases Leases, name string, interval time.Du
 // by its own previous pass. The cadence is therefore each wait plus each pass's time: a slow pass
 // delays the next tick by its own length, and a step is never cut short by the pass before it.
 //
-// ctx ending returns at once from a wait, and from a tick once its pass returns.
+// ctx ending returns at once from a wait, and from a tick once its pass returns. Exclusive's lines
+// go to the default logger as it is when each is written; RunLeasedAfterEachPassTo sends them
+// elsewhere.
 func RunLeasedAfterEachPass(ctx context.Context, leases Leases, name string, interval time.Duration, pass func(context.Context, time.Duration) time.Duration) {
+	RunLeasedAfterEachPassTo(ctx, nil, leases, name, interval, pass)
+}
+
+// RunLeasedAfterEachPassTo is RunLeasedAfterEachPass with every line of its Exclusive calls going
+// to logger. A nil logger is the default logger as it is when the line is written (logTo).
+func RunLeasedAfterEachPassTo(ctx context.Context, logger *slog.Logger, leases Leases, name string, interval time.Duration, pass func(context.Context, time.Duration) time.Duration) {
 	period := interval
 	due := time.Now()
 	for {
 		wait := interval
-		Exclusive(ctx, nil, leases, name, due, period, func(ctx context.Context) {
+		Exclusive(ctx, logger, leases, name, due, period, func(ctx context.Context) {
 			wait = pass(ctx, period)
 		})
 		period = wait

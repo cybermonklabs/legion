@@ -19,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 
@@ -129,8 +128,8 @@ func tokenCorpusMark(node, parent *pmdoc.Node, texts *int) {
 	}
 }
 
-// tokenCorpusRead folds doc as foldDocument folds the document it loads (foldLoaded), the call the
-// corpus times: the read and its tree, or why the fold has no read. A panic is returned as its
+// tokenCorpusRead folds doc as foldDocument folds the document it loads (foldLoaded):
+// the read and its tree, or why the fold has no read. A panic is returned as its
 // error, as tokenCorpusDoc returns one.
 func tokenCorpusRead(doc *crdt.Doc) (read *documentRead, tree *pmdoc.Node, err error) {
 	defer func() {
@@ -180,7 +179,6 @@ func TestTokenCorpus(t *testing.T) {
 	writer := bufio.NewWriter(out)
 
 	var specs, tokens, markdownBytes int
-	var reading time.Duration
 	for _, name := range names {
 		source, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
@@ -188,16 +186,13 @@ func TestTokenCorpus(t *testing.T) {
 		}
 		specs++
 		line := tokenCorpusLine{File: name}
-		// The timing is only logged, never dumped: it differs on every run and would break cmp.
 		func() {
 			doc, err := tokenCorpusDoc(string(source))
 			if err != nil {
 				line.Error = err.Error()
 				return
 			}
-			started := time.Now()
 			read, tree, err := tokenCorpusRead(doc)
-			reading += time.Since(started)
 			if err != nil {
 				line.Error = err.Error()
 				return
@@ -233,8 +228,7 @@ func TestTokenCorpus(t *testing.T) {
 	if err := out.Close(); err != nil {
 		t.Fatalf("DISPATCH_TOKEN_CORPUS_OUT: %v", err)
 	}
-	t.Logf("token corpus: %d specs, %d block tokens, %d markdown bytes, foldLoaded %s",
-		specs, tokens, markdownBytes, reading)
+	t.Logf("token corpus: %d specs, %d block tokens, %d markdown bytes", specs, tokens, markdownBytes)
 }
 
 // BenchmarkTokenCorpusLargest measures buildDocumentRead on the corpus's largest spec, its tree

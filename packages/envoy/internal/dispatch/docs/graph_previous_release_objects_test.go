@@ -3,18 +3,19 @@ package docs
 import (
 	"context"
 	"slices"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // rollSession is the agent session whose conversation the stand-in for the release before this
@@ -170,8 +171,8 @@ func TestARowThePreviousReleaseCreatesWhileItHoldsTheLeaseGetsItsNodeFromTheNext
 func TestARowNoEventNamesGetsItsNodeOnceTheObjectPassIntervalPasses(t *testing.T) {
 	t.Parallel()
 	database, service := blockIndexService(t)
-	var aged atomic.Int64
-	service.now = func() time.Time { return time.Now().Add(time.Duration(aged.Load())) }
+	serviceClock := clocktest.New(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
+	service.now = serviceClock.Now
 	appendIssueEvent(t, database)
 	if joined := awaitedBlockIndexTick(t, service); joined.ObjectNodes != 2 {
 		t.Fatalf("the process's first tick wrote %d object node(s), want the nodes of CORE-1 and CORE-2", joined.ObjectNodes)
@@ -183,7 +184,7 @@ func TestARowNoEventNamesGetsItsNodeOnceTheObjectPassIntervalPasses(t *testing.T
 	}
 	requireProjectComplete(t, database, missing, "within the interval of the process's last pass")
 
-	aged.Store(int64(objectPassInterval))
+	serviceClock.Advance(objectPassInterval)
 	if due := awaitedBlockIndexTick(t, service); due.AnotherBuild || due.ObjectNodes != 3 {
 		t.Errorf("the tick once the interval passed wrote %d object node(s) and found another build %t, want the three rows' nodes and no other build",
 			due.ObjectNodes, due.AnotherBuild)
@@ -383,7 +384,7 @@ func requireTheRollTicksObjectPassLockOrder(t *testing.T) {
 	database, _ := blockIndexService(t)
 	ctx := context.Background()
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	now := time.Now()
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		return graphstore.Write(ctx, tx, []graphstore.Node{
 			graphstore.IssueNode("CORE-1", "CORE", alice, now), graphstore.IssueNode("CORE-2", "CORE", alice, now),
@@ -422,9 +423,7 @@ func requireTheRollTicksObjectPassLockOrder(t *testing.T) {
 	// transaction of its own: what the pass must let go of before it takes an owner lock. The
 	// horizon observes through a pool of its own (blockIndexHorizon), so the one connection stays
 	// the tick's.
-	awaited, cancelAwait := context.WithTimeout(ctx, time.Minute)
-	defer cancelAwait()
-	if _, err := service.blockIndexHorizon().Await(awaited); err != nil {
+	if _, err := service.blockIndexHorizon().Await(testwait.Context(t)); err != nil {
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
 
@@ -453,9 +452,9 @@ func requireTheRollTicksObjectPassLockOrder(t *testing.T) {
 	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project CORE's row", Step: lockstep.StepEvent},
 		`select 1 from projects where key = $1 for update`, "CORE")
 
-	// A tick that waits on its own connection never answers on its own; its context ends it
-	// after the holds are let go, so a failed run lets the test's pool close.
-	running, stop := context.WithTimeout(ctx, 2*lockstep.Wait)
+	// The tick can wait on its own connection. Cancel it on return from this helper so
+	// the test can close its pool even when the lock-order check fails.
+	running, stop := context.WithCancel(testwait.Context(t))
 	defer stop()
 	done := make(chan error, 1)
 	var tick BlockIndexTick

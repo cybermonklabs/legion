@@ -27,7 +27,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -433,12 +432,13 @@ func (w *roomLoads) count() int {
 // goroutine and fires the observer there), and a third is the service projecting comment records.
 // Under -race the walk of the live tree is a data race with the other writers.
 func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
-	service, artifactID := newTestService(t)
+	// Not parallel: its fixed 2 s window gets too few projections beside other tests: 198 peer
+	// writes and 4 projections, under its bound of 5, in a run beside 25 others under -race.
+	logs, logger := testLogger(slog.LevelWarn)
+	service, artifactID := newTestServiceTo(t, logger)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	mark := logs.Len()
 
 	var trees []*pmdoc.Node
 	for _, body := range []string{
@@ -498,7 +498,7 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 		t.Fatalf("%d peer writes and %d projections, too few to say anything", writes.Load(), projections.Load())
 	}
 
-	if logged := logs.String(); logged != "" {
+	if logged := logs.String()[mark:]; logged != "" {
 		t.Errorf("a healthy room under concurrent writes logged:\n%s", logged)
 	}
 	// Persistence can reach the room in a different order than the writes that made it

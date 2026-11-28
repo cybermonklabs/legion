@@ -58,7 +58,8 @@ func parks(doc *crdt.Doc) bool {
 //
 // A log of one update is returned as stored: a compaction leaves the rows it folds as one update
 // holding their state, and a document's first update deletes nothing an earlier one inserted.
-func stateThrough(room string, version persistence.Version, updates updateSource, maxPending int) ([]byte, error) {
+// The warning of a log served merged goes to logger, its store's (logTo).
+func stateThrough(logger *slog.Logger, room string, version persistence.Version, updates updateSource, maxPending int) ([]byte, error) {
 	state, _, misread, err := fold(updates, maxPending)
 	if err != nil {
 		return nil, err
@@ -66,7 +67,7 @@ func stateThrough(room string, version persistence.Version, updates updateSource
 	if misread == nil {
 		return state, nil
 	}
-	slog.Warn(misreadWarning+"; serving them merged",
+	logTo(logger).Warn(misreadWarning+"; serving them merged",
 		"room", room, "version", int64(version), "error", misread)
 	return mergedThrough(updates)
 }
@@ -76,14 +77,14 @@ func stateThrough(room string, version persistence.Version, updates updateSource
 // update, which the fold returns as stored, or a log that does not fold, which is served merged -
 // the state decoded into a document with the store's pending queue, maxPending, as a room decodes
 // it. A state that does not decode is ErrDocumentUnloadable; a log holding no update is no
-// document.
-func documentThrough(room string, version persistence.Version, updates updateSource, maxPending int) (*crdt.Doc, error) {
+// document. The warning of a log served merged goes to logger, its store's (logTo).
+func documentThrough(logger *slog.Logger, room string, version persistence.Version, updates updateSource, maxPending int) (*crdt.Doc, error) {
 	state, readBack, misread, err := fold(updates, maxPending)
 	switch {
 	case err != nil:
 		return nil, err
 	case misread != nil:
-		slog.Warn(misreadWarning+"; serving them merged",
+		logTo(logger).Warn(misreadWarning+"; serving them merged",
 			"room", room, "version", int64(version), "error", misread)
 		if state, err = mergedThrough(updates); err != nil {
 			return nil, err
@@ -391,7 +392,7 @@ type LoadedDocument struct {
 func (p *PgVersioned) LoadDocument(ctx context.Context, room string) (LoadedDocument, error) {
 	var doc *crdt.Doc
 	stamp, err := p.loadStored(ctx, room, func(head persistence.Version, updates updateSource) (err error) {
-		doc, err = documentThrough(room, head, updates, p.maxPendingItems)
+		doc, err = documentThrough(p.logger, room, head, updates, p.maxPendingItems)
 		return err
 	})
 	if err != nil {

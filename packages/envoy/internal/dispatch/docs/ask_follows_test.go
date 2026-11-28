@@ -59,7 +59,7 @@ func TestAnAskOpenedBesideAWithheldAnswerIsCausedByItsOwnEvent(t *testing.T) {
 	var node, followed graphstore.Uncaused
 	reconciled.follows = append(reconciled.follows, openedFollow{ask: opened.ID, node: &node, followed: &followed})
 	reconciled.events = append(reconciled.events, model.Event{Type: "ask.opened", Payload: model.AskEventPayload{Ask: opened}})
-	reconciled.withholdAnswers("document", tree, before)
+	reconciled.withholdAnswers(nil, "document", tree, before)
 	if len(reconciled.events) != 1 || reconciled.events[0].Type != "ask.opened" {
 		t.Fatalf("the reconciliation's events are %+v, want the ask.opened alone once the block.repaired of the withheld answer is dropped",
 			reconciled.events)
