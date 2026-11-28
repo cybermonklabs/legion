@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // TestTheDocsReconciliationsReadServedAndFormerLinks: the document service's own readers of a
@@ -60,7 +61,7 @@ func TestTheDocsReconciliationsReadServedAndFormerLinks(t *testing.T) {
 		// No timer settles a document while a row reads what its reader wrote.
 		Settle: time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = service.Shutdown(stop)
