@@ -38,7 +38,7 @@ import {
   coveredBoxes,
   DOOR_ROWS,
   expectDeliveryClaim,
-  expectHint,
+  expectDescription,
   expectIssueRows,
   expectSend,
   heldRow,
@@ -63,13 +63,10 @@ import {
  * One `test()` per covered box of `DISPATCH_WRITING_BOXES`, generated from that list, so a box
  * the list gains with no way to drive it fails a row of its own and a driver for a box the list
  * no longer holds fails every row. In each box the three doors open over the same rows in each
- * door's own order, the words of a list with no rows are the same, Enter takes the highlighted
- * row and the pick lands at the caret with the words after it untouched, and the line under the
- * box says what a pick does on that box's write - whether a picked agent or role is told, that a
- * picked person is not, and, where nobody picked is told, what does - in words the rows write
- * out rather than read from the list the box reads them from (`hintWords`). Which people a box
- * lists is the one thing its own row decides (`issueRows`), and each box is held to its row's
- * answer.
+ * door's own order, the words of a list with no rows are the same, and Enter takes the
+ * highlighted row and the pick lands at the caret with the words after it untouched. Which
+ * people a box lists is the one thing its own row decides (`issueRows`), and each box is held to
+ * its row's answer.
  *
  * The check that delivery is unchanged is held in the same rows: each box whose write delivers is
  * sent through its own send control, which its driver hands to `expectRow`, and the fake Envoy
@@ -91,9 +88,10 @@ import {
 
 test.setTimeout(120_000);
 
-/** The box's hint, the people it lists and what it says it does with a picked party, which are
- *  what its own row of the list decides. A row whose write delivers takes `send`, the box's own
- *  send control, and is sent through it (`expectDeliveryClaim`). */
+/** The people the box lists and what it does with a picked party, which are what its own row of
+ *  the list decides, and its description where its page holds it to words of its own. A row whose
+ *  write delivers takes `send`, the box's own send control, and is sent through it
+ *  (`expectDeliveryClaim`). */
 async function expectRow(
   page: Page,
   field: Locator,
@@ -101,7 +99,7 @@ async function expectRow(
   write: DispatchWriting,
   send?: SendBox
 ): Promise<void> {
-  await expectHint(page, field, box, write);
+  await expectDescription(page, field, box, write);
   await expectIssueRows(field, dispatchWritingBox(box, write).issueRows);
   await expectDeliveryClaim(field, box, write, send);
 }
@@ -257,14 +255,11 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       const field = card.locator("[data-ask-answer]");
       await expect(field).toBeVisible();
       await walkBox(field, world);
-      // One box, two writes: the reader chooses there whether it answers or asks back, so both
-      // rows of the list carry the one line it shows. The field itself is handed the
-      // `ask-answer` row (`AskCard.tsx`, `writing={dispatchWritingBox("ask-answer",
-      // "ask-answer")}`), so that row's claim is the one its party list draws.
+      // One box, two writes: the reader chooses there whether it answers or asks back. The field
+      // itself is handed the `ask-answer` row (`AskCard.tsx`, `writing={dispatchWritingBox(
+      // "ask-answer", "ask-answer")}`), so that row's claim is the one its party list draws.
       await expectRow(page, field, "ask-answer", "ask-answer");
-      // The `ask-back` row's own words and people, which the same field draws under that
-      // write: the hint both rows share is what tells the reader that asking back delivers.
-      await expectHint(page, field, "ask-answer", "ask-back");
+      // The `ask-back` row's own people, which the same field draws under that write.
       await expectIssueRows(field, dispatchWritingBox("ask-answer", "ask-back").issueRows);
       // And that row's `delivers`, which no state of the field draws, is driven instead: a
       // question back with a party picked in it is a comment on the ask, so the party is told,
@@ -412,7 +407,6 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
 
       await openSpec(page, world.host, ANCHOR);
       const editor = documentEditor(page);
-      await expectHint(page, editor, "document-body", "document-text");
       const list = refPicker(page);
       /** Clears the line the caret is on, picker and all. */
       const clearLine = async () => {
@@ -631,7 +625,6 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await page.goto(`/priorities/${priority.id}`);
       await expect(page.getByText("No description is written. Write one below.")).toBeVisible();
       const editor = page.getByRole("textbox", { exact: true, name: "Description" });
-      await expectHint(page, editor, "priority-description", "priority-description");
       const list = refPicker(page);
       /** Clears the line the caret is on, picker and all. */
       const clearLine = async () => {
@@ -731,7 +724,7 @@ for (const box of coveredBoxes()) {
   // the threads its box answers - loads the page its box is on, and opens the picker seven times,
   // each open its own read of the registry, the issue's people and the search route; a box whose
   // write delivers then sends once and waits for the fake listener's frame.
-  test(`${box}: three doors over the same rows, the same words, a pick at the caret and its own hint`, async ({
+  test(`${box}: three doors over the same rows, the same words and a pick at the caret`, async ({
     browser,
   }) => {
     // Both directions at once: a covered box with no driver fails here, and a driver for a box

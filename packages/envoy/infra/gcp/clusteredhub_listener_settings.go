@@ -6,18 +6,23 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // clusteredHubListener is the resolved session listener the hub runs as a workload of its own,
 // nil without one: the tailnet hosts forward the Tailscale Service's port 9020 to it, and the
-// pods of clientNamespaces reach it at its cluster Service. env is its environment but the seed
-// and its credential (core.ListenerConfig.Env), its consumer-name setting included, credential is
-// the token check it requires of every caller, nil where it serves with none
+// pods of clientNamespaces reach it at its cluster Service. env is its environment but its NATS
+// credential and its token check (core.ListenerConfig.Env), its consumer-name setting included,
+// credential is the token check it requires of every caller, nil where it serves with none
 // (clusteredHubListenerEnv), and replaceUnderHold is the writer hold's update rule for its
-// Deployment (heldReplacement).
+// Deployment (heldReplacement). natsAudience is the audience of the projected token of its own
+// ServiceAccount it connects to NATS with in the token mode, where seedSecretName and
+// seedSecretKey are empty; it is empty in the seeded mode, where the pod mounts the seed from that
+// Secret.
 type clusteredHubListener struct {
 	image, machineID              string
 	seedSecretName, seedSecretKey string
+	natsAudience                  string
 	clientNamespaces              []string
 	cpu, memory                   string
 	env                           []string
@@ -69,6 +74,29 @@ func clusteredHubListenerArgs(args *ClusteredNatsHubArgs) (*ClusteredHubListener
 // <path>.allowedHosts and the index the operator wrote. Its sender limit is core's rule
 // (core.CheckSenderLimit), naming <path>.senderMessagesPerMinute or <path>.senderMessageBurst,
 // and so is its consumer-name setting (core.CheckConsumerNames), naming <path>.consumerNames.
+//
+// Its NATS identity is one of two. In the seeded mode, natsAudience unset, nkey, seedSecretName
+// and seedSecretKey are each required, and the listener user it returns is the one the hub renders
+// from nkey, which the pod connects as with the seed it mounts from that Secret. In the token mode,
+// natsAudience set, the pod presents a projected token of its own ServiceAccount for natsAudience
+// to the auth service, so the listener user it returns says the hub renders no user for it
+// (byToken) and the pod mounts no Secret. natsAudience is then refused, naming
+// <path>.natsAudience, in this order: without authCallout, whose auth service alone admits a token;
+// beside each of the seed's three inputs, since the listener connects as one identity; holding
+// whitespace or a control character anywhere (checkNatsAudience), since the broker trims its own
+// audience, so one with leading or trailing whitespace would never verify; and, where the listener
+// requires a credential, equal to oidcAudience, the audience of the tokens the listener's callers
+// present to it, which would make a token minted for the one spendable at the other, or to
+// oidcIssuer, whose URL the cluster's API server takes as an audience on GKE, which would make the
+// NATS token spendable there and a token minted for the API server a bearer the auth service
+// admits. Its machine id is then held, naming <path>.machineId, to the part of the rule the auth
+// service reads a BROKER_NATS_SERVICES entry's machine id by that core.CheckMachineID, which holds
+// it in either mode, does not already hold: natsgrant.ServiceMachineID, the part the entry's form
+// makes, an id natsgrant.MachineIDToken takes that holds neither '/' nor '=' and is not '-'.
+// core.CheckMachineID holds the other part, bus.CheckListenerMachineID. A dotted id, which core
+// refuses in the seeded mode because it names the listener's user, names no user here and is
+// taken, and an id holding '/' or '=', or the id '-', which core takes, is refused, since no entry
+// can name it. A seed in natsAudience is clusteredHubSeededInput's to refuse, before any of these.
 func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string, s clusteredHubSettings) (*clusteredHubListener, *listenerUser, error) {
 	if l == nil {
 		if args.Tailnet != nil {
@@ -94,14 +122,21 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	if err := core.CheckMachineID(path+".machineId", machineID); err != nil {
 		return nil, nil, err
 	}
-	if l.NKey == "" {
-		return nil, nil, core.InputErrorf(path+".nkey", "%s.nkey is required", path)
-	}
-	if !dnsSubdomain(l.SeedSecretName) {
-		return nil, nil, core.InputErrorf(path+".seedSecretName", "%s.seedSecretName %q must be a DNS subdomain, the name of a Secret in namespace %s", path, l.SeedSecretName, s.namespace)
-	}
-	if !isSecretKey(l.SeedSecretKey) {
-		return nil, nil, core.InputErrorf(path+".seedSecretKey", "%s.seedSecretKey %q must match %s", path, l.SeedSecretKey, secretKeyRule)
+	byToken := l.NatsAudience != ""
+	if byToken {
+		if err := checkClusteredHubListenerAudience(args, l, path); err != nil {
+			return nil, nil, err
+		}
+	} else {
+		if l.NKey == "" {
+			return nil, nil, core.InputErrorf(path+".nkey", "%s.nkey is required", path)
+		}
+		if !dnsSubdomain(l.SeedSecretName) {
+			return nil, nil, core.InputErrorf(path+".seedSecretName", "%s.seedSecretName %q must be a DNS subdomain, the name of a Secret in namespace %s", path, l.SeedSecretName, s.namespace)
+		}
+		if !isSecretKey(l.SeedSecretKey) {
+			return nil, nil, core.InputErrorf(path+".seedSecretKey", "%s.seedSecretKey %q must match %s", path, l.SeedSecretKey, secretKeyRule)
+		}
 	}
 	if err := checkNamespaces(path+".clientNamespaces", l.ClientNamespaces); err != nil {
 		return nil, nil, err
@@ -123,11 +158,30 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	if err != nil {
 		return nil, nil, err
 	}
+	if byToken {
+		if credential != nil && credential.audience == l.NatsAudience {
+			return nil, nil, core.InputErrorf(path+".natsAudience", "%s.natsAudience is %s.oidcAudience's audience, %q: a token minted for one audience is spendable wherever that audience is verified, "+
+				"and the listener receives its callers' projected tokens for oidcAudience while the auth service admits a token by its account alone, "+
+				"so the listener could connect to NATS as any caller whose account the broker lists; give natsAudience the broker's BROKER_NATS_K8S_AUDIENCE and oidcAudience another",
+				path, path, l.NatsAudience)
+		}
+		if credential != nil && credential.issuer == l.NatsAudience {
+			return nil, nil, core.InputErrorf(path+".natsAudience", "%s.natsAudience is %s.oidcIssuer's URL, %q: a token minted for one audience is spendable wherever that audience is verified, "+
+				"and on GKE the cluster's API server takes its issuer's URL as an audience, so the listener's NATS token would be spendable at the API server and a token minted for the API server "+
+				"would be a bearer the auth service admits; give natsAudience, and the broker's BROKER_NATS_K8S_AUDIENCE with it, an audience of its own",
+				path, path, l.NatsAudience)
+		}
+		if !natsgrant.ServiceMachineID(machineID) {
+			return nil, nil, core.InputErrorf(path+".machineId", "%s.machineId %q holds a space, '*', '>', '/', '=' or a control character, or is '-', which no BROKER_NATS_SERVICES entry can name: "+
+				"in the token mode the auth service admits the listener by its entry listener/<machine id>", path, machineID)
+		}
+	}
 	listener := &clusteredHubListener{
 		image:            l.Image,
 		machineID:        machineID,
 		seedSecretName:   l.SeedSecretName,
 		seedSecretKey:    l.SeedSecretKey,
+		natsAudience:     l.NatsAudience,
 		clientNamespaces: l.ClientNamespaces,
 		credential:       credential,
 		replaceUnderHold: l.ReplaceUnderHold,
@@ -169,7 +223,28 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	}).Env([]string{s.serviceURL}); err != nil {
 		return nil, nil, err
 	}
-	return listener, &listenerUser{path: path, machineID: machineID, nkey: l.NKey}, nil
+	return listener, &listenerUser{path: path, machineID: machineID, nkey: l.NKey, byToken: byToken}, nil
+}
+
+// checkClusteredHubListenerAudience refuses the token mode of the listener l, declared at path,
+// where it cannot connect: natsAudience without authCallout, beside each of the seed's three
+// inputs, and holding whitespace or a control character (checkNatsAudience). Each refusal is a
+// core.InputError naming <path>.natsAudience, in that order (newClusteredHubListenerSettings).
+func checkClusteredHubListenerAudience(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string) error {
+	input := path + ".natsAudience"
+	if args.AuthCallout == nil {
+		return core.InputErrorf(input, "%s is set without authCallout: the listener presents its projected ServiceAccount token for natsAudience to the auth service, "+
+			"which only a hub with authCallout asks about a connection; without authCallout give it %s.nkey, %s.seedSecretName and %s.seedSecretKey instead", input, path, path, path)
+	}
+	for _, seed := range []struct{ name, value string }{
+		{"nkey", l.NKey}, {"seedSecretName", l.SeedSecretName}, {"seedSecretKey", l.SeedSecretKey},
+	} {
+		if seed.value != "" {
+			return core.InputErrorf(input, "%s is set beside %s.%s: the listener connects to NATS as one identity, its projected ServiceAccount token for natsAudience "+
+				"or its seed's user, and with natsAudience the hub renders no user for it and mounts no seed; unset %s.%s, or natsAudience", input, path, seed.name, path, seed.name)
+		}
+	}
+	return checkNatsAudience(input, l.NatsAudience)
 }
 
 // clusteredHubListenerCredentialFor resolves the token check the listener l, declared at path,
@@ -189,8 +264,9 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 // shape (cmd/listener/apiauth.go, resolveListenerOIDCAccounts), so those are refused here first;
 // the issuer must also be an https URL with no user, query or fragment, as a cluster's issuer
 // is, since the listener reads its keys from it, and none of the three may hold whitespace or a
-// control character, which an environment variable's value cannot carry intact. An account list
-// may not repeat a subject. A seed in any of them is clusteredHubSeededInput's to refuse.
+// control character anywhere (holdsSpaceOrControl; an account by its shape), a rule stricter than
+// the listener's, which reads the issuer and the audience trimmed (oidc.ConfigFromEnv). An account
+// list may not repeat a subject. A seed in any of them is clusteredHubSeededInput's to refuse.
 func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string) (*clusteredHubListenerCredential, error) {
 	inputs := []struct {
 		name string
@@ -223,13 +299,10 @@ func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredH
 	if len(l.AllowedHosts) > 0 {
 		return nil, core.InputErrorf(path+".allowedHosts", "%s.allowedHosts is given on a listener that requires a credential, which serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS, so it would do nothing; unset it", path)
 	}
-	blank := func(value string) bool {
-		return strings.ContainsFunc(value, unicode.IsSpace) || strings.ContainsFunc(value, unicode.IsControl)
-	}
-	if blank(l.OidcIssuer) || !issuerURL(l.OidcIssuer) {
+	if holdsSpaceOrControl(l.OidcIssuer) || !issuerURL(l.OidcIssuer) {
 		return nil, core.InputErrorf(path+".oidcIssuer", "%s.oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", path, l.OidcIssuer)
 	}
-	if blank(l.OidcAudience) {
+	if holdsSpaceOrControl(l.OidcAudience) {
 		return nil, core.InputErrorf(path+".oidcAudience", "%s.oidcAudience %q holds whitespace or a control character", path, l.OidcAudience)
 	}
 	seen := make(map[string]int, len(l.OidcAccounts))
@@ -253,4 +326,12 @@ func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredH
 func issuerURL(raw string) bool {
 	issuer, err := url.Parse(raw)
 	return err == nil && issuer.Scheme == "https" && issuer.Host != "" && !urlCarriesExtras(raw, issuer)
+}
+
+// holdsSpaceOrControl is whether value holds whitespace (unicode.IsSpace) or a control character
+// (unicode.IsControl) anywhere: the one test of a listener's oidcIssuer and oidcAudience, which the
+// listener reads trimmed (oidc.ConfigFromEnv), and of the natsAudience of the hub's listener and
+// of gcp:Dispatch, which must equal the broker's own audience, read trimmed (checkNatsAudience).
+func holdsSpaceOrControl(value string) bool {
+	return strings.ContainsFunc(value, unicode.IsSpace) || strings.ContainsFunc(value, unicode.IsControl)
 }

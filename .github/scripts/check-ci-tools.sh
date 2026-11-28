@@ -81,8 +81,8 @@
 #      helm the render passes over for the one it builds with `go run`. That file is read only
 #      where a helm row exists, and then a file that is missing, is not readable as text, or
 #      holds no such line is refused too.
-#      The `crane`, `changie`, `elan` and `pulumi-cli` rows are their own pins: their installs
-#      hold no version of their own and install the version the row names.
+#      The `crane`, `changie`, `gotestsum`, `elan` and `pulumi-cli` rows are their own pins:
+#      their installs hold no version of their own and install the version the row names.
 #      A row whose name ends in `-aarch64` is the arm64 build of the row named without that
 #      suffix, and carries that row's `version`, so it answers to that row's pin: the jobs on
 #      ubuntu-24.04-arm install the one and the jobs on ubuntu-24.04 the other, and they are one

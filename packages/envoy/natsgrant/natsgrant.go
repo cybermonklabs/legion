@@ -564,11 +564,25 @@ func SessionToken(id string) bool {
 // each dot out (bus.ListenerSpelling: bus.ListenerDurable, bus.ListenerQueue, EdgeInboxPrefix and
 // EdgeRelayReplyPrefix), so each name stays one token. A wildcard, a space or a control character
 // is still refused, as SessionToken refuses them. The auth service reads a BROKER_NATS_SERVICES
-// entry's machine id by it (internal/cipher/config), and Edge holds its own machine id to it.
+// entry's machine id by it, within ServiceMachineID (internal/cipher/config), and Edge holds its
+// own machine id to it.
 func MachineIDToken(id string) bool {
 	return id != "" && !strings.ContainsFunc(id, func(r rune) bool {
 		return r == '*' || r == '>' || unicode.IsSpace(r) || unicode.IsControl(r)
 	})
+}
+
+// ServiceMachineID is the part of the rule for a BROKER_NATS_SERVICES entry's machine id that the
+// entry's own form makes, the machine id an entry <kind>/<machine id>/<scope>=<account> names:
+// an id MachineIDToken takes, holding neither '/' nor '=', at which the entry's form is split, and
+// not "-", which an entry writes for no machine id. bus.CheckListenerMachineID is the other part:
+// it refuses an id holding '%' or whose durable is over NATS's limit for a consumer name, which
+// this takes. The auth service reads each entry's machine id by both (internal/cipher/config).
+// envoy-infra holds by this one the machine id of a clustered hub's listener that connects by a
+// service token, which the auth service admits by its entry listener/<machine id>, and by the
+// other part through its own core.CheckMachineID.
+func ServiceMachineID(id string) bool {
+	return MachineIDToken(id) && !strings.ContainsAny(id, "/=") && id != "-"
 }
 
 // Daemon is the NATS grant of one Legion daemon. Its three durable consumers inspect and create
@@ -673,6 +687,42 @@ func Measure() Permissions {
 			MeasureInbox + ".cutover.>",
 		},
 		Subscribe: []string{legacyMeasureInbox + ".>", MeasureInbox + ".>"},
+	}
+}
+
+// JSReadInbox is the JetStream reader's inbox prefix (nats.CustomInboxPrefix), the one subscribe
+// of its grant (JSRead), as the deployment repository's static user legion-jsread names it. It is
+// outside ReplyRoot: the reader only sends requests, and a request's reply needs no export.
+const JSReadInbox = "_INBOX_legion_jsread"
+
+// JSRead is the grant of the JetStream reader, a BROKER_NATS_SERVICES entry of kind jsread: a
+// Legion pod that reads the account's JetStream state, which the deployment repository deploys
+// today as the static user legion-jsread (its envoy-cluster/hub.go, hubJSReadPublish and
+// hubJSReadSubscribe, at 21b66a4a3ae3643b4ac420f41d8560908a0cf773), whose lists this grant copies
+// entry for entry. Publish: JetStream's account info, the stream names and
+// list, any stream's info, and any stream's consumer names, list and infos. A stream's info names
+// its subjects and, asked with a subject filter, how many stored messages each subject holds; a
+// consumer's info names its filter and its position. It reads no message: it holds no direct get
+// (DIRECT.GET), no stored-message get (STREAM.MSG.GET) and no consumer create, which would deliver
+// a stream's messages to a subject of the creator's choosing. It holds no create, update, delete
+// or purge of a stream or consumer, and publishes nothing outside the JetStream API. As every
+// grant that holds a JetStream API request, it can have the server publish a JetStream answer on
+// a reply subject of its choosing; operatorReleased's comment says what that reaches. Subscribe:
+// its own inbox prefix alone (JSReadInbox), never _INBOX.>, where other clients' replies arrive.
+// It has no deny list. Its lists are written here and not shared with Measure, whose first seven
+// publish entries are the same, so a change to either grant changes no other's.
+func JSRead() Permissions {
+	return Permissions{
+		Publish: []string{
+			jsAPI + "INFO",
+			jsAPI + "STREAM.NAMES",
+			jsAPI + "STREAM.LIST",
+			jsAPI + "STREAM.INFO.*",
+			jsAPI + "CONSUMER.NAMES.*",
+			jsAPI + "CONSUMER.LIST.*",
+			jsAPI + "CONSUMER.INFO.*.*",
+		},
+		Subscribe: []string{JSReadInbox + ".>"},
 	}
 }
 

@@ -21,9 +21,9 @@ import (
 // off its task's line: LEGION-208 stands in implementing at step 1 of task a, whose steps are now
 // `implementer reviewer`, and its tester, whose run the daemon ended without its report, sends its
 // fail naming returnTo 1. The fail names no step the task can return from, so the route answers
-// 409 RETURN_REFUSED with what to send instead, and records nothing; the same fail with no
-// returnTo is then taken (200), on the tester's own row. A 500 would answer every retry of the same
-// fail the same way, since its key names the step.
+// 409 RETURN_REFUSED with what to send instead, and the fail moves nothing; the same fail with no
+// returnTo, a new key, is then taken (200), on the tester's own row. A 500 would answer every
+// retry of the same fail the same way, since its key names the step.
 func TestALateFailNamingAStepOffItsTasksLineIsRefusedNotFailed(t *testing.T) {
 	const root = "LEGION-208"
 	h, _, _ := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
@@ -58,7 +58,7 @@ func TestALateFailNamingAStepOffItsTasksLineIsRefusedNotFailed(t *testing.T) {
 	}
 
 	refusedSaying(t, h.complete(fail(new(1))), http.StatusConflict, "RETURN_REFUSED",
-		"returnTo is 1, and task a of LEGION-208 has no step that runs as testing now (its steps are implementer reviewer), so this fail names no step of the task to return to; send the fail again without returnTo; nothing was recorded")
+		"returnTo is 1, and task a of LEGION-208 has no step that runs as testing now (its steps are implementer reviewer), so this fail names no step of the task to return to; send the fail again without returnTo; this report moved nothing")
 	if got := recordedChild(t, h, root); got == nil || got.Phase != phase.Implementing {
 		t.Fatalf("%s once the fail was refused = %#v, want it still in implementing", root, got)
 	}

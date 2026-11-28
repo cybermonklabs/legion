@@ -1,0 +1,23 @@
+kind: Added
+body: |-
+    A new `legion.yaml` key, `nats_daemon_service_token_file`, or the variable
+    `NATS_DAEMON_SERVICE_TOKEN_FILE` in its place, names a projected ServiceAccount token that the
+    daemon's own NATS connection presents, as user `service`, to a hub whose connections the
+    secrets broker's NATS auth service admits; the broker lists the daemon's account under a
+    `daemon/-/*` entry of `BROKER_NATS_SERVICES`. The daemon reads the file again at each connect,
+    and moves to a later token ten minutes before the one it presented lapses. A refusal of the
+    token is waited out: at boot each refused attempt is logged with its reason and the daemon is
+    not ready until the auth service admits the token, so it neither exits nor restarts; after the
+    connect a refused reconnect is tried again, never closing the connection, and the refusal is
+    logged at most once a minute. Boot is refused, naming the setting and never the token: for the
+    token set beside a setting of the daemon's own seed (`nats_daemon_nkey_seed_file`,
+    `NATS_DAEMON_NKEY_SEED_FILE`, `NATS_DAEMON_NKEY_SEED`), naming both, before any seed is read;
+    for the variable set but empty; for a `nats_urls` entry that carries a user name; and for a
+    token file that cannot be read, is empty or names no account. The agents' seed stays allowed
+    beside the token. `legion config check` reads the token as boot does and names its account on
+    its OK line (`nats-daemon-service-account=`), never the token, and `legion controller start`
+    drops the variable from the controller's environment. A daemon with a seed, or with no NATS
+    credential, connects as before.
+time: 2026-11-28T14:41:51Z
+custom:
+    Issue: INFRA-6420

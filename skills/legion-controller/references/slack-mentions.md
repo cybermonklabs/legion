@@ -6,10 +6,10 @@ The delivery's `message` carries `channel_id`, `user_id`, `text` (the words, the
 
 ## Read the thread first
 
-Envoy delivers one message of a thread. For a mention with `thread_ts`, read the thread with the Legion bot token the secrets broker holds:
+Envoy delivers one message of a thread. For a mention with `thread_ts`, read the thread with the Legion bot token the secrets broker holds, `LEGION_SLACK_BOT_TOKEN`, with `--wait 0s` and `read the thread of a Slack mention` as its `--reason`, and this as the `<command>` of the run `agent-secrets --help` gives:
 
 ```sh
-agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mention' --wait 0s -- bash -c '
+bash -c '
   curl -sS -G https://slack.com/api/conversations.replies \
     -H @<(printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN") \
     --data-urlencode channel=<channel_id> \

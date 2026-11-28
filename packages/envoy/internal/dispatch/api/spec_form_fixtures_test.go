@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -17,7 +18,8 @@ import (
 // The fixtures of the form tests (spec_form_*_test.go): the tree of issues under a named root, the
 // requests and answers of each approval route, the fixture texts of v-form and of a procedure with
 // the refusal that each gives, and the state that a refused write must leave as it was. The route
-// assertions are in spec_form_routes_test.go.
+// assertions are in spec_form_routes_test.go, and those of the list of terms in
+// spec_form_terms_routes_test.go.
 
 // formIssue is an issue the form tests made, with its spec.
 type formIssue struct {
@@ -157,11 +159,15 @@ func answerFormApproval(t *testing.T, handler http.Handler, ask, selected, text 
 // formFault is one of the seven fixture texts of v-form (formFaults), or of the two texts of a
 // procedure (procedureFaults), with a clean text of the same node that a new version can break, and
 // the rule and detail its finding names. A text that ste-lint reads as a sentence of more than 25
-// words has a second finding, ste-lint's long-sentence, whose detail is steLong.
+// words has a second finding, ste-lint's long-sentence, whose detail is steLong. A fault of a
+// definition (v-terms) holds whole term lines: its clean line defines another term, or the same
+// term in one sentence, and excerpt is the definition its broken line gives, which the finding
+// quotes.
 type formFault struct {
 	name, node    string
 	kind          specform.Kind
 	clean, broken string
+	excerpt       string
 	rule, detail  string
 	steLong       string
 }
@@ -216,13 +222,16 @@ var procedureFaults = []formFault{
 const twentyWords = "Run the merge test against a fixture server that holds two approved specs of the same issue and three requests."
 
 // document is a spec that holds the fault's node with body: a requirement block for a statement,
-// a check block for a claim, and a check block whose run is body for a procedure.
+// a check block for a claim, a check block whose run is body for a procedure, and the line body
+// under a heading Terms for a definition or a line.
 func (f formFault) document(body string) string {
 	switch f.kind {
 	case specform.KindClaim:
 		return fmt.Sprintf("# Spec\n\n:::check{#%s}\n%s\n:::\n", f.node, body)
 	case specform.KindProcedure:
 		return fmt.Sprintf("# Spec\n\n:::check{#%s run=%q}\nDispatch keeps each record.\n:::\n", f.node, body)
+	case specform.KindDefinition, specform.KindLine:
+		return specWithTerms(body)
 	}
 	return fmt.Sprintf("# Spec\n\n:::requirement{#%s}\n%s\n:::\n", f.node, body)
 }
@@ -257,7 +266,7 @@ func (f formFault) findings(issue formIssue, version int) []specFormFinding {
 			Document: "spec.md", ArtifactID: issue.PrimaryArtifactID, Version: version,
 			Finding: specform.Finding{
 				Node: f.node, Kind: f.kind, Where: fmt.Sprintf("spec.md version %d", version),
-				Rule: rule, Detail: detail, Excerpt: f.broken,
+				Rule: rule, Detail: detail, Excerpt: cmp.Or(f.excerpt, f.broken),
 			},
 		}
 	}

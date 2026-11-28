@@ -1549,6 +1549,42 @@ It changes no output and no status; it does change the order in which a Python p
 This repository's artifacts can be downloaded by anyone for those 90 days, and GitHub's log masking does not reach them: the record holds each harness's output as the harness wrote it.
 No pooled harness is given a secret today — the shell harnesses run over fakes, and envoy-session-stall's suites over stacks of their own with fixture secrets made for the run — and a harness that is ever given one must keep it out of its output, as every harness whose log the wait prints already must.
 
+## Which tests a CI job ran
+
+Each `go test` run of ci.yaml's run keeps go's test2json events, one JSON object per line, in a file of its own, and each job uploads its files as the artifact `go-test-events-<job id>`, where the id is the check run id that the jobs API and the job's URL give.
+Without `-v`, a package that passes prints only its `ok` line, so the job's log names no test and gives no test a time; the events name each test, its result and its `Elapsed` seconds.
+
+To read one job's events:
+
+```sh
+gh run download <run id> -R cybermonklabs/legion -n go-test-events-<job id> -D <directory>
+jq -c 'select(.Test == "<TestName>" and (.Action == "pass" or .Action == "fail" or .Action == "skip"))' <directory>/*.jsonl
+```
+
+A test passed only where its own `pass` event is in the files: an event with `"Action": "pass"` and that test's `Package` and `Test`.
+A `run` event with no later `pass`, `fail` or `skip` for that test means the test did not finish (`go test`'s `-timeout`, a panic, or the end of the job can stop it), and it reads as unknown, never as a pass.
+A package's own result is the event with its `Package` and no `Test`.
+`gotestsum tool slowest --jsonfile <file> --threshold 1s` lists the tests of one file that took more than one second.
+
+A step runs its go test as `gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/<name>.jsonl" --format standard-quiet --raw-command -- go test -json <its arguments>`, with `--format standard-verbose` where its arguments hold `-v`.
+gotestsum (gotest.tools/gotestsum) runs that command as written, writes each event to the file as it reads it, prints a log and summary (with `standard-quiet`, used by most steps, the log has only package-level lines such as each package's `ok` or `FAIL` line and package output, and each failed test's `=== FAIL:` line and output appear only in the `=== Failed` summary section; with `standard-verbose`, the log has `go test -v` lines from the events, and the summary repeats each failed test's output), and exits with go test's status, `128+N` if gotestsum forwarded signal N to go test, `127` if a signal gotestsum did not forward ended go test, or `3` for gotestsum's own fault.
+gotestsum makes the file new, so `<name>` is a name that no other go test run of the job uses.
+`.github/scripts/ci_filter_coverage.py`'s `as_go_test` is the one reading of that form for every CI tool that reads a step's go test: it reads it as `go test <its arguments>`.
+The scripts that run go test themselves (`packages/envoy/scripts/database-skips.sh`, `backend-count.sh` and `forced-order.sh`, `packages/envoy/infra/scripts/race-unit.sh` and `natslive.sh`, and `.github/scripts/race_memory.py`) write each run's events to a file of their own in the same directory when `RUNNER_TEMP` is set, and to a temporary file that they delete when it is not.
+The job's step "Upload the go test events" (`.github/actions/go-test-events-upload`) runs after its last go test step, under `if: always()`, or under `always() &&` the conditions of its go test steps where each of them has one, so a failed, timed-out or cancelled job keeps the events written before it ended.
+A job whose go test ran and that kept no file, or whose upload failed, fails at that step, so a run whose record was lost never reads as green.
+
+A new `go test` step of ci.yaml's run keeps its events in the same way: its job has the install step (`.github/actions/install-gotestsum`) before it and the upload step after it.
+No check refuses a step that does not; the reviewer of the pull request holds that line.
+
+The `gotestsum` and `gotestsum-aarch64` rows of `.github/ci-tools.yaml` pin gotestsum. `.github/actions/install-gotestsum` installs it in CI.
+On a Linux workstation, download the release tarball from `primary` in the row for your architecture: `gotestsum` for x86_64 or `gotestsum-aarch64` for arm64.
+Run `sha256sum` on the entire tarball and compare its output with the row's `digest`.
+Only if the digest matches, extract the `gotestsum` member into a directory on your `PATH`.
+
+Anyone can download this repository's artifacts for 90 days, its default retention, and GitHub's log masking does not reach them: the events hold every test's output, the `t.Log` lines of a passing test among them.
+So a `go test` step gives its tests no secret, whether through the workflow's, the job's or the step's `env`, through `$GITHUB_ENV`, or in a file that an earlier step writes.
+
 ## A test asserts no count of work a broker may repeat
 
 A message broker that gives at-least-once delivery may hand one message to a handler twice. NATS

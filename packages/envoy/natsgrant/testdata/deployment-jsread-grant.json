@@ -1,0 +1,13 @@
+{
+  "source": "the deployment repository's envoy-cluster/hub.go hubJSReadPublish and hubJSReadSubscribe at 21b66a4a3ae3643b4ac420f41d8560908a0cf773",
+  "publish": [
+    "$JS.API.INFO",
+    "$JS.API.STREAM.NAMES",
+    "$JS.API.STREAM.LIST",
+    "$JS.API.STREAM.INFO.*",
+    "$JS.API.CONSUMER.NAMES.*",
+    "$JS.API.CONSUMER.LIST.*",
+    "$JS.API.CONSUMER.INFO.*.*"
+  ],
+  "subscribe": ["_INBOX_legion_jsread.>"]
+}
