@@ -1,12 +1,12 @@
 /**
  * Windowing for a list whose rows are not all the same height: the Agents page's rows, each of
- * which expands into a conversation (`features/agents/AgentsPage.tsx`). Its neighbour
- * `prList.ts` windows a list whose every row is 36 px, where the rows on screen are arithmetic
- * with nothing measured; a row that grows a conversation inside it cannot be counted that way.
- * Here a row is as tall as the page last measured it, and a row
- * nothing has measured yet is taken to be `estimate` tall, so the list has a length - and a
- * scrollbar - before a single row is drawn. Pure: no React. The caller draws the rows this
- * answers with, measures them, and hands the heights back (`withMeasuredHeights`).
+ * which expands into a conversation (`features/agents/AgentsPage.tsx`), the one list that reads
+ * this module; the Delivery list is windowed by the shared table's virtualizer (`DataTable`). A
+ * row that grows a conversation inside it cannot be counted by arithmetic. Here a row is as tall
+ * as the page last measured it, and a row nothing has measured yet is taken to be `estimate`
+ * tall, so the list has a length - and a scrollbar - before a single row is drawn. Pure: no
+ * React. The caller draws the rows this answers with, measures them, and hands the heights back
+ * (`withMeasuredHeights`).
  *
  * Two rules are INFRA-812's D1. The list draws the rows the screen holds and `OVERSCAN_ROWS`
  * either side, and it draws every row the person has opened wherever that row has scrolled to:
@@ -16,7 +16,8 @@
  * of it that is drawn.
  */
 
-/** Rows drawn past each edge of the window, as the uniform list draws (`prList.ts`). */
+/** Rows drawn past each edge of the window, as many as the shared table's virtualizer draws
+ *  (`DataTable`'s `overscan`). */
 export const OVERSCAN_ROWS = 12;
 
 /** What the list measured each row to be, by the key the list names that row with. */

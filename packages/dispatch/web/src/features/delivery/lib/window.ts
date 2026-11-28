@@ -75,16 +75,20 @@ export function readWindow(params: URLSearchParams): WindowChoice {
   return { kind: "preset", preset: isPreset(preset) ? preset : DEFAULT_WINDOW_PRESET };
 }
 
+/** A sub-window of the read window a brush drag set (`ws`/`we`): it narrows what the chart, the
+ *  list and the count show without a new read, so the facets keep counting the whole window. */
+export interface BrushWindow {
+  start: string;
+  end: string;
+}
+
 /** The brush window a drag on the chart set, as the address names its two ends (`ws`, `we`), or
  *  none. Both ends are times and the end is no earlier than the start; any other pair - one end
  *  alone, a word that is no time, an end before its start - would leave no merge inside it and
  *  filter every pull request out of the chart, the list and the count, so it is no brush and the
  *  page shows its whole window. Takes the two texts rather than the parameters so a caller can
  *  memoize on them. */
-export function readBrush(
-  start: string | null,
-  end: string | null
-): { start: string; end: string } | null {
+export function readBrush(start: string | null, end: string | null): BrushWindow | null {
   if (start === null || end === null) return null;
   const startMs = Date.parse(start);
   const endMs = Date.parse(end);

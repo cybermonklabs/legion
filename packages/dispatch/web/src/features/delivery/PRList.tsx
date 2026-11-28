@@ -35,13 +35,11 @@ import { useKeymapScope } from "../shell/keymap";
 import { type ColorFacet, colorKeyFor, PLACEHOLDER_COLOR } from "./lib/colorScale";
 import {
   DEPLOYED_LABELS,
-  type DeployedFacet,
   FACET_PARAMS,
   type FacetKey,
   ownEntry,
   PLACEHOLDER_LABELS,
   REWORK_LABELS,
-  type ReworkFacet,
 } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";
 import {
@@ -75,8 +73,8 @@ export function isColumnFacet(key: string | undefined): key is ColumnFacet {
 /** The values a column facet offers whatever the window holds, in its own order: every verdict
  *  a pull request can have. The other three list what the window counts, busiest first. */
 export const FIXED_FACET_VALUES: Partial<Record<ColumnFacet, readonly string[]>> = {
-  deployed: ["deployed", "waiting", "not_tracked"] satisfies DeployedFacet[],
-  rework: ["value", "rework"] satisfies ReworkFacet[],
+  deployed: Object.keys(DEPLOYED_LABELS),
+  rework: Object.keys(REWORK_LABELS),
 };
 
 /** What a column facet's value reads as - the issue's title, a session group's name, a
@@ -210,9 +208,9 @@ const PR_NOUN: RowNoun = {
 };
 
 /** This table groups nothing and pages nothing: every row of the window is on one page, and the
- *  list scrolls. Both are module constants rather than literals in the state below, so the
- *  state object the virtualizer's every scroll notification re-renders carries the same two
- *  values it did before - a fresh array there re-runs a row model over every row. */
+ *  list scrolls. Both are module constants rather than literals in the state below, so a sort or
+ *  a filter that rebuilds that state keeps these two fields the same: a fresh array there would
+ *  be a change of its own to every row model that reads it. */
 const NO_GROUPING: GroupingState = [];
 const ONE_PAGE: PaginationState = { pageIndex: 0, pageSize: Number.MAX_SAFE_INTEGER };
 

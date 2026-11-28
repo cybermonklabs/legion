@@ -10,7 +10,7 @@ import {
   type WriteRequest,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { advancesIssuesParams, advancesIssuesQuery, projectIssuesQuery } from "../../api/queries";
+import { advancesIssuesParams } from "../../api/queries";
 import { invalidateWaitingForPaused } from "../../api/query-client";
 import { useReadBound } from "../../api/read-bound";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
@@ -32,7 +32,7 @@ import {
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { plainWrite, useWrites } from "../writes/write-store";
 import { IN_WORK_STATUSES, statusText } from "./board-model";
-import { type IssueListing, listingName } from "./issues-table-data";
+import { type IssueListing, listingIssuesQuery, listingName } from "./issues-table-data";
 import {
   buildItems,
   type Item,
@@ -65,6 +65,8 @@ interface DuplicateEpic {
   /** The reader said yes to the new epic's move into work before its first create. */
   intoWork?: true;
 }
+/** Which press opened a question (`Confirmation`'s `origin`). */
+type QuestionOrigin = "bar" | "merge";
 /** An action waiting on the reader's yes, with everything the dialog says and does. */
 interface Confirmation {
   title: string;
@@ -83,7 +85,7 @@ interface Confirmation {
    *  whose confirm arms the bar's hand-off at the bar's root. `"merge"`: an epic group's Merge…
    *  (`askMerge`), whose confirm arms it at the group's Epic actions. A Finish's question
    *  (`askOnFinish`) has none. */
-  origin?: "bar" | "merge";
+  origin?: QuestionOrigin;
 }
 /** What a question says, before the page knows what its yes and its Cancel do. */
 type Question = Omit<Confirmation, "cancel" | "origin" | "run">;
@@ -93,7 +95,7 @@ type Question = Omit<Confirmation, "cancel" | "origin" | "run">;
 interface TargetAction {
   readonly lead?: string;
   readonly noun: "merge" | "move";
-  readonly origin?: "bar" | "merge";
+  readonly origin?: QuestionOrigin;
 }
 /** The epic whose name the reader is typing: a new one for the selected issues, or a rename. */
 export type EpicNaming =
@@ -200,10 +202,7 @@ export function useIssueTableActions({
   // Why the read of this table's listing after an action has not settled, once its hold ran out,
   // which the next action takes away as its hold begins: one hold for every table of the listing
   // (`useReadBound`).
-  const [unsettled, holdThrough] = useReadBound(
-    ("project" in listing ? projectIssuesQuery(listing.project, []) : advancesIssuesQuery(listing))
-      .queryKey
-  );
+  const [unsettled, holdThrough] = useReadBound(listingIssuesQuery(listing).queryKey);
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
   // The issues the action in hand is taking out of the view, which `leaving` names: each issue its
   // writes are for, from the reader's press that began it (`perform`, and `askTarget` while its dry
@@ -421,10 +420,10 @@ export function useIssueTableActions({
       // checkbox. An action that failed or changed nothing keeps the selection.
       // Read again waiting on a fetch the network has paused, since the hold below has a bound
       // of its own (`invalidateWaitingForPaused`, `useReadBound`).
-      const listed = invalidateWaitingForPaused(client, ["issues"]);
+      const reread = invalidateWaitingForPaused(client, ["issues"]);
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
-      if (mayHaveChanged) await holdThrough(listed, press);
+      if (mayHaveChanged) await holdThrough(reread, press);
       // The bar's going and its hand-off are one render. This line runs outside any event of the
       // reader's - the turn a write's answer takes, or the read's own bound - so React would
       // commit it at normal priority and run the bar's hand-off, a passive effect

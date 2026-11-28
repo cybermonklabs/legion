@@ -13,6 +13,7 @@ import {
 import { focusOnDocument } from "../features/shell/roving";
 import { useMediaQuery } from "../features/shell/useDialog";
 import { afterFootPass, footPassNow, useFootInset } from "../hooks/useFootInset";
+import { inputMethodKey } from "../lib/input-method-key";
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
 import {
@@ -67,19 +68,19 @@ export interface SelectionBarProps {
    *  (`MarkedList`'s `drawRow`). */
   readonly returnFocus?: () => HTMLElement | null;
   /** The elements the list the bar stands over names as its rows where their markup makes them
-   *  none (`MarkedPlace`'s `rows`, from `MarkedList`'s `row`): the Inbox's reading view for the
-   *  row it shows. The bar hands them to the press it arms at its root (`armOnPress`), so a
-   *  control its running action holds in one of them that is marked is that press's own, as a
-   *  control it holds in a marked row is (`focus-place.ts`'s `holds`). */
+   *  none (`MarkedPlace`'s `rows`, from `MarkedList`'s `row`), such as a reading view a page
+   *  draws for the row it shows. The bar hands them to the press it arms at its root
+   *  (`armOnPress`), so a control its running action holds in one of them that is marked is that
+   *  press's own, as a control it holds in a marked row is (`focus-place.ts`'s `holds`). */
   readonly rows?: () => readonly Element[];
   /** The page's size (`ControlSize`): the bar's own padding and how its line of actions lays out
    *  (`BAR_BOX`, `BAR_LINE`), and at the compact size the band it publishes for the room the
    *  project List keeps at its end (`SELECTION_BAR_TOP_PROPERTY`). The actions in it are the
    *  page's, and each carries the page's size itself. */
   readonly size?: ControlSize;
-  /** The bar's own words in place of the count, for what a count cannot say: the Inbox's
-   *  `Every row selected`, which covers rows a fold or a page is holding back, and its
-   *  `Snoozing 3…`, which is the press that is in the air rather than what is still marked. */
+  /** The bar's own words in place of the count, for what a count cannot say: words such as
+   *  `Every row selected`, which covers rows a fold or a page is holding back, or `Snoozing 3…`,
+   *  which is the press that is in the air rather than what is still marked. */
   readonly state?: ReactNode;
 }
 
@@ -99,11 +100,11 @@ export interface MarkedList {
   /** The element that counts as row `id` where the hand-off reads where the focus stands, in a
    *  row the list names as leaving or in any row of it, while the page draws that row; else null.
    *  A focus anywhere inside it is a focus in that row. A list whose rows are each the row around
-   *  their mark (`ROW_SELECTOR`) leaves this out, and that row is read. The Inbox gives its reading
-   *  view for the row it shows: the view is no row by its markup, and a row marker on it would make
-   *  it one for `components/focus-place.ts`'s row hand-offs inside it too. The page hands these
-   *  elements to its bar as well (`MarkedPlace`'s `rows`), where the first checkbox in each is its
-   *  mark, as a row's own mark is. */
+   *  their mark (`ROW_SELECTOR`) leaves this out, and that row is read. A page can give a reading
+   *  view for the row it shows: the view is no row by its markup, and a row marker on it would
+   *  make it one for `components/focus-place.ts`'s row hand-offs inside it too. The page hands
+   *  these elements to its bar as well (`MarkedPlace`'s `rows`), where the first checkbox in each
+   *  is its mark, as a row's own mark is. */
   readonly row?: (id: string) => Element | null;
   /** Draws row `id`, which the list holds (`order`) and its window has not drawn (`control` is
    *  null), and lands on its mark once drawn, calling `onLand` with that mark in the task that
@@ -206,7 +207,7 @@ export interface MarkedList {
  * Shift+Tab is the act, and it starts from the parked mark. Where the act left the focus is read
  * once the act has been answered (`afterAnswer`): a task after a wheel; a task after a press's
  * own `pointerup` or `pointercancel`, by which its click has run and the page has named the row
- * that click takes away, as an Inbox row's own Dismiss names its row; a task after a key's own
+ * that click takes away, as a row's own action names its row; a task after a key's own
  * keyup, by which the page's keymap has moved the focus and Space has ticked the mark; and a task
  * after the keydown of a key pressed with Meta, as ⌘C is, since Chromium and WebKit on macOS send
  * no keyup for a key released while Meta is held.
@@ -532,6 +533,17 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     forgetLeft();
     return focusOnDocument() && leavingFocus.current?.isConnected === false;
   }, [forgetLeft]);
+  /** Owes the landing on the place the row `last` gives, with the row a reader's act left the
+   *  focus in where its read owes it again (`actRow`, else null), and asks for it at once, as each
+   *  commit asks while it is owed: the focus parked while the list names a listed row as leaving,
+   *  else the landing made after the foot's pass. */
+  const owePlace = useCallback(
+    (live: MarkedList, last: string | null, actRow: Element | null) => {
+      owe({ actRow, kind: "place", last });
+      parkOrLand(live, last);
+    },
+    [owe, parkOrLand]
+  );
   // Each commit of the host asks the hand-off again while a landing is owed: the commit that lets
   // the press's rows go is the one that makes the landing. The page's own landing is its table's,
   // and is made once the focus stands in the list's rows, or ends unmade where the page has moved
@@ -551,9 +563,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       // remembered in such a row gone from the page (`goingOwes`): the landing is owed, and asked
       // for at once, as each commit asks while it is owed, so with no row leaving it is made now.
       if (goingOwes(live, went, leavingFocus.current)) {
-        const last = live.lastMarked();
-        owe({ actRow: null, kind: "place", last });
-        parkOrLand(live, last);
+        owePlace(live, live.lastMarked(), null);
         return;
       }
       if (live.shown) rememberLeaving(live);
@@ -577,17 +587,6 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     }
     parkOrLand(live, place.last);
   });
-  /** Owes the landing on the place the row `last` gives, with the row a reader's act left the
-   *  focus in where its read owes it again (`actRow`, else null), and asks for it at once, as each
-   *  commit asks while it is owed: the focus parked while the list names a listed row as leaving,
-   *  else the landing made after the foot's pass. */
-  const owePlace = useCallback(
-    (live: MarkedList, last: string | null, actRow: Element | null) => {
-      owe({ actRow, kind: "place", last });
-      parkOrLand(live, last);
-    },
-    [owe, parkOrLand]
-  );
   // Where the reader's act left the focus, once it has been answered: in a row the list names as
   // leaving, or on the body because the control that held it (`from`) went with its row, the
   // landing the act ended is owed again, on the place of the same row marked last, with the row
@@ -744,7 +743,7 @@ function readerActed(event: Event): boolean {
 /** Ends the wait for the reader's act and calls `finish` with whether to read the focus.
  *  A wheel is read in the next task. A press is read in a task after its own `pointerup` or
  *  `pointercancel` (the same `pointerId`), so the click its release makes has run: that click is
- *  what names a row the press takes away, as an Inbox row's own Dismiss does. Both are heard on
+ *  what names a row the press takes away, as a row's own action does. Both are heard on
  *  the document's capture, so the release of a press whose control has left the page is still
  *  heard. A key is read in a task after the keyup with the same `code`, so Space can tick its
  *  mark and a modifier's keyup cannot run the read early. A key pressed with Meta is read in the
@@ -960,8 +959,8 @@ export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactN
   // After every commit, so after the one that removed the bar's element, or the control, and
   // dropped the focus with it. No dependency list: the `returnFocus` called is this commit's own,
   // so a page that hands a new function on every render starts nothing by it. Passive rather than
-  // layout: the Inbox's `ViewportAnchor` keeps its rows in place from its `componentDidUpdate`,
-  // which runs in the layout phase after this bar's own layout effects and would scroll the list
+  // layout: a list's `ViewportAnchor` keeps its rows in place from its `componentDidUpdate`, in
+  // the layout phase, which can run after this bar's own layout effects and would scroll the list
   // back over the target that focusing brought into view.
   useEffect(() => {
     const held = wentHolding.current;
@@ -999,9 +998,9 @@ const BAR_LINE: Record<ControlSize, string> = {
  *  scroll clear of the bar whatever lines the bar wraps onto. */
 export const SELECTION_BAR_TOP_PROPERTY = "--selection-bar-top";
 
-/** The bar's own box at each size. The comfortable size is the bar the Inbox draws. The compact
- *  size is the smaller box of a page whose controls are compact, in the padding the compact
- *  controls take (`controlPadding`); the toolbar size's controls take that padding too. */
+/** The bar's own box at each size. The comfortable size is the bar's default. The compact size
+ *  is the smaller box of a page whose controls are compact, in the padding the compact controls
+ *  take (`controlPadding`); the toolbar size's controls take that padding too. */
 const BAR_BOX: Record<ControlSize, string> = {
   comfortable: "px-4 py-2",
   compact: "px-2 py-1",
@@ -1018,13 +1017,19 @@ const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
  *  for (`armOnPress`), and Escape from a control inside the bar besides, which the bar's hand-off
  *  counts as the reader's own (`SelectionBar`): on a page whose keymap clears the selection on
  *  Escape, as the Inbox's does, Escape there clears the selection the bar holds (the project List
- *  binds no such key), where a component's root reads it as the reader leaving a control. Each
+ *  binds no such key), where a component's root reads it as the reader leaving a control. The
+ *  Escape that ends an input method's composition (`inputMethodKey`) is the input method's: it
+ *  falls to `armOnPress`, which arms nothing for it, as for every key of an input method. Each
  *  arm takes the rows the page names (`SelectionBarProps`'s `rows`). */
 function armOnBarKey(
   event: KeyboardEvent<HTMLDivElement>,
   rows: (() => readonly Element[]) | undefined
 ): void {
-  if (event.key === "Escape" && event.target instanceof Element) {
+  if (
+    event.key === "Escape" &&
+    !inputMethodKey(event.nativeEvent) &&
+    event.target instanceof Element
+  ) {
     armHandOff(event.target, event.currentTarget, rows);
   } else {
     armOnPress(event, rows);
@@ -1120,6 +1125,7 @@ function DrawnBar({
     focused.current = null;
     if (!held.isConnected && focusOnDocument()) wentHolding.current = held;
   });
+  const countText = <span className="mr-1 font-semibold">{state ?? `${count} selected`}</span>;
   return (
     <div
       aria-label={label}
@@ -1149,11 +1155,11 @@ function DrawnBar({
         tabIndex={-1}
       >
         {countAction === undefined ? (
-          <span className="mr-1 font-semibold">{state ?? `${count} selected`}</span>
+          countText
         ) : (
           // The count's group: the count and what stands after it, which move as one.
           <span className="flex flex-wrap items-center gap-2">
-            <span className="mr-1 font-semibold">{state ?? `${count} selected`}</span>
+            {countText}
             {countAction}
           </span>
         )}

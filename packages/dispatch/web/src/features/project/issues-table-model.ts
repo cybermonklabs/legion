@@ -1,6 +1,7 @@
 import { rankItem, rankings } from "@tanstack/match-sorter-utils";
 import type { ColumnFiltersState } from "@tanstack/react-table";
 import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
+import { ALL_ROWS } from "../../components/Pager";
 import type { LayoutColumns } from "../../components/table-layout";
 import { copyAddress, type TableAddressView } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -32,7 +33,6 @@ export const ISSUE_LINK_ATTRIBUTE = "data-issue-link";
 export const tableStorageKey = (project: string) => `dispatch.project-table.${project}`;
 
 export const AGES = ["Today", "This week", "This month", "Older"] as const;
-export const ALL_ROWS = Number.MAX_SAFE_INTEGER;
 export const PAGE_SIZES = [25, 50, 100, 250, ALL_ROWS];
 /** The statuses an issue is being worked in, as the status bar counts them. */
 export const runningIssueStatuses: readonly IssueStatus[] = [

@@ -53,7 +53,6 @@ import {
   useIssueTableItems,
 } from "./issues-table-data";
 import {
-  ALL_ROWS,
   clearPicked,
   compareGroups,
   facetCounts,
@@ -118,9 +117,8 @@ const ISSUE_TABLE_NOUN: RowNoun = {
   one: "issue",
 };
 
-/** The line under the List: its page sizes, the one that means every row, and its test id. */
+/** The line under the List: its page sizes and its test id. */
 const ISSUE_TABLE_PAGER: PagerOptions = {
-  allRows: ALL_ROWS,
   pageSizes: PAGE_SIZES,
   testId: "issues-table-pager",
 };

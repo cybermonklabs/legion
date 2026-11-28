@@ -26,7 +26,9 @@ export const settingsFieldLabel = `grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1 
 /** A one-line field of a value: a value or a placeholder longer than the box ends in an ellipsis
  *  while the reader is not in it, rather than being cut at the box's edge with no sign. */
 export const settingsMonoInput = `rounded-md px-3 py-2 font-mono text-ellipsis ${inputClasses(false)} ${textPrimaryOnSurface}`;
-export const settingsSubmitButton = `min-h-11 rounded-md px-4 py-2 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-9 ${primaryButtonBg} ${primaryButtonHoverBg}`;
+/** A Settings form's submit button. The `refused:` variant (`styles.css`) paints it the same
+ *  whether it is `disabled` or held by `aria-disabled` (`held-press.ts`). */
+export const settingsSubmitButton = `min-h-11 rounded-md px-4 py-2 font-medium refused:cursor-not-allowed refused:opacity-50 md:min-h-9 ${primaryButtonBg} ${primaryButtonHoverBg}`;
 /** An `owner/repo` field's `pattern`: one slash between an owner and a name that hold neither a
  *  slash nor whitespace. Its slashes are escaped because browsers compile a `pattern` with the `v`
  *  flag, where an unescaped `/` inside a character class is a syntax error, and a `pattern` that
