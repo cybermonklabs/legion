@@ -3915,8 +3915,7 @@ printf '#!/bin/sh\ngo build ./cmd/app\n' > "$root/build.sh"
 replace "$root/.github/workflows/called.yaml" "$report_step" "$build_step$report_step"
 replace "$root/.github/ci-gates/called.app.py" 'text="go test ./lib"),' \
   'text="go test ./lib"), run("mod", ["./cmd/app"], "build.sh, run by " + at("called", "Build the app again", CALLED) + ": go build ./cmd/app", mode="build", source="build.sh", text="go build ./cmd/app"),'
-printf '      - name: Build the app again\n        run: echo again\n' > "$root.again"
-replace "$root/.github/workflows/called.yaml" "$report_step" "$(<"$root.again")"$'\n'"$report_step"
+add_called_step "$root" $'      - name: Build the app again\n        run: echo again'
 run_check "$root"
 check "fails while the Run cites another step" "$(is "$status" 1)"
 check "names the step and the gate of app on its job" \
@@ -4024,8 +4023,7 @@ shared_callers "$root" app image
 replace "$root/.github/workflows/ci.yaml" $'      job: called-b\n      enabled: \'true\'' \
   $'      job: called-b\n      enabled: ${{ needs.changes.outputs.image }}'
 shared_gate "$root" called-a ""
-replace "$root/.github/ci-gates/app.py" 'text="go test ./cmd/app ./lib"),' \
-  'text="go test ./cmd/app ./lib"), run("mod", ["./cmd/app"], "build.sh, run by " + at("app", "Build the app") + ": go build ./cmd/app", mode="build", source="build.sh", text="go build ./cmd/app"),'
+script_job "$root" build.sh "Build the app"
 replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$report_step"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
@@ -4250,13 +4248,13 @@ run_check "$root"
 check "passes once the Run cites that step" "$(is "$status" 0)"
 
 # A step two filters gate - its caller's on app and its own on build - must be cited by a Run in a
-# gate of each, since either can skip it: dispatch-two-builds-same's sizing step is one.
+# gate of each, since either can skip it: dispatch-two-builds-same's ceiling step is one.
 echo "case: a step two filters gate, cited by a Run of one gate alone"
 root=$(fixture script-step-two-filters)
 called_input_gate "$root"
 printf '#!/bin/sh\ngo build ./cmd/app\n' > "$root/build.sh"
-replace "$root/.github/workflows/ci.yaml" $'      image: ${{ steps.scope.outputs.every_job && \'true\' || steps.filter.outputs.image }}' \
-  $'      image: ${{ steps.scope.outputs.every_job && \'true\' || steps.filter.outputs.image }}\n      build: ${{ steps.scope.outputs.every_job && \'true\' || steps.filter.outputs.build }}'
+replace "$root/.github/workflows/ci.yaml" "$(every_job_output image)" \
+  "$(every_job_output image)"$'\n'"$(every_job_output build)"
 replace "$root/.github/workflows/called.yaml" $'    inputs:\n      app:' $'    inputs:\n      build:\n        type: string\n        required: true\n      app:'
 replace "$root/.github/workflows/called.yaml" "$report_step" \
   $'      - name: Build the app\n        if: inputs.build == \'true\'\n        run: sh build.sh\n'"$report_step"
@@ -4315,7 +4313,7 @@ for shape in output list; do
     "      - name: Build the app"$'\n'"        if: $condition"$'\n        run: sh build.sh\n'"$report_step"
   replace "$root/.github/workflows/ci.yaml" '      app: ${{ needs.changes.outputs.app }}' $'      app: ${{ needs.changes.outputs.app }}\n'"$passed"
   replace "$root/.github/ci-gates/called.app.py" $'        text="go test ./lib"),\n], step="Test the library"' \
-    $'        text="go test ./lib"),\n    run("mod", ["./cmd/app"], "build.sh, run by " + at("called", "Build the app", CALLED) + ": go build ./cmd/app", mode="build", source="build.sh", text="go build ./cmd/app"),\n], step="Test the library"'
+    $'        text="go test ./lib"),\n    '"$called_build_run"$',\n], step="Test the library"'
   run_check "$root"
   # The fixture can draw refusals of other rules besides, so the status alone says nothing of
   # rule 4: count rule 4's own refusals of the step.

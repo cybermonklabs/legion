@@ -46,8 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-import audited_scripts
-from audited_scripts import reading_of
+from audited_scripts import Unreadable, reading_of
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
 from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
@@ -302,8 +301,12 @@ def cited_in(why: str, index: dict) -> set:
     longer text of the index, which is the one at() wrote there. So `ci.yaml app "Build"` is not
     read inside `long+ci.yaml app "Build"`: the longer citation was made by at() too, and only
     at() makes one. The workflows are files of one directory, so a basename names one file."""
-    found = [(m.start(), m.start() + len(text), text) for text in index
-             for m in re.finditer(re.escape(text), why)]
+    found = []
+    for text in index:
+        end = 0
+        while (start := why.find(text, end)) != -1:
+            end = start + len(text)
+            found.append((start, end, text))
     kept = {text for start, end, text in found
             if not any(s <= start and end <= e and e - s > end - start for s, e, _ in found)}
     return set().union(*(index[text] for text in kept))
@@ -1598,27 +1601,35 @@ def script_lines(text: str) -> list:
     return [line for line in stripped if line and not line.startswith("#")]
 
 
+@functools.lru_cache(maxsize=None)
+def composite_steps(folder: Path) -> tuple[Path | None, tuple]:
+    """The action file in a resolved directory and the steps it defines if it is composite."""
+    action = next((folder / name for name in ("action.yml", "action.yaml") if (folder / name).is_file()), None)
+    if action is None:
+        return None, ()
+    runs = (load_repository_yaml(action) or {}).get("runs") or {}
+    return action, tuple(runs.get("steps") or ()) if runs.get("using") == "composite" else ()
+
+
 def step_texts(step: dict, seen=()):
-    """The texts rule 4 reads in a step: its run:, or each value of its with: and, for a composite
-    action of this repository (uses: ./<dir>), the texts of each of that action's steps, read the
-    same way. An action already on the path is not read again, and a missing one gives nothing."""
+    """The texts rule 4 reads: a step's run:, or its with: values and, for a local composite
+    action (uses: ./<dir>), the run: texts of its steps and of nested local composite actions.
+    Only the outer step's with: is read. An action already on the path is not followed again."""
     if "run" in step:
         yield str(step["run"])
         return
     if "uses" not in step:
         return
-    yield from (str(value) for value in (step.get("with") or {}).values())
+    if not seen:
+        yield from (str(value) for value in (step.get("with") or {}).values())
     uses = str(step["uses"])
     if not uses.startswith("./"):
         return
-    folder = (REPO / uses).resolve()
-    action = next((folder / name for name in ("action.yml", "action.yaml") if (folder / name).is_file()), None)
+    action, steps = composite_steps((REPO / uses).resolve())
     if action is None or action in seen:
         return
-    runs = (load_repository_yaml(action) or {}).get("runs") or {}
-    if runs.get("using") == "composite":
-        for inner in runs.get("steps") or []:
-            yield from step_texts(inner, seen + (action,))
+    for inner in steps:
+        yield from step_texts(inner, seen + (action,))
 
 
 SCRIPT_SEPARATORS = str.maketrans({char: " " for char in """'"=;&|()<>"""})
@@ -2138,9 +2149,9 @@ def check_script_steps(data, units: list, caller_jobs: dict, inputs_of: dict,
                                                     f"covers it (a gate of {f} on job {own}), so that filter is held to "
                                                     f"nothing the script compiles there; add a gate of {f} on job {own} "
                                                     f"with a Run of the script whose why cites the step with at()"))
-                    elif any(shared & c for c in cites):
+                    elif (hit := set().union(*cites) & shared):
                         problems.append(error(path, f"{where} runs {script}, and a Run of it in gate {f} on job {own} "
-                                                    f"cites the step only as \"{sorted(shared)[0][2]}\", which more than "
+                                                    f"cites the step only as \"{sorted(hit)[0][2]}\", which more than "
                                                     f"one step of the job answers to, so it declares none of them; cite "
                                                     f"each step by its own id: or run: text"))
                     else:
@@ -2891,7 +2902,7 @@ def tag_run_steps(documents: dict) -> tuple[list, list]:
             for step in (job or {}).get("steps") or []:
                 try:
                     lines = step_go_lines(document, job or {}, step)
-                except audited_scripts.Unreadable as why:
+                except Unreadable as why:
                     unreadable.append((path, name, step, str(why)))
                     continue
                 if any(all(flag.search(line) for flag in TAG_RUN_FLAGS) for line in lines):
@@ -2955,7 +2966,7 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
         # go test line, so a --dry-run in a script's own echo, or a -run in its header, is none.
         try:
             ran = step_go_lines(documents.get(entry.workflow) or {}, job, steps[0])
-        except audited_scripts.Unreadable as why:
+        except Unreadable as why:
             problems.append(error(".github/scripts/ci_job_reads.py", f"TAG_RUNS names {where}, whose run: {why}; this rule "
                                                                       f"reads what a step runs only in those forms, so it cannot tell "
                                                                       f"whether that step passes -run: run the script as its entry reads "
