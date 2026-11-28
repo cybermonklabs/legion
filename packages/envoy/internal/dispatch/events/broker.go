@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -138,12 +139,33 @@ type ownerLastSeqPayload interface {
 	WithOwnerLastSeq(seq int) any
 }
 
+// ownerClosedAtPayload is an issue.closed payload that carries its issue's row
+// (model.IssueEventPayload). A close stamps the row's closed_at again in its write phase, after it
+// read the row back and so after its payload was built (api/issue_patch.go). That stamp is the
+// database's clock when the statement runs, which no writer knows in Go before the batch has run.
+// So the insert takes closed_at from the row as the close's earlier statements left it
+// (ownerClosedAtJSON), as it takes last_seq, and the payload records the stamp that the row keeps.
+type ownerClosedAtPayload interface {
+	WithOwnerClosedAt(closedAt *time.Time) any
+}
+
+// ownerClosedAtJSON is the closed_at of the event's issue row, as the insert reads it, as a JSON
+// value: JSON null where the row holds none, and else the time as encoding/json writes a
+// time.Time in UTC (time.RFC3339Nano). That is the fraction without its trailing zeros, no
+// fraction for a whole second, and the zone as Z. A reader that compares the payload's text with
+// a time that Dispatch wrote in Go, as a client compares two stamps, so reads the same text.
+const ownerClosedAtJSON = `coalesce((
+				select to_jsonb(to_char(c.at, 'YYYY-MM-DD"T"HH24:MI:SS') || rtrim(rtrim(to_char(c.at, '.US'), '0'), '.') || 'Z')
+				from (select closed_at at time zone 'UTC' as at from issues where key = $1) c),
+				'null'::jsonb)`
+
 // QueueAppend queues e's append on a write phase's batch: its owner's lock and row
 // (lockEventOwner), which take the transaction's id, and the insert, which takes the next sequence
 // from the owner row as it stands when the insert runs and advances the row's last_seq (and an
 // issue's updated_at) to the row it inserted, in the same statement. An ask.opened event's payload
 // then records the event's own id (opened_event_id) through the id sequence's currval, the id the
-// insert just took. So no value of one statement is read in Go before the next one is sent.
+// insert just took, and an issue.closed's payload takes closed_at from its issue's row
+// (ownerClosedAtPayload). So no value of one statement is read in Go before the next one is sent.
 // appended receives the event as written - its id, sequence, time, the owner's project and the
 // payload as stored - once the batch has read those statements' results, before any statement
 // queued after them is read. A statement queued right after these may name the event's id as
@@ -203,7 +225,9 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	// last_event_at_seq (20261125143901), in the same statement, so the pair names last_seq's own
 	// event wherever this release wrote last_seq, and the priorities read takes its newest event
 	// from the row (api's priorityReadQuery). It takes no statement and no lock of its own.
-	storedPayload, storedLogins := `$6`, `null::jsonb`
+	// An issue.closed that carries its issue's row takes closed_at from that row in the same
+	// snapshot too (ownerClosedAtPayload), and reads back the value its payload stores.
+	storedPayload, storedLogins, storedClosedAt := `$6`, `null::jsonb`, `null::timestamptz`
 	args := []any{e.IssueKey, e.ArtifactID, e.ProjectKey, e.Type, actor, payload, e.Notify}
 	if logins != nil {
 		loginsSQL, loginsArgs := logins.SQL(8)
@@ -214,11 +238,17 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	if _, carriesOwnerSeq := e.Payload.(ownerLastSeqPayload); carriesOwnerSeq {
 		storedPayload = `jsonb_set(` + storedPayload + `, '{last_seq}', to_jsonb(` + nextOwnerSeq + `))`
 	}
+	_, takesClosedAt := e.Payload.(ownerClosedAtPayload)
+	takesClosedAt = takesClosedAt && e.Type == "issue.closed"
+	if takesClosedAt {
+		storedPayload = `jsonb_set(` + storedPayload + `, '{closed_at}', ` + ownerClosedAtJSON + `)`
+		storedClosedAt = `(payload->>'closed_at')::timestamptz`
+	}
 	batch.Queue("", `
 		with appended as (
 			insert into events (issue_key, artifact_id, project_key, seq, type, actor, payload, notify)
 			values ($1, $2, $3, `+nextOwnerSeq+`, $4, $5, `+storedPayload+`, $7)
-			returning id, seq, created_at, `+storedLogins+` as thread_logins
+			returning id, seq, created_at, `+storedLogins+` as thread_logins, `+storedClosedAt+` as closed_at
 		), issue as (
 			update issues set last_seq = appended.seq, last_event_at = appended.created_at, last_event_at_seq = appended.seq,
 				updated_at = greatest(issues.updated_at, appended.created_at)
@@ -228,10 +258,11 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 		), project as (
 			update projects set last_seq = appended.seq from appended where projects.key = $3
 		)
-		select id, seq, created_at, thread_logins from appended
+		select id, seq, created_at, thread_logins, closed_at from appended
 	`, args...).QueryRow(func(row pgx.Row) error {
 		var threadLogins []string
-		if err := row.Scan(&event.ID, &event.Seq, &event.CreatedAt, &threadLogins); err != nil {
+		var closedAt *time.Time
+		if err := row.Scan(&event.ID, &event.Seq, &event.CreatedAt, &threadLogins, &closedAt); err != nil {
 			return fmt.Errorf("insert event: %w", err)
 		}
 		if logins != nil {
@@ -247,6 +278,11 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 		// the payload's type, so it is read here after it.
 		if carrier, ok := event.Payload.(ownerLastSeqPayload); ok {
 			event.Payload = carrier.WithOwnerLastSeq(event.Seq)
+		}
+		// And an issue.closed carries the closed_at its stored payload records, read back from
+		// that payload (ownerClosedAtPayload), after the two swaps above, which keep its type.
+		if carrier, ok := event.Payload.(ownerClosedAtPayload); ok && takesClosedAt {
+			event.Payload = carrier.WithOwnerClosedAt(closedAt)
 		}
 		if event.Type != "ask.opened" {
 			appended(*event)
@@ -429,7 +465,10 @@ func lockEventOwner(batch *store.WriteBatch, e *model.Event) {
 // Quiet reports whether an event carries nothing for a reader that follows its owner topic: a
 // delivery receipt, an anchor refresh, settings or per-viewer bookkeeping, a targeted message the
 // session it names already had through the synchronous listener send, an ask edit that only moved
-// the version it names, or a document version nobody named.
+// the version it names, a document version nobody named, or an issue update that moved only the
+// priority the issue resolves to or the issue that priority comes from: a write to another issue
+// above it appends that one, which asks nobody anything and which one write appends on every issue
+// under it that takes its priority from it.
 //
 // It is the half of Notify that does not depend on who acted, and it is what the outbox puts on
 // the wire (`quiet`), because the two answer different questions. Notify answers whether to wake
@@ -448,6 +487,21 @@ func Quiet(e model.Event) bool {
 		}
 	}
 	switch e.Type {
+	case "issue.updated":
+		// A write to one issue that moves what it passes down to the issues under it that take
+		// their priority from it - a change or a clear of its own priority, a move, a detach -
+		// appends one issue.updated on each of them whose changed names resolved_priority,
+		// priority_from or both, and nothing else (J3 of dispatch://INFRA-5793). Nobody asked those
+		// issues anything and nobody on them did anything, and one write can append thousands of
+		// them, so they wake no route, claimant or author and no follower is shown them. The
+		// readers that keep an issue's resolved priority, the Legion daemon and the delivery live
+		// hub, read every event whatever Quiet says, and the daemon tells this event apart by the
+		// same test (resolvedOnly in packages/daemon/internal/intake/decode.go). No other
+		// issue.updated names only those fields: the written issue's own event names at least the
+		// field its write moved, and one whose write moved no value names none, which is not quiet.
+		if resolvedPriorityOnly(e.Payload) {
+			return true
+		}
 	case "comment.anchor_refreshed", "ask.anchor_refreshed":
 		// Refresh is a document mutation side effect, not a human addressing its
 		// author. Retain it for every stream consumer without waking anyone.
@@ -527,8 +581,8 @@ func namedVersion(payload any) bool {
 // Quiet is asked of one event from two payload shapes, and must answer the same for both: at
 // append time (Broker.Notify) the payload is the typed value the caller built, and at publish
 // time it is the event the outbox scanned out of Postgres, whose payload JSON decodes into a
-// map[string]any (outbox/batch_read.go, readRows). quietAskEdit and namedVersion read
-// their field the same way.
+// map[string]any (outbox/batch_read.go, readRows). quietAskEdit, namedVersion and
+// resolvedPriorityOnly read their field the same way.
 func targetedMessage(payload any) bool {
 	switch message := payload.(type) {
 	case model.MessageEventPayload:
@@ -556,6 +610,46 @@ func quietAskEdit(payload any) bool {
 	default:
 		return false
 	}
+}
+
+// resolvedPriorityOnly reports whether an issue event's changed is not empty and names only
+// resolved_priority and priority_from, from either payload shape, as targetedMessage reads its
+// field: the typed model.IssueEventPayload at append time and the map the outbox decodes at
+// publish time.
+func resolvedPriorityOnly(payload any) bool {
+	switch update := payload.(type) {
+	case model.IssueEventPayload:
+		if len(update.Changed) == 0 {
+			return false
+		}
+		for _, field := range update.Changed {
+			if !resolvedPriorityField(field) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		// Changed is omitzero, so the decoded field is absent from an event that names none, and a
+		// list of strings otherwise. An entry that is no string matches neither field.
+		names, _ := update["changed"].([]any)
+		if len(names) == 0 {
+			return false
+		}
+		for _, name := range names {
+			if field, _ := name.(string); !resolvedPriorityField(field) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// resolvedPriorityField reports whether field is one of the two an issue event names where the
+// priority the issue resolves to, or the issue it comes from, moved.
+func resolvedPriorityField(field string) bool {
+	return field == "resolved_priority" || field == "priority_from"
 }
 
 // Subscribe returns a committed-event stream and a cancellation function.

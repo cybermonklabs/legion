@@ -18,6 +18,7 @@ import type {
 import { PAGE_COLORS } from "../../theme/classes";
 import { ProofDocument } from "../doc/ProofDocument";
 import { DocumentRuntime } from "../doc/runtime";
+import { issuePriority } from "../issue/issue-priority";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { MarginProvider } from "../margin/margin-context";
 import { NoTooltips } from "./NoTooltips";
@@ -402,7 +403,7 @@ export const idlePriorityWrite: IssuePriorityWrite = {
   failed: false,
   pending: false,
   retry: () => undefined,
-  shown: null,
+  shown: issuePriority({ priority: null }),
   stopped: undefined,
   submit: () => undefined,
 };

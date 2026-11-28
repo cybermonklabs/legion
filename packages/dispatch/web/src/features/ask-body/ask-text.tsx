@@ -72,8 +72,9 @@ export type TextMarks = Pick<PageWords, "authorText" | "pageChrome">;
 
 /** Whose colours the ask body's children and its settled record draw (`AskBodyProps.palette`):
  *  `main`'s, as every surface of today's pages and the Inbox draws them, or the new issue page's
- *  (`theme/classes.ts`' page tokens, dispatch://INFRA-3940 R13). Dashboard on the new page hands
- *  `page`; every other host hands none. */
+ *  (`theme/classes.ts`' page tokens, dispatch://INFRA-3940 R13). Dashboard on the new page and
+ *  Threads' opened record (`issue-page/threads/ThreadRecord.tsx`, through `DashboardAskBody`)
+ *  hand `page`; the other hosts hand none. */
 export type AskPalette = "main" | "page";
 
 /** `value` inside the mark of a value, where the host hands the marks, and as it is where it

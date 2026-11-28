@@ -118,6 +118,8 @@ export function issueAsk(
     state: "open",
     waiting_on: "human",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     snoozed_until: null,
     urgency: "med",
     ...overrides,

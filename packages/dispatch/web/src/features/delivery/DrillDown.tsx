@@ -24,9 +24,9 @@ import {
 import { AgentName } from "../refs/AgentName";
 import { buildIssuePath } from "../refs/routes";
 import { useDialog } from "../shell/useDialog";
-import { NO_COMPONENT, NO_ISSUE, NO_PRIORITY, NO_SESSION, PLACEHOLDER_LABELS } from "./lib/facets";
+import { NO_COMPONENT, NO_ISSUE, NO_SESSION, PLACEHOLDER_LABELS } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";
-import { leadTimeMinutes } from "./lib/prList";
+import { issuePriorityLabel, leadTimeMinutes } from "./lib/prList";
 import { storedSessionTitle } from "./lib/sessionTitles";
 import type { TimelineSelection } from "./Timeline";
 
@@ -90,11 +90,8 @@ function PRDetail({
           )}
         </dd>
         <dt className={textMutedOnSurface}>Priority</dt>
-        <dd>
-          {pr.issue === null
-            ? PLACEHOLDER_LABELS[NO_ISSUE]
-            : (pr.priority ?? PLACEHOLDER_LABELS[NO_PRIORITY])}
-        </dd>
+        {/* The words the list's Issue cell says, the source of an inherited one as text. */}
+        <dd>{issuePriorityLabel(pr)}</dd>
         <dt className={textMutedOnSurface}>Components</dt>
         <dd>{componentText}</dd>
         <dt className={textMutedOnSurface}>Parent agent(s)</dt>

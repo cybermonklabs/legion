@@ -22,6 +22,7 @@ import (
 // call takes decides any of it. The negative controls: a hold that returns without the lock fails
 // the try; a release that does not let the lock go fails the publish's return.
 func TestHoldWriteLockReturnsHoldingTheConnectionLock(t *testing.T) {
+	t.Parallel()
 	for _, form := range []struct {
 		name string
 		hold func(*HandshakeHold, testing.TB, *natsgo.Conn) func()
@@ -75,6 +76,7 @@ func TestHoldWriteLockReturnsHoldingTheConnectionLock(t *testing.T) {
 // Connect does, until the end of its wait (until, testDeadline), which makes a connect that failed
 // again, each dial carrying that end as its socket's deadline (socketDialer, endDialer).
 func TestHoldStalledWriteHoldsTheLockWithAWriteTheSocketsCloseEnds(t *testing.T) {
+	t.Parallel()
 	RequireSocketQueues(t)
 	for _, stalled := range []bool{true, false} {
 		name := "HoldStalledWrite"
@@ -167,6 +169,7 @@ const holdChildGuard = 2 * time.Minute
 // and passes its URL to the child, so a server whose start is slow costs the parent time and not
 // the child.
 func TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
+	t.Parallel()
 	uri := URL(t)
 	stdout, stderr, err := testwait.RunChild(t, os.Args[0], holdChildGuard, "^TestTakeWriteLockOnAHooksGoroutineChild$", holdChildEnv+"="+uri)
 	text := stdout + stderr
@@ -195,6 +198,7 @@ func TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
 // its hook calls gives up at its first question. It runs only when the parent re-executes this
 // binary.
 func TestTakeWriteLockOnAHooksGoroutineChild(t *testing.T) {
+	t.Parallel()
 	uri := os.Getenv(holdChildEnv)
 	if uri == "" {
 		t.Skip(holdChildEnv + " is not set: this test is the child of TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns")
@@ -242,6 +246,7 @@ func TestTakeWriteLockOnAHooksGoroutineChild(t *testing.T) {
 //   - Under the hold, a client that sends its CONNECT closes the channel, and is counted as one
 //     more dial and one attempt.
 func TestAHoldCountsAnAttemptAtItsConnectNotAtItsDial(t *testing.T) {
+	t.Parallel()
 	_, uri := Start(t)
 	hold := StartHandshakeHold(t, uri)
 	const connect = "CONNECT {\"verbose\":false,\"pedantic\":false}\r\n"

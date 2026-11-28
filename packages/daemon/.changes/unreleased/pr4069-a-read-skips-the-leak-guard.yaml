@@ -12,7 +12,7 @@ body: |-
   Each option is its own word and each value the next word, neither empty nor beginning with
   `-`, so `--repo=o/r`, `-q.x`, `-XGET`, `-cw` and `--` are outside it. A read typed any other
   way gets the whole guard, as before. The rule, which admits only what the shared check also
-  reads as a read, is `ghWritesNothing` in `packages/daemon/cmd/legion/gh_reads.go`.
+  reads as a read, is `writesNothing` in `packages/daemon/internal/ghroute/reads.go`.
   The guard skips only under the shared check that rule was proven against, the one the worker
   image pins, which it tells by the sha256 of its `public_leak_check.py`; under any other check,
   a tmux pane's of another version included, every call gets the whole guard as before. gh runs

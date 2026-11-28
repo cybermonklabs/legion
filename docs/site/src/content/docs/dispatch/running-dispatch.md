@@ -36,7 +36,7 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 | Need | Setting | Notes |
 | --- | --- | --- |
 | Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. Dispatch also refuses a URL holding an `@` after its user name and password, naming the variable alone: write each `@` in a password, a user name or a query value as `%40`, and a `/` in a password as `%2F`. A database name holding an `@` is refused however it is written. |
-| A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
+| A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents; agents normally sign in through the secrets broker, as a person's sign-in on a box (`agent-secrets login`) or a Dispatch sign-in its person approves for chosen scopes (`dispatch login --device --scope`), and otherwise use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
 | Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. [Signing people in](#signing-people-in) covers both. |
 | The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. |
 | The GitHub App | `DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64` | `DISPATCH_APP_PEM_B64` holds the App's private key as the PEM GitHub gives or the base64 of that PEM; a key that does not parse stops boot. Without the App the server starts, but the web app's GitHub reads answer `503` and architecture sources cannot be saved. |
@@ -70,7 +70,7 @@ People sign in through a Cognito sign-in pool or with Google directly by default
 names each person by their lowercase email. `DISPATCH_IDENTITY=iap` names people from the
 assertion Google Cloud's Identity-Aware Proxy signs instead
 ([Behind Identity-Aware Proxy](#behind-identity-aware-proxy)).
-`DISPATCH_IDENTITY=header:<Header-Name>` names people by a request header; it is for
+`DISPATCH_IDENTITY=header:X-Dispatch-User` names people by the `X-Dispatch-User` header; it is for
 tests and local harnesses only, needs `DISPATCH_IDENTITY_HEADER_TRUSTED=1`, and refuses every
 `DISPATCH_SIGNIN_*` setting. Serve Dispatch over HTTPS. `DISPATCH_INSECURE_COOKIE=1` is only for
 trying it over plain HTTP on your own machine.

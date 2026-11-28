@@ -12,6 +12,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).listResidentRooms,
 	TestHook:    true,
 	// The test hooks' GET rows, which read this process's memory.
-	Read:  readEntry{Writes: readWritesNothing},
+	Read:  readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{Status: http.StatusOK, Response: residentRooms{}},
 })

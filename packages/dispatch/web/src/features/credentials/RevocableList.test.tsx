@@ -93,11 +93,13 @@ const sections: Section[] = [
           {
             approved_by: "ada@example.com",
             credential_id: "cred-devbox",
+            dispatch_scopes: null,
             expired: false,
             expires_at: "2026-10-10T12:00:00Z",
             host: "devbox.example.com",
             issued_at: "2026-10-03T12:00:00Z",
             person: null,
+            reason: "",
             service: null,
             subject: null,
           },

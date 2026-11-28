@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"time"
@@ -19,32 +18,19 @@ const testDeadlineEnv = "LEGION_CMD_TEST_DEADLINE"
 // test's alarm panics the binary. It is testwait.Receive's, and programbound's.
 const testBoundMargin = 30 * time.Second
 
-// testBinaryDeadline is the deadline go test's -timeout gives this binary, reckoned from now, and
-// false under -timeout 0, which gives none. TestMain calls it before m.Run, which starts its own
-// alarm a moment later, so this deadline is never the later of the two.
-func testBinaryDeadline() (time.Time, bool) {
-	if !flag.Parsed() {
-		flag.Parse()
-	}
-	timeout := flag.Lookup("test.timeout").Value.(flag.Getter).Get().(time.Duration)
-	if timeout <= 0 {
-		return time.Time{}, false
-	}
-	return time.Now().Add(timeout), true
-}
-
 // boundByTheDeadline gives every bound legion registers with programbound, each beside its
 // declaration, what is left of deadline less 30 s when its wait starts, in this process and in
-// each run of this binary as `legion` whose environment is this process's own (testDeadlineEnv).
-// Each product bound fits the real program or service, and none is what a test here reads: each
-// is all the time a stand-in has to start and answer, and a loaded machine makes starts slow.
-// At a box load of about 1,100 a git behind a one-line script ran out
-// ghGitReadBound's 30 s in TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit, and at a load average of
-// 744 a run of this binary as `legion gh` reached the stand-in gh after visibilityAnswerBound's
-// 15 s in TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead. A program that never answers still
-// fails its row by name before the binary's deadline, however late in the run its wait starts. A
-// test that reads a bound's own stop sets that bound itself, and a bound a test has set keeps that
-// test's value.
+// each run of this binary as `legion` whose environment is this process's own (testDeadlineEnv),
+// which legionBuild also links into the `legion` it builds. TestMain passes it this binary's own
+// deadline (testwait.BinaryDeadline). Each product bound fits the real program or service, and
+// none is what a test here reads: each is all the time a stand-in has to start and answer, and a
+// loaded machine makes starts slow. At a box load of about 1,100 a git behind a one-line script
+// ran out ghroute.GitReadBound's 30 s in TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit, and at a
+// load average of 744 a run of this binary as `legion gh` reached the stand-in gh after
+// visibilityAnswerBound's 15 s in TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead. A program
+// that never answers still fails its row by name before the binary's deadline, however late in
+// the run its wait starts. A test that reads a bound's own stop sets that bound itself, and a
+// bound a test has set keeps that test's value.
 func boundByTheDeadline(deadline time.Time) error {
 	programbound.SetDeadline(deadline)
 	return os.Setenv(testDeadlineEnv, deadline.Format(time.RFC3339Nano))

@@ -17,6 +17,7 @@ import (
 // those closes while the later clients connect, and a single read of its Connz then can leave a
 // closed one out, or name it twice (Connections says why).
 func TestConnectionsNamesEachConnectionTheServerTookOnce(t *testing.T) {
+	t.Parallel()
 	server, uri := Start(t)
 	const clients, closed = 5, 3
 	for i := range clients {
@@ -51,6 +52,7 @@ func TestConnectionsNamesEachConnectionTheServerTookOnce(t *testing.T) {
 // the leaf would never settle. The hub's leaf listener is at a loopback address of its own
 // (testport.LoopbackIP), as every listener of a server this package starts is.
 func TestConnectionsLeavesALeafNodeOut(t *testing.T) {
+	t.Parallel()
 	hub := start(t, fmt.Sprintf("leafnodes { listen: %q }\n", net.JoinHostPort(testport.LoopbackIP().String(), "-1")), nil)
 	srv := hub.natsServer()
 	varz, err := srv.Varz(nil)
