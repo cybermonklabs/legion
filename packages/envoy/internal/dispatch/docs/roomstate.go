@@ -115,6 +115,11 @@ type roomState struct {
 	// arms.
 	liveWriter     *liveWrite
 	settleDeferred bool
+	// coldPublished is set when a write to the document no room held armed its settlement from its
+	// publish (publishLiveWrite) and cleared when a later write's publish loads the room. A write
+	// that opens while that settlement is still owed (openLiveWrite) is the next of a run of such
+	// writes (liveWrite.followsUnsettled).
+	coldPublished bool
 	// settleWarming is set while a settlement loads the room it is about to settle, so that load
 	// arms no second settlement for the document's pending-settlement row (onLoadDocument).
 	settleWarming bool

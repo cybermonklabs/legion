@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A run of writes to a document that no browser has open, and that this server process holds no
+  room for (an agent's edits one after another, or comments anchored in its text one after
+  another), no longer reads and decodes the document's whole stored history on every write. The
+  run's second write now loads the document's room, and the writes after it are made on that room,
+  so a write's cost no longer grows with the writes before it. Before, the room loaded only when
+  the document's settlement ran, which every write of the run put off again. On a spec of 1,393
+  requirements, the mark of each of comments 2,201 to 2,400 took 512 ms that way, against 45 ms on
+  the room. A single write still loads no room.
+time: 2026-11-28T03:00:00Z
+custom:
+    Issue: INFRA-1253
