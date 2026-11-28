@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // While a fix of a task reads its job or runs, each other step of the task pushes its commits to a
@@ -328,58 +327,4 @@ func besideWorkSentence(issue string, generation uint64, task string, fix int) s
 	}
 	return fmt.Sprintf(" The commits of fix %d and of each step beside it, where they pushed them, are on the branches under %s on GitHub. The fix's own is %s. "+
 		"Legion keeps them until no step of the task can run again.", fix, prefix, own)
-}
-
-// besideStepSentence is what the task of a step that starts beside a fix says of it (fixLines),
-// from the start's facts (startFacts): the fix runs, its failure is the fix's, and, where the step
-// has a branch of its own (facts.Branch, "" for the reviewer, which creates no commit), that it
-// pushes only there, names that branch and its commits in its report, records each result at the
-// pull request's head, and what it does where GitHub refuses the push; and, where the daemon holds a
-// push of that branch (facts.Pushed), where those commits stand for a new pod. No text names a ref
-// the daemon holds no push of.
-func besideStepSentence(facts startFacts) string {
-	sentence := fmt.Sprintf(" A fix of this task runs: check %s failed at %s. Leave that failure to the fix.", facts.Check, facts.Head)
-	if facts.Branch == "" {
-		return sentence
-	}
-	sentence += pushBesideSentence(facts.Branch) + recordAtHead(facts.Head)
-	if facts.Pushed != "" {
-		sentence += fmt.Sprintf(" Your pushed commits are on %s at %s: on a new pod, run jj -R \"$LEGION_WORKSPACE\" git fetch --remote origin --branch %s first and go on at %s@origin.",
-			facts.Branch, facts.Pushed, facts.Branch, facts.Branch)
-	}
-	return sentence
-}
-
-// pushBesideSentence is the sentence that tells a step beside a fix where it pushes until its step
-// ends: to branch, its own branch beside the fix, with the command that pushes there
-// (workspace.BesidePushCommand), never to the task's branch, naming that branch and each commit in
-// its report.
-func pushBesideSentence(branch string) string {
-	return fmt.Sprintf(" Until your step ends, push nothing to the branch of the task: push your commits to your own branch %s with %s, and name that branch and each commit in your report.",
-		branch, workspace.BesidePushCommand(branch))
-}
-
-// recordAtHead is the two sentences a step beside a fix that pushes is told of where it records
-// and what it does where GitHub refuses its push: each result, and its head, at head, the pull
-// request's, never at a commit of its own branch.
-func recordAtHead(head string) string {
-	return fmt.Sprintf(" Record each result, and name your head, at %s, the head of the pull request, never at a commit of your own branch, where a result counts for nothing.", head) +
-		refusedPushSentence
-}
-
-// refusedPushSentence is what a step beside a fix does where GitHub refuses the push to its own
-// branch: it pushes nothing else, and names each commit by its id, with GitHub's answer.
-const refusedPushSentence = " If GitHub refuses that push, push nothing else, and name each commit by its id, with GitHub's answer, in your report."
-
-// keptSentence is what the task of a step that a way 2 runs again says of its kept branch beside
-// the fix (fixLines), from the start's facts (startFacts, Kept): the fix ended, and the commits the
-// step pushed to its own branch while the fix ran stay there, at the pushed head, kept by the way.
-// The step takes first, by ancestry, those of them that the task's branch taskBranch does not hold
-// (workspace.KeptTakeCommands), since the fix's end push took some as they are, and a take run
-// again on a resumed turn takes nothing more; then it pushes to the task's branch as its task says.
-func keptSentence(facts startFacts, taskBranch string) string {
-	return fmt.Sprintf(" Fix %d of this task ended at %s, and the steps after it run again. Your own branch %s keeps the commits you pushed there beside the fix, at %s. "+
-		"Take first those of them that the branch of the task does not hold: run %s. "+
-		"That puts them under your working copy as they are, and a run of it again changes nothing; never rebase or rewrite one. Then push to the branch of the task as this task says.",
-		facts.Fix, facts.Head, facts.Branch, facts.Pushed, strings.Join(workspace.KeptTakeCommands(facts.Branch, taskBranch), ", then "))
 }
