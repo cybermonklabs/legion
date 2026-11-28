@@ -46,8 +46,12 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	adminURL = WithConnectDeadline(t, adminURL)
 	server, err := url.Parse(adminURL)
 	if err != nil {
-		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
-		t.Fatalf("parse the admin URL of the Postgres server: %v", errors.Unwrap(err))
+		// WithConnectDeadline already parsed adminURL, failing the test on a URL that does not
+		// parse, so this parse of the URL it returned does not fail. Were it to, no part of it is
+		// printed: url.Parse's error quotes the URL, and even the error it wraps can (an invalid
+		// port's quotes what follows the authority's last colon, which for a password holding an
+		// unescaped '#', '/' or '?' is the password's first part).
+		t.Fatal("the admin URL of the Postgres server does not parse")
 	}
 	name, err := newDatabaseName(prefix)
 	if err != nil {
@@ -140,8 +144,8 @@ func otherPairs(rawQuery string, names ...string) []string {
 // replaced. Where t names no deadline (ConnectEnd says which callers) it is
 // NoDeadlineConnectTimeout, two minutes. Every other pair of the query is kept byte for byte
 // (otherPairs), as databaseURL keeps them, so an options pair still connects. It is WithConnectEnd
-// with t's ConnectEnd, and fails t with WithConnectEnd's error, which prints only what url.Parse
-// wraps, since the URL carries a credential.
+// with t's ConnectEnd, and fails t with WithConnectEnd's error, a fixed text that prints nothing of
+// the URL, since the URL carries a credential.
 func WithConnectDeadline(t testing.TB, databaseURL string) string {
 	t.Helper()
 	end, bounded := ConnectEnd(t)
@@ -156,12 +160,13 @@ func WithConnectDeadline(t testing.TB, databaseURL string) string {
 // names the end its connects must end by instead (testwait.MainGiveUpAt): it returns databaseURL
 // with connect_timeout set to the whole seconds left until end (TimeoutUntil), or to
 // NoDeadlineConnectTimeout without bounded, in place of any connect_timeout the URL names, and
-// keeps every other pair of the query byte for byte. Its error carries only what url.Parse wraps,
-// never the URL, which carries a credential.
+// keeps every other pair of the query byte for byte. Its error on a URL that does not parse is a
+// fixed text that carries nothing of the URL: url.Parse's error quotes the URL, and the error it
+// wraps can quote the part of it that holds the password.
 func WithConnectEnd(databaseURL string, end time.Time, bounded bool) (string, error) {
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		return "", fmt.Errorf("parse the URL of the test database: %w", errors.Unwrap(err))
+		return "", errors.New("the URL of the test database does not parse")
 	}
 	parsed.RawQuery = strings.Join(append(otherPairs(parsed.RawQuery, "connect_timeout"), "connect_timeout="+connectTimeout(end, bounded)), "&")
 	return parsed.String(), nil
