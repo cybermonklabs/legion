@@ -159,9 +159,14 @@ type citationFiles struct {
 func (r citationRun) write(t *testing.T) citationFiles {
 	t.Helper()
 	root := t.TempDir()
-	f := citationFiles{root: root, repo: filepath.Join(root, "repo"), changed: filepath.Join(root, "changed.txt"),
-		reports: filepath.Join(root, "reports"), needs: filepath.Join(root, "needs.json"), json: filepath.Join(root, "out", "faults.json")}
-	f.dir = filepath.Join(f.repo, ".dispatch", "spec")
+	return r.writeFlags(t, root, r.writeRepo(t, filepath.Join(root, "repo")))
+}
+
+// writeRepo writes the run's git repository at repo, with its base and head commits, and answers
+// where it is, with no file of the flags (writeFlags).
+func (r citationRun) writeRepo(t *testing.T, repo string) citationFiles {
+	t.Helper()
+	f := citationFiles{repo: repo, dir: filepath.Join(repo, ".dispatch", "spec")}
 	copyCitationsRepo(t, f.repo, r.spec)
 	script, baseScript := filepath.Join(f.repo, ".github", "scripts", "go-test-reads.sh"), r.baseScript
 	if baseScript == nil {
@@ -171,6 +176,17 @@ func (r citationRun) write(t *testing.T) citationFiles {
 	f.base = commitAll(t, f.repo, "", "base")
 	writeScript(t, script, r.script)
 	f.head = commitAll(t, f.repo, f.base, "head")
+	return f
+}
+
+// writeFlags writes the files of the run's flags in root, a directory of the test's own:
+// changed.txt, whose base line names the base commit of f, the reports/ tree and needs.json; and
+// answers f with them, and with out/faults.json there as the --json file. Runs over one repository
+// each write their own (TestCitationsStatedLimitAForgedRun).
+func (r citationRun) writeFlags(t *testing.T, root string, f citationFiles) citationFiles {
+	t.Helper()
+	f.root, f.changed, f.reports = root, filepath.Join(root, "changed.txt"), filepath.Join(root, "reports")
+	f.needs, f.json = filepath.Join(root, "needs.json"), filepath.Join(root, "out", "faults.json")
 	writeFile(t, f.changed, []byte("base "+f.base+"\n"+r.changed))
 	if r.reports != nil {
 		if err := os.Mkdir(f.reports, 0o755); err != nil {
@@ -761,9 +777,11 @@ func TestCitationsSeesAChangedSubmodule(t *testing.T) {
 // lines with no marker do the same. Each report is a real one, made here by `go test -json
 // -count=1 -run '^TestPrinter$' ./a` over a copy of testdata/citations/repo with a test TestPrinter
 // added, which prints TestA's two lines, with the marker when PRINT_TESTA is marked and with none
-// when it is plain; the -run pattern leaves TestA out. The controls: TestPrinter quiet, and the
-// plain lines under go test -json alone, where they are output; the report does not hold TestA,
-// and the check is refused.
+// when it is plain; the -run pattern leaves TestA out. The rows share one copy, whose test go
+// builds once before they start, so the go test of each row takes that build from go's cache:
+// neither go test nor the binary writes in the copy, and each row writes its own reports, needs
+// and --json file (writeFlags). The controls: TestPrinter quiet, and the plain lines under go test
+// -json alone, where they are output; the report does not hold TestA, and the check is refused.
 func TestCitationsStatedLimitAForgedRun(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -775,6 +793,16 @@ func TestCitationsStatedLimitAForgedRun(t *testing.T) {
 		"\tcase \"marked\":\n\t\tfmt.Print(\"\\x16=== RUN   TestA\\n\\x16--- PASS: TestA (0.00s)\\n\")\n" +
 		"\tcase \"plain\":\n\t\tfmt.Print(\"=== RUN   TestA\\n--- PASS: TestA (0.00s)\\n\")\n\t}\n}\n"
 	const notRun = "test-not-run: no base commit, and go-checks did not run example.com/citations/a TestA (its report does not hold it)"
+	r := newCitationRun()
+	r.allChanged = true
+	shared := r.writeRepo(t, filepath.Join(t.TempDir(), "repo"))
+	writeFile(t, filepath.Join(shared.repo, "a", "printer_test.go"), []byte(printer))
+	build := exec.Command("go", "test", "-count=1", "-run", "^$", "./a")
+	build.Dir = shared.repo
+	build.Env = append(build.Environ(), "GOWORK=off", "GOFLAGS=")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go %s: %v\n%s", strings.Join(build.Args[1:], " "), err, out)
+	}
 	for _, row := range []struct {
 		name, print    string
 		flags, binFlag []string
@@ -790,10 +818,7 @@ func TestCitationsStatedLimitAForgedRun(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			r := newCitationRun()
-			r.allChanged = true
-			f := r.write(t)
-			writeFile(t, filepath.Join(f.repo, "a", "printer_test.go"), []byte(printer))
+			f := r.writeFlags(t, t.TempDir(), shared)
 			args := append(append([]string{"test", "-json", "-count=1", "-run", "^TestPrinter$"}, row.flags...), "./a")
 			cmd := exec.Command("go", append(args, row.binFlag...)...)
 			cmd.Dir = f.repo
