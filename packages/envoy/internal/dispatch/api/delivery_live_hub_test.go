@@ -3377,6 +3377,59 @@ func TestAnEvalsViewFallsDueBesideTheSerialLane(t *testing.T) {
 	}
 }
 
+// TestAnItemsViewIsAnsweredBesideTheSerialLane: a timeline is open and its recompute for a merge
+// is held at its read, on the serial lane. An items view of pr-ci, the job list the Evals tab's
+// first paint waits for, is then subscribed: its snapshot arrives while the timeline's recompute
+// is still held, and the timeline's ends once let go. While items views ran on the serial lane, the
+// items view's first answer waited for the held recompute and the wait for its snapshot never
+// ended, as the Evals tab's second job list waited for the first one's read (260.6 ms at ten
+// times the stated run rate) in the bench's split run (dispatch://INFRA-2918, T33).
+func TestAnItemsViewIsAnsweredBesideTheSerialLane(t *testing.T) {
+	t.Parallel()
+	var holding atomic.Bool
+	held, gate := make(chan struct{}, 1), make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		observe, lifetime := hub.observe, hub.lifetime
+		hub.observe = func(note deliveryHubNote) {
+			observe(note)
+			if note.what != "recompute position" || !strings.HasPrefix(note.view, deliveryLiveTimeline+"|") || !holding.CompareAndSwap(true, false) {
+				return
+			}
+			held <- struct{}{}
+			select {
+			case <-gate:
+			case <-lifetime.Done():
+			}
+		}
+	})
+	t.Cleanup(release)
+	createTestProject(t, rig.handler, "ACME")
+	saveProjectRules(t, rig.database, "ACME", deployRule("acme/widgets", "release / release"))
+	timeline := newFakeLiveConn()
+	rig.hub.Subscribe(timeline, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
+	timeline.firstSnapshots(t, "t")
+	rig.settle(t)
+
+	start := rig.mark()
+	holding.Store(true)
+	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-time.Hour)))
+	rig.hub.catchUpNow()
+	testwait.Receive(t, "the timeline's recompute for the merge, held at its read", held)
+	page := newFakeLiveConn()
+	rig.hub.Subscribe(page, subscribeFrame("i", itemsLiveView("ACME", "pr-ci", DeliveryLiveWindow{Preset: new(28)}, "sort=failures&limit=200")))
+	page.snapshot(t, "i")
+	if n := rig.count(start, func(note deliveryHubNote) bool {
+		return note.what == "recompute end" && strings.HasPrefix(note.view, deliveryLiveTimeline+"|")
+	}); n != 0 {
+		t.Fatalf("the timeline's held recompute ended %d times before it was let go", n)
+	}
+	release()
+	if _, ok := timeline.next(t, "the timeline's delta for the merge").(DeliveryLiveDelta); !ok {
+		t.Fatal("want the timeline's delta for the merge")
+	}
+}
+
 func TestAChangeOutsideAWindowRecomputesNothing(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)

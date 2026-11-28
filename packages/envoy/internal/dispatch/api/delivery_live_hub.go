@@ -201,8 +201,8 @@ const deliveryHubFeedBuffer = 1024
 // (legion.StateChannel, workflowstore.RunsChannel), and of a committed event from the event stream
 // relay's feed, the live paths' one reader of the event log; marks dirty only the views the change
 // can touch; recomputes each dirty view once per burst, as the GET routes' population read and
-// pure compute, one at a time but for the evals views, up to evalsRecomputes of which run at once
-// beside them; re-runs the compute alone, reading nothing, when something leaves a preset window;
+// pure compute, one at a time but for the evals and items views, up to evalsRecomputes of which run
+// at once beside them; re-runs the compute alone, reading nothing, when something leaves a preset window;
 // and sends each subscriber only the keys whose revision differs from what it holds.
 //
 // Each run of the hub is a generation (hubGeneration): the first Subscribe of a hub with no sub
@@ -211,9 +211,9 @@ const deliveryHubFeedBuffer = 1024
 // runs three goroutines on a context of its own: the listener; the intake, which alone moves the
 // change log's cursor, applies the relay's events and marks views dirty; and the worker, which
 // alone starts a recompute, each on a goroutine of its own, and waits for none (runDue): each
-// recompute of a delivery view, a Legion view or an items view, and each delivery view's expiry,
-// on the serial lane, one at a time, and each recompute of an evals view, its expiry's among them,
-// up to evalsRecomputes at once. Its relay
+// recompute of a delivery view or a Legion view, and each delivery view's expiry, on the serial
+// lane, one at a time, and each recompute of an evals or items view, its expiry's among them, up to
+// evalsRecomputes at once (besideSerial). Its relay
 // subscription, which waits for a safe horizon, is taken on another goroutine that ends once it
 // has (seedEvents), at the start and after a feed closes. A generation owns its views and conns,
 // and the drop of its last conn is what stops it, so a goroutine of a stopped generation reaches
@@ -255,9 +255,9 @@ type deliveryHub struct {
 // connection (readContext), so the recomputes hold at most eight of the shared pool's 64
 // connections (store's sharedPoolSize), as many as a Delivery timeline request holds for its reads
 // side by side (readDeliveryRows) and twice the four a broadcast's delivery holds for the same
-// reason (broadcastDeliveryWorkers). Evals views alone run beside each other: they judge no
-// freshness, where the delivery views' reads set the one verdict in the order they run, one at a
-// time on the serial lane.
+// reason (broadcastDeliveryWorkers). Evals and items views alone run beside each other: they judge
+// no freshness, where the delivery views' reads set the one verdict in the order they run, one at
+// a time on the serial lane.
 //
 // Neither lane waits for the other. While the worker ran each serial recompute itself, an evals
 // view that fell due meanwhile began only once that recompute ended; in the Evals tab's bench at
@@ -284,8 +284,9 @@ type hubGeneration struct {
 	// could hold one the intake never took past g's end, which neither would cancel, and the relay
 	// would keep its generation, its LISTEN connection and its reads of the event log for it.
 	feeds chan hubEventFeed
-	// evalsRunning counts the recomputes of evals views under way, at most evalsRecomputes, and
-	// serialBusy is set while the serial lane runs a recompute or an expiry (runDue).
+	// evalsRunning counts the recomputes of evals and items views under way (besideSerial), at most
+	// evalsRecomputes, and serialBusy is set while the serial lane runs a recompute or an expiry
+	// (runDue).
 	evalsRunning int
 	serialBusy   bool
 

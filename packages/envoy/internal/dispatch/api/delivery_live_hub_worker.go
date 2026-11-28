@@ -15,12 +15,12 @@ import (
 
 // work starts the recomputes of g's dirty views and the expired ones, and keeps the freshness
 // verdict on its threshold, until g ends. It starts each on a goroutine of its own and waits for
-// none (runDue): each delivery view's, Legion view's and items view's recompute and each delivery
-// view's expiry on the serial lane, one at a time, and each evals view's, which its expiry reads
-// again too, up to evalsRecomputes at once. One timer, re-armed after every pass, wakes it at the
-// earliest moment a view whose lane has room is due or the reconciled sources cross their
-// threshold; nothing else wakes it but a mark and the end of a recompute, after which a view its
-// lane held back, or a mark made during that recompute, falls due (dueAt).
+// none (runDue): each delivery view's and Legion view's recompute and each delivery view's expiry
+// on the serial lane, one at a time, and each evals view's and items view's (besideSerial), which
+// its expiry reads again too, up to evalsRecomputes at once. One timer, re-armed after every pass,
+// wakes it at the earliest moment a view whose lane has room is due or the reconciled sources cross
+// their threshold; nothing else wakes it but a mark and the end of a recompute, after which a view
+// its lane held back, or a mark made during that recompute, falls due (dueAt).
 func (h *deliveryHub) work(g *hubGeneration) {
 	select {
 	case <-g.ctx.Done():
@@ -85,7 +85,7 @@ func (h *deliveryHub) runDue(g *hubGeneration) bool {
 		return false
 	}
 	picked := time.Now()
-	evals := due.spec.classes().reads == viewReadsEvals
+	evals := besideSerial(due.spec)
 	due.computing = true
 	if evals {
 		g.evalsRunning++
@@ -113,13 +113,24 @@ func (h *deliveryHub) runDue(g *hubGeneration) bool {
 	return true
 }
 
-// canStartLocked is whether view's lane has room for its recompute: an evals view's while fewer
-// than evalsRecomputes run, any other view's while the serial lane runs nothing.
+// canStartLocked is whether view's lane has room for its recompute: an evals or items view's
+// (besideSerial) while fewer than evalsRecomputes of those run, any other view's while the serial
+// lane runs nothing.
 func (g *hubGeneration) canStartLocked(view *deliveryView) bool {
-	if view.spec.classes().reads == viewReadsEvals {
+	if besideSerial(view.spec) {
 		return g.evalsRunning < evalsRecomputes
 	}
 	return !g.serialBusy
+}
+
+// besideSerial is whether a view of spec recomputes beside the serial lane (runDue): an evals
+// view, or an items view, each of which reads the eval tables in a snapshot of its own and judges
+// no freshness. An items view ran on the serial lane until the Evals tab's two job lists, opened
+// together, were answered one after the other: the second waited for the first one's read, 260.6 ms
+// at ten times the stated run rate (dispatch://INFRA-2918, T33).
+func besideSerial(spec deliveryLiveSpec) bool {
+	reads := spec.classes().reads
+	return reads == viewReadsEvals || reads == viewReadsEvalItems
 }
 
 // dueAt is when the view is next due, and why: a dirty view viewQuiet after its last mark or
@@ -245,14 +256,15 @@ func newRecomputeTrace(ctx context.Context, view *deliveryView, cause string, pi
 
 // log writes the recompute's debug line: its view (its kind, an evals view's kind of eval, page
 // offset and whether a facet narrows it, an items view's eval and order, and its preset's days)
-// and the lane it ran on (runDue: evals, or serial for every other view), the cause, the change
+// and the lane it ran on (runDue: evals, beside the serial lane, for an evals or items view, or
+// serial for every other view), the cause, the change
 // position it read, how many frames it sent and whether its read failed; how the view stood
 // marked; and when it was due, picked, began and ended, each moment in Unix microseconds, 0 for
 // none, and each step's time in milliseconds. So the lines of a stretch name every recompute each
 // lane ran in it, and what ran between a view's due moment and its beginning.
 func (trace *recomputeTrace) log(spec deliveryLiveSpec, cause string, seq int64, sent int, failed bool, began time.Time) {
 	lane := "serial"
-	if spec.classes().reads == viewReadsEvals {
+	if besideSerial(spec) {
 		lane = "evals"
 	}
 	slog.Debug("dispatch: delivery live hub timed a recompute",
