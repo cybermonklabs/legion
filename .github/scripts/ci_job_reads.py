@@ -2586,6 +2586,7 @@ BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a fail
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
+BROWSER_STORE_CHECK_STEP = "Check that no write grew the file store"
 # One name, two steps: the shard job's and the alone job's second read of the binaries artifact.
 BROWSER_FETCH_STEP = "Download the binaries again, after a first attempt that did not complete"
 # One name, two steps: the shard job's and the alone job's, each running a script of its own,
@@ -2847,8 +2848,8 @@ def browser_gate(filter, job):
          "could not complete"),
         (".github/scripts/dispatch-browser-wait-for-store.sh",
          f"{at_browser(BROWSER_WAIT_STORE_STEP)} runs it to wait for the file store the step "
-         "before it started, which it makes a bucket in and writes, reads back and deletes one "
-         "object in"),
+         "before it started, which it grows one collection of before any write, makes a bucket in, "
+         "writes, reads back and deletes one object in, and checks no write grew"),
         (".github/scripts/dispatch-browser-shard-suite.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's share of the lane's row time"),
         (".github/scripts/dispatch-browser-shard-record.sh",
@@ -2886,6 +2887,9 @@ def browser_gate(filter, job):
         (".github/scripts/gh-read.sh",
          "`.github/scripts/dispatch-browser-run-reads.sh#$script_dir/gh-read.sh` sources it, so the merge job's read of its own attempt's "
          "jobs takes its retry ladder, and the blobs-refused mode makes no request"),
+        (f"{ENVOY}/internal/tests3/one-collection.sh",
+         f"`.github/scripts/dispatch-browser-wait-for-store.sh#packages/envoy/internal/tests3/one-collection.sh`, which {at_browser(BROWSER_WAIT_STORE_STEP)} runs, "
+         f"and {at_browser(BROWSER_STORE_CHECK_STEP)} run it on the file store the shard job starts"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so
         # the citation is the two jobs that carry that key rather than a step of either.

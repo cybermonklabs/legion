@@ -162,6 +162,7 @@ func heldStreams(cluster *Cluster) string {
 // alone: while the routes are held, a create through another member never reaches the meta leader,
 // which alone takes it, so it would go unanswered whatever the drop did.
 func TestACreateWhoseAnswerADropLostIsSentAgainAndAnswered(t *testing.T) {
+	t.Parallel()
 	cluster := StartCluster(t, 3)
 	leader := -1
 	for i, member := range cluster.Servers {
@@ -193,6 +194,7 @@ func TestACreateWhoseAnswerADropLostIsSentAgainAndAnswered(t *testing.T) {
 // and the server stores as its default, as max_msgs, max_bytes, max_consumers and
 // max_msgs_per_subject.
 func TestACreateOfANameTheClusterHoldsOtherwiseFailsNamingTheDifference(t *testing.T) {
+	t.Parallel()
 	cluster := StartCluster(t, 3)
 	held := cutStream("HELD")
 	held.Replicas = 1
@@ -227,6 +229,7 @@ func TestACreateOfANameTheClusterHoldsOtherwiseFailsNamingTheDifference(t *testi
 // differs: a field the create leaves unset that the API writes anyway, as num_replicas and the four
 // limits, is the server's default, which is no difference.
 func TestACreateOfANameHeldOtherwiseOnlyInAFieldItLeavesUnsetNamesTheWholeStreamHeld(t *testing.T) {
+	t.Parallel()
 	cluster := StartCluster(t, 3)
 	held := cutStream("WINDOW")
 	held.Replicas = 1
@@ -264,6 +267,7 @@ func TestACreateOfANameHeldOtherwiseOnlyInAFieldItLeavesUnsetNamesTheWholeStream
 // retried. The row reads the stream the create made from the server's own state (streamAnswered),
 // not over a connection, whose read would wait on the relay as a request bounded by jetStreamWait.
 func TestACreateWhoseFirstDialsDrawNoHandshakeWaitsForTheConnection(t *testing.T) {
+	t.Parallel()
 	server, _ := Start(t)
 	cluster := &Cluster{Servers: []*Server{server}}
 	thaw := server.Freeze(t)
@@ -368,6 +372,7 @@ const (
 // 18 s in, and a setup still running then failed the child with a wait of its setup's own rather
 // than the create's.
 func TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline(t *testing.T) {
+	t.Parallel()
 	if uri := os.Getenv(unansweredBucketChildEnv); uri != "" {
 		createUnansweredBucket(t, uri)
 		return
@@ -432,6 +437,7 @@ func connectWithoutJetStream(t testing.TB, uri, who string) *natsgo.Conn {
 // the one send it refused, though the server reports the refusal on the connection and the create
 // itself draws no answer.
 func TestARefusedBucketCreateFailsNamingTheRefusalAfterItsOneSend(t *testing.T) {
+	t.Parallel()
 	seed, public := User(t)
 	uri := StartNkeyDenied(t, public, "$JS.API.STREAM.CREATE.>")
 	conn, err := AwaitConnectSeed(t, uri, seed)
