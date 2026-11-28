@@ -171,8 +171,6 @@ func TestTheRetroRunsAfterTheCloseLive(t *testing.T) {
 	r.run("sent-back-then-closed", r.sentBackThenClosed)
 	r.run("retro-task-held-at-close", r.retroTaskHeldAtClose)
 	r.run("todo-ends-retro", r.todoEndsRetro)
-	// Steps 15 and 16 go here (t9, after INFRA-3570's branch is merged into this one: the retro's
-	// agent is then the one record.PlaceWorker names, and the daemon's task goes to it).
 	r.run("root-closed", r.rootClosed)
 	r.run("member-open-at-root-close", r.memberOpenAtRootClose)
 	r.run("root-closed-in-linger", r.rootClosedInLinger)
