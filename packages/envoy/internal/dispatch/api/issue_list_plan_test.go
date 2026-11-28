@@ -114,7 +114,9 @@ func analyzePlan(t *testing.T, database *store.Store, statement string, argument
 // values to the page runs once and answers at most the page's rows, and each parent walk starts
 // from at most the page's keys, which is what says the walk is no longer one per matching
 // issue. The fixture's project holds several hundred issues, so a plan that resolved them all
-// would show it.
+// would show it. The page's components, repository, priority and advances relations read one
+// walk up the page's chains between them (issueSummaryQuery), so the plan holds that one walk and
+// the three of the filters.
 func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 	t.Parallel()
 	fixture := newIssueListFixture(t)
@@ -168,10 +170,10 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 						name, base.Rows, base.Loops, limit, text)
 				}
 			}
-			if walks != 7 {
-				t.Errorf("%s runs %d parent walks, want the components walk, the repository walk, the priority walk,"+
-					" the walk up every page row's chain for its advances relations, the walk down from the advances"+
-					" filter's own relations, the walk up from them that `own` reads and the priority filter's walk:\n%s",
+			if walks != 4 {
+				t.Errorf("%s runs %d parent walks, want the one walk up every page row's chain that its components,"+
+					" repository, priority and advances relations read, the walk down from the advances filter's own"+
+					" relations, the walk up from them that `own` reads and the priority filter's walk:\n%s",
 					name, walks, text)
 			}
 		})

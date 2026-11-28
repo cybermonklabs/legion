@@ -80,18 +80,32 @@ var (
 // (issuePage.of says what a change does). Without the key they could: ranks repeat across
 // projects (every project's first issue is "U"), nothing makes one unique within a project, and
 // created_at is the creating transaction's start.
+//
+// The components, repository, priority and `advances` relations of a row each take a value from
+// the issues above it by a rule of their own, and the statement climbs the rows' parent chains
+// once for all four: `subjects_chain` (refs.IssueChainTerm) walks up from every issue of
+// `subjects`, and each of the four reads from it the rows its own walk would make
+// (issueComponentsChainOf, refs.IssueRepoTermsOn, refs.IssuePriorityTermsOn,
+// issueAdvancesChainOf), so each answers what its own walk answers, by the same text, while the
+// statement reads the issues table for one walk rather than for four: four walks read it four
+// times, and a plan that hashes the table for a walk hashed it four times. The priority filter's
+// walk climbs from its own candidates rather than from these rows, before they are known, so it
+// keeps its own (issuePriorityFilterTerms).
+//
 // readAdvances false is the one listing text that answers no `advances` relation: it leaves out
-// the relation read, the inheritance walk it climbs and the columns' join, and answers the three
-// columns as the constants an issue with no relation reads as, so one scan and one argument list
-// serve both texts. Its one caller is the speed test that holds the relation read to twice the
-// work of the same page without it; every text the server runs passes true. The `advances`
-// filter term stays in both, because it is a filter rather than a read: a request that names no
-// `advances` key leaves its seed gated off (issueAdvancesFilterTerms), so the text without the
-// read measures the read alone. The move into `backlog` or `icebox` stays in both for the same
-// reason: it is read only under `?moved=true` ($14), and a request without it reads no event.
+// the relation read (the reading of the log for every issue of the rows' chains) and the columns'
+// join, and keeps `subjects_chain`, which the components, repository and priority terms read too.
+// It answers the three columns as the constants an issue with no relation reads as, so one scan
+// and one argument list serve both texts. Its one caller is the speed test that holds the
+// relation read to twice the work of the same page without it; every text the server runs passes
+// true. The `advances` filter term stays in both, because it is a filter rather than a read: a
+// request that names no `advances` key leaves its seed gated off (issueAdvancesFilterTerms), so
+// the text without the read measures the read alone. The move into `backlog` or `icebox` stays in
+// both for the same reason: it is read only under `?moved=true` ($14), and a request without it
+// reads no event.
 // atCut writes the text for a read at a cut: it reads which priorities were live at the cut
 // (prioritiesLiveAtCutTerm) in place of priority_nodes, which keeps only the present state, and
-// reads no component member (issueComponentsTermsAtCut).
+// reads no component member (issueComponentsTermsAtCutOver).
 func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 	parameter := 18
 	pinnedJoin := ""
@@ -99,7 +113,10 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
 		parameter++
 	}
-	filterTerms, advancesTerms, componentsTerms := issueAdvancesFilterTerms, issueAdvancesTerms, issueComponentsTerms
+	const chain = "subjects_chain"
+	filterTerms := issueAdvancesFilterTerms
+	advancesTerms := issueAdvancesTermsJoining(issueAdvancesChainOf(chain), issueAdvancesLive)
+	componentsTerms := issueComponentsTermsOver(issueComponentsChainOf(chain))
 	filteredTerms := `matched as (
 		select i.ctid as address
 		from issues i` + pinnedJoin + `
@@ -112,7 +129,8 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 	)`
 	if atCut {
 		filterTerms = prioritiesLiveAtCutTerm + `, ` + issueAdvancesFilterTermsAtCut
-		advancesTerms, componentsTerms = issueAdvancesTermsAtCut, issueComponentsTermsAtCut
+		advancesTerms = issueAdvancesTermsJoining(issueAdvancesChainOf(chain), issueAdvancesLiveAtCut)
+		componentsTerms = issueComponentsTermsAtCutOver(issueComponentsChainOf(chain))
 		// At a cut `issues` names the issues shadow, a WITH member, which has no ctid to read the
 		// matched issues back by. So the text for a cut filters in one term, as the listing did
 		// before it read the matched issues back by their addresses.
@@ -124,12 +142,13 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 	}
 	query := `with recursive ` + filterTerms + `, ` + issuePriorityFilterTerms + `, ` + filteredTerms
 	advancesColumns := issueAdvancesColumns
-	terms := componentsTerms + `, ` + refs.IssueRepoTerms + `, ` + refs.IssuePriorityTerms
+	terms := componentsTerms + `, ` + refs.IssueRepoTermsOn(chain) + `, ` + refs.IssuePriorityTermsOn(chain)
 	if readAdvances {
 		terms = advancesTerms + `, ` + terms
 	} else {
 		advancesColumns = issueAdvancesColumnsUnread
 	}
+	terms = refs.IssueChainTerm("subjects", chain) + `, ` + terms
 	rows, columns := "filtered", issueSummaryColumns(advancesColumns)
 	if paged {
 		query += fmt.Sprintf(`, page as (
@@ -266,7 +285,8 @@ const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
 // parentDepthCap like legionManagedStatusSQL's walk of the same chain for the `legion` label,
 // so it terminates even if a raced reparent ever commits a cycle. One walk climbs every
 // subject's chain together, as refs.IssueRepoTerms' does, so a page of issues pays one walk
-// rather than one per row.
+// rather than one per row. These terms walk on their own (issueAdvancesWalk); the listing reads
+// the same chains from the one walk its other values share instead (issueAdvancesChainOf).
 //
 // `advances_current` is prioritystore.AdvancesTupleRead's reading of the log for every issue
 // those chains name at once (over priority_tuples_current): the newest tuple per (issue,
@@ -293,25 +313,54 @@ const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
 // left to the default collation an order that weighs punctuation last (glibc's en_US, which a
 // deployment's database was created with) answers `cicd` before `ci-fixes` where Go puts
 // `ci-fixes` first, and the merge then lists an id the issue holds both ways twice.
-var issueAdvancesTerms = issueAdvancesTermsJoining(`priority_nodes live on live.kind = '` + prioritystore.KindPriority + `' and live.id = cu.to_id
-			and live.state = '` + prioritystore.StateLive + `'`)
+var issueAdvancesTerms = issueAdvancesTermsJoining(issueAdvancesWalk, issueAdvancesLive)
 
 // issueAdvancesTermsAtCut are issueAdvancesTerms for a read at a cut (asof): the priority of a
 // relation is live when it was live at the cut (prioritiesLiveAtCutTerm), which the statement
 // defines before these terms.
-var issueAdvancesTermsAtCut = issueAdvancesTermsJoining(`priorities_live_at_cut live on live.id = cu.to_id`)
+var issueAdvancesTermsAtCut = issueAdvancesTermsJoining(issueAdvancesWalk, issueAdvancesLiveAtCut)
 
-// issueAdvancesTermsJoining writes issueAdvancesTerms with live, the join of the priority that a
-// relation names (cu.to_id) to a live priority, aliased live.
-func issueAdvancesTermsJoining(live string) string {
-	return `advances_chain as (
+// issueAdvancesLive and issueAdvancesLiveAtCut are the two joins issueAdvancesTermsJoining takes
+// as live: of the priority a relation names (cu.to_id) to the priority live now, or to the one
+// live at the cut.
+var issueAdvancesLive = `priority_nodes live on live.kind = '` + prioritystore.KindPriority + `' and live.id = cu.to_id
+			and live.state = '` + prioritystore.StateLive + `'`
+
+const issueAdvancesLiveAtCut = `priorities_live_at_cut live on live.id = cu.to_id`
+
+// issueAdvancesWalk is advances_chain as a walk of its own, which the issue read and the
+// priorities read climb.
+var issueAdvancesWalk = `advances_chain as (
 		select s.key as start, s.key as issue_key, 0 as depth
 		from subjects s
 		union all
 		select c.start, p.parent_key, c.depth + 1
 		from advances_chain c join issues p on p.key = c.issue_key
 		where p.parent_key is not null and c.depth < ` + parentDepthCapSQL + `
-	), advances_current as (
+	)`
+
+// issueAdvancesChainOf is advances_chain read from chain, a refs.IssueChainTerm the statement
+// defines before it that climbs every link, rather than walked: each of its rows, with the
+// issue's key as issue_key, which are the rows issueAdvancesWalk makes for every subject and
+// parent an issue carries. The walk also keeps a key no issue carries, since it reads no row for
+// a subject and none for a parent before it steps to it, and chain, which reads both, does not:
+// the listing's subjects are its rows' keys, but for the null key `listed` names beside an empty
+// filtered set, which no row joins, and the issues table's foreign key on parent_key refuses a
+// parent no issue carries. The term is not materialized: the two terms that read it each scan
+// chain, so its rows are not copied into a store of their own first.
+func issueAdvancesChainOf(chain string) string {
+	return `advances_chain as not materialized (
+		select c.start, c.key as issue_key, c.depth
+		from ` + chain + ` c
+	)`
+}
+
+// issueAdvancesTermsJoining writes issueAdvancesTerms over chain, the term advances_chain
+// (issueAdvancesWalk, or issueAdvancesChainOf a walk the statement shares), with live, the join
+// of the priority that a relation names (cu.to_id) to a live priority, aliased live
+// (issueAdvancesLive, issueAdvancesLiveAtCut).
+func issueAdvancesTermsJoining(chain, live string) string {
+	return chain + `, advances_current as (
 		` + prioritystore.AdvancesTupleRead(`, t.seq, t.asserted`, `and t.from_id in (select issue_key from advances_chain)`) + `
 	), advances as (
 		select c.start as issue_key,
@@ -367,7 +416,13 @@ const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
 // inheritance the read climbs, written as one descent per request instead of one climb per row;
 // it is bounded by parentDepthCap, which no chain passes (refuseParentTooDeep), so a descendant
 // the cap cuts off is one no chain could have reached anyway. Under `?own=true` no arm reads it,
-// so its seed is gated off there.
+// so its seed is gated off there. A request that names priorities and neither keyword descends
+// only from the issues that state a named one (`s.named`), not from every issue that states any
+// live priority: the one arm such a request runs keeps the issues `advancing` marks named, and
+// an issue is marked named exactly when it or an issue above it is a named seed, so an issue
+// reached from unnamed seeds alone was walked to only to be dropped. `none` ($12) reads every
+// issue `advancing` holds, and `any` ($13) keeps every one, so a request with either keyword
+// still descends from every issue that states a live priority.
 //
 // `advances_originating` is advancesOriginTerms over the issues that state a matched priority,
 // read only under `?own=true`: a request without the key climbs from no issue.
@@ -394,7 +449,7 @@ func issueAdvancesFilterTermsJoining(live string) string {
 		from advances_relations
 		group by key
 	), advances_spread as (
-		select s.key, s.named, 0 as depth from advances_stated s where not $15::boolean
+		select s.key, s.named, 0 as depth from advances_stated s where not $15::boolean and (s.named or $12::boolean or $13::boolean)
 		union all
 		select c.key, a.named, a.depth + 1
 		from advances_spread a join issues c on c.parent_key = a.key

@@ -159,8 +159,15 @@ func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, i
 // this replaced did. The walk climbs with `union all` bounded by parentDepthCap, like
 // refs.IssueRepoTerms, so it terminates even if a raced reparent ever commits a cycle: a row carries
 // its depth, so no two rows of one chain are equal and `union`'s distinct step would remove
-// nothing.
-var issueComponentsTerms = issueComponentsOwnerTerms + `, comp as (
+// nothing. These terms walk on their own (issueComponentsWalk); the listing reads the same rows
+// from the one walk its other values share instead (issueComponentsTermsOver,
+// issueComponentsChainOf).
+var issueComponentsTerms = issueComponentsTermsOver(issueComponentsWalk)
+
+// issueComponentsTermsOver are issueComponentsTerms with chain as their walk, the term comp_chain:
+// issueComponentsWalk, or issueComponentsChainOf a walk the statement shares.
+func issueComponentsTermsOver(chain string) string {
+	return issueComponentsOwnerTerms(chain) + `, comp as (
 		select o.key, o.owner_key, o.mode, o.reason,
 		       coalesce(array_agg(m.component_id order by m.component_id) filter (where x.id is not null), '{}'::text[]) as ids,
 		       coalesce(array_agg(m.component_id order by m.component_id) filter (where m.component_id is not null and x.id is null), '{}'::text[]) as unknown
@@ -169,22 +176,41 @@ var issueComponentsTerms = issueComponentsOwnerTerms + `, comp as (
 		left join components x on x.project_key = m.project_key and x.id = m.component_id
 		group by o.key, o.owner_key, o.mode, o.reason
 	)`
+}
 
-// issueComponentsOwnerTerms are the walk of issueComponentsTerms: the nearest issue of each
-// subject's own project on its parent chain with an issue_components row, and that row's mode and
-// reason.
-var issueComponentsOwnerTerms = `comp_chain as (
+// issueComponentsOwnerTerms are chain, the walk of issueComponentsTerms, and comp_owner over it:
+// the nearest issue of each subject's own project on its parent chain with an issue_components
+// row, and that row's mode and reason.
+func issueComponentsOwnerTerms(chain string) string {
+	return chain + `, comp_owner as (
+		select distinct on (c.start) c.start as key, c.key as owner_key, ic.mode, ic.reason
+		from comp_chain c join issue_components ic on ic.issue_key = c.key
+		order by c.start, c.depth
+	)`
+}
+
+// issueComponentsWalk is comp_chain as a walk of its own: each subject and each issue above it
+// of the subject's project, up to the first parent of another project or parentDepthCap links.
+var issueComponentsWalk = `comp_chain as (
 		select s.key as start, i.project_key, i.key, i.parent_key, 0 as depth
 		from subjects s join issues i on i.key = s.key
 		union all
 		select c.start, c.project_key, p.key, p.parent_key, c.depth + 1
 		from comp_chain c join issues p on p.key = c.parent_key and p.project_key = c.project_key
 		where c.depth < ` + parentDepthCapSQL + `
-	), comp_owner as (
-		select distinct on (c.start) c.start as key, c.key as owner_key, ic.mode, ic.reason
-		from comp_chain c join issue_components ic on ic.issue_key = c.key
-		order by c.start, c.depth
 	)`
+
+// issueComponentsChainOf is comp_chain read from chain, a refs.IssueChainTerm the statement
+// defines before it, rather than walked: the rows of chain that issueComponentsWalk makes, those
+// whose every issue up from the subject is of the subject's project (in_project), with its
+// columns. comp_owner reads it once, so Postgres plans it inside comp_owner.
+func issueComponentsChainOf(chain string) string {
+	return `comp_chain as (
+		select c.start, c.project_key, c.key, c.parent_key, c.depth
+		from ` + chain + ` c
+		where c.in_project
+	)`
+}
 
 // issueComponentsTermsAtCut are issueComponentsTerms for a read at a cut (asof): the same owner,
 // mode and reason of each subject, which the shadows of issues and issue_components give at the
@@ -192,10 +218,16 @@ var issueComponentsOwnerTerms = `comp_chain as (
 // components) keep no history, so the read at a cut does not read them. An explicit attachment
 // leaves out its ids and its unknown ids (issueAtTheCut, issueSummariesAtTheCut), and an
 // attachment of another mode holds no member.
-var issueComponentsTermsAtCut = issueComponentsOwnerTerms + `, comp as (
+var issueComponentsTermsAtCut = issueComponentsTermsAtCutOver(issueComponentsWalk)
+
+// issueComponentsTermsAtCutOver are issueComponentsTermsAtCut with chain as their walk, as
+// issueComponentsTermsOver are issueComponentsTerms with it.
+func issueComponentsTermsAtCutOver(chain string) string {
+	return issueComponentsOwnerTerms(chain) + `, comp as (
 		select o.key, o.owner_key, o.mode, o.reason, '{}'::text[] as ids, '{}'::text[] as unknown
 		from comp_owner o
 	)`
+}
 
 // issueComponentsJoin attaches issueComponentsTerms' answer to the issue aliased `i` in the
 // enclosing query. It yields one row per issue, all null when no ancestor chose.

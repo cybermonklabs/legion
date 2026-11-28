@@ -277,8 +277,9 @@ func readIssueDescendantRows(ctx context.Context, q Queryer, key, statement, wha
 // issueSummaryQuery).
 //
 // This is the server's one repository-resolution rule. The issue page resolves a page of issues
-// through these terms (api's issue reads), IssueRepository resolves one key through them, and
-// delivery's attribution splices them over the candidate keys of a pull request to hold its
+// through these terms (api's issue reads), the listing through IssueRepoTermsOn, the same answer
+// read from the one walk its other values share, IssueRepository resolves one key through them,
+// and delivery's attribution splices them over the candidate keys of a pull request to hold its
 // issue to the repository it is in, so the results read and the pull-request head attribution
 // can never disagree with the issue page.
 var IssueRepoTerms = `repo_chain as (
@@ -288,13 +289,69 @@ var IssueRepoTerms = `repo_chain as (
 		select c.start, c.project_key, p.parent_key, p.repo, c.depth + 1
 		from repo_chain c join issues p on p.key = c.parent_key and p.project_key = c.project_key
 		where c.repo is null and c.depth < ` + issueDepthCapSQL + `
-	), repo as (
+	), ` + issueRepoAnswer
+
+// IssueRepoTermsOn are IssueRepoTerms over chain, an IssueChainTerm the statement defines before
+// them, rather than over a walk of their own: repo_chain keeps the rows of chain that
+// IssueRepoTerms' walk makes (repo_open), with that walk's columns, so `repo` answers for each
+// subject what IssueRepoTerms answer, by the same text (issueRepoAnswer).
+func IssueRepoTermsOn(chain string) string {
+	return `repo_chain as (
+		select c.start, c.project_key, c.parent_key, c.repo, c.depth
+		from ` + chain + ` c
+		where c.repo_open
+	), ` + issueRepoAnswer
+}
+
+// issueRepoAnswer is the term `repo` of IssueRepoTerms and IssueRepoTermsOn: each subject's
+// nearest repository and whether its walk ran out of depth, over the rows of repo_chain.
+var issueRepoAnswer = `repo as (
 		select c.start as key,
 		       max(c.repo) as owned,
 		       bool_or(c.depth = ` + issueDepthCapSQL + ` and c.repo is null and c.parent_key is not null) as too_deep
 		from repo_chain c
 		group by c.start
 	)`
+
+// IssueChainTerm is the term named chain: one walk up the parent chain of every issue of
+// subjects, any one-column term of issue keys the statement defines before it, which the
+// statement's readers of those chains read in place of a walk each. The listing resolves its
+// rows' components, repository, priority and `advances` relations from one such term (api's
+// issueSummaryQuery), so it reads the issues table for one walk rather than for four. Each row is
+// one issue of a subject's chain: start, the subject; key, parent_key, priority and repo, that
+// issue's own; project_key, the subject's project, carried up as IssueRepoTerms' walk carries it;
+// depth, its links above the subject; and three flags, each saying whether one of the walks the
+// term replaces makes the row:
+//
+//   - in_project: every issue from the subject up to this one is of the subject's project, the
+//     rows of the components walk (api's issueComponentsTerms);
+//   - repo_open: in_project, and no issue below this one on the chain names a repository, the
+//     rows of IssueRepoTerms' walk (IssueRepoTermsOn);
+//   - priority_open: no issue below this one on the chain has a priority of its own, the rows of
+//     IssuePriorityTerms' walk (IssuePriorityTermsOn).
+//
+// Each flag is its walk's step condition carried one link up, so a reader that keeps the rows a
+// flag holds reads exactly the rows that walk makes, with the same columns and depths. The walk
+// itself stops at no flag: it climbs into a parent of any project and stops only IssueDepthCap
+// links up, as far as a reader of every issue above climbs (api's issueAdvancesTerms), and is
+// bounded by IssueDepthCap like every walk of the chain, so it terminates even if a raced reparent
+// ever commits a cycle. A row carries its depth, so no two rows of one chain are equal and the
+// walk is a `union all`.
+func IssueChainTerm(subjects, chain string) string {
+	return chain + ` as (
+		select s.key as start, i.key, i.parent_key, i.project_key, i.priority, i.repo,
+		       true as in_project, true as repo_open, true as priority_open, 0 as depth
+		from ` + subjects + ` s join issues i on i.key = s.key
+		union all
+		select c.start, p.key, p.parent_key, c.project_key, p.priority, p.repo,
+		       c.in_project and p.project_key = c.project_key,
+		       c.repo_open and c.repo is null and p.project_key = c.project_key,
+		       c.priority_open and c.priority is null,
+		       c.depth + 1
+		from ` + chain + ` c join issues p on p.key = c.parent_key
+		where c.depth < ` + issueDepthCapSQL + `
+	)`
+}
 
 // IssueRepoJoin attaches IssueRepoTerms' answer to the issue aliased `i` in the enclosing query,
 // with the project row of every project those issues belong to, for its default repository. One
@@ -377,8 +434,9 @@ func IssueRepository(ctx context.Context, q Queryer, key string) (*string, error
 // that resolves none has no row, which IssuePriorityJoin's left join reads as null in both
 // (IssuePriorityColumns). This is the server's one priority-resolution rule, which a read takes
 // one of two ways. The reads that climb, from an issue up to the priority it takes, splice these
-// terms: the issue read resolves one issue through them, the listing its page (api's
-// issueRowStatement and issueSummaryQuery), the p0 checks of a write one issue (api's
+// terms: the issue read resolves one issue through them (api's issueRowStatement), the listing
+// its page through IssuePriorityTermsOn, the same answer read from the one walk its other values
+// share (api's issueSummaryQuery), the p0 checks of a write one issue (api's
 // issuePriorityStandingQuery), and every other read of issue rows the rows it reads
 // (IssuePriorityJoin, IssuePriorityJoinOn); and the listing's priority filter climbs from its own
 // candidates through the same walk (IssuePriorityTermsOver), so the rows a filter keeps and what
@@ -401,7 +459,7 @@ var IssuePriorityTerms = IssuePriorityTermsOver("subjects", "priority_resolved")
 // IssuePriorityTermsOver is IssuePriorityTerms' walk over subjects, any one-column term of issue
 // keys the statement defines before it, answering in the term named resolved, with its climb in
 // resolved + "_chain", so one statement can resolve two sets of issues by the one rule: the
-// listing resolves its page through IssuePriorityTerms and filters its candidates through these
+// listing resolves its page through IssuePriorityTermsOn and filters its candidates through these
 // (api's issuePriorityFilterTerms).
 func IssuePriorityTermsOver(subjects, resolved string) string {
 	return resolved + `_chain as (
@@ -411,7 +469,27 @@ func IssuePriorityTermsOver(subjects, resolved string) string {
 		select c.start, p.key, p.parent_key, p.priority, c.depth + 1
 		from ` + resolved + `_chain c join issues p on p.key = c.parent_key
 		where c.priority is null and c.depth < ` + issueDepthCapSQL + `
-	), ` + resolved + ` as (
+	), ` + issuePriorityAnswer(resolved)
+}
+
+// IssuePriorityTermsOn are IssuePriorityTerms over chain, an IssueChainTerm the statement defines
+// before them, rather than over a walk of their own: priority_resolved_chain keeps the rows of
+// chain that IssuePriorityTerms' walk makes (priority_open), with that walk's columns, so
+// `priority_resolved` answers for each subject what IssuePriorityTerms answer, by the same text
+// (issuePriorityAnswer), and IssuePriorityJoin reads it as it reads theirs.
+func IssuePriorityTermsOn(chain string) string {
+	return `priority_resolved_chain as (
+		select c.start, c.key, c.parent_key, c.priority, c.depth
+		from ` + chain + ` c
+		where c.priority_open
+	), ` + issuePriorityAnswer("priority_resolved")
+}
+
+// issuePriorityAnswer is the term named resolved of IssuePriorityTermsOver and
+// IssuePriorityTermsOn: each subject's priority and its source, over the rows of resolved +
+// "_chain".
+func issuePriorityAnswer(resolved string) string {
+	return resolved + ` as (
 		select c.start as key, max(c.priority) as priority,
 		       max(c.key) filter (where c.depth > 0) as source
 		from ` + resolved + `_chain c

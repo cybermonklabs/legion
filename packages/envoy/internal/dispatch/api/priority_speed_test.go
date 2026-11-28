@@ -226,10 +226,10 @@ func speedCorpusReadings(t *testing.T) speedReadings {
 // TestAdvancesListingSpeed holds the `advances` relation's own cost on the listing: one page of
 // 250 issues by the statement the server runs, against the same page by the one statement text
 // that leaves the relation out (issueSummaryQuery's readAdvances). Both run on the same corpus
-// with the same arguments, so what is between them is the relation read alone — the inheritance
-// walk over the page's chains, the reading of the tuple log for every issue those chains name,
-// and the three columns' join — and it is held to at most twice the work of the page without it
-// (speedWork).
+// with the same arguments, so what is between them is the relation read alone — the reading of
+// the tuple log for every issue of the page's chains and the three columns' join — and it is held
+// to at most twice the work of the page without it (speedWork). The walk up the page's chains is
+// in both: the page's components, repository and priority read it too (issueSummaryQuery).
 //
 // The statement is counted under both plans the server runs it with (speedCustomPlans), each
 // against one reference: the page without the relation under the plan made for its arguments,
@@ -395,8 +395,8 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 		prioritiesLite:  countSpeedRequest(t, corpus, "the priorities summary", "/api/v1/priorities?summary=true"),
 	}
 	for _, read := range []speedWork{readings.advancesCustom, readings.advancesGeneric} {
-		if read.walks != readings.advancesUnread.walks+1 {
-			t.Fatalf("%s holds %d walks and the page without the relation %d, want one more, the relation's own: the plan was not read whole, so nothing was measured",
+		if read.walks != readings.advancesUnread.walks {
+			t.Fatalf("%s holds %d walks and the page without the relation %d, want the same, since the relation reads the walk the page's other values read: the plan was not read whole, so nothing was measured",
 				read.name, read.walks, readings.advancesUnread.walks)
 		}
 	}
