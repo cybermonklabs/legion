@@ -541,16 +541,16 @@ them.
 
 ## The go-browser-binaries family
 
-What dispatch-browser.yaml's binaries job compiles, and nothing else: the four `CGO_ENABLED=0`
-builds of its "Build the binaries the browser suite runs" step and the `go run` of its connections
-step. The job runs for every caller of that file - ci.yaml's dispatch-browser,
+What dispatch-browser.yaml's binaries job compiles, and nothing else: the two `CGO_ENABLED=0`
+builds (four binaries) of its "Build the binaries the browser suite runs" step and the `go run` of
+its connections step. The job runs for every caller of that file - ci.yaml's dispatch-browser,
 dispatch-browser-pr and dispatch-references jobs and dispatch-browser-nightly.yaml - and on
-every lane. Each of the fill's two steps runs the text of the job's step of that name, in its
-directory, so the entry holds each object under the key that job asks for: ci_job_reads.py's
-BINARIES_FILLS gives the two texts, the binaries job's own Exact entries pin them, and rule 25 of
-check-ci-filters.sh fails the check when a step of either side runs another text, in another
-directory or under an env or an earlier step that can move what go compiles. So a change to the
-job's step changes the table and the fill with it.
+every lane. Each of the fill's two steps runs the text of the job's step whose name it starts
+with, in its directory, so the entry holds each object under the key that job asks for:
+ci_job_reads.py's BINARIES_FILLS gives the two texts, the binaries job's own Exact entries pin
+them, and rule 25 of check-ci-filters.sh fails the check when a step of either side runs another
+text, in another directory or under an env or an earlier step that can move what go compiles. So
+a change to the job's step changes the table and the fill with it.
 
 The job restored go-envoy-test before, whose objects are compiled with cgo on. With
 `CGO_ENABLED=0`, net and os/user build other files, so every package above them has other cache
@@ -566,8 +566,8 @@ The family starts with no module cache, so its builds download only the 106 modu
 reads, and the fill deletes their zips as every fill does
 (.github/ci-notes/ci-caches.md#why-the-fills-delete-the-module-zips). A fill from nothing with the
 zips kept, run 45468247148, saved 523,275,050 B, so an entry is less than that by its zips. It
-runs on ubuntu-24.04 alone, the runner the binaries job runs on; from nothing its builds took 98 s
-in that run, and the module download is the rest.
+runs on ubuntu-24.04 alone, the runner the binaries job runs on; from nothing the job took 138 s
+in that run, its builds 98 s of it.
 
 ## What the refill-superseded job deletes, and why it is a job of its own
 

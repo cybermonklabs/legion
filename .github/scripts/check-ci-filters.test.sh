@@ -5679,9 +5679,9 @@ run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "and refuses no step of either side" "$(is "$(contains "$out" "BINARIES_FILLS")" false)"
 
-# Four shapes of the fill's second build that a reader of go commands took for no command, or for
-# another one, so a rule comparing those found two empty lists equal. Each is another text, which
-# the rule names by its first line that differs.
+# Four shapes of the fill's second build that a rule reading go commands out of the text would
+# take for no command, or for another one. Each is another text, which the rule names by its first
+# line that differs.
 shapes=("a GOFLAGS= prefix" "a time before the command" "a continued line" "an export before the command")
 pinned_line=$'          CGO_ENABLED=0 go build -ldflags=\'-s -w\' -o "$RUNNER_TEMP/bin/app2" ./cmd/app'
 shape_lines=(
@@ -5754,7 +5754,7 @@ replace "$root/.github/workflows/ci-caches.yaml" $'/bin/app2" ./cmd/app\n       
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "naming the env and what it moves" \
-  "$(contains "$out" "${fill_build}its own env sets GOCACHE, which moves the objects away from the cache the fill saves\.")"
+  "$(contains "$out" "${fill_build}its own env sets GOCACHE, which moves go's build cache off the ~/\.cache/go-build the family is saved from and restored into\.")"
 
 echo "case: the fill's build step runs under an if:"
 binaries_case binaries-fill-if

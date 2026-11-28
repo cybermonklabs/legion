@@ -657,9 +657,6 @@ def check_race_fill_scripts(fills: list, problems: list) -> None:
 # not read. GOPROXY is left alone: both files set it in their workflow env, and where a module
 # comes from changes no key. An `if:` is refused for the same reason as GOCACHE: a step that does
 # not run compiles nothing, and the rule would say the fill runs what the job runs.
-NO_STEP_ENV = ("GOCACHE",)
-
-
 def binaries_step_reason(document: dict, job: dict, step: dict) -> str:
     """What a rule 25 step carries that leaves its text saying nothing about what ran: an `if:`,
     or a GOCACHE of the workflow, the job or the step; else around_reason's first reason."""
@@ -670,9 +667,9 @@ def binaries_step_reason(document: dict, job: dict, step: dict) -> str:
         return f"it runs under `if: {spelt}`, so it may run nothing at all"
     for where, env in (("the workflow's", document.get("env")), ("the job's", job.get("env")),
                        ("its own", step.get("env"))):
-        for name in (env if isinstance(env, dict) else {}):
-            if name in NO_STEP_ENV:
-                return f"{where} env sets {name}, which moves the objects away from the cache the fill saves"
+        if isinstance(env, dict) and "GOCACHE" in env:
+            return (f"{where} env sets GOCACHE, which moves go's build cache off the ~/.cache/go-build the "
+                    "family is saved from and restored into")
     return around_reason(document, job_up_to(job, step, including=False), [step])
 
 

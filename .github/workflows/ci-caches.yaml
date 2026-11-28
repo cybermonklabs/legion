@@ -540,8 +540,8 @@ jobs:
   browser-binaries:
     if: inputs.only != 'dispatch-builds'
     runs-on: ubuntu-24.04
-    # Cold: the builds 98 s, the module download and the connections step the rest (run
-    # 45468247148).
+    # Cold: 138 s, the builds 98 s of it (run 45468247148, job 138708870226). 20 is about eight
+    # times that.
     timeout-minutes: 20
     outputs:
       go-browser-binaries-x64: ${{ steps.saved.outputs.go-browser-binaries-x64 }}

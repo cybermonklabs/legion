@@ -152,23 +152,19 @@ its own retry arithmetic rather than its measured maximum.
 ## Why the binaries job restores go-browser-binaries
 
 go-browser-binaries, restored only: .github/workflows/ci-caches.yaml fills it on every push to
-main with the texts of this job's two steps, the build step's four `CGO_ENABLED=0` builds and the
-connections step's `go run`, each in this job's directory, and saves only what those builds used
-(.github/ci-notes/ci-caches.md#the-go-browser-binaries-family). No job here saves it.
+main with the texts of this job's two steps, the build step's two `CGO_ENABLED=0` builds (four
+binaries) and the connections step's `go run`, each in this job's directory, and saves only what
+those builds used (.github/ci-notes/ci-caches.md#the-go-browser-binaries-family). No job here
+saves it.
 
 go-envoy is no answer: it is filled by a build of ./cmd/listener and
 ./internal/testnats/cmd/natsd alone (.github/workflows/ci-caches.yaml), so a job that restores it
 and builds these four downloads and compiles their closure on a key that hit: 115 `go:
 downloading` lines in job 129055096326 of run 42585736615. The job restored go-envoy-test before,
 which is filled by `go test -count=1 -run '^$' ./...` over the whole envoy module with cgo on, so
-it carries every module these builds read but few of their objects. With `CGO_ENABLED=0`, net and
-os/user build other files, so every package above them has other cache keys: on a go-envoy-test
-entry, 427 of the 1,034 packages of this job's closure were stale (`go list -deps -f
-{{.Stale}}`), against 4 with cgo on. Measured in one 4-CPU build-cluster pod (main 1cd586b462b,
-three runs each): the job's builds took 94-103 s on no build cache, 77-80 s on go-envoy-test (423
-compiles), and 7.5 s on this family's entry (0 compiles). On CI, over 22 binaries jobs of
-2026-11-27 on go-envoy-test (its entry 721 MB since the fills stopped saving module zips), the
-restore took 12-27 s and the build 64-108 s.
+it carries every module these builds read but few of their objects: with `CGO_ENABLED=0`, net and
+os/user build other files, so most packages above them have other cache keys
+(.github/ci-notes/ci-caches.md#the-go-browser-binaries-family has the measurements).
 
 ## What the binaries build writes, and why it is static
 
