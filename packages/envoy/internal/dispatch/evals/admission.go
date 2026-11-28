@@ -72,24 +72,26 @@ const limitCleared = "limit cleared"
 // intake, which copies the daemon's record.
 var admissionActor = model.Actor{Kind: "system", ID: "legion-intake"}
 
-// AdmissionSkippedLine is the log line, at WARN, of each reading of a project's admission eval the
-// writer cannot write and skips, writing the state's other readings, so one bad entry does not stop
-// the project's intake: a reading R29's rules refuse, one the database refuses for good, and one
-// of an eval no row holds, each with its code, its row kind and its row key. The entry stays in
-// the daemon's record, which every later state carries whole, so the writer logs it once in each
-// process (loggedEntries).
+// AdmissionSkippedLine is the log line, at WARN on the logger of the intake that applies the state
+// (legion.Admissions.Write), of each reading of a project's admission eval the writer cannot write
+// and skips, writing the state's other readings, so one bad entry does not stop the project's
+// intake: a reading R29's rules refuse, one the database refuses for good, and one of an eval no
+// row holds, each with its code, its row kind and its row key. The entry stays in the daemon's
+// record, which every later state carries whole, so the writer logs it once in each process
+// (loggedEntries).
 const AdmissionSkippedLine = "legion intake: an admission reading cannot be written, so it is skipped and the state's other readings are written"
 
-// AdmissionUnknownLine is the log line, at WARN, of each entry of a state's `signalChanges` whose
-// signal, part or what the writer does not know (signalSeries), which is skipped, with its row key,
-// once in each process as AdmissionSkippedLine is.
+// AdmissionUnknownLine is the log line, at WARN on the logger of the intake that applies the state
+// (legion.Admissions.Write), of each entry of a state's `signalChanges` whose signal, part or what
+// the writer does not know (signalSeries), which is skipped, with its row key, once in each process
+// as AdmissionSkippedLine is.
 const AdmissionUnknownLine = "legion intake: an admission signal entry is of a signal, part or what this build does not know, so it is skipped"
 
-// AdmissionRefusedLine is the log line, at WARN, of a registration of a project's admission eval
-// that the register write refuses (*Error), with its code: no row then holds the eval, so the
-// writer skips the state's readings and logs each as a reading of an eval no row holds
-// (AdmissionSkippedLine), and the intake registers it again at the next state that serves either
-// record.
+// AdmissionRefusedLine is the log line, at WARN on the logger of the intake that registers the eval
+// (legion.Admissions.Register), of a registration of a project's admission eval that the register
+// write refuses (*Error), with its code: no row then holds the eval, so the writer skips the
+// state's readings and logs each as a reading of an eval no row holds (AdmissionSkippedLine), and
+// the intake registers it again at the next state that serves either record.
 const AdmissionRefusedLine = "legion intake: the register write refused the admission eval, so the state's admission readings are skipped"
 
 // AdmissionWriter is the operations of each project's admission eval the Legion intake runs
@@ -131,9 +133,9 @@ func (w admissionWriter) registered(ctx context.Context, project string) (bool, 
 // register registers project's admission eval through the register write (Store.Register), in that
 // write's own transaction, with the root's definition (admissionEval, admissionRegistration), its
 // person the project's default assignee. A registration the register write refuses (*Error) is
-// logged with its code (AdmissionRefusedLine) and answers nil, since a retry would be refused for
-// ever; any other error is one a retry may fix, and is answered.
-func (w admissionWriter) register(ctx context.Context, project string) error {
+// logged on logger with its code (AdmissionRefusedLine) and answers nil, since a retry would be
+// refused for ever; any other error is one a retry may fix, and is answered.
+func (w admissionWriter) register(ctx context.Context, logger *slog.Logger, project string) error {
 	// A project no row holds reads no person, and the register write refuses it PROJECT_NOT_FOUND.
 	var person string
 	if err := w.store.database.Pool.QueryRow(ctx, `select default_assignee from projects where key = $1`, project).Scan(&person); err != nil &&
@@ -143,7 +145,7 @@ func (w admissionWriter) register(ctx context.Context, project string) error {
 	_, err := w.store.Register(ctx, admissionRegistration(project, person))
 	var refusal *Error
 	if errors.As(err, &refusal) {
-		slog.Warn(AdmissionRefusedLine, "project", project, "code", refusal.Code, "field", refusal.Field, "error", refusal.Message)
+		logger.Warn(AdmissionRefusedLine, "project", project, "code", refusal.Code, "field", refusal.Field, "error", refusal.Message)
 		return nil
 	}
 	if err != nil {
@@ -236,15 +238,15 @@ func (l *loggedEntries) first(key loggedEntry) bool {
 // (heldRowKeys), so a state applied again, by a replay or by a whole read of a state a batch
 // applied, adds no row. A project that holds no row of the eval and whose state serves neither
 // record gets no reading and no log line; one whose state serves either has each reading skipped
-// and logged as one of an eval no row holds (writeEntries). It answers the move of the readings'
-// change rows into the delivery change log, nil where it wrote none, and an error only for a write
-// a retry may fix.
-func (w admissionWriter) write(ctx context.Context, tx pgx.Tx, state legion.AdmissionState) (func(context.Context), error) {
+// and logged on logger as one of an eval no row holds (writeEntries). It answers the move of the
+// readings' change rows into the delivery change log, nil where it wrote none, and an error only for
+// a write a retry may fix.
+func (w admissionWriter) write(ctx context.Context, tx pgx.Tx, logger *slog.Logger, state legion.AdmissionState) (func(context.Context), error) {
 	if len(state.Blocks) == 0 {
 		return nil, nil
 	}
 	evalID := EvalID(state.Project, slugAdmission)
-	entries := admissionEntries(state, w.logged)
+	entries := admissionEntries(state, w.logged, logger)
 	reported := state.Blocks[len(state.Blocks)-1].Cap
 	if len(entries) == 0 && reported == nil {
 		return nil, nil
@@ -265,7 +267,7 @@ func (w admissionWriter) write(ctx context.Context, tx pgx.Tx, state legion.Admi
 		return nil, err
 	}
 	entries = slices.DeleteFunc(entries, func(entry admissionEntry) bool { return held[entry.key()] })
-	drain, err := w.writeEntries(ctx, tx, state.Project, entries)
+	drain, err := w.writeEntries(ctx, tx, logger, state.Project, entries)
 	if err != nil || observed == nil || held[observed.key()] {
 		return drain, err
 	}
@@ -276,7 +278,7 @@ func (w admissionWriter) write(ctx context.Context, tx pgx.Tx, state legion.Admi
 	if found && newest != nil && *newest == *observed.Value {
 		return drain, nil
 	}
-	observedDrain, err := w.writeEntries(ctx, tx, state.Project, []admissionEntry{*observed})
+	observedDrain, err := w.writeEntries(ctx, tx, logger, state.Project, []admissionEntry{*observed})
 	if observedDrain != nil {
 		drain = observedDrain
 	}
@@ -284,11 +286,11 @@ func (w admissionWriter) write(ctx context.Context, tx pgx.Tx, state legion.Admi
 }
 
 // writeEntries writes entries as readings of project's admission eval in tx (WriteReadingsIn), and
-// logs each it skips (AdmissionSkippedLine), once in the writer's process for its row kind, row key
-// and code (loggedEntries): each row WriteReadingsIn skips, and every row of a batch it refuses
-// whole (*Error), which a retry of the intake's transaction would refuse again for ever. It answers
-// WriteReadingsIn's drain, nil where it wrote no reading.
-func (w admissionWriter) writeEntries(ctx context.Context, tx pgx.Tx, project string, entries []admissionEntry) (func(context.Context), error) {
+// logs on logger each it skips (AdmissionSkippedLine), once in the writer's process for its row
+// kind, row key and code (loggedEntries): each row WriteReadingsIn skips, and every row of a batch
+// it refuses whole (*Error), which a retry of the intake's transaction would refuse again for ever.
+// It answers WriteReadingsIn's drain, nil where it wrote no reading.
+func (w admissionWriter) writeEntries(ctx context.Context, tx pgx.Tx, logger *slog.Logger, project string, entries []admissionEntry) (func(context.Context), error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -315,7 +317,7 @@ func (w admissionWriter) writeEntries(ctx context.Context, tx pgx.Tx, project st
 		if !w.logged.first(loggedEntry{project: project, rowKind: entry.RowKind, rowKey: entry.RowKey, code: skipped.Code}) {
 			continue
 		}
-		slog.Warn(AdmissionSkippedLine, "project", project, "series", entry.Series, "row_kind", entry.RowKind, "row_key", entry.RowKey,
+		logger.Warn(AdmissionSkippedLine, "project", project, "series", entry.Series, "row_kind", entry.RowKind, "row_key", entry.RowKey,
 			"code", skipped.Code, "field", skipped.Field, "error", skipped.Message)
 	}
 	return drain, nil
@@ -354,9 +356,9 @@ func admissionRowKey(stateID string, id int64) string {
 // `capChanges` (capEntry), and a signal_change entry for each entry of `signalChanges`
 // (signalEntry), each taken once by its id, so by its row key, from the first block that carries
 // it; the cap's in the order of their ids, then the signals'. An entry of a signal, part or what
-// this build does not know is logged (AdmissionUnknownLine), once in logged's process for its row
-// key (loggedEntries), and left out.
-func admissionEntries(state legion.AdmissionState, logged *loggedEntries) []admissionEntry {
+// this build does not know is logged on logger (AdmissionUnknownLine), once in logged's process for
+// its row key (loggedEntries), and left out.
+func admissionEntries(state legion.AdmissionState, logged *loggedEntries, logger *slog.Logger) []admissionEntry {
 	caps, signals := map[int64]legion.CapChange{}, map[int64]legion.SignalChange{}
 	for _, block := range state.Blocks {
 		for _, change := range block.CapChanges.Entries {
@@ -379,7 +381,7 @@ func admissionEntries(state legion.AdmissionState, logged *loggedEntries) []admi
 		entry, known := signalEntry(state.StateID, change)
 		if !known {
 			if logged.first(loggedEntry{project: state.Project, rowKind: entry.RowKind, rowKey: entry.RowKey}) {
-				slog.Warn(AdmissionUnknownLine, "project", state.Project, "row_key", entry.RowKey,
+				logger.Warn(AdmissionUnknownLine, "project", state.Project, "row_key", entry.RowKey,
 					"signal", textOrNone(change.Signal), "part", textOrNone(change.Part), "what", change.What)
 			}
 			continue

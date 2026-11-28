@@ -343,7 +343,7 @@ func (in *Intake) recordWhole(ctx context.Context, owed owedRead, read *wholeRea
 			return false, 0, err
 		}
 		if !registered {
-			if err := in.admissions.Register(ctx, project); err != nil {
+			if err := in.admissions.Register(ctx, in.logger(), project); err != nil {
 				return false, 0, err
 			}
 		}
@@ -379,7 +379,7 @@ func (in *Intake) recordWhole(ctx context.Context, owed owedRead, read *wholeRea
 	var drain func(context.Context)
 	if good && read.admission != nil {
 		admission := AdmissionState{Project: project, StateID: *read.stateID, Seq: *read.stateSeq, At: read.at, Blocks: []*Admission{read.admission}}
-		if drain, err = in.admissions.Write(ctx, tx, admission); err != nil {
+		if drain, err = in.admissions.Write(ctx, tx, in.logger(), admission); err != nil {
 			return false, 0, fmt.Errorf("write the admission readings of %s: %w", project, err)
 		}
 	}

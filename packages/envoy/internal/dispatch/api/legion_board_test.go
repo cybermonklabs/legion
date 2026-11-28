@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -523,7 +524,7 @@ func readLegionWhole(t *testing.T, database *store.Store, project string) {
 		t.Fatalf("read the Legion setting of %s: %v", project, err)
 	}
 	admissions := evals.AdmissionWriter(evals.New(database, nil, nil, nil), testServerBuild)
-	admissions.Register = func(_ context.Context, project string) error {
+	admissions.Register = func(_ context.Context, _ *slog.Logger, project string) error {
 		t.Errorf("a whole read of %s registers its admission eval, which readLegionWhole's registry, built with no document service, cannot write", project)
 		return fmt.Errorf("register the admission eval of %s: readLegionWhole's registry has no document service", project)
 	}

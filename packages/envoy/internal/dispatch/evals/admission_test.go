@@ -23,8 +23,7 @@ import (
 // skipped by the writer's list of entries (admissionEntries) and logged with their row key, and the
 // 16 others are each in the list once.
 func TestEverySignalEntryHasItsSeriesColAndUnit(t *testing.T) {
-	// Not parallel: it reads the records of the process's default logger, which admissionEntries
-	// logs through.
+	t.Parallel()
 	kinds := []struct {
 		signal, part            *string
 		what, series, col, unit string
@@ -78,7 +77,7 @@ func TestEverySignalEntryHasItsSeriesColAndUnit(t *testing.T) {
 	}
 
 	logs := &logtest.Buffer{}
-	logtest.SetDefault(t, slog.NewJSONHandler(logs, nil))
+	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	record, err := json.Marshal(map[string]any{"cap": 3, "signalChanges": append(changes, unknown...)})
 	if err != nil {
 		t.Fatalf("encode the admission block: %v", err)
@@ -87,7 +86,7 @@ func TestEverySignalEntryHasItsSeriesColAndUnit(t *testing.T) {
 	if err := json.Unmarshal(record, &block); err != nil {
 		t.Fatalf("decode the admission block: %v", err)
 	}
-	entries := admissionEntries(legion.AdmissionState{Project: "EVAL", StateID: "store", Seq: 9, At: at, Blocks: []*legion.Admission{&block, &block}}, newLoggedEntries())
+	entries := admissionEntries(legion.AdmissionState{Project: "EVAL", StateID: "store", Seq: 9, At: at, Blocks: []*legion.Admission{&block, &block}}, newLoggedEntries(), logger)
 	if len(entries) != len(kinds) {
 		t.Fatalf("the writer's list holds %d entries %v, want the %d known kinds once each", len(entries), entries, len(kinds))
 	}

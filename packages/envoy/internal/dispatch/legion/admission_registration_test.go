@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -46,11 +47,11 @@ func (c *registerCalls) of(project string) int {
 func (r *admissionRig) countRegisters() *registerCalls {
 	counted := &registerCalls{calls: map[string]int{}}
 	register := r.admissions.Register
-	r.admissions.Register = func(ctx context.Context, project string) error {
+	r.admissions.Register = func(ctx context.Context, logger *slog.Logger, project string) error {
 		counted.mu.Lock()
 		counted.calls[project]++
 		counted.mu.Unlock()
-		return register(ctx, project)
+		return register(ctx, logger, project)
 	}
 	r.Admit(r.admissions)
 	return counted

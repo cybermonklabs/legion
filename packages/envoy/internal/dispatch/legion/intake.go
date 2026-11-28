@@ -224,7 +224,8 @@ type Intake struct {
 	// time, and lastRetry how long at the most, the wait doubling after each failure between
 	// (untilDone): applyFirstRetry and applyLastRetry. A test shrinks both.
 	firstRetry, lastRetry time.Duration
-	// log is where the intake writes its lines (logger): nil writes each where slog.Default()
+	// log is where the intake writes its lines (logger), and the admission eval's operations it
+	// runs theirs (Admissions.Register, Admissions.Write): nil writes each where slog.Default()
 	// points as the line is written, as every line of the package went before the intake took a
 	// logger, and no program sets it. A test sets it over a handler of its own, so it reads the
 	// lines of its own intake alone: that is what lets the read rule's seeds run beside each other.
@@ -278,15 +279,17 @@ type Admissions struct {
 	// Registered answers whether a row of project's admission eval exists.
 	Registered func(ctx context.Context, project string) (bool, error)
 	// Register registers project's admission eval through the register write, in a transaction of
-	// its own. A registration the register write refuses is logged and answered nil, the state's
-	// readings then skipped as readings of an eval no row holds (Write); an error is one a retry
-	// may fix, and fails the state as an error of Write does.
-	Register func(ctx context.Context, project string) error
+	// its own. A registration the register write refuses is logged on logger, the calling intake's
+	// (Intake.logger), and answered nil, the state's readings then skipped as readings of an eval
+	// no row holds (Write); an error is one a retry may fix, and fails the state as an error of
+	// Write does.
+	Register func(ctx context.Context, logger *slog.Logger, project string) error
 	// Write writes, inside tx and under the eval's lock tx holds (Lock), the readings state gives,
 	// and answers the move of their change rows into the delivery change log, which the caller
 	// runs once tx has committed and never after a rollback, nil where it wrote none. A reading it
-	// cannot write is logged and skipped; an error is one a retry may fix, and rolls tx back.
-	Write func(ctx context.Context, tx pgx.Tx, state AdmissionState) (drain func(context.Context), err error)
+	// cannot write is logged on logger, the calling intake's (Intake.logger), and skipped; an error
+	// is one a retry may fix, and rolls tx back.
+	Write func(ctx context.Context, tx pgx.Tx, logger *slog.Logger, state AdmissionState) (drain func(context.Context), err error)
 }
 
 // AdmissionState is what one state the intake applies reports of admission (Admissions.Write): a

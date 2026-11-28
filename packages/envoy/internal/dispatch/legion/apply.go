@@ -359,7 +359,7 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 	if !errors.Is(err, errUnregistered) {
 		return result, read, err
 	}
-	if err := in.admissions.Register(ctx, attempt.message.Project); err != nil {
+	if err := in.admissions.Register(ctx, in.logger(), attempt.message.Project); err != nil {
 		return outcomeDone, nil, err
 	}
 	return in.applyBatchOnce(ctx, attempt, false)
@@ -470,7 +470,7 @@ func (in *Intake) applyBatchOnce(ctx context.Context, attempt *messageAttempt, g
 		return outcomeDone, nil, err
 	}
 	if len(admission.Blocks) > 0 {
-		if drain, err = in.admissions.Write(ctx, tx, admission); err != nil {
+		if drain, err = in.admissions.Write(ctx, tx, in.logger(), admission); err != nil {
 			return outcomeDone, nil, fmt.Errorf("write the admission readings of %s: %w", project, err)
 		}
 	}

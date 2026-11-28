@@ -75,7 +75,9 @@ type intakeRig struct {
 var noAdmissions = Admissions{
 	Lock:       func(context.Context, pgx.Tx, string) error { return nil },
 	Registered: func(context.Context, string) (bool, error) { return true, nil },
-	Write:      func(context.Context, pgx.Tx, AdmissionState) (func(context.Context), error) { return nil, nil },
+	Write: func(context.Context, pgx.Tx, *slog.Logger, AdmissionState) (func(context.Context), error) {
+		return nil, nil
+	},
 }
 
 // intakeClock is the intake's clock (Intake.now): the wall clock, moved forward by what the test
