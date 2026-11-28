@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.MainEager(m)) }
 
 // daemon is the one writer of a step record: the session of the project's Legion daemon.
 var daemon = model.Actor{Kind: "session", ID: "legion-daemon:LEG"}

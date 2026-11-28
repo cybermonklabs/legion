@@ -26,7 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.MainEager(m)) }
 
 // seedAtOnce seeds each of databases at once, a goroutine each, and answers each run. Each
 // database is its test's own (storetest.Open) and each render its own block ids (renderVersion),

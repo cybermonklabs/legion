@@ -348,10 +348,10 @@ func writeStatus(w http.ResponseWriter, status int) {
 }
 
 // TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
-// storetest.Main.
+// storetest.MainEager.
 func TestMain(m *testing.M) {
 	storetest.SetDefaultParallel()
-	os.Exit(storetest.Main(m))
+	os.Exit(storetest.MainEager(m))
 }
 
 // newGitHubClient serves handler as the GitHub API and returns an App client

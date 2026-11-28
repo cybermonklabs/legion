@@ -22,7 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.MainEager(m)) }
 
 // serverMain is where the server registers the schema channel. The test reads it, because what
 // makes the reinstall safe is that the registration is a Wake and not a Handle.

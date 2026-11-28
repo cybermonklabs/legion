@@ -26,10 +26,10 @@ import (
 )
 
 // TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
-// storetest.Main.
+// storetest.MainEager.
 func TestMain(m *testing.M) {
 	storetest.SetDefaultParallel()
-	os.Exit(storetest.Main(m))
+	os.Exit(storetest.MainEager(m))
 }
 
 // The two builds the fleet rolls between, and the relation kinds each writes as tuples: the two

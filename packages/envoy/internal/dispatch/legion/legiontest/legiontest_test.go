@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.MainEager(m)) }
 
 // TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked: a seed of the default history, read
 // back through metrics.ReadProject and shared out by metrics.ProjectFactsClosed, grown to the

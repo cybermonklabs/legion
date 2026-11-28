@@ -470,10 +470,10 @@ func appendEvent(t *testing.T, database *store.Store, broker *Broker, event mode
 }
 
 // TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
-// storetest.Main.
+// storetest.MainEager.
 func TestMain(m *testing.M) {
 	storetest.SetDefaultParallel()
-	os.Exit(storetest.Main(m))
+	os.Exit(storetest.MainEager(m))
 }
 
 // statementLog records the text of every statement a pool's connections send, a pipeline's one by

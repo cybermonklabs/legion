@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.MainEager(m)) }
 
 // hourTolerance is how far apart two readings of one hour figure may stand: 0.1 hour, which is
 // what R1 holds the two sides of its check to. Every count beside it is compared exactly.
