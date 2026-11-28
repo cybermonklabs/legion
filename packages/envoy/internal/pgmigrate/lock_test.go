@@ -295,6 +295,37 @@ func TestALockingsCensusReadsItsTimeout(t *testing.T) {
 	}
 }
 
+// A Locking's census runs under the Locking's Timeout, the lock_timeout its runner sets, and does
+// not only name it: the migration's own census, which runs inside the census's transaction, counts
+// a row wherever current_setting('lock_timeout') is not the Locking's. A census whose transaction
+// kept production's 5 s under a Locking of 300 ms counts 1 here, and still passes
+// TestALockingsCensusReadsItsTimeout, which writes its refusal's words from the Locking and waits
+// the held table out at whatever lock_timeout Postgres was given.
+func TestALockingsCensusRunsUnderItsTimeout(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	conn := connect(t, ctx, testpg.URL(t))
+	if _, err := conn.Exec(ctx, "create table schema_migrations (version bigint primary key); insert into schema_migrations values (1)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		locking Locking
+		want    string
+	}{{Locking{Timeout: 300 * time.Millisecond}, "300ms"}, {Locking{}, "5s"}} {
+		census := fmt.Sprintf("select count(*) from (select 1) as one where current_setting('lock_timeout') <> '%s'", row.want)
+		report, err := row.locking.Census(ctx, conn, []Migration{{Version: 2, Name: "0002_note.up.sql", SQL: "select 1", Census: census, CensusName: "0002_note.census.sql"}}, "schema_migrations", CensusOptions{})
+		if err != nil {
+			t.Fatalf("census under lock_timeout %s: %v", row.want, err)
+		}
+		if len(report.Pending) != 1 {
+			t.Fatalf("the census under lock_timeout %s read %d pending migrations, want 1", row.want, len(report.Pending))
+		}
+		if entry := report.Pending[0]; entry.Count == nil || *entry.Count != 0 || len(entry.Refusals) != 0 {
+			t.Errorf("a census that counts a row where lock_timeout is not %s refused %q: the census's transaction did not run under the Locking's Timeout", row.want, entry.Refusals)
+		}
+	}
+}
+
 // The zero Locking's timeout error names production's five seconds, the bound every migration of
 // a production runner waits under unless it sets its own. Here the migration sets its own, 100 ms,
 // with SET LOCAL as a migration does, and then waits on a table another session holds, so Postgres
