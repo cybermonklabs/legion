@@ -12,6 +12,8 @@ package main
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -190,6 +192,54 @@ func TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem(t *testing.T) {
 					return
 				}
 				wantNamedNotPrinted(t, "stderr", stderr, []string{row.says + cipheraddr.WordsNotPrinted}, planted, "demopass9z")
+			})
+		}
+	}
+}
+
+// TestTheMemoryStoresFilePrintsOnlyAsItsAddressLetsIt: memory_secrets_file is a field of the
+// broker's settings, so beside an AGENT_SECRETS_URL that carries a credential no line prints it:
+// not the line that names the store the form writes, nor a refusal of a file that is missing or is
+// no memory secrets file, which each name the file as cipheraddr.WordsNotPrinted. Control: beside a
+// clean address each prints the file, so the check sees it.
+func TestTheMemoryStoresFilePrintsOnlyAsItsAddressLetsIt(t *testing.T) {
+	planted := "hunter2pw-" + "memoryfile-" + "5c2e"
+	for _, row := range []struct {
+		name    string
+		content string // "" leaves the file missing
+		exit    int
+	}{
+		{"a file that exists", `{"secrets": []}`, 0},
+		{"a file that does not exist", "", 1},
+		{"a file that is no memory secrets file", "not json", 1},
+	} {
+		for _, clean := range []bool{false, true} {
+			name := row.name + ", beside a credentialed address"
+			if clean {
+				name = "control: " + row.name + ", beside a clean address"
+			}
+			t.Run(name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), planted+".json")
+				if row.content != "" {
+					if err := os.WriteFile(path, []byte(row.content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				startSecretBrokerWith(t, memorySettings(path), func(string) Reread { return Reread{} })
+				if !clean {
+					t.Setenv("AGENT_SECRETS_URL", strings.Replace(brokerURLFromEnv(t), "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))
+				}
+				_, stderr, code := runSecret("list")
+				if code != row.exit {
+					t.Fatalf("exit %d, stderr %q; want %d", code, stderr, row.exit)
+				}
+				if clean {
+					if !strings.Contains(stderr, path) {
+						t.Fatalf("stderr %q does not name the file %s", stderr, path)
+					}
+					return
+				}
+				wantNamedNotPrinted(t, "stderr", stderr, []string{cipheraddr.WordsNotPrinted}, planted, "demopass9z")
 			})
 		}
 	}

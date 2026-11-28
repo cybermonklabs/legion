@@ -53,9 +53,11 @@ type Store struct {
 	version map[string]uint64
 	serial  uint64
 	// path is the file an Open store follows, and file the bytes its secrets were last read from;
-	// empty for a New store.
-	path string
-	file []byte
+	// empty for a New store. shown is path as a message prints it: path itself for the broker's
+	// own file, and, for a file the broker's settings named to the CLI, what the broker's address
+	// lets its answer print (OpenWriter). Every error names the file as shown, never as path.
+	path, shown string
+	file        []byte
 	// next is the error the next call of each kind answers (FailNext), held the error every call
 	// of each kind answers until cleared (Fail), and calls the calls of each kind made so far.
 	next, held map[string]error

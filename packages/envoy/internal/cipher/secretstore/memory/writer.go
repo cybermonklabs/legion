@@ -83,12 +83,24 @@ func SwapHooks(h Hooks) (restore func()) {
 // printed it for a store they did not know.
 func (Backend) Kind() string { return "memory" }
 
-// Place is "file <path>", the memory secrets file the settings name, "" for none.
+// Place is "file <path>", the memory secrets file the settings name, as their address lets it
+// print (shownFile), "" for none.
 func (Backend) Place(s secretstore.Settings) string {
 	if path := s.Fields[settingsFile]; path != "" {
-		return "file " + s.Words(path)
+		return "file " + shownFile(s, path)
 	}
 	return ""
+}
+
+// shownFile is path, a field of the broker's settings, as a message prints it: what the broker's
+// address lets its answer print (Settings.Words), since whoever answers at an address that is not
+// clean can repeat its credential in any field. Settings no address answered (no Words) print it
+// as not printed.
+func shownFile(s secretstore.Settings, path string) string {
+	if s.Words == nil {
+		return "(the file the broker's settings name, not printed)"
+	}
+	return s.Words(path)
 }
 
 // HelpRows is none: the memory store reads no environment variable of the CLI's.
@@ -102,7 +114,9 @@ func (Backend) ProfileHint() (secretstore.ProfileHint, bool) { return secretstor
 const settingsFile = "memory_secrets_file"
 
 // OpenWriter opens the writer over the file the broker's settings name (memory_secrets_file). On a
-// system without a file lock between processes it refuses before any write (fileLockMissing).
+// system without a file lock between processes it refuses before any write (fileLockMissing). The
+// writer reads and writes the file at its path, and every line and error it makes names the file
+// as shownFile prints it.
 func (Backend) OpenWriter(_ context.Context, s secretstore.Settings, _ secretstore.WriterOptions) (secretstore.Writer, error) {
 	if err := fileLockMissing(); err != nil {
 		return nil, err
@@ -111,7 +125,7 @@ func (Backend) OpenWriter(_ context.Context, s secretstore.Settings, _ secretsto
 	if path == "" {
 		return nil, errors.New("the broker's settings name no memory_secrets_file, so there is no memory store to write")
 	}
-	store, err := Open(path)
+	store, err := openShown(path, shownFile(s, path))
 	if err != nil {
 		return nil, err
 	}
@@ -202,14 +216,14 @@ func lostAnswer(call string) error {
 func (w *Writer) edit(change func(secrets []Secret) ([]Secret, error)) error {
 	unlock, err := lockFile(w.path + ".lock")
 	if err != nil {
-		return fmt.Errorf("lock %s: %w", w.path, err)
+		return fileFailure("lock", w.shown, err)
 	}
 	defer unlock()
 	data, err := os.ReadFile(w.path)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", w.path, err)
+		return fileFailure("read", w.shown, err)
 	}
-	secrets, err := parseFile(w.path, data)
+	secrets, err := parseFile(w.shown, data)
 	if err != nil {
 		return err
 	}
@@ -218,7 +232,7 @@ func (w *Writer) edit(change func(secrets []Secret) ([]Secret, error)) error {
 		return err
 	}
 	if err := writeWhole(w.path, secrets); err != nil {
-		return err
+		return fileFailure("write", w.shown, err)
 	}
 	w.Store.mu.Lock()
 	defer w.Store.mu.Unlock()
@@ -226,7 +240,8 @@ func (w *Writer) edit(change func(secrets []Secret) ([]Secret, error)) error {
 }
 
 // writeWhole writes secrets as path's whole new content: a file beside it, mode 0600, renamed over
-// it, so a reader of path reads the old file or the new one and never part of either.
+// it, so a reader of path reads the old file or the new one and never part of either. Its errors
+// name the paths the calls were handed; its caller prints them through fileFailure.
 func writeWhole(path string, secrets []Secret) error {
 	entries := make([]fileSecret, 0, len(secrets))
 	for _, s := range secrets {
@@ -279,8 +294,8 @@ func tagEtag(tags map[string]string) string {
 	return b.String()
 }
 
-// Identity is "memory store: <file>".
-func (w *Writer) Identity() string { return "memory store: " + w.path }
+// Identity is "memory store: <file>", the file as the broker's address lets it print.
+func (w *Writer) Identity() string { return "memory store: " + w.shown }
 
 // ChooseAnother says how to write another memory store.
 func (w *Writer) ChooseAnother() string {
