@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  The listener publishes a completed or running `workflow_run` of a repository's default branch a
+  second time, on `notifications.github.<owner>.<repo>.default_branch.workflow.<file>.<action>.<event>`,
+  when the run's `head_branch` is the repository's `default_branch` and its head repository is the
+  repository itself (not a fork). The copy goes out before the `workflow` envelope with the same
+  payload and dedupe key, so a subscriber hears only the runs of the trigger events it names, and a
+  session that follows both topics is shown the run once. A copy whose subject would pass the bus's
+  subject limit is not published and the listener logs the run; the `workflow` envelope still goes
+  out. The `workflow` payload now carries the run's trigger event as `event`, the listener reads a
+  subscription to the new family as the repository it names without a warning, and the
+  `github mention detected` line is logged only for a comment or a review that mentions the trigger.
+time: 2026-11-27T18:29:15Z
+custom:
+    Issue: INFRA-4122

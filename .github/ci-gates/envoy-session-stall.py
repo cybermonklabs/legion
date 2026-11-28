@@ -1,47 +1,53 @@
-# The envoy_session_stall filter's gate: what job envoy-session-stall reads. Its steps are in the
-# legs of envoy-session-stall-legs (STALL_LEGS) of the file it calls (STALL_FILE); the job
-# envoy-session-stall there only restates their result. So each citation names the legs' job.
+# The envoy_session_stall filter's gate: what job envoy-session-stall reads.
 GATE = gate("envoy_session_stall", STALL, runs=[
     script_run("packages/envoy-client/test/envoy-stack.ts",
                'const spawned = Bun.spawn(["go", "build", "-o", `${build.bin}${path.sep}`, ...build.packages], {',
                f"buildGoBinaries, which both rigs of that directory call; this one's packages are the Envoy "
-               f"stack's, built for {at(STALL_LEGS, STALL_CLIENT, STALL_FILE)}, "
-               f"{at(STALL_LEGS, 'Stall test of pi-envoy', STALL_FILE)} and "
-               f"{at(STALL_LEGS, 'Stall test of claude-envoy', STALL_FILE)}", ENVOY,
-               ["./internal/testnats/cmd/natsd", "./cmd/listener"], mode="build"),
+               f"stack's, built for {at(STALL, STALL_CLIENT)}, {at(STALL, 'Stall test of pi-envoy')} and "
+               f"{at(STALL, 'Stall test of claude-envoy')}", ENVOY, ["./internal/testnats/cmd/natsd", "./cmd/listener"], mode="build"),
     script_run("packages/envoy-client/test/dispatch-stack.ts",
                'packages: ["./cmd/dispatch"],',
                f"the packages that rig hands buildGoBinaries, run by "
-               f"{at(STALL_LEGS, 'Design-gate advice of the real CLI against a real Dispatch', STALL_FILE)} and "
-               f"{at(STALL_LEGS, CI_RESULTS_STEP, STALL_FILE)}",
+               f"{at(STALL, 'Design-gate advice of the real CLI against a real Dispatch')} and "
+               f"{at(STALL, CI_RESULTS_STEP)}",
                ENVOY, ["./cmd/dispatch"], mode="build"),
     script_run("packages/envoy-client/test/ci-results-stack.ts",
                'packages: ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./cmd/dev-proxy-stands"],',
                f"the secrets brokers, cluster token issuer and the airlock's authority and fronts that rig hands "
-               f"buildGoBinaries, run by {at(STALL_LEGS, CI_RESULTS_STEP, STALL_FILE)} and "
-               f"{at(STALL_LEGS, CI_RESULTS_REFUSAL_STEP, STALL_FILE)}",
+               f"buildGoBinaries, run by {at(STALL, CI_RESULTS_STEP)} and "
+               f"{at(STALL, CI_RESULTS_REFUSAL_STEP)}",
                ENVOY, ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./cmd/dev-proxy-stands"], mode="build"),
     script_run("packages/envoy-client/test/ci-results-stack.ts",
                'const spawned = Bun.spawn(["go", "build", "-o", binary, "./cmd/cipher"], {',
                f"buildAgentSecrets, the results-grant producer that rig builds as agent-secrets, run by "
-               f"{at(STALL_LEGS, CI_RESULTS_STEP, STALL_FILE)} and {at(STALL_LEGS, CI_RESULTS_REFUSAL_STEP, STALL_FILE)}",
+               f"{at(STALL, CI_RESULTS_STEP)} and {at(STALL, CI_RESULTS_REFUSAL_STEP)}",
                ENVOY, ["./cmd/cipher"], mode="build"),
     script_run("packages/envoy-client/src/__tests__/nats-credential.test.ts",
                'packages: ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"],',
                f"the packages that test hands buildGoBinaries, run by "
-               f"{at(STALL_LEGS, 'Broker credential tests on a hub behind the auth service', STALL_FILE)}",
+               f"{at(STALL, 'Broker credential tests on a hub behind the auth service')}",
                ENVOY, ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"], mode="build"),
-    ceiling_run(STALL_LEGS, STALL_FILE),
+    step_run(STALL, "Build once the Go commands the suites below build",
+             "go build ./cmd/dispatch ./internal/testnats/cmd/calloutd ./cmd/cipherd ./cmd/dev-oidc-issuer ./cmd/dev-proxy-stands ./cmd/cipher",
+             ENVOY, ["./cmd/dispatch", "./internal/testnats/cmd/calloutd", "./cmd/cipherd", "./cmd/dev-oidc-issuer",
+                     "./cmd/dev-proxy-stands", "./cmd/cipher"], mode="build"),
+    ceiling_run(STALL),
 ], reads=reads(
-    ("packages/envoy-client/**", f"{at(STALL_LEGS, STALL_CLIENT, STALL_FILE)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),
-    ("packages/pi-envoy/**", at(STALL_LEGS, "Stall test of pi-envoy", STALL_FILE)),
+    ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),
+    ("packages/pi-envoy/**", at(STALL, "Stall test of pi-envoy")),
     (TEST_FIXTURES_SRC, "packages/pi-envoy/extensions/envoy.test.ts imports @legion/test-fixtures/environment"),
-    ("packages/claude-envoy/**", f"{at(STALL_LEGS, 'Stall test of claude-envoy', STALL_FILE)} (tests/envoy-channel-stall.test.ts runs bin/envoy-channel.ts)"),
+    ("packages/claude-envoy/**", f"{at(STALL, 'Stall test of claude-envoy')} (tests/envoy-channel-stall.test.ts runs bin/envoy-channel.ts)"),
     ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
-    ("packages/contracts/**", at(STALL_LEGS, "Build contracts for the stall suites", STALL_FILE)),
-    (BROKER_CLIENT_SRC, f"{at(STALL_LEGS, 'Stall test of claude-envoy', STALL_FILE)} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/cipher-client's seven modules through packages/envoy-client/src/broker-credential.ts's imports of brokerTokenClient, chooseSignIn and isFinalRefusal"),
-) + ceiling_reads(STALL_LEGS, STALL_FILE) + service_settings_reads(STALL_LEGS, STALL_FILE)
-  + setup_go(STALL_LEGS, f"{ENVOY}/go.mod", STALL_FILE) + bun_job(STALL_LEGS, STALL_FILE))
+    ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
+    (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/cipher-client's seven modules through packages/envoy-client/src/broker-credential.ts's imports of brokerTokenClient, chooseSignIn and isFinalRefusal"),
+    # The pool every suite step queues its suite through, and whose wait is the job's verdict on
+    # them, so a change to the pool must start this job.
+    (".github/scripts/harness-pool.sh",
+     f"{at(STALL, HARNESS_POOL_WAIT_STEP)}, and each suite step above it queues its suite through it"),
+    (".github/scripts/harness_line_times.py",
+     f"{at(STALL, HARNESS_POOL_WAIT_STEP)}: .github/scripts/harness-pool.sh starts it beside each suite it runs, on that suite's log"),
+    (".github/actions/harness-times-upload/**", at(STALL, "Upload the harness case times")),
+) + ceiling_reads(STALL) + service_settings_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL))
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_session_stall held packages/envoy/** by hand before the filters were computed: it selected 1962 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/pi-shared/**', "filter envoy_session_stall held packages/pi-shared/** by hand before the filters were computed: it selected 13 file(s) no other read of this gate declares"),

@@ -6,16 +6,25 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 )
 
+// A client built without WithRateLimitClock bounds the write of a limit to the shared ledger on
+// the real clock, which the synctest bubble fakes, as a deployment's does.
 func TestLimitRecordContextEndsABlockedWriteOnItsOwnDeadline(t *testing.T) {
 	t.Parallel()
+	_, pemText := testKeyPEM(t)
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, "")
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
 	synctest.Test(t, func(t *testing.T) {
 		type valueKey struct{}
 		caller, cancelCaller := context.WithCancel(context.WithValue(context.Background(), valueKey{}, "kept"))
 		defer cancelCaller()
 		started := time.Now()
-		record, cancelRecord := limitRecordContext(caller)
+		record, cancelRecord := client.limitRecordContext(caller)
 		defer cancelRecord()
 		ended := make(chan error, 1)
 		go func() {
@@ -34,15 +43,15 @@ func TestLimitRecordContextEndsABlockedWriteOnItsOwnDeadline(t *testing.T) {
 			t.Fatalf("the ledger context lost the caller's value: %v", got)
 		}
 		deadline, bounded := record.Deadline()
-		if !bounded || deadline.Sub(started) != limitRecordTimeout {
-			t.Fatalf("the ledger context's deadline is %v (bounded=%v), want exactly %s after %v", deadline, bounded, limitRecordTimeout, started)
+		if !bounded || deadline.Sub(started) != LimitRecordTimeout {
+			t.Fatalf("the ledger context's deadline is %v (bounded=%v), want exactly %s after %v", deadline, bounded, LimitRecordTimeout, started)
 		}
 
-		time.Sleep(limitRecordTimeout - time.Nanosecond)
+		time.Sleep(LimitRecordTimeout - time.Nanosecond)
 		synctest.Wait()
 		select {
 		case err := <-ended:
-			t.Fatalf("the blocked ledger write ended before its %s budget: %v", limitRecordTimeout, err)
+			t.Fatalf("the blocked ledger write ended before its %s budget: %v", LimitRecordTimeout, err)
 		default:
 		}
 		time.Sleep(time.Nanosecond)

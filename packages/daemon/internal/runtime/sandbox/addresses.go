@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -68,16 +69,26 @@ type recordedAddress struct {
 // environmentAddresses are what a generation of role carries in its environment that a daemon
 // restarted under another configuration would hand otherwise: handedAddresses but the stream its
 // launcher dials, and, for the controller, the project's Slack channels (slackChannelsVariable),
-// so a changed list relaunches it, resuming its session, as a moved address does. enrolled is the
-// one enrollment decision for the generation (Runtime.enrollsIn), which decides its
-// AGENT_SECRETS_URL exactly as it decides the two variables mainEnvironment sets.
+// so a changed list relaunches it, resuming its session, as a moved address does. The controller's
+// also hold the project's watched workflows (watchedWorkflowsAddress), which no variable carries:
+// its plugin reads them from its registration's answer, which a generation is given once, so a
+// changed list relaunches it the same way and the new generation's registration answers the new
+// list. enrolled is the one enrollment decision for the generation (Runtime.enrollsIn), which
+// decides its AGENT_SECRETS_URL exactly as it decides the two variables mainEnvironment sets.
 func (r *Runtime) environmentAddresses(role claim.Role, enrolled bool) []handedAddress {
 	addresses := slices.DeleteFunc(r.handedAddresses(enrolled), func(a handedAddress) bool { return a.name == connectFlag })
 	if role == claim.RoleController {
-		addresses = append(addresses, handedAddress{slackChannelsVariable, r.slackChannelsValue()})
+		addresses = append(addresses,
+			handedAddress{slackChannelsVariable, r.slackChannelsValue()},
+			handedAddress{watchedWorkflowsAddress, r.controllerWatchedWorkflows})
 	}
 	return addresses
 }
+
+// watchedWorkflowsAddress names the project's watched workflows in the controller's address
+// record. It is no variable, though the record's field is named `variable`: the runtime sets
+// nothing of the list in any environment.
+const watchedWorkflowsAddress = "watched_workflows"
 
 // slackChannelsValue is LEGION_SLACK_CHANNELS as the controller is told it: the project's channels,
 // comma-joined, "" for none.
@@ -85,13 +96,37 @@ func (r *Runtime) slackChannelsValue() string {
 	return strings.Join(r.controllerSlackChannels, ",")
 }
 
+// watchedWorkflowsValue is the project's watched workflows as the controller's address record
+// holds them: each entry `<owner>/<repo>/<file>@<event>,<event>` with its events sorted, the
+// entries sorted by owner, repository and file, each compared as the file spells it, and
+// space-joined; "" for none. Owner and repository keep their case, since Envoy names a run's topic
+// with GitHub's spelling and a respelled entry subscribes another topic. One list written in
+// another order is one value, so it relaunches nothing. configureProber computes it once, from
+// Options.ControllerWatchedWorkflows.
+func watchedWorkflowsValue(workflows []WatchedWorkflow) string {
+	entries := slices.Clone(workflows)
+	slices.SortFunc(entries, func(a, b WatchedWorkflow) int {
+		return cmp.Or(
+			strings.Compare(a.Repository.Owner(), b.Repository.Owner()),
+			strings.Compare(a.Repository.Name(), b.Repository.Name()),
+			strings.Compare(a.File, b.File),
+		)
+	})
+	written := make([]string, len(entries))
+	for i, entry := range entries {
+		written[i] = entry.Repository.String() + "/" + entry.File + "@" + strings.Join(slices.Sorted(slices.Values(entry.Events)), ",")
+	}
+	return strings.Join(written, " ")
+}
+
 // addressName is how an address handed now is named in a record and an observation's detail. The
-// channel list is no URL and no credential, so it is named as it is, "(none)" when empty.
+// channel list and the watched workflows are no URL and no credential, so each is named as it is,
+// "(none)" when empty.
 func (r *Runtime) addressName(a handedAddress) string {
 	switch a.name {
 	case "ENVOY_NATS_URL":
 		return namedNATSURLs(r.natsURLs)
-	case slackChannelsVariable:
+	case slackChannelsVariable, watchedWorkflowsAddress:
 		if a.value == "" {
 			return "(none)"
 		}
@@ -188,7 +223,10 @@ func describeMoved(moved []movedAddress) string {
 // its update round. A Sandbox with no record of role, or a record of another generation, has
 // nothing to compare: a generation started before records existed is never read as stale for want
 // of one. A record that cannot be read is an error, which proves nothing about the generation's
-// addresses: evaluate reads it as stale, and the relaunch that follows writes a fresh one.
+// addresses: evaluate reads it as stale, and the relaunch that follows writes a fresh one. A
+// record without the watched workflows was written by a daemon before the list, which gave its
+// controller none: it moved nothing while the project watches none, so an upgrade relaunches no
+// controller for a list it does not need, and moved once the project watches one.
 //
 // dispatchToken is, from the same read, whether the generation's start carried DISPATCH_TOKEN
 // (recordedDispatchToken), which no comparison here reads: a generation with no record of its
@@ -208,6 +246,8 @@ func (r *Runtime) movedEnvironment(s *sandbox, pod *corev1.Pod, role claim.Role,
 	for _, a := range r.environmentAddresses(role, r.enrollsIn(&pod.Spec, role)) {
 		i := slices.IndexFunc(record.Addresses, func(held recordedAddress) bool { return held.Variable == a.name })
 		switch {
+		case i < 0 && a.name == watchedWorkflowsAddress && a.value == "":
+			// A record from before the list, and no list now: the controller was given none.
 		case i < 0:
 			moved = append(moved, movedAddress{a.name, "(unrecorded)", r.addressName(a)})
 		case record.Addresses[i].SHA256 != addressDigest(a.value):

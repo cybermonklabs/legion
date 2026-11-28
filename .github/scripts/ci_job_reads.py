@@ -2628,9 +2628,6 @@ BROWSER_SUITE_STEPS = (
     f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)}"
 )
 STALL = "envoy-session-stall"
-# The suites run in the legs of this job of STALL's file; STALL there only restates their result.
-STALL_LEGS = "envoy-session-stall-legs"
-STALL_FILE = job_file(STALL)
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 CI_RESULTS_STEP = "A CI job's result through the real broker and a real Dispatch"
 CI_RESULTS_REFUSAL_STEP = "A CI job's refused result prints no workflow command"
@@ -2641,7 +2638,7 @@ LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl
 # scripts/approve/scan.ts.
 SCAN_TESTS_STEP = "Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)"
 # The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
-# and is the verdict on them; envoy-go-checks and the test job each end with one.
+# and is the verdict on them; envoy-go-checks, the test job and envoy-session-stall each have one.
 HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run

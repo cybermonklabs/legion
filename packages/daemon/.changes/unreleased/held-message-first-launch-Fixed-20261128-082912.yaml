@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A merge-forward message, a merge-holds change and a merge-queue removal wait for their role''s first launch to register its session before the daemon publishes them. The move into `merging` queues the merger''s ask in the same transaction as the merger''s start. Where a session already held the merger''s role at the Envoy listener before that start launched, the ask was delivered to that session and credited to no launch, and the ready of the merger''s first launch asked again, so the merger was told one merge forward twice.'
+time: 2026-11-28T08:29:12.862824864Z
+custom:
+    Issue: held-message-first-launch
