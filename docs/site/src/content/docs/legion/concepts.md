@@ -548,7 +548,9 @@ Legion uses GitHub's own review mechanisms rather than labels:
   Legion footer, and its review decides the round only when that head is the pull request's current
   head: GitHub rewrites a review's `commit_id` to the current head, so the footer is the review's
   own word for the code it read, and a person's review, which carries no footer, decides by its
-  webhook alone. An approval counts for the head it names and no
+  webhook alone. A person's approval ends the round only once the reviewer has completed its round:
+  an agent can approve on a person's account, so until the completion a review the reviewer
+  submits decides the round instead. An approval counts for the head it names and no
   other, since any push may change code, and a push on its way from that head leaves the approval
   undecided until the new head arrives; anything else sets it aside, and only an approval of the
   head itself or a request for changes ends the round. An approval does not end it on its own:

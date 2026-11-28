@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  The request line of a search carries `search_key`, the first 16 hex characters of an HMAC-SHA256
+  of the normalized request under a key the server makes at each start and never writes out, and
+  `search_shape`, the statement that ran (`keyword`, `keyword-degraded`, `meaning-every`,
+  `meaning-scoped` or `meaning-joined`, with `+broadened` when the broadened run answered, or
+  `none`; `meaning-as-of` for the meaning statement of a search at a past time). The normalized
+  request holds the cut of a search at a past time, so the same search at two cuts, or at a cut
+  and at the present, carries two keys. The line still holds no query text, and no hash a reader
+  can reverse.
+time: 2026-11-24T07:00:12Z
+custom:
+    Issue: pr5293

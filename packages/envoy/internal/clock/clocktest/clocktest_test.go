@@ -25,9 +25,18 @@ var epoch = time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 // in an ordinary run.
 const childEnv = "CLOCKTEST_CHILD"
 
-// childTimeout is the -timeout a parent gives its child: the child's move, or its join, gives up
-// 5 s into the run, 30 s before its deadline.
+// childTimeout is the -timeout TestAStartedMoveThatGivesUpFailsTheTestByName gives its child: the
+// child's join gives up 5 s into the run, 30 s (the shared wait's margin) before its deadline. The
+// join's failure names its last reading of the move, so the 5 s is room, on a loaded machine, for
+// the child to start and for its move to fire the timer and wait for the function before the join
+// gives up; a join that gave up as it began could read the move before it waits and fail with
+// another line.
 const childTimeout = "35s"
+
+// moveChildTimeout is the -timeout TestAMoveGivesUpNamingAFunctionThatNeverReturns gives its child:
+// the margin itself, so the child's move gives up as it begins, 30 s before the deadline where Go's
+// alarm would end it. The move's give-up names no reading, so the child needs no room before it.
+const moveChildTimeout = "30s"
 
 // Advance fires every timer due by the moment it moves to, earliest first and the timers due
 // together in the order they were armed, each reading its own deadline as the fake's time; a
@@ -108,12 +117,12 @@ func TestAMoveWaitsForTheFunctionItFired(t *testing.T) {
 func TestAMoveGivesUpNamingAFunctionThatNeverReturns(t *testing.T) {
 	// The child is waited for through Returns, and runs on testwait.Context, which ends it where
 	// that wait gives up, so this row cannot outlast its own binary's deadline.
-	child := exec.CommandContext(testwait.Context(t), os.Args[0], "-test.run=^TestAMoveWhoseFunctionNeverReturnsChild$", "-test.timeout="+childTimeout, "-test.v")
+	child := exec.CommandContext(testwait.Context(t), os.Args[0], "-test.run=^TestAMoveWhoseFunctionNeverReturnsChild$", "-test.timeout="+moveChildTimeout, "-test.v")
 	child.Env = append(os.Environ(), childEnv+"=1")
 	var stdout, stderr bytes.Buffer
 	child.Stdout, child.Stderr = &stdout, &stderr
 	var ran error
-	testwait.Returns(t, "the child under -timeout "+childTimeout+" to exit", func() { ran = child.Run() })
+	testwait.Returns(t, "the child under -timeout "+moveChildTimeout+" to exit", func() { ran = child.Run() })
 	if ran == nil {
 		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", &stdout, &stderr)
 	}
@@ -660,9 +669,9 @@ func TestWithTimeoutCauseEndsAsTheContextPackagesDoes(t *testing.T) {
 }
 
 // TestAMoveWhoseFunctionNeverReturnsChild is the child of
-// TestAMoveGivesUpNamingAFunctionThatNeverReturns, run under -timeout 35s: its move fires a
-// function that never returns, and gives up 5 s in. It runs only when the parent re-executes this
-// binary.
+// TestAMoveGivesUpNamingAFunctionThatNeverReturns, run under -timeout 30s: its move fires a
+// function that never returns, and gives up as it begins, 30 s before its deadline. It runs only
+// when the parent re-executes this binary.
 func TestAMoveWhoseFunctionNeverReturnsChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestAMoveGivesUpNamingAFunctionThatNeverReturns")

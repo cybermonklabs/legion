@@ -429,13 +429,20 @@ func (r *doneByChecksRig) retroAt(head string) api.HandoffCompleteRequest {
 }
 
 // reviewOf is the reviewer of issue, a member of the walk's tree, taking its task and ending its
-// turn, and a person submitting state on pull request number at head; issue then reaches next.
+// turn, and then the round's decision of state on pull request number at head: an approval by the
+// reviewer itself (approveAt), since a person's approval ends the round only once the reviewer has
+// completed it (workflow's reviewRound), and any other state by a person (publishReviewAt); issue
+// then reaches next.
 func (r *doneByChecksRig) reviewOf(issue string, number int, head, state string, next phase.Phase) {
 	r.t.Helper()
 	c := r.workerOf(issue, claim.RoleReviewer)
 	r.taskOf(c)
 	c.endTurn()
-	r.publishReviewAt(number, head, state)
+	if state == "APPROVED" {
+		r.approveAt(c, number, head)
+	} else {
+		r.publishReviewAt(number, head, state)
+	}
 	r.waitPhaseOf(issue, next)
 }
 

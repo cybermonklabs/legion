@@ -26,7 +26,7 @@ export function HeaderSlot({ issue, route }: SlotProps): ReactNode {
   const { drawn, state } = useIssueDetail(route);
   const issueState = stateForIssue(state.data, issue.key);
   const writes = useIssueHeaderWrites(issue, issueState);
-  const priorityWrite = useIssuePriority(issue.key, issuePriority(issue.priority));
+  const priorityWrite = useIssuePriority(issue.key, issuePriority(issue));
   useHeaderKeys(priorityWrite);
   const openDetailsAt = useOpenDetailsAt();
   return (

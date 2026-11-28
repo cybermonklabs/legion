@@ -432,7 +432,9 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // In reviewing, after the architect's notice, the merge settles the review round (settleRound):
 // an approval that stands on the head the pull request merged at ends the round and moves the
 // issue to its task's next step (accepting, in the default steps), since a merged pull request
-// leaves the round nothing to wait on (reviewRound). Without this, an approval that came before
+// leaves the round nothing to wait on (reviewRound). A person's approval
+// (record.ReviewDecision.Person) still waits for the reviewer's completion at that head first.
+// Without this, an approval that came before
 // the merge would hold the issue in
 // reviewing: no read of the merged pull request ever comes (mergeStateOwed), and once the
 // reviewer has completed no other fact settles the round. An approval of a head other than the

@@ -351,15 +351,36 @@ func (r *stepRecordsRig) complete(c *stepClaimant, req api.HandoffCompleteReques
 	return status, string(body)
 }
 
-// review is the reviewer taking its task and answering, and then a person submitting state on the
-// walk's pull request (publishReview); the issue then reaches next.
+// review is the reviewer taking its task and answering, and then the round's decision of state on
+// the walk's pull request: a request for changes by a person (publishReview), an approval by the
+// reviewer itself (approve), since a person's approval ends the round only once the reviewer has
+// completed it (workflow's reviewRound). The issue then reaches next.
 func (r *stepRecordsRig) review(state string, next phase.Phase) {
 	r.t.Helper()
 	c := r.worker(claim.RoleReviewer)
 	c.take()
 	c.endTurn()
-	r.publishReview(r.number, state)
+	if state == "APPROVED" {
+		r.approve(c, r.number)
+	} else {
+		r.publishReview(r.number, state)
+	}
 	r.waitPhase(next)
+}
+
+// approve is approveAt stepRecordsHead, the head every walk of the rig works at.
+func (r *stepRecordsRig) approve(reviewer *stepClaimant, number int) {
+	r.t.Helper()
+	r.approveAt(reviewer, number, stepRecordsHead)
+}
+
+// approveAt is reviewer, the walk's reviewer, approving pull request number at head with a review
+// of its own: the review App's, whose Legion footer names the session the reviewer's claim
+// registered and that head (workflow's byReviewer). It ends the round with no completion, where a
+// person's approval waits for one.
+func (r *stepRecordsRig) approveAt(reviewer *stepClaimant, number int, head string) {
+	r.t.Helper()
+	r.publishReviewBy(number, head, "APPROVED", reviewAppLogin, legionFooter(reviewer.session, head))
 }
 
 // publishReview is publishReviewAt stepRecordsHead, the head every walk of the rig works at.
@@ -371,12 +392,19 @@ func (r *stepRecordsRig) publishReview(number int, state string) {
 // publishReviewAt is a person with write access submitting state on pull request number at head,
 // as Envoy relays GitHub's review.
 func (r *stepRecordsRig) publishReviewAt(number int, head, state string) {
+	r.t.Helper()
+	r.publishReviewBy(number, head, state, stepRecordsPerson, "")
+}
+
+// publishReviewBy is author submitting state on pull request number at head, the body naming the
+// review's number and ending with footer, as Envoy relays GitHub's review.
+func (r *stepRecordsRig) publishReviewBy(number int, head, state, author, footer string) {
 	t := r.t
 	t.Helper()
 	r.reviews++
 	payload, err := json.Marshal(map[string]string{
 		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": state,
-		"commit_id": head, "head_sha": head, "author": stepRecordsPerson, "body": "round " + strconv.Itoa(r.reviews),
+		"commit_id": head, "head_sha": head, "author": author, "body": "round " + strconv.Itoa(r.reviews) + footer,
 		"review_id": strconv.Itoa(number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {

@@ -39,6 +39,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -117,25 +118,30 @@ type legionBoardColumn struct {
 
 // legionBoardCard is one issue on the board. Key, Title and Priority come from Dispatch's own
 // issues table, joined on the daemon's key (the plan's D13; the daemon's state carries none of the
-// three). Phase, PhaseSince, Slot, Roles and WaitingOn are the newest observations of that issue,
-// PhaseSince being when the phase it is in was first recorded — the time in the phase the card
-// shows. BlockedBy names the issues a blocker link holds it on; for a parent in
+// three), and so do ResolvedPriority and PriorityFrom, as the issue read resolves them. Phase,
+// PhaseSince, Slot, Roles and WaitingOn are the newest observations of that issue, PhaseSince
+// being when the phase it is in was first recorded — the time in the phase the card shows.
+// BlockedBy names the issues a blocker link holds it on; for a parent in
 // `awaiting_children` it names the open children the daemon lists it as blocked on, not blocker
 // links. Children counts the issues of its tree that its tree has not started, which are on no
 // card of their own. The card carries no CI verdict: the daemon's state has none since
 // cybermonklabs/legion#2539, and a verdict row a read wrote before then is read by nothing.
 type legionBoardCard struct {
-	Key        string           `json:"key"`
-	Title      string           `json:"title"`
-	Priority   *int             `json:"priority"`
-	Phase      string           `json:"phase"`
-	PhaseSince *time.Time       `json:"phase_since"`
-	Slot       *int             `json:"slot"`
-	Roles      []string         `json:"roles"`
-	BlockedBy  []string         `json:"blocked_by"`
-	WaitingOn  *legionBoardWait `json:"waiting_on"`
-	Tree       string           `json:"tree"`
-	Children   int              `json:"children"`
+	Key      string `json:"key"`
+	Title    string `json:"title"`
+	Priority *int   `json:"priority"`
+	// ResolvedPriority and PriorityFrom are the issue's (model.Issue's), null for an issue
+	// Dispatch does not hold.
+	ResolvedPriority *int             `json:"resolved_priority"`
+	PriorityFrom     *string          `json:"priority_from"`
+	Phase            string           `json:"phase"`
+	PhaseSince       *time.Time       `json:"phase_since"`
+	Slot             *int             `json:"slot"`
+	Roles            []string         `json:"roles"`
+	BlockedBy        []string         `json:"blocked_by"`
+	WaitingOn        *legionBoardWait `json:"waiting_on"`
+	Tree             string           `json:"tree"`
+	Children         int              `json:"children"`
 }
 
 // legionBoardWait is what a root in `awaiting_person` waits on, as the daemon recorded it: the
@@ -223,11 +229,14 @@ type legionBoardIssue struct {
 	// own read takes them through (legion.IssueState), so a card and that read agree on the
 	// issue's phase, its slot and the roles in a turn.
 	state legion.IssueState
-	// title and priority are Dispatch's, empty for an issue Dispatch does not hold; the parent
-	// Dispatch records is p.parents, which holds every issue of the project and not only the
-	// ones the daemon reports, and the daemon's `tree` is p.reported's.
-	title    string
-	priority *int
+	// title, priority, resolvedPriority and priorityFrom are Dispatch's, empty for an issue
+	// Dispatch does not hold; the parent Dispatch records is p.parents, which holds every issue of
+	// the project and not only the ones the daemon reports, and the daemon's `tree` is
+	// p.reported's.
+	title            string
+	priority         *int
+	resolvedPriority *int
+	priorityFrom     *string
 }
 
 // readLegionBoard reads one project's board. A project with no Legion setting is legion's
@@ -355,30 +364,36 @@ func (p *legionBoardPopulation) observeProject(field string, value []byte) {
 
 // readIssues reads the project's issues in Dispatch's rank order, records the parent of every one
 // of them — the chain the tree walk climbs, whatever the daemon reports of each — and fills the
-// title, priority and parent of every issue the daemon reported. An issue the daemon reports that
-// Dispatch does not hold keeps an empty title: the board shows what the daemon says, and a card
-// with no title is better than a card the reader never sees.
+// title, priority and parent of every issue the daemon reported, with the priority that issue
+// resolves to and its source (refs.IssuePriorityTerms), climbed from the reported issues alone
+// (`subjects`), since only they carry a card. An issue the daemon reports that Dispatch does not
+// hold keeps an empty title: the board shows what the daemon says, and a card with no title is
+// better than a card the reader never sees.
 func (p *legionBoardPopulation) readIssues(ctx context.Context, pool *store.Pool) error {
 	rows, err := pool.Query(ctx, `
-		select key, title, priority, coalesce(parent_key, '')
-		from issues
-		where project_key = $1
-		order by rank asc, created_at asc, key asc
-	`, p.project)
+		with recursive subjects as (select unnest($2::text[]) as key), `+refs.IssuePriorityTerms+`
+		select i.key, i.title, i.priority, `+refs.IssuePriorityColumns+`, coalesce(i.parent_key, '')
+		from issues i
+		`+refs.IssuePriorityJoin+`
+		where i.project_key = $1
+		order by i.rank asc, i.created_at asc, i.key asc
+	`, p.project, slices.Collect(maps.Keys(p.issues)))
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var key, title, parent string
-		var priority *int
-		if err := rows.Scan(&key, &title, &priority, &parent); err != nil {
+		var priority, resolvedPriority *int
+		var priorityFrom *string
+		if err := rows.Scan(&key, &title, &priority, &resolvedPriority, &priorityFrom, &parent); err != nil {
 			return err
 		}
 		p.ranked = append(p.ranked, key)
 		p.parents[key] = parent
 		if issue := p.issues[key]; issue != nil {
 			issue.title, issue.priority = title, priority
+			issue.resolvedPriority, issue.priorityFrom = resolvedPriority, priorityFrom
 		}
 	}
 	return rows.Err()
@@ -664,7 +679,8 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 // of its tree that are on no card of their own.
 func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string, children int) legionBoardCard {
 	card := legionBoardCard{
-		Key: issue.key, Title: issue.title, Priority: issue.priority, Phase: issue.state.Phase,
+		Key: issue.key, Title: issue.title, Priority: issue.priority,
+		ResolvedPriority: issue.resolvedPriority, PriorityFrom: issue.priorityFrom, Phase: issue.state.Phase,
 		Slot: issue.state.Slot, Roles: issue.state.Working(), BlockedBy: blockedBy,
 		WaitingOn: legionBoardWaitOf(issue.state.WaitingOn), Tree: p.treeRoot(issue.key), Children: children,
 	}
