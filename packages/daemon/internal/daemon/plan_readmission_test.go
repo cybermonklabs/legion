@@ -80,9 +80,19 @@ func TestAPlanGivenBeforeAChildIsReleasedWaitsThroughItsRootsReadmission(t *test
 
 			launched := len(r.launchesOfRole(claim.RoleArchitect))
 			r.todoAgain()
-			// The root's work merged, so the person's todo starts its next change at generation 2 (D17),
-			// whose first phase waits on the child open in backlog (D10).
-			r.waitStands(root, 2, phase.AwaitingChildren)
+			// The root's work merged, so the person's todo starts one next change of it at generation 2
+			// (D17), whose first phase waits on the child open in backlog (D10): held at admitted, or in
+			// awaiting_children holding that start. D17's opposite of the re-admission: no clear runs,
+			// so the gate stays approved and needs no new opening, and the change is the one next
+			// change of the root.
+			var stands api.Issue
+			if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
+				stands = r.d.state().Issues[root]
+				return stands.Generation == 2 && (stands.Phase == phase.AwaitingChildren || stands.Phase == phase.Admitted)
+			}) {
+				t.Fatalf("%s stands in %q at generation %d, want its next change at generation 2 waiting on its open child", root, stands.Phase, stands.Generation)
+			}
+			r.wantOneNextChangeOnItsKeptGate(root, 2)
 			if got := r.storedPlan(child, 0); !reflect.DeepEqual(got, given) {
 				t.Fatalf("the plan of %s at generation 0 after the next change of %s started = %+v, want %+v as given", child, root, got, given)
 			}
@@ -131,6 +141,38 @@ func TestAPlanGivenBeforeAChildIsReleasedWaitsThroughItsRootsReadmission(t *test
 				t.Fatalf("the plan of %s at generation 0 after its release = %+v, want %+v as given", child, got, given)
 			}
 		})
+	}
+}
+
+// wantOneNextChangeOnItsKeptGate fails the test unless issue stands on one next change, at
+// generation, with every row of its design gate still approved: a request on merged work starts
+// that change with the gate kept and runs no clear of the tree (D17 of the done-by-checks plan),
+// where a re-admission empties the gate and asks for a new opening.
+func (r *ownerStepsRig) wantOneNextChangeOnItsKeptGate(issue string, generation uint64) {
+	r.t.Helper()
+	ctx := context.Background()
+	var stored *record.Issue
+	var gates map[record.DesignStep]record.DesignGate
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if stored, err = r.records.Issue(ctx, tx, issue); err != nil {
+			return err
+		}
+		gates, err = r.records.GatesOf(ctx, tx, issue)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read %s and its gate: %v", issue, err)
+	}
+	if stored == nil || stored.NextChange != generation || stored.NextChanges != 1 {
+		r.t.Fatalf("%s = %+v, want one next change open at generation %d", issue, stored, generation)
+	}
+	if len(gates) == 0 {
+		r.t.Fatalf("%s holds no gate row after its next change started, want its approved gate kept", issue)
+	}
+	for step, gate := range gates {
+		if gate.ApprovedVersion == nil {
+			r.t.Fatalf("%s's %s gate = %+v after its next change started, want it kept approved: no clear runs", issue, step, gate)
+		}
 	}
 }
 
