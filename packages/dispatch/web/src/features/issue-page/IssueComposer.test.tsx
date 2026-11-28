@@ -1313,6 +1313,9 @@ test("the look keeps the hint and the targets off screen, and a picker row has n
 
   // The space closes the `#` door, and an `@` query lists the planner's session row.
   await user.keyboard(" @Plan");
+  // The rows are read once the picker has searched the query the typing rested on, as in the
+  // next case: read earlier, the settle and the search outlive the body.
+  await waitFor(() => expect(searchRead).toHaveBeenCalledWith("Plan", expect.anything()));
   const parties = await within(composerBox()).findByRole("listbox", {
     name: BOX_PICKER_NAMES.label,
   });
@@ -1343,6 +1346,11 @@ test("two sessions that share a title draw words on screen in the box's picker t
   act(() => client.setQueryData(["agents"], twins));
   await user.click(writeField());
   await user.keyboard("@Plan");
+  // The picker searches the query once the typing has rested (`useRefPicker`'s settle of it), and
+  // lists what that search answers among its rows: the rows are read once it has searched. Read
+  // earlier, the row ends with the settle's timer still set and the search still to answer, and
+  // either one landing outside a wait updates the box outside act, which fails the row.
+  await waitFor(() => expect(searchRead).toHaveBeenCalledWith("Plan", expect.anything()));
   const parties = await within(composerBox()).findByRole("listbox", {
     name: BOX_PICKER_NAMES.label,
   });
