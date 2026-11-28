@@ -1655,8 +1655,9 @@ func TestControllerStartProbesUnderTheControllersEnvironment(t *testing.T) {
 	}
 }
 
-// The controller is pane-side: the daemon's own NATS seed, by value or by pointer, exported in the
-// operator's shell, reaches neither its load probe nor its Oh My Pi, while its pane seed pointer does.
+// The controller is pane-side: the daemon's own NATS seed, by value or by pointer, and the file of
+// the daemon's own NATS service token (NATS_DAEMON_SERVICE_TOKEN_FILE), exported in the operator's
+// shell, reach neither its load probe nor its Oh My Pi, while its pane seed pointer does.
 func TestControllerStartDropsTheDaemonSeedFromTheControllersEnvironment(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
@@ -1664,6 +1665,7 @@ func TestControllerStartDropsTheDaemonSeedFromTheControllersEnvironment(t *testi
 	const seed = "SUAMDAEMONSEEDVALUEFORTHECONTROLLERTEST"
 	t.Setenv("NATS_DAEMON_NKEY_SEED", seed)
 	t.Setenv("NATS_DAEMON_NKEY_SEED_FILE", filepath.Join(c.dir, "daemon-seed"))
+	t.Setenv("NATS_DAEMON_SERVICE_TOKEN_FILE", filepath.Join(c.dir, "nats-token"))
 	if code, _, errb := c.run(); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
@@ -1672,6 +1674,9 @@ func TestControllerStartDropsTheDaemonSeedFromTheControllersEnvironment(t *testi
 			if strings.HasPrefix(name, "NATS_DAEMON_NKEY_SEED") || strings.Contains(value, seed) {
 				t.Errorf("the %s's environment carries the daemon seed: %s", kind, name)
 			}
+		}
+		if value, set := env["NATS_DAEMON_SERVICE_TOKEN_FILE"]; set {
+			t.Errorf("the %s's environment carries the file of the daemon's service token: NATS_DAEMON_SERVICE_TOKEN_FILE=%q", kind, value)
 		}
 		if env["NATS_NKEY_SEED_FILE"] != filepath.Join(c.dir, "nats-seed") {
 			t.Errorf("the %s's NATS_NKEY_SEED_FILE = %q, want the pane seed's file", kind, env["NATS_NKEY_SEED_FILE"])
