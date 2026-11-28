@@ -2874,10 +2874,9 @@ are rebalanced from their own times. Two more are envoy's own:
 
 What it costs: each job repeats its setup, about 80 s for a unit leg and 65 s for a race leg, so
 the legs use more runner minutes than the two jobs did, and each summary job is one more wait for
-a runner after its kind's last leg. A job sets up only what its tests use: envoy-go-race-impossible
-and envoy-go-skips run no test that starts a container and run no Bun, so they pull no test image
-(their Postgres service's image aside, which envoy-go-race-impossible also runs as its second
-Postgres), install nothing and set no testcontainers variable.
+runner after its kind's last leg. envoy-go-race-impossible and envoy-go-skips install gotestsum
+but no Bun. They pull no test images besides the Postgres service's image (which
+envoy-go-race-impossible also runs as its second Postgres), and set no testcontainers variable.
 Standard runners on this public repository bill no money; the cost is runner concurrency and that
 wait.
 

@@ -5,7 +5,7 @@
 # workspace names the module files it reads. No Bun and no database: nothing here starts
 # either.
 GATE = gate("text_checks", TEXT_CHECK_JOB, runs=[
-    *[step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[module], TEXT_CHECK_TEXT, module, [TEXT_CHECK_PKG])
+    *[step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[module], TEXT_CHECK_TEXT[module], module, [TEXT_CHECK_PKG])
       for module in TEXT_CHECK_MODULES],
 ], exact=[
     # The twenty-two static tests by name: a -run is outside the simple form, so the step is
@@ -23,4 +23,4 @@ GATE = gate("text_checks", TEXT_CHECK_JOB, runs=[
         (DAEMON, [f"./{SUPERVISE_TABLE_PACKAGE}/"],
          f"go test -run of the table's two pure pins in {SUPERVISE_TABLE_PACKAGE}", {}),
     ]),
-], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod"))
+], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod") + go_test_events(TEXT_CHECK_JOB))

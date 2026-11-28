@@ -16,7 +16,8 @@ GATE = gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run(RACE_D
     (GO_LEGS, f"{GO_LEGS_SCRIPT} reads each leg's packages from it"),
     (f"{GO_LEGS_GROUPS}/**", f"{GO_LEGS_SCRIPT} reads the groups of a split package's tests from it"),
 ) + ceiling_reads(RACE_DOCS_LEGS_JOB, ENVOY_GO_RACE_DOCS_FILE) + service_settings_reads(RACE_DOCS_LEGS_JOB, ENVOY_GO_RACE_DOCS_FILE)
-  + setup_go(RACE_DOCS_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_RACE_DOCS_FILE))
+  + setup_go(RACE_DOCS_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_RACE_DOCS_FILE)
+  + go_test_events(RACE_DOCS_LEGS_JOB, ENVOY_GO_RACE_DOCS_FILE, install=False))
 GATE = with_reads(GATE, [
     Read('packages/envoy/internal/dispatch/pmdoc/schema/**', "filter envoy_go_race_docs held packages/envoy/internal/dispatch/pmdoc/schema/** by hand before the filters were computed: it selected 1 file(s) no other read of this gate declares"),
     Read('packages/envoy/internal/dispatch/pmdoc/testdata/**', "filter envoy_go_race_docs held packages/envoy/internal/dispatch/pmdoc/testdata/** by hand before the filters were computed: it selected 259 file(s) no other read of this gate declares"),

@@ -252,8 +252,8 @@ if [ -n "${RUNNER_TEMP:-}" ]; then
 fi
 events=$(mktemp --suffix=.jsonl "$events_dir/forced-order-XXXXXX")
 run_forced_order_tests() {
-  "${go_env[@]}" gotestsum --hide-summary output --jsonfile "$events" --format standard-verbose --raw-command -- \
-    go test -json "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
+  # Keep the command on one line for ci_job_reads.py's FORCED_ORDER_GO_TEST pin.
+  "${go_env[@]}" gotestsum --hide-summary output --jsonfile "$events" --format standard-verbose --raw-command -- go test -json "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
 }
 
 # Plain go test -v holds each package's output together. With -json, even a package's last test
