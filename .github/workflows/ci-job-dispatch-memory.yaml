@@ -39,7 +39,6 @@ jobs:
         image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
         env:
           POSTGRES_PASSWORD: ci
-        ports: ["5432:5432"]
         # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
         command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
@@ -79,13 +78,7 @@ jobs:
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      # The service's own address on the runner's docker network, which the tests reach it at
-      # instead of localhost:5432, the port map the runner's userland proxy serves: that proxy
-      # copies every byte of this lane's Postgres traffic and cost 131 CPU-s of the machine's
-      # 1,936 a run, with the suite 87 s slower for it (three runs each way, measured in
-      # .github/scripts/postgres-service-address.sh's header). The script fails the job rather
-      # than leave the tests a URL with no host, and the tests skip only on an unset
-      # DISPATCH_TEST_DATABASE_URL, which the step below always sets.
+      # Why the tests reach the service at its own address: .github/scripts/postgres-service-address.sh's header.
       - id: service-address
         name: Read the service's own address
         run: .github/scripts/postgres-service-address.sh "${{ job.services.postgres.id }}" >>"$GITHUB_OUTPUT"
