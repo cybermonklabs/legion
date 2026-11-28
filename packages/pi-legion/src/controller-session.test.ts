@@ -640,6 +640,45 @@ test("watched workflows: a later claim of the same session with another list uns
   }
 });
 
+// The earlier claim's subscription of a topic the new list leaves out can still be on the wire when
+// the re-claim of the same session comes: the session still ends with the new list alone, so a
+// subscription of that topic that lands after the re-claim is closed too.
+test("watched workflows: a later claim of the same session closes a topic its list leaves out whose subscription was still on the wire", async () => {
+  const held = Promise.withResolvers<void>();
+  const lists = [[NIGHTLY, RELEASE], [RELEASE]];
+  let registrations = 0;
+  const landedOrClosed: string[] = [];
+  const run = watchingController({
+    register: () => registeredWith(lists[registrations++] ?? [])(),
+    subscribe: async (topic) => {
+      if (topic === NIGHTLY_SCHEDULE && registrations === 1) await held.promise;
+      landedOrClosed.push(`landed ${topic}`);
+    },
+    unsubscribe: async (topic) => {
+      landedOrClosed.push(`closed ${topic}`);
+    },
+  });
+  try {
+    await run.controller.handleSessionStart(run.context);
+    await until("the first claim's subscription of the nightly schedule topic, on the wire", () =>
+      asked(run, NIGHTLY_SCHEDULE)
+    );
+    await run.controller.claim(run.context);
+    await settled();
+    held.resolve();
+    await until("the second claim's watched subscription", () => asked(run, RELEASE_PUSH));
+    await settled();
+    await settled();
+
+    const nightly = landedOrClosed.filter((call) => call.endsWith(` ${NIGHTLY_SCHEDULE}`));
+    expect(nightly.at(-1)).toBe(`closed ${NIGHTLY_SCHEDULE}`);
+    expect(run.exits).toEqual([]);
+  } finally {
+    held.resolve();
+    run.stopSink();
+  }
+});
+
 // A `/new` or `/resume` leaves the role behind, and every subscription bound to it closed with it:
 // the session change's re-claim registers the new session, closes none of the earlier session's
 // watched topics, and subscribes its own list.
