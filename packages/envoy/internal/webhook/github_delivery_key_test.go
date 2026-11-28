@@ -68,6 +68,7 @@ func TestOneGUIDWithTwoInstallationsIsOneStreamMessage(t *testing.T) {
 		}},
 		{name: "sub_issues added", event: "sub_issues", body: githubFixture(t, "sub-issues-added")},
 		{name: "workflow_run completed", event: "workflow_run", body: githubFixture(t, "workflow-run-completed")},
+		{name: "workflow_run completed on the default branch, published again under its event", event: "workflow_run", body: githubFixture(t, "workflow-run-default-branch-schedule")},
 	}
 	var published []string
 	for _, row := range rows {

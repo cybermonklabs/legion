@@ -413,12 +413,13 @@ func (m sharedMigration) reading(t *testing.T, holderPID uint32) func() (migrati
 		}
 		var waiting string
 		if err := watch.QueryRow(ctx, `with recursive waiting(pid) as (
-				select pid from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))
+				select pid from pg_stat_activity where $1 = any(pg_blocking_pids(pid))
 				union
-				select a.pid from pg_stat_activity a, waiting w where a.wait_event_type = 'Lock' and w.pid = any(pg_blocking_pids(a.pid))
+				select a.pid from pg_stat_activity a, waiting w where w.pid = any(pg_blocking_pids(a.pid))
 			)
 			select coalesce(string_agg(format('pid %s of %s on database %s waits on a lock of type %s in: %s',
-				a.pid, a.application_name, a.datname, a.wait_event, a.query), '; ' order by a.pid), '')
+				a.pid, a.application_name, a.datname,
+				(select string_agg(l.locktype, ', ') from pg_locks l where l.pid = a.pid and not l.granted), a.query), '; ' order by a.pid), '')
 			from pg_stat_activity a join waiting w on w.pid = a.pid
 			where a.application_name = $2`, int32(holderPID), m.schema).Scan(&waiting); err != nil {
 			t.Fatalf("read the backends waiting behind pid %d: %v", holderPID, err)
