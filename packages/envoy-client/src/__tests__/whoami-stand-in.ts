@@ -1,5 +1,5 @@
 import type { WhoamiAgent } from "@legion/contracts";
-import { type DispatchToolName, dispatchCommands } from "../dispatch-commands/table";
+import { dispatchCommandOf } from "../dispatch-commands/table";
 import {
   type DispatchToolResult,
   type ExecuteDispatchToolInput,
@@ -45,7 +45,7 @@ function answeringWhoami(fetchImpl: typeof fetch): typeof fetch {
 
 /** `input` with whoami answered where its tool is a read command, and as it is otherwise. */
 function withWhoamiAnswered(input: ExecuteDispatchToolInput): ExecuteDispatchToolInput {
-  const command = dispatchCommands[input.tool as DispatchToolName];
+  const command = dispatchCommandOf(input.tool);
   return command?.reads === true
     ? { ...input, fetchImpl: answeringWhoami(input.fetchImpl ?? fetch) }
     : input;
