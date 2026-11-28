@@ -16,6 +16,7 @@ import (
 // The named revert: make the rewrite in main.go look for anything but a development store, and the
 // run is handed http://127.0.0.1:0.
 func TestALocalRunsPortZeroProxyURLIsTheProxysBoundAddress(t *testing.T) {
+	t.Parallel()
 	e := newResultsEnvironment(t, "BROKER_AIRLOCK_PROXY_URL=http://127.0.0.1:0")
 	b := e.start(t)
 	status, body := postTokenAt(t, b.Addr, "http://"+b.Addr, askedForThePlaceholder(runForm(mintRunToken(t, e.github, e.githubKey, resultsWorkflow, resultsBranch, "1"), "")))

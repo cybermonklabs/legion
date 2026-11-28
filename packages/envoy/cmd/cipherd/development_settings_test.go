@@ -16,6 +16,7 @@ import (
 // setting and that the store is no development store. A start that still sets
 // BROKER_FAKE_SECRETS_FILE, which the memory store replaced, is refused naming what replaces it.
 func TestDevelopmentSettings(t *testing.T) {
+	t.Parallel()
 	var everyTestSetting config.Config
 	for _, setting := range airlockTestSettings() {
 		setting.cfg(&everyTestSetting)
