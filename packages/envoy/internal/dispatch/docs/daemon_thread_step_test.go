@@ -343,7 +343,10 @@ func (r *daemonThreadRig) requireMovedByTheStep(t *testing.T, node, key, fromKin
 // it moves both, each under the issue's node by a part_of the step wrote, its old part_of retracted
 // by the step; the census reads daemon_thread_parent=0; the spec holds one version more, with its
 // artifact.version event; the open request names that version; and alice's approval stands at the
-// version she approved, so it reads changed since.
+// version she approved, so it reads changed since: the approval read (GET /api/v1/artifacts/{id})
+// names her own approval of that version beside the latest version the step wrote, reads it
+// awaiting the open request and not approved, and the stand it reads that approval by does not
+// approve the latest version (requireApprovalChangedSince).
 //
 // Then a person's move against the step's. A third such part_of is written on one issue and a
 // fourth on the other, so one batch of the step takes both issues' owner locks in one call of
@@ -444,6 +447,7 @@ func TestANodeUnderADaemonThreadMovesUnderItsIssue(t *testing.T) {
 		t.Errorf("the newest review of the spec of %s reads %s at version %d, want alice's approval of version %d, which reads changed since",
 			first.key, review.State, review.Version, approved)
 	}
+	rig.requireApprovalChangedSince(t, first.key, first.spec, approved, newest)
 
 	// A person's move against the step's: the held issue is the one LockOwners locks first.
 	gate, raced := first, second

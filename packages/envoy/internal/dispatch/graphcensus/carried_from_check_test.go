@@ -110,14 +110,17 @@ func requireCarriedFromAgrees(t *testing.T, database *store.Store, after string)
 // backfill, and none after it, which wrote its row naming version 4, the version its reason names,
 // and no row of any approval alice gave herself: the pass reads artifact_reviews in batches of
 // backfillBatch ordered by artifact_id and model.ReviewOrder, and the carry stands in its second
-// batch. An SQL update that changes its source version to 3 is one difference. The next pass
-// rewrites it to 4, so the census reads zero. An SQL delete of the review is one difference, its
-// row now standing for a review that is gone, and the next pass deletes the row, so the census
-// reads zero again.
+// batch. Each page of that pass reads artifact_reviews through index scans of
+// artifact_reviews_by_artifact_event_seq, the index-led keyset order
+// (requireReviewCarryPagesReadTheReviewOrderIndex). An SQL update that changes its source version
+// to 3 is one difference. The next pass rewrites it to 4, so the census reads zero. An SQL delete
+// of the review is one difference, its row now standing for a review that is gone, and the next
+// pass deletes the row, so the census reads zero again.
 func TestCensusHoldsEveryCarriedReviewsSourceVersion(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedCarriedFromReviews(t, database)
+	requireReviewCarryPagesReadTheReviewOrderIndex(t, database)
 	backfill := func(over string) {
 		t.Helper()
 		if _, err := Backfill(ctx, database, io.Discard); err != nil {

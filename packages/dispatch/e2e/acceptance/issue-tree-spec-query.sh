@@ -36,13 +36,17 @@
 #             types it takes, those R14 gives the spec query (callout, criterion, requirement), and
 #             the subtree it takes them from, the issue's tree node;
 #   words     one word of a check and one of the plan node, both written before the conversion,
-#             change through the issue's room, and the tree read answers both new words.
+#             change in one write of the issue's room: the person's document socket on the
+#             Verification document, admitted to the issue's room, changes both words in one Yjs
+#             transaction, which it sends the room as one update, and the room applies it
+#             (issue-tree-spec-query-peer.ts); the tree read then answers both new words.
 #
 # Inputs: DATABASE_URL (infra_1253_upgrade, a loopback database whose name begins infra_1253_,
 # which this driver drops and creates again), PROJECT (CORE), DISPATCH_TOKEN (e2e-token, the bearer
 # both servers accept), BASELINE_SHA or BASELINE_BINARY (lib-baseline.sh's), DEV_SIGNIN_LOGIN (the
-# person signed in before the project's create names them, `alice` where it is unset), and the
-# stamped `envoy-dispatch` of this head on PATH. Each unmet input is exit 2.
+# person signed in before the project's create names them, `alice` where it is unset), the
+# stamped `envoy-dispatch` of this head on PATH, and `bun` with this package's node_modules, which
+# the socket peer imports yjs and lib0 from. Each unmet input is exit 2.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` and the script exits 1. The last line is
@@ -76,7 +80,8 @@ USAGE
 
 readonly driver=issue-tree-spec-query.sh
 require_env DATABASE_URL PROJECT
-require_commands curl jq psql
+require_commands curl jq psql bun
+tree_peer_require
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 project="$PROJECT"
 readonly project
@@ -351,15 +356,42 @@ tree_kept_expect "$work/spec-query.json" query \
 # --- a write of the issue's room ---------------------------------------------------------------
 
 tree_section words
-corpus_edit words "change one word of the check c-zulu" "$verification" \
-  "$(jq -cn --arg f "$check_before" --arg w "$check_after" '[{op: "replace", find: $f, with: $w}]')"
-corpus_edit words "change one word of the plan node t-only" "$plan" \
-  "$(jq -cn --arg f "$plan_before" --arg w "$plan_after" '[{op: "replace", find: $f, with: $w}]')"
-tree_read agent "$key"
-tree_want 200 words "read the tree of $key after the words changed"
-expect words "the tree read answers the check's new word and the plan node's new word" '[true,true]' \
-  --arg c "$check_after" --arg p "$plan_after" \
-  '[([.nodes[] | select(.block_id == "c-zulu") | .text | contains($c)] | any),
-    ([.nodes[] | select(.block_id == "t-only") | .text | contains($p)] | any)]'
+# The person's one write of the issue's room: a document socket on the Verification document,
+# which the server admits to the issue's room with every fragment of it, changes the word of the
+# check c-zulu in the Verification document's fragment and the word of the plan node t-only in the
+# plan's fragment in one Yjs transaction, and so sends the room one update, which the room applies.
+tree_send GET /api/v1/schema/blocks
+tree_want 200 words "read the block schema this head serves"
+tree_field words "the block schema's version" .version
+schema="$tree_value"
+readonly schema
+tree_peer_cookie
+room_edits="$(jq -cn --arg v "$verification" --arg p "$plan" \
+  --arg cf "$check_before" --arg cw "$check_after" --arg pf "$plan_before" --arg pw "$plan_after" \
+  '[{fragment: $v, block: "c-zulu", find: $cf, with: $cw}, {fragment: $p, block: "t-only", find: $pf, with: $pw}]')"
+readonly room_edits
+readonly room_write="the person changes one word of the check c-zulu and one of the plan node t-only in one write of $key's room"
+reply="$(PEER_ANSWER_MS=$((tree_peer_answer_seconds * 1000)) bun "$tree_dispatch_dir/e2e/acceptance/issue-tree-spec-query-peer.ts" \
+  "$base" "$work/cookie" "$schema" "$verification" "$room_edits" 2>>"$work/peer.err")" ||
+  fail words "$room_write" "the socket peer answered '$reply': $(tail -n 20 "$work/peer.err" 2>/dev/null)"
+printf 'peer: %s\n' "$reply"
+[[ "$reply" == "wrote 2 edits in 1 update(s) answered 1" ]] ||
+  fail words "$room_write" "the socket peer on $verification answered: $reply"
+pass words "$room_write: the socket on $verification_slug ($verification) sent both edits in one update, which the room applied"
+readonly words_filter='[([.nodes[] | select(.block_id == "c-zulu") | .text | contains($c)] | any),
+  ([.nodes[] | select(.block_id == "t-only") | .text | contains($p)] | any)]'
+deadline=$((SECONDS + tree_wait_seconds))
+while true; do
+  tree_read agent "$key"
+  tree_want 200 words "read the tree of $key after the words changed"
+  read_words="$(jq -c --arg c "$check_after" --arg p "$plan_after" "$words_filter" "$work/body")" ||
+    fail words "the tree read answers the check's new word and the plan node's new word" "jq could not read the answer: $(head -c 600 "$work/body")"
+  [[ "$read_words" != '[true,true]' ]] || break
+  ((SECONDS < deadline)) ||
+    fail words "the tree read answers the check's new word and the plan node's new word" \
+      "after ${tree_wait_seconds} s it reads $read_words (the check's, the plan node's): $(jq -c '[.nodes[] | select(.block_id == "c-zulu" or .block_id == "t-only") | {block_id, text}]' "$work/body")"
+  sleep "$tree_poll_seconds"
+done
+pass words "the tree read answers the check's new word and the plan node's new word"
 
 printf 'PASS: %s complete %d sections\n' "$driver" "$sections"

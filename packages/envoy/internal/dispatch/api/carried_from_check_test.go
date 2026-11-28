@@ -8,12 +8,15 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -36,49 +39,99 @@ import (
 // carried_from_version: nil where the member is null, and the member as the route wrote it, ""
 // where the route left it out.
 type carriedFromReview struct {
-	ID                 string  `json:"id"`
-	Version            int     `json:"version"`
-	State              string  `json:"state"`
-	Kind               string  `json:"kind"`
-	Reason             *string `json:"reason"`
-	CarriedFrom        *int    `json:"-"`
-	CarriedFromWritten string  `json:"-"`
+	ID                 string      `json:"id"`
+	Version            int         `json:"version"`
+	State              string      `json:"state"`
+	Kind               string      `json:"kind"`
+	Actor              model.Actor `json:"actor"`
+	Reason             *string     `json:"reason"`
+	CarriedFrom        *int        `json:"-"`
+	CarriedFromWritten string      `json:"-"`
 }
 
-// The edits the carried-from tests make to the reading tests' spec (readingSpec) as the agent's
-// session. The first two touch its readings alone, which the reading case of the approval carry
-// carries an approval across (docs.readingCase), and each stores one version, since neither writes
-// a decided ask's block (readingWrite.carryReasons): a reading added under the decision d2, and the
-// words of the reading r1 changed. The third changes the prose, which supersedes the approval.
-var carriedFromReadingAdded = replaceOp(readingDecisionTwo,
-	"::::decision{#d2}\n"+readingDecisionTwo+"\n\n:::reading{#r2}\n"+readingOfTwo+"\n:::\n::::")
+// carriedFromReviewsWords is reviews as a failure names them: each one's id, who gave it, its
+// state, version and kind, its carried_from_version and its reason.
+func carriedFromReviewsWords(reviews []carriedFromReview) string {
+	words := make([]string, 0, len(reviews))
+	for _, review := range reviews {
+		reason := "no reason"
+		if review.Reason != nil {
+			reason = strconv.Quote(*review.Reason)
+		}
+		words = append(words, fmt.Sprintf("%s, %s's %s of version %d (%s) carried from %s, %s",
+			review.ID, review.Actor.ID, review.State, review.Version, review.Kind, carriedFromWords(review.CarriedFrom), reason))
+	}
+	return "[" + strings.Join(words, "; ") + "]"
+}
 
-var carriedFromReadingEdited = replaceOp("for every service.", "for every public service.")
+// carriedFromApproved is the version of the spec alice approves in every carried-from fixture
+// (carriedFromRig.approvedAtFour).
+const carriedFromApproved = 4
 
-var carriedFromProseChanged = replaceOp(readingProse, "The service ships behind a flag and a canary.")
+// carriedFromSpec is the spec of a carried-from issue as draft words it: one requirement, whose
+// words name the draft, so each draft changes the spec's text and the Spec query's record.
+func carriedFromSpec(draft int) string {
+	return fmt.Sprintf(":::requirement{#r1}\nThe carried list comes first, as draft %d words it.\n:::\n", draft)
+}
 
-// carriedFromFixture serves documents that version an agent's edit in the edit's own transaction
-// and settle a person's answer in milliseconds (settlingCarryDocuments), creates project TEST, and
-// writes the reading tests' fixture spec, which alice approves once its asks hold their answers and
-// its declined ask her decline, each of which settles into a version of its own, so that she
-// approves version 4 (approvedReadingSpec). It answers the handler, the store and the fixture.
-func carriedFromFixture(t *testing.T, title string) (http.Handler, *store.Store, readingFixture) {
+// conversionCarrySentence is the reason the conversion's one-time carry records (R14, docs'
+// issueConversion.finish), carrying the approval of version from to the version the conversion
+// writes.
+func conversionCarrySentence(from int) string {
+	return fmt.Sprintf("%s%d: the issue room conversion kept what was approved.", model.CarriedReviewReasonPrefix, from)
+}
+
+// carriedFromRig is the server of a carried-from test: its handler, its store and its document
+// service, which a conversion runs through (convertDigestIssue). Its documents settle nothing on a
+// timer within a test (an hour), as the digest tests' server, so every version a test reads is one
+// that a write of its own made, and each test knows its numbers.
+type carriedFromRig struct {
+	handler   http.Handler
+	database  *store.Store
+	documents *docs.Service
+}
+
+// newCarriedFromRig serves the API over a database of its own and creates project TEST.
+func newCarriedFromRig(t *testing.T) carriedFromRig {
 	t.Helper()
-	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
-	holdIssuesUnconverted(t, database)
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	createRoomProject(t, handler, "TEST")
-	return handler, database, approvedReadingSpec(t, handler, database, title)
+	return carriedFromRig{handler: handler, database: database, documents: deps.Docs.(*docs.Service)}
 }
 
-// carriedFromEdit makes ops to fixture's spec through the edits route as the agent's session
-// (agentEdit), waits until the spec owes no settlement, and fails t unless its latest version is
-// number, the one version the edit stores.
-func carriedFromEdit(t *testing.T, handler http.Handler, database *store.Store, fixture readingFixture, number int, ops ...map[string]string) {
+// carriedFromIssue is an issue of TEST that has not converted: its key, its spec, and alice's own
+// approval of version 4 of that spec.
+type carriedFromIssue struct {
+	key, spec string
+	approval  model.ArtifactReview
+}
+
+// approvedAtFour creates, as alice, an issue of TEST that has not converted (createDigestIssue:
+// a live process of the release before stands beside the create alone), whose spec holds draft 1
+// as its version 1, uploads drafts 2 to 4 over it as versions 2 to 4, and has alice approve
+// version 4. It fails unless each upload wrote the version its draft names and alice approved
+// version 4.
+func (r carriedFromRig) approvedAtFour(t *testing.T, title string) carriedFromIssue {
 	t.Helper()
-	agentEdit(t, handler, fixture.artifactID, number, ops...)
-	awaitSettled(t, database, fixture.artifactID)
-	if stored := documentVersions(t, handler, fixture.artifactID); stored[len(stored)-1].Number != number {
-		t.Fatalf("once the spec owes no settlement its latest version is %d, want %d, the one version the edit stores", stored[len(stored)-1].Number, number)
+	issue := createDigestIssue(t, r.handler, r.database, "TEST", title, carriedFromSpec(1), true)
+	for draft := 2; draft <= carriedFromApproved; draft++ {
+		r.uploadSpec(t, issue.Key, issue.PrimaryArtifactID, carriedFromSpec(draft), draft)
+	}
+	approval := reviewDocument(t, r.handler, issue.PrimaryArtifactID, "alice", "approved", "")
+	if approval.Version != carriedFromApproved {
+		t.Fatalf("alice approved version %d of the spec of %s, want version %d", approval.Version, issue.Key, carriedFromApproved)
+	}
+	return carriedFromIssue{key: issue.Key, spec: issue.PrimaryArtifactID, approval: approval}
+}
+
+// uploadSpec uploads markdown as alice over the spec of the issue key, whose id is spec, through
+// POST /api/v1/issues/{key}/artifacts, and fails unless the upload wrote version number of it.
+func (r carriedFromRig) uploadSpec(t *testing.T, key, spec, markdown string, number int) {
+	t.Helper()
+	uploaded := uploadDocument(t, r.handler, "/api/v1/issues/"+key, "spec", markdown)
+	if uploaded.Artifact.ID != spec || uploaded.Version.Number != number {
+		t.Fatalf("the upload over the spec %s of %s wrote version %d of %s, want version %d of the spec",
+			spec, key, uploaded.Version.Number, uploaded.Artifact.ID, number)
 	}
 }
 
@@ -227,161 +280,216 @@ func requireCarriedFrom(t *testing.T, what string, got, want *int) {
 	}
 }
 
-// TestACarriedReviewNamesTheVersionItCarriesFrom is c-carried-from's first case (R27). Alice
-// approves version 4 of the spec (carriedFromFixture), and the agent's session adds a reading under
-// a decision, which carries her approval to version 5. The reviews route answers the review of
-// version 5 with carried_from_version 4 and the review of version 4, her own act, with null written
-// out, never left out; the approval read answers 4; the artifact.approved of the carry carries 4,
-// and that of her own approval null. The session then changes a reading's words, which carries
-// that carry to version 6, and the carry of the carry names 4, the version alice approved, through
-// the same three reads. A row of artifact_review_carries written by
-// SQL for the review of version 6, naming version 3 while its reason names 4, reads 3 through the
-// reviews route and the approval read, so a reader that parses the reason alone fails. The session
-// then changes the prose, which carries nothing, and alice approves version 7 herself: the reviews
-// route and the approval read answer null for it, and it holds no row. Beside each read the test
-// reads the row of the review of version 5 by SQL, which names 4 throughout. Last a plan review's
-// approval of the issue's plan answers null through the reviews route and the approval read.
+// TestACarriedReviewNamesTheVersionItCarriesFrom is c-carried-from's first case (R27). On an issue
+// that has not converted, alice approves version 4 of the spec (carriedFromRig.approvedAtFour). The
+// issue's conversion (docs.Service.ConvertIssue) writes version 5 of its spec query, and R14's
+// one-time cutover carry carries her approval to version 5: one review of version 5, in her name,
+// with the conversion's reason. The reviews route answers it with carried_from_version 4 and the
+// review of version 4, her own act, with null written out, never left out; the approval read
+// answers approved at version 5, carried from 4; the artifact.approved of the carry carries 4, and
+// that of her own approval null. Alice then edits the converted spec and approves the version her
+// edit wrote herself: the reviews route and the approval read answer null for that approval, and
+// it holds no row.
+//
+// On a second issue that has not converted, main's text carry still runs: alice approves version
+// 4 of its spec, an upload changes the text as version 5, which carries nothing, and an upload of
+// version 4's text as version 6 carries her approval to version 6 (docs.CarryUploadedApproval),
+// naming 4. A carry of that carry, an upload of the same text as version 7, names 4. Each carry
+// reads 4 through the reviews route, the approval read and its artifact.approved, and holds its
+// row naming 4. A row of artifact_review_carries written by SQL for the review of version 7,
+// naming version 3 while its reason names 4, reads 3 through the reviews route and the approval
+// read, so a reader that parses the reason alone fails. Beside each read the test reads by SQL the
+// row of the review of version 5 the conversion carried, which names 4 throughout. Last a plan
+// review's approval of the second issue's plan answers null through the reviews route and the
+// approval read.
 func TestACarriedReviewNamesTheVersionItCarriesFrom(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	handler, database, fixture := carriedFromFixture(t, "Carried from")
-	approved := fixture.approval.Version
-	carriedTo := approved + 1
+	rig := newCarriedFromRig(t)
 
-	carriedFromEdit(t, handler, database, fixture, carriedTo, carriedFromReadingAdded)
-	carry := requireReviewCarriedWith(t, handler, fixture.artifactID, carriedTo, approved, readingCarrySentence(approved), nil)
+	// The conversion's one-time carry (R14).
+	converted := rig.approvedAtFour(t, "Carried by the conversion")
+	approved := converted.approval.Version
+	convertDigestIssue(t, &digestRig{handler: rig.handler, database: rig.database, documents: rig.documents}, converted.key)
+	awaitDigestsFilled(t, rig.database, converted.spec)
+	carriedTo := newestVersionOf(t, rig.database, converted.spec)
+	if carriedTo != approved+1 {
+		t.Fatalf("the conversion of %s left version %d of its spec newest, want version %d, the version of its spec query the conversion writes",
+			converted.key, carriedTo, approved+1)
+	}
+	reviews := carriedFromReviews(t, rig.handler, converted.spec)
+	var carry carriedFromReview
+	carries := 0
+	for _, review := range reviews {
+		if review.Version == carriedTo {
+			carry, carries = review, carries+1
+		}
+	}
+	if carries != 1 || carry.State != "approved" || carry.Kind != docs.ReviewKindPerson || carry.Actor.ID != "alice" ||
+		carry.Reason == nil || *carry.Reason != conversionCarrySentence(approved) {
+		t.Fatalf("the reviews of the spec of %s after its conversion read %s, want one review of version %d, alice's approval the conversion carried, with the reason %q",
+			converted.key, carriedFromReviewsWords(reviews), carriedTo, conversionCarrySentence(approved))
+	}
 	requireCarryRow := func(beside string) {
 		t.Helper()
-		if version, held := carriedFromRow(t, database, carry.ID); !held || version != approved {
-			t.Errorf("beside %s the review %s of version %d carried from the approval of version %d holds %s, want its artifact_review_carries row naming version %d",
+		if version, held := carriedFromRow(t, rig.database, carry.ID); !held || version != approved {
+			t.Errorf("beside %s the review %s of version %d, which the conversion carried from the approval of version %d, holds %s, want its artifact_review_carries row naming version %d",
 				beside, carry.ID, carriedTo, approved, carriedFromRowWords(version, held), approved)
 		}
 	}
 
-	// The carry and alice's own approval, through the reviews route, the approval read and the
-	// carry's artifact.approved.
-	reviews := carriedFromReviews(t, handler, fixture.artifactID)
-	requireCarriedFrom(t, fmt.Sprintf("the reviews route, for the review %s carried to version %d", carry.ID, carriedTo),
-		carriedFromReviewOf(t, reviews, carry.ID).CarriedFrom, &approved)
-	firstOwn := carriedFromReviewOf(t, reviews, fixture.approval.ID)
-	requireCarriedFrom(t, fmt.Sprintf("the reviews route, for alice's own approval %s of version %d", fixture.approval.ID, approved),
+	// The conversion's carry and alice's own approval, through the reviews route, the approval read
+	// and the artifact.approved of each.
+	requireCarriedFrom(t, fmt.Sprintf("the reviews route, for the review %s the conversion carried to version %d", carry.ID, carriedTo),
+		carry.CarriedFrom, &approved)
+	firstOwn := carriedFromReviewOf(t, reviews, converted.approval.ID)
+	requireCarriedFrom(t, fmt.Sprintf("the reviews route, for alice's own approval %s of version %d", converted.approval.ID, approved),
 		firstOwn.CarriedFrom, nil)
 	if firstOwn.CarriedFromWritten != "null" {
 		t.Errorf("the reviews route writes carried_from_version %q for alice's own approval %s of version %d, want null written out: a member left out reads as no answer, not as her own act",
-			firstOwn.CarriedFromWritten, fixture.approval.ID, approved)
+			firstOwn.CarriedFromWritten, converted.approval.ID, approved)
 	}
 	requireCarryRow("the reviews route")
-	state, version, carried := carriedFromApproval(t, handler, fixture.artifactID)
+	state, version, carried := carriedFromApproval(t, rig.handler, converted.spec)
 	if state != "approved" || version != carriedTo {
-		t.Errorf("the approval read answers %s at version %d after the carry, want approved at version %d", state, version, carriedTo)
+		t.Errorf("the approval read answers %s at version %d after the conversion's carry, want approved at version %d", state, version, carriedTo)
 	}
-	requireCarriedFrom(t, fmt.Sprintf("the approval read after the carry to version %d", carriedTo), carried, &approved)
+	requireCarriedFrom(t, fmt.Sprintf("the approval read after the conversion's carry to version %d", carriedTo), carried, &approved)
 	requireCarryRow("the approval read")
-	requireCarriedFrom(t, fmt.Sprintf("the artifact.approved of the carry to version %d", carriedTo),
-		carriedFromEventOf(t, handler, fixture.issueKey, fixture.artifactID, carriedTo), &approved)
+	requireCarriedFrom(t, fmt.Sprintf("the artifact.approved of the conversion's carry to version %d", carriedTo),
+		carriedFromEventOf(t, rig.handler, converted.key, converted.spec, carriedTo), &approved)
 	requireCarryRow("the carry's artifact.approved")
 	requireCarriedFrom(t, fmt.Sprintf("the artifact.approved of alice's own approval of version %d", approved),
-		carriedFromEventOf(t, handler, fixture.issueKey, fixture.artifactID, approved), nil)
+		carriedFromEventOf(t, rig.handler, converted.key, converted.spec, approved), nil)
 
-	// A carry of that carry names the version alice approved.
-	again := carriedTo + 1
-	carriedFromEdit(t, handler, database, fixture, again, carriedFromReadingEdited)
-	second := requireReviewCarriedWith(t, handler, fixture.artifactID, again, approved, readingCarrySentence(approved), nil)
-	reviews = carriedFromReviews(t, handler, fixture.artifactID)
-	requireCarriedFrom(t, fmt.Sprintf("the reviews route, for the review %s carried to version %d from the carry to version %d", second.ID, again, carriedTo),
-		carriedFromReviewOf(t, reviews, second.ID).CarriedFrom, &approved)
-	requireCarriedFrom(t, fmt.Sprintf("the reviews route, for the review %s carried to version %d, once that carry is carried again", carry.ID, carriedTo),
-		carriedFromReviewOf(t, reviews, carry.ID).CarriedFrom, &approved)
-	requireCarryRow("the reviews route after the carry of the carry")
-	state, version, carried = carriedFromApproval(t, handler, fixture.artifactID)
-	if state != "approved" || version != again {
-		t.Errorf("the approval read answers %s at version %d after the carry of the carry, want approved at version %d", state, version, again)
+	// Alice's own approval of a later version is her own act.
+	edited := editSpec(t, rig.handler, converted.key, []map[string]any{
+		{"op": "replace", "find": fmt.Sprintf("as draft %d words it", approved), "with": "as alice words it after the conversion"},
+	})
+	awaitDigestsFilled(t, rig.database, converted.spec)
+	own := reviewDocument(t, rig.handler, converted.spec, "alice", "approved", "")
+	if own.Version <= carriedTo || own.Version < edited.Number {
+		t.Fatalf("alice's own approval of the converted spec of %s is of version %d, want the version her edit wrote, %d, after version %d",
+			converted.key, own.Version, edited.Number, carriedTo)
 	}
-	requireCarriedFrom(t, fmt.Sprintf("the approval read after the carry of the carry to version %d", again), carried, &approved)
-	requireCarryRow("the approval read after the carry of the carry")
-	requireCarriedFrom(t, fmt.Sprintf("the artifact.approved of the carry of the carry to version %d", again),
-		carriedFromEventOf(t, handler, fixture.issueKey, fixture.artifactID, again), &approved)
-	if version, held := carriedFromRow(t, database, second.ID); !held || version != approved {
-		t.Errorf("the review %s carried to version %d holds %s, want its artifact_review_carries row naming version %d, the version alice approved",
-			second.ID, again, carriedFromRowWords(version, held), approved)
+	reviews = carriedFromReviews(t, rig.handler, converted.spec)
+	requireCarriedFrom(t, fmt.Sprintf("the reviews route, for alice's own approval %s of version %d", own.ID, own.Version),
+		carriedFromReviewOf(t, reviews, own.ID).CarriedFrom, nil)
+	requireCarryRow("the reviews route after alice's own approval")
+	state, version, carried = carriedFromApproval(t, rig.handler, converted.spec)
+	if state != "approved" || version != own.Version {
+		t.Errorf("the approval read answers %s at version %d after alice's own approval, want approved at version %d", state, version, own.Version)
 	}
+	requireCarriedFrom(t, fmt.Sprintf("the approval read after alice's own approval of version %d", own.Version), carried, nil)
+	requireCarryRow("the approval read after alice's own approval")
+	if version, held := carriedFromRow(t, rig.database, own.ID); held {
+		t.Errorf("alice's own approval %s of version %d holds an artifact_review_carries row naming version %d, want none: she gave it herself", own.ID, own.Version, version)
+	}
+
+	// main's text carry, on a second issue that has not converted: an upload that changes the
+	// text carries nothing, and an upload of the approved text carries the approval to its version.
+	uploaded := rig.approvedAtFour(t, "Carried by an upload")
+	changed := approved + 1
+	rig.uploadSpec(t, uploaded.key, uploaded.spec, carriedFromSpec(changed), changed)
+	if reviews := carriedFromReviews(t, rig.handler, uploaded.spec); len(reviews) != 1 || reviews[0].ID != uploaded.approval.ID {
+		t.Fatalf("the upload of version %d of the spec of %s, which changes its text, leaves the reviews %s, want alice's own approval %s of version %d alone: a change of the text carries nothing",
+			changed, uploaded.key, carriedFromReviewsWords(reviews), uploaded.approval.ID, approved)
+	}
+	requireCarryRow("the reviews route after the upload that changes the text")
+	requireUploadCarry := func(review string, number int, what string) {
+		t.Helper()
+		reviews := carriedFromReviews(t, rig.handler, uploaded.spec)
+		requireCarriedFrom(t, fmt.Sprintf("the reviews route, for the review %s %s", review, what),
+			carriedFromReviewOf(t, reviews, review).CarriedFrom, &approved)
+		requireCarryRow("the reviews route after the review " + what)
+		state, version, carried := carriedFromApproval(t, rig.handler, uploaded.spec)
+		if state != "approved" || version != number {
+			t.Errorf("the approval read of the spec of %s answers %s at version %d after the review %s, want approved at version %d", uploaded.key, state, version, what, number)
+		}
+		requireCarriedFrom(t, "the approval read after the review "+what, carried, &approved)
+		requireCarryRow("the approval read after the review " + what)
+		requireCarriedFrom(t, "the artifact.approved of the review "+what,
+			carriedFromEventOf(t, rig.handler, uploaded.key, uploaded.spec, number), &approved)
+		requireCarryRow("the artifact.approved of the review " + what)
+		if version, held := carriedFromRow(t, rig.database, review); !held || version != approved {
+			t.Errorf("the review %s %s holds %s, want its artifact_review_carries row naming version %d, the version alice approved",
+				review, what, carriedFromRowWords(version, held), approved)
+		}
+	}
+	restored := changed + 1
+	rig.uploadSpec(t, uploaded.key, uploaded.spec, versionMarkdown(t, rig.handler, uploaded.spec, approved), restored)
+	upload := requireReviewCarriedWith(t, rig.handler, uploaded.spec, restored, approved, restoreSentence(approved), nil)
+	requireUploadCarry(upload.ID, restored, fmt.Sprintf("carried to version %d by the upload of version %d's text", restored, approved))
+	again := restored + 1
+	rig.uploadSpec(t, uploaded.key, uploaded.spec, versionMarkdown(t, rig.handler, uploaded.spec, restored), again)
+	second := requireReviewCarriedWith(t, rig.handler, uploaded.spec, again, approved, restoreCarriedSentence(approved, restored), nil)
+	requireUploadCarry(second.ID, again, fmt.Sprintf("carried to version %d by the upload of version %d's text, a carry of the carry to version %d", again, restored, restored))
+	requireCarriedFrom(t, fmt.Sprintf("the reviews route, for the review %s carried to version %d, once that carry is carried again", upload.ID, restored),
+		carriedFromReviewOf(t, carriedFromReviews(t, rig.handler, uploaded.spec), upload.ID).CarriedFrom, &approved)
 
 	// A row written by SQL that names another version than the reason: the reads answer the row's.
 	forged := approved - 1
-	if _, err := database.Pool.Exec(ctx, `
+	if _, err := rig.database.Pool.Exec(ctx, `
 		insert into artifact_review_carries (review_id, carried_from_version) values ($1::uuid, $2)
 		on conflict (review_id) do update set carried_from_version = excluded.carried_from_version`, second.ID, forged); err != nil {
 		t.Fatalf("write the artifact_review_carries row of the review %s naming version %d: %v", second.ID, forged, err)
 	}
-	reviews = carriedFromReviews(t, handler, fixture.artifactID)
+	reviews = carriedFromReviews(t, rig.handler, uploaded.spec)
 	if got := carriedFromReviewOf(t, reviews, second.ID).CarriedFrom; got == nil || *got != forged {
 		t.Errorf("the reviews route answers carried_from_version %s for the review %s of version %d, whose artifact_review_carries row names version %d and whose reason names version %d, want %d, the row's",
 			carriedFromWords(got), second.ID, again, forged, approved, forged)
 	}
 	requireCarryRow("the reviews route over the row written by SQL")
-	if _, _, got := carriedFromApproval(t, handler, fixture.artifactID); got == nil || *got != forged {
+	if _, _, got := carriedFromApproval(t, rig.handler, uploaded.spec); got == nil || *got != forged {
 		t.Errorf("the approval read answers carried_from_version %s for the review %s of version %d, whose artifact_review_carries row names version %d and whose reason names version %d, want %d, the row's",
 			carriedFromWords(got), second.ID, again, forged, approved, forged)
 	}
 	requireCarryRow("the approval read over the row written by SQL")
 
-	// Alice's own approval of a later version is her own act.
-	later := again + 1
-	carriedFromEdit(t, handler, database, fixture, later, carriedFromProseChanged)
-	own := reviewDocument(t, handler, fixture.artifactID, "alice", "approved", "")
-	if own.Version != later {
-		t.Fatalf("alice's own approval is of version %d, want version %d, the latest", own.Version, later)
-	}
-	reviews = carriedFromReviews(t, handler, fixture.artifactID)
-	requireCarriedFrom(t, fmt.Sprintf("the reviews route, for alice's own approval %s of version %d", own.ID, later),
-		carriedFromReviewOf(t, reviews, own.ID).CarriedFrom, nil)
-	requireCarryRow("the reviews route after alice's own approval")
-	state, version, carried = carriedFromApproval(t, handler, fixture.artifactID)
-	if state != "approved" || version != later {
-		t.Errorf("the approval read answers %s at version %d after alice's own approval, want approved at version %d", state, version, later)
-	}
-	requireCarriedFrom(t, fmt.Sprintf("the approval read after alice's own approval of version %d", later), carried, nil)
-	requireCarryRow("the approval read after alice's own approval")
-	if version, held := carriedFromRow(t, database, own.ID); held {
-		t.Errorf("alice's own approval %s of version %d holds an artifact_review_carries row naming version %d, want none: she gave it herself", own.ID, later, version)
-	}
-
 	// A plan review's approval is no carry.
-	plan := uploadDocument(t, handler, "/api/v1/issues/"+fixture.issueKey, "plan.md", "# Plan\n\nShip behind the flag, one region at a time.\n")
-	recorded := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+plan.Artifact.ID+"/plan-reviews",
+	plan := uploadDocument(t, rig.handler, "/api/v1/issues/"+uploaded.key, "plan.md", "# Plan\n\nShip behind the flag, one region at a time.\n")
+	recorded := sessionRequest(t, rig.handler, http.MethodPost, "/api/v1/artifacts/"+plan.Artifact.ID+"/plan-reviews",
 		map[string]any{"actor": sessionActor(), "version": plan.Version.Number})
 	if recorded.Code != http.StatusCreated {
 		t.Fatalf("record the plan review of version %d of the plan: status=%d body=%s", plan.Version.Number, recorded.Code, recorded.Body.String())
 	}
-	planReview := carriedFromReviewOf(t, carriedFromReviews(t, handler, plan.Artifact.ID), decodeBody[carriedFromReview](t, recorded).ID)
+	planReview := carriedFromReviewOf(t, carriedFromReviews(t, rig.handler, plan.Artifact.ID), decodeBody[carriedFromReview](t, recorded).ID)
 	if planReview.Kind != "plan_review" {
 		t.Errorf("the plan's review reads kind %q, want plan_review", planReview.Kind)
 	}
 	requireCarriedFrom(t, fmt.Sprintf("the reviews route, for the plan review %s of version %d of the plan", planReview.ID, plan.Version.Number),
 		planReview.CarriedFrom, nil)
-	_, _, carried = carriedFromApproval(t, handler, plan.Artifact.ID)
+	_, _, carried = carriedFromApproval(t, rig.handler, plan.Artifact.ID)
 	requireCarriedFrom(t, "the approval read of the plan its plan review approved", carried, nil)
+	requireCarryRow("the plan review's reads")
 }
 
 // TestAnUnfilledCarriedReviewTakesItsSourceFromItsReason is c-carried-from's second case (R27).
-// Alice approves version 4 of the spec (carriedFromFixture), and the agent's session adds a reading
-// under a decision, which carries her approval to version 5: the carry holds its
-// artifact_review_carries row. The release before this build writes the same review, its reason
-// and its artifact.approved, and no row, so the test takes the row off by SQL and holds the review
-// as that release leaves it. Before the backfill, the reviews route and the approval read answer 4
-// for it, through its reason; alice's own approval of version 4 answers null and holds no row. The
-// backfill (graphcensus.Backfill) writes the carried review's row naming 4, and the same reads
-// answer the same after it.
+// On an issue that has not converted, alice approves version 4 of the spec
+// (carriedFromRig.approvedAtFour), and a named version that changes nothing writes version 5,
+// which holds version 4's text, so main's text carry, the restore, carries her approval to it: the
+// carry holds its artifact_review_carries row naming 4. The release before this build writes the
+// same review, its reason and its artifact.approved, and no row, so the test takes the row off by
+// SQL and holds the review as that release leaves it. Before the backfill, the reviews route and
+// the approval read answer 4 for it, through its reason; alice's own approval of version 4 answers
+// null and holds no row. The backfill (graphcensus.Backfill) writes the carried review's row naming
+// 4, and the same reads answer the same after it.
 func TestAnUnfilledCarriedReviewTakesItsSourceFromItsReason(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	handler, database, fixture := carriedFromFixture(t, "Carried before its row")
+	rig := newCarriedFromRig(t)
+	fixture := rig.approvedAtFour(t, "Carried before its row")
 	approved := fixture.approval.Version
 	carriedTo := approved + 1
 
-	carriedFromEdit(t, handler, database, fixture, carriedTo, carriedFromReadingAdded)
-	carry := requireReviewCarriedWith(t, handler, fixture.artifactID, carriedTo, approved, readingCarrySentence(approved), nil)
-	if version, held := carriedFromRow(t, database, carry.ID); !held {
+	named := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/artifacts/"+fixture.spec+"/versions",
+		map[string]string{"summary": "nothing changed"}, "alice")
+	if named.Code != http.StatusCreated {
+		t.Fatalf("name version %d of the spec of %s, which changes nothing: status=%d body=%s", carriedTo, fixture.key, named.Code, named.Body.String())
+	}
+	waitForArtifactVersion(t, rig.handler, fixture.spec, carriedTo)
+	carry := requireReviewCarriedWith(t, rig.handler, fixture.spec, carriedTo, approved, restoreSentence(approved), nil)
+	if version, held := carriedFromRow(t, rig.database, carry.ID); !held {
 		t.Errorf("the review of version %d carried from the approval of version %d holds no artifact_review_carries row", carriedTo, approved)
 	} else if version != approved {
 		t.Errorf("the review of version %d carried from the approval of version %d holds the artifact_review_carries row naming version %d, want %d",
@@ -389,32 +497,32 @@ func TestAnUnfilledCarriedReviewTakesItsSourceFromItsReason(t *testing.T) {
 	}
 
 	// The review as the release before writes it: its carried reason, and no row.
-	if _, err := database.Pool.Exec(ctx, `delete from artifact_review_carries where review_id = $1::uuid`, carry.ID); err != nil {
+	if _, err := rig.database.Pool.Exec(ctx, `delete from artifact_review_carries where review_id = $1::uuid`, carry.ID); err != nil {
 		t.Fatalf("leave the review %s with no artifact_review_carries row, as the release before writes it: %v", carry.ID, err)
 	}
 	requireTakenFromItsReason := func(when string) {
 		t.Helper()
-		reviews := carriedFromReviews(t, handler, fixture.artifactID)
+		reviews := carriedFromReviews(t, rig.handler, fixture.spec)
 		requireCarriedFrom(t, fmt.Sprintf("%s the reviews route, for the review %s of version %d, whose reason names version %d", when, carry.ID, carriedTo, approved),
 			carriedFromReviewOf(t, reviews, carry.ID).CarriedFrom, &approved)
 		requireCarriedFrom(t, fmt.Sprintf("%s the reviews route, for alice's own approval %s of version %d", when, fixture.approval.ID, approved),
 			carriedFromReviewOf(t, reviews, fixture.approval.ID).CarriedFrom, nil)
-		state, version, carried := carriedFromApproval(t, handler, fixture.artifactID)
+		state, version, carried := carriedFromApproval(t, rig.handler, fixture.spec)
 		if state != "approved" || version != carriedTo {
 			t.Errorf("%s the approval read answers %s at version %d, want approved at version %d", when, state, version, carriedTo)
 		}
 		requireCarriedFrom(t, when+" the approval read", carried, &approved)
-		if version, held := carriedFromRow(t, database, fixture.approval.ID); held {
+		if version, held := carriedFromRow(t, rig.database, fixture.approval.ID); held {
 			t.Errorf("%s alice's own approval %s holds an artifact_review_carries row naming version %d, want none: she gave it herself",
 				when, fixture.approval.ID, version)
 		}
 	}
 	requireTakenFromItsReason("before the backfill")
 
-	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+	if _, err := graphcensus.Backfill(ctx, rig.database, io.Discard); err != nil {
 		t.Fatalf("run the backfill: %v", err)
 	}
-	if version, held := carriedFromRow(t, database, carry.ID); !held || version != approved {
+	if version, held := carriedFromRow(t, rig.database, carry.ID); !held || version != approved {
 		t.Errorf("after the backfill the review %s of version %d, whose reason names version %d, holds %s, want its artifact_review_carries row naming version %d",
 			carry.ID, carriedTo, approved, carriedFromRowWords(version, held), approved)
 	}
