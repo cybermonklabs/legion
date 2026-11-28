@@ -5395,10 +5395,7 @@ func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload 
 		return nil
 	}
 	if payload.From != nil {
-		if err := r.startBranchAtBase(ctx, row, issue, *payload.From); err != nil {
-			return err
-		}
-		return r.branchWritten(ctx, issue.Key)
+		return r.startBranchAtBase(ctx, row, issue, *payload.From)
 	}
 	if err := r.createBranch(ctx, issue); err != nil {
 		return fmt.Errorf("create the branch of %s, which its roles' starts wait for: %w", issue.Key, err)
@@ -5459,7 +5456,10 @@ func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubre
 // merged head nor holds the base is left where it stands: its commits are someone's work. The
 // owning architect is told so (`next-change-workspace`), and has the base merged forward before the
 // change's first task, which the start of the working copy also says to its role where the branch
-// is behind the base (supervise's startedNote).
+// is behind the base (supervise's startedNote). Only a write GitHub took (Moved, Made) clears the
+// issue's refusals (branchWritten): a branch left or already at the base was written by nobody, so
+// a refusal of its write still stands. Each outcome writes in one transaction at most: the clear,
+// or the notice.
 func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, issue record.Issue, from record.BranchFrom) error {
 	base := from.Base
 	if base == "" {
@@ -5478,9 +5478,13 @@ func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, is
 	}
 	r.log.Info("outbox issue branch of a next change", "row", row.ID, "issue", issue.Key, "outcome", string(result.Outcome),
 		"base", result.Base, "head", result.Head, "tip", result.Tip, "mergedHead", from.MergedHead)
-	if result.Outcome != ghbranch.Left {
+	switch result.Outcome {
+	case ghbranch.Moved, ghbranch.Made:
+		return r.branchWritten(ctx, issue.Key)
+	case ghbranch.Stands:
 		return nil
 	}
+	// Left: the branch is someone's work, and the owning architect is told.
 	notice, err := record.NewOutboxRow(issue.Key, branchLeftNotice(issue.Key, from, result), r.now().UTC())
 	if err != nil {
 		return err
