@@ -39,6 +39,7 @@ const (
 // with the same fields. Above the bound the one listing the turn makes already takes every
 // summary, the child's among them.
 func TestTheTickRereadReadsTheChildrenOfAnIssueWhosePhasesStarted(t *testing.T) {
+	t.Parallel()
 	parent := startedParent
 	filed := dispatch.IssueSummary{Key: filedChild, Status: "triage", Parent: &parent, LastSeq: 1}
 
@@ -139,6 +140,68 @@ func TestTheTickRereadReadsTheChildrenOfAnIssueWhosePhasesStarted(t *testing.T) 
 	})
 }
 
+// A parent held before its retro waits for a Dispatch child its architect filed and never
+// released (record.HoldForChildren, dispatch://INFRA-3320 R8). Such a child sends this daemon no
+// event, so its close in Dispatch reaches the copy only from a reading of Dispatch: the
+// controller tick's re-read reads the children of every parent held before its retro, as it does
+// for every started parent, and the admission pass of the same tick, reading the mirror the
+// re-read wrote, finds nothing holding the parent and starts its retro. The re-read takes the
+// child from its one listing of the project, as a key the turn waits on, and reads nothing singly.
+func TestTheTickRereadReadsTheChildrenOfAParentHeldBeforeItsRetro(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	parent := startedParent
+	closed := dispatch.IssueSummary{Key: filedChild, Status: "done", Parent: &parent, LastSeq: 2}
+	client := &tickDispatch{summaries: []dispatch.IssueSummary{closed}}
+	w := tickRuntime(t, pool, client)
+	seedTickIssue(t, pool, record.Issue{
+		Key: startedParent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "CAPTURE",
+		Title: startedParent, Tree: startedParent, Phase: phase.Held, Hold: &record.Hold{From: phase.Retro, Reason: record.HoldForChildren},
+		Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
+	})
+	seedTickMirror(t, pool, startedParent, "in_progress", 1)
+	ctx := context.Background()
+	token, err := claim.ProjectToken("CAPTURE")
+	if err != nil {
+		t.Fatalf("project token: %v", err)
+	}
+	if err := store.Transact(ctx, pool, func(_ context.Context, tx pgx.Tx) error {
+		records := record.NewStore()
+		version := record.PlanVersion{Issue: startedParent, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: mustClaimToken(t, startedParent, claim.RoleArchitect), GivenAt: time.Now().UTC().Add(-time.Hour)}
+		task := record.PlanTask{Issue: startedParent, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
+			State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceRetro}}
+		steps := []record.PlanStep{
+			{Issue: startedParent, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
+			{Issue: startedParent, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
+		}
+		if err := records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps); err != nil {
+			return err
+		}
+		// The child as the copy last read it: filed under the parent in triage, never released.
+		if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: filedChild, Project: "CAPTURE", Seq: 1,
+			Status: record.Carry("triage"), Parent: record.Carry(startedParent), Blockers: record.Carry[[]string](nil)}); err != nil {
+			return err
+		}
+		_, err := records.OpenTreeLifecycle(ctx, tx, token, startedParent, treelifecycle.AuthorityWorkflow)
+		return err
+	}); err != nil {
+		t.Fatalf("seed the held parent, its plan and its filed child: %v", err)
+	}
+
+	w.applyControllerTick(ctx, time.Now())
+
+	if asked, listings := client.asked(), client.listings(); len(asked) != 0 || listings != 1 {
+		t.Fatalf("the turn read %v singly and listed the project %d times, want no single read and the one listing of the children", asked, listings)
+	}
+	if row := tickMirrored(t, pool)[filedChild]; row.Status != "done" || row.Parent != startedParent || row.Seq != 2 {
+		t.Fatalf("the mirror holds %s as %+v, want the listing's reading: done under %s at 2", filedChild, row, startedParent)
+	}
+	if got := recordOf(t, pool, record.NewStore(), startedParent); got.Phase != phase.Retro || got.Hold != nil {
+		t.Fatalf("%s after the turn = %s with hold %+v, want its retro started: the turn's own pass read its closed child", startedParent, got.Phase, got.Hold)
+	}
+}
+
 // failingListing is Dispatch whose project listing fails while its single reads answer: the
 // listing still counts as asked (tickDispatch.listings).
 type failingListing struct{ *tickDispatch }
@@ -164,7 +227,7 @@ func seedStartedParent(t *testing.T, pool *store.Pool, key string) {
 	if err != nil {
 		t.Fatalf("project token: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(_ context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		if _, err := records.OpenTreeLifecycle(ctx, tx, token, key, treelifecycle.AuthorityWorkflow); err != nil {
 			return err

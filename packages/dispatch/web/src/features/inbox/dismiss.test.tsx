@@ -4,7 +4,7 @@
  * (INFRA-450).
  */
 
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import {
   QueryClient,
   QueryClientProvider,
@@ -37,6 +37,7 @@ import type {
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -49,6 +50,13 @@ import {
   inboxDismissBody,
   useInboxDismiss,
 } from "./useInboxDismiss";
+
+// A thread row's checkbox is named after its subject's plain-text reading (`PlainText`), which
+// reads nothing until the lazy Markdown engine has loaded, and the rows find each checkbox by that
+// name. So the file loads the engine before its first row, in whatever order the rows run.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** What a press carries for one of this file's Reply rows: the version the fixture draws them
  *  at, which every row of it shares. */
@@ -191,6 +199,92 @@ test("a refused dismiss puts the row back where it stood and says so", async () 
   expect(dismissRefusalText(1, false, "not found")).toBe("Could not dismiss 1 thread: not found.");
   // Back in the list, in the place it held.
   expect(rowIds()).toEqual(["reply:c1", "reply:c9"]);
+});
+
+test("below 1280 px a dismiss refused from the reading view's head is said where the reader is", async () => {
+  const user = userEvent.setup();
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(new ApiError(404, { error: "not found" }));
+  renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
+
+  await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+  await user.click(document.querySelector('[data-inbox-row="reply:c1"] time') as HTMLElement);
+  const view = await screen.findByTestId("inbox-reading-view");
+  await user.click(view.querySelector('[data-inbox-dismiss="reply:c1"]') as HTMLElement);
+
+  // The view is still open - on the row the selection moved to - and the refusal is on screen
+  // above it, not in the list's hidden header.
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toBe("Could not dismiss 1 thread: not found.");
+  expect(alert.closest("[hidden]")).toBeNull();
+  expect(screen.getByTestId("inbox-reading-view")).toBeTruthy();
+});
+
+test("below 1280 px a plain click on a thread row's title opens the row in place; a modified click follows the link", async () => {
+  const user = userEvent.setup();
+  renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
+  await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+  // What the browser would do with each click is read here and then stopped, so no click leaves
+  // the test's page.
+  const followed: boolean[] = [];
+  const record = (event: Event) => {
+    followed.push(!event.defaultPrevented);
+    event.preventDefault();
+  };
+  document.addEventListener("click", record);
+  try {
+    const title = () =>
+      document.querySelector<HTMLElement>('[data-inbox-row="reply:c9"] a[data-inbox-owner]');
+
+    await user.keyboard("{Control>}");
+    await user.click(title() as HTMLElement);
+    await user.keyboard("{/Control}");
+    expect(followed).toEqual([true]);
+    expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
+
+    await user.click(title() as HTMLElement);
+    expect(followed).toEqual([true, false]);
+    const view = await screen.findByTestId("inbox-reading-view");
+    expect(view.getAttribute("data-inbox-reading-row")).toBe("reply:c9");
+  } finally {
+    document.removeEventListener("click", record);
+  }
+});
+
+test("below 1280 px `o` on a focused thread row goes to the thread's own page, not the row's view", async () => {
+  const user = userEvent.setup();
+  const assign = spyOn(window.location, "assign").mockImplementation(() => undefined);
+  renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+    const row = document.querySelector<HTMLElement>('[data-inbox-row="reply:c9"]') as HTMLElement;
+    const title = row.querySelector<HTMLAnchorElement>("a[data-inbox-owner]") as HTMLAnchorElement;
+    row.focus();
+    await user.keyboard("o");
+    expect(assign).toHaveBeenCalledWith(title.href);
+    expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
+  } finally {
+    assign.mockRestore();
+  }
+});
+
+test("a short row's cut texts carry their whole text as a title: an ask's question and an Agent row's session", async () => {
+  const question =
+    "Should the sandbox tree checkpoint fence hold until the node release that follows it lands?";
+  const ask = issueAsk({ id: "ask-long", question });
+  const agent = plannerAgentRow({
+    session: { id: "planner", name: "Reviewing PR #1489 production-check screen fixes at 390px" },
+  });
+  renderInbox(seeded([agent], [ask]));
+  await waitFor(() => expect([...rowIds()].sort()).toEqual(["agent:message-1", "ask-long"]));
+
+  // Each is cut with an ellipsis where the line is too narrow, so the whole of it is the title.
+  const askRow = document.querySelector<HTMLElement>('[data-inbox-row="ask-long"]') as HTMLElement;
+  expect(askRow.querySelector(`[title="${CSS.escape(question)}"]`)?.textContent).toBe(question);
+  const owner = document
+    .querySelector<HTMLElement>('[data-inbox-row="agent:message-1"] [data-inbox-row-context]')
+    ?.querySelector<HTMLElement>(`[title="${CSS.escape(agent.session.name)}"]`);
+  expect(owner?.textContent).toBe(agent.session.name);
 });
 
 test("a row a refused dismiss put back is the reader's hand's again, held under the next read", async () => {
@@ -504,6 +598,69 @@ test("Select all in the paged Dismissed view sends the narrowing with that list'
     restore: true,
   });
 });
+
+/** The test DOM's window, whose viewport `matchMedia` answers from: from 1280 px the Inbox draws
+ *  short rows beside a reading column, below it cards. */
+const testWindow = window as unknown as {
+  happyDOM: { setViewport(size: { width: number }): void };
+  innerWidth: number;
+};
+
+// A thread row prints its root in one line, so a root its author deleted - whose subject the
+// delete cleared - reads as the deleted line in the title and in every name the row's controls
+// carry, rather than as an empty line; an edited root carries ` · edited` after its title; and
+// a root that stands unedited carries neither. Both layouts draw the same.
+test.each([
+  ["a card, below the reading column's width", undefined],
+  ["a short row, beside the reading column", 1440],
+] as const)(
+  "a thread row drawn as %s reads a deleted root as deleted and marks an edited one",
+  async (_layout, width) => {
+    const was = testWindow.innerWidth;
+    if (width !== undefined) testWindow.happyDOM.setViewport({ width });
+    try {
+      renderInbox(
+        seeded([
+          // The deleted root was edited first, so ` · edited` can be drawn, and only the row's own
+          // reading of the delete keeps it off.
+          replyRow("c1", {
+            deleted_at: "2026-10-12T00:40:00Z",
+            deleted_by: { id: "alice", kind: "user" },
+            edited_at: "2026-10-12T00:10:00Z",
+            subject: "",
+          }),
+          replyRow("c2", { edited_at: "2026-10-12T00:20:00Z", subject: "Edited root" }),
+          replyRow("c9", { subject: "Standing root" }),
+        ])
+      );
+      await waitFor(() => expect(rowIds().sort()).toEqual(["reply:c1", "reply:c2", "reply:c9"]));
+      const row = (id: string) =>
+        document.querySelector<HTMLElement>(`[data-inbox-row="${id}"]`) as HTMLElement;
+
+      const deleted = row("reply:c1");
+      await waitFor(() =>
+        expect(deleted.querySelector("[data-post-deleted]")?.textContent).toContain(
+          "Deleted by alice"
+        )
+      );
+      expect(deleted.querySelector('[title="Deleted by alice"]')).not.toBeNull();
+      expect(deleted.querySelector('[aria-label="Select Deleted by alice"]')).not.toBeNull();
+      expect(deleted.querySelector('[aria-label="Dismiss: Deleted by alice"]')).not.toBeNull();
+      expect(deleted.textContent).not.toContain("edited");
+
+      const edited = row("reply:c2");
+      expect(edited.textContent).toContain("Edited root · edited");
+      expect(edited.querySelector('[aria-label="Select Edited root"]')).not.toBeNull();
+
+      const standing = row("reply:c9");
+      expect(standing.textContent).toContain("Standing root");
+      expect(standing.textContent).not.toContain("edited");
+      expect(standing.querySelector("[data-post-deleted]")).toBeNull();
+    } finally {
+      testWindow.happyDOM.setViewport({ width: was });
+    }
+  }
+);
 
 // A dismissal the reader stopped may have been made: the rows come back as after a refusal, but
 // the page says Dispatch may have made it and that the next press is one of its own, rather

@@ -15,6 +15,7 @@ import {
   pagePaperBg,
   pageQuietText,
 } from "../../theme/classes";
+import { buildIssuePath } from "../refs/routes";
 import { dialogOpen, useMediaQuery } from "../shell/useDialog";
 import { FILTER_ROW_ATTRIBUTE, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { presetPath } from "./issue-address";
@@ -26,13 +27,16 @@ import {
   PRESET_ORDER,
   type Preset,
 } from "./page-words";
-import type { PresetSignal } from "./presets";
+import { type Filter, isFilter, type PresetSignal } from "./presets";
 import { useShortcutHelpOpener } from "./shortcut-help-opener";
 
 /**
- * The view row (R2, R11, R20, and the prototype's view tabs): five
- * controls, Conversation - the page with no view on - then Spec, Verification, Plan and
- * Decisions, each with its signal; and Keys at its right end.
+ * The view row (R2, R11, R20, and the prototype's view tabs): seven controls, Dashboard - the
+ * page's opening view, which draws no signal (dispatch://INFRA-5702/spec#b-r-new-page) - and
+ * Conversation - the page with no view on - then Spec, Verification, Plan, Decisions and Threads;
+ * the four filters draw signals, Threads draws its count where it has one
+ * (dispatch://INFRA-5704/spec#b-r-control), and Dashboard and Conversation draw none. Keys sits at
+ * the right end.
  *
  * The row is one line at every width (the architect's ruling 5, the 1440 and 390 px pictures).
  * At 760 px and below the row is the one control and Outline,
@@ -44,46 +48,55 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  * turns it off, and pressing Conversation turns every view off. Each control's state is an
  * address of its own (`issue-address.ts`'s `presetPath`), so pressing one is navigation and a
  * view survives a reload and a link. The toolbar is one tab stop, the control that is pressed;
- * the arrow keys, Home and End move between the five, and Enter and Space press.
+ * the arrow keys, Home and End move between the seven, and Enter and Space press.
  *
  * A toggle is the prototype's `.tab`: its name, which is the button, named by that word alone -
- * the word a voice user says - and beside it, outside the button and inside the same drawn box,
- * its signal, a `<label>` of the button, so a press on the count presses it too and the signal is
- * the button's description (`aria-describedby`), not a word drawn inside the button and missing
- * from its name (WCAG 2.5.3).
+ * the word a voice user says. A control's signal is beside the button in the same box, as a
+ * `<label>` so a press on the count presses the button too. The signal is the button's
+ * description (`aria-describedby`), not a word drawn inside the button and missing from its
+ * name (WCAG 2.5.3). Each filter holds its signal's room from its first draw, empty until the
+ * counts are read (`Signal`), so no control moves when they arrive. Threads holds no room: it
+ * draws its signal only where it has one.
  *
- * The row has two shapes and no third. From 1280 px it is the row of five, which is where R2
- * says the views are one row; below it - R2's 1024 px and every width between, where the five
- * and the small controls measured up to 47 px wider than the row at 1025 px with a view on - it
- * is one control naming the one on, with its signal, which opens a menu of the five, each a
- * `menuitemradio` that says whether it is the one on; below 1024 px the Outline control stands
- * beside it (R2, R14). One query and its negation decide the two (`ONE_CONTROL_QUERY`), so no
- * width answers both shapes or neither, and the row is one line at every width. The one control
- * is a WAI-ARIA menu button: Enter, Space, Down and Up open its menu with the focus on the view
- * that is on; Up and Down move in it, wrapping, and Home and End go to its ends; Escape closes it
- * and gives the focus back to the control, and Tab closes it.
+ * The row has two shapes and no third. From 1280 px it is the row of seven, which is where R2
+ * says the views are one row; below it - R2's 1024 px and every width between, where the row of
+ * five, before Dashboard, and the small controls measured up to 47 px wider than the row at
+ * 1025 px with a view on - it is one control naming the one on, with its signal if drawn, which
+ * opens a menu of the seven, each a `menuitemradio` that says whether it is the one on; below
+ * 1024 px the Outline control stands beside it (R2, R14). One query and its negation decide the
+ * two (`ONE_CONTROL_QUERY`), so no width answers both shapes or neither, and the row is one line
+ * at every width. The one control is a WAI-ARIA menu button: Enter, Space, Down and Up open its
+ * menu with the focus on the view that is on; Up and Down move in it, wrapping, and Home and End
+ * go to its ends; Escape closes it and gives the focus back to the control, and Tab closes it.
  */
 export function IssuePresets({
   active,
   issueKey,
   outline,
   signals,
+  threads,
 }: {
   active: Preset;
   issueKey: string;
   /** The Outline control, beside the one control below 1024 px where the Contents pane is not
    *  drawn (R14), and undefined wherever no Outline control is drawn. */
   outline?: ReactNode;
-  /** What each control draws after its name (`presets.ts`'s `filterSignals`). Undefined while
-   *  the counts cannot be read yet (`slots/view-row.tsx` waits for the tree's reads and the
-   *  reader's login): then no control draws a signal - no count, no unit word, no flag - and no
-   *  control's description or name points at one, so none names an element that is not drawn. */
-  signals?: Readonly<Record<Preset, PresetSignal>>;
+  /** What each filter control draws after its name (`presets.ts`'s `filterSignals`). Dashboard
+   *  draws no signal, since what waits on the reader is counted in the header
+   *  (dispatch://INFRA-5702/spec#b-r-header-count), and nor does Conversation.
+   *  The whole record is undefined until the counts can be read (`slots/view-row.tsx`), and until
+   *  then each filter holds its signal's room empty. */
+  signals?: Readonly<Record<Filter, PresetSignal>>;
+  /** What the Threads control draws after its name: the number of the rows of Waiting on me, in
+   *  the words `new_replies` (dispatch://INFRA-5704/spec#b-r-control). It is read off no tree, so
+   *  it is drawn whether or not `signals` is, and it is undefined at 0 and while its read has not
+   *  answered (`slots/view-row.tsx`): then the control draws its name alone, and holds no room. */
+  threads?: PresetSignal;
 }): ReactNode {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const openKeys = useShortcutHelpOpener();
-  // The row of five is drawn exactly where the one control is not.
+  // The row of seven is drawn exactly where the one control is not.
   const row = !useMediaQuery(ONE_CONTROL_QUERY);
   // Where the header scrolls away, the row holds the one control and Outline alone.
   const phone = useMediaQuery(HEADER_SCROLLS_QUERY);
@@ -104,6 +117,13 @@ export function IssuePresets({
   const nameId = (preset: Preset) => `${ids}-name-${preset}`;
   const signalId = (preset: Preset) => `${ids}-signal-${preset}`;
   const toggleId = (preset: Preset) => `${ids}-toggle-${preset}`;
+  // What `preset`'s control draws after its name: a filter its signal, in the room it holds from
+  // its first draw; Threads its count where it has one; Dashboard and Conversation nothing.
+  const drawnSignal = (preset: Preset): DrawnSignal | undefined => {
+    if (isFilter(preset)) return { preset, signal: signals?.[preset] };
+    return preset === "threads" && threads !== undefined ? { preset, signal: threads } : undefined;
+  };
+  const activeSignal = drawnSignal(active);
 
   useEffect(() => {
     const opened = wasOpen.current === undefined && open === "presets";
@@ -141,9 +161,10 @@ export function IssuePresets({
     // The press is the open menu's alone: the page's own Escape - Details' among them - waits for
     // the next one. The menu reads it in the capture phase, so it marks the press before any
     // listener of the page's that a layer under it added earlier. A dialog open over the row
-    // takes the press wherever the focus is: not yet in it, the frame after it opens, or gone to
-    // the page. Whether one is open is `useDialog`'s registry's answer (`dialogOpen()`), which
-    // also decides which dialog the key closes, as Details' drawer asks it.
+    // takes the press wherever the focus is: on the dialog itself in its first frame, on its
+    // field, or gone to the page after a press on its text. Whether one is open is `useDialog`'s
+    // registry's answer (`dialogOpen()`), which also decides which dialog the key closes, as
+    // Details' drawer asks it.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inDialog(event.target)) return;
       if (dialogOpen()) return;
@@ -159,11 +180,20 @@ export function IssuePresets({
   }, [open]);
 
   // A press on a view turns it on, or off where it is the one on; Conversation turns every view
-  // off, and is a press that changes nothing only on the issue's own address, which is
-  // Conversation's: from any other address of the issue - `/collaborators` among them - it goes
-  // to the issue's own.
+  // off, and is a press that changes nothing only where Conversation is on at its own address or
+  // at the issue's own one naming a node or words: from any other address of the issue -
+  // Dashboard's, `/collaborators` among them - it goes to Conversation's own. Pressing Dashboard
+  // while it is on returns to Conversation, as every view does
+  // (dispatch://INFRA-5702/spec#b-r-new-page).
   const press = (preset: Preset) => {
-    if (preset === "conversation" && pathname === presetPath(issueKey, "conversation")) return;
+    if (
+      preset === "conversation" &&
+      active === "conversation" &&
+      (pathname === presetPath(issueKey, "conversation") ||
+        pathname === buildIssuePath({ key: issueKey, kind: "issue" }))
+    ) {
+      return;
+    }
     navigate(
       presetPath(issueKey, preset === active && preset !== "conversation" ? "conversation" : preset)
     );
@@ -176,7 +206,7 @@ export function IssuePresets({
     event.preventDefault();
     toggles.current[next]?.focus();
   };
-  // Inside the open menu, Up and Down move between the five, wrapping, and Home and End go to
+  // Inside the open menu, Up and Down move between the six, wrapping, and Home and End go to
   // the ends. Tab closes it: the focus goes back to the control first, so Tab moves on from the
   // control, and the items take no tab stop of their own.
   const walkMenu = (event: KeyboardEvent<HTMLElement>) => {
@@ -250,41 +280,48 @@ export function IssuePresets({
               <span data-preset-name="" {...pageChrome}>
                 {PRESET_NAMES[active]}
               </span>
-              {signals === undefined ? null : <Signal preset={active} signal={signals[active]} />}
+              {activeSignal === undefined ? null : (
+                <Signal preset={activeSignal.preset} signal={activeSignal.signal} />
+              )}
             </span>
             <MenuMark />
           </button>
           {open === "presets" ? (
             <div className={`${pageMenu} left-0`} onKeyDown={walkMenu} role="menu">
-              {PRESET_ORDER.map((preset) => (
-                // Named by its name and its signal, which it draws inside it; and checked
-                // where it is the one on, which its dot draws.
-                <button
-                  aria-checked={preset === active}
-                  aria-labelledby={
-                    signals === undefined ? nameId(preset) : `${nameId(preset)} ${signalId(preset)}`
-                  }
-                  className={`${pageMenuItem} flex items-baseline gap-1.5`}
-                  key={preset}
-                  onClick={() => {
-                    setOpen(undefined);
-                    if (preset !== active || preset === "conversation") press(preset);
-                  }}
-                  role="menuitemradio"
-                  tabIndex={-1}
-                  type="button"
-                >
-                  <span aria-hidden="true" className={`w-3 shrink-0 ${pageInkText}`}>
-                    {preset === active ? "●" : ""}
-                  </span>
-                  <span id={nameId(preset)} {...pageChrome}>
-                    {PRESET_NAMES[preset]}
-                  </span>
-                  {signals === undefined ? null : (
-                    <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
-                  )}
-                </button>
-              ))}
+              {PRESET_ORDER.map((preset) => {
+                const drawn = drawnSignal(preset);
+                const signal = drawn?.signal;
+                return (
+                  // Named by its name and any signal it draws; checked where it is the one on.
+                  <button
+                    aria-checked={preset === active}
+                    aria-labelledby={
+                      signal === undefined
+                        ? nameId(preset)
+                        : `${nameId(preset)} ${signalId(preset)}`
+                    }
+                    className={`${pageMenuItem} flex items-baseline gap-1.5`}
+                    key={preset}
+                    onClick={() => {
+                      setOpen(undefined);
+                      if (preset !== active || preset === "conversation") press(preset);
+                    }}
+                    role="menuitemradio"
+                    tabIndex={-1}
+                    type="button"
+                  >
+                    <span aria-hidden="true" className={`w-3 shrink-0 ${pageInkText}`}>
+                      {preset === active ? "●" : ""}
+                    </span>
+                    <span id={nameId(preset)} {...pageChrome}>
+                      {PRESET_NAMES[preset]}
+                    </span>
+                    {drawn === undefined ? null : (
+                      <Signal id={signalId(preset)} preset={drawn.preset} signal={signal} />
+                    )}
+                  </button>
+                );
+              })}
             </div>
           ) : null}
         </div>
@@ -310,8 +347,10 @@ export function IssuePresets({
       >
         {PRESET_ORDER.map((preset) => {
           const on = preset === active;
+          const drawn = drawnSignal(preset);
+          const signal = drawn?.signal;
           return (
-            // The prototype's `.tab`: the name and the signal on one baseline, the rule under
+            // The prototype's `.tab`: the name and any signal on one baseline, the rule under
             // both, ink and semibold for the one on.
             <span
               className={`-mb-px inline-flex shrink-0 items-baseline whitespace-nowrap border-b-2 text-sm leading-5 ${
@@ -322,7 +361,7 @@ export function IssuePresets({
               key={preset}
             >
               <button
-                aria-describedby={signals === undefined ? undefined : signalId(preset)}
+                aria-describedby={signal === undefined ? undefined : signalId(preset)}
                 aria-labelledby={nameId(preset)}
                 aria-pressed={on}
                 className="pt-[7px] pb-1.5 pl-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-page-ink"
@@ -361,8 +400,8 @@ export function IssuePresets({
                 }}
                 onMouseDown={(event) => event.preventDefault()}
               >
-                {signals === undefined ? null : (
-                  <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
+                {drawn === undefined ? null : (
+                  <Signal id={signalId(preset)} preset={drawn.preset} signal={signal} />
                 )}
               </label>
             </span>
@@ -380,7 +419,7 @@ export function IssuePresets({
  *  ▾: as text, it is drawn in a face of the reader's own machine, at that face's width. The
  *  control's `aria-haspopup` says it opens a menu, so the shape is hidden from assistive
  *  technology. */
-function MenuMark(): ReactNode {
+export function MenuMark(): ReactNode {
   return (
     <svg
       aria-hidden="true"
@@ -417,11 +456,52 @@ function step(
 }
 
 /**
+ * The room each filter's signal takes from its control's first draw, in the signal's own `ch`,
+ * the advance of "0" in its 12 px medium face: the counts arrive seconds after the row on a large
+ * issue (`slots/view-row.tsx`), and a control that grew then moved every control after it under a
+ * press aimed at one of them. Each room holds its filter's longest signal (`PresetSignal`) with a
+ * count of three digits and a flag of two. In the page's Inter, where "0" is 7.57 px at 12 px and
+ * no digit is wider, "000" is 3.00 ch, "000 steps" 7.53 ch, "000 · 00 failing" 11.33 ch and
+ * "000 · 00 to review" 13.73 ch; each room rounds that up, which leaves room for the medium face
+ * the signal is drawn in. A longer signal still widens its control.
+ *
+ * With every room drawn the five controls after Dashboard are 732 px: each control its 12 px
+ * before the name, the name (14 px: Conversation 88 px, Spec 34, Verification 76, Plan 28,
+ * Decisions 64), the label's 6 px and 12 px and the room (Spec 23 px, Verification 91, Plan 61,
+ * Decisions 110), and 2 px between controls. Dashboard, which holds no room, adds its name and
+ * those 32 px. With Keys (50 px) and the row's two 8 px gaps the row needs 798 px and
+ * Dashboard's, which the 1168 px the row has at 1280 px (less the 56 px rail and the 28 px
+ * insets) and the 1328 px it has at 1440 px hold on one line. Below 1280 px the one control's
+ * widest name and room, Decisions', take 230 px of the 362 px it has at 390 px; the menu is at
+ * least 260 px wide (`pageMenu`), and its widest item, Decisions with its room, takes 214 px of
+ * the 246 px inside its padding and rule, so no item widens it when the signals arrive. Threads,
+ * the last control of the row, holds no room (`Signal`), so these widths leave it out.
+ */
+const SIGNAL_ROOM: Readonly<Record<Filter, string>> = {
+  decisions: "min-w-[14.5ch]",
+  plan: "min-w-[8ch]",
+  spec: "min-w-[3ch]",
+  verification: "min-w-[12ch]",
+};
+
+/** The signal a control draws after its name (`IssuePresets`'s `drawnSignal`): a filter's, which
+ *  is undefined until the counts are read, or Threads' count, which is drawn only where it has
+ *  one. */
+interface DrawnSignal {
+  readonly preset: Filter | "threads";
+  readonly signal: PresetSignal | undefined;
+}
+
+/**
  * What one control draws after its name: its count, then the noun the count is in, or what of
  * it asks something of the reader, in the prototype's `.sig` (12 px, the quiet grey; the failed
  * red for what failed and the decision violet for what waits for review, each with its word, so
  * the colour repeats what the word says). The count is the author's number and carries
- * `data-preset-count`, which the checks read it by.
+ * `data-preset-count`, which the checks read it by. A filter's signal stands in its room
+ * (`SIGNAL_ROOM`): until the signal is known the room is drawn empty and hidden from assistive
+ * technology, so it holds the control's width and no screen reader hears it or find-in-page
+ * matches in it. The room carries `data-preset-signal` either way. Threads' signal holds no room,
+ * and is drawn only once it is known (`IssuePresets`'s `threads`).
  */
 function Signal({
   id,
@@ -429,25 +509,37 @@ function Signal({
   signal,
 }: {
   id?: string;
-  preset: Preset;
-  signal: PresetSignal;
+  preset: DrawnSignal["preset"];
+  signal: PresetSignal | undefined;
 }): ReactNode {
-  const { flag, unit } = signal;
+  const room = preset === "threads" ? "" : ` ${SIGNAL_ROOM[preset]}`;
   return (
-    <span className={`text-xs leading-4 font-medium ${pageQuietText}`} id={id}>
-      <span data-preset-count={preset} {...authorText}>
-        {signal.count}
-      </span>
-      {unit === undefined ? null : <span {...pageChrome}> {FILTER_SIGNAL_WORDS[unit]}</span>}
-      {flag === undefined ? null : (
-        <span
-          className={flag.word === "failing" ? pageFailedText : pageDecisionText}
-          data-preset-flag={flag.word}
-          {...pageChrome}
-        >
-          {" · "}
-          <span {...authorText}>{flag.count}</span> {FILTER_SIGNAL_WORDS[flag.word]}
-        </span>
+    <span
+      aria-hidden={signal === undefined ? true : undefined}
+      className={`inline-block${room} text-xs leading-4 font-medium ${pageQuietText}`}
+      data-preset-signal={preset}
+      id={id}
+    >
+      {signal === undefined ? null : (
+        <>
+          <span data-preset-count={preset} {...authorText}>
+            {signal.count}
+          </span>
+          {signal.unit === undefined ? null : (
+            <span {...pageChrome}> {FILTER_SIGNAL_WORDS[signal.unit]}</span>
+          )}
+          {signal.flag === undefined ? null : (
+            <span
+              className={signal.flag.word === "failing" ? pageFailedText : pageDecisionText}
+              data-preset-flag={signal.flag.word}
+              {...pageChrome}
+            >
+              {" · "}
+              <span {...authorText}>{signal.flag.count}</span>{" "}
+              {FILTER_SIGNAL_WORDS[signal.flag.word]}
+            </span>
+          )}
+        </>
       )}
     </span>
   );

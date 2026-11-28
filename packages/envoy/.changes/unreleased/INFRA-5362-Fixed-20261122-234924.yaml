@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  Dispatch's priorities read (`GET /api/v1/priorities`, the whole body and `?summary=true`) no
+  longer does many times its work from a connection's sixth read on. Its four statements over the
+  relations' seed read the seed through `unnest`, whose rows a generic plan sizes at 10 whatever
+  the arrays hold, so once Postgres switched a connection to that plan the descent scanned the
+  whole issues table at each step: 6.7 to 45.8 times the shared buffers of the plans made for the
+  read's own arguments on the test corpus. The seed now reads the arrays by their subscripts, which
+  every plan sizes alike, so each run does the work of the plan made for its arguments, with the
+  same answer.
+time: 2026-11-22T23:49:24Z
+custom:
+    Issue: INFRA-5362

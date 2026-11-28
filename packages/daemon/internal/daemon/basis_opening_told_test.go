@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"context"
 	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -31,8 +33,8 @@ func (r *personHandoverRig) openingWordsTold(tree, issue string, texts ...string
 		return true
 	}
 	var owed bool
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
-		told, err := record.NewStore().TreeTold(r.t.Context(), tx, tree)
+	if err := store.TransactWith(r.t.Context(), r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		told, err := record.NewStore().TreeTold(ctx, tx, tree)
 		owed = slices.ContainsFunc(told, func(row record.DesignTold) bool { return row.Issue == issue && row.OpeningOwed })
 		return err
 	}); err != nil {

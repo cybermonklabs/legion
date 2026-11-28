@@ -3,6 +3,7 @@ package oidctest
 import (
 	"encoding/json"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -43,11 +44,13 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	if failure := flow.token; failure.status != 0 || failure.drop {
+		// The failure and the refresh count are read and kept under the lock; the answer is written
+		// without it, as the delay above and handleRevoke's failure answer are.
 		if r.PostForm.Get("grant_type") == "refresh_token" {
 			flow.refreshes++
 		}
+		i.mu.Unlock()
 		switch {
 		case failure.drop:
 			if hijacker, ok := w.(http.Hijacker); ok {
@@ -55,6 +58,15 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 					_ = conn.Close()
 				}
 			}
+		case failure.cut != cutNone:
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", "200")
+			w.WriteHeader(failure.status)
+			_, _ = w.Write([]byte(`{"access_t`))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			breakOff(w, r, failure.cut)
 		case failure.code == "":
 			http.Error(w, http.StatusText(failure.status), failure.status)
 		default:
@@ -62,6 +74,7 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	defer i.mu.Unlock()
 	clientID, clientSecret, basic, err := basicCredentials(r)
 	if err != nil {
 		tokenError(w, http.StatusUnauthorized, "invalid_client")
@@ -249,4 +262,28 @@ func (i *Issuer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	i.mu.Unlock()
 	w.WriteHeader(http.StatusOK)
+}
+
+// breakOff ends an answer whose body the token endpoint promised and did not send, as how says:
+// cutClose aborts the response, so the server closes the connection; cutReset takes the
+// connection and resets it (a TCP RST: SO_LINGER of zero, then close); cutStall sends nothing
+// more until the client hangs up, so the client's own timeout ends its read. The caller holds no
+// lock of the issuer's.
+func breakOff(w http.ResponseWriter, r *http.Request, how cutAnswer) {
+	switch how {
+	case cutReset:
+		if hijacker, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hijacker.Hijack(); err == nil {
+				if tcp, ok := conn.(*net.TCPConn); ok {
+					_ = tcp.SetLinger(0)
+				}
+				_ = conn.Close()
+				return
+			}
+		}
+	case cutStall:
+		<-r.Context().Done()
+		return
+	}
+	panic(http.ErrAbortHandler)
 }

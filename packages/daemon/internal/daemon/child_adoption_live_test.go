@@ -23,7 +23,7 @@
 // whole-daemon live proof.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration load,
+// whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration load,
 // the real store and its migrations, the real HTTP API, the real claim supervision, the real
 // openWorkflow, the real JetStream consumers and the real outbox lanes. Facts enter only by the
 // transports production has: the Dispatch envelopes of the ENVOY_NOTIFICATIONS stream and the
@@ -73,6 +73,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -121,6 +122,7 @@ type childAdoptionLive struct {
 // TestAQueuedRootUnderALiveTreeJoinsItLive drives the eleven steps of the proof against one booted
 // daemon.
 func TestAQueuedRootUnderALiveTreeJoinsItLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newChildAdoptionLive(t)
 	r.step("queued-root-leaves-the-line", r.queuedRootLeavesTheLine)
@@ -153,7 +155,7 @@ func newChildAdoptionLive(t *testing.T) *childAdoptionLive {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = childAdoptionGitHub(t)
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	r.architect = r.registerArchitect()
 	return r
 }
@@ -259,7 +261,7 @@ func (r *childAdoptionLive) registerArchitect() *childAdoptionArchitect {
 	const session = "ses_architect"
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)
@@ -370,7 +372,9 @@ func (r *childAdoptionLive) stopped(issue string) []string {
 // what it was seeding on an error.
 func (r *childAdoptionLive) write(what string, body func(tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := r.st.Tx(context.Background(), body); err != nil {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return body(tx)
+	}); err != nil {
 		r.t.Fatalf("seed %s: %v", what, err)
 	}
 	r.note("seeded: %s", what)
@@ -380,7 +384,7 @@ func (r *childAdoptionLive) write(what string, body func(tx pgx.Tx) error) {
 func (r *childAdoptionLive) recorded(key string) *record.Issue {
 	r.t.Helper()
 	var issue *record.Issue
-	if err := r.st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = r.records.Issue(context.Background(), tx, key)
 		return err

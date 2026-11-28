@@ -22,8 +22,9 @@ import (
 // the notice and has answered nothing, the hook runs to completion, which is where a lane meets
 // the daemon — the publish is outside every transaction of the row's run. The publish is then
 // given answer, nil for the delivery; a kept publish (PublishKept) is answered the same way and
-// never kept.
+// never kept. Its role read is fakeRoleListener's.
 type hookPublisher struct {
+	fakeRoleListener
 	mu        sync.Mutex
 	hook      func() error
 	answer    error
@@ -31,8 +32,8 @@ type hookPublisher struct {
 	delivered []outboxPublish
 }
 
-func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
-	return p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload})
+func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, key string) (string, error) {
+	return "", p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload})
 }
 
 func (p *hookPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
@@ -84,12 +85,12 @@ func (p *hookPublisher) ranHook(t *testing.T) {
 func keptCatchUp(t *testing.T, pool *store.Pool, records record.Store, root string, launch uint64, now time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := records.Issue(ctx, tx, root)
 		if err != nil || stored == nil {
 			return fmt.Errorf("read %s: %w", root, err)
 		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now, time.Time{})
+		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now)
 	}); err != nil {
 		t.Fatalf("queue the catch-up of %s for launch %d: %v", root, launch, err)
 	}
@@ -106,7 +107,7 @@ func leaseCatchUp(t *testing.T, pool *store.Pool, records record.Store, root str
 		t.Fatalf("%d catch-ups of %s in the outbox, want the one to lease", len(rows), root)
 	}
 	var leased record.OutboxRow
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		row, claimed, err := records.ClaimRow(ctx, tx, rows[0].ID, now, time.Minute)
 		if err == nil && !claimed {
 			return fmt.Errorf("outbox row %d was not claimed", rows[0].ID)
@@ -188,7 +189,7 @@ func namingRef(naming map[int64]bool) int {
 func keepDecision(t *testing.T, pool *store.Pool, records record.Store, issue, ref string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: issue, Ref: ref,
 			Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at})
 	}); err != nil {
@@ -203,6 +204,7 @@ func keepDecision(t *testing.T, pool *store.Pool, records record.Store, issue, r
 // decisions is left for its own ending to settle — here the publish, which forgets exactly what it
 // named — and the fresh catch-up names only what nobody claims.
 func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -221,12 +223,12 @@ func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 	// The architect's next ready, while that catch-up is publishing: it drops the root's queued
 	// catch-ups and writes a fresh one in the same transaction.
 	publisher := &hookPublisher{hook: func() error {
-		return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		return store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			stored, err := records.Issue(ctx, tx, "LEGION-1")
 			if err != nil {
 				return err
 			}
-			return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, 2, "", now, time.Time{})
+			return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, 2, "", now)
 		})
 	}}
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher,
@@ -262,6 +264,7 @@ func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 // a fresh catch-up while the root has an architect to tell. Left to the row's deletion, those
 // decisions would wait unclaimed with nothing to name them while the architect worked the tree.
 func TestAReceiptTimeoutOnASupersededCatchUpHandsOverWhatItNamed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -281,7 +284,7 @@ func TestAReceiptTimeoutOnASupersededCatchUpHandsOverWhatItNamed(t *testing.T) {
 		answer: fmt.Errorf("publish notice: listener returned 504 Gateway Timeout: %w",
 			notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses-other"}),
 		hook: func() error {
-			return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			return store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				stored, err := records.Issue(ctx, tx, "LEGION-1")
 				if err != nil {
 					return err
@@ -300,7 +303,7 @@ func TestAReceiptTimeoutOnASupersededCatchUpHandsOverWhatItNamed(t *testing.T) {
 	publisher.ranHook(t)
 	// The lane finishes the row its run returned nothing for, which releases whatever it still
 	// claims.
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.FinishOutbox(ctx, tx, leased.ID, leased.LeaseToken)
 	}); err != nil {
 		t.Fatalf("finish the superseded catch-up: %v", err)
@@ -325,6 +328,7 @@ func TestAReceiptTimeoutOnASupersededCatchUpHandsOverWhatItNamed(t *testing.T) {
 // confirms a delivery. Left to the row's deletion, the decision would wait unclaimed with nothing
 // to name it while the architect worked the tree.
 func TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -353,7 +357,7 @@ func TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed(t *testing.T) {
 	if err := runner.notice(ctx, leased, payload); err != nil {
 		t.Fatalf("run the catch-up whose last receipt timed out: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.FinishOutbox(ctx, tx, leased.ID, leased.LeaseToken)
 	}); err != nil {
 		t.Fatalf("finish the spent catch-up: %v", err)
@@ -376,6 +380,7 @@ func TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed(t *testing.T) {
 // architect to hear it, and waits KEPT, with nothing written, while it has none — a lingering
 // root's next start or ready names it.
 func TestALateReportOfASpentCatchUpNamesWhatItsRowReleased(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		lingers bool
@@ -398,7 +403,7 @@ func TestALateReportOfASpentCatchUpNamesWhatItsRowReleased(t *testing.T) {
 			leased, payload := leaseCatchUp(t, pool, records, "LEGION-1", now)
 			// The row's last copy finished on the listener's 202, and its deletion released what it
 			// claimed; the listener reports the failed forward only after that.
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.FinishOutbox(ctx, tx, leased.ID, leased.LeaseToken)
 			}); err != nil {
 				t.Fatalf("finish the spent catch-up: %v", err)

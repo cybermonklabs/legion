@@ -1,0 +1,17 @@
+{
+  "m0": {
+    "a-sent-message-reaches-a-listener": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"],
+    "a-late-session-gets-the-message": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"],
+    "a-restart-keeps-the-message": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"]
+  },
+  "b1": {
+    "a-sent-message-reaches-a-listener": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"],
+    "a-late-session-gets-the-message": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"],
+    "a-restart-keeps-the-message": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"]
+  },
+  "m1": {
+    "a-sent-message-reaches-a-listener": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"],
+    "a-late-session-gets-the-message": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"],
+    "a-restart-keeps-the-message": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"]
+  }
+}

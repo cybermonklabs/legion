@@ -2,10 +2,12 @@
 //
 // The listener records a check run or a check suite from the webhook GitHub sends it, and the
 // Legion daemon reads the settlement those records produce (`ci-ok`, `pr-title`). A webhook that
-// reaches no record leaves that head short of a check, and a head short of a check never settles:
-// the daemon waits for an answer that never comes. GitHub holds the same objects the webhook
-// carries, so every Interval a pass reads each open pull request's head and records every
-// completed check run and completed check suite the listener's record of that head lacks.
+// reaches no record leaves that head's record behind GitHub: a run whose end it missed holds the
+// head for ever, and the daemon waits for an answer that never comes, and a run it missed whole
+// is absent, so the head settles while GitHub still runs it and the daemon reads the head as done.
+// GitHub holds the same objects the webhook carries, so every Interval a pass reads each open
+// pull request's head and records every check run, finished or not, in one write of the head's
+// record, and every completed check suite the listener's record of that head lacks (recordRuns).
 //
 // A pass reads GitHub in batches, over GraphQL: one query answers twenty open pull requests of
 // one repository with every check suite and every check run of each one's head commit
@@ -93,6 +95,8 @@ import (
 	"maps"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
@@ -155,6 +159,11 @@ type Reconciler struct {
 	// (`tester`, `architect`) is recorded only when that App created it
 	// (contracts.ReviewerVerdictDecision); unset, no verdict check is recorded at all.
 	ReviewerAppID string
+	// VerdictAppID is the verdict App's id, Dispatch's DISPATCH_VERDICT_APP_ID, the App that
+	// writes `legion-verdict`. Its check suites are no CI result, and the listener leaves them out
+	// of the record (contracts.VerdictAppsOwnSuite); the pass leaves them out too. Unset, the pass
+	// records every App's completed suite.
+	VerdictAppID string
 	// Logger takes the one INFO line each pass writes and the WARN lines of what it skipped. It is
 	// required.
 	Logger *slog.Logger
@@ -184,10 +193,17 @@ type Reconciler struct {
 	// a record apart from ci_reconcile_passes, which says how the pass ended: a pass can complete
 	// there and still have failed here, on a repository it skipped. Nil records nothing.
 	GitHubReads githubreads.Recorder
+	// VerifyLeases is the lease-pool reservation the verify loop answers its requests under
+	// (Verify, VerifyLease): one of its own, apart from the one the reconcile pass holds its lease
+	// on, since both can be inside a lease at once. Nil answers with no lease, which is a test's
+	// Reconciler.
+	VerifyLeases duty.Leases
 	// now is the clock the answers held in absent are timed by, and time.Now when it is nil,
 	// which is every Reconciler but a test's: a test of how long an answer is held moves its
 	// own clock rather than waiting out AbsentAppRecheck.
 	now func() time.Time
+	// passClock owns pass deadlines, pacing gaps and query durations. Nil uses clock.Real.
+	passClock clock.Clock
 
 	// rows is what the last pass learned of each repository the pass read, keyed by the canonical
 	// name it read it under, which an old name and the name it was renamed to share as one entry:
@@ -234,6 +250,12 @@ type Reconciler struct {
 	seenRows         map[string]struct{}
 	seenRepositories map[int64]struct{}
 	seenHeads        map[string]struct{}
+	// verifyFailed is the heads the verify loop could not answer, by head (pullHead.key), each
+	// with the episode and revision it failed at, how often in a row that episode failed, when the
+	// loop reads the head again and whether it gave the episode up (Verify, verifyRetryAfter,
+	// permanentVerifyFailure). Only Verify touches it, never a pass, and a head is forgotten
+	// verifyForget after its last failure.
+	verifyFailed map[string]verifyFailure
 }
 
 // stop is the rate limit that ended a pass: the scope it was found or answered under, and when
@@ -325,6 +347,15 @@ func (r *Reconciler) clock() time.Time {
 		return r.now()
 	}
 	return time.Now()
+}
+
+// deadlineClock supplies pass deadlines, pacing gaps and query durations. A test can set
+// passClock to advance them together; nil preserves the real clock and its timer semantics.
+func (r *Reconciler) deadlineClock() clock.Clock {
+	if r.passClock != nil {
+		return r.passClock
+	}
+	return clock.Real()
 }
 
 // forget drops every entry of held the cycle that has just closed did not reach, so what the

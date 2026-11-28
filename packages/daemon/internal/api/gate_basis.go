@@ -107,7 +107,15 @@ func (s *server) refuseFailedRead(w http.ResponseWriter, r *http.Request, err er
 	if errors.As(err, &failure) {
 		what = failure.what
 	}
-	s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry register_gate", what))
+	s.refuseDispatchRead(w, r, what, "register_gate")
+}
+
+// refuseDispatchRead answers a Dispatch read of what that failed: 502 DISPATCH_FAILED, nothing
+// recorded, so operation, which the refusal names, retries. It is the one text of that refusal,
+// for register_gate's reads (refuseFailedRead), the read of the document an operation names
+// (documentOfIssue) and register_plan's read of the plan's version (planAt).
+func (s *server) refuseDispatchRead(w http.ResponseWriter, r *http.Request, what, operation string) {
+	s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry %s", what, operation))
 }
 
 // gateAncestors walks root's Dispatch child_of chain upward from its parent, nearest first,
@@ -281,8 +289,7 @@ func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant
 			ancestor.Key, dispatch.LegionLabel, labelNames(ancestor.Labels))
 	}
 	if record.AcceptedStatus(ancestor.Status) {
-		return refuse("BASIS_ACCEPTED", "Dispatch shows %s %s, so it has been accepted; a basis is an ancestor not yet accepted, so request a person's approval of the issue's own document",
-			ancestor.Key, ancestor.Status)
+		return refuse("BASIS_ACCEPTED", "Dispatch shows %s %s, so it has been accepted; %s", ancestor.Key, ancestor.Status, record.BasisNotYetAccepted)
 	}
 	recorded, err := s.recordedIssue(ctx, ancestor.Key)
 	if err != nil {
@@ -290,8 +297,8 @@ func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant
 		return nil, false
 	}
 	if recorded != nil && record.Accepted(*recorded) {
-		return refuse("BASIS_ACCEPTED", "the daemon records %s in %s, so it has accepted %s's reviewed head; a basis is an ancestor not yet accepted, so request a person's approval of the issue's own document",
-			ancestor.Key, record.StandsAt(*recorded), ancestor.Key)
+		return refuse("BASIS_ACCEPTED", "the daemon records %s in %s, so it has accepted the head the step before %s's retro passed; %s",
+			ancestor.Key, record.StandsAt(*recorded), ancestor.Key, record.BasisNotYetAccepted)
 	}
 
 	// The ancestor's approval: a person's of its latest version, or its open request of that version

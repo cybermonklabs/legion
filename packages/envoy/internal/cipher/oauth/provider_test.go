@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code"
@@ -42,6 +43,9 @@ type fixture struct {
 	dsn      string
 	pool     *pgxpool.Pool
 	provider *oauth.Provider
+	// store is the store the provider runs on, for a test that sets what a deployment sets on it
+	// before the broker serves (SetSessionPairs).
+	store *oauthstore.Store
 
 	mu        sync.Mutex
 	userCodes []string
@@ -67,7 +71,7 @@ func newFixtureWith(t *testing.T, adjust func(*oauth.Config)) *fixture {
 // test starts a second broker process beside a first.
 func newFixtureOn(t *testing.T, dsn string, adjust func(*oauth.Config)) *fixture {
 	t.Helper()
-	pool, err := pgxpool.New(context.Background(), dsn)
+	pool, err := testpool.NewPool(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
@@ -92,7 +96,7 @@ func newFixtureOn(t *testing.T, dsn string, adjust func(*oauth.Config)) *fixture
 	if err != nil {
 		t.Fatalf("oauth.New: %v", err)
 	}
-	f := &fixture{dsn: dsn, pool: pool, provider: provider}
+	f := &fixture{dsn: dsn, pool: pool, provider: provider, store: store}
 	hooks := oauth.TokenHooks{
 		Before: func(_ context.Context, _ oauth2.GrantType, _ map[string]any) error {
 			f.mu.Lock()
@@ -229,6 +233,18 @@ func (f *fixture) newCredential(t *testing.T) string {
 	id := uuid.NewString()
 	if _, err := f.pool.Exec(context.Background(), `insert into launcher_credentials (id, operator, host, key_thumbprint, public_jwk, expires_at)
 		values ($1, 'ada@example.com', 'example-host', $2, '{}'::jsonb, now() + interval '30 days')`, id, "thumbprint-"+id); err != nil {
+		t.Fatalf("insert launcher_credentials: %v", err)
+	}
+	return id
+}
+
+// newSignInCredential inserts a Dispatch sign-in's launcher credential holding scopes, as an
+// approval mints one (its dispatch_scopes is written once, at the insert).
+func (f *fixture) newSignInCredential(t *testing.T, scopes []string) string {
+	t.Helper()
+	id := uuid.NewString()
+	if _, err := f.pool.Exec(context.Background(), `insert into launcher_credentials (id, operator, host, key_thumbprint, public_jwk, expires_at, dispatch_scopes)
+		values ($1, 'ada@example.com', 'example-host', $2, '{}'::jsonb, now() + interval '30 days', $3)`, id, "thumbprint-"+id, scopes); err != nil {
 		t.Fatalf("insert launcher_credentials: %v", err)
 	}
 	return id

@@ -36,7 +36,7 @@ func TestParentWaitsHoldsTheWorkOfAnEntryRaisedAfterARetryOfTheOneBefore(t *test
 		t.Fatalf("the retry's start = %+v; want the retry's own task on entry 3", retry)
 	}
 	putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 1, supervise.StateIdle, "")
-	pwDeliver(t, pool, token, retry)
+	pwDeliver(t, pool, spParent, token, retry)
 
 	pwApplied(t, pool, admission, "api", "implemented", intake.HandoffComplete{Generation: 1, Issue: spParent,
 		Role: claim.RoleImplementer, Claim: token, Summary: "implemented after the retry", Commit: "head-42",
@@ -46,7 +46,7 @@ func TestParentWaitsHoldsTheWorkOfAnEntryRaisedAfterARetryOfTheOneBefore(t *test
 	}
 	tester := pwRoleToken(t, spParent, claim.RoleTester)
 	putWorkerClaim(t, pool, spParent, spParent, claim.RoleTester, 1, supervise.StateIdle, "")
-	pwDeliver(t, pool, tester, pnWorkerStart(t, pool, spParent, claim.RoleTester))
+	pwDeliver(t, pool, spParent, tester, pnWorkerStart(t, pool, spParent, claim.RoleTester))
 	pwApplied(t, pool, admission, "api", "failed", intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester,
 		Claim: tester, Summary: "a check failed", Verdict: "fail", Commit: "head-42",
 		HandoffRecord: "test-1", HandoffVersion: 1})
@@ -63,7 +63,7 @@ func TestParentWaitsHoldsTheWorkOfAnEntryRaisedAfterARetryOfTheOneBefore(t *test
 		string(token)); err != nil {
 		t.Fatalf("retire the retry's delivery as the end of the turn that took it does: %v", err)
 	}
-	pwDeliver(t, pool, token, fixed)
+	pwDeliver(t, pool, spParent, token, fixed)
 	seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 	spPass(t, pool, admission)

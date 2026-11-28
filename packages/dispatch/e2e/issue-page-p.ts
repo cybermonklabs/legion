@@ -9,17 +9,25 @@ import {
   createIssue,
   createIssueArtifact,
   createProject,
+  getIssue,
   patchIssue,
   userHeaders,
 } from "./api";
 import { filterRow } from "./issue-page";
 import { assertWhole } from "./unclipped";
 
+// The typeface's readers are `issue-page-typeface.ts`'s, the one copy every row reads; this
+// module passes them on to its own rows, which import them from here.
+export { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
+
 declare global {
   interface Window {
     /** `holdClipboard`'s clipboard: how many writes were made, and the resolve of each write
      *  still held. */
     __dispatchHeldClipboard?: { held: (() => void)[]; writes: number };
+    /** `holdFrames`' release: hands every held animation frame to the browser's next frame and
+     *  puts the page's own `requestAnimationFrame` back. */
+    __dispatchReleaseFrames?: () => void;
   }
 }
 
@@ -108,11 +116,16 @@ export interface HeaderSeed {
 }
 
 /**
- * One issue holding every part of the header's list, written through `e2e/api.ts`: a parent
- * whose route reaches nobody, so the parent draws the header's one route marker; the issue under
- * it in progress, at P1, assigned to alice, with a spec and a Verification document, three
- * children (one done, one in progress, one to do) and two questions an agent asked, which wait
- * on alice. No approval request is open: a row that needs one asks for it.
+ * One issue holding every part of the header's list, written through `e2e/api.ts`: a parent in
+ * progress whose route reaches nobody, so the parent draws the header's one route marker; the
+ * issue under it in progress, at P1, assigned to alice, with a spec and a Verification document,
+ * three children (one done, one in progress, one to do) and two questions an agent asked, which
+ * wait on alice. No approval request is open: a row that needs one asks for it.
+ *
+ * The parent is in work, so the chain keeps Dispatch's parent-status rule (R24): a pick of the
+ * issue's status into work is one the rule asks nothing of, and the page sends its PATCH after the
+ * dry run, which Dispatch answers as the rule is on whatever its setting. A close is not: a row
+ * that closes the issue closes its open children first (`closeOpenChildren`).
  */
 export async function seedHeader(): Promise<HeaderSeed> {
   await createProject({ key: HEADER_PROJECT, name: "Header" });
@@ -122,7 +135,7 @@ export async function seedHeader(): Promise<HeaderSeed> {
     spec: "The parent's plan.",
     title: "The parent of the header's issue",
   });
-  await patchIssue(parent.key, { route: "role:nobody-holds-this" });
+  await patchIssue(parent.key, { route: "role:nobody-holds-this", status: "in_progress" });
   const issue = await createIssue({
     force: true,
     parent: parent.key,
@@ -160,9 +173,26 @@ export async function seedHeader(): Promise<HeaderSeed> {
   };
 }
 
+/** Closes each open child of the seeded issue through the API, so that a close of the issue keeps
+ *  Dispatch's parent-status rule (a parent is done only when each child is done) and the page
+ *  writes it with no question. A child already done is left as it is: Dispatch refuses a write of
+ *  a closed issue's status (`ISSUE_CLOSED`). A row about what a close does to the page, not about
+ *  the rule's question, calls it before it closes the issue. */
+export async function closeOpenChildren(seeded: HeaderSeed): Promise<void> {
+  for (const child of seeded.childKeys) {
+    if ((await getIssue(child)).status !== "done") await patchIssue(child, { status: "done" });
+  }
+}
+
 /** The new page's header. */
 export function issueHeader(page: Page): Locator {
   return page.locator("[data-issue-page] header[data-issue-header]");
+}
+
+/** The header's Edit title: the button laid over the title's heading that opens its editor
+ *  (`IssueTitleRow.tsx`), drawn while the issue is open and its title is not being edited. */
+export function editTitleButton(page: Page): Locator {
+  return issueHeader(page).getByRole("button", { exact: true, name: CONTROL_LABELS.edit_title });
 }
 
 /** The part of the header that stays at the top of the screen from 761 px up: the key's row
@@ -756,52 +786,6 @@ export function stickyReading(page: Page): Promise<StickyReading | null> {
   });
 }
 
-/** The family `web/src/styles.css` declares for the typeface the new page ships and draws in. */
-export const TYPEFACE = "Dispatch Inter";
-
-/** The address the page's stylesheet loads the typeface from, read from its own `@font-face`
- *  rule. Throws when no rule declares the family. */
-export async function typefaceAddress(page: Page): Promise<string> {
-  // Callers wait for the header drawn first, and the page's script runs only once its stylesheet
-  // has loaded, so the rule is there; a miss only throws.
-  const address = await page.evaluate((family) => {
-    const find = (rules: CSSRuleList, base: string): string | null => {
-      for (const rule of rules) {
-        if (rule instanceof CSSFontFaceRule) {
-          const named = rule.style.getPropertyValue("font-family").replace(/["']/g, "").trim();
-          const source = /url\(["']?([^"')]+)["']?\)/.exec(rule.style.getPropertyValue("src"));
-          if (named === family && source?.[1] !== undefined) return new URL(source[1], base).href;
-        } else if (rule instanceof CSSGroupingRule) {
-          const found = find(rule.cssRules, base);
-          if (found !== null) return found;
-        }
-      }
-      return null;
-    };
-    for (const sheet of document.styleSheets) {
-      const found = find(sheet.cssRules, sheet.href ?? document.baseURI);
-      if (found !== null) return found;
-    }
-    return null;
-  }, TYPEFACE);
-  if (address === null) {
-    throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
-  }
-  return address;
-}
-
-/** How each face of the typeface's family stands in the document's font set: `loaded` once the
- *  file arrived, `error` once its request failed. */
-export function typefaceStatuses(page: Page): Promise<string[]> {
-  return page.evaluate(
-    (family) =>
-      [...document.fonts]
-        .filter((face) => face.family.replace(/["']/g, "") === family)
-        .map((face) => face.status),
-    TYPEFACE
-  );
-}
-
 /** The stack the header's band is drawn in, as its computed `font-family`, each family
  *  unquoted. */
 export function headerFamilies(page: Page): Promise<string[]> {
@@ -975,5 +959,45 @@ export async function holdClipboard(page: Page): Promise<HeldClipboard> {
         for (const resolve of window.__dispatchHeldClipboard?.held.splice(0) ?? []) resolve();
       }),
     writes: () => page.evaluate(() => window.__dispatchHeldClipboard?.writes ?? 0),
+  };
+}
+
+/**
+ * Holds every animation frame the page asks for from now on until `release`, which hands them to
+ * the browser's next frame: a loaded machine draws its next frame late, and the keys it takes in
+ * the meantime are handled before that frame. Cancelling a held frame drops it. Called once the
+ * page has loaded; a navigation ends it.
+ */
+export async function holdFrames(page: Page): Promise<{ release: () => Promise<void> }> {
+  await page.evaluate(() => {
+    const frame = window.requestAnimationFrame.bind(window);
+    const cancel = window.cancelAnimationFrame.bind(window);
+    const held = new Map<number, FrameRequestCallback>();
+    // A held frame's id starts far above the browser's own, which count up from 1, so a cancel
+    // of a frame asked for before the hold still reaches the browser.
+    let next = 1_000_000_000;
+    window.requestAnimationFrame = (callback) => {
+      next += 1;
+      held.set(next, callback);
+      return next;
+    };
+    window.cancelAnimationFrame = (id) => {
+      if (!held.delete(id)) cancel(id);
+    };
+    window.__dispatchReleaseFrames = () => {
+      window.requestAnimationFrame = frame;
+      window.cancelAnimationFrame = cancel;
+      for (const callback of held.values()) frame(callback);
+      held.clear();
+    };
+  });
+  return {
+    release: () =>
+      page.evaluate(() => {
+        if (window.__dispatchReleaseFrames === undefined) {
+          throw new Error("the page holds no frames to let go");
+        }
+        window.__dispatchReleaseFrames();
+      }),
   };
 }

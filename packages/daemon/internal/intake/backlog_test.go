@@ -30,6 +30,7 @@ import (
 // here as well would say nothing about the fetch batch: once the handler is released the facts
 // finish in milliseconds, and a larger batch would pass such a count.
 func TestABacklogIsDeliveredOnceWhileEachFactTakesItsAcknowledgementWindow(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})

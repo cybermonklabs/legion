@@ -9,9 +9,8 @@ import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
+import { blocksKey, useOutlineReads } from "../outline-reads";
 import { presetView } from "../presets";
-import type { SlotProps } from "../slot-props";
-import { useIssueTree } from "../useIssueTree";
 import {
   type FailedRead,
   queryTyped,
@@ -19,19 +18,38 @@ import {
   type VerificationRead,
   type VerificationReads,
 } from "../verification-filter/VerificationFilterBody";
+import { useTellsAddressDrawn } from "./refused-reads";
+import type { ViewSlotProps } from "./stage";
 
 /** Filled by INFRA-1196 part V, "The Verification view". */
-export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
+export function ViewVerificationSlot({
+  acts,
+  issue,
+  onAddressDrawn,
+  route,
+}: ViewSlotProps): ReactNode {
   // The Verification view: the issue's one tree as the Verification view leaves it, each statement
   // with the checks that serve it and each check beside its newest result.
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  const { root } = useIssueTree(issue);
-  const { checks, reads } = useVerificationReads(issue.key);
+  // The tree, the line of each read it is built from that stands refused, and whether every one
+  // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
+  // tree reads it by, so they cost no request of their own; what the page publishes of its
+  // batched names read, which the body hands its rows in the render that draws them
+  // (`published`), so none of them reads a reference the page asks for; and the outline's names
+  // line while those reads stand failed (`names`), which the body draws over its tree, since
+  // every reference its rows draw waits on those names.
+  const { failed, names, published, readsSettled, root } = useOutlineReads(issue);
+  const { checks, documentId, reads } = useVerificationReads(issue.key);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the view holds no row for still draws it, as the outline resolves
   // it (`useAddressTarget`).
   const { named } = useAddressTarget(root, address);
+  // The id of the node the address names, which `named` holds: the body puts the focus on its row
+  // once every read the tree is built from has settled (`readsSettled`), for the reason
+  // `SpecFilterBody` gives, and makes that row its tab stop.
+  // It is the last node of the hook's `reveal`, read from `named`: the slot takes only `named`.
+  const revealed = [...named].at(0);
   const view = useMemo(
     () => presetView(root, "verification", address.filter, named),
     [address.filter, named, root]
@@ -44,14 +62,39 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
     () => (typed ? presetView(root, "verification", "", named).root : undefined),
     [named, root, typed]
   );
+  // Whether the view draws a row of the node the address names, which the stage is told by the
+  // rule for refused reads (`useTellsAddressDrawn`). The view draws a line of its own for the
+  // coverage read, the results read and, where the results read holds a check, its document's
+  // blocks (`useVerificationReads`'s `documentId`). Where the view may tell, the body says whether
+  // it draws the node, with the reader's chip applied (`addressed`, one value while the node and
+  // the call stay the same): a statement, a check under a statement it draws, a check that serves
+  // none or a row of its own, but under a chip only that state's statements and their checks, and
+  // under a statement no node that is no check, such as a plan task that serves it. It tells it
+  // before the browser paints, so where the reads were held as the view was drawn, as on Back to
+  // its address, the table is never painted in the outline's place.
+  const tells = useTellsAddressDrawn(
+    failed,
+    readsSettled,
+    ["coverage", "results", ...(documentId === undefined ? [] : [blocksKey(documentId)])],
+    onAddressDrawn
+  );
+  const addressed = useMemo(() => ({ named, tell: onAddressDrawn }), [named, onAddressDrawn]);
   return (
     <NoTooltips>
       {/* The stage's column, which the body draws its own measure in. */}
       <div className="flex w-full min-w-0 flex-col">
         <VerificationFilterBody
+          // The reader's acts since the address was followed, which the stage watches and the
+          // body's landing reads: a reader who acted keeps the page as they left it.
+          {...(acts === undefined ? {} : { addressActs: acts })}
+          {...(tells ? { addressed } : {})}
           checks={checks}
           context={view.context}
+          namesLine={names}
+          published={published}
           reads={reads}
+          readsSettled={readsSettled}
+          {...(revealed === undefined ? {} : { reveal: revealed })}
           view={view.root}
           whole={whole}
         />
@@ -69,6 +112,8 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
  */
 export function useVerificationReads(issueKey: string): {
   checks: readonly CheckBlock[];
+  /** The document whose blocks are read: none where the results read holds no check. */
+  documentId: string | undefined;
   reads: VerificationReads;
 } {
   // The coverage read, and the issue's checks with the results recorded against them, under the
@@ -127,7 +172,7 @@ export function useVerificationReads(issueKey: string): {
       : answered
         ? { state: "answered" }
         : { state: "waiting" };
-  return { checks, reads };
+  return { checks, documentId, reads };
 }
 
 /** What the line of a read that failed is given: which refusal it says, the read's own count of

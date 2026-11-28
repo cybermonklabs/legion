@@ -4,25 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
 	"runtime"
-	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
@@ -32,7 +29,7 @@ func TestMain(m *testing.M) { os.Exit(Main(m)) }
 // races CreateKeyValue. The helper must retry the JetStream operation itself.
 func TestWaitForJetStreamRetriesTheOperationUntilItIsReady(t *testing.T) {
 	attempts := 0
-	waitForJetStream(t, func(context.Context) error {
+	waitForJetStream(t, func() error {
 		attempts++
 		if attempts < 3 {
 			return errors.New("JetStream is starting")
@@ -44,6 +41,94 @@ func TestWaitForJetStreamRetriesTheOperationUntilItIsReady(t *testing.T) {
 	}
 }
 
+// shortDeadline is how far off TestTheWaitsOnAServersOwnFactEndHalfwayToAShortDeadline puts each
+// wait's deadline: less than the shared wait's 30 s margin, so its give-up has passed when the wait
+// begins, and less than a minute, so testDeadline is halfway to it.
+const shortDeadline = 4 * time.Second
+
+// The waits on a server's own fact keep main's end (testDeadline): with less than a minute of the
+// test binary's deadline left they wait halfway to it, where the shared wait has given up 30 s
+// before it (testwait.GiveUpAt) and asks once. The row gives each wait a deadline of its own,
+// shortDeadline away. until returns a fact that holds 100 ms in. receive takes a value that a
+// sender armed just before it sends 100 ms later, so the value comes while receive waits (unless
+// the machine holds the goroutine 100 ms between the two), and a receive whose end had passed, as
+// the shared give-up has, would find none and fail. The span a request of MaxWait or
+// RequestTimeout waits (left) is about half of what is left, where the shared give-up would leave
+// a millisecond, and Context's deadline lies between halfway to the deadline and the deadline,
+// where testwait.Context's has passed. A fact that never holds fails until at its end, halfway to
+// the deadline and not before, naming what it waited for and testDeadline.
+func TestTheWaitsOnAServersOwnFactEndHalfwayToAShortDeadline(t *testing.T) {
+	began := time.Now()
+	short := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: began.Add(shortDeadline)}
+	if giveUp, _ := testwait.GiveUpAt(short); giveUp.After(began) {
+		t.Fatalf("control: the shared wait gives up at %s, after the row began at %s: the row's deadline leaves it time, and the row proves nothing", giveUp, began)
+	}
+	if span := left(short); span < shortDeadline/4 {
+		t.Errorf("left gives a request %s with less than %s of the deadline left, want about half of it", span, shortDeadline)
+	}
+	halfway := began.Add(shortDeadline / 2)
+	if deadline, ok := Context(short).Deadline(); !ok || deadline.Before(halfway) || !deadline.Before(short.deadline) {
+		t.Errorf("Context with %s of its deadline left has deadline %s (reported %t), want one from halfway to it, %s, to it, %s",
+			shortDeadline, deadline.Format(time.RFC3339Nano), ok, halfway.Format(time.RFC3339Nano), short.deadline.Format(time.RFC3339Nano))
+	}
+	const comes = 100 * time.Millisecond
+	waited := make(chan struct{})
+	go func() {
+		defer close(waited)
+		until(short, boundOf(short), "a fact that holds 100 ms in", func() (time.Duration, bool) {
+			since := time.Since(began)
+			return since, since >= comes
+		})
+		sent := make(chan struct{})
+		time.AfterFunc(comes, func() { close(sent) })
+		receive(short, boundOf(short), "a value sent 100 ms into the receive", sent)
+	}()
+	testwait.Receive(t, "the waits on a fact that comes 100 ms in and a value sent 100 ms into the receive to end", waited)
+	if short.message != "" {
+		t.Fatalf("a wait with %s of its deadline left failed on a fact that comes 100 ms in or a value sent 100 ms into its wait: %s", shortDeadline, short.message)
+	}
+
+	set := time.Now()
+	never := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: set.Add(shortDeadline)}
+	end := boundOf(never)
+	if halfway := set.Add(shortDeadline / 2); end.end.Before(halfway) {
+		t.Errorf("a wait with %s of its deadline left ends at %s, before halfway to it, %s", shortDeadline, end, halfway.Format(time.RFC3339Nano))
+	}
+	failed := make(chan struct{})
+	go func() {
+		defer close(failed)
+		until(never, end, "a fact that never holds", func() (string, bool) { return "not yet", false })
+	}()
+	testwait.Receive(t, "the wait on a fact that never holds to fail", failed)
+	if at := time.Now(); at.Before(end.end) {
+		t.Errorf("the wait on a fact that never holds failed at %s, before its end %s", at.Format(time.RFC3339Nano), end)
+	}
+	for _, want := range []string{"gave up waiting for a fact that never holds at ", "short of the test binary's deadline (testDeadline); last read: not yet"} {
+		if !strings.Contains(never.message, want) {
+			t.Errorf("the wait on a fact that never holds failed with %q, want it to say %q", never.message, want)
+		}
+	}
+}
+
+// noDeadline is t as testwait sees a test binary run under -timeout 0: with no deadline.
+type noDeadline struct{ testing.TB }
+
+func (noDeadline) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+// Under -timeout 0 the test binary has no deadline, so testwait.Context has none, and nats.go
+// refuses a flush on a context with none. Context refuses nothing there: the flush on it is made.
+func TestAFlushOnContextIsMadeWhenTheBinaryHasNoDeadline(t *testing.T) {
+	conn := Connect(t, URL(t))
+	defer conn.Close()
+	timeless := noDeadline{t}
+	if err := conn.FlushWithContext(testwait.Context(timeless)); !errors.Is(err, natsgo.ErrNoDeadlineContext) {
+		t.Fatalf("a flush on testwait's context under no deadline: %v, want nats.go's refusal %v, which Context is there to spare", err, natsgo.ErrNoDeadlineContext)
+	}
+	if err := conn.FlushWithContext(Context(timeless)); err != nil {
+		t.Fatalf("a flush on Context under no deadline: %v, want it made", err)
+	}
+}
+
 // A create right after a stream delete can meet nats-server still removing the account's streams
 // directory, and is answered with the store failure; RecreateKeyValue tries it again. Every other
 // answer is the test's own failure and must not be retried into a slower one or a pass.
@@ -51,7 +136,7 @@ func TestRetryStreamStoreFailureRetriesOnlyTheStoreFailure(t *testing.T) {
 	storeFailure := &natsgo.APIError{Code: 500, ErrorCode: streamCreateErrorCode, Description: streamStoreFailed}
 	t.Run("store failure", func(t *testing.T) {
 		attempts := 0
-		err := retryStreamStoreFailure(func() error {
+		err := retryStreamStoreFailure(t, func() error {
 			attempts++
 			if attempts < 3 {
 				return storeFailure
@@ -65,7 +150,7 @@ func TestRetryStreamStoreFailureRetriesOnlyTheStoreFailure(t *testing.T) {
 	t.Run("any other error", func(t *testing.T) {
 		other := &natsgo.APIError{Code: 500, ErrorCode: streamCreateErrorCode, Description: "insufficient storage resources available"}
 		attempts := 0
-		err := retryStreamStoreFailure(func() error {
+		err := retryStreamStoreFailure(t, func() error {
 			attempts++
 			return other
 		})
@@ -82,7 +167,7 @@ func TestEachTestGetsTheSharedServerEmpty(t *testing.T) {
 	t.Run("leaves a stream and a message", func(t *testing.T) {
 		conn := Connect(t, URL(t))
 		defer conn.Close()
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(MaxWait(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -96,7 +181,7 @@ func TestEachTestGetsTheSharedServerEmpty(t *testing.T) {
 	t.Run("finds none of it", func(t *testing.T) {
 		conn := Connect(t, URL(t))
 		defer conn.Close()
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(MaxWait(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -112,50 +197,92 @@ func TestEachTestGetsTheSharedServerEmpty(t *testing.T) {
 
 // A test that publishes a burst without waiting for acks leaves messages the server routes after
 // the test ends. They land in that test's own account, so the next test, creating a stream on the
-// same subjects, finds none of them.
+// same subjects, finds none of them. The burst is a subtest, and this test is the next test: every
+// test has an account of its own (URL), the subtest's apart from this one's, and running this test
+// runs the burst first.
 func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	const burst = 20000
 	config := &natsgo.StreamConfig{Name: "BURST", Subjects: []string{"burst.>"}}
-	t.Run("publishes a burst and ends", func(t *testing.T) {
+	var publisher uint64
+	if !t.Run("publishes a burst and ends", func(t *testing.T) {
 		conn := Connect(t, URL(t))
 		defer conn.Close()
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(MaxWait(t))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err := js.AddStream(config); err != nil {
 			t.Fatalf("add stream: %v", err)
 		}
+		cid, err := conn.GetClientID()
+		if err != nil {
+			t.Fatalf("read the burst connection's client id: %v", err)
+		}
+		publisher = cid
 		payload := []byte(strings.Repeat("x", 64))
 		for i := range burst {
 			if err := conn.Publish(fmt.Sprintf("burst.%d", i%16), payload); err != nil {
 				t.Fatalf("publish %d: %v", i, err)
 			}
 		}
+	}) {
+		return
+	}
+	if publisher == 0 {
+		t.Fatal("the burst's subtest did not run, so no burst was left for this test to find none of; a -run pattern that names a subtest must name that one")
+	}
+	conn := Connect(t, URL(t))
+	defer conn.Close()
+	js, err := conn.JetStream(MaxWait(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every byte of the burst has been routed once the server has let its connection go: the
+	// server routes what a client sends from that client's own read loop, and closes the
+	// connection after the last of it.
+	testwait.Eventually(t, fmt.Sprintf("the shared server to let the burst's connection (cid %d) go", publisher), func() bool {
+		return openConnections(t, publisher) == 0
 	})
-	t.Run("recreates the stream and finds none of it", func(t *testing.T) {
-		conn := Connect(t, URL(t))
-		defer conn.Close()
-		js, err := conn.JetStream()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := js.AddStream(config); err != nil {
-			t.Fatalf("add stream: %v", err)
-		}
-		time.Sleep(time.Second)
-		info, err := js.StreamInfo(config.Name)
-		if err != nil {
-			t.Fatalf("stream info: %v", err)
-		}
-		if info.State.Msgs != 0 {
-			t.Errorf("the recreated stream holds %d of the previous test's %d messages", info.State.Msgs, burst)
-		}
-	})
+	if _, err := js.AddStream(config); err != nil {
+		t.Fatalf("add stream: %v", err)
+	}
+	// A message of this test's own, published once the burst was routed, is stored after
+	// anything the burst left for this stream: one stream appends what reaches it in order.
+	ack, err := js.Publish("burst.0", []byte("marker"))
+	if err != nil {
+		t.Fatalf("publish this test's own message: %v", err)
+	}
+	if ack.Sequence != 1 {
+		t.Errorf("this test's own message is at sequence %d, so %d of the previous test's %d messages reached the recreated stream before it",
+			ack.Sequence, ack.Sequence-1, burst)
+	}
+	info, err := js.StreamInfo(config.Name)
+	if err != nil {
+		t.Fatalf("stream info: %v", err)
+	}
+	if info.State.Msgs != 1 {
+		t.Errorf("the recreated stream holds %d messages, want only this test's own: %d of the previous test's %d reached it",
+			info.State.Msgs, info.State.Msgs-1, burst)
+	}
+}
+
+// openConnections is how many connections the shared server still holds open under cid, read from
+// the server object in this process.
+func openConnections(t *testing.T, cid uint64) int {
+	t.Helper()
+	srv := shared.srv.natsServer()
+	if srv == nil {
+		t.Fatal("the package's shared NATS server is not running")
+	}
+	connections, err := srv.Connz(&natsserver.ConnzOptions{CID: cid, State: natsserver.ConnOpen})
+	if err != nil {
+		t.Fatalf("read the shared server's connections: %v", err)
+	}
+	return len(connections.Conns)
 }
 
 // fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does, and with its
-// test's deadline, which a wait bounded by it reads (waitBound).
+// test's deadline, which the shared wait and testDeadline read.
 type fatalRecorder struct {
 	testing.TB
 	message string
@@ -183,7 +310,7 @@ func TestATestGetsOneAccountAndEachSubtestItsOwn(t *testing.T) {
 	}
 	conn := Connect(t, uri)
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +324,7 @@ func TestATestGetsOneAccountAndEachSubtestItsOwn(t *testing.T) {
 		}
 		sub := Connect(t, subURI)
 		defer sub.Close()
-		subJS, err := sub.JetStream()
+		subJS, err := sub.JetStream(MaxWait(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -229,7 +356,7 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 	server := ownAccountServer(t, 2)
 	live := Connect(t, server.url(namedTB{t, "live"}))
 	defer live.Close()
-	js, err := live.JetStream()
+	js, err := live.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +369,7 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 		t.Fatalf("watch: %v", err)
 	}
 	defer func() { _ = watcher.Stop() }()
-	if entry := <-watcher.Updates(); entry != nil {
+	if entry := receive(t, boundOf(t), "the empty bucket's scan to deliver its marker", watcher.Updates()); entry != nil {
 		t.Fatalf("the empty bucket's scan delivered %v before its marker", entry)
 	}
 
@@ -257,13 +384,8 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 	if _, err := kv.Put("after-the-reload", []byte("1")); err != nil {
 		t.Fatalf("put after the reload: %v", err)
 	}
-	select {
-	case entry := <-watcher.Updates():
-		if entry == nil || entry.Key() != "after-the-reload" {
-			t.Fatalf("the watcher delivered %v after the reload, want the put", entry)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the watcher of an account in use delivered nothing after the reload")
+	if entry := receive(t, boundOf(t), "the watcher of an account in use to deliver the put made after the reload", watcher.Updates()); entry == nil || entry.Key() != "after-the-reload" {
+		t.Fatalf("the watcher delivered %v after the reload, want the put", entry)
 	}
 	if status := live.Status(); status != natsgo.CONNECTED {
 		t.Fatalf("the connection of an account in use is %v after the reload, want CONNECTED", status)
@@ -282,11 +404,7 @@ func TestTheNkeyReadinessWaitRefusesAServerThatAdmitsAnyone(t *testing.T) {
 		defer close(done)
 		awaitAuth(wait, uri, false)
 	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the readiness wait is still waiting on a server that admits anyone")
-	}
+	receive(t, boundOf(t), "the readiness wait on a server that admits anyone to end", done)
 	if want := "admitted a client with no credential"; !strings.Contains(wait.message, want) {
 		t.Errorf("the readiness wait ended with %q, want it to say %q", wait.message, want)
 	}
@@ -320,130 +438,6 @@ func TestTheLogHoldsWhatTheServerSaidAcrossARestart(t *testing.T) {
 	}
 }
 
-// A gate's port must lie below the machine's ephemeral range, where no :0 bind can take it while
-// the gate is closed. The range is fed in as text, each kernel's answer in turn, so the band is
-// pinned whatever range the machine running this test has: a CI runner's default range would hide
-// a band that lands inside the 16000-65535 a Legion worker pod (gVisor) has.
-func TestTheGateBandLiesBelowTheEphemeralRangeItIsGiven(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		text  string
-		low   int
-		first int
-	}{
-		{name: "gVisor's range in a Legion worker pod", text: "16000\t65535\n", low: 16000, first: 15000},
-		{name: "Linux's default range", text: "32768\t60999\n", low: 32768, first: 31768},
-		{name: "text that is no range", text: "not a range\n", low: 16000, first: 15000},
-		{name: "empty text", text: "", low: 16000, first: 15000},
-		{name: "the lowest range that leaves a band", text: "3048\t65535\n", low: 3048, first: 2048},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			first, count, err := gatePorts(tc.text)
-			if err != nil {
-				t.Fatalf("gatePorts(%q) = %v, want a band", tc.text, err)
-			}
-			if first != tc.first || count != 1000 {
-				t.Errorf("gatePorts(%q) = %d ports from %d, want 1000 from %d", tc.text, count, first, tc.first)
-			}
-			if last := first + count - 1; last >= tc.low {
-				t.Errorf("gatePorts(%q) = %d-%d, which reaches the range starting at %d", tc.text, first, last, tc.low)
-			}
-		})
-	}
-	t.Run("a range too low to leave a band", func(t *testing.T) {
-		first, count, err := gatePorts("1024\t65535\n")
-		if err == nil {
-			t.Fatalf("gatePorts = %d ports from %d, want a refusal", count, first)
-		}
-		if !strings.Contains(err.Error(), "1024") {
-			t.Errorf("refusal %v does not name the range's first port, 1024", err)
-		}
-	})
-}
-
-// StartGate takes its port from just below this machine's ephemeral range, which it reads from
-// ephemeralRangePath. The test reads that file itself, as the rig does, and checks the ports of 20
-// gates against it: a StartGate that stopped reading the file and took a band of its own fails
-// here on every machine whose range does not start where that band ends.
-func TestEveryGatePortLiesJustBelowThisMachinesEphemeralRange(t *testing.T) {
-	low := fallbackEphemeralLow
-	text, err := os.ReadFile(ephemeralRangePath)
-	if fields := strings.Fields(string(text)); err == nil && len(fields) == 2 {
-		first, firstErr := strconv.Atoi(fields[0])
-		last, lastErr := strconv.Atoi(fields[1])
-		if firstErr == nil && lastErr == nil && 0 < first && first <= last && last <= 65535 {
-			low = first
-		}
-	}
-	server, _ := Start(t)
-	for range 20 {
-		gate := StartGate(t, server)
-		address, err := url.Parse(gate.URL())
-		if err != nil {
-			t.Fatalf("parse the gate's URL %s: %v", gate.URL(), err)
-		}
-		port, err := strconv.Atoi(address.Port())
-		if err != nil {
-			t.Fatalf("read the port of the gate's URL %s: %v", gate.URL(), err)
-		}
-		if port >= low || port < low-gatePortCount {
-			t.Errorf("a gate took port %d, want one of the %d ports below %d, the first port of this machine's ephemeral range (%s holds %q)", port, gatePortCount, low, ephemeralRangePath, text)
-		}
-	}
-}
-
-// A closed gate keeps its port. While it is closed a dial of its address is refused, as a client's
-// failed reconnect needs, a program that binds the port without SO_REUSEADDR is refused, and no
-// other gate can take the port; Open then listens on the same address again and a client connects
-// through it. Each row is the control of one hold: with the reservation gone the bind succeeds and
-// Open fails, with the claim gone the second gate's hold succeeds, and with the reservation
-// listening the dial succeeds.
-func TestAClosedGateKeepsItsPort(t *testing.T) {
-	server, _ := Start(t)
-	gate := StartGate(t, server)
-	address, err := net.ResolveTCPAddr("tcp", gate.address)
-	if err != nil {
-		t.Fatalf("resolve the gate's address %s: %v", gate.address, err)
-	}
-	gate.Close()
-
-	conn, err := net.DialTimeout("tcp", gate.address, 5*time.Second)
-	if err == nil {
-		_ = conn.Close()
-	}
-	if !errors.Is(err, syscall.ECONNREFUSED) {
-		t.Errorf("a dial of the closed gate at %s: %v, want connection refused", gate.address, err)
-	}
-
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
-	if err != nil {
-		t.Fatalf("open the other program's socket: %v", err)
-	}
-	t.Cleanup(func() { _ = syscall.Close(fd) })
-	err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: address.Port, Addr: [4]byte(address.IP.To4())})
-	if err == nil {
-		// The port was free: hold it listening, as a program that took it would, so the Open below
-		// meets it.
-		_ = syscall.Listen(fd, 16)
-		t.Errorf("another program bound the closed gate's port %d", address.Port)
-	} else if !errors.Is(err, syscall.EADDRINUSE) {
-		t.Errorf("another program's bind of the closed gate's port %d: %v, want address already in use", address.Port, err)
-	}
-
-	if claim, reservation, err := holdGatePort(address.IP, address.Port); err == nil {
-		_ = syscall.Close(reservation)
-		_ = claim.Close()
-		t.Errorf("a second gate held the closed gate's port %d", address.Port)
-	}
-
-	gate.Open()
-	nc, err := natsgo.Connect(gate.URL(), natsgo.Timeout(5*time.Second))
-	if err != nil {
-		t.Fatalf("connect through the reopened gate at %s: %v", gate.URL(), err)
-	}
-	nc.Close()
-}
-
 // Terminate ends the server for good and gives up the port its URL named, so nothing answers there
 // any more; the cleanup that runs at the test's end finds the work done and does it no second time.
 func TestTerminateEndsTheServerAndGivesUpItsPort(t *testing.T) {
@@ -454,7 +448,7 @@ func TestTerminateEndsTheServerAndGivesUpItsPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse %s: %v", uri, err)
 	}
-	if conn, err := net.DialTimeout("tcp", u.Host, dialTimeout); err == nil {
+	if conn, err := net.Dial("tcp", u.Host); err == nil {
 		conn.Close()
 		t.Fatalf("%s still answers after the server was terminated", u.Host)
 	}
@@ -488,7 +482,7 @@ func TestASecondGrantWaitsForItsOwnReload(t *testing.T) {
 		defer close(done)
 		grant.Grant(refused, "not..a.subject")
 	}()
-	<-done
+	receive(t, boundOf(t), "the second Grant to return or refuse", done)
 	if !strings.Contains(refused.message, "NATS refused the new grant") ||
 		!strings.Contains(refused.message, `subject "not..a.subject" is not a valid subject`) {
 		t.Fatalf("a second Grant the server refused ended with %q, want the server's refusal", refused.message)
@@ -510,7 +504,7 @@ func TestARefusedReloadAnswersWithTheServersReasonAndKeepsTheOldConfiguration(t 
 		t.Fatalf("the refusal is %v, want it to say %s", err, want)
 	}
 
-	conn, err := ConnectSeed(t, uri, seed)
+	conn, err := AwaitConnectSeed(t, uri, seed)
 	if err != nil {
 		t.Fatalf("the user of the configuration the server kept was refused: %v", err)
 	}
@@ -518,7 +512,7 @@ func TestARefusedReloadAnswersWithTheServersReasonAndKeepsTheOldConfiguration(t 
 	if err := conn.Publish("first.one", nil); err != nil {
 		t.Fatalf("publish to the subject the kept grant allows: %v", err)
 	}
-	if _, err := ConnectSeed(t, uri, ""); !errors.Is(err, natsgo.ErrAuthorization) {
+	if _, err := AwaitConnectSeed(t, uri, ""); !errors.Is(err, natsgo.ErrAuthorization) {
 		t.Fatalf("a client with no credential after the refused reload: %v, want %v", err, natsgo.ErrAuthorization)
 	}
 }
@@ -532,6 +526,19 @@ const (
 	reloadCount       = 200
 )
 
+// reloadRequestStep bounds how long each request of TestAReloadUnderJetStreamRequestsAnswersEveryOne
+// waits for its answer: a minute, the step main gave it, twice main's connectTimeout of 30 s, which
+// there capped each of the two waits through which one Reload holds a connection's bytes
+// (relay.hold's wait for every connection to stop at a message boundary, and relay.barrier's wait
+// for the server's answers to the relay's PINGs). Here those waits end at testDeadline as the
+// Reload begins (relay.await), with no cap of their own, so the step is a hang guard, not a proof
+// that an answer was lost: the hold also lasts while the server reloads, and a request can wait
+// through more than one reload in a row. Requests the holds only delay are answered far sooner: in
+// INFRA-3904's build Jobs, 32,520 runs of a copy of this row with a 15 s wait per request, plain,
+// under -race and beside up to 16 busy loops, ran out of that wait only in the one run whose
+// answers nats-server had dropped (below).
+const reloadRequestStep = time.Minute
+
 // A reload under clients' JetStream requests answers every request and keeps every connection, and
 // under the race detector it is no data race. nats-server writes each service import's account on
 // an authorization reload and reads it without the lock while it sets up the response to a request
@@ -541,50 +548,117 @@ const (
 // that held the clients without waiting for the server to finish what it had; each reload here
 // changes the user's grant, so each one runs the server's authorization reload, and the server's
 // log says so.
+//
+// Each request waits reloadRequestStep for its answer, cut to what is left of the row's end,
+// testDeadline read once before the connects (boundOf, left). A request that draws none in its
+// step fails the test by name at once, and its requester sends another, so the reloads still run
+// under requests; one whose step that end cut fails the test naming the end. No request and no
+// reload starts past it, and each Reload's hold and barrier wait until testDeadline as that Reload
+// begins, which is no earlier. So a lost answer costs this test about one step, where a request
+// with no step of its own waits to that end and holds every later test of the package until then,
+// as one that waited to the binary's deadline did before main gave each request a step
+// (dispatch://INFRA-3904: CI run 45724862942 lost two answers, this test ran 1,111 s, and the
+// package's last tests failed for want of time).
+//
+// Before the requesters start, one request is sent until it is answered, each send bounded by
+// readWait, cut to what is left of the same end, and sent again until that end (until), as main
+// sent it on the bound it read before the connects. That works around a race in nats-server, not a
+// defect of this test: v2.15.1 (and 2.15.3) makes an exporting account's prefix for the replies of
+// its service imports on the first request through one, releases the account's lock, and only then
+// subscribes to the prefix (newServiceReply, server/accounts.go 2504-2522 in 2.15.1, the lock
+// released at 2516 and the subscribe at 2521). A request another connection's read loop handles in
+// between takes the prefix, and its answer is published before the subscription exists, matches
+// nothing and is dropped; nothing sends it again. The global account's $JS.API.INFO requests go
+// through the system account's $JS.API.> export, and the requesters start 32 first requests from
+// four connections at once, so without that one answer, which reaches the client only through the
+// subscription, a run could lose a connection's first answers: in a build Job at GOMAXPROCS=2 under
+// load, one run in 3,200 lost all eight of a connection's first requests, sent before the first
+// reload, and the system account still held their eight response mappings. The awaited request can
+// go once nats-server subscribes to the prefix before it hands the prefix out.
 func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 	seed, public := User(t)
 	grant := func(n int) string {
 		return publishGrantConfig(public, []string{"$JS.API.>", "_INBOX.>", fmt.Sprintf("reload%d.>", n)})
 	}
 	server, uri := StartConfig(t, grant(0), []string{"-js"}, false)
-	stop := make(chan struct{})
-	var answered atomic.Int64
-	failures := make(chan error, reloadConnections*reloadRequesters)
-	var requesters sync.WaitGroup
-	for range reloadConnections {
-		conn, err := ConnectSeed(t, uri, seed)
+	end := boundOf(t)
+	conns := make([]*natsgo.Conn, reloadConnections)
+	for c := range conns {
+		conn, err := AwaitConnectSeed(t, uri, seed)
 		if err != nil {
 			t.Fatalf("connect as the user: %v", err)
 		}
 		t.Cleanup(conn.Close)
-		for range reloadRequesters {
+		conns[c] = conn
+	}
+	until(t, end, "the first request, whose answer shows nats-server subscribed to the replies of its JetStream API", func() (error, bool) {
+		_, err := conns[0].Request("$JS.API.INFO", nil, min(readWait, end.left()))
+		if err != nil && !errors.Is(err, natsgo.ErrTimeout) {
+			t.Fatalf("the first request, whose answer shows nats-server subscribed to the replies of its JetStream API: %v", err)
+		}
+		return err, err == nil
+	})
+	pastEnd := func() bool { return end.bounded && !time.Now().Before(end.end) }
+	stop := make(chan struct{})
+	var answered atomic.Int64
+	var requesters sync.WaitGroup
+	stopRequesters := sync.OnceFunc(func() { close(stop) })
+	stopped := func() bool {
+		select {
+		case <-stop:
+			return true
+		default:
+			return false
+		}
+	}
+	// An early failure (a Reload's t.Fatalf among them) still stops the requesters and joins them
+	// before the test returns, closing the connections first so a request need not spend its step;
+	// each requester reports through t, which it must not do once the test has returned.
+	defer func() {
+		stopRequesters()
+		for _, conn := range conns {
+			conn.Close()
+		}
+		requesters.Wait()
+	}()
+	for c, conn := range conns {
+		for r := range reloadRequesters {
 			requesters.Go(func() {
-				for {
-					select {
-					case <-stop:
+				for !stopped() {
+					if pastEnd() {
+						t.Errorf("connection %d, requester %d: the reloads did not end by %s, short of the test binary's deadline (testDeadline)", c, r, end)
+						return
+					}
+					step := min(reloadRequestStep, end.left())
+					_, err := conn.Request("$JS.API.INFO", nil, step)
+					switch {
+					case err == nil:
+						answered.Add(1)
+					case errors.Is(err, natsgo.ErrTimeout) && step < reloadRequestStep:
+						t.Errorf("connection %d, requester %d: a request across the reloads was not answered by %s, short of the test binary's deadline (testDeadline)", c, r, end)
+						return
+					case errors.Is(err, natsgo.ErrTimeout):
+						t.Errorf("connection %d, requester %d: a request across the reloads drew no answer within %s", c, r, step)
+					case errors.Is(err, natsgo.ErrConnectionClosed) && stopped():
 						return
 					default:
-					}
-					if _, err := conn.Request("$JS.API.INFO", nil, 5*time.Second); err != nil {
-						failures <- err
+						t.Errorf("connection %d, requester %d: a request across the reloads failed: %v", c, r, err)
 						return
 					}
-					answered.Add(1)
 				}
 			})
 		}
 	}
 	for n := 1; n <= reloadCount; n++ {
+		if pastEnd() {
+			t.Fatalf("completed only %d of %d reloads by %s, short of the test binary's deadline (testDeadline)", n-1, reloadCount, end)
+		}
 		if err := server.Reload(t, grant(n)); err != nil {
 			t.Fatalf("reload %d: %v", n, err)
 		}
 	}
-	close(stop)
+	stopRequesters()
 	requesters.Wait()
-	close(failures)
-	for err := range failures {
-		t.Errorf("a request across the reloads failed: %v", err)
-	}
 	if answered.Load() == 0 {
 		t.Fatal("no request was answered; this test says nothing about a reload under requests")
 	}
@@ -603,7 +677,7 @@ func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
 	seed, public := User(t)
 	grant := func(subjects ...string) string { return publishGrantConfig(public, subjects) }
 	server, uri := StartConfig(t, grant("traced.>"), []string{"-js"}, false)
-	conn, err := ConnectSeed(t, uri, seed)
+	conn, err := AwaitConnectSeed(t, uri, seed)
 	if err != nil {
 		t.Fatalf("connect as the user: %v", err)
 	}
@@ -614,7 +688,7 @@ func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
 	if err := conn.PublishMsg(message); err != nil {
 		t.Fatalf("publish the trace-only message: %v", err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush the trace-only message: %v", err)
 	}
 	if !strings.Contains(server.Log(), `Destination "not..a.subject" is not valid`) {
@@ -626,7 +700,7 @@ func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
 	if reloads := strings.Count(server.Log(), "Reloaded: authorization nkey users"); reloads != 1 {
 		t.Fatalf("the server reloaded its nkey users %d times, want 1", reloads)
 	}
-	if _, err := conn.Request("more.echo", nil, 5*time.Second); !errors.Is(err, natsgo.ErrNoResponders) {
+	if _, err := conn.RequestWithContext(Context(t), "more.echo", nil); !errors.Is(err, natsgo.ErrNoResponders) {
 		t.Fatalf("a request on the subject the reload granted: %v, want %v from the server that took the grant", err, natsgo.ErrNoResponders)
 	}
 }
@@ -640,7 +714,7 @@ func TestARestartServesItsNewConfiguration(t *testing.T) {
 	server, uri := StartConfig(t, granted, []string{"-js"}, false)
 	subscribe := func() error {
 		t.Helper()
-		conn, err := ConnectSeed(t, uri, seed)
+		conn, err := AwaitConnectSeed(t, uri, seed)
 		if err != nil {
 			t.Fatalf("connect as the user: %v", err)
 		}
@@ -648,7 +722,7 @@ func TestARestartServesItsNewConfiguration(t *testing.T) {
 		if _, err := conn.SubscribeSync("granted.subject"); err != nil {
 			t.Fatalf("subscribe: %v", err)
 		}
-		if err := conn.Flush(); err != nil {
+		if err := conn.FlushWithContext(Context(t)); err != nil {
 			t.Fatalf("flush the subscription: %v", err)
 		}
 		return conn.LastError()
@@ -675,12 +749,12 @@ func TestStartConfigRunsTheArgumentsItWasGivenAndNoOther(t *testing.T) {
 	seed, public := User(t)
 	config := fmt.Sprintf("authorization {\n  users: [ { nkey: %q } ]\n}\n", public)
 	server, uri := StartConfig(t, config, []string{"-DV"}, false)
-	conn, err := ConnectSeed(t, uri, seed)
+	conn, err := AwaitConnectSeed(t, uri, seed)
 	if err != nil {
 		t.Fatalf("connect with the seed: %v", err)
 	}
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
@@ -691,6 +765,13 @@ func TestStartConfigRunsTheArgumentsItWasGivenAndNoOther(t *testing.T) {
 		t.Errorf("the log of a server given -DV holds no protocol trace:\n%s", server.Log())
 	}
 }
+
+// frozenRequest is how long a request to a frozen server waits before it counts as unanswered:
+// nats.go's own request timer is the span that proves the freeze held the bytes, since an answer
+// the server never sent leaves no state to read and nothing the test does later orders against
+// it. A request the server answers waits on Context, until the end of a wait on a server's own fact
+// (testDeadline), so no bound of the test's own decides a slow round trip.
+const frozenRequest = time.Second
 
 // A frozen server stops the bytes in either direction without dropping anything: the request times
 // out while its connection is still CONNECTED, as a server that has stopped answering leaves it,
@@ -704,12 +785,12 @@ func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T)
 		t.Fatalf("subscribe: %v", err)
 	}
 	defer func() { _ = sub.Unsubscribe() }()
-	if _, err := conn.Request("echo", nil, connectTimeout); err != nil {
+	if _, err := conn.RequestWithContext(Context(t), "echo", nil); err != nil {
 		t.Fatalf("request before the freeze: %v", err)
 	}
 
 	thaw := server.Freeze(t)
-	if _, err := conn.Request("echo", nil, time.Second); !errors.Is(err, natsgo.ErrTimeout) {
+	if _, err := conn.Request("echo", nil, frozenRequest); !errors.Is(err, natsgo.ErrTimeout) {
 		t.Fatalf("a request to a frozen server: %v, want %v", err, natsgo.ErrTimeout)
 	}
 	if status := conn.Status(); status != natsgo.CONNECTED {
@@ -717,12 +798,68 @@ func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T)
 	}
 
 	thaw()
-	answer, err := conn.Request("echo", nil, connectTimeout)
+	answer, err := conn.RequestWithContext(Context(t), "echo", nil)
 	if err != nil {
 		t.Fatalf("request after the thaw: %v", err)
 	}
 	if string(answer.Data) != "answer" {
 		t.Errorf("the answer after the thaw is %q, want %q", answer.Data, "answer")
+	}
+}
+
+// natsDefaultWait is how long nats.go waits for the answer to a JetStream request a test's context
+// makes without MaxWait or RequestTimeout: the legacy context's MaxWait default and the
+// JetStream client's DefaultTimeout, five seconds each (nats.go v1.55.0).
+const natsDefaultWait = 5 * time.Second
+
+// A JetStream request of a context a test makes with MaxWait or RequestTimeout waits past
+// nats.go's own five seconds for a server that answers late: each context's account info, sent to
+// a frozen server, is answered once the server is thawed a second after nats.go's own wait would
+// have ended it, and neither request fails. The second is counted from the moment the connection
+// has published both requests (Stats().OutMsgs), and each request's wait began before its publish:
+// nats.go makes both contexts' timeouts before it sends (nats.go v1.55.0 jsm.go getJSContextOpts,
+// jetstream/jetstream.go wrapContextWithoutDeadline).
+func TestAJetStreamRequestOfATestsContextOutwaitsNatsGosFiveSeconds(t *testing.T) {
+	server, uri := Start(t)
+	conn := Connect(t, uri)
+	defer conn.Close()
+	legacy, err := conn.JetStream(MaxWait(t))
+	if err != nil {
+		t.Fatalf("the legacy JetStream context: %v", err)
+	}
+	client, err := jetstream.New(conn, RequestTimeout(t))
+	if err != nil {
+		t.Fatalf("the JetStream client: %v", err)
+	}
+
+	sentBefore := conn.Stats().OutMsgs
+	thaw := server.Freeze(t)
+	defer thaw()
+	type answer struct {
+		context string
+		err     error
+	}
+	answers := make(chan answer, 2)
+	go func() {
+		_, err := legacy.AccountInfo()
+		answers <- answer{"the legacy context (MaxWait)", err}
+	}()
+	go func() {
+		_, err := client.AccountInfo(context.Background())
+		answers <- answer{"the JetStream client (RequestTimeout)", err}
+	}()
+	testwait.Until(t, "the connection to publish both requests", func() (uint64, bool) {
+		sent := conn.Stats().OutMsgs - sentBefore
+		return sent, sent >= 2
+	})
+	testwait.Span(t, natsDefaultWait+time.Second, "the row's subject is a request that outlives nats.go's own five-second wait, "+
+		"and nothing the server or the client holds shows a timer that has not fired yet")
+	thaw()
+	for range 2 {
+		got := testwait.Receive(t, "the answer to a request sent to the frozen server", answers)
+		if got.err != nil {
+			t.Errorf("%s: the account info sent to a server thawed %s later: %v, want its answer", got.context, natsDefaultWait+time.Second, got.err)
+		}
 	}
 }
 
@@ -749,21 +886,66 @@ func TestOverlappingFreezesThawInEitherOrderWithoutPanicking(t *testing.T) {
 			second()
 			first()
 			second()
-			if _, err := conn.Request("echo", nil, connectTimeout); err != nil {
+			if _, err := conn.RequestWithContext(Context(t), "echo", nil); err != nil {
 				t.Fatalf("request after every thaw: %v", err)
 			}
 
 			later := server.Freeze(t)
 			first()
-			if _, err := conn.Request("echo", nil, time.Second); !errors.Is(err, natsgo.ErrTimeout) {
+			if _, err := conn.Request("echo", nil, frozenRequest); !errors.Is(err, natsgo.ErrTimeout) {
 				t.Fatalf("a request after a stale thaw of an earlier freeze: %v, want %v", err, natsgo.ErrTimeout)
 			}
 			later()
-			if _, err := conn.Request("echo", nil, connectTimeout); err != nil {
+			if _, err := conn.RequestWithContext(Context(t), "echo", nil); err != nil {
 				t.Fatalf("request after the later thaw: %v", err)
 			}
 		})
 	}
+}
+
+// A server whose replies the relay holds still takes what its clients send: a JetStream publish is
+// stored, which StoredOn reads in the server itself, while its acknowledgement waits in the relay
+// on a connection that stays CONNECTED, as an acknowledgement lost on its way back does, and
+// reaches the client once the relay passes the server's replies again.
+func TestFrozenRepliesKeepAPublishAndHoldItsAcknowledgement(t *testing.T) {
+	server, uri := Start(t)
+	conn := Connect(t, uri)
+	defer conn.Close()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	if _, err := js.AddStream(&natsgo.StreamConfig{Name: "held", Subjects: []string{"held.>"}}, natsgo.Context(testwait.Context(t))); err != nil {
+		t.Fatalf("add the stream: %v", err)
+	}
+
+	thaw := server.FreezeReplies(t)
+	t.Cleanup(thaw)
+	ack, err := js.PublishAsync("held.kept", []byte("kept"))
+	if err != nil {
+		t.Fatalf("publish while the relay holds the server's replies: %v", err)
+	}
+	// The acknowledgement can reach the client only through the relay, which holds it, so each
+	// read of the store, the one that finds the publish stored among them, finds it unanswered on a
+	// connection that is still CONNECTED.
+	ctx := Context(t)
+	testwait.Until(t, "the server to store the publish whose acknowledgement the relay holds", func() (uint64, bool) {
+		stored := server.StoredOn(t, ctx, "held", "held.kept")
+		select {
+		case <-ack.Ok():
+			t.Fatal("the publish was acknowledged while the relay held the server's replies")
+		case err := <-ack.Err():
+			t.Fatalf("the publish failed while the relay held the server's replies: %v", err)
+		default:
+		}
+		if status := conn.Status(); status != natsgo.CONNECTED {
+			t.Fatalf("the connection whose replies the relay holds is %v, want CONNECTED", status)
+		}
+		return stored, stored == 1
+	})
+
+	thaw()
+	testwait.Receive(t, "the publish's acknowledgement once the relay passes the server's replies again", ack.Ok())
 }
 
 // The anonymous wait ends at once, failing the test, on a server that refuses a client with no
@@ -778,166 +960,8 @@ func TestTheAnonymousWaitRefusesAServerThatRefusesAnyone(t *testing.T) {
 		defer close(done)
 		awaitAuth(wait, uri, true)
 	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the anonymous wait is still waiting on a server that refuses anyone")
-	}
+	receive(t, boundOf(t), "the anonymous wait on a server that refuses anyone to end", done)
 	if want := "refused a client with no credential"; !strings.Contains(wait.message, want) {
 		t.Errorf("the anonymous wait ended with %q, want it to say %q", wait.message, want)
 	}
-}
-
-// envoyRoot is the module's directory, packages/envoy, from this package's own.
-const envoyRoot = "../.."
-
-// thisPackage is the natslive half of this rig, in image.go and image_test.go, which an untagged
-// build does not see at all.
-const thisPackage = "github.com/sjawhar/envoy/internal/testnats"
-
-// containerRigs are the packages of this module that may reach testcontainers: this rig, and the
-// two whose containers are not NATS and are not this issue's (internal/testpg runs pgvector,
-// internal/tests3 SeaweedFS). Every other package is a finding, whichever testcontainers package
-// it imports: modules/nats is the obvious way to start a NATS container, and
-// testcontainers.Run(ctx, testnats.Image) is the one that needs no such import.
-var containerRigs = []string{
-	thisPackage,
-	"github.com/sjawhar/envoy/internal/testpg",
-	"github.com/sjawhar/envoy/internal/tests3",
-}
-
-// containerModule is the import prefix every testcontainers package shares.
-const containerModule = "github.com/testcontainers/testcontainers-go"
-
-// dockerDriver matches a file of this module driving a container runtime by hand: exec's run with
-// docker as the command, however the call spells its context argument, and testcontainers' own
-// Docker client. The context argument runs to the end of the line rather than to the first ')',
-// since the module already passes context.Background() inline and a test's own is t.Context().
-// It is written from pieces so that this file, which has to name them, is not itself a finding.
-var dockerDriver = regexp.MustCompile(
-	`exec\.Command(Context)?\([^\n]*` + `"docker"` + `|NewDockerClient` + `WithOpts`)
-
-// No package of this module outside the rigs above imports a container runtime directly or drives
-// docker by hand: Envoy's agents have no container runtime, and a test that needs one cannot run
-// where they do. This pins those two ways to get one — a direct import of testcontainers, read
-// from go list's Imports, TestImports and XTestImports, and a hand-driven docker — against the
-// packages allowed to have them. It does not prove that no other package needs a runtime: a
-// package that imports an allowlisted rig passes and still starts that rig's container, as
-// cmd/listener's tests do through testpg.URL whenever DISPATCH_TEST_DATABASE_URL is unset. Direct
-// imports are the right scope today because that is the one such case with no opt-out (tests3's
-// one consumer, internal/dispatch/files, skips under DISPATCH_TEST_NO_CONTAINERS=1), and a
-// separate issue removes Postgres through testpg; widening this guard to walk go list -deps is
-// that issue's work, not this one's. internal/smoke's containers are behind the smoke build tag
-// and the rig's own behind natslive, so an untagged go list never sees their imports. The walk
-// does not go by tag: it reads every .go file, those included, and passes them because none
-// drives docker by hand.
-func TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime(t *testing.T) {
-	t.Run("imports", func(t *testing.T) {
-		for _, finding := range containerImporters(t) {
-			t.Errorf("package %s imports %s, which belongs to a container runtime; a test that needs a NATS server starts it with testnats.Start, StartConfig or URL", finding.pkg, finding.imported)
-		}
-	})
-	t.Run("docker", func(t *testing.T) {
-		for _, file := range dockerDriverFiles(t) {
-			t.Errorf("%s drives a container runtime itself; a test that has to stop a server's traffic uses testnats.Server.Freeze, and one that has to stop the server, Server.Stop", file)
-		}
-	})
-}
-
-// The file walk's matcher recognises a hand-driven docker in every way a test of this module spells
-// the call, the context argument included: the module already passes context.Background() inline,
-// and t.Context() is the test's own. Each line is assembled from pieces so this file, which the walk
-// also reads, is not a finding itself.
-func TestTheDockerDriverMatchCatchesEveryContextArgument(t *testing.T) {
-	const run, docker = "exec." + "Command", `"dock` + `er"`
-	for _, line := range []string{
-		run + "(" + docker + `, "pause", id)`,
-		run + "Context(ctx, " + docker + `, "pause", id)`,
-		run + "Context(context.Background(), " + docker + `, "pause", id)`,
-		run + "Context(t.Context(), " + docker + `, "unpause", id)`,
-		"client.NewDocker" + "ClientWithOpts(client.FromEnv)",
-	} {
-		if !dockerDriver.MatchString(line) {
-			t.Errorf("the docker-driver match misses %s", line)
-		}
-	}
-	if line := run + `("go", "list", "./...")`; dockerDriver.MatchString(line) {
-		t.Errorf("the docker-driver match flags %s, which runs no container", line)
-	}
-}
-
-// containerImport is a package of this module importing a testcontainers package, and the import
-// it was found by: a package reaching only testcontainers-go/wait has imported neither a runtime
-// client nor modules/nats, and the finding has to say which it did import.
-type containerImport struct{ pkg, imported string }
-
-// containerImporters lists every package of this module, outside the rigs allowed one, that
-// imports a testcontainers package, from its own sources or its tests', with the first such
-// import of each.
-func containerImporters(t *testing.T) []containerImport {
-	t.Helper()
-	const format = `{{.ImportPath}} {{join .Imports " "}} {{join .TestImports " "}} {{join .XTestImports " "}}`
-	list := exec.Command("go", "list", "-f", format, "./...")
-	list.Dir = envoyRoot
-	out, err := list.Output()
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			t.Fatalf("go list ./...: %v: %s", err, exit.Stderr)
-		}
-		t.Fatalf("go list ./...: %v", err)
-	}
-	var importers []containerImport
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 || slices.Contains(containerRigs, fields[0]) {
-			continue
-		}
-		for _, imported := range fields[1:] {
-			if imported == containerModule || strings.HasPrefix(imported, containerModule+"/") {
-				importers = append(importers, containerImport{pkg: fields[0], imported: imported})
-				break
-			}
-		}
-	}
-	return importers
-}
-
-// dockerDriverFiles lists every Go file under packages/envoy that drives a container runtime
-// itself, by its path from there. The nested infra module is left out: its pulumilive lane runs a
-// real stack of containers on a host that has a runtime, which is the one place in this tree that
-// legitimately drives Docker.
-func dockerDriverFiles(t *testing.T) []string {
-	t.Helper()
-	var drivers []string
-	err := filepath.WalkDir(envoyRoot, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path == filepath.Join(envoyRoot, "infra") || entry.Name() == "node_modules" || entry.Name() == "testdata" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		text, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if dockerDriver.Match(text) {
-			relative, err := filepath.Rel(envoyRoot, path)
-			if err != nil {
-				return err
-			}
-			drivers = append(drivers, filepath.ToSlash(relative))
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", envoyRoot, err)
-	}
-	return drivers
 }

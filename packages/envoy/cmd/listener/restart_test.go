@@ -22,6 +22,7 @@ import (
 // because the consumer is gone either way (kvwatch.Watcher.End, LEGION-278). Every ERROR line
 // fails the test.
 func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "restart-test")
 	listener.waitHealthy(t)
@@ -41,7 +42,7 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 			t.Fatalf("restart %d: subscribe through another listener: %v", round, err)
 		}
 		writer.Close()
-		deadline := time.Now().Add(3 * time.Second)
+		deadline := time.Now().Add(listenerWaitBound(t))
 		for !listsInterest(t, listener.port, sessionID) {
 			if time.Now().After(deadline) {
 				t.Fatalf("restart %d: %s after the listener reconnected, its interest cache still missed a subscription another listener wrote", round, time.Since(since).Round(time.Millisecond))
@@ -56,7 +57,7 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 	for restart := 1; restart <= 3; restart++ {
 		server.Stop(t)
 		server.Start(t)
-		deadline := time.Now().Add(30 * time.Second)
+		deadline := time.Now().Add(listenerWaitBound(t))
 		for strings.Count(listener.Output.String(), "envoy nats reconnected") < restart {
 			if time.Now().After(deadline) {
 				t.Fatalf("restart %d: the listener never reconnected:\n%s", restart, listener.Output.String())
@@ -106,7 +107,7 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 // cache answers while the read it waits for runs.
 func interestWarmUp(t *testing.T, p *listenerProcess, n int, while func()) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		while()
 		var lines []map[string]any
@@ -120,7 +121,7 @@ func interestWarmUp(t *testing.T, p *listenerProcess, n int, while func()) map[s
 			return lines[n-1]
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no interest registry warm-up line %d within 10s:\n%s", n, p.Output.String())
+			t.Fatalf("no interest registry warm-up line %d in time:\n%s", n, p.Output.String())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

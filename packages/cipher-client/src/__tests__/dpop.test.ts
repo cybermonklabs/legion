@@ -5,7 +5,7 @@
 // and the proof a NATS connection carries, which the Go checker reads from a committed vector as
 // this suite reads the Go signer's.
 
-import { expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { createHash, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -17,7 +17,17 @@ function part(compact: string, at: number): Record<string, unknown> {
   return JSON.parse(Buffer.from(compact.split(".")[at] as string, "base64url").toString("utf8"));
 }
 
+/** The moment the proof's clock reads while it signs: `iat` is its whole second. */
+const SIGNED_AT = new Date("2026-03-04T05:06:07.890Z");
+
+// A pin of `Date.now()` holds for the whole process, and a row its guard ends stops at the await
+// it was in, so the real clock comes back here, after every row, whether it passed, failed or its
+// guard ended it.
+afterEach(() => setSystemTime());
+
 test("a token endpoint proof carries jti, htm, htu and iat, and nothing else", async () => {
+  // Bun holds `Date.now()`, which the proof stamps `iat` from, at SIGNED_AT; timers stay real.
+  setSystemTime(SIGNED_AT);
   const key = await newDpopKey();
   const compact = await key.proof({ method: "post", url: "http://broker.test/v1/oauth/token" });
   expect(Object.keys(part(compact, 0)).sort()).toEqual(["alg", "jwk", "typ"]);
@@ -25,7 +35,7 @@ test("a token endpoint proof carries jti, htm, htu and iat, and nothing else", a
   expect(Object.keys(claims).sort()).toEqual(["htm", "htu", "iat", "jti"]);
   expect(claims.htm).toBe("POST");
   expect(claims.htu).toBe("http://broker.test/v1/oauth/token");
-  expect(Math.abs(Date.now() / 1000 - (claims.iat as number))).toBeLessThan(60);
+  expect(claims.iat).toBe(Math.floor(SIGNED_AT.getTime() / 1000));
   expect(part(compact, 0).typ).toBe("dpop+jwt");
   expect(part(compact, 0).alg).toBe("ES256");
 });
@@ -144,21 +154,24 @@ test.each([
       `${"-----BEGIN"} PRIVATE KEY-----\n${canary}\n${"-----END"} PRIVATE KEY-----\n`,
   ],
   ["no PEM at all", (canary: string) => `d=${canary}`],
-] as const)("a box key that does not parse, as %s, is refused naming none of it", async (_as, pem) => {
-  const canary = fixtureSecret("canary");
-  const refusal = await importDpopKey(pem(canary), "ada@example.com's box key").then(
-    () => null,
-    (error: unknown) => error as Error
-  );
-  expect(refusal).toBeInstanceOf(Error);
-  expect(refusal?.message).toBe(
-    "read ada@example.com's box key: it does not parse as a PKCS#8 PEM private key"
-  );
-  expect(refusal?.cause).toBeUndefined();
-  expect(String(refusal)).not.toContain(canary);
-  expect(String(refusal?.cause ?? "")).not.toContain(canary);
-  expect(JSON.stringify(Object.getOwnPropertyNames(refusal))).not.toContain("cause");
-});
+] as const)(
+  "a box key that does not parse, as %s, is refused naming none of it",
+  async (_as, pem) => {
+    const canary = fixtureSecret("canary");
+    const refusal = await importDpopKey(pem(canary), "ada@example.com's box key").then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal?.message).toBe(
+      "read ada@example.com's box key: it does not parse as a PKCS#8 PEM private key"
+    );
+    expect(refusal?.cause).toBeUndefined();
+    expect(String(refusal)).not.toContain(canary);
+    expect(String(refusal?.cause ?? "")).not.toContain(canary);
+    expect(JSON.stringify(Object.getOwnPropertyNames(refusal))).not.toContain("cause");
+  }
+);
 
 /** What a connection proof's checker holds it to, beside its signature: the header and claim
  *  names, the connection's method and target, the token's hash (`ath`, its SHA-256 in base64url)
@@ -177,6 +190,8 @@ function expectConnectionClaims(compact: string, accessToken: string, nonce: str
 }
 
 test("connectionProof verifies with jose", async () => {
+  // Bun holds `Date.now()`, which the proof stamps `iat` from, at SIGNED_AT; timers stay real.
+  setSystemTime(SIGNED_AT);
   const key = await newDpopKey();
   const presented = "example-session-credential";
   const nonce = "the-server-nonce-of-this-connection";
@@ -184,7 +199,7 @@ test("connectionProof verifies with jose", async () => {
   // Signed with no await: nats.js asks its authenticator for the CONNECT synchronously.
   expect(typeof compact).toBe("string");
   expectConnectionClaims(compact, presented, nonce);
-  expect(Math.abs(Date.now() / 1000 - (part(compact, 1).iat as number))).toBeLessThan(60);
+  expect(part(compact, 1).iat).toBe(Math.floor(SIGNED_AT.getTime() / 1000));
   // The key its header embeds signed it, and that key is this key's public half.
   const verified = await jwtVerify(compact, EmbeddedJWK, {
     typ: "dpop+jwt",

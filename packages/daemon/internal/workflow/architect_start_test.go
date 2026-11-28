@@ -96,6 +96,7 @@ func childDecision() record.KeptDecisions {
 // review of a registered step and the re-admitted members of a tree that ran each start something
 // or bring a message.
 func TestTheArchitectTaskOfEachShape(t *testing.T) {
+	t.Parallel()
 	two := []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria}
 	for _, tc := range []struct {
 		name  string
@@ -253,6 +254,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 // document the architect registered under a deployment that gates the spec alone gates the tree
 // too (record.TreeSteps), so its clause stands beside the spec's.
 func TestTheArchitectTaskSaysEachStepTheTreeIsGatedOnByWhatOpenedIt(t *testing.T) {
+	t.Parallel()
 	basis := record.GateBasis{Issue: "LEGION-90", ArtifactID: "artifact-90", Version: 5, Approver: "user:alice", RegisteredAt: time.Unix(0, 0).UTC()}
 	for _, tc := range []struct {
 		name  string
@@ -297,6 +299,7 @@ var shapeLabels = []string{ArchitectFreshTreeLabel, ArchitectCarriedPhaseLabel, 
 // shape's, and ends with its own shape's closing sentence. The decomposition is asked for by the
 // one shape that opens a tree.
 func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
+	t.Parallel()
 	for i, label := range shapeLabels {
 		for j, other := range shapeLabels {
 			if i != j && strings.Contains(label, other) {
@@ -381,6 +384,7 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 // take up, so it reads as any other root standing there; and a root whose gate rows open its gate
 // reads apart from one whose rows stand part way, since the daemon starts its first phase itself.
 func TestTheArchitectTaskShapeRule(t *testing.T) {
+	t.Parallel()
 	registered := registeredSpec()
 	carried := func(gate record.TreeGate, taken bool) ArchitectStart {
 		root := rootAt(phase.Reviewing)
@@ -525,6 +529,7 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 //   - a claim that served entry 1 and then generation 3, a wake's task of this run, ran the tree
 //     at an earlier generation all the same, so the task is of the fourth rule's shape.
 func TestTheArchitectTaskReadsTheRunItsArchitectServedAndNotItsLaunches(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name             string
 		launches, served uint64
@@ -582,6 +587,7 @@ func TestTheArchitectTaskReadsTheRunItsArchitectServedAndNotItsLaunches(t *testi
 //   - a child whose phase is done runs nothing, whatever its status says;
 //   - an issue in planning of another tree is no member of this one.
 func TestTheArchitectStartReadsWhetherAMemberOfTheTreeRuns(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		tree   string
@@ -639,6 +645,7 @@ func TestTheArchitectStartReadsWhetherAMemberOfTheTreeRuns(t *testing.T) {
 // same pull request the promotion reads. The control is the same root whose pull request is still
 // open, whose merger the promotion does start.
 func TestTheArchitectTaskOfACarriedRootInMergingReadsWhetherItsPullRequestMerged(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		state    record.PullRequestState
@@ -687,6 +694,7 @@ func TestTheArchitectTaskOfACarriedRootInMergingReadsWhetherItsPullRequestMerged
 // (record.HandedOverRoot.GateCarried): a child handed over from a tree whose root was reopened in
 // its linger comes with none, and a task that said a gate came with it would be false of it.
 func TestTheArchitectTaskOfACarriedRootNamesThePhaseItStandsInAndItsGate(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		stands      phase.Phase
@@ -750,6 +758,7 @@ func TestTheArchitectTaskOfACarriedRootNamesThePhaseItStandsInAndItsGate(t *test
 // the roots that rest on its approval (TestTheArchitectTaskNamesTheRootsRestingOnItInEveryShape)
 // and nothing else, the empty string where there is neither, and it carries no first-task tail.
 func TestTheArchitectTaskIsNoneForARootPastAdmitted(t *testing.T) {
+	t.Parallel()
 	registered := registeredSpec()
 	for _, tc := range []struct {
 		name  string
@@ -782,6 +791,7 @@ func TestTheArchitectTaskIsNoneForARootPastAdmitted(t *testing.T) {
 // A person's decision on the tree is read before the work, so it leads whichever shape the root
 // gets: the decided text, a blank line, then the shape's own text.
 func TestTheArchitectTaskNamesAKeptDecisionFirstInEveryShape(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		start ArchitectStart
@@ -805,7 +815,7 @@ func TestTheArchitectTaskNamesAKeptDecisionFirstInEveryShape(t *testing.T) {
 // restingOnTheRoot is the text that names a root resting on LEGION-208's approval, as
 // restingRootsTask writes it.
 const restingOnTheRoot = "These roots rest on the approval of LEGION-208 and are still in the workflow: LEGION-300 (its spec step, in implementing). " +
-	"The daemon refuses the sign-off and the close of LEGION-208 while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
+	"The daemon refuses the sign-off and the close of LEGION-208, and holds its retro where its task has no acceptance step, while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
 	"Each root's own architect, or a person, moves it."
 
 // The roots that rest on the root's approval are named in every shape, apart from what a person
@@ -815,6 +825,7 @@ const restingOnTheRoot = "These roots rest on the approval of LEGION-208 and are
 // and the narrowing of a held task writes them again, whether the task is of an entry or of none
 // and whether or not a decision is left, so a task with no decision left still names them.
 func TestTheArchitectTaskNamesTheRootsRestingOnItInEveryShape(t *testing.T) {
+	t.Parallel()
 	for _, label := range append(slices.Clone(shapeLabels), ArchitectDecompositionLabel) {
 		if strings.Contains(restingOnTheRoot, label) {
 			t.Fatalf("the resting roots' text carries the label %q, so a task would carry a shape's label it is not of", label)
@@ -851,7 +862,7 @@ func TestTheArchitectTaskNamesTheRootsRestingOnItInEveryShape(t *testing.T) {
 			}
 			// The held task of an entry narrowed of every decision still names the resting root, in
 			// the shape the record gives the root now.
-			if got, want := NarrowRootTask(tc.start, heldEntry, record.KeptDecisions{}), then(restingOnTheRoot); got != want {
+			if got, want := NarrowRootTask(tc.start, heldEntry, ""), then(restingOnTheRoot); got != want {
 				t.Fatalf("the held task of an entry narrowed of every decision =\n%q\nwant\n%q", got, want)
 			}
 		})
@@ -859,11 +870,11 @@ func TestTheArchitectTaskNamesTheRootsRestingOnItInEveryShape(t *testing.T) {
 	// A held task of no entry is narrowed into the decisions and the resting roots alone, whatever
 	// shape the record gives the root, so it is the resting roots alone where no decision is left.
 	held := ArchitectStart{Root: admittedRoot(), Resting: restingOnTheRoot}
-	if got := NarrowRootTask(held, 0, record.KeptDecisions{}); got != restingOnTheRoot {
+	if got := NarrowRootTask(held, 0, ""); got != restingOnTheRoot {
 		t.Fatalf("the held task of no entry narrowed of every decision = %q, want the resting roots alone %q", got, restingOnTheRoot)
 	}
-	stays := childDecision()
-	if got, want := NarrowRootTask(held, 0, stays), KeptDecisionsTask("LEGION-208", stays)+"\n\n"+restingOnTheRoot; got != want {
+	decided, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208", childDecision())
+	if got, want := NarrowRootTask(held, 0, decided), decided+"\n\n"+restingOnTheRoot; got != want {
 		t.Fatalf("the held task of no entry narrowed to one decision = %q, want %q", got, want)
 	}
 }
@@ -879,8 +890,9 @@ func TestTheArchitectTaskNamesTheRootsRestingOnItInEveryShape(t *testing.T) {
 // whatever wording a release wrote a derived task in, the instruction is written again, so a
 // closing sentence reworded by a later release costs no first act.
 func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
+	t.Parallel()
 	stays := childDecision()
-	decided := KeptDecisionsTask("LEGION-208", stays)
+	decided, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208", stays)
 	if decided == "" {
 		t.Fatal("the kept decisions name nothing, so the narrowing has nothing to pin")
 	}
@@ -919,14 +931,14 @@ func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			whole := tc.start
 			whole.Decided = decided
-			narrowed := NarrowRootTask(tc.start, heldEntry, stays)
+			narrowed := NarrowRootTask(tc.start, heldEntry, decided)
 			if want := ArchitectStartTask(whole); narrowed != want {
 				t.Fatalf("the narrowed task =\n%q\nwant\n%q", narrowed, want)
 			}
 			if !strings.Contains(narrowed, tc.label) {
 				t.Fatalf("the narrowed task lost the shape labelled %q", tc.label)
 			}
-			if got := NarrowRootTask(tc.start, 0, stays); got != decided {
+			if got := NarrowRootTask(tc.start, 0, decided); got != decided {
 				t.Fatalf("the narrowed task of a held task of no entry = %q, want the decisions' own text %q", got, decided)
 			}
 		})
@@ -941,10 +953,11 @@ const heldEntry int64 = 3
 // task of an entry writes the kept decisions' own text alone: the tree has been taken up, and its
 // phase's own role says what the work is.
 func TestNarrowingARootsArchitectTaskThatMovedOnDropsTheInstruction(t *testing.T) {
+	t.Parallel()
 	stays := childDecision()
-	decided := KeptDecisionsTask("LEGION-208", stays)
+	decided, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208", stays)
 	moved := ArchitectStart{Root: rootAt(phase.Planning), Gate: record.TreeGate{Steps: specGated}}
-	if got := NarrowRootTask(moved, heldEntry, stays); got != decided {
+	if got := NarrowRootTask(moved, heldEntry, decided); got != decided {
 		t.Fatalf("the narrowed task of a root now in planning = %q, want the kept decisions' own text %q", got, decided)
 	}
 }
@@ -952,8 +965,10 @@ func TestNarrowingARootsArchitectTaskThatMovedOnDropsTheInstruction(t *testing.T
 // A narrowing that leaves no decision at all writes the empty task its caller retires rather than
 // sends, where the held task is of no entry and so carried no first-task instruction.
 func TestNarrowingARootsKeptDecisionsToNothingWritesNoTask(t *testing.T) {
+	t.Parallel()
 	start := ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}}
-	if got := NarrowRootTask(start, 0, record.KeptDecisions{}); got != "" {
+	decided, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208", record.KeptDecisions{})
+	if got := NarrowRootTask(start, 0, decided); got != "" {
 		t.Fatalf("the narrowed task = %q, want the empty task its caller retires", got)
 	}
 }

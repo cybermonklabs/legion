@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -202,34 +203,49 @@ func enrollUnderCredential(ctx context.Context, base cipheraddr.Address, key *ec
 }
 
 // registerSignInSession registers this person's session on this machine for a record that holds
-// no enrollment yet: it trades the kept sign-in for an access token, as every later renewal
-// does, enrolls the box key under the launcher credential that trade mints, and keeps the
-// enrollment in the record. A machine or a sign-in client the deployment no longer configures is
-// refused by name, and so is a record made with another client than this machine now has, since
-// nothing here could renew that person's identity token.
+// no enrollment yet: it trades the kept sign-in for an access token (tradeSignIn), enrolls the box
+// key under the launcher credential that trade mints, and keeps the enrollment in the record. A
+// machine or a sign-in client the deployment no longer configures is refused by name, and so is a
+// record made with another client than this machine now has, since nothing here could renew that
+// person's identity token (signInRenewal).
 func registerSignInSession(ctx context.Context, record cipherclient.SignInRecord, boxKey *ecdsa.PrivateKey) (cipherclient.SignInRecord, error) {
 	base := brokerBaseURL()
 	if base.Empty() {
 		return record, fmt.Errorf("%s is required: it names the secrets broker %s's session registers at", brokerURLVar, record.Person)
 	}
-	flow, err := cipherclient.SignInFlow(clientGetenv)
+	token, err := tradeSignIn(ctx, base, record, boxKey)
 	if err != nil {
 		return record, err
 	}
-	switch {
-	case flow == nil:
-		return record, cipherclient.WithHint(fmt.Errorf("this machine is told of no sign-in client, so %s's sign-in cannot be renewed: set %s and %s, then sign in again",
-			record.Person, cipherclient.SignInClientIDVar, cipherclient.SignInClientSecretFileVar), cipherclient.FailureSignInRefused)
-	case record.ClientID != "" && record.ClientID != flow.ClientID:
-		return record, cipherclient.WithHint(fmt.Errorf("%s signed in with another client than this machine now has (%s), so their sign-in cannot be renewed",
-			record.Person, record.ClientID), cipherclient.FailureSignInRefused)
+	if record.EnrollmentID, err = enrollUnderCredential(ctx, base, boxKey, record.Thumbprint, token.CredentialID, record.Person); err != nil {
+		return record, err
+	}
+	return record, cipherclient.SignIns(homeGetenv).Write(record)
+}
+
+// tradeSignIn trades record's sign-in on this machine at the broker base names: a fresh identity
+// token minted from the person's kept refresh token, presented beside this machine's own identity
+// under the person's own session name (cipherclient.SessionFor). The broker answers the launcher
+// credential the sign-in holds on this box, with its expiry moved to the new identity token's
+// (token.CredentialExpiresAt): the same credential row at every trade of the same box key, so a
+// session enrolled under it renews on. registerSignInSession enrolls under it, and a sign-in's
+// renewer trades again before it expires (signin_renewer.go), since the broker renews no
+// sign-in's session past it (enroll.Service.Renew, ErrSignInCredentialEnded). A sign-in this
+// machine cannot renew is errSignInUnrenewable (signInRenewal).
+func tradeSignIn(ctx context.Context, base cipheraddr.Address, record cipherclient.SignInRecord, boxKey *ecdsa.PrivateKey) (*cipherclient.Token, error) {
+	flow, err := signInRenewal(record)
+	if errors.Is(err, errSignInUnrenewable) {
+		return nil, cipherclient.WithHint(err, cipherclient.FailureSignInRefused)
+	}
+	if err != nil {
+		return nil, err
 	}
 	machine, skipped, err := machineSource(ctx, true)
 	if err != nil {
-		return record, err
+		return nil, err
 	}
 	if machine == nil {
-		return record, fmt.Errorf("a person's session acts on a machine, and this machine proves no identity of its own (%s); set %s to name one", joinSkipped(skipped), cipherclient.IdentityVar)
+		return nil, fmt.Errorf("a person's session acts on a machine, and this machine proves no identity of its own (%s); set %s to name one", joinSkipped(skipped), cipherclient.IdentityVar)
 	}
 	client, err := cipherclient.New(cipherclient.Config{
 		BrokerURL: base,
@@ -240,19 +256,56 @@ func registerSignInSession(ctx context.Context, record cipherclient.SignInRecord
 		HTTP:      cipherclient.HTTPClient(),
 	})
 	if err != nil {
-		return record, err
+		return nil, err
 	}
 	token, err := client.Token(ctx)
 	if err != nil {
 		// The broker's own words name the cure where one exists, and an ended sign-in carries
 		// its own hint, so a failed trade adds none (cipherclient.Hint).
-		return record, err
+		return nil, err
 	}
 	if token.CredentialID == "" {
-		return record, fmt.Errorf("the broker took %s's sign-in but named no launcher credential, so no session can be registered under it", record.Person)
+		return nil, fmt.Errorf("the broker took %s's sign-in but named no launcher credential, so no session can be registered under it", record.Person)
 	}
-	if record.EnrollmentID, err = enrollUnderCredential(ctx, base, boxKey, record.Thumbprint, token.CredentialID, record.Person); err != nil {
-		return record, err
+	return token, nil
+}
+
+// errSignInUnrenewable is what signInRenewal answers, through unrenewableSignIn, for a sign-in
+// this machine cannot renew.
+var errSignInUnrenewable = errors.New("this machine cannot renew the sign-in")
+
+// unrenewableSignIn is why this machine cannot renew a sign-in: reason in the words a refusal
+// prints as they stand, and why, the same cause in a clause that names neither the person nor the
+// cure, for the line that says the chain passed the sign-in over (signInPassedOver). It is
+// errSignInUnrenewable to errors.Is.
+type unrenewableSignIn struct{ reason, why string }
+
+func (e *unrenewableSignIn) Error() string        { return e.reason }
+func (e *unrenewableSignIn) Is(target error) bool { return target == errSignInUnrenewable }
+
+// signInRenewal is the device-flow client this machine renews record's identity token with. It
+// is errSignInUnrenewable, saying why, where this machine is told of no sign-in client, or of
+// another client than the one the person signed in with: nothing here could renew that sign-in.
+// A sign-in client it cannot read (one of its two settings alone, a secret file it cannot open)
+// is that error, which is not errSignInUnrenewable.
+func signInRenewal(record cipherclient.SignInRecord) (*cipherclient.DeviceFlow, error) {
+	flow, err := cipherclient.SignInFlow(clientGetenv)
+	if err != nil {
+		return nil, err
 	}
-	return record, cipherclient.SignIns(homeGetenv).Write(record)
+	switch {
+	case flow == nil:
+		return nil, &unrenewableSignIn{
+			reason: fmt.Sprintf("this machine is told of no sign-in client, so %s's sign-in cannot be renewed: set %s and %s, then sign in again",
+				record.Person, cipherclient.SignInClientIDVar, cipherclient.SignInClientSecretFileVar),
+			why: fmt.Sprintf("no sign-in client is set (%s and %s)", cipherclient.SignInClientIDVar, cipherclient.SignInClientSecretFileVar),
+		}
+	case record.ClientID != "" && record.ClientID != flow.ClientID:
+		return nil, &unrenewableSignIn{
+			reason: fmt.Sprintf("%s signed in with another client than this machine now has (%s), so their sign-in cannot be renewed",
+				record.Person, record.ClientID),
+			why: fmt.Sprintf("it was made with the sign-in client %s, and this machine has %s", record.ClientID, flow.ClientID),
+		}
+	}
+	return flow, nil
 }

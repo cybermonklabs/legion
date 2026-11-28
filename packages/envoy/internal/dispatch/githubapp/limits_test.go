@@ -464,7 +464,7 @@ func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
 			tc.prepare(t, limits, fake)
 			requests := fake.count()
 
-			ctx, attempt := githubreads.Begin(context.Background())
+			ctx, attempt := githubreads.Begin(context.Background(), githubreads.CIReconcile)
 			err = tc.request(ctx, client, token)
 			sentRequests := 0
 			if tc.sent {
@@ -585,14 +585,14 @@ func TestARateLimitErrorAt2xxPrintsNoBodyWhoeverBuildsIt(t *testing.T) {
 				t.Fatalf("the limit reads %q, want %q, which holds no 2xx body", text, want)
 			}
 
-			ctx, attempt := githubreads.Begin(context.Background())
+			ctx, attempt := githubreads.Begin(context.Background(), githubreads.CIReconcile)
 			githubreads.NoteFailure(ctx, limited)
 			if _, failed, cause := attempt.Outcome(); !failed || cause != want || strings.Contains(cause, marker) {
 				t.Fatalf("the attempt failed %v with the cause %q, want the limit's text %q, which holds no 2xx body", failed, cause, want)
 			}
 
 			noted := "POST " + target + ": " + want
-			ctx, attempt = githubreads.Begin(context.Background())
+			ctx, attempt = githubreads.Begin(context.Background(), githubreads.CIReconcile)
 			githubreads.NoteFailure(ctx, limitNoted(http.MethodPost, target, limited))
 			if _, failed, cause := attempt.Outcome(); !failed || cause != noted || strings.Contains(cause, marker) {
 				t.Fatalf("the attempt failed %v with the client's note %q, want %q, which holds no 2xx body", failed, cause, noted)
@@ -634,7 +634,7 @@ func TestA200LimitALoopNotesWrappedBeforeTheClientNeverCarriesTheQuerysData(t *t
 				t.Fatalf("GraphQLRateLimit read no limit in %s", row.body)
 			}
 			err := fmt.Errorf("%s: %w", step, limited)
-			ctx, attempt := githubreads.Begin(context.Background())
+			ctx, attempt := githubreads.Begin(context.Background(), githubreads.CIReconcile)
 			githubreads.NoteFailure(ctx, err)
 
 			want := fmt.Sprintf("%s: rate-limited by GitHub (status 200), next request in %s: %s", step, limited.Wait, row.wording)

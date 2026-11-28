@@ -106,7 +106,7 @@ func launchTestDeleter(t *testing.T, follows bool) {
 		// A binary built with -race sleeps atexit_sleep_ms before it exits, which a deleter
 		// reaped inside the sweep's grace would spend on every sweep (roleInitHelperLaunch).
 		gorace := strings.TrimSpace(os.Getenv("GORACE") + " atexit_sleep_ms=0")
-		return []string{self, "-test.run=^TestVolumeTrimDeleteHelper$"},
+		return append([]string{self}, reentry(t, "TestVolumeTrimDeleteHelper")...),
 			[]string{volumeTrimDeleteEnv + "=" + string(body), "GORACE=" + gorace}, nil
 	}
 	t.Cleanup(func() { trimDeleteLaunch = previous })
@@ -151,6 +151,7 @@ func useRoleSystemRoot(t *testing.T, cover RoleCover, root string) {
 // returning, so nothing of the test framework is written on the standard output the replies go
 // down.
 func TestVolumeTrimDeleteHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	body := os.Getenv(volumeTrimDeleteEnv)
 	if body == "" {
 		return
@@ -168,7 +169,7 @@ func TestVolumeTrimDeleteHelper(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "volume-trim-delete:", err)
 		os.Exit(2)
 	}
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // baitFile is one file a sweep that escaped would delete, with what it held.
@@ -246,6 +247,7 @@ func agedUnder(t *testing.T, root, path string, at time.Time) {
 // it refuses the open, and the root is skipped with a line naming it. The one root this case
 // leaves above the link is swept as usual, so a trimmer that skipped everything fails here.
 func TestAReclaimableRootUnderALinkedElementIsSkippedAndTheRestAreSwept(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 4)
 	bait := t.TempDir()
 	at := f.clock.at.Add(-2 * time.Hour)
@@ -317,6 +319,7 @@ func TestAReclaimableRootUnderALinkedElementIsSkippedAndTheRestAreSwept(t *testi
 // everything fails here (TestAReclaimableRootUnderALinkedElementIsSkippedAndTheRestAreSwept
 // reads the same half for an element above the root).
 func TestARootAlreadyALinkWhenTheSweepOpensItIsSkippedAndItsBaitUntouched(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 4)
 	swapped := f.roots[3] // bun's install cache: no protected path lies under it
 	if swapped.Entry != ImmediateChildren {
@@ -400,6 +403,7 @@ func TestARootAlreadyALinkWhenTheSweepOpensItIsSkippedAndItsBaitUntouched(t *tes
 // Only the Go build cache root is swept here, so what the case reads back is the shard that was
 // swapped and the shards that were not.
 func TestAShardSwappedForARelativeLinkCrossingAnAbsoluteOneIsSkipped(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 8)
 	cache := f.roots[1]
 	if cache.Entry != GoCacheEntries {
@@ -498,6 +502,7 @@ func TestAShardSwappedForARelativeLinkCrossingAnAbsoluteOneIsSkipped(t *testing.
 // (testwait.Receive), so a trimmer which blocks again fails here by name before the test binary's
 // deadline, and a sweep that a loaded host makes slow passes.
 func TestAFifoWhereACacheRootBelongsIsSkippedAndDoesNotBlockTheSweep(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 4)
 	piped := f.roots[3]
 	if err := os.RemoveAll(piped.Path); err != nil {
@@ -632,6 +637,8 @@ func raceSwaps(t *testing.T, victim, target string, enough, tries int, at time.T
 		trials++
 		buildRacedEntry(t, victim, sub, at)
 		swapped := make(chan bool, 1)
+		// The racer's 30 s is part of the claim, not a hang guard: it is how long the racer keeps
+		// swapping (beforeDeadline).
 		go raceTheSwap(sub, target, time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second)), swapped)
 		if trial(trials, swapped) {
 			landed++
@@ -722,6 +729,8 @@ func sweepTrial(t *testing.T, f *trimFixture, target string, planted map[string]
 // made by a child in a user, mount, PID and IPC namespace of its own, and a link the recursion
 // follows to one of those paths lands in what that child is shown there.
 func TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles(t *testing.T) {
+	// Not parallel: it writes the package variable trimDeleteLaunch (useFollowingContainedDeleter),
+	// which parallel tests read.
 	requireRoleNamespaces(t)
 	f := newTrimFixture(t, 1)
 	system := filepath.Join(f.coverRoot, "system")
@@ -766,6 +775,7 @@ func TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFil
 // has no business driving a removal of: what it reads back is that the inherited directory is
 // not a way past a cover.
 func TestTheDeletersInheritedWorkingDirectoryIsNoWayPastACover(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	requireRoleNamespaces(t)
 	f := newTrimFixture(t, 1)
 	useRoleSystemRoot(t, f.cover, filepath.Join(f.coverRoot, "system"))
@@ -804,6 +814,8 @@ func TestTheDeletersInheritedWorkingDirectoryIsNoWayPastACover(t *testing.T) {
 // it). The volume the sweep deletes in needs no such thing: every removal is made through a
 // descriptor the listing opened and passed, and no path of the volume is resolved in the child.
 func TestTheDeleterOverTheImagesOwnPathsDeletesWhatTheSweepLists(t *testing.T) {
+	// Not parallel: it writes the package variable trimDeleteLaunch (useContainedDeleter), which
+	// parallel tests read.
 	requireRoleNamespaces(t)
 	useContainedDeleter(t)
 	f := newTrimFixture(t, 4)
@@ -833,6 +845,7 @@ func TestTheDeleterOverTheImagesOwnPathsDeletesWhatTheSweepLists(t *testing.T) {
 // one line of the pod's log and in the report the daemon gets, because a trimmer silently
 // freeing nothing on a full volume is the pod nobody is told about.
 func TestASweepWhoseDeleterCannotStartDeletesNothingAndSaysSo(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 4)
 	refused := errors.New("clone the deleter into a mount namespace of its own: operation not permitted")
 	f.useVolume(steady(90))
@@ -877,6 +890,7 @@ func TestASweepWhoseDeleterCannotStartDeletesNothingAndSaysSo(t *testing.T) {
 // the kernel refused mid-sweep does. The sweep must not finish its list in the launcher's own
 // view, which is what a fallback would do.
 func TestASweepWhoseDeleterDiesKeepsWhatItDeletedAndStops(t *testing.T) {
+	t.Parallel()
 	const before = 2
 	f := newTrimFixture(t, 4)
 	f.useVolume(steady(90))
@@ -944,6 +958,7 @@ func (r *dyingRemover) close() { *r.closed++ }
 // deletion, because a stop that arrived during the listing ends the sweep before any deleter is
 // started at all.
 func TestASweepClosesItsDeleterHoweverItEnded(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		stop func(f *trimFixture, cancel context.CancelFunc)

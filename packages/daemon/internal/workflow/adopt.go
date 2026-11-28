@@ -188,7 +188,7 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 		return err
 	}
 	issue.ToldParent = fact.Parent
-	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+	if err := e.WriteIssue(ctx, tx, *issue); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a root that ran was re-parented under a live tree and stays its own tree; the parent is read before it is told", "issue", issue.Key,
@@ -324,15 +324,19 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 	if err := e.store.DeleteHandover(ctx, tx, member.Key); err != nil {
 		return err
 	}
-	if err := e.store.ClearGeneration(ctx, tx, member.Key, e.now()); err != nil {
+	if err := e.ClearGeneration(ctx, tx, member, e.now()); err != nil {
 		return err
 	}
 	if member.Status == "todo" {
 		return e.enterChild(ctx, tx, root, fact, next, recordedResolution(member))
 	}
+	// The member is parked at done at its next run, and no task moves (moveTask): the write takes it
+	// out of the workflow without ending a task. The run it leaves keeps its task where it stood,
+	// with that run's step ended above, and the run it enters has started none. A todo runs it
+	// again at a run of its own (ReenterChild).
 	member.Tree, member.Project, member.Generation, member.Phase = root.Tree, root.Project, next, phase.Done
 	member.LingerUntil, member.Hold, member.Ancestry = nil, nil, nil
-	return e.store.PutIssue(ctx, tx, member)
+	return e.WriteIssue(ctx, tx, member)
 }
 
 // StopLeftTree queues the old tree's suspend of every role left can hold. Every request names

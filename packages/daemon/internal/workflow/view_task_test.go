@@ -16,9 +16,11 @@ import (
 
 // viewTaskSentence is the one sentence every task of a phase worker of LEGION-208 carries while its
 // spec is a view on LEGION-100's requirements (dispatch://INFRA-3320, R4). It tells the worker too
-// that Dispatch's Coverage line for LEGION-208, which counts only its own blocks, shows no gap.
+// that Dispatch's Coverage line for LEGION-208 reads "the spec marks no requirements", which is no
+// gap, since LEGION-208's checks count in LEGION-100's Coverage.
 const viewTaskSentence = "LEGION-208 is a view on LEGION-100: the requirements of LEGION-208 are the parts of the requirements of LEGION-100 " +
-	"that the Delivers: line in the spec of LEGION-208 names, so Dispatch's Coverage line, which counts only LEGION-208's own blocks, shows no gap."
+	"that the Delivers: line in the spec of LEGION-208 names, so Dispatch's Coverage line for LEGION-208 reads \"the spec marks no requirements\", " +
+	"which is no gap in its work: LEGION-208's checks count in LEGION-100's Coverage."
 
 // assertViewSentence fails the test unless task carries viewTaskSentence exactly once where view
 // says the issue is a view, and not at all where it is not.
@@ -54,13 +56,15 @@ func phaseStartTask(t *testing.T, pool *pgxpool.Pool, role claim.Role, at phase.
 }
 
 // The task the daemon gives each phase worker of a view says in one sentence that the issue's
-// requirements are the parts of the ancestor's requirements its Delivers: line names, so Dispatch's
-// Coverage line for the issue shows no gap, whether an ancestor's approval or a person's approval
-// of the view's own spec opened its step: the planner's, the implementer's, the tester's and the
-// reviewer's, each as its phase starts, and the resume of a phase under way. The task is built
-// from the record's view fact alone, so an issue whose registration recorded none carries no such
-// sentence.
+// requirements are the parts of the ancestor's requirements its Delivers: line names, and that
+// Dispatch's Coverage line for the issue, "the spec marks no requirements", is no gap, since the
+// issue's checks count in the ancestor's Coverage. It says so whether an ancestor's approval or a
+// person's approval of the view's own spec opened its step: the planner's, the implementer's, the
+// tester's and the reviewer's, each as its phase starts, and the resume of a phase under way. The
+// task is built from the record's view fact alone, so an issue whose registration recorded none
+// carries no such sentence.
 func TestEveryPhaseTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
+	t.Parallel()
 	alice := dispatch.Actor{Kind: "user", ID: "alice"}
 	for _, tc := range []struct {
 		name     string
@@ -91,14 +95,16 @@ func TestEveryPhaseTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
 				t.Fatalf("the root = %s after admission's pass, want planning", got)
 			}
 			planner := phaseStartTask(t, pool, claim.RolePlanner, phase.Planning)
-			want := "Continue root. Issue: LEGION-208. Phase: planning."
+			want := "Working copy: branch legion/LEGION-208.\nContinue root. Issue: LEGION-208. Phase: planning."
 			if tc.view {
 				want += " " + viewTaskSentence
 			}
-			if planner != want {
-				t.Fatalf("the planner's task = %q, want %q", planner, want)
+			// The task opens with the step's working copy line, then the continue line; the view
+			// sentence comes right after the continue line, before the task's place on the walk.
+			if !strings.HasPrefix(planner, want+" Task: ") {
+				t.Fatalf("the planner's task = %q, want it to open with %q and then the step's task", planner, want)
 			}
-			if got := ResumePhaseTask(recordedRoot(t, pool)); !strings.HasPrefix(got, want+" ") {
+			if got := phaseResumeTask(t, pool, engine, gatedRoot); !strings.HasPrefix(got, want+" ") {
 				t.Fatalf("the resume task of the planning phase = %q, want it to open with %q", got, want)
 			}
 
@@ -128,6 +134,7 @@ func TestEveryPhaseTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
 // The production check's task names a view's ancestor's requirements as every phase task does, in
 // the line after its first, and the check of an issue that is no view names none.
 func TestTheProductionCheckTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		viewOf string

@@ -34,8 +34,8 @@ import (
 // Items is what the audience is told, each with its recorded change set, or with the review
 // history that could not say which version the audience took: the holder's items for Issue, or the
 // architect row's own items for the tree. The send has already dropped every item that no longer
-// stands (classify.DesignApprovalStands) and every item the record cannot tell yet, so each one
-// here is said as given.
+// stands (the daemon's itemStands, which asks StepApprovalStands) and every item the record cannot
+// tell yet, so each one here is said as given.
 type News struct {
 	Audience    record.DesignAudience
 	Tree        string
@@ -45,6 +45,10 @@ type News struct {
 	Gates       map[record.DesignStep]record.DesignGate
 	OpeningOwed bool
 	Items       []NewsChange
+	// Back is the phases a move back of Issue reaches where Issue stands in accepting
+	// (MoveBackTargets), which its answer names (acceptingAnswer); nil elsewhere, where nothing
+	// reads it.
+	Back []phase.Phase
 	// Members is every member of the tree, the root among them, in the order the architect's
 	// summary names them. The holder's form reads none.
 	Members []NewsMember
@@ -99,13 +103,15 @@ func (c NewsChange) to() int {
 // is the key of the issue whose architect holds the member in accepting, where that is an
 // architect other than the tree root's: the member's own, or one between it and the root (the
 // owner walk, record.OwningIssue). The summary names that architect as the one told. Every other
-// member has none.
+// member has none. Back is the phases a move back of the member reaches where the root architect
+// answers it in accepting (NewsYouAnswer), as News.Back is the holder's.
 type NewsMember struct {
 	Issue     string
 	Phase     phase.Phase
 	State     NewsState
 	Items     []NewsChange
 	Architect string
+	Back      []phase.Phase
 }
 
 // NewsState is what one member of a tree is told of an approved version, as its root architect's
@@ -153,8 +159,9 @@ const (
 	// NewsAwaitingPerson is a member told nothing while it waits on a person, since no phase
 	// holder works it.
 	NewsAwaitingPerson NewsState = "awaiting-person"
-	// NewsStopped is a member told nothing while it stands in held (record.UntoldHeld): the restart
-	// that moves it back into its phase carries what it is owed then.
+	// NewsStopped is a member told nothing while it stands in held (record.UntoldHeld), whatever
+	// holds it (its stopped task, the issues beneath it or its failed worker): the release that
+	// moves it back into a phase carries what it is owed then.
 	NewsStopped NewsState = "stopped"
 	// NewsAwaitingChildren is a parent told nothing while it stands in awaiting_children, a
 	// Dispatch child of it open (record.UntoldAwaitingChildren): no restart moves it back, and the
@@ -279,7 +286,7 @@ func holderNews(news News) []string {
 		list = append(list, fmt.Sprintf("- The %s document (%s): %s.%s", item.Step, item.artifact(), pairWords(item, "your phase", basis != ""), basis))
 		list = append(list, indented(changeLines(news.Tree, item, "your phase"))...)
 	}
-	return []string{strings.Join(list, "\n"), holderRule(news.Issue, news.Phase)}
+	return []string{strings.Join(list, "\n"), holderRule(news.Issue, news.Phase, news.Back)}
 }
 
 // nothingChanged is the words that tell a holder an item's new version changed nothing its issue
@@ -297,17 +304,18 @@ func nothingChanged(item NewsChange) string {
 
 // holderRule is the closing paragraph of a holder's news: the rule its role's prompt carries for
 // answering it. The architect holding an issue in accepting answers by its sign-off or a move
-// back (acceptingAnswer). The planner revises its plan when it is stale, since planning has no
-// earlier phase to move back to (prompts/go/planner.md), and comments when it is current. Every
-// other phase worker moves back when its work is stale, and comments when it is current.
-func holderRule(issue string, p phase.Phase) string {
+// back to back, the phases of the steps of its task before the acceptance (acceptingAnswer). The
+// planner revises its plan in place when it is stale, since the plan is its own work wherever its
+// task places its step (prompts/go/planner.md), and comments when it is current. Every other phase
+// worker moves back when its work is stale, and comments when it is current.
+func holderRule(issue string, p phase.Phase, back []phase.Phase) string {
 	switch p {
 	case phase.Accepting:
-		return "As your prompt says, read each named section and check at the new version, then " + acceptingAnswer(issue) +
+		return "As your prompt says, read each named section and check at the new version, then " + acceptingAnswer(issue, back) +
 			", with a reason that names the version and the change."
 	case phase.Planning:
-		return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version. Planning has no earlier phase, "+
-			"so a stale plan does not move back. If your plan is stale, revise `plan.md` in place to match the new version of the design, "+
+		return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version. A stale plan is your own work "+
+			"wherever your task places your step, so it does not move back. If your plan is stale, revise `plan.md` in place to match the new version of the design, "+
 			"then run the plan review again. If your plan is current, write a `dispatch comment` on %s that names the version and why.", issue)
 	}
 	return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version: if your work is stale, "+
@@ -316,11 +324,32 @@ func holderRule(issue string, p phase.Phase) string {
 }
 
 // acceptingAnswer is the answer an architect gives the news of an issue it holds in accepting,
-// named as subject: its sign-off, or a move back. It is written once for its two readers: the
-// closing rule of the holder form (holderRule) and the root architect's line for a member it
-// answers itself (memberWords).
-func acceptingAnswer(subject string) string {
-	return fmt.Sprintf("sign %s off with `sign_off`, or call `request_backward_move` to move it back to planning, implementing or testing", subject)
+// named as subject: its sign-off, or a move back to back, the phases of the steps of its task
+// before the acceptance (MoveBackTargets), which the daemon's send reads from the task and refuses
+// to send without. It is written once for its two readers: the closing rule of the holder form
+// (holderRule) and the root architect's line for a member it answers itself (memberWords).
+func acceptingAnswer(subject string, back []phase.Phase) string {
+	named := make([]string, len(back))
+	for i, p := range back {
+		named[i] = string(p)
+	}
+	return fmt.Sprintf("sign %s off with `sign_off`, or call `request_backward_move` to move it back to %s", subject, listed(named, "or"))
+}
+
+// MoveBackTargets is the phases a move back of an issue standing in accepting reaches, on line,
+// the phases its task walks (Walk.Line, LineOf): each phase before accepting, the phases of the
+// steps of the task before the acceptance, as the walk's backward rows reach them (backwardRows).
+// So the answer of the news (acceptingAnswer) names no phase a move would be refused for, where
+// the task has no step for it, and leaves out none a move reaches. A line that holds no accepting,
+// or no step before it, is an error: an issue stands in accepting only on a task with an
+// acceptance after its implementer step (plan.Supported), so such a line is a record the news
+// cannot answer.
+func MoveBackTargets(line []phase.Phase) ([]phase.Phase, error) {
+	at := slices.Index(line, phase.Accepting)
+	if at < 1 {
+		return nil, fmt.Errorf("the line %v holds no step before an acceptance", line)
+	}
+	return slices.Clone(line[:at]), nil
 }
 
 // architectNews is the root architect's summary after its gate sentence: each pair of versions
@@ -435,7 +464,7 @@ func memberWords(member NewsMember, gates map[record.DesignStep]record.DesignGat
 	case NewsAtNextStart:
 		return fmt.Sprintf("%s; the next start of %s carries it.", owes, holder)
 	case NewsYouAnswer:
-		return fmt.Sprintf("%s. You hold it in accepting, so you answer it yourself: read what changed, then %s.", owes, acceptingAnswer("it"))
+		return fmt.Sprintf("%s. You hold it in accepting, so you answer it yourself: read what changed, then %s.", owes, acceptingAnswer("it", member.Back))
 	case NewsWorkUnchanged:
 		return "told nothing: the approved version holds the same text as the one it took, apart from decision blocks."
 	case NewsNotConcerned:
@@ -447,7 +476,7 @@ func memberWords(member NewsMember, gates map[record.DesignStep]record.DesignGat
 	case NewsAwaitingPerson:
 		return "told nothing while it waits on a person: no phase holder works it."
 	case NewsStopped:
-		return "told nothing while it is stopped: the restart that moves it back into its phase carries what it is owed then."
+		return "told nothing while it is held: the release that moves it back into a phase carries what it is owed then."
 	case NewsAwaitingChildren:
 		return "told nothing while it waits on its open children: the return that moves it back into its phase once no child " +
 			"of it is open carries what it is owed then."

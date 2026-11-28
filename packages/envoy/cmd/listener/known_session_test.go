@@ -76,6 +76,7 @@ func knownMatchedIDs(known *session.KnownSessions, topic string) []string {
 // stream subject captures, a team topic among them, so the record counts exactly the sessions a
 // stored publish reaches.
 func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *testing.T) {
+	t.Parallel()
 	rig := setupKnownRig(t)
 	team := "notifications.team.deploy-squad"
 	rig.subscribe(t, "ses_registered", []string{team, "notifications.github.sjawhar.legion.pr.1"})
@@ -103,8 +104,8 @@ func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *test
 	if record.Title != "a known session" || !slices.Equal(record.Capabilities, []string{"aside"}) {
 		t.Errorf("record = %#v, want the registration's title and capabilities", record)
 	}
-	if record.LastSeen != rig.clock.UnixMilli() {
-		t.Errorf("record.LastSeen = %d, want the write's clock %d", record.LastSeen, rig.clock.UnixMilli())
+	if record.LastSeen != rig.clock.Now().UnixMilli() {
+		t.Errorf("record.LastSeen = %d, want the write's clock %d", record.LastSeen, rig.clock.Now().UnixMilli())
 	}
 	if got := knownMatchedIDs(rig.known, team); !slices.Equal(got, []string{"ses_registered"}) {
 		t.Errorf("MatchEach of the team topic = %v, want the session just registered", got)
@@ -119,6 +120,7 @@ func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *test
 // would skip, and a `last_seen` minutes before the stop is what a send to the stopped session
 // would then answer.
 func TestACleanStopKeepsTheKnownSessionRecordAndMovesLastSeen(t *testing.T) {
+	t.Parallel()
 	rig := setupKnownRig(t)
 	team := "notifications.team.deploy-squad"
 	rig.subscribe(t, "ses_stopping", []string{team})
@@ -127,7 +129,7 @@ func TestACleanStopKeepsTheKnownSessionRecordAndMovesLastSeen(t *testing.T) {
 		t.Fatal("the registration wrote no known-session record")
 	}
 
-	rig.clock = rig.clock.Add(time.Minute)
+	rig.clock.Advance(time.Minute)
 	rig.stop(t, "ses_stopping")
 
 	stopped, ok := rig.known.Get("ses_stopping")
@@ -137,8 +139,8 @@ func TestACleanStopKeepsTheKnownSessionRecordAndMovesLastSeen(t *testing.T) {
 	if !slices.Equal(stopped.Topics, registered.Topics) {
 		t.Errorf("the stopped record's topics are %v, want the registered %v", stopped.Topics, registered.Topics)
 	}
-	if stopped.LastSeen != rig.clock.UnixMilli() {
-		t.Errorf("the stopped record's last_seen = %d, want the stop's clock %d", stopped.LastSeen, rig.clock.UnixMilli())
+	if stopped.LastSeen != rig.clock.Now().UnixMilli() {
+		t.Errorf("the stopped record's last_seen = %d, want the stop's clock %d", stopped.LastSeen, rig.clock.Now().UnixMilli())
 	}
 	if stopped.LastSeen <= registered.LastSeen {
 		t.Errorf("the stop left last_seen at %d, want it past the registration's %d", stopped.LastSeen, registered.LastSeen)
@@ -153,6 +155,7 @@ func TestACleanStopKeepsTheKnownSessionRecordAndMovesLastSeen(t *testing.T) {
 // writes the key took, and the heartbeats run through the registration route itself on a clock
 // this test moves.
 func TestAHundredUnchangedHeartbeatsWriteTheRecordAtMostTwice(t *testing.T) {
+	t.Parallel()
 	rig := setupKnownRig(t)
 	topics := []string{"notifications.team.deploy-squad"}
 	const heartbeats = 100
@@ -164,7 +167,7 @@ func TestAHundredUnchangedHeartbeatsWriteTheRecordAtMostTwice(t *testing.T) {
 	}
 	for i := range heartbeats {
 		if i > 0 {
-			rig.clock = rig.clock.Add(step)
+			rig.clock.Advance(step)
 		}
 		rig.subscribe(t, "ses_heartbeat", topics)
 	}
@@ -190,6 +193,7 @@ func TestAHundredUnchangedHeartbeatsWriteTheRecordAtMostTwice(t *testing.T) {
 // filter to what is left. Neither waits on the other, so the record is right whatever the consumer
 // call did.
 func TestARefollowWritesTheKnownSessionRecord(t *testing.T) {
+	t.Parallel()
 	rig := setupKnownRig(t)
 	kept, dropped := "notifications.team.deploy-squad", "notifications.team.other-squad"
 	rig.subscribe(t, "ses_refollow", []string{kept, dropped})
@@ -204,7 +208,7 @@ func TestARefollowWritesTheKnownSessionRecord(t *testing.T) {
 		t.Fatalf("ses_refollow's entry is %#v, want one that records consumer delivery", entry)
 	}
 
-	rig.clock = rig.clock.Add(session.KnownSessionRefreshAge + time.Minute)
+	rig.clock.Advance(session.KnownSessionRefreshAge + time.Minute)
 	body, err := json.Marshal(map[string]any{"session_id": "ses_refollow", "topics": []string{dropped}})
 	if err != nil {
 		t.Fatal(err)
@@ -221,8 +225,8 @@ func TestARefollowWritesTheKnownSessionRecord(t *testing.T) {
 	if !slices.Contains(after.Topics, kept) {
 		t.Errorf("the record's topics are %v, want the topic the session still follows", after.Topics)
 	}
-	if after.LastSeen != rig.clock.UnixMilli() {
-		t.Errorf("the record's last_seen = %d, want the unsubscribe's clock %d", after.LastSeen, rig.clock.UnixMilli())
+	if after.LastSeen != rig.clock.Now().UnixMilli() {
+		t.Errorf("the record's last_seen = %d, want the unsubscribe's clock %d", after.LastSeen, rig.clock.Now().UnixMilli())
 	}
 	if filter := rig.filters(t, "ses_refollow"); slices.Contains(filter, dropped) {
 		t.Errorf("the consumer filter %v still holds the unsubscribed %q", filter, dropped)
@@ -233,6 +237,7 @@ func TestARefollowWritesTheKnownSessionRecord(t *testing.T) {
 // that route is the unsubscribe's other call site, and a record left naming the topics the
 // session no longer follows would keep telling a publish that it gets the message.
 func TestRemovingASessionsInterestsThroughTheAdminRouteEmptiesItsRecord(t *testing.T) {
+	t.Parallel()
 	rig := setupKnownRig(t)
 	team := "notifications.team.deploy-squad"
 	rig.subscribe(t, "ses_admin_removed", []string{team})
@@ -244,7 +249,7 @@ func TestRemovingASessionsInterestsThroughTheAdminRouteEmptiesItsRecord(t *testi
 		t.Fatalf("the registered record's topics are %v, want the team topic the removal will take", registered.Topics)
 	}
 
-	rig.clock = rig.clock.Add(session.KnownSessionRefreshAge + time.Minute)
+	rig.clock.Advance(session.KnownSessionRefreshAge + time.Minute)
 	recorder := httptest.NewRecorder()
 	rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/v1/interests/ses_admin_removed", nil))
 	if recorder.Code != http.StatusNoContent {
@@ -258,8 +263,8 @@ func TestRemovingASessionsInterestsThroughTheAdminRouteEmptiesItsRecord(t *testi
 	if len(after.Topics) != 0 {
 		t.Errorf("the record's topics are %v, want none: the route removed every interest the session had", after.Topics)
 	}
-	if after.LastSeen != rig.clock.UnixMilli() {
-		t.Errorf("the record's last_seen = %d, want the removal's clock %d", after.LastSeen, rig.clock.UnixMilli())
+	if after.LastSeen != rig.clock.Now().UnixMilli() {
+		t.Errorf("the record's last_seen = %d, want the removal's clock %d", after.LastSeen, rig.clock.Now().UnixMilli())
 	}
 	if got := knownMatchedIDs(rig.known, team); len(got) != 0 {
 		t.Errorf("the team topic still matches %v, so a publish on it would count a session that no longer follows it", got)
@@ -270,6 +275,7 @@ func TestRemovingASessionsInterestsThroughTheAdminRouteEmptiesItsRecord(t *testi
 // runs on a nil store - answers a registration and a clean stop 200: the routes that write a
 // record carry no check of their own for the store.
 func TestTheRoutesServeAListenerWithNoKnownSessionStore(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	if rig.deps.known != nil {
 		t.Fatal("the deps hold a known-session store, so this test is not the listener without one")
@@ -284,6 +290,8 @@ func TestTheRoutesServeAListenerWithNoKnownSessionStore(t *testing.T) {
 // grant does not let it read. This is a listener whose hub's grant does not carry the bucket, and
 // the store it holds there is open for business in every way but the bucket.
 func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing.T) {
+	// Not parallel: it sets an environment variable of the whole process (t.Setenv of
+	// NATS_NKEY_SEED).
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, listenerGrantBeforeSessionConsumers()...)
 	t.Setenv("NATS_NKEY_SEED", seed)
@@ -304,7 +312,7 @@ func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing
 	harness := newListenerDeliveryHarnessOn(t, client)
 	deps := harness.publishDeps(t)
 	deps.known = known
-	recipients, connected := recipientCounts(deps, "notifications.team.deploy-squad", "ses_sender")
+	recipients, connected := recipientCounts(t.Context(), deps, "notifications.team.deploy-squad", "ses_sender")
 	if recipients != nil || connected != nil {
 		t.Errorf("the counts are %v and %v, want both left out while the bucket is not open", recipients, connected)
 	}

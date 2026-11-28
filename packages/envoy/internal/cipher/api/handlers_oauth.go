@@ -72,11 +72,17 @@ func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 // for: the device login's own client, and a person's machine login that passes
 // machine.Service.CheckPersonLogin, the device login's own checks short of the jti, none of which
 // reads the database. What its answer spends is deviceAuthorization's.
+// A Dispatch sign-in takes the same preflight with its dispatch scope, read by the device route's
+// own rule (machine.DeviceScope).
 func (s *server) deviceLoginCanOpen(form url.Values) bool {
 	if form.Get("client_id") != oauthwire.ClientID {
 		return false
 	}
-	return s.deps.MachineLogin.CheckPersonLogin(form.Get("request"), form.Get("dpop_jkt"), time.Now()) == nil
+	scope, err := machine.DeviceScope(form)
+	if err != nil {
+		return false
+	}
+	return s.deps.MachineLogin.CheckPersonLogin(form.Get("request"), form.Get("dpop_jkt"), scope, time.Now()) == nil
 }
 
 // spendDeviceLoginBucket spends one request of the bucket of the person form's request object
@@ -183,13 +189,14 @@ func readOAuthForm(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// atPublicURL is r as if it had reached BROKER_PUBLIC_URL directly: its URL's scheme and host and
-// its Host are the public URL's, it carries TLS state exactly when that URL is https, and it has
-// no X-Forwarded-Proto or X-Forwarded-Host.
+// atPublicURL is r as if it had reached Deps.PublicURL directly, which is BROKER_PUBLIC_URL, or
+// BROKER_EDGE_URL on the edge listener (RegisterEdge): its URL's scheme and host and its Host are
+// that URL's, it carries TLS state exactly when that URL is https, and it has no
+// X-Forwarded-Proto or X-Forwarded-Host.
 func (s *server) atPublicURL(r *http.Request) *http.Request {
 	public, err := url.Parse(s.deps.PublicURL)
 	if err != nil {
-		// config.Load refuses a BROKER_PUBLIC_URL that does not parse.
+		// config.Load refuses a BROKER_PUBLIC_URL or a BROKER_EDGE_URL that does not parse.
 		panic("api: PublicURL does not parse: " + err.Error())
 	}
 	out := r.Clone(r.Context())

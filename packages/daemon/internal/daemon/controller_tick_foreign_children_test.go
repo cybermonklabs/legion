@@ -187,7 +187,7 @@ func seedAcceptingParent(t *testing.T, pool *store.Pool) {
 	if err != nil {
 		t.Fatalf("project token: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: acceptingParent, Project: "LEGION", Seq: 1,
 			Status: record.Carry("needs_review"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)}); err != nil {
@@ -204,9 +204,9 @@ func seedAcceptingParent(t *testing.T, pool *store.Pool) {
 func foreignChildRow(t *testing.T, pool *store.Pool) (record.DispatchIssueRow, bool) {
 	t.Helper()
 	var rows []record.DispatchIssueRow
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		rows, err = record.NewStore().DispatchIssuesOf(context.Background(), tx, []string{otherProjectChild})
+		rows, err = record.NewStore().DispatchIssuesOf(ctx, tx, []string{otherProjectChild})
 		return err
 	}); err != nil {
 		t.Fatalf("read the copy's row of %s: %v", otherProjectChild, err)

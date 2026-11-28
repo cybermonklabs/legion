@@ -24,6 +24,7 @@ import (
 // whose read of the parent decides the words (dispatch://INFRA-3320, R2), and the message and the
 // notice come with that read's fact.
 func TestARootThatRanIsToldOncePerParentThatItStaysItsOwnTree(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedLiveRoot(t, pool, "LEGION-208", 0)
 	seedLiveRoot(t, pool, "LEGION-300", 1)
@@ -108,6 +109,7 @@ func TestARootThatRanIsToldOncePerParentThatItStaysItsOwnTree(t *testing.T) {
 // register its design gate on that approval. Otherwise, and where the record shows the parent
 // accepted whatever the read found, both are told today's words.
 func TestAReparentReadNamesR1sPathOnlyWhereItIsOpen(t *testing.T) {
+	t.Parallel()
 	const ran = "it ran as a tree of its own"
 	stays := "LEGION-500 is now a child of LEGION-208 in Dispatch, and it stays a tree of its own in Legion: " + ran +
 		", so the tree of LEGION-208 cannot take it in and no architect of that tree can release it."
@@ -153,6 +155,7 @@ func TestAReparentReadNamesR1sPathOnlyWhereItIsOpen(t *testing.T) {
 // A root that never ran is adopted rather than refused, so it is told nothing: the release of
 // children takes it into the tree, and a message saying it stays its own would be false.
 func TestARootThatNeverRanIsToldNothingWhenItIsReparented(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedLiveRoot(t, pool, "LEGION-208", 0)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-501", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",

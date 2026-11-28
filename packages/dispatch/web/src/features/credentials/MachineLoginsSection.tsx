@@ -1,3 +1,4 @@
+import { signInScopes } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -5,8 +6,9 @@ import { api } from "../../api/client";
 import type { LauncherCredentialResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { credentialGrantsQuery } from "./grants";
-import { machineLoginsQuery, machineName } from "./machineLogins";
+import { signInScopesText } from "../settings/dispatch-scope-choices";
+import { credentialGrantsQuery } from "./logic/grants";
+import { machineLoginsQuery, machineName } from "./logic/machineLogins";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 
 /** Who approved a login, as its "Approved by" cell says: the approver of a login a person
@@ -20,10 +22,18 @@ function approvedBy(login: LauncherCredentialResp): string {
   return `No one: ${login.subject}`;
 }
 
+/** What a login is called in its Revoke's question and its button's name. */
+function loginKind(login: LauncherCredentialResp): string {
+  return signInScopes(login) === null ? "machine login" : "Dispatch sign-in";
+}
+
 /** What revoking a login ends, and what logs in again after it, as its Revoke asks before it
  *  sends: a person's pod login, one of the viewer's machines, a service's login a person
  *  approved, and a service's token login. */
 function revokeOutcome(login: LauncherCredentialResp): string {
+  if (signInScopes(login) !== null) {
+    return "Its Dispatch sign-in ends at once. The session or tool needs a new approval.";
+  }
   if (login.person != null) {
     return "Every session it started ends at once. The pod logs in again with its token, under a new login, while the broker's BROKER_SERVICE_LOGINS names its Kubernetes account, and that login is yours while BROKER_POD_OPERATORS maps the account to you.";
   }
@@ -38,16 +48,31 @@ function revokeOutcome(login: LauncherCredentialResp): string {
 
 const columns: readonly RevocableColumn<LauncherCredentialResp>[] = [
   {
-    cell: (login) => (
-      <>
-        {machineName(login)}
-        {login.expired ? (
-          <span className={`block text-xs font-normal ${textSecondaryOnSurface}`}>
-            expired, sessions still running
-          </span>
-        ) : null}
-      </>
-    ),
+    cell: (login) => {
+      const approved = signInScopes(login);
+      return (
+        <>
+          {machineName(login)}
+          {approved === null ? null : (
+            <span className={`block text-xs font-normal ${textSecondaryOnSurface}`}>
+              Dispatch sign-in: {signInScopesText(approved)}
+            </span>
+          )}
+          {approved === null || login.reason === "" ? null : (
+            <span className={`block text-xs font-normal ${textSecondaryOnSurface}`}>
+              {/* The reason the sign-in's request gave, as it typed it: the reading list's
+                  `credential-request-reason`. */}
+              {login.reason}
+            </span>
+          )}
+          {login.expired ? (
+            <span className={`block text-xs font-normal ${textSecondaryOnSurface}`}>
+              expired, sessions still running
+            </span>
+          ) : null}
+        </>
+      );
+    },
     header: "Machine",
   },
   {
@@ -82,6 +107,11 @@ const columns: readonly RevocableColumn<LauncherCredentialResp>[] = [
  * replaced. Dispatch names the viewer as the person revoking, and the broker refuses anyone but
  * the approver of a person's machine login and anyone but the person of a person's pod login.
  * Rendered on the machine-login page.
+ *
+ * A Dispatch sign-in is also listed, marked with its approved scopes and the reason its request
+ * gave, and its Revoke names it as a sign-in: it writes in Dispatch and works on Envoy as its own
+ * session within the viewer's projects, starts no agent session and reads no secret, and only the
+ * person who approved it may revoke it, as with a machine login.
  */
 export function MachineLoginsSection(): ReactNode {
   const queryClient = useQueryClient();
@@ -91,10 +121,11 @@ export function MachineLoginsSection(): ReactNode {
     <RevocableList
       className="pt-4"
       columns={columns}
+      // A login's subject is the Kubernetes identity its token names, not a writer's text.
       confirm={(login) =>
-        `Revoke the machine login for ${machineName(login)}? ${revokeOutcome(login)}`
+        `Revoke the ${loginKind(login)} for ${machineName(login)}? ${revokeOutcome(login)}`
       }
-      description="Every machine and every pod logged in as you, and every service's login. A pod logs in as you when the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to you. The list shows a login while it is unexpired or a session it started still runs: a session outlives its login's expiry. Only you may revoke the logins of your machines and your pods. Anyone signed in may revoke a service's login. Revoking a login ends it now: it starts no more sessions, and every session it started loses its secrets."
+      description="Every machine and every pod logged in as you, every service's login and your Dispatch sign-ins. A pod logs in as you when the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to you. A Dispatch sign-in writes in Dispatch and works on Envoy as its own session within your projects, with the scopes you approved; it starts no agent session and reads no secret. The list shows a login while it is unexpired or a session it started still runs: a session outlives its login's expiry. Only you may revoke the logins of your machines and your pods, and your Dispatch sign-ins. Anyone signed in may revoke a service's login. Revoking a login ends it now: it starts no more sessions, and every session it started loses its secrets. Revoking a Dispatch sign-in ends it and every token it was given."
       empty="No live machine logins."
       heading="Machine logins"
       headingId="machine-logins-heading"
@@ -106,7 +137,7 @@ export function MachineLoginsSection(): ReactNode {
       query={logins}
       revoke={(login, bounds) => api.revokeMachineLogin(login.credential_id, bounds)}
       rowKey={(login) => login.credential_id}
-      rowName={(login) => `the machine login for ${machineName(login)}`}
+      rowName={(login) => `the ${loginKind(login)} for ${machineName(login)}`}
     />
   );
 }

@@ -101,6 +101,7 @@ var featureOffRoutes = []struct {
 }
 
 func TestCredentialRoutesAnswerFeatureOffWithNilClient(t *testing.T) {
+	t.Parallel()
 	handler := newCredentialTestHandler(t, "")
 	for _, route := range featureOffRoutes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
@@ -123,6 +124,7 @@ func TestCredentialRoutesAnswerFeatureOffWithNilClient(t *testing.T) {
 // failed request, while the request is held to the same human caller and `approver=me` as one a
 // broker would answer.
 func TestListCredentialPendingWithAndWithoutABroker(t *testing.T) {
+	t.Parallel()
 	t.Run("without a broker", func(t *testing.T) {
 		handler := newCredentialTestHandler(t, "")
 		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/credential-requests?approver=me", nil, "alice")
@@ -195,6 +197,7 @@ func newFakeBrokerRig(t *testing.T) *fakeBrokerRig {
 // The pending list relays the broker's answer untouched, a secret request's approve_url among its
 // rows. That link is the broker's, and Dispatch adds nothing to it.
 func TestCredentialRouteForwardsBrokerSuccessBodyAndAuth(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, brokerRoute, dispatchPath, body string
 	}{
@@ -225,6 +228,7 @@ func TestCredentialRouteForwardsBrokerSuccessBodyAndAuth(t *testing.T) {
 // A secret request is decided on the broker's page alone, so the broker refuses Dispatch's approve
 // or deny of one; the browser gets that refusal, and the page it names, exactly as the broker sent it.
 func TestCredentialRouteForwardsBrokerErrorStatusAndBodyVerbatim(t *testing.T) {
+	t.Parallel()
 	refusal := `{"code":"DECIDE_ON_BROKER_PAGE","error":"decide it at https://secrets.example.com/approve/rec1","approve_url":"https://secrets.example.com/approve/rec1"}`
 	for _, action := range []string{"approve", "deny"} {
 		t.Run(action, func(t *testing.T) {
@@ -246,6 +250,7 @@ func TestCredentialRouteForwardsBrokerErrorStatusAndBodyVerbatim(t *testing.T) {
 }
 
 func TestCredentialRouteRelaysRequestBodyVerbatim(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	handler := newCredentialTestHandler(t, rig.server.URL)
 
@@ -265,15 +270,21 @@ func TestCredentialRouteRelaysRequestBodyVerbatim(t *testing.T) {
 // forward a machine login's typed code — never an approver, or anything else, the browser put in
 // its body. A dismissal reads no body at all, so it sends the approver alone whatever the browser
 // sent.
+// Approval of a Dispatch sign-in forwards the scopes the browser selected; a denial forwards none,
+// whatever the browser sent, since a denial grants nothing.
 func TestDecisionsNameTheCallerNeverTheBrowsersApprover(t *testing.T) {
+	t.Parallel()
 	browserBody := map[string]any{"approver": "bob", "code": "ABCD-1234", "assertion": map[string]string{"id": "x"}}
+	browserScopes := map[string]any{"approver": "bob", "code": "ABCD-1234", "scopes": []string{"person"}, "assertion": map[string]string{"id": "x"}}
 	for _, tc := range []struct {
 		path     string
 		body     any
 		wantBody string
 	}{
 		{"/api/v1/credential-requests/rec1/approve", browserBody, `{"approver":"alice","code":"ABCD-1234"}`},
+		{"/api/v1/credential-requests/rec1/approve", browserScopes, `{"approver":"alice","code":"ABCD-1234","scopes":["person"]}`},
 		{"/api/v1/credential-requests/rec1/deny", browserBody, `{"approver":"alice","code":"ABCD-1234"}`},
+		{"/api/v1/credential-requests/rec1/deny", browserScopes, `{"approver":"alice","code":"ABCD-1234"}`},
 		{"/api/v1/credential-requests/rec1/approve", nil, `{"approver":"alice"}`},
 		{"/api/v1/credential-requests/rec1/dismiss", browserBody, `{"approver":"alice"}`},
 		{"/api/v1/credential-requests/rec1/dismiss", nil, `{"approver":"alice"}`},
@@ -295,6 +306,7 @@ func TestDecisionsNameTheCallerNeverTheBrowsersApprover(t *testing.T) {
 }
 
 func TestCredentialRouteTransportFailureIsAgentSecretsUnavailable(t *testing.T) {
+	t.Parallel()
 	// Nothing listens at the broker's port, and the test holds it, so every call is a transport
 	// failure (testport.Refused).
 	handler := newCredentialTestHandler(t, "http://"+testport.Refused(t))
@@ -313,10 +325,14 @@ func TestCredentialRouteTransportFailureIsAgentSecretsUnavailable(t *testing.T) 
 
 // A token file Dispatch cannot read stops the call before the broker is asked, so the answer
 // names Dispatch's own credential, never the unreachable broker 503 AGENT_SECRETS_UNAVAILABLE
-// would send the operator to, and the one log line it writes names the file to fix.
+// would send the operator to, and the one log line it writes names the setting that holds the
+// file and why it could not be read, never the path: the path here is a made-up token, as one
+// pasted where the path goes would be.
 func TestCredentialRouteWithAnUnreadableAccountTokenNamesDispatchsOwnCredential(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	rig := newFakeBrokerRig(t)
-	missing := filepath.Join(t.TempDir(), "missing")
+	const pasted = "madeUpAccountToken0123456789abcdef"
+	missing := filepath.Join(t.TempDir(), pasted)
 	handler := newCredentialTestHandlerReading(t, rig.server.URL, missing)
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
@@ -341,8 +357,9 @@ func TestCredentialRouteWithAnUnreadableAccountTokenNamesDispatchsOwnCredential(
 			lines = append(lines, line)
 		}
 	}
-	if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], "path="+missing) {
-		t.Fatalf("logged %q, want one ERROR line naming %s beside the access line", logs.String(), missing)
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], "setting=DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE") ||
+		!strings.Contains(lines[0], `reason="it does not exist"`) || strings.Contains(logs.String(), pasted[:10]) {
+		t.Fatalf("logged %q, want one ERROR line naming the setting and why, and no part of the path, beside the access line", logs.String())
 	}
 }
 
@@ -350,6 +367,7 @@ func TestCredentialRouteWithAnUnreadableAccountTokenNamesDispatchsOwnCredential(
 // expired ones nobody has dismissed, on every call: the browser's URL names neither, and a state
 // the browser does add narrows nothing.
 func TestListCredentialPendingResolvesApproverMeToCallerCanonicalLogin(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	handler := newCredentialTestHandler(t, rig.server.URL)
 
@@ -365,6 +383,7 @@ func TestListCredentialPendingResolvesApproverMeToCallerCanonicalLogin(t *testin
 }
 
 func TestListCredentialGrantsResolvesApproverMeToCallerCanonicalLogin(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	handler := newCredentialTestHandler(t, rig.server.URL)
 
@@ -378,6 +397,7 @@ func TestListCredentialGrantsResolvesApproverMeToCallerCanonicalLogin(t *testing
 }
 
 func TestApproverLiteralOtherValueIsRejectedBeforeReachingTheBroker(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	handler := newCredentialTestHandler(t, rig.server.URL)
 
@@ -399,6 +419,7 @@ func TestApproverLiteralOtherValueIsRejectedBeforeReachingTheBroker(t *testing.T
 // A sign-in belongs to one person, so the two routes that read and end one must name that person
 // from Dispatch's own session and never from the browser, exactly as every decision does.
 func TestSignInRoutesNameTheCallerNeverTheBrowser(t *testing.T) {
+	t.Parallel()
 	t.Run("the list asks for the caller's own sign-ins", func(t *testing.T) {
 		rig := newFakeBrokerRig(t)
 		handler := newCredentialTestHandler(t, rig.server.URL)
@@ -429,6 +450,7 @@ func TestSignInRoutesNameTheCallerNeverTheBrowser(t *testing.T) {
 // broker, which answers a sign-in of anybody else as an unknown id. This drives both against a
 // broker that behaves as the real one does.
 func TestOnePersonReachesNoneOfAnothersSignIns(t *testing.T) {
+	t.Parallel()
 	signIns := map[string]string{"signin-alice": "alice", "signin-bob": "bob"}
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -496,44 +518,54 @@ func TestOnePersonReachesNoneOfAnothersSignIns(t *testing.T) {
 // be read. What a lapsed window does with a broker that has stopped answering is the client's
 // own test (internal/dispatch/cipher).
 func TestCredentialCapabilitiesFollowTheBrokersMetadata(t *testing.T) {
+	t.Parallel()
 	const metadata = "GET /.well-known/oauth-authorization-server"
-	ask := func(t *testing.T, handler http.Handler) bool {
+	type answer struct {
+		MachineCodePage bool `json:"machine_code_page"`
+		DispatchSignIn  bool `json:"dispatch_sign_in"`
+	}
+	ask := func(t *testing.T, handler http.Handler) answer {
 		t.Helper()
 		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/credentials/capabilities", nil, "alice")
 		if response.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200: %s", response.Code, response.Body.String())
 		}
-		return decodeBody[struct {
-			MachineCodePage bool `json:"machine_code_page"`
-		}](t, response).MachineCodePage
+		return decodeBody[answer](t, response)
 	}
 
-	t.Run("the broker serves the device grant", func(t *testing.T) {
+	t.Run("the broker serves the device grant and the Dispatch sign-in", func(t *testing.T) {
 		rig := newFakeBrokerRig(t)
-		rig.bodyByRoute[metadata] = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:device_code"]}`
+		rig.bodyByRoute[metadata] = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:device_code"],"scopes_supported":["machine","dispatch"]}`
 		handler := newCredentialTestHandler(t, rig.server.URL)
-		if !ask(t, handler) {
-			t.Fatalf("machine_code_page = false, want true: the metadata names the device code")
+		if got := ask(t, handler); got != (answer{MachineCodePage: true, DispatchSignIn: true}) {
+			t.Fatalf("capabilities = %+v, want both: the metadata names the device code and the scope dispatch", got)
 		}
-		if !ask(t, handler) || rig.calls != 1 {
+		if got := ask(t, handler); !got.MachineCodePage || rig.calls != 1 {
 			t.Fatalf("the broker was read %d times for two asks, want 1: the read is cached", rig.calls)
+		}
+	})
+	t.Run("the broker serves the device grant and no Dispatch sign-in", func(t *testing.T) {
+		rig := newFakeBrokerRig(t)
+		rig.bodyByRoute[metadata] = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:device_code"],"scopes_supported":["machine"]}`
+		if got := ask(t, newCredentialTestHandler(t, rig.server.URL)); got != (answer{MachineCodePage: true}) {
+			t.Fatalf("capabilities = %+v, want the machine code page and no Dispatch sign-in: the metadata names no scope dispatch", got)
 		}
 	})
 	t.Run("the broker serves no device grant", func(t *testing.T) {
 		rig := newFakeBrokerRig(t)
 		rig.bodyByRoute[metadata] = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:token-exchange"]}`
-		if ask(t, newCredentialTestHandler(t, rig.server.URL)) {
-			t.Fatalf("machine_code_page = true, want false: the metadata names no device code")
+		if got := ask(t, newCredentialTestHandler(t, rig.server.URL)); got != (answer{}) {
+			t.Fatalf("capabilities = %+v, want neither: the metadata names no device code", got)
 		}
 	})
 	t.Run("no broker at all", func(t *testing.T) {
-		if ask(t, newCredentialTestHandler(t, "")) {
-			t.Fatalf("machine_code_page = true, want false: no broker prints a code for anyone to type")
+		if got := ask(t, newCredentialTestHandler(t, "")); got != (answer{}) {
+			t.Fatalf("capabilities = %+v, want neither: no broker prints a code for anyone to type", got)
 		}
 	})
 	t.Run("the broker cannot be read", func(t *testing.T) {
-		if !ask(t, newCredentialTestHandler(t, "http://"+testport.Refused(t))) {
-			t.Fatalf("machine_code_page = false, want true: a page that vanishes on one failed read is worse than one that lingers")
+		if got := ask(t, newCredentialTestHandler(t, "http://"+testport.Refused(t))); got != (answer{MachineCodePage: true}) {
+			t.Fatalf("capabilities = %+v, want the page kept and no sign-in offered: a page that vanishes on one failed read is worse than one that lingers", got)
 		}
 	})
 	t.Run("a bearer is refused as every credential page is", func(t *testing.T) {

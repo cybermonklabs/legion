@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // What a tree's liveness is read from moves with this release: from the slot its root holds to
@@ -21,12 +22,13 @@ import (
 // The two halves are one rule: the fact is carried where it is missing, and a row that already
 // stands is left exactly as it is, since its epoch is the one the tree's claims carry.
 func TestTheMigrationCarriesEachRunningTreesLivenessAndKeepsTheRowsItFinds(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preReleaseStore(t)
 	pool := st.Pool()
 	records := record.NewStore()
 	fresh, known, parked := bootProject+"-1", bootProject+"-3", bootProject+"-2"
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		// A root whose architect is writing the spec, with a child a person parked, and no
 		// lifecycle row of its own.
 		if err := records.PutIssue(ctx, tx, bootIssue(fresh, fresh, "in_progress", phase.Admitted)); err != nil {
@@ -96,7 +98,7 @@ func TestTheMigrationCarriesEachRunningTreesLivenessAndKeepsTheRowsItFinds(t *te
 	}
 	for key, want := range map[string]phase.Phase{fresh: phase.Admitted, known: phase.Implementing} {
 		var stood record.Issue
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			issue, err := records.Issue(ctx, tx, key)
 			if err != nil {
 				return err

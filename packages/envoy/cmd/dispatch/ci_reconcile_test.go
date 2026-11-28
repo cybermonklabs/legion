@@ -2,12 +2,17 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -15,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // What the reconcile stand-in below serves: the project's default repository, lower-cased as
@@ -35,11 +41,17 @@ const (
 // the actual process, against a real NATS whose envoy_ci_state bucket the test made as the
 // listener makes it (the pass creates no bucket), a loopback GitHub serving the installation
 // lookup, the token mint and the four reads one pass makes, and one project whose default
-// repository is the repository it serves. The process's own log is the evidence: the duty
-// loop's leased pass under the ci-reconcile lease, and the pass's own INFO line with the one
-// record it changed -- the one head's record, which an ordinary completed check run, the review
-// App's `tester` verdict and the head's check suite all write.
+// repository is the repository it serves. The evidence is the process's own log and the bucket:
+// the duty loop's leased pass under the ci-reconcile lease, a pass line that read the one head
+// whole, and the one head's record, which an ordinary completed check run, the review App's
+// `tester` verdict and the head's check suite all write. The record is read from the bucket, not
+// from a pass line's records count: each pass is bound at the one-second interval
+// (Reconciler.PassTimeout), a write that bound cut off can land all the same, and the pass that
+// reads the head again then changes nothing (recordHead), so on a loaded machine no pass line
+// need count the record. The bucket holds no record of the head before the process starts, so the
+// record read is a write of this process, as a records count could only have been.
 func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedCIReconcileDefault(t, database)
 	_, natsURL := testnats.Start(t)
@@ -47,6 +59,11 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 	github := startCIReconcileGitHub(t)
 	_, pemText := githubapptest.Key(t)
 
+	bucket := ciStateBucket(t, natsURL)
+	key := cistore.Key(ciReconcileOwner, ciReconcileName, "7", ciReconcileHeadSHA)
+	if entry, err := bucket.Get(key); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("the CI bucket holds a record of %s before the process starts (%v, %v), so a record read later need not be the pass's", key, entry, err)
+	}
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		NATSURL: natsURL,
 		Env: map[string]string{
@@ -61,9 +78,60 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 	process.waitHealthy(t)
 	process.WaitForOutput(t,
 		`msg="dispatch: reconciling the CI records GitHub's webhook never delivered" client_id=Iv1.cireconcile interval=1s`,
-		`msg="ci reconcile pass" list_pages=1 heads=1 head_requests=2 heads_not_modified=0 records=1 defaults_skipped=0 heads_too_large=0 rate_limited=false`,
 		`msg="dispatch duty: leased pass ran" lease=ci-reconcile`,
 	)
+	waitForCIReconcilePasses(t, process, "a pass that read the one head whole", func(passes []map[string]string) bool {
+		for _, pass := range passes {
+			if pass["list_pages"] == "1" && pass["heads"] == "1" && pass["head_requests"] == "2" && pass["heads_not_modified"] == "0" &&
+				pass["defaults_skipped"] == "0" && pass["heads_too_large"] == "0" && pass["rate_limited"] == "false" {
+				return true
+			}
+		}
+		return false
+	})
+	awaitCIReconcileHeadRecord(t, bucket, key)
+}
+
+// ciStateBucket binds the CI state bucket on the test's NATS at natsURL.
+func ciStateBucket(t *testing.T, natsURL string) natsgo.KeyValue {
+	t.Helper()
+	conn := testnats.Connect(t, natsURL)
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream(testnats.MaxWait(t))
+	if err != nil {
+		t.Fatalf("JetStream context: %v", err)
+	}
+	bucket, err := js.KeyValue(bus.CIStateBucket)
+	if err != nil {
+		t.Fatalf("open the CI bucket: %v", err)
+	}
+	return bucket
+}
+
+// awaitCIReconcileHeadRecord waits until bucket's record of the stand-in's one head, key, holds
+// all it serves: the completed run 11 of build, the review App's completed `tester` run 12, and
+// the completed check suite 21, each a success. A pass whose bound cut off its write of the runs
+// writes no suite, so the suite can land a pass later than the runs.
+func awaitCIReconcileHeadRecord(t *testing.T, bucket natsgo.KeyValue, key string) {
+	t.Helper()
+	testwait.Until(t, "the CI bucket's record of the one head holding build's run, the tester verdict and the check suite", func() (string, bool) {
+		entry, err := bucket.Get(key)
+		if err != nil {
+			return fmt.Sprintf("no record of %s: %v", key, err), false
+		}
+		var state cistore.State
+		if err := json.Unmarshal(entry.Value(), &state); err != nil {
+			return fmt.Sprintf("the record of %s does not decode: %v", key, err), false
+		}
+		build, tester := state.Checks["build"], state.Checks["tester"]
+		suite := false
+		for _, s := range state.Suites {
+			suite = suite || (s.ID == "21" && s.Status == "completed" && s.Conclusion == "success")
+		}
+		held := uint64(build.CheckRunID) == 11 && build.Status == "completed" && build.Conclusion == "success" &&
+			uint64(tester.CheckRunID) == 12 && tester.Status == "completed" && tester.Conclusion == "success" && suite
+		return fmt.Sprintf("checks %+v, suites %+v", state.Checks, state.Suites), held
+	})
 }
 
 // seedCIReconcileDefault makes the stand-in's repository the default repository of a project

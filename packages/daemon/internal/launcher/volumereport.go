@@ -15,10 +15,9 @@ import (
 // it. The trimmer that makes them is volumetrim.go's.
 
 // flush tries the report the last attempt could not send. A report the daemon never got is a
-// volume nobody was told about, so the trimmer keeps it rather than dropping it, as
-// bundleRestore keeps its own confirmation across every connection of the pod (restore.go). A
-// held report that fails again stays held for the next attempt, unless the report deliver tries
-// next fails too and replaces it, carrying what only the held one carries (carryHeld).
+// volume nobody was told about, so the trimmer keeps it rather than dropping it. A held report
+// that fails again stays held for the next attempt, unless the report deliver tries next fails too
+// and replaces it, carrying what only the held one carries (carryHeld).
 //
 // The resend is a sweep's work wherever it is tried, before an interval's reading (tick), in the
 // wait for settings (awaitSettings) or before a new report's send (deliver): a held report is a
@@ -98,7 +97,7 @@ func (t *trimmer) deliver(report shimwire.LauncherVolumeReport) {
 // deliver, which gives what report carried back to the trimmer (takeBack), since report is then
 // neither sent nor held, and in switchOff, whose panic ends the trimmer (run).
 func (t *trimmer) replace(held, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
-	return boundReport(t, carryHeld(held, report))
+	return t.boundReport(carryHeld(held, report))
 }
 
 // takeBack puts what a report that was neither sent nor held carried back on the trimmer, for the
@@ -192,7 +191,7 @@ func (t *trimmer) switchOff() {
 		// the first thing the daemon hears of this trimmer.
 		report.RaisedBy = shimwire.VolumeEpisodeFirst
 	}
-	report = boundReport(t, report)
+	report = t.boundReport(report)
 	t.faults, t.faultsDropped = nil, 0
 	t.refusedReads, t.refusedDropped = nil, 0
 	if t.held != nil {
@@ -282,7 +281,7 @@ func (t *trimmer) carryRefused(refused []string) {
 // and a report neither sent nor held gives them back (deliver).
 func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.LauncherVolumeReport {
 	walk := t.sizes(ctx)
-	report := boundReport(t, shimwire.LauncherVolumeReport{
+	report := t.boundReport(shimwire.LauncherVolumeReport{
 		Trimmer:             t.id,
 		Episode:             t.episode,
 		RaisedBy:            t.raisedBy,
@@ -325,12 +324,12 @@ func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.Launche
 const (
 	// volumeReportPathRunes bounds each path of Sizes, the read each names as refused
 	// (LauncherVolumeSize.Refused), each path of SizesMissing and its reason, and each refused
-	// /proc read. Of the directories this layout makes two levels under the volume root, the
-	// fixed ones are at most 26 runes (`/legion/scratch/leak-check`) and a repository owner's,
-	// under `/legion/workspaces` or `/legion/feed`, at most 58 under GitHub's 39-character owner,
-	// and the paths a reader acts on are of that order, while one directory component may be 255
-	// bytes and a role may make it: a few hundred runes keeps every real path whole and cuts a
-	// made-up one. A reason takes the same bound (unreadReason, volumewalk.go).
+	// /proc read. Of the directories this layout makes two levels under the volume root, the fixed
+	// ones are at most 26 runes (`/legion/scratch/leak-check`) and a repository owner's, under
+	// `/legion/workspaces`, at most 58 under GitHub's 39-character owner, and the paths a reader
+	// acts on are of that order, while one directory component may be 255 bytes and a role may
+	// make it: a few hundred runes keeps every real path whole and cuts a made-up one. A reason
+	// takes the same bound (unreadReason, volumewalk.go).
 	volumeReportPathRunes = 200
 	// volumeReportStopReasonRunes bounds the sweep's own reason, which names at most the first
 	// shimwire.VolumeReportRefusedReads refused /proc reads and how many more there were
@@ -424,12 +423,6 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 	report.Faults = cutEach(faults, volumeReportFaultRunes)
 	return report
 }
-
-// boundReport is how a report is bounded where it is made and where it replaces a held one
-// (report, switchOff, deliver): bound itself, a package variable for the reason readVolumeUsage
-// is one, so a case can make the bound panic and read that what the report was to carry stays
-// with the trimmer for the next one.
-var boundReport = (*trimmer).bound
 
 // saidLeftOut writes the one line of what a report leaves out, so a person reading the pod's log
 // knows the report the daemon got is not the whole of what the trimmer measured. deliver writes

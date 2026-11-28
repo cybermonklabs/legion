@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testfifo"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -59,6 +60,7 @@ func isCheckout(argv []string) bool {
 // Provision returns with the lock released, on the first workspace of a clone, on another issue's,
 // and on a workspace that already exists, which it checks out no more.
 func TestProvisionHoldsTheStoreLockForEverythingButTheCheckout(t *testing.T) {
+	t.Parallel()
 	lock := &heldLock{}
 	run := &lockReadingRunner{recordingRunner: newLocalRunner(t), lock: lock}
 	req := provisionRequest(t)
@@ -100,6 +102,7 @@ func TestProvisionHoldsTheStoreLockForEverythingButTheCheckout(t *testing.T) {
 // `jj sparse reset` wrote them — gets its files from the next provision, which finds the directory
 // and would otherwise leave the pane an empty working copy.
 func TestProvisionFinishesACheckoutThatNeverRan(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	pushRemoteBranch(t, run.remote, "main", "kept.txt")
 	req := provisionRequest(t)
@@ -139,6 +142,7 @@ func (r *failingCheckoutRunner) Run(ctx context.Context, command Command) (Resul
 // A checkout that fails leaves the workspace registered with no files: Provision returns the
 // failure, CheckedOut reads the workspace as not checked out, and the next Provision checks it out.
 func TestTheProvisionAfterAFailedCheckoutFinishesIt(t *testing.T) {
+	t.Parallel()
 	base := newLocalRunner(t)
 	pushRemoteBranch(t, base.remote, "main", "kept.txt")
 	run := &failingCheckoutRunner{recordingRunner: base}
@@ -170,6 +174,7 @@ func TestTheProvisionAfterAFailedCheckoutFinishesIt(t *testing.T) {
 // CheckedOut reads a workspace's sparse patterns without snapshotting its working copy, which a
 // pane may be writing: a file the pane wrote is not recorded in the repository's log.
 func TestCheckedOutNeverSnapshotsTheWorkingCopy(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	working, err := Provision(context.Background(), run, provisionRequest(t))
 	if err != nil {
@@ -191,6 +196,7 @@ func TestCheckedOutNeverSnapshotsTheWorkingCopy(t *testing.T) {
 // checked out, and the next Provision — every launch of its issue runs one when the workspace is
 // not — leaves the agent's patterns as they are rather than resetting them to the whole tree.
 func TestANarrowedWorkspaceIsCheckedOutAndKeepsItsPatterns(t *testing.T) {
+	t.Parallel()
 	base := newLocalRunner(t)
 	pushRemoteBranch(t, base.remote, "main", "kept.txt")
 	req := provisionRequest(t)
@@ -214,6 +220,7 @@ func TestANarrowedWorkspaceIsCheckedOutAndKeepsItsPatterns(t *testing.T) {
 // a provision that waited on that lock behind its repository's queue never fetches with a token
 // that expired in the wait.
 func TestProvisionAsksForItsTokenUnderTheStoreLock(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	lock := &heldLock{}
 	var asked, heldWhenAsked bool
@@ -259,6 +266,7 @@ func (r *placeReadingRunner) Run(ctx context.Context, command Command) (Result, 
 // none. A wait for a place that ends with its context fails the provision, naming the wait, with
 // the workspace registered and not checked out, which the next provision checks out.
 func TestProvisionHoldsACheckoutPlaceAroundTheCheckoutAlone(t *testing.T) {
+	t.Parallel()
 	lock := &heldLock{}
 	var place atomic.Bool
 	places := 0
@@ -331,6 +339,7 @@ func (l *unlockWatch) Unlock() { l.onUnlock(); l.heldLock.Unlock() }
 // workspace's size: when the lock is let go the renamed-aside directory is still there, and once
 // Remove returns it is gone, with the workspace, and the lock is free.
 func TestRemoveLetsTheStoreLockGoBeforeItDeletesTheWorkspace(t *testing.T) {
+	t.Parallel()
 	base := newLocalRunner(t)
 	working, err := Provision(context.Background(), base, provisionRequest(t))
 	if err != nil {
@@ -375,29 +384,57 @@ func TestRemoveLetsTheStoreLockGoBeforeItDeletesTheWorkspace(t *testing.T) {
 // which answers ENOTDIR without waiting: Remove returns, refusing, and the fifo is left as it was.
 // The parent is swapped as the store lock is let go, which is after the git worktree entry's
 // removal and before the aside's deletion. Remove's answer is waited for with no span of its own
-// (testwait.Receive), so a removal that waits on the fifo fails the row by name before the test
-// binary's deadline, and the jj and git runs before it are as slow as the host makes them.
+// (testwait.Receive), so the jj and git runs before it are as slow as the host makes them, and
+// a removal that opens the fifo plainly fails the row by name as soon as the fifo watch beside
+// that wait reads the open from the kernel (testfifo.WatchBeside), or at the deadline where it
+// cannot.
 func TestRemoveAsideAnswersAParentSwappedForAFifo(t *testing.T) {
+	// Not parallel: the fifo watch reads what every thread of this process is asleep in
+	// (testfifo.WatchBeside), so another test's open could read as this removal's.
+	// The verdict needs the kernel's record of what each thread is asleep in; where it keeps
+	// none, as gVisor keeps none, the row fails under CI and skips elsewhere
+	// (testfifo.RequireWatch).
+	testfifo.RequireWatch(t)
 	run := newLocalRunner(t)
 	working, err := Provision(context.Background(), run, provisionRequest(t))
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 	parent := filepath.Dir(working.Dir)
+	// The swap records its errors rather than reporting them: it runs in Remove's goroutine, which
+	// a row that failed early has stopped waiting for, and the row reads them once Remove answers.
+	swapped := make(chan struct{})
 	var once sync.Once
+	var swapErr error
 	lock := &unlockWatch{onUnlock: func() {
 		once.Do(func() {
+			defer close(swapped)
 			if err := os.Rename(parent, parent+".moved"); err != nil {
-				t.Error(err)
+				swapErr = err
+				return
 			}
-			if err := syscall.Mkfifo(parent, 0o644); err != nil {
-				t.Error(err)
-			}
+			swapErr = syscall.Mkfifo(parent, 0o644)
 		})
 	}}
 	done := make(chan error, 1)
 	go func() { done <- Remove(context.Background(), run, working, lock) }()
+	// Remove's answer is waited for with testwait.Receive, as main waits for it. Beside that wait,
+	// the fifo watch reads from the kernel whether the removal opens the swapped parent plainly and
+	// waits there for a writer (testfifo.WatchBeside); the correct removal opens it with
+	// O_NONBLOCK and holds it for a moment, which is no such wait. The watch's own open for
+	// writing is the writer a plain open needed, so Remove then answers, and the row fails naming
+	// the open at once rather than at the test binary's deadline.
+	stopWatch := testfifo.WatchBeside(swapped, parent)
+	defer func() { _, _ = stopWatch() }()
 	err = testwait.Receive(t, "Remove with its workspace's parent "+parent+" swapped for a fifo", done)
+	if opened, watchErr := stopWatch(); watchErr != nil {
+		t.Fatalf("cannot tell whether Remove waits in a plain open of %s: %v", parent, watchErr)
+	} else if opened != "" {
+		t.Fatalf("Remove opened %s, its workspace's parent swapped for a fifo, plainly and waited there for a writer: a workspace parent swapped for a fifo blocks the aside's removal", opened)
+	}
+	if swapErr != nil {
+		t.Fatalf("swap %s for a fifo as the store lock was let go: %v", parent, swapErr)
+	}
 	if !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), "remove workspace directory") {
 		t.Fatalf("Remove with its workspace's parent swapped for a fifo answered %v, want the aside's removal refused with ENOTDIR", err)
 	}
@@ -483,6 +520,7 @@ func (r *overlapRunner) Run(ctx context.Context, command Command) (Result, error
 // side, and no two of the clone's other commands ever do. Both workspaces are then whole, and the
 // clone knows both.
 func TestTwoIssuesProvisionedAtOnceOverlapOnlyInTheirCheckouts(t *testing.T) {
+	t.Parallel()
 	lock := &sharedStoreLock{}
 	base := newLocalRunner(t)
 	req := provisionRequest(t)
@@ -547,6 +585,7 @@ func TestTwoIssuesProvisionedAtOnceOverlapOnlyInTheirCheckouts(t *testing.T) {
 // branch GitHub has: another issue's branch pushed since is not brought, and the issue's own branch,
 // made on GitHub before its workspace, is.
 func TestAHostProvisionFetchesOnlyTheBranchesItNeeds(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	req.Issue = "WIDGETS-41"
@@ -581,12 +620,13 @@ func TestAHostProvisionFetchesOnlyTheBranchesItNeeds(t *testing.T) {
 	}
 }
 
-// CheckedOut reads a workspace's sparse patterns, and a shared clone made from a pod's feed
-// permanently holds none (feedClone's `jj sparse set --clear`), so a caller that asked it about a
-// clone would read the clone as an unfinished checkout and check the whole tree out into it. It
-// refuses the clone itself and every directory under the clone root the clone sits in, before it
+// CheckedOut reads a workspace's sparse patterns, and an issue pod's directly filled clone
+// permanently holds none (issuePodClone's `jj sparse set --clear`), so a caller that asked it
+// about a clone would read the clone as an unfinished checkout and check the whole tree out into it.
+// It refuses the clone itself and every directory under the clone root the clone sits in, before it
 // runs any jj, and still answers for the issue's own workspace.
 func TestCheckedOutCloneRootDirectoriesAreRefused(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	working, err := Provision(context.Background(), run, req)

@@ -38,6 +38,8 @@
 
 package main
 
+//ci:reads packages/envoy/internal/cipher/store/migrations/* countMigrations globs ../../internal/cipher/store/migrations/*.up.sql
+
 import (
 	"context"
 	"encoding/json"
@@ -51,6 +53,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -87,12 +90,6 @@ const (
 	// than a grant (internal/cipher/policy's own table).
 	multiprocessNewOwner = "grace@example.com"
 )
-
-// migrateTimeout bounds how long a process of a pair gets to log "broker listening". It is far
-// past listenTimeout because the two processes start together against an unmigrated database and
-// one of them waits on the other's migration advisory lock (store.go's pg_advisory_xact_lock),
-// a wait that is unbounded by design.
-const migrateTimeout = 2 * time.Minute
 
 // fakeSecretsJSON is the secret store every broker here is started over: BROKER_FAKE_SECRETS_FILE's
 // shape (cmd/cipherd/main.go's own note on it) holding the one agent-tier secret, owned by owner.
@@ -259,7 +256,7 @@ func startBrokerFleet(t *testing.T, binary string, drains []time.Duration, env .
 		fleet.Processes = append(fleet.Processes, fleet.launch(t, drain))
 	}
 	for _, process := range fleet.Processes {
-		process.AwaitListening(t, migrateTimeout)
+		process.AwaitListening(t)
 		fleet.Clients = append(fleet.Clients, newBrokerClient(t, multiprocessPublicURL, process.Addr, fleet.caller.Token))
 	}
 	return fleet
@@ -292,7 +289,7 @@ func (f *brokerFleet) launch(t *testing.T, drain time.Duration) *brokerProcess {
 func (f *brokerFleet) Start(t *testing.T) int {
 	t.Helper()
 	process := f.launch(t, 0)
-	process.AwaitListening(t, migrateTimeout)
+	process.AwaitListening(t)
 	f.Processes = append(f.Processes, process)
 	f.Clients = append(f.Clients, newBrokerClient(t, multiprocessPublicURL, process.Addr, f.caller.Token))
 	return len(f.Processes) - 1
@@ -306,7 +303,7 @@ func (f *brokerFleet) Stop(t *testing.T, i int) {
 	t.Helper()
 	process := f.Processes[i]
 	process.Terminate(t)
-	if err := process.AwaitExit(t, stopTimeout); err != nil {
+	if err := process.AwaitExit(t); err != nil {
 		t.Fatalf("the broker at %s exited with %v after its SIGTERM; want 0:\n%s", process.Addr, err, process.Log())
 	}
 	f.Processes = slices.Delete(f.Processes, i, i+1)
@@ -321,30 +318,41 @@ func (f *brokerFleet) Stop(t *testing.T, i int) {
 // brokers: the default lease is far longer than the shortest one a sweep this short allows.
 const fastSweep = "BROKER_SWEEP_SECONDS=1"
 
-// rereadRateSettles bounds how long a process gets to log the rate it derives at a replica
-// count. The count a pod uses is the one its own last beat counted, so a change of the fleet
-// reaches every pod within the stopped pod's ageing out and one more beat — about four seconds
-// at fastSweep — and this is many times that.
-const rereadRateSettles = 30 * time.Second
-
 // awaitRereadRate waits for process to log the reread rate it derives at replicas pods and
-// answers that line, which is this process's own rate and not a figure read off a constant.
+// answers that line, which is this process's own rate and not a figure read off a constant. The
+// count a pod uses is the one its own last beat counted, so a change of the fleet reaches every
+// pod within the stopped pod's ageing out (leasetime.NotServingSweeps) and one more beat.
 func awaitRereadRate(t *testing.T, process *brokerProcess, replicas int) rereadRateLine {
 	t.Helper()
-	var rate rereadRateLine
-	var ok bool
-	if !testwait.Holds(rereadRateSettles, listeningPoll, func() bool {
-		rate, ok = rereadRateIn(process.Log())
-		return ok && rate.Replicas == replicas
-	}) {
-		if !ok {
-			t.Fatalf("the broker at %s logged no reread rate at all within %s; want the one it derives from %d pods:\n%s",
-				process.Addr, rereadRateSettles, replicas, process.Log())
-		}
-		t.Fatalf("%s after the fleet became %d pods the broker at %s was still serving the rate it derived from %d of them, one reread every %s; want it to have counted the whole fleet:\n%s",
-			rereadRateSettles, replicas, process.Addr, rate.Replicas, rate.Every, process.Log())
+	return testwait.Until(t, fmt.Sprintf("the broker at %s to log the reread rate it derives from %d pods", process.Addr, replicas),
+		func() (rereadRateLine, bool) {
+			rate, ok := rereadRateIn(process.Log())
+			return rate, ok && rate.Replicas == replicas
+		})
+}
+
+// backstopReloads is how many whole-namespace policy loads process has taken so far: the
+// read="list" sample of broker_policy_store_reads_total on its own metrics port (storeReads).
+// After its boot's own, each is the five-minute backstop behind the fan-out (policyRefresh),
+// which reads every secret's tags again for its own reasons; a reread, the fan-out's included,
+// is a read="describe" and moves nothing here.
+func backstopReloads(t *testing.T, process *brokerProcess) int {
+	t.Helper()
+	return int(scrapeMetric(t, process.MetricsAddr(t), "broker_policy_store_reads_total")[`read="list"`])
+}
+
+// requireNoBackstopReload fails t once process has taken more whole-namespace loads than before
+// (backstopReloads). A row that waits for what the fan-out did to a peer asks it on every turn
+// of the wait: the backstop does what the fan-out does and more, so once it has run, what the
+// peer serves no longer says that the fan-out reached it. It is what tells the fan-out's work
+// from the backstop's, which no span of the test's could: a span says only that the backstop
+// was probably not due yet.
+func requireNoBackstopReload(t *testing.T, process *brokerProcess, before int, waitingFor string) {
+	t.Helper()
+	if reloads := backstopReloads(t, process); reloads > before {
+		t.Fatalf("the process at %s took %d whole-namespace policy loads, %d before, while this row waited for %s: its backstop reload ran, which narrows the secret as the fan-out does, so the row can no longer say the fan-out reached it:\n%s",
+			process.Addr, reloads, before, waitingFor, process.Log())
 	}
-	return rate
 }
 
 // awaitFleetRereadRate waits for every process of the fleet to count the whole fleet, logs the
@@ -518,12 +526,8 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	writeFakeSecrets(t, fakeSecretsFile, multiprocessPerson)
 	caller := newListedCaller(t)
-	// It does not wait for its own listening line here: its database is fresh and unmigrated, so
-	// the wait is AwaitListening's own migrateTimeout rather than startBroker's listenTimeout,
-	// which is sized for a broker that has only to bind.
 	solo.Process = startBroker(t, brokerOptions{
-		Binary:             binary,
-		NoWaitForListening: true,
+		Binary: binary,
 		Env: append([]string{
 			// As the pair's: this row logs a machine in through the device grant.
 			"BROKER_MACHINE_LOGIN_URL=" + testMachineLoginURL,
@@ -534,37 +538,36 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 			"BROKER_DRAIN_SECONDS=" + strconv.Itoa(int(drain/time.Second)),
 		}, caller.Env...),
 	})
-	solo.Process.AwaitListening(t, migrateTimeout)
 	solo.Client = newBrokerClient(t, "http://"+solo.Process.Addr, solo.Process.Addr, caller.Token)
 	return solo
 }
 
-// freshRequest GETs path at addr over a connection of its own and answers the status, the body,
-// and whatever went wrong instead. A transport per call, never a client's idle keep-alive
-// connection: what a drain is about is whether the listener is still ACCEPTING, which only a
-// connection opened after the signal can show, and whether it is gone, which a reused connection
-// would not notice at all.
-func freshRequest(addr, path string) (int, string, error) {
+// mustRequest GETs path at addr over a connection of its own and answers the status and the body.
+// A transport per call, never a client's idle keep-alive connection: what a drain is about is
+// whether the listener is still ACCEPTING, which only a connection opened after the signal can
+// show. Its one bound is the test binary's deadline (testwait.Context): a broker the machine's
+// load slows is waited for, and one that never answers fails the row when the test gives up, with
+// the error naming the request. Every caller asserts what the broker ANSWERED, so a request that
+// never reached it at all is the row's failure rather than its observation.
+func mustRequest(t *testing.T, addr, path string) (int, string) {
+	t.Helper()
+	target := "http://" + addr + path
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatalf("GET %s: %v", target, err)
+	}
 	transport := &http.Transport{DisableKeepAlives: true}
 	defer transport.CloseIdleConnections()
-	resp, err := (&http.Client{Transport: transport, Timeout: 10 * time.Second}).Get("http://" + addr + path)
+	resp, err := (&http.Client{Transport: transport}).Do(request)
 	if err != nil {
-		return 0, "", err
+		t.Fatalf("GET %s: %v", target, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(body), err
-}
-
-// mustRequest is freshRequest for a caller that is asserting what the broker ANSWERED: a request
-// that never reached it at all is this row's failure rather than its observation.
-func mustRequest(t *testing.T, addr, path string) (int, string) {
-	t.Helper()
-	status, body, err := freshRequest(addr, path)
 	if err != nil {
-		t.Fatalf("GET http://%s%s: %v", addr, path, err)
+		t.Fatalf("GET %s: %v", target, err)
 	}
-	return status, body
+	return resp.StatusCode, string(body)
 }
 
 // errorCode is the code an error answer names ({"code", "error"}, api/server.go's writeError),
@@ -796,18 +799,16 @@ func TestTwoBrokers(t *testing.T) {
 	// not the write, which both processes could see at any moment and neither reads until
 	// something makes it.
 	//
-	// Ten seconds bounds the wait, which is a thirtieth of the five-minute reload that is the
-	// fan-out's documented backstop: inside that window no reload has run, so a pass here is
-	// the notification and nothing else.
+	// The wait for B has no span of its own. The five-minute reload that is the fan-out's
+	// documented backstop would narrow the secret on B too, so every turn of the wait also reads
+	// B's whole-namespace loads (requireNoBackstopReload), and one taken while it waits fails the
+	// row: a pass here is the notification and nothing else.
 	//
 	// Every ask comes from a session enrolled for the first time. requests.Machine.Create hands
 	// a still-live grant back for an exact name-set match against the SAME enrollment before it
 	// evaluates the policy at all, so a second ask from one enrollment would repeat the first
 	// answer whatever the policy now says — forever.
 	t.Run("4_ARereadOnOneProcessNarrowsTheSecretOnTheOther", func(t *testing.T) {
-		// fanOutWithin bounds how long B may go on granting the secret after A was told to
-		// reread it.
-		const fanOutWithin = 10 * time.Second
 		const host = "two-brokers-reread"
 		// A is the process the reread is sent to; B is the one that must learn of it without
 		// the test ever telling it anything.
@@ -839,6 +840,7 @@ func TestTwoBrokers(t *testing.T) {
 
 		// A's reread is a session's, so its answer says what A now serves: one enrolled on A,
 		// under the machine login B approved, since the two share one database.
+		backstops := backstopReloads(t, pair.Processes[1])
 		rereaderID, rereaderKey := a.EnrollSession(t, machineKey, credentialID, host+"-rereader")
 		path := "/v1/secrets/" + multiprocessSecret + "/reread"
 		signed, err := proof.Sign(rereaderKey, rereaderID, http.MethodPost, a.PublicURL+path, time.Now())
@@ -857,19 +859,14 @@ func TestTwoBrokers(t *testing.T) {
 
 		// Polled by asking again, which is the only observable there is: either B grants a
 		// fresh session the secret at once or it does not. Every turn is two real requests to
-		// B, so nothing here waits on a clock.
-		var answer ciphertest.AgentSecretAnswer
-		for {
-			answer = ask()
-			if answer.State != "granted" {
-				break
-			}
-			if time.Since(rereadAt) > fanOutWithin {
-				t.Fatalf("%s and %d asks after A (%s) reread %s, B (%s) still answered a freshly enrolled session %d %s; want the retag in force on B, which this far inside B's %s reload only the fan-out could have put there",
-					fanOutWithin, asks, a.Addr, multiprocessSecret, b.Addr, answer.Status, answer.Body, policyRefresh)
-			}
-		}
-		t.Logf("B (%s) stopped granting %s at once %s after A was told to reread it, on ask %d: %d %s",
+		// B and a read of its whole-namespace loads.
+		answer := testwait.Until(t, fmt.Sprintf("B (%s) to stop granting %s to a freshly enrolled session once A (%s) reread it", b.Addr, multiprocessSecret, a.Addr),
+			func() (ciphertest.AgentSecretAnswer, bool) {
+				answer := ask()
+				requireNoBackstopReload(t, pair.Processes[1], backstops, "B to stop granting "+multiprocessSecret)
+				return answer, answer.State != "granted"
+			})
+		t.Logf("B (%s) stopped granting %s %s after A was told to reread it, on ask %d: %d %s",
 			b.Addr, multiprocessSecret, time.Since(rereadAt).Round(time.Millisecond), asks, answer.Status, answer.Body)
 
 		// What B answers instead is pinned, not merely "something other than granted": the
@@ -905,7 +902,6 @@ func TestTwoBrokers(t *testing.T) {
 	// nothing in the answer would otherwise tell them apart.
 	t.Run("5_ANotificationSpendsNoRereadTokenOnTheReceivingPod", func(t *testing.T) {
 		const burstBound = 20
-		const notifiedWithin = 10 * time.Second
 		a, b := pair.Clients[0], pair.Clients[1]
 		path := "/v1/secrets/" + multiprocessSecret + "/reread"
 		// Every reread A accepts makes B read the store once, when A's notification of it
@@ -931,10 +927,11 @@ func TestTwoBrokers(t *testing.T) {
 		refusal := string(body)
 		t.Logf("A (%s) served %d rereads and refused the next: %s", a.Addr, sent-1, refusal)
 
-		if !testwait.Holds(notifiedWithin, listeningPoll, func() bool { return storeReads(t, pair.Processes[1]) >= bReads+sent-1 }) {
-			t.Fatalf("%s after A (%s) accepted %d rereads, B (%s) had read the store %d times since; want once for each of A's notifications",
-				notifiedWithin, a.Addr, sent-1, b.Addr, storeReads(t, pair.Processes[1])-bReads)
-		}
+		testwait.Until(t, fmt.Sprintf("B (%s) to read the store once for each of the %d notifications A (%s) sent it", b.Addr, sent-1, a.Addr),
+			func() (int, bool) {
+				reads := storeReads(t, pair.Processes[1]) - bReads
+				return reads, reads >= sent-1
+			})
 		if status, body := b.Req(t, http.MethodPost, path, nil, nil); status != http.StatusAccepted {
 			t.Fatalf("A (%s) refused its own next reread with %s, and B (%s) then answered a reread of its own %d %s; want 202 — the %d notifications B took from A must have spent nothing of B's bucket",
 				a.Addr, refusal, b.Addr, status, body, sent-1)
@@ -953,26 +950,29 @@ func TestTwoBrokers(t *testing.T) {
 	// the handler, with nothing faked and nothing sleeping in the broker.
 	t.Run("6_ADrainingProcessFailsReadinessAndServesOn", func(t *testing.T) {
 		const (
-			// drain is this broker's BROKER_DRAIN_SECONDS: long enough to get both observations
-			// out inside the window, short enough that the row pays for no budget it does not
-			// use.
-			drain = 5 * time.Second
-			// observeWithin bounds each observation taken against a signalled process, so a row
-			// that fails names what the broker answered instead of running a budget out.
-			observeWithin = 2 * time.Second
+			// drain is this broker's BROKER_DRAIN_SECONDS, the longest config.Load accepts. Once
+			// both observations are in, the row ends the drain with a second SIGTERM and requires
+			// the broker's log to say that signal ended it. The drain's own clock still runs: a
+			// stall of two minutes before the second signal ends the drain first, and the row then
+			// fails by name rather than reading the shutdown as the drain.
+			drain = 120 * time.Second
 			// oldShutdownBudget is what main.go's shutdownTimeout was before it became the
 			// write timeout: the figure this row exists to outlive.
 			oldShutdownBudget = 10 * time.Second
-			// holdFor is when the blocked refresh is let go, measured from the signal, past
-			// oldShutdownBudget by a margin no scheduling hiccup closes.
+			// holdFor is how long the blocked refresh stays held once the broker has logged that
+			// its shutdown began: past oldShutdownBudget, counted from inside the shutdown, by a
+			// margin no scheduling hiccup closes.
 			holdFor = 12 * time.Second
-			// exitWithin bounds the wait for the process to go once its last request has been
-			// answered. It covers the whole stop budget the broker logs at boot (this drain
-			// plus main.go's 60-second shutdown), so only a broker that hangs fails it.
-			exitWithin = 90 * time.Second
-			host       = "draining-broker"
+			host    = "draining-broker"
+			// secondSignalEndedTheDrain is the line boot.go's stop logs when a second signal,
+			// and not the drain's clock, ends the drain.
+			secondSignalEndedTheDrain = "broker: a second signal ended the drain early"
 		)
 		solo := startSoloBroker(t, binary, drain)
+		// A row that fails before its first SIGTERM leaves that signal to startBroker's cleanup,
+		// which would begin a two-minute drain, past its stopGrace: the broker is killed here, once
+		// the row has its verdict.
+		t.Cleanup(func() { _ = solo.Process.Cmd.Process.Kill() })
 		machineKey := ciphertest.NewSigningKey(t)
 		authorization := solo.Client.DeviceLogin(t, machineKey, multiprocessPerson, host)
 		credentialID := solo.Client.ApproveMachineLogin(t, multiprocessPerson, authorization.UserCode)
@@ -1011,18 +1011,13 @@ func TestTwoBrokers(t *testing.T) {
 
 		// Inside the drain, readiness fails. Polled because the signal handler flips the flag on
 		// a goroutine of its own; every turn is a real request on a connection of its own.
-		var health int
 		var healthBody string
-		for {
-			health, healthBody = mustRequest(t, solo.Process.Addr, "/healthz")
-			if health != http.StatusOK {
-				break
-			}
-			if time.Since(signalled) > observeWithin {
-				t.Fatalf("GET /healthz at %s still answered 200 %s after the SIGTERM; want 503 SHUTTING_DOWN from the moment it begins draining",
-					solo.Process.Addr, observeWithin)
-			}
-		}
+		health := testwait.Until(t, fmt.Sprintf("GET /healthz at %s to stop answering 200 once the SIGTERM began its drain", solo.Process.Addr),
+			func() (int, bool) {
+				var status int
+				status, healthBody = mustRequest(t, solo.Process.Addr, "/healthz")
+				return status, status != http.StatusOK
+			})
 		if health != http.StatusServiceUnavailable || errorCode(t, healthBody) != "SHUTTING_DOWN" {
 			t.Fatalf("GET /healthz at %s after the SIGTERM = %d %s; want 503 SHUTTING_DOWN",
 				solo.Process.Addr, health, healthBody)
@@ -1035,17 +1030,31 @@ func TestTwoBrokers(t *testing.T) {
 			t.Fatalf("GET /v1/settings at %s, %s into its drain, = %d %s; want 200 — a draining broker serves every route but its health check",
 				solo.Process.Addr, time.Since(signalled).Round(time.Millisecond), status, body)
 		}
+		// The drain ends here, on the row's word: a second SIGTERM, which the watchdog at the top
+		// of main hands to the drain. Readiness failing above shows the first signal was taken,
+		// so the two cannot merge into one pending signal. The broker logs a line only when this
+		// signal, and not its clock, ends the drain, so finding that line says both answers above
+		// came inside the drain.
+		if err := solo.Process.Cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Fatalf("send the broker at %s its second SIGTERM: %v", solo.Process.Addr, err)
+		}
+		solo.Process.AwaitRecord(t, "broker shutting down", nil)
+		shutdownBegan := time.Now()
+		if len(recordsWith(solo.Process.Log(), secondSignalEndedTheDrain, nil)) == 0 {
+			t.Fatalf("the broker at %s began its shutdown without logging %q: the second SIGTERM, which the row sent once GET /healthz had answered 503 and GET /v1/settings 200, did not end its %s drain:\n%s",
+				solo.Process.Addr, secondSignalEndedTheDrain, drain, solo.Process.Log())
+		}
 
-		// This wait IS the experiment, and it is the only bare sleep in this file: the claim is
+		// This wait IS the experiment, and it is the only bare sleep in this row: the claim is
 		// about a request still in flight when the old ten-second shutdown budget would have run
 		// out, so the length of the wait is the thing under test rather than a stand-in for some
 		// observable the row could have waited on instead.
-		time.Sleep(time.Until(signalled.Add(holdFor)))
+		time.Sleep(time.Until(shutdownBegan.Add(holdFor)))
 		if err := holder.Rollback(ctx); err != nil {
 			t.Fatalf("release the refresh token's row: %v", err)
 		}
 
-		answer := <-refreshed
+		answer := testwait.Receive(t, "the refresh held in flight across the drain to be answered", refreshed)
 		if answer.err != nil {
 			t.Fatalf("the refresh held in flight across the drain was answered %s; want the broker to finish it:\n%s",
 				describeRefusal(answer.err), solo.Process.Log())
@@ -1054,40 +1063,46 @@ func TestTwoBrokers(t *testing.T) {
 			t.Fatalf("the refresh held in flight answered access token %t, refresh token %t; want both",
 				answer.token.AccessToken != "", answer.token.RefreshToken != "")
 		}
-		if err := solo.Process.AwaitExit(t, exitWithin); err != nil {
+		if err := solo.Process.AwaitExit(t); err != nil {
 			t.Fatalf("the broker exited with %v after draining; want 0:\n%s", err, solo.Process.Log())
 		}
-		stopped := time.Since(signalled)
-		t.Logf("the broker exited 0 %s after its SIGTERM, having finished the refresh it was holding",
-			stopped.Round(time.Millisecond))
-		if stopped <= oldShutdownBudget {
-			t.Fatalf("the broker exited %s after its SIGTERM, inside the old %s budget; the row says nothing about that budget unless the request it held outlived it",
-				stopped.Round(time.Millisecond), oldShutdownBudget)
+		t.Logf("the broker exited 0 %s after its first SIGTERM and %s after its shutdown began, having finished the refresh it was holding",
+			time.Since(signalled).Round(time.Millisecond), time.Since(shutdownBegan).Round(time.Millisecond))
+		// The shutdown's own record says whether it finished that request inside its budget: stop
+		// logs "broker: shutdown" with the error when srv.Shutdown's budget runs out first
+		// (boot.go). The old ten-second budget runs out while the request is still held, and logs
+		// so. Neither the answer nor the exit shows it: closing the store waits for the request's
+		// connection only until the request commits, and the answer it writes after that races the
+		// process's exit.
+		if gaveUp := recordsWith(solo.Process.Log(), "broker: shutdown", nil); len(gaveUp) != 0 {
+			t.Fatalf("the broker's shutdown gave up on the request it held (%v), which it held %s into the shutdown; want a shutdown budget that outlasts the old %s:\n%s",
+				gaveUp[0]["error"], holdFor, oldShutdownBudget, solo.Process.Log())
 		}
 
-		// The control, which is what makes the serving window above mean anything: the same
-		// binary and the same request, with the drain set to zero and nothing in flight. Here
-		// the listener must be gone almost at once, where the drained process answered
-		// /v1/settings at the same point after its own signal — so that window came from
-		// BROKER_DRAIN_SECONDS and not from a process that happens to be slow to stop.
+		// The control: the same binary, with the drain set to zero and nothing in flight, stopped
+		// by one SIGTERM. It must log that it began a drain of 0s and exit cleanly with no second
+		// signal. That shows BROKER_DRAIN_SECONDS reaches stop, so the drain the row ended above
+		// came from the setting and not from its 5 s default (config.Load).
 		control := startSoloBroker(t, binary, 0)
 		if status, body := mustRequest(t, control.Process.Addr, "/v1/settings"); status != http.StatusOK {
 			t.Fatalf("GET /v1/settings at the control broker %s before its signal = %d %s; want 200",
 				control.Process.Addr, status, body)
 		}
 		controlSignalled := control.Process.Terminate(t)
-		for {
-			status, body, err := freshRequest(control.Process.Addr, "/v1/settings")
-			if err != nil {
-				t.Logf("the control broker refused a fresh connection %s after its signal: %v",
-					time.Since(controlSignalled).Round(time.Millisecond), err)
-				break
-			}
-			if time.Since(controlSignalled) > observeWithin {
-				t.Fatalf("the control broker at %s went on answering GET /v1/settings %d %s for %s after a SIGTERM with BROKER_DRAIN_SECONDS=0; want its listener gone",
-					control.Process.Addr, status, body, observeWithin)
-			}
+		draining := control.Process.AwaitRecord(t, "broker draining", nil)
+		if draining["drain"] != "0s" {
+			t.Fatalf("the control broker at %s, with BROKER_DRAIN_SECONDS=0, began a drain of %v; want 0s:\n%s",
+				control.Process.Addr, draining["drain"], control.Process.Log())
 		}
+		if err := control.Process.AwaitExit(t); err != nil {
+			t.Fatalf("the control broker exited with %v after its SIGTERM; want 0:\n%s", err, control.Process.Log())
+		}
+		// Exited closes once cmd.Wait has drained the output pipe, so this is the whole log.
+		if controlLog := control.Process.Log(); len(recordsWith(controlLog, "broker shutting down", nil)) == 0 {
+			t.Fatalf("the control broker at %s exited without logging its shutdown:\n%s", control.Process.Addr, controlLog)
+		}
+		t.Logf("the control broker exited 0 %s after its one SIGTERM, having begun a drain of 0s",
+			time.Since(controlSignalled).Round(time.Millisecond))
 	})
 
 	// A pod that is stopping still takes the other pods' rereads. The drain exists because new
@@ -1100,56 +1115,41 @@ func TestTwoBrokers(t *testing.T) {
 	// neither of them signalled, put the retag on the peer within milliseconds. What this row
 	// changes is the signal, and nothing else.
 	t.Run("7_ADrainingPodStillTakesAPeersReread", func(t *testing.T) {
-		const (
-			// drain is long enough to hold the whole observation inside the window in which the
-			// pod is still being sent traffic, which is what the row is about.
-			drain = 30 * time.Second
-			// observeWithin bounds each observation taken against the signalled process.
-			observeWithin = 2 * time.Second
-			// fanOutWithin bounds the wait for the peer's reread, as row 4 bounds its own: far
-			// inside the five-minute reload, so only the fan-out could have driven one.
-			fanOutWithin = 10 * time.Second
-		)
+		// drain is long enough to hold the whole observation inside the window in which the pod
+		// is still being sent traffic, which is what the row is about.
+		const drain = 30 * time.Second
 		stopping := startBrokerFleet(t, binary, []time.Duration{0, drain})
 		serving, draining := stopping.Processes[0], stopping.Processes[1]
 
 		signalled := draining.Terminate(t)
-		for {
-			status, body := mustRequest(t, draining.Addr, "/healthz")
-			if status == http.StatusServiceUnavailable && errorCode(t, body) == "SHUTTING_DOWN" {
-				break
-			}
-			if time.Since(signalled) > observeWithin {
-				t.Fatalf("GET /healthz at the signalled process %s answered %d %s for %s; the row needs it draining before it asks what a draining pod hears",
-					draining.Addr, status, body, observeWithin)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		testwait.Until(t, fmt.Sprintf("GET /healthz at the signalled process %s to answer 503 SHUTTING_DOWN", draining.Addr),
+			func() (string, bool) {
+				status, body := mustRequest(t, draining.Addr, "/healthz")
+				return fmt.Sprintf("%d %s", status, body), status == http.StatusServiceUnavailable && errorCode(t, body) == "SHUTTING_DOWN"
+			})
 		if status, body := mustRequest(t, draining.Addr, "/v1/settings"); status != http.StatusOK {
 			t.Fatalf("GET /v1/settings at the draining process %s = %d %s; the row is about a pod that is still serving, and this one is not",
 				draining.Addr, status, body)
 		}
 
+		backstops := backstopReloads(t, draining)
 		before := [2]int{storeReads(t, serving), storeReads(t, draining)}
 		status, body := stopping.Clients[0].Req(t, http.MethodPost, "/v1/secrets/"+multiprocessSecret+"/reread", nil, nil)
 		if status != http.StatusAccepted {
 			t.Fatalf("POST /v1/secrets/%s/reread at %s = %d %s; want the 202 whose reread fans out",
 				multiprocessSecret, stopping.Clients[0].Addr, status, body)
 		}
-		rereadAt := time.Now()
-		for storeReads(t, draining) == before[1] {
-			if time.Since(rereadAt) > fanOutWithin {
-				if storeReads(t, serving) == before[0] {
-					t.Fatalf("%s after the reread, the process that served it (%s) had not read the store either; the row cannot say what the draining pod missed when the call itself did nothing",
-						fanOutWithin, stopping.Clients[0].Addr)
-				}
-				still, body := mustRequest(t, draining.Addr, "/v1/settings")
-				t.Fatalf("%s and %s after its SIGTERM, the draining process %s had not reread %s, which %s was told to reread and did — while %s still answered GET /v1/settings %d %s. A pod is still being sent requests for the whole of its %s drain, so a retag that narrows who may have the secret is unenforced there until it stops accepting.",
-					fanOutWithin, time.Since(signalled).Round(time.Millisecond), draining.Addr, multiprocessSecret,
-					stopping.Clients[0].Addr, draining.Addr, still, body, drain)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		// A pod is still being sent requests for the whole of its drain, so a retag that narrows
+		// who may have the secret is unenforced on a draining pod that misses the fan-out until
+		// it stops accepting. The reading names both pods' reads since the call, so a wait that
+		// gives up says whether the process that served it read the store at all.
+		testwait.Until(t, fmt.Sprintf("the draining process %s to reread %s on the fan-out of %s's reread", draining.Addr, multiprocessSecret, stopping.Clients[0].Addr),
+			func() (string, bool) {
+				servingReads, drainingReads := storeReads(t, serving), storeReads(t, draining)
+				requireNoBackstopReload(t, draining, backstops, "its peer's fan-out of "+multiprocessSecret)
+				return fmt.Sprintf("the serving process read the store %d times since the call, the draining one %d", servingReads-before[0], drainingReads-before[1]),
+					drainingReads != before[1]
+			})
 		t.Logf("the draining process %s reread %s %s after its SIGTERM, told by %s",
 			draining.Addr, multiprocessSecret, time.Since(signalled).Round(time.Millisecond), stopping.Clients[0].Addr)
 	})
@@ -1193,9 +1193,6 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 		const (
 			onePodRereadsPerSecond    = 4.0
 			onePodGCPRereadsPerSecond = 1.0
-			// countWithin bounds the wait for the peers' own reads of the store, which arrive
-			// over LISTEN/NOTIFY and not on the request's own goroutine.
-			countWithin = 10 * time.Second
 		)
 		// Two pods is what the Deployment runs, four is the most a clean roll of them counts
 		// (api.MaxSupportedReplicas), and three is what every roll passes through.
@@ -1210,29 +1207,22 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 					t.Fatalf("POST /v1/secrets/%s/reread at %s = %d %s; want the 202 that spends a token of the broker-wide bucket and whose reread fans out",
 						multiprocessSecret, fleet.Clients[0].Addr, status, body)
 				}
-				rereadAt := time.Now()
-				// The counts this row does its arithmetic on are the ones the loop exits on,
+				// The counts this row does its arithmetic on are the ones the wait ends on,
 				// read once each and not again: re-reading them afterwards lets a read that
 				// straggled in between count too, and a fleet cost above one read per pod would
-				// fail the assertion below and say the sizing was wrong when it was right.
-				var after []int
-				for {
-					after = storeReadsPerPod(t, fleet)
-					if readEverywhere(before, after) {
-						break
-					}
-					if time.Since(rereadAt) > countWithin {
-						t.Fatalf("%s after one accepted reread at %s, the %d processes had read the store %v more times; want each of them to have read it — the fan-out is what makes a reread cost the fleet more than one read",
-							countWithin, fleet.Clients[0].Addr, replicas, readsSince(before, after))
-					}
-					time.Sleep(20 * time.Millisecond)
-				}
+				// fail the assertion below and say the sizing was wrong when it was right. The
+				// peers' reads arrive over LISTEN/NOTIFY and not on the request's own goroutine.
+				since := testwait.Until(t, fmt.Sprintf("each of the %d processes to read the store after one accepted reread at %s — the fan-out is what makes a reread cost the fleet more than one read", replicas, fleet.Clients[0].Addr),
+					func() ([]int, bool) {
+						after := storeReadsPerPod(t, fleet)
+						return readsSince(before, after), readEverywhere(before, after)
+					})
 				// Exactly one read per pod, named pod by pod rather than summed: a pod that
 				// read twice is a defect of the fan-out, and feeding a sum larger than the
 				// replica count into the arithmetic below would report it as an overspent
 				// budget — a sizing failure the sizing did not cause.
 				reads := 0
-				for i, pod := range readsSince(before, after) {
+				for i, pod := range since {
 					if pod != 1 {
 						t.Fatalf("one accepted reread at %s made the pod at %s read the secret store %d times; want exactly one on every pod — its own on the pod that served the call, and the fan-out's on each peer",
 							fleet.Clients[0].Addr, fleet.Processes[i].Addr, pod)
@@ -1621,10 +1611,9 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 		// was expected shows up at the next count.
 		requireTakes := func(broker rolloutBroker, want int, from, to string) {
 			t.Helper()
-			var took []map[string]any
-			testwait.Holds(awaitTimeout, listeningPoll, func() bool {
-				took = recordsWith(broker.process.Log(), takeoverWarning, nil)
-				return len(took) >= want
+			took := testwait.Until(t, fmt.Sprintf("%s to have logged %d takeovers", broker.name, want), func() ([]map[string]any, bool) {
+				took := recordsWith(broker.process.Log(), takeoverWarning, nil)
+				return took, len(took) >= want
 			})
 			if len(took) != want || want > 0 &&
 				!carries(took[want-1], map[string]any{"from": from, "to": to}) {
@@ -1663,7 +1652,7 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 			// is what takes it, for the last time.
 			if turn == turns {
 				old.process.Terminate(t)
-				if err := old.process.AwaitExit(t, stopTimeout); err != nil {
+				if err := old.process.AwaitExit(t); err != nil {
 					t.Fatalf("%s exited with %v after its SIGTERM; want 0:\n%s", old.name, err, old.process.Log())
 				}
 				requireHolder(old.name+" stopped", oldEntryPrincipal)

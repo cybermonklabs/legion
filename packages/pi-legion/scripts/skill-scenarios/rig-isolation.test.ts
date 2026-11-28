@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
@@ -25,7 +26,9 @@ import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
 //     Dispatch variables of its environment, and runs `mise x <pin> -- <command>` as the command
 //     (a run names its pin's omp by path).
 // Each run must get a database of its own, a server of its own and a DISPATCH_URL of its own, and
-// must stop its server when it ends.
+// must stop its server when it ends. Every hook and row here takes this guard: the `beforeAll`
+// runs the batch's two rigs at once, end to end, and three rows start rigs of their own, the
+// stale-profile and link rows one each and the bun-failure row two in turn.
 setDefaultTimeout(120_000);
 
 // Every row here runs the rig through ownGroup (scripts/e2e/lib/own-group.ts), a perl that puts it
@@ -55,13 +58,15 @@ function put(file: string, text: string, mode = 0o644) {
   });
 }
 
-// The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins.
+// The checkout: this rig.sh and rpc.sh, which it sources beside it, the e2e helpers it sources and
+// packages/envoy's pg-url.sh, which it sources too, with the two Dispatch stand-ins.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
 const stub = path.join(scratch, "stub");
 stagings.push(() => {
   mkdirSync(path.dirname(rig), { recursive: true });
   copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
+  copyFileSync(path.join(import.meta.dir, "rpc.sh"), path.join(path.dirname(rig), "rpc.sh"));
   for (const lib of [
     "rig.sh",
     "process-tree.sh",
@@ -73,6 +78,9 @@ stagings.push(() => {
     mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
     copyFileSync(path.join(root, "scripts/e2e/lib", lib), path.join(co, "scripts/e2e/lib", lib));
   }
+  const pgUrl = "packages/envoy/scripts/lib/pg-url.sh";
+  mkdirSync(path.dirname(path.join(co, pgUrl)), { recursive: true });
+  copyFileSync(path.join(root, pgUrl), path.join(co, pgUrl));
   mkdirSync(stub);
 });
 put(
@@ -230,6 +238,7 @@ const miseData =
     ? undefined
     : path.join(process.env.XDG_DATA_HOME, "mise"));
 const env = {
+  ...bunCacheOff,
   PATH: `${bin}:${process.env.PATH ?? ""}`,
   HOME: path.join(scratch, "home"),
   USER: process.env.USER ?? "rig",

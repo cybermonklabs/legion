@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build (ownerlock_fleet_test.go): the earlier build's mark, as
@@ -95,22 +97,22 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 			writerPID := writer.Conn().PgConn().PID()
 			wrote := make(chan error, 1)
 			go func() {
-				_, err := raceWriter(ctx, s, rowFirstWriter, []Owner{issue}, []Owner{issue})
+				_, err := raceWriter(ctx, t, s, rowFirstWriter, []Owner{issue}, []Owner{issue})
 				wrote <- err
 			}()
-			ended := false
-			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			// The earlier build's write either queues behind this build's write, which Postgres
+			// records as backend writerPID blocking it, or goes through, which is the defect. The
+			// wait ends on whichever comes first, and gives up only 30 s before the test binary's
+			// deadline (testwait.Until), so a write that is merely slow to start is no failure.
+			type earlyWrite struct {
+				ended bool
+				err   error
+			}
+			early := testwait.Until(t, "the earlier build's write to queue behind this build's write, or to end", func() (earlyWrite, bool) {
 				select {
 				case err := <-wrote:
-					if err != nil {
-						t.Fatalf("the earlier build's write: %v", err)
-					}
-					t.Errorf("the earlier build's write went through while this build's write was between its owner lock and its write phase; want it to wait for the owner's row")
-					ended = true
+					return earlyWrite{ended: true, err: err}, true
 				default:
-				}
-				if ended {
-					break
 				}
 				var queued bool
 				if err := s.Pool.QueryRow(ctx, `
@@ -118,12 +120,14 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 					writerPID).Scan(&queued); err != nil {
 					t.Fatal(err)
 				}
-				if queued {
-					break
+				return earlyWrite{}, queued
+			})
+			ended := early.ended
+			if ended {
+				if early.err != nil {
+					t.Fatalf("the earlier build's write: %v", early.err)
 				}
-				if time.Now().After(deadline) {
-					t.Fatal("the earlier build's write neither went through nor queued behind this build's write within 10s")
-				}
+				t.Errorf("the earlier build's write went through while this build's write was between its owner lock and its write phase; want it to wait for the owner's row")
 			}
 			if _, err := writer.Exec(ctx, ownerLock, OwnerLockNamespace, issue.LockKey()); err != nil {
 				t.Fatal(err)
@@ -138,13 +142,8 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !ended {
-				select {
-				case err := <-wrote:
-					if err != nil {
-						t.Fatalf("the earlier build's write after this build's committed: %v", err)
-					}
-				case <-time.After(10 * time.Second):
-					t.Fatal("the earlier build's write did not end within 10s of this build's commit")
+				if err := testwait.Receive(t, "the earlier build's write to end once this build's committed", wrote); err != nil {
+					t.Fatalf("the earlier build's write after this build's committed: %v", err)
 				}
 			}
 			if got := ownerSeqs(t, s, []Owner{issue})[issue]; got != seq+2 {

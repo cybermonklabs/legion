@@ -21,6 +21,7 @@ import (
 // and arms none. The control is the same release of the same issue in implementing, which arms
 // the released implementer's.
 func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase
@@ -50,7 +51,7 @@ func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
 			if err := st.PutClaim(ctx, supervise.Claim{Token: mustClaimToken(t, issue.Key, claim.RoleImplementer), Project: "legion",
 				Tree: issue.Tree, Issue: issue.Key, Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 				State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased, Session: "ses-implementer",
-				SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion}); err != nil {
+				SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion()}); err != nil {
 				t.Fatalf("seed the released implementer: %v", err)
 			}
 			// The backstop an earlier release of this pod armed, still open.
@@ -93,6 +94,7 @@ func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
 // workflow.OpenPhaseRole), where the same release in implementing, the control, arms the released
 // implementer's.
 func TestAWaitingParentsQuietPodIsReleasedAsAnyQuietPodAndArmsNoBackstop(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase

@@ -80,9 +80,9 @@ const (
 	// envoyPackage the Envoy plugin it claims its role through, which every session loads; and
 	// legacyPackage the one package that carried both before the split, which no pane may still
 	// load beside pluginPackage.
-	pluginPackage = "@sjawhar/pi-legion"
-	envoyPackage  = "@sjawhar/pi-envoy"
-	legacyPackage = "@sjawhar/pi-legion-envoy"
+	pluginPackage = runtime.PiLegionPackage
+	envoyPackage  = runtime.PiEnvoyPackage
+	legacyPackage = runtime.PluginScope + "/pi-legion-envoy"
 	// maxProbeStderr bounds how much of a failed probe's stderr a refusal quotes, keeping the tail,
 	// where the error usually is (MAX_PROBE_STDERR_LENGTH, boot-probes.ts).
 	maxProbeStderr = 2048
@@ -112,8 +112,9 @@ const (
 // agent it would not run on the agent's own model. Only pi-legion declares a contract: pi-envoy is
 // held to the interface version the probe reports, and to an owning manifest of its own name.
 //
-// Inside the worker image the same gate is `legion probe-image` (ProbeImage), which adds the two
-// probes only the image runs: pi.agents and the session-storage setting.
+// Inside the worker image the same gate is `legion probe-image` (ProbeImage). The image build's
+// run adds three probes that only it makes: pi.agents, the session-storage probe and the Claude
+// lane. The daemon's boot run (ImageProbe.BootRun) adds none of them.
 type pluginGate struct {
 	// env is the environment the probes resolve and run under: a pane's, or the image's own.
 	env map[string]string
@@ -141,8 +142,10 @@ type pluginGate struct {
 	// `claude` backend loads as Claude Code's plugin directory, and claudeCodePin the directory of
 	// the Claude Code pin a pod installs that worker's Claude Code from at launch (`legion
 	// probe-image --claude-root` and `--claude-code-pin`; packages/daemon/internal/claudelaunch,
-	// internal/runtime/sandbox's claudeCodeBlock). Empty everywhere else: only the image runs the
-	// Claude lane (verifyClaude), as only the image runs the session-storage probe.
+	// internal/runtime/sandbox's claudeCodeBlock). Empty everywhere else. Only the image build's
+	// run makes the Claude lane (verifyClaude), as only that run makes the session-storage probe:
+	// `legion probe-image` passes both paths on every run, and the daemon's boot run does not make
+	// the lane on them.
 	claudeRoot    string
 	claudeCodePin string
 	// roleReferences are the task agents and skills the role prompts the probed Oh My Pi is handed
@@ -667,9 +670,11 @@ func (g pluginGate) probeLoad(ctx context.Context, launch, probe string, lane pl
 		return bootprobe.Outcome{Refusal: fmt.Errorf("%s: run the pi-legion load probe: %w", g.label(), err)}, loaded{}
 	}
 	// A budget kill is transient when the probe never answered; a probe that said "not loaded" and
-	// only then hung has answered, and is judged below like any other answer.
+	// only then hung has answered, and is judged below like any other answer. Every line names the
+	// launch as WithPrefixShown shows it, never the prefix's arguments.
+	shown := omplaunch.WithPrefixShown(g.prefix, g.invocation)
 	if r.timedOut && !strings.Contains(r.output, notLoadedMarker) {
-		return bootprobe.Outcome{Detail: r.killed(launch, g.timeout)}, loaded{}
+		return bootprobe.Outcome{Detail: r.killed(shown, g.timeout)}, loaded{}
 	}
 	isLoaded := strings.Contains(r.output, loadedMarker)
 	if r.exit == 0 && isLoaded {
@@ -690,7 +695,7 @@ func (g pluginGate) probeLoad(ctx context.Context, launch, probe string, lane pl
 	// that is not Oh My Pi: its own refusal, since "not loaded" would send the operator to
 	// `omp plugin list` when the fix is the prefix or the invocation.
 	if r.exit != 0 && !strings.Contains(r.output, notLoadedMarker) {
-		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("OMP launch probe failed (%s) for launch command %q", r.end, launch)))}, loaded{}
+		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("OMP launch probe failed (%s) for launch command %q", r.end, shown)))}, loaded{}
 	}
 	return bootprobe.Outcome{Refusal: lane.notLoaded(version)}, loaded{}
 }
@@ -740,7 +745,7 @@ func (g pluginGate) verifyAgentsCapability(ctx context.Context) error {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	launch := omplaunch.WithPrefix(g.prefix, g.invocation)
+	launch, shown := omplaunch.WithPrefix(g.prefix, g.invocation), omplaunch.WithPrefixShown(g.prefix, g.invocation)
 	return bootprobe.Run(ctx, "OMP pi.agents", g.retry, g.log, func(ctx context.Context) bootprobe.Outcome {
 		r, err := g.run(ctx, `exec `+launch+` models --no-extensions --extension "$1" --json >/dev/null`, probe)
 		if err != nil {
@@ -748,23 +753,24 @@ func (g pluginGate) verifyAgentsCapability(ctx context.Context) error {
 		}
 		answeredNo := strings.Contains(r.output, noAgentsMarker)
 		if r.timedOut && !answeredNo {
-			return bootprobe.Outcome{Detail: r.killed(launch, g.timeout)}
+			return bootprobe.Outcome{Detail: r.killed(shown, g.timeout)}
 		}
 		available := strings.Contains(r.output, agentsMarker)
 		if r.exit == 0 && available {
 			return bootprobe.Outcome{Passed: true}
 		}
 		if r.exit != 0 && available && !answeredNo {
-			return bootprobe.Outcome{Detail: fmt.Sprintf("launch command %q %s after Oh My Pi answered: %s", launch, r.ended(), r.tail)}
+			return bootprobe.Outcome{Detail: fmt.Sprintf("launch command %q %s after Oh My Pi answered: %s", shown, r.ended(), r.tail)}
 		}
-		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("the OMP launch command %q does not expose pi.agents", launch)))}
+		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("the OMP launch command %q does not expose pi.agents", shown)))}
 	})
 }
 
 // verifySessionStorage is the session-storage probe (verifySessionStorageSetting, boot-probes.ts),
-// which only the image runs: it proves the Oh My Pi build carries the `session.storage`
-// setting, so a deployment that sets OMP_SESSION_STORAGE=sql gets its sessions in its database
-// rather than a build that ignores the variable and silently keeps them on files.
+// which only the image build's run makes, and not the daemon's probe pod: it proves the Oh My Pi
+// build carries the `session.storage` setting, so a deployment that sets OMP_SESSION_STORAGE=sql
+// gets its sessions in its database rather than a build that ignores the variable and silently
+// keeps them on files.
 //
 // It starts Oh My Pi in RPC mode with stdin on /dev/null, where the setting resolves before the
 // first command is read and the closed stdin then ends the run with exit 0, calling no model; an
@@ -777,7 +783,7 @@ func (g pluginGate) verifyAgentsCapability(ctx context.Context) error {
 // build that accepted the value, so predates the setting (refused). Any other failure is the
 // launch dying before the resolver ran (transient).
 func (g pluginGate) verifySessionStorage(ctx context.Context) error {
-	launch := omplaunch.WithPrefix(g.prefix, g.invocation)
+	launch, shown := omplaunch.WithPrefix(g.prefix, g.invocation), omplaunch.WithPrefixShown(g.prefix, g.invocation)
 	script := "export " + sessionStorageVariable + "=" + sessionStorageProbeValue + "; exec " + launch +
 		" --mode rpc --no-session --no-extensions --no-skills --no-rules --no-lsp --no-tools </dev/null >/dev/null"
 	return bootprobe.Run(ctx, "OMP session storage setting", g.retry, g.log, func(ctx context.Context) bootprobe.Outcome {
@@ -787,19 +793,20 @@ func (g pluginGate) verifySessionStorage(ctx context.Context) error {
 		}
 		switch {
 		case r.timedOut:
-			return bootprobe.Outcome{Detail: r.killed(launch, g.timeout)}
+			return bootprobe.Outcome{Detail: r.killed(shown, g.timeout)}
 		case r.exit != 0 && strings.Contains(r.stderr, sessionStorageVariable):
 			return bootprobe.Outcome{Passed: true}
 		case r.exit == 0:
 			return bootprobe.Outcome{Refusal: fmt.Errorf("OMP launch command %q started with %s=%s (exit 0): this build predates the session.storage setting and would silently keep sessions on files under a sql session store; pin a fork release that carries the setting",
-				launch, sessionStorageVariable, sessionStorageProbeValue)}
+				shown, sessionStorageVariable, sessionStorageProbeValue)}
 		}
-		return bootprobe.Outcome{Detail: r.quoting(fmt.Sprintf("launch command %q %s without naming %s", launch, r.ended(), sessionStorageVariable))}
+		return bootprobe.Outcome{Detail: r.quoting(fmt.Sprintf("launch command %q %s without naming %s", shown, r.ended(), sessionStorageVariable))}
 	})
 }
 
-// verifyClaude is the Claude lane, which only the image runs and only when it is given the
-// claude-envoy root and the Claude Code pin (`legion probe-image --claude-root --claude-code-pin`).
+// verifyClaude is the Claude lane, which only the image build's run makes, and only when it is
+// given the claude-envoy root and the Claude Code pin (`legion probe-image --claude-root
+// --claude-code-pin`). The daemon's probe pod does not make it.
 // The image carries no Claude Code — its licence grants no redistribution, and the worker image is
 // public — so the lane proves the two facts a phase worker on the `claude` backend needs of it
 // instead. First, the image carries the plugin that worker loads: the root holds the two files
@@ -814,15 +821,14 @@ func (g pluginGate) verifySessionStorage(ctx context.Context) error {
 // internal/runtime/sandbox/plugins.go).
 //
 // The lane reads the pin and does not perform the install. Performing it once would prove the
-// fetch end to end, but it would make the image's publish and every boot probe of the image — this
-// lane runs in the daemon's probe pod as well as the build — depend on the npm registry, put a
-// download of Claude Code's native binary in front of every boot, and need cleaning up within the
-// same step so no layer of a public image kept a binary the image may not redistribute. And it would
-// prove less than it seems: a registry that answered the build is no promise that it answers a pod
-// days later. So the image proves it is self-consistent — what a pod installs from is here, exact
-// and checksummed — and the fetch itself is proved where it happens: every Claude launch's start
-// script installs and verifies it and fails that launch loudly when it cannot, and the pod e2e
-// (scripts/e2e/claude-backend-sandbox.sh) watches a worker run the binary that fetch installed.
+// fetch end to end, but it would make the image's publish depend on the npm registry, and it would
+// need cleaning up within the same step so no layer of a public image kept a binary the image may
+// not redistribute. And it would prove less than it seems: a registry that answered the build is
+// no promise that it answers a pod days later. So the image proves it is self-consistent — what a
+// pod installs from is here, exact and checksummed — and the fetch itself is proved where it
+// happens: every Claude launch's start script installs and verifies it and fails that launch
+// loudly when it cannot, and the pod e2e (scripts/e2e/claude-backend-sandbox.sh) watches a worker
+// run the binary that fetch installed.
 //
 // None of the checks is retried, unlike the probes above: they read the image's own filesystem
 // and no network, so a failure is the image's and no further attempt answers differently.
@@ -955,8 +961,10 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	}
 	// The tail of the probe's stderr is cut by redact.Tail, which reads it whole through the URL
 	// rule first: Oh My Pi and a plugin can quote a URL with a token, and a tail cut first could
-	// start inside its userinfo or its query, where the rule no longer finds either.
-	tail, _ := redact.Tail(strings.TrimSpace(stderr.String()), maxProbeStderr)
+	// start inside its userinfo or its query, where the rule no longer finds either. The launch
+	// prefix's words, and each NAME=value word's value, are taken out before that
+	// (omplaunch.PrefixMasked): a prefix that refuses or fails can echo them.
+	tail, _ := redact.Tail(omplaunch.PrefixMasked(strings.TrimSpace(stderr.String()), g.prefix), maxProbeStderr)
 	return ran{
 		exit:     cmd.ProcessState.ExitCode(),
 		end:      end,
@@ -970,9 +978,12 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 }
 
 // ImageProbe is `legion probe-image`, run inside the worker image: by its build's final step, and
-// by the daemon's probe Sandbox (internal/runtime/sandbox/probe.go).
+// by the daemon's probe Sandbox (internal/runtime/sandbox/probe.go). These are two runs, and
+// BootRun says which one it is: the image build's run makes every launch probe, and the daemon's
+// boot run makes only the contract probe and the plugin load probe.
 type ImageProbe struct {
-	// Omp is the OMP invocation as the shell runs it: the image's LEGION_OMP_PATH, or --omp.
+	// Omp is the OMP invocation as the shell runs it: the image's LEGION_OMP_PATH, or --omp, a path
+	// quoted as one shell word (shellprefix.Word).
 	Omp string
 	// Contract is the daemon API contract the image's plugin must declare.
 	Contract int
@@ -995,7 +1006,8 @@ type ImageProbe struct {
 	// lane checks together (verifyClaude): the root holds its built channel server and its generated
 	// Legion plugin and its manifest declares Contract, and the pin is one a pod can install and
 	// verify. Both empty runs no Claude lane; one without the other is refused. `legion
-	// probe-image` always passes both, the image's own paths unless told others.
+	// probe-image` passes both on every run, the image's own paths unless told others. Only the
+	// image build's run makes the lane on them: the boot run (BootRun) does not.
 	ClaudeRoot    string
 	ClaudeCodePin string
 	// RoleReferences are the task agents and skills the role prompts a pod is handed name
@@ -1005,6 +1017,12 @@ type ImageProbe struct {
 	// SkipAgentModels leaves the task agents' models unresolved: the image build's probe, which runs
 	// with none of the operator's model configuration.
 	SkipAgentModels bool
+	// BootRun is the daemon's boot run: `legion probe-image` under LEGION_IMAGE_PROBE_RUN=boot
+	// (bootprobe.ImageProbeRunBoot), which the daemon's probe Sandbox sets. ProbeImage then makes
+	// only the contract probe and the plugin load probe, with the prompt references and the agents'
+	// models, and not the pi.agents probe, the session-storage probe or the Claude lane, which the
+	// image build's run (false) makes beside them.
+	BootRun bool
 }
 
 // defaultProbeTimeout is each image-probe and controller-probe attempt's budget: the default
@@ -1012,13 +1030,16 @@ type ImageProbe struct {
 // (IMAGE_PROBE_TIMEOUT_MS, boot-probes.ts).
 const defaultProbeTimeout = 300 * time.Second
 
-// ProbeImage runs the image's launch probes: pi.agents; then the daemon's own gate — pi-legion
-// held to Contract, then loaded with pi-envoy, from the manifest it was held by; then the
-// session-storage setting, and the Claude lane, which only the image runs (the launch probes'
-// comment atop boot-probes.ts). The contract comes before the load, as in the daemon's gate, so a
-// plugin of another contract is refused as a reinstall rather than sent to `omp plugin list`. Each
-// attempt is bounded by defaultProbeTimeout and retried under bootprobe.Image: an image build has
-// no supervisor and must finish.
+// ProbeImage runs the image's launch probes in one of two runs, which BootRun picks. The image
+// build's run (verifyImage) makes pi.agents; then the daemon's own gate — pi-legion held to
+// Contract, then loaded with pi-envoy, from the manifest it was held by; then the session-storage
+// setting, and the Claude lane, which only that run makes (the launch probes' comment atop
+// boot-probes.ts). The daemon's boot run (BootRun) makes the daemon's own gate alone (verify): the
+// contract probe, then the load probe with the prompt references and the agents' models. The
+// contract comes before the load, as in the daemon's gate, so a plugin of another contract is
+// refused as a reinstall rather than sent to `omp plugin list`. Each attempt is bounded by
+// defaultProbeTimeout and retried under bootprobe.Image: an image build has no supervisor and must
+// finish.
 func ProbeImage(ctx context.Context, p ImageProbe) error {
 	if p.PluginRoot == "" {
 		return errors.New("image probe: ImageProbe.PluginRoot is required: the Legion plugin directory a pod loads as an explicit extension")
@@ -1032,16 +1053,20 @@ func ProbeImage(ctx context.Context, p ImageProbe) error {
 	if (p.ClaudeRoot == "") != (p.ClaudeCodePin == "") {
 		return errors.New("image probe: ImageProbe.ClaudeRoot and ImageProbe.ClaudeCodePin go together: the Claude lane checks the claude-envoy plugin and the Claude Code pin a worker on the `claude` backend needs both of")
 	}
-	return pluginGate{
+	g := pluginGate{
 		env: p.Env, workDir: p.WorkDir, invocation: p.Omp, timeout: defaultProbeTimeout,
 		retry: bootprobe.Image, contract: p.Contract,
 		pluginRoot: p.PluginRoot, envoyPluginRoot: p.EnvoyPluginRoot, claudeRoot: p.ClaudeRoot, claudeCodePin: p.ClaudeCodePin,
 		roleReferences: p.RoleReferences, skipAgentModels: p.SkipAgentModels,
 		log: p.Log,
-	}.verifyImage(ctx)
+	}
+	if p.BootRun {
+		return g.verify(ctx)
+	}
+	return g.verifyImage(ctx)
 }
 
-// verifyImage runs the image's probes in ProbeImage's order.
+// verifyImage is the image build's run: it makes the image's launch probes in ProbeImage's order.
 func (g pluginGate) verifyImage(ctx context.Context) error {
 	if err := g.verifyAgentsCapability(ctx); err != nil {
 		return err
@@ -1104,10 +1129,17 @@ func ProbeController(ctx context.Context, p ControllerProbe) error {
 		name: "controller probe", log: p.Log,
 	}
 	// No refusal names a profile: which one Oh My Pi reads is its own resolution, which this does
-	// not port, so the words say only what Oh My Pi did, where it ran, and how.
-	launch := omplaunch.WithPrefix(p.Prefix, p.Omp)
+	// not port, so the words say only what Oh My Pi did, where it ran, and how. The launch is named
+	// as WithPrefixShown shows it, the prefix's program and how many arguments it takes, never the
+	// arguments; the check the operator pastes names the setting the prefix comes from in its place,
+	// since they run it with their own.
+	launch := omplaunch.WithPrefixShown(p.Prefix, p.Omp)
 	where := fmt.Sprintf("Oh My Pi, launched as the controller launches it (%q, in %s),", launch, p.WorkDir)
-	check := fmt.Sprintf("`cd %s && %s plugin", shellprefix.Word(p.WorkDir), launch)
+	runs := p.Omp
+	if len(p.Prefix) > 0 {
+		runs = "<your omp_launch_prefix> " + p.Omp
+	}
+	check := fmt.Sprintf("`cd %s && %s plugin", shellprefix.Word(p.WorkDir), runs)
 	// The controller's lane is discovery's, with its own refusals: it reads no manifest, so it
 	// names no version, and a check that names nothing needs no words for how the plugin loaded.
 	lane := pluginLane{

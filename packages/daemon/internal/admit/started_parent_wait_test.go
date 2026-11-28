@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -38,17 +39,15 @@ const spMergeLine = "`children merged: full test round`"
 // does (intake.ApplyFact).
 func spPass(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 	t.Helper()
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	scoped, settle := intake.OpenSettlers(scoped, admission)
-	inTx(t, pool, func(tx pgx.Tx) {
-		if _, _, err := admission.promote(scoped, tx); err != nil {
-			t.Fatalf("the admission pass: %v", err)
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx, settle := intake.OpenSettlers(ctx, admission)
+		if _, _, err := admission.promote(ctx, tx); err != nil {
+			return err
 		}
-		if err := settle(scoped, tx); err != nil {
-			t.Fatalf("settle the admission pass: %v", err)
-		}
-	})
-	committed()
+		return settle(ctx, tx)
+	}); err != nil {
+		t.Fatalf("the admission pass: %v", err)
+	}
 }
 
 // spSeedParent records key as the root of a running tree standing in at, at the status that
@@ -205,7 +204,7 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 		if got.Phase != phase.AwaitingChildren || wait == nil || wait.Start != phase.Accepting || !wait.Since.Equal(fixedNow) {
 			t.Fatalf("the parent = phase %s, held start %+v; want awaiting_children holding accepting since %s", got.Phase, wait, fixedNow)
 		}
-		if !strings.Contains(wait.Task, "Phase: accepting.") || !strings.Contains(wait.Reason, "its reviewed head waited in accepting") ||
+		if !strings.Contains(wait.Task, "Phase: accepting.") || !strings.Contains(wait.Reason, "the head the step before accepting passed waited in accepting") ||
 			!strings.Contains(wait.Reason, spChild+" (todo)") {
 			t.Fatalf("the held start = %+v, want accepting's task and a reason naming the wait and %s", wait, spChild)
 		}
@@ -307,7 +306,7 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 		var held []record.HeldIssue
 		inTx(t, pool, func(tx pgx.Tx) {
 			var err error
-			if held, _, _, err = admission.tickRows(context.Background(), tx); err != nil {
+			if held, _, _, err = admission.tickRows(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) }); err != nil {
 				t.Fatalf("read what is held: %v", err)
 			}
 		})

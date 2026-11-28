@@ -336,13 +336,13 @@ func startedIssues(issues []record.Issue, slots []record.Slot, facts record.Line
 // second is the same judgement the line holds an unstarted parent by: a started parent waits for
 // its children exactly as one that never started does, and only the slot it holds differs.
 //
-// An issue whose phase keeps no slot (record.KeepsSlot: past its review, done, or out of the
-// workflow) waits on nothing here, whatever its links say. The wait this answers is the one a
-// started issue gives its row back for, and such an issue holds no row to give back, so the
-// rule that states the wait term states the phase term too: the release for a wait (admit's
-// releaseSlotsForWaits) frees no row of it and marks it with no release, the line places it in
-// no entry of record.LineWaitingOnIssue, and none of that rests on the order the admission pass
-// runs its releases in.
+// An issue whose phase keeps no slot (record.KeepsSlot: accepting, retro, merging or
+// awaiting_children, done, or out of the workflow) waits on nothing here, whatever its links say.
+// The wait this answers is the one a started issue gives its row back for, and such an issue
+// holds no row to give back, so the rule that states the wait term states the phase term too: the
+// release for a wait (admit's releaseSlotsForWaits) frees no row of it and marks it with no
+// release, the line places it in no entry of record.LineWaitingOnIssue, and none of that rests on
+// the order the admission pass runs its releases in.
 //
 // Three started issues wait on neither, though a rule names them. A root waiting on a person
 // (awaiting_person, answered or not) is waiting on that person and nothing else, and the slot it
@@ -368,7 +368,7 @@ func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []
 	if issue.Phase == phase.Admitted && record.AtWork(issue, facts.Gates[issue.Tree]) {
 		return nil
 	}
-	if record.QueuedRoot(issue, facts.Gates[issue.Tree]) {
+	if record.QueuedRoot(issue, facts.Lifecycles[issue.Tree], facts.Gates[issue.Tree]) {
 		return nil
 	}
 	waits := Unfinished(rows, issue.Key)

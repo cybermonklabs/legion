@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A new session on `@sjawhar/pi-envoy` 14.1.0 or later registers even when its registration asks
+  for no consumer, which 16.2.1 through 17.7.0 do after a first pass that could not reach NATS:
+  the listener gives it a consumer as if it asked, and those builds read every relay frame. Such
+  a session was refused 409 `not_requested` at every heartbeat before and never registered. The
+  refusal that stays, for older builds and other clients, names what each needs.
+time: 2026-11-16T18:39:57Z
+custom:
+    Issue: pr4194

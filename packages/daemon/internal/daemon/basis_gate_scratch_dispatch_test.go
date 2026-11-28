@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -38,7 +39,7 @@ import (
 // Dispatch itself gave, and the criteria step, on the API tests' fake client
 // (internal/api/gate_basis_test.go); a root waiting on a person, the phase tasks after planning,
 // the production check's task and the merger's start, in internal/workflow and internal/record;
-// and a caller at a contract below 214, whose narrowing needs a caller that states such a contract
+// and a caller at a contract below entry 20261125161152 (gate-basis), whose narrowing needs a caller that states such a contract
 // or one in a pod, which the rig runs neither of (callerPodOf), in
 // internal/api/gate_basis_wire_test.go.
 
@@ -415,8 +416,8 @@ func (r *personHandoverRig) readAncestorOpening(c ancestorOpening) {
 		t.Fatalf("the view fact recorded at %s's registration = %q, want %s", root.Key, viewOf, parent.Key)
 	}
 	viewSentence := fmt.Sprintf("%s is a view on %s: the requirements of %s are the parts of the requirements of %s that the Delivers: line in the spec of %s names,"+
-		" so Dispatch's Coverage line, which counts only %s's own blocks, shows no gap.",
-		root.Key, parent.Key, root.Key, parent.Key, root.Key, root.Key)
+		" so Dispatch's Coverage line for %s reads \"the spec marks no requirements\", which is no gap in its work: %s's checks count in %s's Coverage.",
+		root.Key, parent.Key, root.Key, parent.Key, root.Key, root.Key, root.Key, parent.Key)
 	if task := r.entryTask(root.Key, claim.RolePlanner); !strings.Contains(task, viewSentence) {
 		t.Fatalf("the planner's task of %s = %q, want the view sentence %q", root.Key, task, viewSentence)
 	}
@@ -688,10 +689,11 @@ func insertAtEnd(markdown string) map[string]string {
 // TestTheProductionCheckTaskOfAViewNamesTheAncestorsRequirements (internal/workflow), and
 // TestABasisOpeningTakesTheRegistrationsMomentInTheLine (internal/record: GateOpen, the tree's gate
 // and its first opening, which the merger's start reads, and TreeGate.OpenedAt). A caller below
-// contract 214 is TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis
+// entry 20261125161152 (gate-basis) is TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis
 // (internal/api): the rig runs no pod and no caller of it states a contract below this daemon's
 // own, so no caller here is narrowed.
 func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	pause, held := &registrationPause{}, &outboxHold{}
 	r := newPersonHandoverRig(t, 8)
 	r.tune = func(o *overrides) {
@@ -718,7 +720,7 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	// 3. P is set as R's parent, and R's one check serves P2.
 	r.linkUnder(root, parent, true)
 	p2 := specBlock(parent.Key, "p2")
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{p2}}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}}))
 
 	// 4. The negative control: P's latest version is one the person has not approved.
 	stale := r.editDocument(parent.PrimaryArtifactID, insertParagraph("A later paragraph nobody approved."))
@@ -796,7 +798,7 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	carried := r.carriedReview(carriedParent.PrimaryArtifactID, before.Version)
 	carriedParentGrant := r.admit(carriedParent.Key)
 	r.linkUnder(carriedRoot, carriedParent, true)
-	r.writeDocument(carriedRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(carriedParent.Key, "p2")}}))
+	r.writeDocument(carriedRoot.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(carriedParent.Key, "p2")}}))
 	r.registerApprovedGate(carriedParent.Key, carriedParent.PrimaryArtifactID, carried.Version, carriedParentGrant)
 	r.registerBasis(carriedGrant(), carriedRoot, 1, carriedParent, carried.Version, reason)
 	t.Logf("Dispatch carried the person's approval of version %d of %s to version %d, and %s registered on it", before.Version, carriedParent.Key, carried.Version, carriedRoot.Key)
@@ -810,12 +812,12 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	backlogParent := r.create(asSession, "Arctic sensor network", parentOf("Sensors", ""))
 	backlogApproval := r.approve(backlogParent.PrimaryArtifactID)
 	// The daemon reads the issue a person's approval is on as Dispatch shows it when the event is
-	// delivered (workflow's personHandoverQueues), so the approval is applied while P is still in
+	// delivered (workflow's personHandover), so the approval is applied while P is still in
 	// triage: one read after the move to the backlog would be the person's handover of P.
 	r.applied(r.newestEvent(backlogParent.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == backlogApproval.Version }))
 	r.setStatus(backlogParent.Key, "backlog")
 	r.linkUnder(backlogRoot, backlogParent, false)
-	r.writeDocument(backlogRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(backlogParent.Key, "p2")}}))
+	r.writeDocument(backlogRoot.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(backlogParent.Key, "p2")}}))
 	r.registerBasis(backlogGrant(), backlogRoot, 1, backlogParent, backlogApproval.Version, reason)
 	r.readAncestorOpening(ancestorOpening{root: backlogRoot, parent: backlogParent, rootVersion: 1, approval: backlogApproval, reason: reason})
 
@@ -832,7 +834,7 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	olderApproval := r.approve(olderParent.PrimaryArtifactID)
 	olderParentGrant := r.admit(olderParent.Key)
 	r.linkUnder(olderRoot, olderParent, true)
-	r.writeDocument(olderRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(olderParent.Key, "p2")}}))
+	r.writeDocument(olderRoot.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(olderParent.Key, "p2")}}))
 	r.registerApprovedGate(olderParent.Key, olderParent.PrimaryArtifactID, olderApproval.Version, olderParentGrant)
 	r.registerBasis(olderGrant(), olderRoot, fourth, olderParent, olderApproval.Version, reason)
 	r.readAncestorOpening(ancestorOpening{root: olderRoot, parent: olderParent, rootVersion: fourth, approval: olderApproval, reason: reason, parentLive: true,
@@ -969,6 +971,7 @@ func onBasis(issue string, version int, served ...string) func(record.DesignGate
 // version reaches the daemon as an event it drops, and the registration's own read carries that
 // approval, opening the step on it and recording no basis.
 func TestBasisGateRefusals(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	drop := &consumerDrop{}
 	r := newPersonHandoverRig(t, 3)
 	r.tune = func(o *overrides) { o.dropConsumedEvent = drop.drops }
@@ -986,17 +989,17 @@ func TestBasisGateRefusals(t *testing.T) {
 		"spec": requirementsMarkdown("Navigation", "p1", "p2", "p3", "p:4", "pn", "pgone")})
 	r.setStatus(parent.Key, "in_progress")
 	r.writeDocument(parent.Key, "decisions.md", requirementsMarkdown("Decisions", "d1"))
-	parentVerification := r.writeDocument(parent.Key, "verification.md", checksMarkdown(rigCheck{id: "pk1", serves: []string{specBlock(parent.Key, "p1")}}))
+	parentVerification := r.writeDocument(parent.Key, "verification.md", checksMarkdown(verificationCheck{id: "pk1", serves: []string{specBlock(parent.Key, "p1")}}))
 	r.editDocument(parent.PrimaryArtifactID, insertParagraph("The program keeps its old charts."))
 	pv := r.approve(parent.PrimaryArtifactID).Version
 
 	// S, R's sibling under P, marking S1.
-	sibling := r.create(asSession, "Tidal gauge calibration", map[string]any{"parent": parent.Key, "spec": requirementsMarkdown("Gauges", "s1")})
+	sibling := r.create(asPerson, "Tidal gauge calibration", map[string]any{"parent": parent.Key, "spec": requirementsMarkdown("Gauges", "s1")})
 
 	// R under P, its one check serving P2.
 	r.patch(root.Key, asPerson, map[string]any{"parent": parent.Key})
 	p2 := specBlock(parent.Key, "p2")
-	onlyP2 := checksMarkdown(rigCheck{id: "k1", serves: []string{p2}})
+	onlyP2 := checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}})
 	r.writeDocument(root.Key, "verification.md", onlyP2)
 	rv := 1
 	reason := basisReasonOf(1000)
@@ -1050,39 +1053,39 @@ func TestBasisGateRefusals(t *testing.T) {
 	r.writeDocument(root.Key, "verification.md", onlyP2+":::requirement{#rv1}\n**RV1.** The beacon's own requirement.\n:::\n")
 	cases.refused("a requirement block in R's Verification document", call(), http.StatusConflict, "VIEW_HOLDS_REQUIREMENT",
 		root.Key+"'s Verification document", "holds requirement block rv1")
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{p2}}, rigCheck{id: "k2"}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}}, verificationCheck{id: "k2"}))
 	cases.refused("a check of R that serves nothing", call(), http.StatusConflict, "VIEW_CHECK_SERVES_NOTHING", "check k2 of "+root.Key)
 
 	// Checks Dispatch would refuse under P: S's requirement is written while R stands under S.
 	s1 := specBlock(sibling.Key, "s1")
 	r.patch(root.Key, asPerson, map[string]any{"parent": sibling.Key})
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{p2}}, rigCheck{id: "k2", serves: []string{s1}}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}}, verificationCheck{id: "k2", serves: []string{s1}}))
 	r.patch(root.Key, asPerson, map[string]any{"parent": parent.Key})
 	cases.refused("one check serving P2 and another serving only a requirement of S", call(), http.StatusConflict, "VIEW_SERVES_OUTSIDE_BASIS",
 		"check k2", "serves "+s1)
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k2", serves: []string{s1}}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k2", serves: []string{s1}}))
 	cases.refused("a check of R that serves a requirement block of S", call(), http.StatusConflict, "VIEW_SERVES_OUTSIDE_BASIS", "check k2", "serves "+s1)
 
 	// A block of P retyped and one deleted after R's checks named them, in a version the person
 	// approved.
 	pn, pgone := specBlock(parent.Key, "pn"), specBlock(parent.Key, "pgone")
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{p2}}, rigCheck{id: "kn", serves: []string{pn}},
-		rigCheck{id: "kg", serves: []string{pgone}}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}}, verificationCheck{id: "kn", serves: []string{pn}},
+		verificationCheck{id: "kg", serves: []string{pgone}}))
 	r.editDocument(parent.PrimaryArtifactID, map[string]string{"op": "delete", "block": "pn"}, map[string]string{"op": "delete", "block": "pgone"},
 		insertAtEnd(":::callout{#pn}\nA note that is no requirement.\n:::\n"))
 	pv = r.approve(parent.PrimaryArtifactID).Version
 	cases.refused("a check that serves a block of P's primary document that is no requirement", call(), http.StatusConflict, "VIEW_SERVES_OUTSIDE_BASIS",
 		"check kn", "serves "+pn, "p1, p2, p3, p:4")
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{p2}}, rigCheck{id: "kg", serves: []string{pgone}}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}}, verificationCheck{id: "kg", serves: []string{pgone}}))
 	cases.refused("a check that serves a block id P's document does not hold", call(), http.StatusConflict, "VIEW_SERVES_OUTSIDE_BASIS",
 		"check kg", "serves "+pgone)
 	decided := "dispatch://" + parent.Key + "/artifact/decisions-md#b-d1"
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{decided}}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{decided}}))
 	cases.refused("a check that serves a requirement block of P's decisions document", call(), http.StatusConflict, "VIEW_SERVES_OUTSIDE_BASIS",
 		"serves "+decided)
 
 	// The checks that open.
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{p2 + "@v1"}}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2 + "@v1"}}))
 	cases.opens("a check whose serves names P2 pinned to another version", call(), onBasis(parent.Key, pv, pinned("p2")))
 	// The step closed at R's later versions and this registration opened it again, which moves the
 	// tree's standing gate: the tree's roles are told it opened on the ancestor's approval, by a role
@@ -1099,9 +1102,9 @@ func TestBasisGateRefusals(t *testing.T) {
 			t.Fatalf("a role message of %s's tree says a person approved its own version %d: %q", root.Key, rv, body)
 		}
 	}
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(parent.Key, "p1"), specBlock(parent.Key, "p3")}}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(parent.Key, "p1"), specBlock(parent.Key, "p3")}}))
 	cases.opens("a check that serves P1 and P3", call(), onBasis(parent.Key, pv, pinned("p1"), pinned("p3")))
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(parent.Key, "p:4")}}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(parent.Key, "p:4")}}))
 	cases.opens("a check whose serves names a block id that a reference percent-encodes", call(), onBasis(parent.Key, pv, pinned("p:4")))
 	if pinned("p:4") != fmt.Sprintf("dispatch://%s/spec#b-p%%3A4@v%d", parent.Key, pv) {
 		t.Fatalf("the reference to P:4 reads %s, want its id percent-encoded", pinned("p:4"))
@@ -1150,7 +1153,7 @@ func TestBasisGateRefusals(t *testing.T) {
 	// The chain: R under P under G, where only G is approved and marks requirements.
 	grandparent := r.create(asSession, "Maritime safety initiative", map[string]any{"labels": []string{"legion"}, "spec": requirementsMarkdown("Safety", "g1", "g2")})
 	gv := r.approve(grandparent.PrimaryArtifactID).Version
-	middle := r.create(asSession, "Buoy maintenance roster", map[string]any{"labels": []string{"legion"}, "parent": grandparent.Key})
+	middle := r.create(asPerson, "Buoy maintenance roster", map[string]any{"labels": []string{"legion"}, "parent": grandparent.Key})
 	chainRoot := r.create(asSession, "Foghorn volume limiter", labelled)
 	chainGrant := r.admit(chainRoot.Key)
 	r.patch(chainRoot.Key, asPerson, map[string]any{"parent": middle.Key})
@@ -1164,7 +1167,7 @@ func TestBasisGateRefusals(t *testing.T) {
 	r.writeDocument(chainRoot.Key, "verification.md", "# Verification\n\nNo check yet.\n")
 	chain.refused("R's Verification document holding no check", onG(), http.StatusConflict, "VIEW_NO_CHECK", "holds no check block")
 	g1 := specBlock(grandparent.Key, "g1")
-	r.writeDocument(chainRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{g1}}))
+	r.writeDocument(chainRoot.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{g1}}))
 	chain.opens("G's approval with P neither reviewed nor requested", onG(), onBasis(grandparent.Key, gv, fmt.Sprintf("%s@v%d", g1, gv)))
 	r.requestApproval(middle.PrimaryArtifactID, "The roster is ready.")
 	chain.refused("G's approval with only an open approval request on P", onG(), http.StatusConflict, "BASIS_NOT_NEAREST",
@@ -1389,7 +1392,7 @@ func TestRegistrationIsRefusedOnceAnotherProjectsDaemonAcceptsTheAncestor(t *tes
 			root := legion.create(asSession, "Ledger export rewrite", map[string]any{"labels": []string{"legion"}})
 			rootGrant := legion.admit(root.Key)
 			legion.mustLinkAcross(root.Key, parent.Key)
-			legion.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(parent.Key, "o1")}}))
+			legion.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(parent.Key, "o1")}}))
 			legion.mustLinkAcross(root.Key, "")
 			if shown := legion.issue(root.Key); shown.Parent != nil {
 				t.Fatalf("%s stands under %s in Dispatch, want no parent before the sign-off", root.Key, *shown.Parent)
@@ -1489,7 +1492,7 @@ func TestARepairTickDuringASignOffWritesNothingOverItsAcceptance(t *testing.T) {
 	root := legion.create(asSession, "Ledger export rewrite", map[string]any{"labels": []string{"legion"}})
 	rootGrant := legion.admit(root.Key)
 	legion.mustLinkAcross(root.Key, parent.Key)
-	legion.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(parent.Key, "o1")}}))
+	legion.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(parent.Key, "o1")}}))
 	legion.mustLinkAcross(root.Key, "")
 
 	// The act runs on the sign-off route's goroutine (afterSignOffStatusWrite), where t.Fatalf
@@ -1557,7 +1560,7 @@ func repairTickInsideSignOff(r *personHandoverRig, ticks chan<- time.Time, key s
 	var readErr error
 	held := testwait.Holds(time.Minute, testwait.Poll, func() bool {
 		var shown *record.Issue
-		readErr = pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		readErr = store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			shown, err = record.NewStore().Issue(ctx, tx, key)
 			return err
@@ -1777,7 +1780,7 @@ func TestPendingBasisOnAnotherProjectOpensAtTheTick(t *testing.T) {
 	root := r.create(asSession, "Ledger export rewrite", map[string]any{"labels": []string{"legion"}})
 	grant := r.admit(root.Key)
 	r.mustLinkAcross(root.Key, ancestor.Key)
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(ancestor.Key, "o1")}}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(ancestor.Key, "o1")}}))
 	r.registerBasis(grant(), root, 1, ancestor, 1, basisReasonOf(400))
 	settled(t, r.d, root.Key+" to wait on "+ask, func(s api.State) bool {
 		step := stepOf(s, root.Key)

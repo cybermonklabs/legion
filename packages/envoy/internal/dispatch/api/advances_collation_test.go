@@ -20,6 +20,9 @@ import (
 const (
 	punctuatedPriority = "ci-fixes"
 	letteredPriority   = "cicd"
+	// originPriority is one only the child in backlog states, so the child is its origin, and so
+	// a fault of priority work in backlog or icebox: no issue above it carries it.
+	originPriority = "docs"
 )
 
 // collatePriorityIDsAsADeploymentDoes holds the priority ids under a collation that sorts `cicd`
@@ -71,25 +74,27 @@ func collatePriorityIDsAsADeploymentDoes(t *testing.T, database *store.Store) {
 
 // Every read of an issue's `advances` lists each priority once, own before inherited where it is
 // both, in the byte order of the id, however the database collates the ids. The issue states
-// `ci-fixes` and its parent states `ci-fixes` and `cicd`, so the issue holds `ci-fixes` both ways:
-// under a collation weighing punctuation last its inherited list comes back `cicd, ci-fixes`,
-// and a merge that trusted that order met `ci-fixes` twice and listed it twice. The issue is
-// parked, so the parked fault of GET /api/v1/priorities reads it as well.
+// `ci-fixes` and `docs`, and its parent states `ci-fixes` and `cicd`, so the issue holds `ci-fixes`
+// both ways: under a collation weighing punctuation last its inherited list comes back
+// `cicd, ci-fixes`, and a merge that trusted that order met `ci-fixes` twice and listed it twice.
+// The issue stands in backlog and is the origin of `docs`, which no issue above it carries, so the
+// second fault of GET /api/v1/priorities, priority work in backlog or icebox, reads it as well.
 func TestAdvancesListEachPriorityOnceHoweverTheDatabaseCollatesTheIDs(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	collatePriorityIDsAsADeploymentDoes(t, database)
 	createTestProject(t, handler, "COLL")
-	for _, id := range []string{punctuatedPriority, letteredPriority} {
+	for _, id := range []string{punctuatedPriority, letteredPriority, originPriority} {
 		createTestPriority(t, handler, map[string]any{"id": id, "title": id}, "alice")
 	}
 	parent := seedPriorityIssue(t, handler, "COLL", "The parent stating both", "", "",
 		[]string{punctuatedPriority, letteredPriority})
-	child := seedPriorityIssue(t, handler, "COLL", "The child stating one", "backlog", parent,
-		[]string{punctuatedPriority})
+	child := seedPriorityIssue(t, handler, "COLL", "The child stating two", "backlog", parent,
+		[]string{punctuatedPriority, originPriority})
 
 	want := map[string][]string{
 		parent: {punctuatedPriority + " own", letteredPriority + " own"},
-		child:  {punctuatedPriority + " own", letteredPriority + " inherited"},
+		child:  {punctuatedPriority + " own", letteredPriority + " inherited", originPriority + " own"},
 	}
 	for key, entries := range want {
 		if got := advanceEntries(readTestIssue(t, handler, key).Advances); !slices.Equal(got, entries) {
@@ -108,7 +113,7 @@ func TestAdvancesListEachPriorityOnceHoweverTheDatabaseCollatesTheIDs(t *testing
 		}
 	}
 	body := readPriorities(t, handler, "")
-	if got, entries := advanceEntries(parkedRow(t, body, child).Advances), want[child]; !slices.Equal(got, entries) {
-		t.Errorf("the parked list says %s advances %v, want %v", child, got, entries)
+	if got, entries := advanceEntries(backlogRow(t, body, child).Advances), want[child]; !slices.Equal(got, entries) {
+		t.Errorf("the backlog-or-icebox list says %s advances %v, want %v", child, got, entries)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -21,20 +22,21 @@ const (
 	askedText  = "The daemon must replace the pod that runs this issue's roles. The reasons are: image a, now b."
 )
 
-// The four lines the executor writes, one for each way a row ends without an error. The first
+// The five lines the executor writes, one for each way a row ends without an error. The first
 // is the line the production check reads (requirement R8).
 const (
 	askPublishedLine = "outbox update ask published to the role topic"
 	askNoHolderLine  = "outbox update ask finished undelivered: no live session holds the role"
 	askLeftLine      = "outbox update ask finished without a publish: the claim no longer records its round"
 	askSuspendedLine = "outbox update ask finished without a publish: the daemon suspended the claim"
+	askAnsweredLine  = "outbox update ask finished without a publish: the role has answered its round"
 )
 
 // askRunner is an outbox runner as hook_prompt_test.go's unit case builds one — a project, a
 // publisher and a log — with the claim supervisor the executor reads the round from. Each role in
 // rounds gets a claim on LEGION-208 in the round given, "" for no round; a role not in rounds has
 // no claim this daemon supervises.
-func askRunner(t *testing.T, publisher notify.Publisher, rounds map[claim.Role]string) (*outbox, *syncBuffer) {
+func askRunner(t *testing.T, publisher outboxNotices, rounds map[claim.Role]string) (*outbox, *syncBuffer) {
 	t.Helper()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	for role, round := range rounds {
@@ -61,6 +63,7 @@ func askRow(t *testing.T, id int64, role claim.Role) record.OutboxRow {
 // executor writes the one line the production check greps for, with the row, the issue, the round,
 // the pod, the claim, the role and the topic.
 func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
+	t.Parallel()
 	for i, role := range []claim.Role{claim.RoleTester, claim.RoleArchitect} {
 		t.Run(string(role), func(t *testing.T) {
 			publisher := &outboxPublisher{}
@@ -101,6 +104,7 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 // finishes with one Info line and writes no published line. The claim here records no ask mark,
 // and an undelivered ask writes none; podupdate_undelivered_ask_test.go holds the sweep's ask again.
 func TestPodUpdateAskNobodyHoldsFinishesTheRow(t *testing.T) {
+	t.Parallel()
 	publisher := &outboxPublisher{err: fmt.Errorf("publish to the tester's topic: %w", notify.ErrNoHolder)}
 	runner, logs := askRunner(t, publisher, map[claim.Role]string{claim.RoleTester: askedRound})
 	row := askRow(t, 73, claim.RoleTester)
@@ -121,6 +125,7 @@ func TestPodUpdateAskNobodyHoldsFinishesTheRow(t *testing.T) {
 // supervises no claim of the role — the row finishes with one Info line and publishes nothing:
 // a role is never asked about a round that is not its own.
 func TestPodUpdateAskForARoundTheClaimLeftPublishesNothing(t *testing.T) {
+	t.Parallel()
 	for i, tc := range []struct {
 		name    string
 		rounds  map[claim.Role]string
@@ -155,6 +160,7 @@ func TestPodUpdateAskForARoundTheClaimLeftPublishesNothing(t *testing.T) {
 // NATS grant denies goes through once an operator changes that grant. No published line is
 // written for any of them.
 func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
+	t.Parallel()
 	publisher := &outboxPublisher{}
 	runner, logs := askRunner(t, publisher, map[claim.Role]string{claim.RoleImplementer: askedRound})
 	row := askRow(t, 77, claim.RoleImplementer)
@@ -175,8 +181,8 @@ func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
 	}
 }
 
-// wakeCountingTrees is the runner's tree store with every pod wake counted: TakePodWake is the
-// step that brings a released pod back for a delivery (wakeForDelivery), and every other call
+// wakeCountingTrees is the runner's tree store with every pod wake counted: TakeDeliveryWake is
+// the step that brings a released pod back for a delivery (wakeForDelivery), and every other call
 // goes to the store it wraps.
 type wakeCountingTrees struct {
 	outboxTrees
@@ -184,11 +190,11 @@ type wakeCountingTrees struct {
 	takes int
 }
 
-func (w *wakeCountingTrees) TakePodWake(ctx context.Context, project, issue string, token claim.Token, kind string, at time.Time, mark int64) (bool, error) {
+func (w *wakeCountingTrees) TakeDeliveryWake(ctx context.Context, project, issue string, token claim.Token, generation uint64, at time.Time, mark int64) (store.DeliveryWake, error) {
 	w.mu.Lock()
 	w.takes++
 	w.mu.Unlock()
-	return w.outboxTrees.TakePodWake(ctx, project, issue, token, kind, at, mark)
+	return w.outboxTrees.TakeDeliveryWake(ctx, project, issue, token, generation, at, mark)
 }
 
 func (w *wakeCountingTrees) taken() int {
@@ -208,6 +214,7 @@ func (w *wakeCountingTrees) taken() int {
 // negative control is c-one-channel's: an executor that called wakeForDelivery first, as
 // hookPrompt does, takes a wake and resumes the claim here.
 func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)

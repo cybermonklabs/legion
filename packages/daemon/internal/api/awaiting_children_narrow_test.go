@@ -57,11 +57,12 @@ func phasesAndHeldWords(t *testing.T, body []byte) (phases, reasons map[string]s
 // A caller below gateBasisContract knows neither awaiting_children word, so the value strips of
 // that contract serve it the issue's phase as admitted and the held row's reason as
 // children_first (dispatch://INFRA-3320 R13; shaping.go's withoutUnadmittedPhases and
-// withoutUnadmittedHeldReasons). That holds for a caller that states a contract below it, which
-// is served the nearest recorded contract's shape, and for one that states nothing from a pod
-// whose claims record one, and on the record route as on the state, since the record answers the
-// issue the state holds. A caller at the contract reads the new words, which is the state as the
-// source holds it, and the source is left as it was for the next caller.
+// withoutUnadmittedHeldWords, whose heldReasonStandIn names the word). That holds for a caller
+// that states a contract below it, which is served the nearest recorded contract's shape, and for
+// one that states nothing from a pod whose claims record one, and on the record route as on the
+// state, since the record answers the issue the state holds. A caller at the contract reads the
+// new words, which is the state as the source holds it, and the source is left as it was for the
+// next caller.
 func TestAwaitingChildrenNarrowsToAdmittedAndChildrenFirstBelowItsContract(t *testing.T) {
 	state := awaitingChildrenState()
 	const operator = "192.0.2.1:41000"
@@ -73,11 +74,11 @@ func TestAwaitingChildrenNarrowsToAdmittedAndChildrenFirstBelowItsContract(t *te
 		phase  phase.Phase
 		reason record.HeldReason
 	}{
-		{name: "a caller stating the contract just below", remote: operator, claims: podClaims(DaemonAPIVersion), stated: gateBasisContract - 1,
+		{name: "a caller stating the contract just below", remote: operator, claims: podClaims(DaemonAPIVersion()), stated: entryNumber(gateBasisContract) - 1,
 			phase: phase.Admitted, reason: record.HeldChildrenFirst},
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract),
 			phase: phase.Admitted, reason: record.HeldChildrenFirst},
-		{name: "a caller stating the contract", remote: operator, claims: podClaims(pauseContract), stated: gateBasisContract,
+		{name: "a caller stating the contract", remote: operator, claims: podClaims(pauseContract), stated: entryNumber(gateBasisContract),
 			phase: phase.AwaitingChildren, reason: record.HeldAwaitingChildren},
 		{name: "a caller in no pod stating nothing", remote: operator, claims: podClaims(pauseContract),
 			phase: phase.AwaitingChildren, reason: record.HeldAwaitingChildren},

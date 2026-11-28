@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { type ConnectionOptions, ErrorCode, type NatsConnection } from "nats";
 // Not part of nats.js's public surface; nats 2.29.x has them where its connection and server list
@@ -39,6 +40,44 @@ export const NATS_MAX_PINGS_OUT = 2;
  * `connectNats` dials again.
  */
 export const NATS_DIAL_TIMEOUT_MS = 10_000;
+
+/** A whole commit id: the only form of a build commit a connection name carries. */
+const FULL_COMMIT = /^[0-9a-f]{40}$/;
+
+/** A released package's version: three numbers, as the release workflow stamps it. */
+const RELEASE_VERSION = /^\d+\.\d+\.\d+$/;
+
+/**
+ * The build a session plugin names after its NATS connection's name (`clientConnectionName`), which
+ * legacy-subjects-gate.sh reads from the end of each name in the hub's census of connections:
+ * `legion@<commit>` when `stampFile` holds the whole commit the plugin was built from (the worker
+ * image writes `build-commit` beside each plugin's bundle, since a plugin it packs from its checkout
+ * keeps that checkout's manifest version), else `<package>@<version>` for a released package, which
+ * a caller passes as `release` only when it runs a release's packed build, else undefined: a plugin
+ * run from its source names no build, and the gate counts it as a client it cannot judge.
+ */
+export function clientBuild(
+  stampFile: string,
+  release?: { readonly name: string; readonly version: string }
+): string | undefined {
+  let stamp = "";
+  try {
+    stamp = readFileSync(stampFile, "utf8").trim();
+  } catch {
+    // No stamp: a build that is no image's.
+  }
+  if (FULL_COMMIT.test(stamp)) return `legion@${stamp}`;
+  if (release !== undefined && RELEASE_VERSION.test(release.version)) {
+    return `${release.name}@${release.version}`;
+  }
+  return undefined;
+}
+
+/** The name a session plugin's NATS connection presents: `name`, then a space and its build
+ *  (`clientBuild`) when it has one. */
+export function clientConnectionName(name: string, build: string | undefined): string {
+  return build === undefined ? name : `${name} ${build}`;
+}
 
 /** The `connect` options every session plugin dials NATS with: its credential (`natsAuthOptions`:
  * a seed's nkey user, the session's broker token, or none), reconnect attempts without limit, the
@@ -334,6 +373,30 @@ export function natsDialBudget(leftMs: number, afterDialMs: number, plan: NatsDi
   return Math.max(0, Math.min(plan.budgetMs, leftMs - afterDialMs));
 }
 
+/**
+ * The clock a dial reads and times itself on: `now` its monotonic reading in milliseconds, `sleep`
+ * the wait before a redial, and `arm` a dial's bound, which runs `expire` once `ms` have passed
+ * unless the disarm it returns runs first. Every session plugin's dial runs on the process's own
+ * (`performance.now`, `node:timers/promises`' `setTimeout` and `setTimeout`); a test hands
+ * `connectNats` one it drives, which holds each wait and bound until the test ends it, so the test
+ * reads the delays and bounds the dial chose, and their order, and no clock.
+ */
+export interface NatsDialClock {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  arm(ms: number, expire: () => void): () => void;
+}
+
+/** The process's own clock, the one every dial of a session plugin runs on. */
+const PROCESS_CLOCK: NatsDialClock = {
+  now: () => performance.now(),
+  sleep: (ms) => delay(ms),
+  arm: (ms, expire) => {
+    const timer = setTimeout(expire, ms);
+    return () => clearTimeout(timer);
+  },
+};
+
 /** What `connectNats` reads of its caller, and what it tells it. */
 export interface NatsDialHooks {
   /** The bound of the first dial, below `NATS_DIAL_TIMEOUT_MS` when the caller has less time. */
@@ -343,6 +406,10 @@ export interface NatsDialHooks {
   readonly stopped?: () => boolean;
   /** A dial failed and another starts `delayMs` from now; `attempt` counts from 1. */
   readonly onRetry?: (error: unknown, delayMs: number, attempt: number) => void;
+  /** The clock the dial reads and times itself on, the process's own unless a test hands it one
+   *  (`NatsDialClock`). Its `sleep` waits every wait between two dials, the broker-token
+   *  backoff's included, unless `delay` stands in for it. */
+  readonly clock?: NatsDialClock;
   /** The hub refused the session's broker token twice, and the dial `attempt` dropped it and
    *  started another trade (`BrokerNatsCredential.refused`). Called at the drop, before the dial's
    *  budget is read, so a drop at the last dial a call can afford is told too. */
@@ -353,7 +420,8 @@ export interface NatsDialHooks {
   readonly credential?: NatsCredential;
   /** The draw of a refused broker token's wait, uniform in [0, 1): `Math.random`, or a test's. */
   readonly random?: () => number;
-  /** How a wait between two dials is waited: `node:timers/promises`' `setTimeout`, or a test's. */
+  /** How a wait between two dials is waited in place of `clock.sleep`: a test's, which waits for
+   *  a fact of its own (a live token) rather than the wait's length. Unset, the clock waits it. */
   readonly delay?: (ms: number) => Promise<unknown>;
 }
 
@@ -485,7 +553,10 @@ function brokerDialRefusals(
  * still opens closes within its server's share. The connection that opens
  * gets back the whole timeout of `options` for its reconnects (`keepWholeTimeout`). nats.js itself
  * gives up on a first dial that fails (it drops the server unless `waitOnFirstConnect` is set, and
- * with that set it would dial forever, past any deadline of its caller's).
+ * with that set it would dial forever, past any deadline of its caller's). The waits, the
+ * broker-token backoff's included, the bounds and the budget's reading are `hooks.clock`'s, the
+ * process's own unless a test hands it one (a test's `hooks.delay` may wait the waits instead);
+ * nats.js's own timers stay the process's.
  */
 export async function connectNats(
   connect: (options: ConnectionOptions) => Promise<NatsConnection>,
@@ -493,12 +564,13 @@ export async function connectNats(
   plan: NatsDialPlan,
   hooks: NatsDialHooks = {}
 ): Promise<NatsConnection> {
-  const started = performance.now();
-  const elapsed = () => performance.now() - started;
+  const clock = hooks.clock ?? PROCESS_CLOCK;
+  const started = clock.now();
+  const elapsed = () => clock.now() - started;
   const timeout = options.timeout ?? NATS_DIAL_TIMEOUT_MS;
   const servers = Array.isArray(options.servers) ? Math.max(1, options.servers.length) : 1;
   const brokerRefusals = brokerDialRefusals(hooks.credential, hooks.random ?? Math.random);
-  const wait = hooks.delay ?? delay;
+  const wait = hooks.delay ?? ((ms: number) => clock.sleep(ms));
   let delayMs = plan.firstDelayMs;
   let failed: unknown;
   for (let attempt = 1; ; attempt += 1) {
@@ -522,7 +594,8 @@ export async function connectNats(
           ...options,
           timeout: Math.min(bound, Math.max(NATS_MIN_REDIAL_BOUND_MS, Math.floor(bound / servers))),
         },
-        bound
+        bound,
+        clock
       );
       keepWholeTimeout(nc, timeout);
       brokerRefusals?.admitted(dialedAt);
@@ -573,7 +646,8 @@ interface AbandonOption {
 async function boundedDial(
   connect: (options: ConnectionOptions) => Promise<NatsConnection>,
   options: ConnectionOptions,
-  boundMs: number
+  boundMs: number,
+  clock: NatsDialClock
 ): Promise<NatsConnection> {
   const abandon = new AbortController();
   const withAbandon: ConnectionOptions & AbandonOption = {
@@ -582,16 +656,16 @@ async function boundedDial(
   };
   const dialing = connect(withAbandon);
   const expired = Promise.withResolvers<never>();
-  const timer = setTimeout(() => {
+  const disarm = clock.arm(boundMs, () => {
     abandon.abort();
     expired.reject(new NatsDialBoundError(`the NATS dial did not complete within ${boundMs} ms`));
-  }, boundMs);
+  });
   try {
     return await Promise.race([dialing, expired.promise]);
   } catch (error) {
     dialing.then((late) => late.close()).catch(() => undefined);
     throw error;
   } finally {
-    clearTimeout(timer);
+    disarm();
   }
 }

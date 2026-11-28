@@ -58,7 +58,13 @@ import {
  *  - The default repository: the `owner/name` an issue of the project resolves to when neither
  *    the issue nor an issue above it names a repository. A project has one or none, and a person
  *    sets or clears it in the project's row. The project list (`projectsQuery`) holds it, as
- *    `default_repo`, which a project with none does not carry. */
+ *    `default_repo`, which a project with none does not carry.
+ *
+ *  Its create form's groups, in this order: Key, Name, Default assignee and New project, four
+ *  columns from `sm` and one below it; each field shrinks with its column, and a value longer than
+ *  its field ends in an ellipsis with the whole value as its title. A row's Default repository is
+ *  one group: its field, Save, Clear (while the project has one), and the line that says why a
+ *  value was refused. */
 export function ProjectsSection(): ReactNode {
   const queryClient = useQueryClient();
   const [projectKey, setProjectKey] = useState("");
@@ -229,19 +235,21 @@ export function ProjectsSection(): ReactNode {
                 }}
                 placeholder="CORE"
                 required
+                title={projectKey === "" ? undefined : projectKey}
                 value={projectKey}
               />
             </label>
             <label className={settingsFieldLabel} htmlFor="project-name">
               Name
               <input
-                className={`rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+                className={`rounded-md px-3 py-2 text-ellipsis ${inputClasses(false)} ${textPrimaryOnSurface}`}
                 disabled={createProject.isPending}
                 id="project-name"
                 maxLength={PROJECT_NAME_MAX}
                 onChange={(event) => setProjectName(event.target.value)}
                 placeholder="Core"
                 required
+                title={projectName === "" ? undefined : projectName}
                 value={projectName}
               />
             </label>
@@ -396,12 +404,12 @@ interface ProjectSettingWrite<TValue> {
  *  once none is pending it shows the stored value. The row's error is read from the cache too:
  *  when the project's newest save was refused, the row says so with its reason, even on a row
  *  mounted after it failed, until a newer pick or Retry starts another save. Each answer lands in
- *  `read`, the read that holds the setting, so the control does not flash back to the old value,
- *  and `read` is refetched after each save that reached the server settles. */
+ *  `queryKey`, the read that holds the setting, so the control does not flash back to the old
+ *  value, and that read is refetched after each save that reached the server settles. */
 function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
   label,
   project,
-  read,
+  queryKey,
   save,
   setting,
   store,
@@ -410,11 +418,11 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
   /** What the shell's pending-writes indicator names a pick. */
   label: (value: TValue) => string;
   project: string;
-  read: QueryKey;
+  queryKey: QueryKey;
   save: (value: TValue, bounds: WriteBounds) => Promise<TAnswer>;
   /** The setting's name in the mutation key and scope, such as `default-assignee`. */
   setting: string;
-  /** The rows of `read` with a save's answer in them. */
+  /** The rows of the `queryKey` read with a save's answer in them. */
   store: (rows: TRows | undefined, saved: TAnswer) => TRows | undefined;
   /** The setting in the row's refusal, such as `the default assignee`. */
   what: string;
@@ -451,13 +459,13 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
     // after the press can be out still when the answer lands - the save may wait its turn behind
     // another in the scope - so the answer is put over the reads out then as well
     // (`replaceQueryData`).
-    onMutate: () => queryClient.cancelQueries({ queryKey: read }),
+    onMutate: () => queryClient.cancelQueries({ queryKey }),
     onSuccess: (saved) => {
       // Saved with no answer to give: the store reads every query again.
       if (saved === null || "superseded" in saved) {
         return;
       }
-      replaceQueryData<TRows>(queryClient, read, (rows) => store(rows, saved));
+      replaceQueryData<TRows>(queryClient, queryKey, (rows) => store(rows, saved));
     },
     onSettled: (saved) => {
       // With gcTime Infinity nothing else clears this project's saves. A save settles in pick
@@ -473,7 +481,7 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
       // A superseded save changed nothing on the server. Not awaited: the next pick in the scope
       // need not wait for this refetch.
       if (saved == null || !("superseded" in saved)) {
-        void queryClient.invalidateQueries({ queryKey: read });
+        void queryClient.invalidateQueries({ queryKey });
       }
     },
   });
@@ -538,7 +546,7 @@ function useDefaultAssigneeWrite(project: string): ProjectSettingWrite<string> {
   return useProjectSettingWrite<ProjectDefaultAssignee, string, ProjectDefaultAssignee[]>({
     label: (assignee) => `${project}'s default assignee ${assignee}`,
     project,
-    read: projectDefaultAssigneesQuery().queryKey,
+    queryKey: projectDefaultAssigneesQuery().queryKey,
     save: (assignee, bounds) => api.putProjectDefaultAssignee(project, { assignee }, bounds),
     setting: "default-assignee",
     store: (rows, saved) => {
@@ -657,6 +665,7 @@ function DefaultRepositoryCell({
           }}
           placeholder="None"
           spellCheck={false}
+          title={(draft ?? repo ?? "") === "" ? undefined : (draft ?? repo ?? "")}
           value={draft ?? repo ?? ""}
         />
         <button
@@ -700,7 +709,7 @@ function useDefaultRepositoryWrite(project: string): ProjectSettingWrite<string 
         ? `${project}'s default repository cleared`
         : `${project}'s default repository ${repo}`,
     project,
-    read: projectsQuery().queryKey,
+    queryKey: projectsQuery().queryKey,
     save: (repo, bounds) => api.putProjectDefaultRepository(project, { repo }, bounds),
     setting: "default-repository",
     store: (rows, saved) =>

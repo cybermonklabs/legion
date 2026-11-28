@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -212,7 +213,7 @@ func gateEventsOf(t *testing.T, h *harness, issue string) int {
 // away when the test ends.
 func putBasisRecord(t *testing.T, h *harness, at phase.Phase) {
 	t.Helper()
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(_ context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: basisP, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: basisP, Project: testProject,
 			Title: basisP, Phase: at, Status: "in_progress",
@@ -311,7 +312,7 @@ func TestBasisGateRefusals(t *testing.T) {
 		{name: "P in Dispatch status retro", change: func(world *statusRecorder, _ map[string]any) { setStatus(world, basisP, "retro") },
 			status: http.StatusConflict, code: "BASIS_ACCEPTED", says: []string{"Dispatch shows LEGION-150 retro"}},
 		{name: "P recorded by the daemon in merging", record: phase.Merging,
-			status: http.StatusConflict, code: "BASIS_ACCEPTED", says: []string{"the daemon records LEGION-150 in merging"}},
+			status: http.StatusConflict, code: "BASIS_ACCEPTED", says: []string{"the daemon records LEGION-150 in merging, so it has accepted the head the step before LEGION-150's retro passed;"}},
 		{name: "P's document with no review", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[pSpec] = dispatch.Approval{State: "draft", LatestVersion: 3}
 			world.reviews[pSpec] = nil
@@ -485,21 +486,21 @@ func TestBasisGateOpenings(t *testing.T) {
 		id     string
 	}{
 		{name: "the world every refusal starts from",
-			want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) },
+			want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect) },
 			id:   ":basis:" + pSpec + ":3:view-of:LEGION-150"},
 		{name: "P on the backlog", change: func(world *statusRecorder, _ map[string]any) { setStatus(world, basisP, "backlog") },
-			want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) }},
+			want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect) }},
 		{name: "P in icebox", change: func(world *statusRecorder, _ map[string]any) { setStatus(world, basisP, "icebox") },
-			want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) }},
+			want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect) }},
 		{name: "P recorded by the daemon at work", record: phase.Implementing,
-			want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) }},
+			want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect) }},
 		{name: "a check whose serves names P2 pinned to another version", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", p2+"@v2"))
-		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) }},
+		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect) }},
 		{name: "a check whose serves names a block id that a reference percent-encodes", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/spec#b-p%3A4@v3"))
 		}, want: func(seq int64) intake.GateRegistered {
-			fact := basisFact(seq, architect.session)
+			fact := basisFact(seq, architect)
 			fact.Basis.Serves = served("dispatch://LEGION-150/spec#b-p%3A4@v3")
 			return fact
 		}},
@@ -507,32 +508,32 @@ func TestBasisGateOpenings(t *testing.T) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/spec#b-p1", "dispatch://LEGION-150/spec#b-p3")+
 				checkBlockOf("k2", "dispatch://LEGION-150/spec#b-p3@v3"))
 		}, want: func(seq int64) intake.GateRegistered {
-			fact := basisFact(seq, architect.session)
+			fact := basisFact(seq, architect)
 			fact.Basis.Serves = served("dispatch://LEGION-150/spec#b-p1@v3", "dispatch://LEGION-150/spec#b-p3@v3")
 			return fact
 		}},
 		{name: "R holding the person's approval of an older version of its own document", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[rSpec] = dispatch.Approval{State: "stale", LatestVersion: 4, Version: new(2), By: basisAlice, Seq: 5, At: basisApprovedAt}
 			world.reviews[rSpec] = []dispatch.Review{{Version: 2, State: "approved", Actor: basisAlice}}
-		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) }},
+		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect) }},
 		{name: "a changes request on R's v2 followed by the person's approval of R's v3, with R at v4", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[rSpec] = dispatch.Approval{State: "stale", LatestVersion: 4, Version: new(3), By: basisAlice, Seq: 6, At: basisApprovedAt}
 			world.reviews[rSpec] = []dispatch.Review{
 				{Version: 3, State: "approved", Actor: basisAlice},
 				{Version: 2, State: "changes_requested", Actor: basisAlice, Reason: "name the rollback path"},
 			}
-		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) }},
+		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect) }},
 		// P's live text past the version the person approved drops p2: the view is judged at the
 		// approved version 3, which marks p2, so R's one check of p2 opens the step on it.
 		{name: "P's live text past its approved version: a check serving P2, which the live text drops", change: func(world *statusRecorder, _ map[string]any) {
 			liveTextPastApproval(world)
-		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) }},
+		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect) }},
 		{name: "G's approval with P neither reviewed nor requested", change: func(world *statusRecorder, body map[string]any) {
 			gUnderP(world)
 			world.approvals[pSpec] = dispatch.Approval{State: "draft", LatestVersion: 3}
 			body["basisArtifactId"], body["basisVersion"] = gSpec, 5
 		}, want: func(seq int64) intake.GateRegistered {
-			fact := basisFact(seq, architect.session)
+			fact := basisFact(seq, architect)
 			fact.Basis.Issue, fact.Basis.ArtifactID, fact.Basis.Version = basisG, gSpec, 5
 			fact.Basis.Approval = record.EventMark{Seq: 51, At: basisApprovedAt}
 			fact.Basis.Serves = served("dispatch://LEGION-120/spec#b-g1@v5")
@@ -549,7 +550,7 @@ func TestBasisGateOpenings(t *testing.T) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/spec#b-p5@v4"))
 			body["basisVersion"] = 4
 		}, want: func(seq int64) intake.GateRegistered {
-			fact := basisFact(seq, architect.session)
+			fact := basisFact(seq, architect)
 			fact.Basis.Version, fact.Basis.Approval, fact.Basis.Approver = 4, record.EventMark{}, ""
 			fact.Basis.Serves = served("dispatch://LEGION-150/spec#b-p5@v4")
 			fact.Basis.Pending = &record.PendingBasis{Ask: "ask-p4"}
@@ -561,7 +562,7 @@ func TestBasisGateOpenings(t *testing.T) {
 			world.approvals[rSpec] = dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), By: basisAlice, Seq: 7, At: basisApprovedAt}
 			world.reviews[rSpec] = []dispatch.Review{{Version: 4, State: "approved", Actor: basisAlice}}
 		}, want: func(seq int64) intake.GateRegistered {
-			fact := basisFact(seq, architect.session)
+			fact := basisFact(seq, architect)
 			fact.Basis = nil
 			fact.ApprovedVersion, fact.ApprovedMark, fact.ReviewedBy = 4, record.EventMark{Seq: 7, At: basisApprovedAt}, basisAlice
 			return fact
@@ -593,14 +594,15 @@ func TestBasisGateOpenings(t *testing.T) {
 }
 
 // basisFact is the registration the world every basis case starts from records, read at R's event
-// sequence seq by the architect session: R's document at version 4 on P's approved version 3,
-// whose approval Dispatch recorded at sequence 21 of P's log, given by alice; R's one check serves
-// P2; and the view fact names P.
-func basisFact(seq int64, session string) intake.GateRegistered {
+// sequence seq by `by`, the architect's live claim: R's document at version 4 on P's approved
+// version 3, whose approval Dispatch recorded at sequence 21 of P's log, given by alice; R's one
+// check serves P2; the view fact names P; and the fact carries the claim that made the call
+// (api's gateRegister).
+func basisFact(seq int64, by liveClaim) intake.GateRegistered {
 	return intake.GateRegistered{Issue: basisR, Step: record.DesignStepSpec, ArtifactID: rSpec, Version: 4, DispatchVersion: 4,
-		Since: record.EventMark{Seq: seq},
+		Since: record.EventMark{Seq: seq}, By: by.token,
 		Basis: &record.GateBasis{Issue: basisP, ArtifactID: pSpec, Version: 3, Approval: record.EventMark{Seq: 21, At: basisApprovedAt},
-			Approver: "user:alice", Serves: []string{"dispatch://LEGION-150/spec#b-p2@v3"}, Reason: basisReason(reasonRunes), Session: session},
+			Approver: "user:alice", Serves: []string{"dispatch://LEGION-150/spec#b-p2@v3"}, Reason: basisReason(reasonRunes), Session: by.session},
 		ViewOf: basisP}
 }
 
@@ -617,7 +619,7 @@ func TestTheCriteriaStepsBasisGateIsTheAncestorsVerificationDocument(t *testing.
 		t.Fatalf("register the criteria step on P's Verification document = %d: %s", recorder.Code, recorder.Body)
 	}
 	want := intake.GateRegistered{Issue: basisR, Step: record.DesignStepCriteria, ArtifactID: rVerification, Version: 2, DispatchVersion: 2,
-		Since: record.EventMark{Seq: 300},
+		Since: record.EventMark{Seq: 300}, By: architect.token,
 		Basis: &record.GateBasis{Issue: basisP, ArtifactID: pVerification, Version: 2, Approval: record.EventMark{Seq: 22, At: basisApprovedAt},
 			Approver: "user:alice", Serves: []string{"dispatch://LEGION-150/spec#b-p2@v3"}, Reason: basisReason(reasonRunes), Session: architect.session}}
 	if got := facts.recorded(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
@@ -653,7 +655,7 @@ func TestTheDecisionsStepsBasisGateIsTheAncestorsDecisionsDocument(t *testing.T)
 		t.Fatalf("register the decisions step on P's decisions document = %d: %s", recorder.Code, recorder.Body)
 	}
 	want := intake.GateRegistered{Issue: basisR, Step: record.DesignStepDecisions, ArtifactID: rDecisions, Version: 1, DispatchVersion: 1,
-		Since: record.EventMark{Seq: 301},
+		Since: record.EventMark{Seq: 301}, By: architect.token,
 		Basis: &record.GateBasis{Issue: basisP, ArtifactID: pDecisions, Version: 1, Approval: record.EventMark{Seq: 23, At: basisApprovedAt},
 			Approver: "user:alice", Serves: []string{"dispatch://LEGION-150/spec#b-p2@v3"}, Reason: basisReason(reasonRunes), Session: architect.session}}
 	if got := facts.recorded(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
@@ -723,7 +725,7 @@ func TestEveryGateRegistrationOfTheSpecStepRecordsItsViewFact(t *testing.T) {
 			}
 			got := facts.recorded()[before:]
 			want := intake.GateRegistered{Issue: basisR, Step: record.DesignStepSpec, ArtifactID: rSpec, Version: 4, DispatchVersion: 4,
-				Since: record.EventMark{Seq: seq}, ViewOf: tc.viewOf}
+				Since: record.EventMark{Seq: seq}, ViewOf: tc.viewOf, By: architect.token}
 			if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 				t.Fatalf("registration facts = %#v, want %#v", got, want)
 			}
@@ -823,7 +825,7 @@ func basisEngineHarness(t *testing.T, world *statusRecorder, seam func(context.C
 func specGateOf(t *testing.T, h *harness) *record.DesignGate {
 	t.Helper()
 	var gate *record.DesignGate
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(_ context.Context, tx pgx.Tx) error {
 		gates, err := record.NewStore().GatesOf(context.Background(), tx, basisR)
 		gate = record.SpecGate(gates)
 		return err

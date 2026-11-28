@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { skipWithout } from "@legion/test-fixtures/host-tools"
 import { queryTmux, sessionTitle, type TmuxQuery, tmuxPaneTitle } from "../src/session-title"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const SESSION_ID = "3084299d-32a7-41a3-ba9b-f61675b03b8d"
 const SERVER_PID = "4242"
@@ -409,7 +410,7 @@ test.skipIf(withoutTmux)(
           "-e",
           `import { queryTmux } from ${JSON.stringify(source)}; process.stdout.write(JSON.stringify(await queryTmux(${JSON.stringify(socket)}, ${JSON.stringify(pane)}, "#{session_name}\\t#{pid}")))`,
         ],
-        { env: { PATH: process.env["PATH"] ?? "", HOME: directory } },
+        { env: { PATH: process.env["PATH"] ?? "", HOME: directory, ...NO_TRANSPILER_CACHE } },
       )
       expect(child.stdout.toString()).toBe(JSON.stringify(`probe\t${pid}\n`))
     } finally {
@@ -438,7 +439,13 @@ test("queryTmux is bounded even by a tmux that ignores SIGTERM", () => {
         "-e",
         `import { queryTmux } from ${JSON.stringify(source)}; const started = Date.now(); const answer = await queryTmux("/nonexistent/tmux.sock", "%0", "x"); process.stdout.write(\`\${String(answer)} \${Date.now() - started}\`)`,
       ],
-      { env: { PATH: `${directory}:${process.env["PATH"] ?? ""}`, HOME: directory } },
+      {
+        env: {
+          PATH: `${directory}:${process.env["PATH"] ?? ""}`,
+          HOME: directory,
+          ...NO_TRANSPILER_CACHE,
+        },
+      },
     )
     const ran = Date.now() - started
     const [answer, elapsed] = child.stdout.toString().split(" ")

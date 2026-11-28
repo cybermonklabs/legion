@@ -150,12 +150,10 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -268,6 +266,7 @@ type sessionsLive struct {
 // that failed its assertion, or one that stopped before it. It stops at a run of either arm that
 // the harness failed too (run). A run that -test.run leaves out is none of these.
 func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of PATH in newSessionsLive).
 	fixtureenv.Live(t)
 	pick, err := pickSessions(os.Getenv(sessionsStepEnv), os.Getenv(sessionsArmEnv), os.Getenv(sessionsRunsEnv))
 	if err != nil {
@@ -822,21 +821,16 @@ func (r *sessionsRun) keepTranscripts() []string {
 	return refused
 }
 
-// version2 answers whether artifact has a version 2, and that version as Dispatch answers it.
+// version2 answers whether artifact has a version 2, and that version as Dispatch answers it
+// (dispatchExchange, with the agent bearer).
 func (r *sessionsRun) version2(artifact string) (bool, string) {
 	r.t.Helper()
-	request, err := http.NewRequest(http.MethodGet, r.s.dispatch.base+"/api/v1/artifacts/"+artifact+"/versions/2", nil)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	request.Header.Set("Authorization", "Bearer "+r.s.dispatch.token)
-	response, err := r.s.client.Do(request)
+	status, answer, err := dispatchExchange(r.s.client, r.s.dispatch.base, http.MethodGet, "/api/v1/artifacts/"+artifact+"/versions/2", nil,
+		bearing(r.s.dispatch.token))
 	if err != nil {
 		r.t.Fatalf("read version 2 of %s: %v", artifact, err)
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	return response.StatusCode == http.StatusOK, string(body)
+	return status == http.StatusOK, string(answer)
 }
 
 // approvalAsks is every approval request Dispatch holds on key, as the issue's asks list it.
@@ -912,44 +906,25 @@ func (r *sessionsRun) edit(artifact, session, find, with string, want int) {
 // dispatchAs sends one request to Dispatch as the person smoke, requiring a 2xx answer.
 func (r *sessionsRun) dispatchAs(method, path string, body, into any) {
 	r.t.Helper()
-	r.dispatchCall(method, path, body, 0, into, func(request *http.Request) { request.Header.Set("X-Dispatch-User", versionNewsPerson) })
+	r.dispatchCall(method, path, body, 0, into, dispatchUser(versionNewsPerson))
 }
 
 // dispatchAgent sends one request to Dispatch with the agent bearer, requiring want.
 func (r *sessionsRun) dispatchAgent(method, path string, body any, want int, into any) {
 	r.t.Helper()
-	r.dispatchCall(method, path, body, want, into, func(request *http.Request) { request.Header.Set("Authorization", "Bearer "+r.s.dispatch.token) })
+	r.dispatchCall(method, path, body, want, into, bearing(r.s.dispatch.token))
 }
 
-// dispatchCall is one request to Dispatch; want 0 takes any 2xx answer. A failure fails the run's
-// own test, from the goroutine that runs it.
+// dispatchCall is one request to Dispatch (dispatchExchange); want 0 takes any 2xx answer. A
+// failure fails the run's own test, from the goroutine that runs it.
 func (r *sessionsRun) dispatchCall(method, path string, body any, want int, into any, identify func(*http.Request)) {
 	r.t.Helper()
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			r.t.Fatal(err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-	request, err := http.NewRequest(method, r.s.dispatch.base+path, reader)
+	status, answer, err := dispatchExchange(r.s.client, r.s.dispatch.base, method, path, body, identify)
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	request.Header.Set("Content-Type", "application/json")
-	identify(request)
-	response, err := r.s.client.Do(request)
-	if err != nil {
-		r.t.Fatalf("Dispatch %s %s: %v", method, path, err)
-	}
-	defer response.Body.Close()
-	answer, err := io.ReadAll(response.Body)
-	if err != nil {
-		r.t.Fatalf("read Dispatch's answer to %s %s: %v", method, path, err)
-	}
-	if (want != 0 && response.StatusCode != want) || (want == 0 && response.StatusCode/100 != 2) {
-		r.t.Fatalf("Dispatch %s %s = %d %s", method, path, response.StatusCode, answer)
+	if refused := dispatchRefused(method, path, want, status, answer); refused != "" {
+		r.t.Fatal(refused)
 	}
 	if into != nil {
 		if err := json.Unmarshal(answer, into); err != nil {

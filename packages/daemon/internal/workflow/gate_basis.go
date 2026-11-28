@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -69,10 +68,10 @@ func standsOn(gate record.DesignGate, basis record.GateBasis) bool {
 // one lock every fact takes (intake.SerializeFacts), so the two apply in one order: a sign-off or
 // close applied first is read here, the close by the status it wrote on the ancestor's record
 // before Dispatch's event of it comes back, and refuses the registration; one applied after reads
-// the row the registration wrote among the roots that rest on the ancestor (RestingRoots) and is
-// refused itself (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). The refusal writes nothing and leaves the
-// fact unspent (intake.Result.Unspent): its cause can clear, as a move of the ancestor back out of
-// its retro clears it, and a call made again is then judged afresh rather than answered as one
+// the row the registration wrote among the roots that rest on the ancestor (record.RestingRoots)
+// and is refused itself (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). The refusal writes nothing and leaves
+// the fact unspent (intake.Result.Unspent): its cause can clear, as a move of the ancestor back out
+// of its retro clears it, and a call made again is then judged afresh rather than answered as one
 // already applied. A step the deployment does not gate takes no basis (registeredBasis), so it
 // refuses nothing, and neither does a registration on a root out of the workflow, whose basis
 // gateRegistered drops before it asks.
@@ -87,8 +86,7 @@ func (e *Engine) acceptedBasis(ctx context.Context, tx pgx.Tx, fact intake.GateR
 	}
 	e.logOnCommit(ctx, "workflow: a registration on a basis whose ancestor was accepted since register_gate read it records nothing", "issue", fact.Issue,
 		"step", fact.Step.OrSpec(), "ancestor", ancestor, "accepted", why)
-	result := refused("BASIS_ACCEPTED", fmt.Sprintf("%s, so %s has been accepted since this registration read it; a basis is an ancestor not yet accepted, so request a person's approval of the issue's own document",
-		why, ancestor))
+	result := refused("BASIS_ACCEPTED", fmt.Sprintf("%s, so %s has been accepted since this registration read it; %s", why, ancestor, record.BasisNotYetAccepted))
 	result.Unspent = true
 	return result, nil
 }
@@ -96,8 +94,10 @@ func (e *Engine) acceptedBasis(ctx context.Context, tx pgx.Tx, fact intake.GateR
 // ancestorLeft is the act by which ancestor left R1's first condition, as the end of a pending
 // step's wait names it, or "" where it has not: why, what the daemon's own store shows
 // (record.BasisAcceptance), comes first, then the ancestor's Dispatch status, "" for none read, and
-// whether it carries the legion label (labelled), as the caller read them: from an event or a read
-// of Dispatch, or, on the live approval's path, the label as the daemon last recorded it.
+// whether it carries the legion label (labelled). The pending-basis seed's read of Dispatch gives
+// the status and the label (judgeBasisRead), an event of the ancestor's issue gives its own to say
+// whether it can be a cue at all (readBasisOnCue), and the daemon's own move of the ancestor gives
+// why alone (movedAccepted).
 func ancestorLeft(ancestor, why, status string, labelled bool) string {
 	switch {
 	case why != "":
@@ -110,6 +110,15 @@ func ancestorLeft(ancestor, why, status string, labelled bool) string {
 	return ""
 }
 
+// movedAccepted is the act by which the daemon's own move of key into to, retro or merging,
+// accepted it (record.Accepted), as the end of a step's wait on key's approval request names it
+// (ancestorLeft): "The daemon moved LEGION-100 into retro, so LEGION-100 is accepted." The pass of
+// a step into either phase (transition) and the release of a parent held before its retro
+// (StartHeldRetro) end such waits with it.
+func movedAccepted(key string, to phase.Phase) string {
+	return ancestorLeft(key, fmt.Sprintf("The daemon moved %s into %s", key, to), "", true)
+}
+
 // recordViewOf writes the view fact a registration of root's spec step carries (Issue.ViewOf, R4):
 // the ancestor whose requirement blocks the root's documents read as a view on, "" for none. It is
 // what that registration read of the root's documents, so the newest registration's fact stands;
@@ -120,7 +129,7 @@ func (e *Engine) recordViewOf(ctx context.Context, tx pgx.Tx, root *record.Issue
 		return nil
 	}
 	root.ViewOf = viewOf
-	return e.store.PutIssue(ctx, tx, *root)
+	return e.WriteIssue(ctx, tx, *root)
 }
 
 // sameBasis says whether a and b rest a step on one ancestor's approval: the same document of the
@@ -132,22 +141,45 @@ func sameBasis(a, b *record.GateBasis) bool {
 	return a.Issue == b.Issue && a.ArtifactID == b.ArtifactID && a.Version == b.Version
 }
 
-// openedNotice is the design-approved notice of a registration that opened gate on root. For a
-// step a person's approval of the root's own document opened, it names the version registered and
-// reviewer, the person whose approval the read carried, as it always has. For a step an ancestor's
+// ancestorOpenedStep is the opening of each text that tells a step an ancestor's approval opened, a
+// format of the step and the root: the design-approved notice's reason (tellOpened) and the
+// resting-root notice of the opening (tellRegisteredBasis).
+const ancestorOpenedStep = "An ancestor's approval opened the %s step of %s."
+
+// tellOpened queues the design-approved notice of a registration, or of the opening of a step that
+// waited on an ancestor's request, that opened gate on root. For a step a person's approval of the
+// root's own document opened, the notice names the version registered and reviewer, the person
+// whose approval the read carried, as it always has, with Dispatch's mark of that approval and the
+// document approved (record.Notice.Review and Artifact), so a decision kept from it is asked by
+// Dispatch's order and of its own document (SupersedingApproval). For a step an ancestor's
 // approval opened it names that basis: the ancestor's document for the step as its reference, the
 // version a person approved and that person, with a reason that names the root's version and says
 // that no person approved it (R1, R2).
-func openedNotice(root string, gate record.DesignGate, reviewer string) record.Notice {
+//
+// The notice tells a person's decision, so it is asked first whether that decision is still the
+// person's word, as every sender of one asks and as the relay of this notice asks it again
+// (NoticeSuperseded, the outbox's parkDecision): of gate as the opening leaves it, under the steps
+// the deployment gates. One that is no longer their word is told to nobody. A basis names the
+// ancestor's document, which no gate of root holds, so it is asked of no gate and stands
+// (RefSuperseded).
+func (e *Engine) tellOpened(ctx context.Context, tx pgx.Tx, root string, gate record.DesignGate, reviewer string) error {
 	step := gate.Step.OrSpec()
-	if !gate.OnBasis() {
-		return record.Notice{Kind: "design-approved", Version: gate.LatestVersion, Actor: reviewer, Ref: stepRef(root, step)}
+	notice := record.Notice{Kind: "design-approved", Version: gate.LatestVersion, Actor: reviewer, Ref: stepRef(root, step),
+		Review: gate.ApprovedMark, Artifact: gate.ArtifactID}
+	if gate.OnBasis() {
+		basis := gate.Basis
+		notice = record.Notice{Kind: "design-approved", Version: basis.Version, Actor: basis.Approver, Ref: stepRef(basis.Issue, step),
+			Reason: fmt.Sprintf(ancestorOpenedStep+" A person approved version %d of the %s of %s. "+
+				"%s registered version %d of its own %s on that approval. No person approved that version.",
+				step, root, basis.Version, step.Document(), basis.Issue, root, gate.LatestVersion, step.Document())}
 	}
-	basis := gate.Basis
-	return record.Notice{Kind: "design-approved", Version: basis.Version, Actor: basis.Approver, Ref: stepRef(basis.Issue, step),
-		Reason: fmt.Sprintf("An ancestor's approval opened the %s step of %s. A person approved version %d of the %s of %s. "+
-			"%s registered version %d of its own %s on that approval. No person approved that version.",
-			step, root, basis.Version, step.Document(), basis.Issue, root, gate.LatestVersion, step.Document())}
+	gates := map[record.DesignStep]record.DesignGate{step: gate}
+	if superseded := NoticeSuperseded(gates, e.cfg.Steps, root, notice, record.DecisionDesignApproved); superseded != nil {
+		e.logOnCommit(ctx, "workflow: an opening whose approval is no longer the person's word is not told", "issue", root,
+			"step", step, "version", notice.Version)
+		return nil
+	}
+	return e.notice(ctx, tx, root, notice)
 }
 
 // tellRegisteredBasis tells what a registration on a basis does beyond a person's approval of the
@@ -202,7 +234,7 @@ func (e *Engine) tellRegisteredBasis(ctx context.Context, tx pgx.Tx, root record
 		}
 		e.logOnCommit(ctx, "workflow: a design gate step opened on an ancestor's approval", "issue", root.Key, "step", step,
 			"version", gate.LatestVersion, "ancestor", basis.Issue, "basis", basis.ArtifactID, "basis_version", basis.Version, "recorded_before", stood)
-		what := fmt.Sprintf("An ancestor's approval opened the %s step of %s. A person approved version %d of %s. %s rests on this approval.",
+		what := fmt.Sprintf(ancestorOpenedStep+" A person approved version %d of %s. %s rests on this approval.",
 			step, root.Key, basis.Version, documentOf(basis.Issue, step), root.Key)
 		return e.queueRestingRoot(ctx, tx, root, step, basis, restingOpened, what)
 	}
@@ -241,7 +273,7 @@ func basisOpenedMessage(root string, gate record.DesignGate) string {
 	if len(basis.Serves) == 0 {
 		line("%s", servesSentence(root, basis.Issue, nil))
 	} else {
-		line("The checks of %s serve these requirements of %s:", root, basis.Issue)
+		line("%s:", servesOpening(root, basis.Issue))
 		for _, served := range basis.Serves {
 			body.WriteString("  - " + served + "\n")
 		}
@@ -278,7 +310,7 @@ func restingEnded(ask string) restingRootEvent { return "ended:" + restingRootEv
 // restingClosed is a resting root's close as done, and restingLeft its leave of the workflow any
 // other way: a move to backlog, icebox or triage, or admission's leave of a root it found with
 // neither a slot nor a place in the line (tellRestingLeft). Either ends the wait of the ancestor's
-// sign-off and close for that root (RestingRoots).
+// sign-off and close for that root (record.RestingRoots).
 const (
 	restingClosed restingRootEvent = "closed"
 	restingLeft   restingRootEvent = "left"
@@ -289,14 +321,16 @@ const (
 // so it reaches that architect as any notice keyed by an issue does (the outbox's
 // owningArchitect). It names the ancestor's document for the step as its reference and the
 // version the step rests or waits on, and its reason is what (what happened, naming the root and
-// its step) and the ancestor's requirements the root's checks serve (basis.Serves). It is the one
-// way the notice is queued: a registration (tellRegisteredBasis), the end of a pending wait, and a
-// resting root's close or its leaving the workflow each call it with the event it tells.
+// its step) and the ancestor's requirements the root's checks serve (basis.Serves). A
+// registration (tellRegisteredBasis), the end of a pending wait, and a resting root's close or its
+// leaving the workflow each call it with the event it tells; the end of a pending wait that the
+// pending-basis seed's read made calls it through queueRestingEnded, the one caller that tells an
+// ancestor outside a live tree.
 //
 // Where the daemon records the ancestor in no live tree (ancestorInLiveTree) it queues nothing
 // and records nothing as told: no architect of the ancestor would hear it, and the ancestor's start
 // task at its admission names the roots that rest on it. Otherwise each event is told once
-// (restingRootEvent), marked in the notice's own transaction.
+// (tellRestingRoot).
 func (e *Engine) queueRestingRoot(ctx context.Context, tx pgx.Tx, root record.Issue, step record.DesignStep, basis record.GateBasis, event restingRootEvent, what string) error {
 	live, err := e.ancestorInLiveTree(ctx, tx, basis.Issue)
 	if err != nil {
@@ -307,6 +341,41 @@ func (e *Engine) queueRestingRoot(ctx context.Context, tx pgx.Tx, root record.Is
 			"ancestor", basis.Issue, "event", string(event))
 		return nil
 	}
+	return e.tellRestingRoot(ctx, tx, root, step, basis, event, what)
+}
+
+// queueRestingEnded tells the architect of basis's ancestor that the pending-basis seed's read of
+// Dispatch ended root's step's wait on the ancestor's request (pendingBasisRead), as
+// queueRestingRoot tells it, and in one case more (dispatch://INFRA-3320, open-items item 43):
+// the daemon records the ancestor as the root of its own tree, and that tree lingers after its
+// close (record.TreeLingers, asked of the tree the ancestor is the root of, since a linger
+// deadline is a root's alone). An ancestor root set done closes its tree, so the seed its close
+// queued reads Dispatch once that tree lingers, and the end of the wait is the last notice its
+// architect gets of the root. The notice goes out as any notice keyed by the ancestor does: an
+// architect that has ended never gets it, and the outbox finishes the row undelivered; nothing is
+// started or woken for it. An ancestor the daemon records in no tree, or does not record, is told
+// nothing, and every other notice keeps queueRestingRoot's rule, an ancestor of another project
+// than the daemon's own among them (ancestorInLiveTree): that project's daemon runs its tree.
+func (e *Engine) queueRestingEnded(ctx context.Context, tx pgx.Tx, root record.Issue, step record.DesignStep, basis record.GateBasis, what string) error {
+	event := restingEnded(basis.Pending.Ask)
+	if project, _, _ := strings.Cut(basis.Issue, "-"); e.cfg.Project != "" && project != e.cfg.Project {
+		return e.queueRestingRoot(ctx, tx, root, step, basis, event, what)
+	}
+	lingers, err := record.TreeLingers(ctx, e.store, tx, basis.Issue)
+	if err != nil {
+		return err
+	}
+	if !lingers {
+		return e.queueRestingRoot(ctx, tx, root, step, basis, event, what)
+	}
+	e.logOnCommit(ctx, "workflow: the ancestor is the root of a tree that lingers after its close, and its architect is told the end of the wait on its request as the outbox delivers any notice keyed by it",
+		"issue", root.Key, "ancestor", basis.Issue, "event", string(event))
+	return e.tellRestingRoot(ctx, tx, root, step, basis, event, what)
+}
+
+// tellRestingRoot queues the resting-root notice queueRestingRoot and queueRestingEnded tell,
+// once for each event (restingRootEvent), marked in the notice's own transaction.
+func (e *Engine) tellRestingRoot(ctx context.Context, tx pgx.Tx, root record.Issue, step record.DesignStep, basis record.GateBasis, event restingRootEvent, what string) error {
 	fresh, err := e.store.MarkProcessed(ctx, tx, "resting-root-told", fmt.Sprintf("%s:%d:%s:%s", root.Key, root.Generation, basis.Issue, event))
 	if err != nil || !fresh {
 		if err == nil {
@@ -325,18 +394,28 @@ func servesSentence(root, ancestor string, serves []string) string {
 	if len(serves) == 0 {
 		return fmt.Sprintf("The daemon records no requirement of %s that the checks of %s serve.", ancestor, root)
 	}
-	return fmt.Sprintf("The checks of %s serve these requirements of %s: %s.", root, ancestor, strings.Join(serves, ", "))
+	return servesOpening(root, ancestor) + ": " + strings.Join(serves, ", ") + "."
+}
+
+// servesOpening is the opening of each text that names the ancestor's requirements the checks of
+// root serve: servesSentence's, and the basis-opened message's line above the list of them
+// (basisOpenedMessage).
+func servesOpening(root, ancestor string) string {
+	return fmt.Sprintf("The checks of %s serve these requirements of %s", root, ancestor)
 }
 
 // ancestorInLiveTree says whether the daemon records key in a live tree: key is recorded, and the
 // root of the tree its record names is live (record.TreeLive). It is where a notice keyed by key
-// reaches an architect. An issue of another project than the daemon's own is in none, whatever a
-// record shared with that project's daemon says: that daemon runs its tree, and this daemon's
-// outbox takes no row keyed by it, so the ancestor's architect hears no notice of a root of this
-// project (no resting-root, no basis-changes-requested). The ancestor's own daemon still reads such
-// a root's record on the database the daemons share, so the root holds the ancestor's sign-off and
-// close, whose refusals name it, and the ancestor's architect's catch-up names it (RestingRoots);
-// where the root is a Dispatch child of the ancestor, its open-child count names it too.
+// reaches an architect, and every notice of a root's rest on key asks it (queueRestingRoot,
+// tellBasisChanges) but the end of a pending wait the pending-basis seed's read made, which
+// reaches an ancestor root whose tree lingers as well (queueRestingEnded). An issue of another
+// project than the daemon's own is in none, whatever a record shared with that project's daemon
+// says: that daemon runs its tree, and this daemon's outbox takes no row keyed by it, so the
+// ancestor's architect hears no notice of a root of this project (no resting-root, no
+// basis-changes-requested). The ancestor's own daemon still reads such a root's record on the
+// database the daemons share, so the root holds the ancestor's sign-off and close, whose refusals
+// name it, and the ancestor's architect's catch-up names it (RestingRoots); where the root is a
+// Dispatch child of the ancestor, its open-child count names it too.
 func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
 	if project, _, _ := strings.Cut(key, "-"); e.cfg.Project != "" && project != e.cfg.Project {
 		return false, nil
@@ -359,16 +438,16 @@ func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) 
 // left (tellRestingLeft), and then each step that waits, closed, on an ancestor's open approval
 // request ends that wait with nobody told (endPendingUntold). The leave is the last that
 // architect hears of root in this generation. A wait left standing would open the step on the
-// person's approval of the ancestor's version, by its live event or by the pending-basis seed's
-// read of it, which the boot queues for every step still waiting: the ancestor's architect would
-// hear that root rests on it again, root's issue would get the message of the basis, and root's
-// architect design-approved, which a lingering tree parks as a person's decision for its next
-// start, though a re-admission keeps nothing of the basis (R3). Any other act that ends a wait
-// would tell both architects of a step nobody runs, but for the check each end makes of the root
-// (openPendingBasis, tellPendingEnded), which ends a wait a release that ended none at the leave
-// left standing on such a root with nobody told. A row of a step the deployment does not gate
-// holds nothing and takes no event, as basisArtifact rules, so it is left as it is. The root's
-// steps are read once for both.
+// person's approval of the ancestor's version, by the pending-basis seed's read of it, which its
+// live event queues and the boot queues for every step still waiting: the ancestor's architect
+// would hear that root rests on it again, root's issue would get the message of the basis, and
+// root's architect design-approved, which a lingering tree parks as a person's decision for its
+// next start, though a re-admission keeps nothing of the basis (R3). Any other act that ends a
+// wait would tell both architects of a step nobody runs, but for the check each end makes of the
+// root (openPendingBasis, tellPendingEnded), which ends a wait a release that ended none at the
+// leave left standing on such a root with nobody told. A row of a step the deployment does not
+// gate holds nothing and takes no event, as basisArtifact rules, so it is left as it is. The
+// root's steps are read once for both.
 func (e *Engine) leaveBases(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
 	gates, err := e.store.GatesOf(ctx, tx, root.Key)
 	if err != nil || len(gates) == 0 {
@@ -392,9 +471,9 @@ func (e *Engine) leaveBases(ctx context.Context, tx pgx.Tx, root record.Issue, s
 // tellRestingLeft tells the architect of each ancestor that root rests on (R8) that root has left
 // the workflow for status (leaveBases): closed as done (restingClosed), or out of the workflow any
 // other way (restingLeft). gates is root's steps as the leave read them. The ancestor's sign-off
-// and close wait for a resting root while it is in the workflow (RestingRoots), so this tells the
-// end of that wait. A step rests on each ancestor a basis opened it on (RestsOn) and on the
-// ancestor its basis names now, standing or pending (record.DesignGate.RestsOnIssue), so one
+// and close wait for a resting root while it is in the workflow (record.RestingRoots), so this
+// tells the end of that wait. A step rests on each ancestor a basis opened it on (RestsOn) and on
+// the ancestor its basis names now, standing or pending (record.DesignGate.RestsOnIssue), so one
 // notice goes to each such ancestor, once per root, generation, ancestor and event
 // (queueRestingRoot), naming each step that rests there and the requirements the root's checks
 // serve, each once. The document and the version the notice names are one step's: the ancestor's
@@ -402,7 +481,8 @@ func (e *Engine) leaveBases(ctx context.Context, tx pgx.Tx, root record.Issue, s
 // names. A step whose basis a new version of the root's own document ended, or a later
 // registration moved to another ancestor, keeps only the rest, so where no step's basis names the
 // ancestor the notice names the ancestor's document for the first step that rests there, no
-// version and no requirement.
+// version and no requirement. Each ancestor is named to the fact's settle too, which starts the
+// retro of one held before it that nothing holds any longer (restEnded).
 func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Issue, gates map[record.DesignStep]record.DesignGate, status string) error {
 	type rest struct {
 		steps []record.DesignStep
@@ -449,6 +529,7 @@ func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Iss
 		}
 	}
 	for _, ancestor := range ancestors {
+		e.restEnded(ctx, ancestor)
 		at := rests[ancestor]
 		event, what := restingLeft, fmt.Sprintf("%s left the workflow: its status is %s.", root.Key, status)
 		if status == "done" {
@@ -458,7 +539,7 @@ func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Iss
 		if len(at.steps) > 1 {
 			verb = "rest"
 		}
-		what += fmt.Sprintf(" Its %s %s on the approval of %s. The sign-off and the close of %s no longer wait for %s.",
+		what += fmt.Sprintf(" Its %s %s on the approval of %s. The sign-off and the close of %s, and its retro where its task has no acceptance step, no longer wait for %s.",
 			stepsPhrase(at.steps), verb, ancestor, ancestor, root.Key)
 		if err := e.queueRestingRoot(ctx, tx, root, at.step, at.basis, event, what); err != nil {
 			return err
@@ -467,129 +548,33 @@ func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Iss
 	return nil
 }
 
-// RestingRoot is a root whose design-gate step rests on an ancestor's approval in its generation
-// (R8) and that is still in the workflow, as the ancestor's sign-off and close refusals, its start
-// task at its admission and its architect's catch-up name it: its key, the phase it stands in, and
-// its steps that rest on the ancestor.
-type RestingRoot struct {
-	Key   string
-	Phase phase.Phase
-	Steps []record.DesignStep
-}
-
-// RestingRoots is each root of every tree whose step rests on ancestor's approval in its
-// generation (Store.GatesRestingOn: a basis on ancestor opened the step, or the step's basis names
-// ancestor now, standing or pending, on the root's own row or on the row a hand-over carried to a
-// child) and that is still in the workflow, by the predicate the sign-off's hold on the issues
-// beneath it reads of each of them (record.InWorkflow), in key order. A root that is done, on the
-// backlog, in icebox or triage, or lingering holds nothing. Its record is read by key, whatever
-// project or tree it is in (restingRootsOn, through Store.IssuesByKey): on the database every
-// project's daemon shares, a root of another project that rests on ancestor holds ancestor's
-// sign-off and close as a root of ancestor's own project does, also where it is no Dispatch child
-// of ancestor, which Dispatch's own refusal of an acceptance over an open child of another project
-// does not see. The one lock every fact takes orders that hold and the root's registration
-// (acceptedBasis), so one of the two is refused.
-func RestingRoots(ctx context.Context, tx pgx.Tx, store record.Store, ancestor string) ([]RestingRoot, error) {
-	resting, err := restingRootsOn(ctx, tx, store, []string{ancestor})
-	return resting[ancestor], err
-}
-
-// restingRoots is the roots of gates, the gates that rest on one ancestor in issue and then step
-// order, that are still in the workflow, each with its steps that rest (RestingRoots). rootOf is
-// each root's record by key, nil for a key with no record, asked once for each root's run of
-// gates.
-func restingRoots(gates []record.DesignGate, rootOf func(key string) (*record.Issue, error)) ([]RestingRoot, error) {
-	var roots []RestingRoot
-	read, live := "", false
-	for _, gate := range gates {
-		if gate.Issue != read {
-			read = gate.Issue
-			root, err := rootOf(gate.Issue)
-			if err != nil {
-				return nil, err
-			}
-			if live = root != nil && record.InWorkflow(*root); live {
-				roots = append(roots, RestingRoot{Key: root.Key, Phase: root.Phase})
-			}
-		}
-		if live {
-			roots[len(roots)-1].Steps = append(roots[len(roots)-1].Steps, gate.Step.OrSpec())
-		}
-	}
-	return roots, nil
-}
-
-// restingRootsOn is RestingRoots for each of ancestors, by ancestor key, with no entry for an
-// ancestor no root still in the workflow rests on, in two reads whatever their number: the gates
-// resting on any of them (Store.GatesRestingOn) and the record of every root those gates name
-// (Store.IssuesByKey), each root read once however many of ancestors it rests on.
-func restingRootsOn(ctx context.Context, tx pgx.Tx, store record.Store, ancestors []string) (map[string][]RestingRoot, error) {
-	if len(ancestors) == 0 {
-		return nil, nil
-	}
-	gates, err := store.GatesRestingOn(ctx, tx, ancestors...)
-	if err != nil || len(gates) == 0 {
-		return nil, err
-	}
-	keys := make([]string, 0, len(gates))
-	for _, gate := range gates {
-		keys = append(keys, gate.Issue)
-	}
-	// The gates come in issue order, so each root's key is a run that Compact leaves once.
-	rows, err := store.IssuesByKey(ctx, tx, slices.Compact(keys))
-	if err != nil {
-		return nil, err
-	}
-	records := make(map[string]record.Issue, len(rows))
-	for _, row := range rows {
-		records[row.Key] = row
-	}
-	rootOf := func(key string) (*record.Issue, error) {
-		if root, recorded := records[key]; recorded {
-			return &root, nil
-		}
-		return nil, nil
-	}
-	resting := make(map[string][]RestingRoot, len(ancestors))
-	for _, ancestor := range ancestors {
-		on := slices.DeleteFunc(slices.Clone(gates), func(gate record.DesignGate) bool { return !gate.RestsOnIssue(ancestor) })
-		roots, err := restingRoots(on, rootOf)
-		if err != nil {
-			return nil, err
-		}
-		if len(roots) > 0 {
-			resting[ancestor] = roots
-		}
-	}
-	return resting, nil
-}
-
 // restingRootsTask is what the architect of ancestor is told of the roots that rest on its
-// approval and are still in the workflow (RestingRoots), "" for none: each one, and that the
-// daemon refuses the ancestor's sign-off and close while any of them is in the workflow, since
-// the checks of the issues under the ancestor prove its requirements together (R8). Its one
-// reader is ArchitectStartOf (ArchitectStart.Resting).
+// approval and are still in the workflow (record.RestingRoots), "" for none: each one, and that
+// the daemon refuses the ancestor's sign-off and close, and holds its retro where its task has no
+// acceptance step (workflow's retroHeld), while any of them is in the workflow, since the checks
+// of the issues under the ancestor prove its requirements together (R8). Its one reader is
+// ArchitectStartOf (ArchitectStart.Resting).
 func restingRootsTask(ctx context.Context, tx pgx.Tx, store record.Store, ancestor string) (string, error) {
-	roots, err := RestingRoots(ctx, tx, store, ancestor)
+	roots, err := record.RestingRoots(ctx, tx, store, ancestor)
 	if err != nil || len(roots) == 0 {
 		return "", err
 	}
 	return fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s. "+
-		"The daemon refuses the sign-off and the close of %s while any of them is in the workflow (%s). "+
+		"The daemon refuses the sign-off and the close of %s, and holds its retro where its task has no acceptance step, while any of them is in the workflow (%s). "+
 		"Each root's own architect, or a person, moves it.", ancestor, restingNames(roots), ancestor, signOffRestingRoot), nil
 }
 
 // restingClause is the clause of a catch-up's reason that names roots, the roots that rest on
 // ancestor's approval and are still in the workflow, to the architect of ancestor's tree
 // (QueueCatchUp).
-func restingClause(ancestor string, roots []RestingRoot) string {
-	return fmt.Sprintf("; resting on the approval of %s and still in the workflow: %s (the daemon refuses the sign-off and the close of %s while any of them is; each root's own architect, or a person, moves it)",
+func restingClause(ancestor string, roots []record.RestingRoot) string {
+	return fmt.Sprintf("; resting on the approval of %s and still in the workflow: %s (the daemon refuses the sign-off and the close of %s, and holds its retro where its task has no acceptance step, while any of them is; each root's own architect, or a person, moves it)",
 		ancestor, restingNames(roots), ancestor)
 }
 
 // restingNames names each of roots with its steps that rest and the phase it stands in, as the
 // refusals, the start task and the catch-up name them.
-func restingNames(roots []RestingRoot) string {
+func restingNames(roots []record.RestingRoot) string {
 	names := make([]string, len(roots))
 	for i, root := range roots {
 		names[i] = fmt.Sprintf("%s (its %s, in %s)", root.Key, stepsPhrase(root.Steps), root.Phase)
@@ -607,13 +592,18 @@ func stepsPhrase(steps []record.DesignStep) string {
 }
 
 // What a step on an ancestor's approval takes after its registration (R1, R3). A step that waits,
-// closed, on the ancestor's open approval request ends that wait on any act R1 names: a changes
-// request on the version it waits on, a newer version of the ancestor's document, a close of the
-// request that carries no approval of that version, the ancestor leaving R1's first condition, and
-// a newer version or review of the root's own document (applyArtifact); and the person's approval
-// of the version opens it, as a registration on that approval would. A step that stands open on
-// an ancestor's approval changes on nothing done to the ancestor's document, and passes on one act
-// alone: a person's changes request on the version it rests on, made after that approval.
+// closed, on the ancestor's open approval request opens or ends that wait only on Dispatch's state
+// as Dispatch shows it now, which the step's pending-basis seed reads and the workflow judges by
+// one verdict (pendingBasisRead, judgeBasisRead), never on an event: each event that can change
+// that state (pendingBasisCue) queues the seed, and nothing else. The person's approval of the
+// version, as the latest review of the latest version, opens the step, as a registration on that
+// approval would; a changes request on that version, a newer version of the ancestor's document,
+// the request closed with no approval of that version, and the ancestor leaving R1's first
+// condition end the wait, and so do a newer version or review of the root's own document
+// (applyArtifact) and the daemon's own move of the ancestor into retro or merging (endPendingOn).
+// A step that stands open on an ancestor's approval changes on nothing done to the ancestor's
+// document, and passes on one act alone: a person's changes request on the version it rests on,
+// made after that approval.
 
 // basisEndedAnswer opens the detail of a root's wait on a person that the end of its step's wait
 // on an ancestor's request answered (tellPendingEnded). The wait is answered as a changes request
@@ -705,115 +695,196 @@ func ownDocumentEnded(root string, gate record.DesignGate, fact intake.DispatchA
 
 // basisArtifact applies an event of an ancestor's document to the steps of other roots that name
 // that document as their basis (Store.GatesForBasisArtifact), whatever tree the ancestor is in or
-// none, which is why dispatchArtifact runs it before and apart from the ancestor's own gates. A
-// step that waits on the ancestor's request opens or ends on it (pendingBasisArtifact). A step
-// that stands open on the ancestor's approval changes on nothing done to that document (R3): it
-// passes on a person's changes request on the version it rests on, made after that approval
-// (tellBasisChanges), and stays open. A row of a step the deployment does not gate holds nothing
-// and takes no event, as artifactIgnored rules for a root's own document. The root is read only
-// for a step that takes the event: most events on a basis document change nothing for a step that
-// stands open on it. Every step here names fact's document as its basis, so every one rests on the
-// one ancestor whose document it is, and where a person's approval asks whether that ancestor has
-// left R1's first condition (ancestorLeftInStore), the store is read once for all of them, and not
-// at all where no step asks.
+// none, which is why dispatchArtifact runs it before and apart from the ancestor's own gates. To a
+// step that waits on the ancestor's request the event is a cue (pendingBasisCue), and it queues
+// that step's pending-basis seed, whose read of Dispatch opens or ends the wait (readBasisLater):
+// the event itself opens and ends nothing. A step that stands open on the ancestor's approval
+// changes on nothing done to that document (R3): it passes on a person's changes request on the
+// version it rests on, made after that approval (tellBasisChanges), and stays open. A row of a
+// step the deployment does not gate holds nothing and takes no event, as artifactIgnored rules for
+// a root's own document (eachWaitingRoot). Every other step takes nothing from the event, and its
+// root is not read: most events on a basis document change nothing for a step that stands open on
+// it.
 func (e *Engine) basisArtifact(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) error {
 	gates, err := e.store.GatesForBasisArtifact(ctx, tx, fact.ArtifactID)
 	if err != nil {
 		return err
 	}
-	left := sync.OnceValues(func() (string, error) { return e.ancestorLeftInStore(ctx, tx, gates[0].Basis.Issue) })
-	for _, gate := range gates {
-		if !e.gatesStep(gate.Step) {
-			continue
+	changes := fact.Kind == intake.DispatchArtifactChangesRequested
+	gates = slices.DeleteFunc(gates, func(gate record.DesignGate) bool {
+		return !pendingBasisCue(gate, fact) && !BasisChangesRequest(gate, changes, fact.Version, fact.Actor, fact.Mark)
+	})
+	return e.eachWaitingRoot(ctx, tx, gates, func(root record.Issue, gate record.DesignGate) error {
+		if pendingBasisCue(gate, fact) {
+			return e.readBasisLater(ctx, tx, root, gate)
 		}
-		pending := gate.PendingOnBasis()
-		if !pending && !BasisChangesRequest(gate, fact.Kind == intake.DispatchArtifactChangesRequested, fact.Version, fact.Actor, fact.Mark) {
-			continue
-		}
-		root, err := e.store.Issue(ctx, tx, gate.Issue)
-		if err != nil {
-			return err
-		}
-		if root == nil {
-			continue
-		}
-		if pending {
-			err = e.pendingBasisArtifact(ctx, tx, *root, gate, fact, left)
-		} else {
-			err = e.tellBasisChanges(ctx, tx, *root, gate, intake.BasisReview{Mark: fact.Mark, Actor: fact.Actor, Reason: fact.Reason})
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+		return e.tellBasisChanges(ctx, tx, root, gate, intake.BasisReview{Mark: fact.Mark, Actor: fact.Actor, Reason: fact.Reason})
+	})
 }
 
 // BasisChangesRequest says whether a review of an ancestor's document is the one act on it that
 // gate, a step standing open on that document, passes on (R3): a changes request (changes) by a
 // person on the version the basis names, which Dispatch recorded after the approval the step
 // opened on. Both marks are places in the ancestor's own event log, so they compare. The live
-// event (basisArtifact), the seeds' reads (pendingBasisRead, basisChangesRead) and the gate
-// seed's choice of the reviews it reads (the outbox's seedGateBasis) all ask it.
+// event (basisArtifact), the gate seed's read (basisChangesRead) and the gate seed's choice of the
+// reviews it reads (the outbox's seedGateBasis) all ask it. A step a read opened on the person's
+// approval (judgeBasisRead) took the place of that approval, the latest review then, so no changes
+// request older than it passes.
 func BasisChangesRequest(gate record.DesignGate, changes bool, version int, actor dispatch.Actor, mark record.EventMark) bool {
 	return gate.OnBasis() && changes && version == gate.Basis.Version && actor.Person() && mark.After(gate.Basis.Approval)
 }
 
-// pendingBasisArtifact applies fact, an event of the ancestor's document, to gate, a step of root
-// that waits, closed, on the ancestor's request for a person's approval of the basis version. An
-// event of an older version, and a version event of that version, change nothing. The person's
-// approval of that version opens the step (openPendingBasis), on an ancestor that still meets R1's
-// first condition as the daemon's own store shows it (left, the caller's one read of
-// ancestorLeftInStore for the fact); on one that has left it, the approval ends the wait instead,
-// as the pending-basis seed's read would. A changes request on that version ends the wait, and so
-// does any event of a newer version, whoever wrote it, and an approval of that version by an actor
-// Dispatch names and who is no person. An approval that names nobody, which only a read of a
-// Dispatch that records no reviewer gives, decides nothing: the person's answer does.
-func (e *Engine) pendingBasisArtifact(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.DesignGate, fact intake.DispatchArtifact,
-	left func() (string, error),
-) error {
-	basis := *gate.Basis
-	step := gate.Step.OrSpec()
-	document := documentOf(basis.Issue, step)
-	switch {
-	case fact.Version < basis.Version, fact.Version == basis.Version && fact.Kind == intake.DispatchArtifactVersion:
-		return nil
-	case fact.Version > basis.Version:
-		return e.endPendingBasis(ctx, tx, root, gate, newerVersionAct(fact.Version, document, basis.Version), fact.Actor.Name())
-	case fact.Kind == intake.DispatchArtifactChangesRequested:
-		return e.endPendingBasis(ctx, tx, root, gate, changesAct(fact.Actor, basis.Version, document, fact.Reason), fact.Actor.Name())
-	case fact.Actor.Person():
-		act, err := left()
-		if err != nil {
-			return err
-		}
-		if act != "" {
-			return e.endPendingBasis(ctx, tx, root, gate, act, "")
-		}
-		_, err = e.openPendingBasis(ctx, tx, root, gate, fact.Mark, fact.Actor.Name())
-		return err
-	case fact.Actor == (dispatch.Actor{}):
-		e.logOnCommit(ctx, "workflow: an approval of the ancestor's version that names nobody opens and ends no step waiting on it", "issue", root.Key,
-			"step", step, "basis", basis.ArtifactID, "basis_version", basis.Version, "ask", basis.Pending.Ask)
-		return nil
+// pendingBasisCue says whether fact, an event of an ancestor's document, of its approval request
+// or of its issue, is a cue for gate: a step that waits, closed, on that request
+// (record.DesignGate.PendingOnBasis), for which such an event queues the step's pending-basis seed
+// (readBasisLater), whose read of Dispatch alone opens or ends the wait (pendingBasisRead,
+// judgeBasisRead). The cues are an event of the basis document at the basis version or a newer
+// one, other than the basis version's own version event; a close of the pending request; and an
+// event of the ancestor's issue. It is the one place an event is judged a cue for a particular
+// step.
+func pendingBasisCue(gate record.DesignGate, fact intake.Fact) bool {
+	if !gate.PendingOnBasis() {
+		return false
 	}
-	return e.endPendingBasis(ctx, tx, root, gate, fmt.Sprintf("%s approved version %d of %s, and %s is no person.",
-		fact.Actor.Name(), basis.Version, document, fact.Actor.Name()), fact.Actor.Name())
+	basis := *gate.Basis
+	switch fact := fact.(type) {
+	case intake.DispatchArtifact:
+		return fact.ArtifactID == basis.ArtifactID &&
+			(fact.Version > basis.Version || fact.Version == basis.Version && fact.Kind != intake.DispatchArtifactVersion)
+	case intake.DispatchAskClosed:
+		return fact.Ask == basis.Pending.Ask
+	case intake.DispatchIssue:
+		return fact.Key == basis.Issue
+	}
+	return false
 }
 
-// ancestorLeftInStore is the act by which ancestor has left R1's first condition as the daemon's
-// own store shows it, "" where it has not (ancestorLeft): the store shows it accepted
-// (record.BasisAcceptance), or the daemon records it without the legion label as Dispatch last
-// showed it (record.Issue.HandedOver, on the record that same read answers). The daemon's mirror
-// of Dispatch's issues holds no labels, so an ancestor the daemon does not record is judged by its
-// status alone; the live event of the person's approval reads no Dispatch, and the ancestor's own
-// event of a lost label ends the wait (endPendingOnAncestorIssue).
-func (e *Engine) ancestorLeftInStore(ctx context.Context, tx pgx.Tx, ancestor string) (string, error) {
-	why, recorded, err := record.BasisAcceptance(ctx, e.store, tx, ancestor)
-	if err != nil {
-		return "", err
+// basisVerdictKind is what a basisVerdict does to a step's wait on an ancestor's request: nothing
+// (basisUnchanged), open the step (basisOpens), or end the wait (basisEnds).
+type basisVerdictKind int
+
+const (
+	basisUnchanged basisVerdictKind = iota
+	basisOpens
+	basisEnds
+)
+
+// basisVerdict is what Dispatch's state now does to a step waiting, closed, on an ancestor's
+// request for a person's approval of a version (judgeBasisRead), as kind says: open the step on
+// the person's approval, at approval in the ancestor's event log and by approver; end the wait,
+// text being the act that ended it and actor who made it ("" for nobody); or change nothing, text
+// being why.
+type basisVerdict struct {
+	kind     basisVerdictKind
+	text     string
+	actor    string
+	approval record.EventMark
+	approver string
+}
+
+// judgeBasisRead is the one verdict on read, the pending-basis seed's read of Dispatch
+// (pendingBasisRead), for gate, a step that waits, closed, on the ancestor's request for a
+// person's approval of the basis version (dispatch://INFRA-3320, R1). Dispatch's state now decides
+// it, and never the event that queued the seed. accepted is what the daemon's own store shows of
+// the ancestor's acceptance, read only where the verdict asks it.
+//
+//   - A version of the document newer than the basis version ends the wait.
+//   - With the basis version the latest, its latest review decides. A person's approval of it opens
+//     the step at that review's place in the ancestor's event log, on an ancestor that still meets
+//     R1's first condition as the store and the read show it, and ends the wait on one that has
+//     left it. An approval by an actor Dispatch names and who is no person ends the wait. A changes
+//     request on it ends the wait, whoever made it. An approval that names nobody, which only a
+//     Dispatch that records no reviewer gives, decides nothing: the ancestor's leaving R1's first
+//     condition ends the wait, and nothing else changes anything.
+//   - With no such review, the request no longer open, closed or replaced by another
+//     (RequestClosed), ends the wait. The seed read the request's close from Dispatch by its id
+//     (intake.BasisRead.Closed), and the end names who closed it (the actor the close names, or
+//     someone Dispatch does not name) and the state Dispatch shows it in, and takes that actor as
+//     its own. Where the ancestor has left R1's first condition, the end names that leave first
+//     and then the close. A read in this case that carries no close is no read the seed makes,
+//     and is an error rather than an end that names nobody.
+//   - With the request still open, the ancestor's leaving R1's first condition ends the wait, and
+//     nothing else changes anything.
+//
+// So an event delivered late or replayed changes nothing that Dispatch no longer shows: an approval
+// a later changes request superseded opens nothing, a changes request older than the request ends
+// nothing, and the close of a request the issue's reopen opened again ends nothing.
+func judgeBasisRead(gate record.DesignGate, read intake.BasisRead, accepted func() (string, error)) (basisVerdict, error) {
+	basis := *gate.Basis
+	document := documentOf(basis.Issue, gate.Step.OrSpec())
+	approval := read.Approval
+	left := func() (string, error) {
+		why, err := accepted()
+		return ancestorLeft(basis.Issue, why, read.Ancestor.Status, read.Ancestor.HandedOver), err
 	}
-	return ancestorLeft(ancestor, why, "", recorded == nil || recorded.HandedOver), nil
+	ends := func(act, actor string) basisVerdict { return basisVerdict{kind: basisEnds, text: act, actor: actor} }
+	approved := approval.ApprovedLatest() == basis.Version
+	approvedByPerson := approved && approval.By.Person()
+	changes, _ := approval.ChangesRequestedLatest()
+	switch {
+	case approval.LatestVersion > basis.Version:
+		return ends(newerVersionAct(approval.LatestVersion, document, basis.Version), ""), nil
+	case approved && approval.By != (dispatch.Actor{}) && !approval.By.Person():
+		return ends(fmt.Sprintf("%s approved version %d of %s, and %s is no person.", approval.By.Name(), basis.Version, document, approval.By.Name()),
+			approval.By.Name()), nil
+	case changes == basis.Version:
+		reason := ""
+		if approval.Reason != nil {
+			reason = *approval.Reason
+		}
+		return ends(changesAct(approval.By, basis.Version, document, reason), approval.By.Name()), nil
+	}
+
+	closed := RequestClosed(approval, basis.Version, basis.Pending.Ask)
+	if closed && read.Closed == nil {
+		return basisVerdict{}, fmt.Errorf("the read of approval request %s of version %d of %s shows it closed and carries no read of its close",
+			basis.Pending.Ask, basis.Version, document)
+	}
+	act, err := left()
+	if err != nil {
+		return basisVerdict{}, err
+	}
+	switch {
+	case closed:
+		closer := read.Closed.Actor.Name()
+		sentence := fmt.Sprintf("%s closed approval request %s of version %d of %s, as %s, with no approval of that version.",
+			cmp.Or(closer, "Someone Dispatch does not name"), basis.Pending.Ask, basis.Version, document, read.Closed.State)
+		if act != "" {
+			sentence = act + " " + sentence
+		}
+		return ends(sentence, closer), nil
+	case act != "":
+		return ends(act, ""), nil
+	case approvedByPerson:
+		return basisVerdict{kind: basisOpens, approval: record.EventMark{Seq: approval.Seq, At: approval.At}, approver: approval.By.Name()}, nil
+	case approved:
+		return basisVerdict{text: "an approval of the ancestor's version that names nobody opens and ends no step waiting on it"}, nil
+	}
+	return basisVerdict{text: "Dispatch shows the ancestor's request still open on its version, so the step waiting on it neither opens nor ends"}, nil
+}
+
+// RequestClosed says whether approval, Dispatch's approval of an ancestor's document, shows ask,
+// the request for a person's approval of version that a step waits on, no longer open with no
+// approval of that version: version is the latest, its latest review neither approves it nor asks
+// for changes on it, and the document holds no open request or another one. It is judgeBasisRead's
+// closed case, and the pending-basis seed asks it of its own read to decide whether to read the
+// request's close from Dispatch as well (the outbox's readBasis), so the seed reads the close in
+// that case alone and the verdict finds the close on every read that asks for it.
+func RequestClosed(approval dispatch.Approval, version int, ask string) bool {
+	changes, _ := approval.ChangesRequestedLatest()
+	return approval.LatestVersion <= version && approval.ApprovedLatest() != version && changes != version &&
+		(approval.State != "awaiting" || approval.AskID != ask)
+}
+
+// readBasisLater queues the pending-basis seed of gate, a step of root that waits, closed, on an
+// ancestor's request, for an event that is a cue for it (pendingBasisCue). The seed reads Dispatch,
+// and that read alone opens or ends the wait (pendingBasisRead), so no event opens or ends it, and
+// an event delivered late or replayed is judged by what Dispatch shows when the seed runs.
+func (e *Engine) readBasisLater(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.DesignGate) error {
+	basis := *gate.Basis
+	e.logOnCommit(ctx, "workflow: an event is a cue for a step waiting on an ancestor's request, so the step's pending-basis seed reads Dispatch",
+		"issue", root.Key, "step", gate.Step.OrSpec(), "basis", basis.ArtifactID, "basis_version", basis.Version, "ask", basis.Pending.Ask)
+	return e.enqueue(ctx, tx, root.Key, record.PendingBasisSeedOf(gate, root.Generation))
 }
 
 // openPendingBasis opens gate, a step of root that waited on the ancestor's request, on the
@@ -862,14 +933,26 @@ func (e *Engine) openPendingBasis(ctx context.Context, tx pgx.Tx, root record.Is
 		_, err := e.answerOpenGates(ctx, tx, []record.Issue{*current}, nil)
 		return opened, err
 	}
-	return opened, e.notice(ctx, tx, root.Key, openedNotice(root.Key, opened, ""))
+	return opened, e.tellOpened(ctx, tx, root.Key, opened, "")
 }
 
+// pendingEnd is what ended a step's wait on an ancestor's request, as tellPendingEnded tells the
+// end: the pending-basis seed's read of Dispatch (endedByRead, pendingBasisRead), the daemon's own
+// move of the ancestor into retro or merging (endedByMove, endPendingOn), or an act on the root's
+// own document (endedByOwnDocument, applyArtifact).
+type pendingEnd int
+
+const (
+	endedByRead pendingEnd = iota
+	endedByMove
+	endedByOwnDocument
+)
+
 // endPendingBasis ends gate's wait on the ancestor's request without opening it, act being what
-// ended it and actor who made it ("" for nobody): the step stays closed and registered on the
-// root's own document with no basis (record.EndPendingBasis), and the end is told
-// (tellPendingEnded).
-func (e *Engine) endPendingBasis(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.DesignGate, act, actor string) error {
+// ended it, actor who made it ("" for nobody) and by how it ended (endedByRead or endedByMove):
+// the step stays closed and registered on the root's own document with no basis
+// (record.EndPendingBasis), and the end is told (tellPendingEnded).
+func (e *Engine) endPendingBasis(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.DesignGate, act, actor string, by pendingEnd) error {
 	step := gate.Step.OrSpec()
 	basis := *gate.Basis
 	ended := record.EndPendingBasis(gate)
@@ -878,7 +961,7 @@ func (e *Engine) endPendingBasis(ctx context.Context, tx pgx.Tx, root record.Iss
 	}
 	e.logOnCommit(ctx, "workflow: a step's wait on an ancestor's approval request ended", "issue", root.Key, "step", step,
 		"ancestor", basis.Issue, "basis", basis.ArtifactID, "basis_version", basis.Version, "ask", basis.Pending.Ask, "act", act)
-	return e.tellPendingEnded(ctx, tx, root.Key, step, basis, act+" "+waitEnded(root.Key, step, basis)+" "+stepClosed(root.Key, step), actor, false)
+	return e.tellPendingEnded(ctx, tx, root.Key, step, basis, act+" "+waitEnded(root.Key, step, basis)+" "+stepClosed(root.Key, step), actor, by)
 }
 
 // endPendingUntold ends gate's wait, a step of root that waits on an ancestor's request, with
@@ -906,21 +989,25 @@ func (e *Engine) logEndedUntold(ctx context.Context, key string, step record.Des
 }
 
 // tellPendingEnded tells the end of root key's step's wait on basis's request: what says what
-// ended it, naming the act, the ancestor's document and its version. The ancestor's architect is
-// told as a resting-root notice (queueRestingRoot), once per request. A root waiting on a person
-// keeps that wait beside its step's, so the end answers it, as a changes request does, with no
-// notice beside it: the answer's detail says what ended the step's wait (basisEndedAnswer). An act
-// on the root's own document (own) that meets a wait already answered is named by the resume as
-// well: what is joined to the answer's detail (basisEndedAfter), and the resume names it after the
-// act that answered the wait. Every other end reaches the root's architect as a basis-ended notice
-// that names the act, the ancestor's document and the version, and who made the act (actor, "" for
-// nobody).
+// ended it, naming the act, the ancestor's document and its version, and by how it ended. The
+// ancestor's architect is told as a resting-root notice, once per request (queueRestingRoot):
+// where the pending-basis seed's read ended the wait (endedByRead), also when the ancestor is a
+// root whose tree lingers after its close (queueRestingEnded). A root waiting on a person keeps
+// that wait beside its step's, so the end answers it, as a changes request does, with no notice
+// beside it: the answer's detail says what ended the step's wait (basisEndedAnswer). An act on the
+// root's own document (endedByOwnDocument) that meets a wait already answered is named by the
+// resume as well: what is joined to the answer's detail (basisEndedAfter), and the resume names it
+// after the act that answered the wait. Every other end reaches the root's architect as a
+// basis-ended notice that names the act, the ancestor's document and the version, and who made the
+// act (actor, "" for nobody). The step no longer rests on the ancestor through that wait, so the
+// ancestor is named to the fact's settle, which starts the retro of one held before it that
+// nothing holds any longer (restEnded).
 //
 // The end of the wait of a root out of the workflow, or whose tree lingers (record.Stopped), is
 // told to nobody, as the end the root's leave makes (endPendingUntold): the leave ended every such
 // wait, so one still standing there was left by a release that ended none at a leave (a rollback,
 // then this release again), and the root's tree runs nothing for either architect to hear of.
-func (e *Engine) tellPendingEnded(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep, basis record.GateBasis, what, actor string, own bool) error {
+func (e *Engine) tellPendingEnded(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep, basis record.GateBasis, what, actor string, by pendingEnd) error {
 	root, err := e.store.Issue(ctx, tx, key)
 	if err != nil || root == nil {
 		return err
@@ -929,19 +1016,27 @@ func (e *Engine) tellPendingEnded(ctx context.Context, tx pgx.Tx, key string, st
 		e.logEndedUntold(ctx, key, step, basis)
 		return nil
 	}
-	if err := e.queueRestingRoot(ctx, tx, *root, step, basis, restingEnded(basis.Pending.Ask), what); err != nil {
+	e.restEnded(ctx, basis.Issue)
+	if by == endedByRead {
+		err = e.queueRestingEnded(ctx, tx, *root, step, basis, what)
+	} else {
+		err = e.queueRestingRoot(ctx, tx, *root, step, basis, restingEnded(basis.Pending.Ask), what)
+	}
+	if err != nil {
 		return err
 	}
 	switch {
 	case root.AwaitingPerson() && root.Awaiting.AnsweredAt == nil:
 		e.logOnCommit(ctx, "workflow: the end of a step's wait on an ancestor's request answers the root's wait on a person", "issue", key,
 			"step", step, "ask", basis.Pending.Ask)
-		return e.answerWait(ctx, tx, *root, record.AnsweredByChanges, basisEndedAnswer+what)
-	case root.AwaitingPerson() && own:
+		// The act is of the ancestor's document and no review of the root's own, so the answer
+		// records no document (waitAnswer): the resume asks no person's word of it (answeredDecision).
+		return e.answerWait(ctx, tx, *root, waitAnswer{by: record.AnsweredByChanges, detail: basisEndedAnswer + what})
+	case root.AwaitingPerson() && by == endedByOwnDocument:
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told by its resume of the act on its own document that ended its step's wait", "issue", key,
 			"step", step, "ask", basis.Pending.Ask)
 		root.Awaiting.AnsweredDetail += basisEndedAfter + what
-		return e.store.PutIssue(ctx, tx, *root)
+		return e.WriteIssue(ctx, tx, *root)
 	}
 	return e.notice(ctx, tx, key, record.Notice{Kind: "basis-ended", Role: claim.RoleArchitect, Version: basis.Version, Actor: actor,
 		Ref: stepRef(basis.Issue, step), Reason: what})
@@ -957,6 +1052,19 @@ func (e *Engine) tellPendingEnded(ctx context.Context, tx pgx.Tx, key string, st
 // whatever order: the told-once mark is keyed by the review's place in the ancestor's event log
 // (reviewPlace), as tellChanges marks a changes request on the root's own document, so a second
 // changes request on the same version is told as well.
+//
+// Each copy carries Dispatch's mark of the review and the document reviewed (record.Notice.Review
+// and Artifact), so the one predicate orders it against a person's approval by Dispatch's order
+// and asks it of its own document (SupersedingApproval) wherever it is asked: here, of the
+// ancestor's copy, and of either copy at its delivery and at a clear of its generation
+// (record.ChangesRequest). The copy keyed by the ancestor names the ancestor's own document, so it
+// is a person's decision that the ancestor's gates can answer (dispatch://INFRA-3136/spec R2): it
+// is asked first, as tellOpened asks, of the ancestor's gates under the steps the deployment gates
+// (NoticeSuperseded), and one the person's approval already followed, as where a seed's read or a
+// late event carries the review after the person approved a later version of the ancestor's
+// document, is queued for nobody and only logged. The root's copy names another issue's document
+// than the root's own, which no gate of the root holds, so asked there it stands (RefSuperseded),
+// and it is queued as before.
 func (e *Engine) tellBasisChanges(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.DesignGate, review intake.BasisReview) error {
 	basis := *gate.Basis
 	step := gate.Step.OrSpec()
@@ -978,7 +1086,7 @@ func (e *Engine) tellBasisChanges(ctx context.Context, tx pgx.Tx, root record.Is
 	e.logOnCommit(ctx, "workflow: a person requested changes on the ancestor's version a step stands open on; the step stays open", "issue", root.Key,
 		"step", step, "ancestor", basis.Issue, "basis", basis.ArtifactID, "basis_version", basis.Version, "review_seq", review.Mark.Seq)
 	told := record.Notice{Kind: "basis-changes-requested", Role: claim.RoleArchitect, Version: basis.Version, Actor: review.Actor.Name(),
-		Ref: stepRef(basis.Issue, step), Reason: asked + " The step stays open. " + reason}
+		Ref: stepRef(basis.Issue, step), Review: review.Mark, Artifact: basis.ArtifactID, Reason: asked + " The step stays open. " + reason}
 	if err := e.notice(ctx, tx, root.Key, told); err != nil {
 		return err
 	}
@@ -990,116 +1098,86 @@ func (e *Engine) tellBasisChanges(ctx context.Context, tx pgx.Tx, root record.Is
 		}
 		return err
 	}
+	gates, err := e.store.GatesOf(ctx, tx, basis.Issue)
+	if err != nil {
+		return err
+	}
+	if superseded := NoticeSuperseded(gates, e.cfg.Steps, basis.Issue, told, record.DecisionDesignChangesRequested); superseded != nil {
+		e.logOnCommit(ctx, "workflow: the person's approval followed the changes request on the ancestor's document, so its architect is not told it",
+			"issue", root.Key, "step", step, "ancestor", basis.Issue, "basis", basis.ArtifactID, "version", basis.Version,
+			"approved", superseded.By.Version)
+		return nil
+	}
 	told.Reason = asked + " The step of " + root.Key + " stays open. " + reason + " " + servesSentence(root.Key, basis.Issue, basis.Serves)
 	return e.notice(ctx, tx, basis.Issue, told)
 }
 
-// endPendingOnRequest ends every step that waits, closed, on fact's ask as an ancestor's approval
-// request (Store.GatesByPendingAsk, since the root-only ask mirror records no ancestor's ask),
-// when the close carries no approval of the version the request names, whoever closed it. A
-// person's answer of an approval request is a review: Dispatch writes it in the answer's
-// transaction and appends its artifact.* event after the ask's, so that event approves the
-// version, which opens the step, or asks for changes on it, which ends the wait (basisArtifact),
-// and the answer itself ends nothing. Every other close (a resolution by the person, the
-// architect, another session or Dispatch's settlement) carries no approval. The withdrawal
-// Dispatch records on the asks of an issue set done (intake.DispatchAskClosed.Withdrawn) comes
-// before that issue's own event, which would end the wait as the ancestor's acceptance
-// (endPendingOnAncestorIssue), so the end it makes names that acceptance and the withdrawal both.
-// A row of a step the deployment does not gate holds nothing and takes no event, as basisArtifact
-// rules.
-func (e *Engine) endPendingOnRequest(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) error {
-	if fact.State == "answered" {
+// readBasisOnCue queues the pending-basis seed of every step of another root that fact, the close
+// of an approval request or an event of an issue, is a cue for (pendingBasisCue, readBasisLater),
+// whatever tree the ancestor is in or none: the seed's read of Dispatch opens or ends the wait,
+// and fact itself opens and ends nothing. A close reaches the steps that wait on that request as
+// an ancestor's (Store.GatesByPendingAsk, since the root-only ask mirror records no ancestor's
+// ask). A person's answer of an approval request is no cue: it is a review, which Dispatch writes
+// in the answer's transaction and whose artifact.* event, appended after the ask's, is the cue
+// (basisArtifact), and a question is no request a step waits on (an ask whose kind an older
+// Dispatch does not say is read). An event of an issue that shows it leaving R1's first condition
+// (Dispatch shows it done or retro, or it no longer carries the legion label) reaches the steps
+// that wait on a request of that issue (Store.GatesRestingOn). Most events that reach here are of
+// issues nothing waits on, and most issue events show no leave, so the steps are read only for an
+// event that can be a cue. A row of a step the deployment does not gate holds nothing and takes no
+// event (eachWaitingRoot).
+func (e *Engine) readBasisOnCue(ctx context.Context, tx pgx.Tx, fact intake.Fact) error {
+	var gates []record.DesignGate
+	var err error
+	switch fact := fact.(type) {
+	case intake.DispatchAskClosed:
+		if fact.State == "answered" || fact.Kind == record.AskQuestion {
+			return nil
+		}
+		gates, err = e.store.GatesByPendingAsk(ctx, tx, fact.Ask)
+	case intake.DispatchIssue:
+		if ancestorLeft(fact.Key, "", fact.Status, fact.HandedOver) == "" {
+			return nil
+		}
+		gates, err = e.store.GatesRestingOn(ctx, tx, fact.Key)
+	default:
 		return nil
 	}
-	gates, err := e.store.GatesByPendingAsk(ctx, tx, fact.Ask)
 	if err != nil {
 		return err
 	}
-	for _, gate := range gates {
-		// Each row was selected on its pending ask, so a step that still waits waits on fact.Ask;
-		// one an earlier release's write of a person's approval opened reads back waiting on
-		// nothing (record's basisAsWritten).
-		if !e.gatesStep(gate.Step) || !gate.PendingOnBasis() {
-			continue
-		}
-		root, err := e.store.Issue(ctx, tx, gate.Issue)
-		if err != nil {
-			return err
-		}
-		if root == nil {
-			continue
-		}
-		document := documentOf(gate.Basis.Issue, gate.Step.OrSpec())
-		act := fmt.Sprintf("%s closed approval request %s of version %d of %s, as %s, with no approval of that version.",
-			cmp.Or(fact.Actor.Name(), "Someone Dispatch does not name"), fact.Ask, gate.Basis.Version, document, fact.State)
-		if fact.Withdrawn {
-			act = fmt.Sprintf("Dispatch shows %s done, so %s is accepted. Its close withdrew approval request %s of version %d of %s, with no approval of that version.",
-				fact.Key, fact.Key, fact.Ask, gate.Basis.Version, document)
-		}
-		if err := e.endPendingBasis(ctx, tx, *root, gate, act, fact.Actor.Name()); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// endPendingOnAncestorIssue ends every step that waits, closed, on a request of fact's issue as an
-// ancestor (pendingOn) when the event shows that issue leaving R1's first condition: Dispatch shows
-// it done or retro, or it no longer carries the legion label. recorded is the issue's record, nil
-// for none: the ancestor may be in no tree the daemon records. An event older than one the daemon
-// has applied of the issue (its record's last sequence, or the mirror's, which every applied event
-// of the issue writes first) says nothing of the issue now, and ends nothing. Most events that
-// reach here are of issues nothing waits on, so the steps are read before anything else is.
-//
-// The daemon's own retro on an issue it records in the workflow and not accepted ends nothing
-// either (signOffWriteAhead): that is a sign_off's write, which reaches Dispatch before the
-// sign-off's fact and is written back when the fact is refused. The fact the workflow takes moves
-// the issue into retro, and that transition ends these waits (transition's endPendingOn); ended
-// here, a refused sign-off's write back would leave them ended on an ancestor nobody accepted.
-// A registration on the issue is refused all the same from the write on, since register_gate
-// reads the retro Dispatch shows (record.BasisAcceptance).
-func (e *Engine) endPendingOnAncestorIssue(ctx context.Context, tx pgx.Tx, recorded *record.Issue, fact intake.DispatchIssue) error {
-	act := ancestorLeft(fact.Key, "", fact.Status, fact.HandedOver)
-	if act == "" || signOffWriteAhead(recorded, fact) {
-		return nil
-	}
-	pending, err := e.pendingOn(ctx, tx, fact.Key)
-	if err != nil || len(pending) == 0 {
-		return err
-	}
-	if fact.Seq > 0 {
-		if recorded != nil && fact.Seq <= recorded.LastDispatchSeq {
-			return nil
-		}
-		mirrored, err := e.store.DispatchIssuesOf(ctx, tx, []string{fact.Key})
-		if err != nil {
-			return err
-		}
-		if slices.ContainsFunc(mirrored, func(row record.DispatchIssueRow) bool { return row.Key == fact.Key && row.Seq > fact.Seq }) {
-			return nil
-		}
-	}
-	return e.endEachPending(ctx, tx, pending, act)
+	gates = slices.DeleteFunc(gates, func(gate record.DesignGate) bool { return !pendingBasisCue(gate, fact) })
+	return e.eachWaitingRoot(ctx, tx, gates, func(root record.Issue, gate record.DesignGate) error {
+		return e.readBasisLater(ctx, tx, root, gate)
+	})
 }
 
 // signOffWriteAhead says whether fact is the event of a sign_off's own retro write that the
 // daemon has not recorded as an acceptance: the daemon wrote it (intake.DispatchIssue.DaemonActor),
 // and the record holds the issue in the workflow and not accepted (record.Accepted). Every other
 // retro the daemon writes, an outbox row or the status repair, is of an issue the record holds
-// accepted already.
+// accepted already. Such an event is no cue for the pending-basis seed (dispatchIssue's
+// readBasisOnCue): the write reaches Dispatch before the sign-off's fact and is written back when
+// the fact is refused. The fact the workflow takes moves the issue into retro, and that
+// transition ends the waits on it (transition's endPendingOn); a seed read in the window before a
+// refused sign-off's write back would end them on an ancestor nobody accepted. A registration on
+// the issue is refused all the same from the write on, since register_gate reads the retro
+// Dispatch shows (record.BasisAcceptance).
 func signOffWriteAhead(recorded *record.Issue, fact intake.DispatchIssue) bool {
 	return fact.DaemonActor && fact.Status == "retro" && recorded != nil && record.InWorkflow(*recorded) && !record.Accepted(*recorded)
 }
 
 // endPendingOn ends every step of another root that waits, closed, on a request of ancestor
-// (pendingOn), act being what ended it. A step standing open on ancestor's approval stays open
-// (R3).
+// (pendingOn), act being what ended it (endPendingBasis). A step standing open on ancestor's
+// approval stays open (R3).
 func (e *Engine) endPendingOn(ctx context.Context, tx pgx.Tx, ancestor, act string) error {
 	pending, err := e.pendingOn(ctx, tx, ancestor)
 	if err != nil {
 		return err
 	}
-	return e.endEachPending(ctx, tx, pending, act)
+	return e.eachWaitingRoot(ctx, tx, pending, func(root record.Issue, gate record.DesignGate) error {
+		return e.endPendingBasis(ctx, tx, root, gate, act, "", endedByMove)
+	})
 }
 
 // pendingOn is every step of another root, of every tree, that waits, closed, on a request of
@@ -1118,9 +1196,12 @@ func (e *Engine) pendingOn(ctx context.Context, tx pgx.Tx, ancestor string) ([]r
 	return pending, nil
 }
 
-// endEachPending ends the wait of each of gates (endPendingBasis), act being what ended it. A row
-// of a step the deployment does not gate holds nothing and takes no event, as basisArtifact rules.
-func (e *Engine) endEachPending(ctx context.Context, tx pgx.Tx, gates []record.DesignGate, act string) error {
+// eachWaitingRoot calls do for each of gates, steps on an ancestor's approval (waiting on its
+// request, or, for basisArtifact, standing open on it), with the root it is a step of, in order,
+// and stops at do's first error. A row of a step the deployment does not gate holds nothing and
+// takes no event, as artifactIgnored rules for a root's own document, and a step of a root the
+// daemon no longer records has no root to act on, so neither is done.
+func (e *Engine) eachWaitingRoot(ctx context.Context, tx pgx.Tx, gates []record.DesignGate, do func(root record.Issue, gate record.DesignGate) error) error {
 	for _, gate := range gates {
 		if !e.gatesStep(gate.Step) {
 			continue
@@ -1132,29 +1213,27 @@ func (e *Engine) endEachPending(ctx context.Context, tx pgx.Tx, gates []record.D
 		if root == nil {
 			continue
 		}
-		if err := e.endPendingBasis(ctx, tx, *root, gate, act, ""); err != nil {
+		if err := do(*root, gate); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// pendingBasisRead applies the pending-basis seed's read of the ancestor's request a step waits
-// on (intake.PendingBasisRead) as the events it read would have applied, in their order: the
-// person's approval of the version opens the step (openPendingBasis), and a changes request on
-// that version made after it is then passed on as on any step open on that approval
-// (tellBasisChanges); with no such approval, a changes request on the version, a newer version of
-// the document, or the request's close ends the wait (endPendingBasis). A request still waiting
-// changes nothing. Neither does a read of a root of another generation, or of a step that no
-// longer waits on that request at that version: an event applied first opened or ended it, or a
-// registration since replaced it.
-//
-// The person's approval opens the step only on an ancestor that still meets R1's first
-// condition, as register_gate reads it: the daemon's own store shows it not accepted now
-// (record.BasisAcceptance), and the seed's read of the ancestor's issue shows it neither done
-// nor retro, carrying the legion label. An ancestor that has left it ends the wait instead, as
-// that ancestor's own event of the move would have (endPendingOnAncestorIssue), whatever event
-// the daemon missed.
+// pendingBasisRead applies the pending-basis seed's read of Dispatch for a step waiting on an
+// ancestor's request (intake.PendingBasisRead), the one place that opens or ends such a wait on
+// what Dispatch shows: by the one verdict (judgeBasisRead), it opens the step on the person's
+// approval the read shows (openPendingBasis), whose place in the ancestor's event log the open step
+// keeps as its approval, so a changes request older than it passes nothing on
+// (BasisChangesRequest); it ends the wait (endPendingBasis), and the end reaches the ancestor's
+// architect even where the ancestor is a root whose tree lingers (queueRestingEnded); or it logs
+// why it changes nothing. The daemon's own store is read for the ancestor's acceptance only where
+// the verdict asks it. The fact names the registration it reads for, at the precision the store
+// keeps (record.PendingBasisSeedOf normalized it once), so it compares with the stored step's
+// registration as it is. A read of a root of another generation, or of a step that no longer
+// waits on that request at that version under that same registration, changes nothing: a read
+// applied first opened or ended it, an act of the root's own document or the daemon's own move of
+// the ancestor ended it, or a registration since replaced it.
 func (e *Engine) pendingBasisRead(ctx context.Context, tx pgx.Tx, fact intake.PendingBasisRead) (intake.Result, error) {
 	root, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || root == nil || root.Generation != fact.Generation {
@@ -1167,38 +1246,31 @@ func (e *Engine) pendingBasisRead(ctx context.Context, tx pgx.Tx, fact intake.Pe
 	step := fact.Step.OrSpec()
 	gate, ok := gates[step]
 	if !ok || !e.gatesStep(step) || !gate.PendingOnBasis() || gate.ArtifactID != fact.ArtifactID || gate.Basis.ArtifactID != fact.BasisArtifactID ||
-		gate.Basis.Version != fact.BasisVersion || gate.Basis.Pending.Ask != fact.Ask {
+		gate.Basis.Version != fact.BasisVersion || gate.Basis.Pending.Ask != fact.Ask ||
+		!gate.Basis.RegisteredAt.Equal(fact.RegisteredAt) {
 		e.logOnCommit(ctx, "workflow: the pending-basis seed read a wait that has opened or ended since, and changes nothing", "issue", root.Key,
 			"step", step, "basis", fact.BasisArtifactID, "basis_version", fact.BasisVersion, "ask", fact.Ask)
 		return intake.Result{}, nil
 	}
-	document := documentOf(gate.Basis.Issue, step)
-	switch {
-	case fact.Approval != nil:
-		why, _, err := record.BasisAcceptance(ctx, e.store, tx, gate.Basis.Issue)
-		if err != nil {
-			return intake.Result{}, err
-		}
-		if act := ancestorLeft(gate.Basis.Issue, why, fact.AncestorStatus, fact.AncestorHandedOver); act != "" {
-			return intake.Result{}, e.endPendingBasis(ctx, tx, *root, gate, act, "")
-		}
-		opened, err := e.openPendingBasis(ctx, tx, *root, gate, fact.Approval.Mark, fact.Approval.Actor.Name())
-		if err != nil || fact.Changes == nil || !BasisChangesRequest(opened, true, fact.BasisVersion, fact.Changes.Actor, fact.Changes.Mark) {
-			return intake.Result{}, err
-		}
-		return intake.Result{}, e.tellBasisChanges(ctx, tx, *root, opened, *fact.Changes)
-	case fact.Changes != nil:
-		return intake.Result{}, e.endPendingBasis(ctx, tx, *root, gate, changesAct(fact.Changes.Actor, fact.BasisVersion, document, fact.Changes.Reason),
-			fact.Changes.Actor.Name())
-	case fact.LatestVersion > fact.BasisVersion:
-		return intake.Result{}, e.endPendingBasis(ctx, tx, *root, gate, newerVersionAct(fact.LatestVersion, document, fact.BasisVersion), "")
-	case !fact.RequestOpen:
-		return intake.Result{}, e.endPendingBasis(ctx, tx, *root, gate, fmt.Sprintf("Dispatch shows approval request %s of version %d of %s closed with no approval of that version.",
-			fact.Ask, fact.BasisVersion, document), "")
+	basis := *gate.Basis
+	verdict, err := judgeBasisRead(gate, fact.Read, func() (string, error) {
+		why, _, err := record.BasisAcceptance(ctx, e.store, tx, basis.Issue)
+		return why, err
+	})
+	if err != nil {
+		return intake.Result{}, err
 	}
-	e.logOnCommit(ctx, "workflow: the pending-basis seed read the ancestor's request still waiting on the person", "issue", root.Key,
-		"step", step, "basis", fact.BasisArtifactID, "basis_version", fact.BasisVersion, "ask", fact.Ask)
-	return intake.Result{}, nil
+	switch verdict.kind {
+	case basisOpens:
+		_, err = e.openPendingBasis(ctx, tx, *root, gate, verdict.approval, verdict.approver)
+	case basisEnds:
+		err = e.endPendingBasis(ctx, tx, *root, gate, verdict.text, verdict.actor, endedByRead)
+	default:
+		e.logOnCommit(ctx, "workflow: "+verdict.text, "issue", root.Key, "step", step, "basis", basis.ArtifactID, "basis_version", basis.Version,
+			"ask", basis.Pending.Ask, "state", fact.Read.Approval.State, "latest_version", fact.Read.Approval.LatestVersion,
+			"ancestor_status", fact.Read.Ancestor.Status)
+	}
+	return intake.Result{}, err
 }
 
 // basisChangesRead applies the gate seed's read of a person's changes request on the ancestor's

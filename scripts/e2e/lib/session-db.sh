@@ -48,15 +48,25 @@ session_db_start() {
 # session_psql NAME VALUE runs the SQL on stdin in the session database as its owner, legion, with
 # VALUE the psql variable NAME, which the SQL quotes as a literal (:'NAME'), so no value is ever
 # spliced into it; the SQL comes on stdin because psql interpolates no variable into a -c command.
-# The output is unaligned and tuples-only (-A -t): each value exactly as the server sent it, with no
-# padding, wrapping, quoting, escaping, header or row count, so a transcript's quotes, backslashes
-# and newlines arrive as their writer wrote them, and psql ends the last row with one newline of its
-# own. The aligned default pads and wraps a value of many lines, and COPY's text and CSV formats
-# escape or quote one, so each would corrupt the JSONL. ON_ERROR_STOP makes an SQL error psql's exit
-# status.
+# The SQL runs in one read-only transaction that opens by pinning search_path to pg_catalog and
+# pg_temp, turning row_security off and refusing views and foreign tables, as packages/daemon's
+# internal/ompsessions reads: every pod's Oh My Pi writes this database, a login that may create
+# in it could plant a function, or a schema named for the reader, that an unqualified name
+# resolves to, or a view at a table's own name, whose query no search_path reaches, and a
+# row-security policy runs in each reader's session. So the SQL names each table public.<table>,
+# and a policy or a view fails the read.
+# Every caller here reads; one that writes would need a transaction of its own. The output is
+# unaligned and tuples-only (-A -t): each value exactly as the server sent it, with no padding,
+# wrapping, quoting, escaping, header or row count, so a transcript's quotes, backslashes and
+# newlines arrive as their writer wrote them, and psql ends the last row with one newline of its
+# own; -q keeps BEGIN, SET and COMMIT from printing their tags. The aligned default pads and wraps
+# a value of many lines, and COPY's text and CSV formats escape or quote one, so each would corrupt
+# the JSONL. ON_ERROR_STOP makes an SQL error psql's exit status.
 session_psql() {
-  docker exec -i -e PGCLIENTENCODING=UTF8 "$session_db_container" \
-    psql -X -q -A -t -v ON_ERROR_STOP=1 -U legion -d sessions -v "$1=$2"
+  { printf 'BEGIN READ ONLY;\nSET LOCAL search_path = pg_catalog, pg_temp;\nSET LOCAL row_security = off;\n'
+    printf "SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table';\n"; cat; printf '\nCOMMIT;\n'; } |
+    docker exec -i -e PGCLIENTENCODING=UTF8 "$session_db_container" \
+      psql -X -q -A -t -v ON_ERROR_STOP=1 -U legion -d sessions -v "$1=$2"
 }
 # session_text PATH prints the session the table holds at PATH whole, as Oh My Pi reads it and
 # ompsessions.Read does: the row's content, then each of its parts in start_offset order, in one
@@ -67,7 +77,7 @@ session_psql() {
 session_text() {
   local out
   out=$(session_psql path "$1" <<<"SELECT f.content || coalesce((SELECT string_agg(p.content, '' ORDER BY p.start_offset)
-    FROM omp_session_files_parts p WHERE p.path = f.path), '') FROM omp_session_files f WHERE f.path = :'path';" && printf x) ||
+    FROM public.omp_session_files_parts p WHERE p.path = f.path), '') FROM public.omp_session_files f WHERE f.path = :'path';" && printf x) ||
     { echo "the session database $session_db_container could not be read for the session $1" >&2; return 1; }
   out=${out%x}
   [ -n "$out" ] || { echo "the session database $session_db_container holds no session $1" >&2; return 1; }
@@ -78,7 +88,7 @@ session_text() {
 # no such row), fails saying which.
 session_byte_len() {
   local out
-  out=$(session_psql path "$1" <<<"SELECT byte_len FROM omp_session_files WHERE path = :'path';") ||
+  out=$(session_psql path "$1" <<<"SELECT byte_len FROM public.omp_session_files WHERE path = :'path';") ||
     { echo "the session database $session_db_container could not be read for the session $1" >&2; return 1; }
   case $out in
     '' | *[!0-9]*) echo "the session table holds no byte_len for $1 ('$out')" >&2; return 1 ;;

@@ -260,8 +260,9 @@ const (
 	UntoldAdmitted UntoldReason = "admitted"
 	// UntoldAwaitingPerson is a member that waits on a person, whose phase no worker holds.
 	UntoldAwaitingPerson UntoldReason = "awaiting-person"
-	// UntoldHeld is a member that stands in held: the restart that moves it back into its phase
-	// carries what it is owed then.
+	// UntoldHeld is a member that stands in held, whatever holds it (its stopped task, the issues
+	// beneath it or its failed worker): the release that moves it back into a phase carries what it
+	// is owed then.
 	UntoldHeld UntoldReason = "held"
 	// UntoldAwaitingChildren is a parent that stands in awaiting_children while a Dispatch child of
 	// it is open: no restart moves it back, and the admission pass's return that moves it back into

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/issuelock"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -142,7 +143,7 @@ func TestAnAcceptanceIsWrittenInDispatchBeforeItsFact(t *testing.T) {
 	if want := []string{"LEGION-208 retro with "}; !reflect.DeepEqual(seen, want) {
 		t.Fatalf("the seam saw %q, want Dispatch at retro and no fact applied yet: %q", seen, want)
 	}
-	if got := facts.recorded(); len(got) != 1 || got[0] != (intake.SignOff{Issue: "LEGION-208"}) {
+	if got := facts.recorded(); len(got) != 1 || got[0] != (intake.SignOff{Issue: "LEGION-208", By: architect.token}) {
 		t.Fatalf("facts = %#v, want the sign-off", got)
 	}
 
@@ -173,7 +174,7 @@ func TestAnAcceptanceWhoseFactDoesNotTakeWritesTheStatusBack(t *testing.T) {
 		t.Fatalf("Dispatch writes = %+v, want retro and then needs_review written back: %+v", statuses.writes, want)
 	}
 
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(_ context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(context.Background(), "update issues set phase = $2, status = 'done' where key = $1", "LEGION-208", string(phase.Done))
 		return err
 	}); err != nil {
@@ -223,18 +224,30 @@ func recordedPhase(t *testing.T, h *harness, issue string) phase.Phase {
 
 // Two sign-offs of one issue can both pass the judgement before either records. Here the other
 // one's fact takes the issue to retro while this one waits between its Dispatch write and its own
-// fact, which the workflow then refuses, the issue being no longer in accepting. Dispatch keeps the
-// retro the daemon records, not the needs_review this sign-off read before its write.
+// fact, which the workflow then refuses: the run of accepting it read no longer stands
+// (SIGNOFF_STALE_ENTRY, the fence every architect's request about that run meets). Dispatch keeps
+// the retro the daemon records, not the needs_review this sign-off read before its write.
 func TestASignOffThatLosesToAnotherLeavesTheAcceptanceInDispatch(t *testing.T) {
 	h, statuses := newWorkflowAcceptanceHarness(t, func(ctx context.Context, h *harness, engine *workflow.Engine) {
-		result, err := intake.ApplyFact(ctx, h.store.Pool(), "api", "the-other-sign-off", intake.SignOff{Issue: "LEGION-208"}, engine)
+		// The other sign-off is built as the route builds it: its architect's claim and the run of
+		// accepting it read (openStep).
+		var entry record.StepEntry
+		if err := store.TransactWith(ctx, h.store.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			entry, err = record.NewStore().OpenStep(ctx, tx, "LEGION-208")
+			return err
+		}); err != nil {
+			t.Fatalf("read the run LEGION-208 stands in: %v", err)
+		}
+		result, err := intake.ApplyFact(ctx, h.store.Pool(), "api", "the-other-sign-off",
+			intake.SignOff{Issue: "LEGION-208", By: rootArchitect208, Entry: entry}, engine)
 		if err != nil || result.Refusal != nil {
 			t.Fatalf("the other sign-off = %+v, %v; want it taken", result.Refusal, err)
 		}
 	})
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
-		http.StatusConflict, "SIGNOFF_OUTSIDE_ACCEPTING")
+		http.StatusConflict, "SIGNOFF_STALE_ENTRY")
 	if at := recordedPhase(t, h, "LEGION-208"); at != phase.Retro {
 		t.Fatalf("LEGION-208 is recorded in %s, want retro, the other sign-off's", at)
 	}
@@ -249,7 +262,7 @@ func TestASignOffThatLosesToAnotherLeavesTheAcceptanceInDispatch(t *testing.T) {
 func TestASignOffRefusedInPlaceWritesBackTheStatusItReplaced(t *testing.T) {
 	h, statuses := newWorkflowAcceptanceHarness(t, func(ctx context.Context, h *harness, _ *workflow.Engine) {
 		parent := "LEGION-208"
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			return record.NewStore().PutIssue(ctx, tx, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 				Tree: "LEGION-208", Project: testProject, Title: "LEGION-209", Parent: &parent, Phase: phase.Planning, Status: "in_progress"})
 		}); err != nil {
@@ -658,7 +671,7 @@ func TestACloseRootRefusedByTheParentStatusRuleNamesTheChildrenThatHoldIt(t *tes
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(), Handlers: []intake.Handler{facts},
-		Dispatch: dispatch.New(server.URL, "dispatch-test-token"), Acceptance: &acceptanceJudge{},
+		Dispatch: dispatch.New(server.URL, dispatch.BearerTransport("dispatch-test-token", nil)), Acceptance: &acceptanceJudge{},
 	}).Handler
 	seedTree(t, h, "LEGION-208", "LEGION-209")
 	recordSaw(t, h, "LEGION-208", "todo", "todo", 7)

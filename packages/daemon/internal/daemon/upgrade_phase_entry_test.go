@@ -44,6 +44,20 @@ const phaseEntryMigration = 20261111225552
 // beside the phase entry and the upgrade under test applies them.
 const olderReleasesNewestMigration = 20261112180548
 
+// appliedWithTheFixture are the migrations above olderReleasesNewestMigration that preEntryStore
+// applies with the fixture's own rather than withholding them for the upgrade under test: the tree
+// is recorded through this release's PutIssue, so each migration that adds a column PutIssue
+// writes must stand before the tree is seeded. Each adds a column of issues, which no statement of
+// the phase entry reads or writes, so it changes nothing the upgrade under test reads.
+// 20261112215432_delivery_resume adds the four answered-document columns
+// (awaiting_answered_version, awaiting_answered_document_at, awaiting_answered_artifact and
+// awaiting_answered_step), and none of the other columns it adds, which its header names, is one
+// the phase entry reads or writes; 20261124060500_issue_priority adds issues.priority, and
+// 20261125181828_p0_bound adds issues.resolved_known, issues.resolved_priority and
+// issues.priority_from (it also makes the table project_p0_bound_changes, which the phase entry
+// does not read).
+var appliedWithTheFixture = []int{20261112215432, 20261124060500, 20261125181828}
+
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
 // read on is the tester (phase.RoleFor).
@@ -64,8 +78,8 @@ const (
 // newest; that is harmless here, since it adds pull_requests.state_read_at and the phase entry
 // touches no pull_requests column. Neither column is one any statement of the phase entry reads
 // or writes. Every version above that release's newest (olderReleasesNewestMigration) is withheld
-// with the phase entry, so Store.Migrate, which decides each migration on its own row, applies
-// the phase entry and those.
+// with the phase entry, but those appliedWithTheFixture names, so Store.Migrate, which decides
+// each migration on its own row, applies the phase entry and those it withheld.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -86,10 +100,10 @@ func preEntryStore(t *testing.T) *store.Store {
 	}
 	widened := false
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration {
+		if migration.Version == phaseEntryMigration || withheldByFixture(migration.Version) {
 			continue
 		}
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
 			}
@@ -108,9 +122,17 @@ func preEntryStore(t *testing.T) *store.Store {
 	return st
 }
 
-// migrationsAbove is how many embedded migrations carry a version above version: beside the
-// phase entry, what preEntryStore withheld, and so what the upgrade under test applies.
-func migrationsAbove(t *testing.T, version int) int {
+// withheldByFixture says whether preEntryStore withholds the migration of version beside the
+// phase entry: every one above the older release's newest but those appliedWithTheFixture names,
+// which the fixture applies. The fixture and the count of what the upgrade applies read this one
+// rule, so the two cannot disagree on which migrations the upgrade under test runs.
+func withheldByFixture(version int) bool {
+	return version > olderReleasesNewestMigration && !slices.Contains(appliedWithTheFixture, version)
+}
+
+// migrationsAbove is how many embedded migrations preEntryStore withheld beside the phase entry
+// (withheldByFixture), and so what the upgrade under test applies beside it.
+func migrationsAbove(t *testing.T) int {
 	t.Helper()
 	all, err := migrations.All()
 	if err != nil {
@@ -118,7 +140,7 @@ func migrationsAbove(t *testing.T, version int) int {
 	}
 	withheld := 0
 	for _, migration := range all {
-		if migration.Version > version {
+		if withheldByFixture(migration.Version) {
 			withheld++
 		}
 	}
@@ -158,7 +180,7 @@ func putPreEntryIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error 
 // which is what decides everything below: a claim at or above its row's entry is holding that
 // entry's work. wantTask is the task the sweep must send, empty where it must send nothing, and
 // wantResume says the task is the line the daemon composes for a worker already in its phase
-// (workflow.ResumePhaseTask), which the fixture can only build once the issue record stands.
+// (workflow's Engine.ResumeTask), which the fixture can only build once the issue record stands.
 type upgradeShape struct {
 	key           string
 	title         string
@@ -219,8 +241,8 @@ type upgradeShape struct {
 //     the stamp the row would deliver with no entry, the claim would stand at 0 under a row at
 //     entry 1, and that sweep would hand the work a second time to a worker already doing it.
 //     The three roles the sweep does send are sent the line the daemon composes for a worker
-//     already in its phase (workflow.ResumePhaseTask), since the release before this one recorded
-//     no task of the entry it was handed.
+//     already in its phase (workflow's Engine.ResumeTask), since the release before this one
+//     recorded no task of the entry it was handed.
 //  8. A claim that confirmed its phase's assignment and whose issue still owes a start carrying
 //     that same token is the retry of a phase the role never left: the release before this one
 //     wrote such a start — its own restart, and the slot repair that went through it
@@ -275,6 +297,7 @@ type upgradeShape struct {
 // role level at zero is owed nothing — which is all workflow.OwedEntry answers and all admit's
 // owedEntryRoles selects.
 func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preEntryStore(t)
 	pool := st.Pool()
@@ -337,7 +360,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	// (record.Store.PutIssue) names columns migrations above that release's newest add —
 	// issues.view_of (20261114064234) and the held start of awaiting_children (20261114232555) —
 	// which the fixture withholds with the phase entry, so the upgrade under test adds them.
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := putPreEntryIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -442,7 +465,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	// applies is the phase entry and whatever has landed above that release's newest since. The
 	// number is counted from the embedded set rather than written here, so a migration added later
 	// is not read as the fixture having withheld one of its own.
-	if want := 1 + migrationsAbove(t, olderReleasesNewestMigration); applied != want {
+	if want := 1 + migrationsAbove(t); applied != want {
 		t.Fatalf("the upgrade applied %d migrations, want the phase entry and the %d above the older release's newest: every other migration is the fixture's own",
 			applied, want-1)
 	}
@@ -503,7 +526,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	engine := workflow.New(records, workflow.Config{Project: upgradeProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(records, engine, len(shapes), upgradeProject, log)
-	w := &workflowRuntime{pool: pool, records: record.NewStore(), admission: admission,
+	w := &workflowRuntime{pool: pool, records: record.NewStore(), engine: engine, admission: admission,
 		handlers: []intake.Handler{engine, admission}, dispatchProject: upgradeProject, bootID: "test-boot",
 		log: log, entrySweep: 10 * time.Millisecond}
 	swept := func() (n int) {
@@ -539,7 +562,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 
 	for i, shape := range shapes {
 		if shape.wantResume {
-			shapes[i].wantTask = workflow.ResumePhaseTask(issues[shape.key])
+			shapes[i].wantTask = resumeTaskOf(t, pool, engine, shape.key)
 			continue
 		}
 		shapes[i].wantTask = shape.owedTask

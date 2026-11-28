@@ -86,7 +86,7 @@ func (e *Engine) closeRootRefusal(ctx context.Context, tx pgx.Tx, root record.Is
 	if err != nil {
 		return nil, err
 	}
-	if refusal, refuses := held.refusal(actCloseRoot, root.Key); refuses {
+	if refusal, refuses := held.refusal(actCloseRoot, root.Key, ""); refuses {
 		return refusal.Refusal, nil
 	}
 	return nil, nil

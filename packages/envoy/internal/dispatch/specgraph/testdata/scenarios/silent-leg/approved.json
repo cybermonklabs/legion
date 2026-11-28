@@ -1,0 +1,64 @@
+{
+  "nodes": [
+    {
+      "id": "delivery-is-fast",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: requirement\nid: delivery-is-fast\nkind: property\ntext:\n  - Envoy delivers a message to a connected session in less than one second.\n"
+        }
+      ]
+    },
+    {
+      "id": "production-delivery-takes-under-a-second",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: check\nid: production-delivery-takes-under-a-second\nserves: delivery-is-fast\nsubject: production\nprocedure: query\nclaim: Each delivery of the last hour took less than one second.\nprocedure_text:\n  - The query reads the time of each delivery of the last hour.\n  - It returns each delivery that took one second or more.\nfailing_example:\n  - A copy of the delivery records with one delivery that took two seconds.\n"
+        }
+      ]
+    },
+    {
+      "id": "messages-reach-sessions",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: requirement\nid: messages-reach-sessions\nkind: behavior\ntext:\n  - Envoy delivers each message to the session that it is for.\n"
+        }
+      ]
+    },
+    {
+      "id": "a-stored-message-survives-a-restart",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: requirement\nid: a-stored-message-survives-a-restart\nkind: behavior\nparent: messages-reach-sessions\ntext:\n  - Envoy delivers each stored message to its session after the listener starts again.\n"
+        }
+      ]
+    },
+    {
+      "id": "a-restart-loses-no-message",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "document": "---\ntype: check\nid: a-restart-loses-no-message\nserves: a-stored-message-survives-a-restart\nsubject: code\nprocedure: program\ntest:\n  runner: go\n  selector: github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage\n  job: go-checks\nclaim: A message that the listener stores before a restart reaches its session after the restart.\nprocedure_text:\n  - The program stores one message, starts the listener again and reads the messages of the session.\n  - It must find the message one time.\nfailing_example:\n  - A listener that deletes its stored messages when it starts.\n"
+        }
+      ]
+    }
+  ]
+}

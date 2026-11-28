@@ -21,16 +21,12 @@ const basisSeedsVersion = 20261122154643
 // A kind that is none is still refused, and so is a merge-lane kind, which went with the merge the
 // daemon no longer submits.
 func TestTheOutboxTakesTheBasisSeedKindsWith20261122154643(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, basisSeedsVersion-1)
-	queue := func(kind string) error {
-		_, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-			values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind)
-		return err
-	}
 	for _, kind := range []string{"pending_basis_seed", "reparent_seed"} {
-		err := queue(kind)
+		err := queueRowOfKind(store, kind)
 		if err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 			t.Fatalf("queueing a %s row before the migration = %v, want the kind constraint to refuse it: it is a row the migration exists for", kind, err)
 		}
@@ -47,15 +43,15 @@ func TestTheOutboxTakesTheBasisSeedKindsWith20261122154643(t *testing.T) {
 		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record", "plan_record",
 		"conflict_confirm", "merge_forward", "design_changes", "pending_basis_seed", "reparent_seed",
 	} {
-		if err := queue(kind); err != nil {
+		if err := queueRowOfKind(store, kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
 		}
 	}
 	t.Logf("after the migration the outbox takes every kind, the two basis seeds among them")
-	if err := queue("quiesce"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
+	if err := queueRowOfKind(store, "quiesce"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a row of a kind that is none = %v, want the constraint to refuse it", err)
 	}
-	if err := queue("ready_merge"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
+	if err := queueRowOfKind(store, "ready_merge"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a ready_merge row = %v, want the constraint to refuse it: the merge lane's kinds went with the merge the daemon no longer submits", err)
 	}
 }

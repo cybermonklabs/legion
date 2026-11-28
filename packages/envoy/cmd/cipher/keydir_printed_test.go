@@ -62,6 +62,7 @@ var keyPemLeaks = []string{"hunter2pw-keybytes-1e8f60", "x509:", "asn1:"}
 // alike, and neither the directory's path nor the key's bytes print. A key dir that holds a key
 // still signs (the control).
 func TestKeyPemInTheKeyDirIsNamedByItsSettingNeverItsPath(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at keydir_printed_test.go:83); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw-keydir-b51e07"
 	for _, fault := range keyPemFaults {
 		for _, form := range []struct {
@@ -103,6 +104,7 @@ func TestKeyPemInTheKeyDirIsNamedByItsSettingNeverItsPath(t *testing.T) {
 // the variable, with the system's reason, and never its path. A directory keygen can write into
 // still gets the key (the control).
 func TestKeygenNamesKeyPemByItsFlagNeverItsPath(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at keydir_printed_test.go:140); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw-keygen-3c7a55"
 	blockedKey := func(t *testing.T) string {
 		t.Helper()
@@ -180,6 +182,7 @@ func TestKeygenNamesKeyPemByItsFlagNeverItsPath(t *testing.T) {
 // refused naming key.pem in the machine cache, never its path. A cache that holds a session still
 // signs, and one that can be written still keeps the key (the controls).
 func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at keydir_printed_test.go:190); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	const secret = "hunter2pw-statehome-9d61c2"
 	useCache := func(t *testing.T) string {
 		t.Helper()
@@ -229,14 +232,14 @@ func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
 		if err := writeMachineCache(machineCacheDir(), key, "enr-machine"); err != nil {
 			t.Fatal(err)
 		}
+		meter := startStallMeter(t)
 		started := time.Now()
 		stdout, stderr, code := runIn(signArgs...)
+		// A cached session signs with no network call, so the sign waits for nothing: it is timed
+		// against no deadline, allowing for the time this process was held up (requireOnTime).
+		requireOnTime(t, meter, "the sign of a cached session, which makes no network call", started, 0)
 		if code != 0 || strings.Count(strings.TrimSpace(stdout), ".") != 2 {
 			t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and a compact JWS", code, stdout, stderr)
-		}
-		// A cached session signs with no network call, so the sign is quick.
-		if took := time.Since(started); took > 10*time.Second {
-			t.Fatalf("the sign took %s, more than the 10 s bound a cached session's sign, which makes no network call, is held to", took)
 		}
 	})
 }
@@ -253,6 +256,7 @@ const machineCacheWords = "the machine cache (${XDG_STATE_HOME:-$HOME/.local/sta
 // system's reason where a file call failed. What a launcher wrote in enrollment.error still
 // prints, and a key dir that holds a session still signs (the controls).
 func TestTheKeyDirIsNamedByItsSettingNeverItsPath(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at keydir_printed_test.go:315); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw-keydirpath-7e3b40"
 	writeEnrollment := func(t *testing.T, dir string, data []byte, asDirectory bool) {
 		t.Helper()
@@ -333,6 +337,7 @@ func TestTheKeyDirIsNamedByItsSettingNeverItsPath(t *testing.T) {
 // /run/user/$UID, where helper.DefaultSocket looks when XDG_RUNTIME_DIR is unset. The last row
 // shows keyDir is there, so the name is not a place the key dir is not.
 func TestTheKeyDirsNameIsWhereTheKeyDirIs(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at keydir_printed_test.go:346).
 	for _, row := range []struct{ keyDir, runtime, want, dir string }{
 		{"/elsewhere/keys", "/run/elsewhere", "AGENT_SECRETS_KEY_DIR", "/elsewhere/keys"},
 		{"", "/run/elsewhere", "$XDG_RUNTIME_DIR/agent-secrets (AGENT_SECRETS_KEY_DIR is unset)", "/run/elsewhere/agent-secrets"},
@@ -356,6 +361,7 @@ func TestTheKeyDirsNameIsWhereTheKeyDirIs(t *testing.T) {
 // marker that cannot, a cache that cannot be made, and no directory for one. A move that can be
 // made still moves the session, which then signs (the control).
 func TestAKeyDirMachineSessionMovesWithoutItsPaths(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at keydir_printed_test.go:399); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw-migrate-0f4c9a"
 	blockWithADirectory := func(t *testing.T, path string) {
 		t.Helper()
@@ -428,6 +434,7 @@ func TestAKeyDirMachineSessionMovesWithoutItsPaths(t *testing.T) {
 // register it again each name the cache by where it is, never by its path. A key.pem there that
 // is no PEM file is TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath's (keyPemFaults).
 func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at keydir_printed_test.go:442); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw-cachename-c4a917"
 	useCache := func(t *testing.T) string {
 		t.Helper()
@@ -567,6 +574,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 // by the directory, whether the variable names it or XDG_STATE_HOME places it. A store that holds a
 // sign-in still signs (the control).
 func TestTheSignInStoreIsNamedByItsSettingNeverItsPath(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at keydir_printed_test.go:585); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw-signindir-5b08e3"
 	const store = "the sign-in store (AGENT_SECRETS_SIGNIN_DIR, or $XDG_STATE_HOME/agent-secrets/signins where it is unset)"
 	for _, row := range []struct {

@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -37,7 +41,7 @@ func TestListIssuesFiltersStatusesWithoutChangingDispatchOrder(t *testing.T) {
 	}))
 	defer server.Close()
 
-	issues, err := New(server.URL, dispatchToken).ListIssues(context.Background(), "LEGION", []string{"todo"})
+	issues, err := New(server.URL, BearerTransport(dispatchToken, nil)).ListIssues(context.Background(), "LEGION", []string{"todo"})
 	if err != nil {
 		t.Fatalf("list issues: %v", err)
 	}
@@ -75,7 +79,7 @@ func TestListChildrenAsksForTheParentInEveryProject(t *testing.T) {
 	}))
 	defer server.Close()
 
-	children, err := New(server.URL, dispatchToken).ListChildren(context.Background(), "LEGION-1")
+	children, err := New(server.URL, BearerTransport(dispatchToken, nil)).ListChildren(context.Background(), "LEGION-1")
 	if err != nil {
 		t.Fatalf("list children: %v", err)
 	}
@@ -123,7 +127,7 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 	}))
 	defer server.Close()
 
-	issue, err := New(server.URL, dispatchToken).GetIssue(context.Background(), "LEGION-8")
+	issue, err := New(server.URL, BearerTransport(dispatchToken, nil)).GetIssue(context.Background(), "LEGION-8")
 	if err != nil {
 		t.Fatalf("get issue: %v", err)
 	}
@@ -154,7 +158,7 @@ func TestListAndDetailCarryTheResolvedRepository(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	issues, err := client.ListIssues(context.Background(), "LEGION", nil)
 	if err != nil {
@@ -187,7 +191,7 @@ func TestWebhookAppInstalledReadsDispatchsAnswer(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	for repo, want := range map[string]bool{"acme/widgets": true, "acme/gadgets": false} {
 		installed, err := client.WebhookAppInstalled(context.Background(), repo)
@@ -226,7 +230,7 @@ func TestHandOverWritesTheStatusAndTheLabelsInOnePatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := New(server.URL, dispatchToken).HandOver(context.Background(), Issue{Key: "LEGION-4", Status: "in_progress", Labels: []string{"repo:x"}, LastSeq: 7}, "todo"); err != nil {
+	if err := New(server.URL, BearerTransport(dispatchToken, nil)).HandOver(context.Background(), Issue{Key: "LEGION-4", Status: "in_progress", Labels: []string{"repo:x"}, LastSeq: 7}, "todo"); err != nil {
 		t.Fatalf("hand over: %v", err)
 	}
 }
@@ -246,7 +250,7 @@ func TestHandOverOfALabelledIssueWritesTheStatusAtItsSequence(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := New(server.URL, dispatchToken).HandOver(context.Background(), Issue{Key: "LEGION-4", Status: "testing", Labels: []string{"Legion"}, HandedOver: true, LastSeq: 9}, "todo"); err != nil {
+	if err := New(server.URL, BearerTransport(dispatchToken, nil)).HandOver(context.Background(), Issue{Key: "LEGION-4", Status: "testing", Labels: []string{"Legion"}, HandedOver: true, LastSeq: 9}, "todo"); err != nil {
 		t.Fatalf("hand over: %v", err)
 	}
 }
@@ -279,7 +283,7 @@ func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
 	}))
 	defer server.Close()
 
-	written, err := New(server.URL, dispatchToken).SetStatus(context.Background(), "LEGION-4", "testing")
+	written, err := New(server.URL, BearerTransport(dispatchToken, nil)).SetStatus(context.Background(), "LEGION-4", "testing")
 	if err != nil {
 		t.Fatalf("set status: %v", err)
 	}
@@ -323,7 +327,7 @@ func TestSetAcceptanceStatusAsksForTheOpenChildCheckAndReadsItsRefusal(t *testin
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	if _, err := client.SetStatus(context.Background(), "LEGION-4", "testing"); err != nil {
 		t.Fatalf("set status: %v", err)
@@ -362,7 +366,7 @@ func TestAnAcceptanceWriteRefusedByTheParentStatusRuleNamesTheChildrenThatHoldIt
 		_, _ = w.Write([]byte(body))
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	read := Issue{Key: "LEGION-4", Status: "todo", LastSeq: 12}
 
 	body = `{"code":"PARENT_STATUS_CONFLICT","error":"this change would leave a parent's status out of line with its children's.","issues":[` +
@@ -416,7 +420,7 @@ func TestReleaseClaimDeletesTheClaimUnderTheDaemonSession(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := New(server.URL, dispatchToken).ReleaseClaim(context.Background(), "LEGION-4"); err != nil {
+	if err := New(server.URL, BearerTransport(dispatchToken, nil)).ReleaseClaim(context.Background(), "LEGION-4"); err != nil {
 		t.Fatalf("release claim: %v", err)
 	}
 
@@ -425,7 +429,7 @@ func TestReleaseClaimDeletesTheClaimUnderTheDaemonSession(t *testing.T) {
 	}))
 	defer claimed.Close()
 
-	err := New(claimed.URL, dispatchToken).ReleaseClaim(context.Background(), "LEGION-4")
+	err := New(claimed.URL, BearerTransport(dispatchToken, nil)).ReleaseClaim(context.Background(), "LEGION-4")
 	var dispatchErr *Error
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("release claim error = %T %v, want *dispatch.Error", err, err)
@@ -480,7 +484,7 @@ func TestGatedStepsPublishSendsTheListUnderTheDaemonSession(t *testing.T) {
 			}))
 			defer server.Close()
 
-			if err := New(server.URL, dispatchToken).PutGatedSteps(context.Background(), "LEGION", tc.steps); err != nil {
+			if err := New(server.URL, BearerTransport(dispatchToken, nil)).PutGatedSteps(context.Background(), "LEGION", tc.steps); err != nil {
 				t.Fatalf("publish the gated steps: %v", err)
 			}
 		})
@@ -519,7 +523,7 @@ func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := New(server.URL, dispatchToken).PostMessage(context.Background(), "LEGION-5", "Pull request checks are blocked."); err != nil {
+	if err := New(server.URL, BearerTransport(dispatchToken, nil)).PostMessage(context.Background(), "LEGION-5", "Pull request checks are blocked."); err != nil {
 		t.Fatalf("post message: %v", err)
 	}
 }
@@ -538,7 +542,7 @@ func TestArtifactsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
 	}))
 	defer server.Close()
 
-	artifacts, err := New(server.URL, dispatchToken).Artifacts(context.Background(), "LEGION-5")
+	artifacts, err := New(server.URL, BearerTransport(dispatchToken, nil)).Artifacts(context.Background(), "LEGION-5")
 	if err != nil {
 		t.Fatalf("artifact slugs: %v", err)
 	}
@@ -577,7 +581,7 @@ func TestArtifactsReadsWhatEachArtifactIsOnTheIssueAndItsLatestVersion(t *testin
 	}))
 	defer server.Close()
 
-	artifacts, err := New(server.URL, dispatchToken).Artifacts(context.Background(), "LEGION-5")
+	artifacts, err := New(server.URL, BearerTransport(dispatchToken, nil)).Artifacts(context.Background(), "LEGION-5")
 	if err != nil {
 		t.Fatalf("artifacts: %v", err)
 	}
@@ -623,7 +627,7 @@ func TestReviewsReadsEveryReviewOfADocumentNewestFirst(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	reviews, err := client.Reviews(context.Background(), "artifact-6")
 	if err != nil {
@@ -669,7 +673,7 @@ func TestDocumentVersionReadsTheMarkdownOfOneVersion(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	got, err := client.DocumentVersion(context.Background(), "artifact-6", 3)
 	if err != nil || got != markdown {
@@ -746,7 +750,7 @@ func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *t
 	}))
 	defer server.Close()
 
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	slug, err := client.UploadArtifact(context.Background(), "LEGION-5", "rescue-pod-9d3f0c7a", content)
 	if err != nil || slug != "rescue-pod-9d3f0c7a" {
 		t.Fatalf("upload = %q, %v; want the slug Dispatch filed the document under", slug, err)
@@ -783,7 +787,7 @@ func TestApprovalReturnsCurrentDocumentApproval(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	approval, err := client.Approval(context.Background(), "artifact-6")
 	if err != nil {
@@ -827,7 +831,7 @@ func TestApprovalNamesOnlyAnOpenRequest(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	awaiting, err := client.Approval(context.Background(), "artifact-7")
 	if err != nil {
 		t.Fatalf("read awaiting approval: %v", err)
@@ -869,7 +873,7 @@ func TestReadsCarryTheClaimHolder(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	listed, err := client.ListIssues(context.Background(), "LEGION", nil)
 	if err != nil {
@@ -937,7 +941,7 @@ func TestHandoffReadsTheRecordAndItsAuthor(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	handoff, err := client.Handoff(context.Background(), id)
 	if err != nil {
 		t.Fatalf("read handoff: %v", err)
@@ -951,13 +955,64 @@ func TestHandoffReadsTheRecordAndItsAuthor(t *testing.T) {
 	}
 }
 
+// An ask reads back with its state and who closed it, as GET /api/v1/asks/{id} answers it beside
+// the ask's thread, which is not the daemon's to read: a resolved ask names its resolver, an
+// answered one the person whose answer closed it, and an open one nobody. An answer that names no
+// state is an error, and an ask Dispatch does not have is Missing.
+func TestAskReadsTheStateAndWhoClosedIt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.Method != http.MethodGet {
+			t.Fatalf("request = %s %s, want GET", r.Method, r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/api/v1/asks/ask-resolved":
+			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-resolved", "kind": "approval", "state": "resolved",
+				"resolution": map[string]any{"kind": "resolved", "reason": "The request is withdrawn.",
+					"actor": map[string]any{"kind": "session", "id": "ses_architect", "origin": map[string]any{"title": "architect"}}, "at": "2026-11-24T18:00:00Z"}},
+				"replies": []any{}, "followers": []any{}, "claimant": nil, "route": nil})
+		case "/api/v1/asks/ask-answered":
+			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-answered", "kind": "approval", "state": "answered",
+				"answer": map[string]any{"id": "b4", "user": "alice", "selected": []string{"Request changes"}, "text": "Name the rollback path.",
+					"at": "2026-11-24T18:00:00Z"}}})
+		case "/api/v1/asks/ask-open":
+			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-open", "kind": "approval", "state": "open"}})
+		case "/api/v1/asks/ask-stateless":
+			writeJSON(t, w, map[string]any{"ask": map[string]any{"id": "ask-stateless"}})
+		default:
+			writeJSONStatus(t, w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND", "error": "ask not found"})
+		}
+	}))
+	defer server.Close()
+
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
+	resolved, err := client.Ask(context.Background(), "ask-resolved")
+	if want := (Ask{State: "resolved", ClosedBy: Actor{Kind: "session", ID: "ses_architect"}}); err != nil || resolved != want {
+		t.Fatalf("the resolved ask = %#v, %v; want %#v", resolved, err, want)
+	}
+	answered, err := client.Ask(context.Background(), "ask-answered")
+	if want := (Ask{State: "answered", ClosedBy: Actor{Kind: "user", ID: "alice"}}); err != nil || answered != want {
+		t.Fatalf("the answered ask = %#v, %v; want %#v", answered, err, want)
+	}
+	open, err := client.Ask(context.Background(), "ask-open")
+	if want := (Ask{State: "open"}); err != nil || open != want {
+		t.Fatalf("the open ask = %#v, %v; want %#v", open, err, want)
+	}
+	if stateless, err := client.Ask(context.Background(), "ask-stateless"); err == nil {
+		t.Fatalf("an ask answered with no state = %#v, want an error", stateless)
+	}
+	if _, err := client.Ask(context.Background(), "ask-unknown"); !Missing(err) {
+		t.Fatalf("an unknown ask = %v, want Dispatch's 404", err)
+	}
+}
+
 func TestClientReturnsDispatchErrorForCoded4xx(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSONStatus(t, w, http.StatusConflict, map[string]string{"code": "ISSUE_CLOSED", "error": "issue is closed"})
 	}))
 	defer server.Close()
 
-	_, err := New(server.URL, dispatchToken).GetIssue(context.Background(), "LEGION-9")
+	_, err := New(server.URL, BearerTransport(dispatchToken, nil)).GetIssue(context.Background(), "LEGION-9")
 	var dispatchErr *Error
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("get issue error = %T %v, want *dispatch.Error", err, err)
@@ -973,7 +1028,7 @@ func TestClientReturnsDispatchErrorFor5xx(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := New(server.URL, dispatchToken).SetStatus(context.Background(), "LEGION-10", "testing")
+	_, err := New(server.URL, BearerTransport(dispatchToken, nil)).SetStatus(context.Background(), "LEGION-10", "testing")
 	var dispatchErr *Error
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("set status error = %T %v, want *dispatch.Error", err, err)
@@ -991,7 +1046,7 @@ func TestClientBoundsEveryCall(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	client.timeout = 20 * time.Millisecond
 	_, err := client.GetIssue(context.Background(), "LEGION-11")
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -1001,6 +1056,57 @@ func TestClientBoundsEveryCall(t *testing.T) {
 	case <-started:
 	default:
 		t.Fatal("server never received the bounded request")
+	}
+}
+
+// TestTheBearerReachesNoOtherHostARedirectNames: the bearer goes on every request to Dispatch's own
+// host, a redirect there included, and on none to another host a redirect names, as when the
+// client set the header itself and Go's client dropped it on such a redirect.
+func TestTheBearerReachesNoOtherHostARedirectNames(t *testing.T) {
+	var mu sync.Mutex
+	presented := map[string]string{}
+	answer := func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		presented[r.Host+r.URL.Path] = r.Header.Get("Authorization")
+		mu.Unlock()
+		writeJSON(t, w, map[string]any{"key": path.Base(r.URL.Path), "title": "Moved", "status": "todo"})
+	}
+	other := httptest.NewServer(http.HandlerFunc(answer))
+	defer other.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/issues/LEGION-12":
+			http.Redirect(w, r, "http://other.example/api/v1/issues/LEGION-12", http.StatusTemporaryRedirect)
+		case "/api/v1/issues/LEGION-13":
+			http.Redirect(w, r, "/api/v1/issues/LEGION-14", http.StatusTemporaryRedirect)
+		default:
+			answer(w, r)
+		}
+	}))
+	defer server.Close()
+	// other.example is the other server, whatever the resolver says of the name.
+	otherAddress := strings.TrimPrefix(other.URL, "http://")
+	base := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		if address == "other.example:80" {
+			address = otherAddress
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, address)
+	}}
+	defer base.CloseIdleConnections()
+
+	client := New(server.URL, BearerTransport(dispatchToken, base))
+	for _, key := range []string{"LEGION-12", "LEGION-13"} {
+		if _, err := client.GetIssue(context.Background(), key); err != nil {
+			t.Fatalf("get %s through its redirect: %v", key, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := presented[strings.TrimPrefix(server.URL, "http://")+"/api/v1/issues/LEGION-14"]; got != "Bearer "+dispatchToken {
+		t.Fatalf("a redirect to Dispatch's own host carried Authorization %q, want the bearer", got)
+	}
+	if got, reached := presented["other.example/api/v1/issues/LEGION-12"]; !reached || got != "" {
+		t.Fatalf("a redirect to another host was reached=%t with Authorization %q, want it reached with none", reached, got)
 	}
 }
 
@@ -1077,7 +1183,7 @@ func TestMessageBodiesSincePagesNewestFirstUntilTheOutboxWindow(t *testing.T) {
 	}))
 	defer server.Close()
 
-	bodies, err := New(server.URL, dispatchToken).MessageBodiesSince(context.Background(), "LEGION-5", since)
+	bodies, err := New(server.URL, BearerTransport(dispatchToken, nil)).MessageBodiesSince(context.Background(), "LEGION-5", since)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
@@ -1112,12 +1218,64 @@ func TestMessageBodiesSinceReadsACutBodyFromItsMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	bodies, err := New(server.URL, dispatchToken).MessageBodiesSince(context.Background(), "LEGION-5", since)
+	bodies, err := New(server.URL, BearerTransport(dispatchToken, nil)).MessageBodiesSince(context.Background(), "LEGION-5", since)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
 	if reads != 1 || len(bodies) != 2 || bodies[0] != whole || bodies[1] != "A short daemon notice." {
 		t.Fatalf("message reads=%d bodies=%d, want the cut body read whole from its message and the short one from its event alone", reads, len(bodies))
+	}
+}
+
+// R3 of dispatch://INFRA-1523: an issue message its author deleted keeps its message.created
+// event, and every read of that event gives no part of its body: the payload carries deleted_at
+// and deleted_by in place of body. A deleted message is no notice the outbox already posted, so
+// the read passes over it and goes on; it must not refuse the whole read, which would leave the
+// outbox row retrying for as long as the deleted message stands inside its window.
+func TestMessageBodiesSincePassesOverADeletedMessage(t *testing.T) {
+	since := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.URL.Path != "/api/v1/issues/LEGION-5/events" {
+			t.Fatalf("request = %s %s, want the issue's events", r.Method, r.URL.Path)
+		}
+		writeJSON(t, w, []map[string]any{
+			{"seq": 9, "type": "message.deleted", "created_at": "2026-09-23T01:03:00Z",
+				"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000001", "deleted_at": "2026-09-23T01:03:00Z", "deleted_by": map[string]string{"kind": "user", "id": "alice"}}},
+			{"seq": 8, "type": "message.created", "created_at": "2026-09-23T01:02:00Z",
+				"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000001", "deleted_at": "2026-09-23T01:03:00Z", "deleted_by": map[string]string{"kind": "user", "id": "alice"}}},
+			{"seq": 7, "type": "message.created", "created_at": "2026-09-23T01:01:00Z",
+				"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000002", "body": "A short daemon notice."}},
+		})
+	}))
+	defer server.Close()
+
+	bodies, err := New(server.URL, BearerTransport(dispatchToken, nil)).MessageBodiesSince(context.Background(), "LEGION-5", since)
+	if err != nil {
+		t.Fatalf("list messages beside a deleted one: %v", err)
+	}
+	if len(bodies) != 1 || bodies[0] != "A short daemon notice." {
+		t.Fatalf("bodies = %#v, want the one message that still stands", bodies)
+	}
+}
+
+// The pass over a deleted message is for that message alone: a message.created event with no body
+// and no deleted_at is a payload the daemon cannot read, and the read still refuses it rather than
+// pass a notice the outbox may have posted.
+func TestMessageBodiesSinceStillRefusesAStandingMessageWithNoBody(t *testing.T) {
+	since := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		writeJSON(t, w, []map[string]any{
+			{"seq": 8, "type": "message.created", "created_at": "2026-09-23T01:02:00Z",
+				"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000001"}},
+		})
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL, BearerTransport(dispatchToken, nil)).MessageBodiesSince(context.Background(), "LEGION-5", since)
+	if err == nil || !strings.Contains(err.Error(), "payload body is required") {
+		t.Fatalf("err = %v, want the refusal of a message.created event with no body", err)
 	}
 }
 
@@ -1183,7 +1341,7 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 	}))
 	defer server.Close()
 
-	events, err := New(server.URL, dispatchToken).EventsAfter(context.Background(), "LEGION-1", 7)
+	events, err := New(server.URL, BearerTransport(dispatchToken, nil)).EventsAfter(context.Background(), "LEGION-1", 7)
 	if err != nil {
 		t.Fatalf("read events: %v", err)
 	}
@@ -1201,7 +1359,280 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 		writeJSON(t, w, []map[string]any{{"seq": 7, "type": "comment.created"}})
 	}))
 	defer stuck.Close()
-	if _, err := New(stuck.URL, dispatchToken).EventsAfter(context.Background(), "LEGION-1", 7); err == nil || !strings.Contains(err.Error(), "non-ascending") {
+	if _, err := New(stuck.URL, BearerTransport(dispatchToken, nil)).EventsAfter(context.Background(), "LEGION-1", 7); err == nil || !strings.Contains(err.Error(), "non-ascending") {
 		t.Fatalf("a page at the sequence already read = %v, want refused", err)
+	}
+}
+
+// daemonOfOther is the actor every write of clientWrites names from a client made with no option:
+// the session of the daemon of the project OTHER, the project of the key OTHER-7
+// (DaemonSession).
+const daemonOfOther = `{"kind":"session","id":"legion-daemon:OTHER"}`
+
+// clientWrite is one write of HTTPClient as the daemon makes it on the issue OTHER-7 (on the
+// project OTHER for PutGatedSteps): the method, the call, the request it sends ("<method>
+// <escaped path>"), the body a client made with no option sends, which is the body the client sent
+// before WritesAs, byte for byte, and what the stand-in answers ({} where it is empty).
+type clientWrite struct {
+	method string
+	call   func(ctx context.Context, client *HTTPClient) error
+	route  string
+	body   string
+	answer string
+}
+
+// clientWrites is every write of HTTPClient, one row each.
+func clientWrites() []clientWrite {
+	const step = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
+	const plan = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
+	retro := StepWrite{Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
+		Agent: "legion-other-other-7-implementer", Generation: 2}
+	started := retro
+	at := time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
+	started.StartedAt = &at
+	return []clientWrite{
+		{
+			method: "SetStatus", route: "PATCH /api/v1/issues/OTHER-7",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				_, err := client.SetStatus(ctx, "OTHER-7", "in_progress")
+				return err
+			},
+			body: `{"status":"in_progress","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "SetStatusAt", route: "PATCH /api/v1/issues/OTHER-7",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				_, err := client.SetStatusAt(ctx, Issue{Key: "OTHER-7", Status: "todo", LastSeq: 12}, "in_progress")
+				return err
+			},
+			body: `{"status":"in_progress","expected_sequence":12,"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "SetAcceptanceStatus", route: "PATCH /api/v1/issues/OTHER-7",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				_, err := client.SetAcceptanceStatus(ctx, Issue{Key: "OTHER-7", Status: "needs_review", LastSeq: 12}, "retro")
+				return err
+			},
+			body: `{"status":"retro","expected_sequence":12,"refuse_open_foreign_children":true,"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "ReleaseClaim", route: "DELETE /api/v1/issues/OTHER-7/claim",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.ReleaseClaim(ctx, "OTHER-7")
+			},
+			body: `{"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutGatedSteps", route: "PUT /api/v1/projects/OTHER/gated-steps",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutGatedSteps(ctx, "OTHER", []string{"criteria", "spec"})
+			},
+			body: `{"steps":["criteria","spec"],"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutDesignGates", route: "PUT /api/v1/issues/OTHER-7/design-gates",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutDesignGates(ctx, "OTHER-7", []DesignGateDocument{{Step: "spec", ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"}})
+			},
+			body: `{"gates":[{"step":"spec","artifact_id":"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b","holds":null}],"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutRoleHolders", route: "PUT /api/v1/issues/OTHER-7/role-holders",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutRoleHolders(ctx, "OTHER-7", []RoleHolder{{Role: "implementer", Session: "ses-implementer"}})
+			},
+			body: `{"holders":[{"role":"implementer","session":"ses-implementer"}],"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutStep", route: "PUT /api/v1/issues/OTHER-7/steps/" + step,
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutStep(ctx, "OTHER-7", step, started)
+			},
+			body: `{"task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-other-other-7-implementer","generation":2,"started_at":"2026-11-16T23:00:00Z","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutStepRating", route: "PUT /api/v1/issues/OTHER-7/steps/" + step + "/rating",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutStepRating(ctx, "OTHER-7", step, retro, PlanRating{Rating: 4, Reason: "The plan put the tests after the review."})
+			},
+			body: `{"task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-other-other-7-implementer","generation":2,"rating":4,"rating_reason":"The plan put the tests after the review.","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutStepExperiment", route: "PUT /api/v1/issues/OTHER-7/steps/" + step + "/experiment",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutStepExperiment(ctx, "OTHER-7", step, retro, StepExperiment{Experiment: "memory", Variant: "off"})
+			},
+			body: `{"task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-other-other-7-implementer","generation":2,"experiment":"memory","variant":"off","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutPlan", route: "PUT /api/v1/issues/OTHER-7/plans/" + plan,
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutPlan(ctx, "OTHER-7", plan, PlanWrite{Generation: 2, Source: "default",
+					Tasks: []PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}})
+			},
+			body: `{"generation":2,"source":"default","tasks":[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}],"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "HandOver", route: "PATCH /api/v1/issues/OTHER-7",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.HandOver(ctx, Issue{Key: "OTHER-7", Status: "in_progress", LastSeq: 7}, "todo")
+			},
+			body: `{"status":"todo","labels_add":["legion"],"expected_sequence":7,"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PostMessage", route: "POST /api/v1/issues/OTHER-7/messages",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PostMessage(ctx, "OTHER-7", "Pull request checks are blocked.")
+			},
+			body: `{"body":"Pull request checks are blocked.","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "UploadArtifact", route: "POST /api/v1/issues/OTHER-7/artifacts",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				_, err := client.UploadArtifact(ctx, "OTHER-7", "rescue-pod-9d3f0c7a", "# The full list\n")
+				return err
+			},
+			body:   `{"name":"rescue-pod-9d3f0c7a","content":"# The full list\n","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+			answer: `{"artifact":{"id":"artifact-3","slug":"rescue-pod-9d3f0c7a"}}`,
+		},
+	}
+}
+
+// TestEveryWriteNamesTheSessionItsClientWritesAs: every write of the daemon's client names an
+// actor, and Dispatch takes the write of a broker token that proves a session only where that
+// actor names the same session (ACTOR_SESSION_MISMATCH). A client made with no option names the
+// session of the daemon of the key's project (DaemonSession) and sends each body byte for byte as
+// it did before WritesAs. A client made WritesAs a session names that session on every write, on
+// an issue of another project too, and changes nothing else in the body.
+func TestEveryWriteNamesTheSessionItsClientWritesAs(t *testing.T) {
+	for _, write := range clientWrites() {
+		t.Run(write.method, func(t *testing.T) {
+			if named := strings.Count(write.body, daemonOfOther); named != 1 {
+				t.Fatalf("the row's body names the actor %s %d times, want once: %s", daemonOfOther, named, write.body)
+			}
+			for _, tc := range []struct {
+				name   string
+				client func(url string) *HTTPClient
+				body   string
+			}{
+				{
+					name:   "a client made with no option",
+					client: func(url string) *HTTPClient { return New(url, BearerTransport(dispatchToken, nil)) },
+					body:   write.body,
+				},
+				{
+					name: "a client made WritesAs legion-daemon:EXAMPLE",
+					client: func(url string) *HTTPClient {
+						return New(url, BearerTransport(dispatchToken, nil), WritesAs("legion-daemon:EXAMPLE"))
+					},
+					body: strings.Replace(write.body, daemonOfOther, `{"kind":"session","id":"legion-daemon:EXAMPLE"}`, 1),
+				},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					var route, body string
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						sent, err := io.ReadAll(r.Body)
+						if err != nil {
+							t.Errorf("read the body of %s %s: %v", r.Method, r.URL.EscapedPath(), err)
+						}
+						route, body = r.Method+" "+r.URL.EscapedPath(), string(sent)
+						answer := write.answer
+						if answer == "" {
+							answer = "{}"
+						}
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = io.WriteString(w, answer)
+					}))
+					defer server.Close()
+					if err := write.call(context.Background(), tc.client(server.URL)); err != nil {
+						t.Fatalf("%s: %v", write.method, err)
+					}
+					if route != write.route {
+						t.Errorf("%s sent %s, want %s", write.method, route, write.route)
+					}
+					if body != tc.body {
+						t.Errorf("%s sent the body\n%s\nwant\n%s", write.method, body, tc.body)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable: TestEveryWriteNamesTheSessionItsClientWritesAs
+// holds each write of its table to the session its client writes as, so a write the client gains
+// and the table does not hold could name another session unseen. Every exported method of
+// *HTTPClient is a row of that table or one of the reads below, which send no actor, and each name
+// the two lists hold is a method the client has.
+func TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable(t *testing.T) {
+	reads := []string{"ListIssues", "ListChildren", "GetIssue", "WebhookAppInstalled", "Artifacts", "Ask", "Reviews", "DocumentVersion",
+		"EventsAfter", "MessageBodiesSince", "Approval", "ApprovedVersionBefore", "ArtifactChanges", "PlanDocument", "Handoff",
+		"Whoami"}
+	listed := map[string]string{}
+	for _, read := range reads {
+		listed[read] = "the list of reads"
+	}
+	for _, write := range clientWrites() {
+		listed[write.method] = "the table of writes"
+	}
+	methods := reflect.TypeOf(&HTTPClient{})
+	exported := map[string]bool{}
+	for i := range methods.NumMethod() {
+		name := methods.Method(i).Name
+		exported[name] = true
+		if _, ok := listed[name]; !ok {
+			t.Errorf("(*HTTPClient).%s is neither a row of clientWrites nor in this test's list of reads: a write is a row of that table, which holds it to the session its client writes as, and a read sends no actor", name)
+		}
+	}
+	for name, list := range listed {
+		if !exported[name] {
+			t.Errorf("%s names %s, which is no exported method of *HTTPClient", list, name)
+		}
+	}
+}
+
+// A page that holds an event the client cannot read fails the read with an *EventLogError naming
+// the event's place in the log read so far, counted from 1, here on the second page: an event
+// whose seq does not decode, with sequence 0, and an event at the sequence already read, with its
+// sequence. The error's text is the text the read gave before the type.
+func TestEventsAfterNamesTheEventOfAPageItCannotRead(t *testing.T) {
+	var probe struct {
+		Seq int64 `json:"seq"`
+	}
+	undecoded := json.Unmarshal([]byte(`{"seq":"210"}`), &probe)
+	for _, tc := range []struct {
+		name string
+		bad  map[string]any
+		seq  int64
+		text string
+	}{
+		{name: "a seq that does not decode", bad: map[string]any{"seq": "210", "type": "comment.created"},
+			text: "page issue events for LEGION-1: " + undecoded.Error()},
+		{name: "a seq at the sequence already read", bad: map[string]any{"seq": 209, "type": "comment.created"}, seq: 209,
+			text: "page issue events for LEGION-1: non-ascending sequence 209 after 209"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The first page holds sequences 8 to 207 and the second 208, 209 and the bad event,
+			// the log's 203rd.
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+				if after == 7 {
+					page := make([]map[string]any, 0, 200)
+					for seq := after + 1; seq <= after+200; seq++ {
+						page = append(page, map[string]any{"seq": seq, "type": "comment.created", "issue_key": "LEGION-1"})
+					}
+					writeJSON(t, w, page)
+					return
+				}
+				writeJSON(t, w, []map[string]any{{"seq": 208, "type": "comment.created"}, {"seq": 209, "type": "comment.created"}, tc.bad})
+			}))
+			defer server.Close()
+
+			events, err := New(server.URL, BearerTransport(dispatchToken, nil)).EventsAfter(context.Background(), "LEGION-1", 7)
+			var unread *EventLogError
+			if !errors.As(err, &unread) || unread.Event != 203 || unread.Seq != tc.seq || err.Error() != tc.text || events != nil {
+				t.Fatalf("EventsAfter = %d events, %#v; want an *EventLogError naming event 203, seq %d, with the text %q", len(events), err, tc.seq, tc.text)
+			}
+		})
 	}
 }

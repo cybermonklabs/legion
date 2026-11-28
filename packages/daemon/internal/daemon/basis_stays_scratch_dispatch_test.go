@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,7 +20,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -87,7 +90,7 @@ func (r *personHandoverRig) composeCatchUp(key string) composedCatchUp {
 	root := r.record(key)
 	launch := r.architects[key].launch.Generation
 	var composed composedCatchUp
-	if err := pgx.BeginFunc(t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 		if err := record.LockCatchUps(t.Context(), tx, key); err != nil {
 			return err
 		}
@@ -99,7 +102,7 @@ func (r *personHandoverRig) composeCatchUp(key string) composedCatchUp {
 			notice := payload.(record.Notice)
 			composed.queued = append(composed.queued, queuedCatchUp{id: row.ID, telling: cmp.Or(notice.ResendOf, row.ID), reason: notice.Reason})
 		}
-		if err := workflow.QueueCatchUp(t.Context(), tx, record.NewStore(), r.cfg.Gates.Steps(), root, launch, "", time.Now().UTC(), time.Time{}); err != nil {
+		if err := workflow.QueueCatchUp(t.Context(), tx, record.NewStore(), r.cfg.Gates.Steps(), root, launch, "", time.Now().UTC()); err != nil {
 			return err
 		}
 		var payload []byte
@@ -351,15 +354,22 @@ type basisRun struct {
 // basisReason is the reason every registration of these proofs carries.
 const basisReason = "The checks serve the ancestor's requirement; both fresh reviews passed."
 
-// ancestor creates an issue of the rig's project as a session with fields, under title, and
-// writes the requirement blocks ids into its primary document as its next version, which it
-// answers with the issue: a primary document that marks requirements, as requirementsMarkdown's
-// does. The blocks come by an edit rather than the create's spec because Dispatch refuses a
-// create whose text its near-copy gate reads as an open issue's (409 POSSIBLE_DUPLICATE), and the
-// blocks every ancestor of a proof that makes many of them marks read so; an edit is no create.
+// ancestor creates an issue of the rig's project with fields, under title, and writes the
+// requirement blocks ids into its primary document as its next version, which it answers with the
+// issue: a primary document that marks requirements, as requirementsMarkdown's does. A session
+// creates it, unless fields name a parent: Dispatch refuses a session that is no architect a create
+// under a parent Legion runs (403 DOCUMENT_WRITER_NOT_ARCHITECT), so the person files that one, as
+// createBlockersIssue files a child. The blocks come by an edit rather than the create's spec
+// because Dispatch refuses a create whose text its near-copy gate reads as an open issue's (409
+// POSSIBLE_DUPLICATE), and the blocks every ancestor of a proof that makes many of them marks read
+// so; an edit is no create.
 func (r *personHandoverRig) ancestor(title string, fields map[string]any, ids ...string) (scratchIssue, int) {
 	r.t.Helper()
-	issue := r.create(asSession, title, fields)
+	identity := asSession
+	if _, under := fields["parent"]; under {
+		identity = asPerson
+	}
+	issue := r.create(identity, title, fields)
 	return issue, r.editDocument(issue.PrimaryArtifactID, insertAtEnd(requirementBlocks(ids...)))
 }
 
@@ -464,7 +474,7 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 		r.setStatus(run.parent.Key, "in_progress")
 	}
 	r.linkUnder(run.root, run.parent, opt.live)
-	r.writeDocument(run.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(run.parent.Key, "p2")}}))
+	r.writeDocument(run.root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(run.parent.Key, "p2")}}))
 	if opt.holdSeed {
 		held.hold(run.root.Key, record.OutboxKindGateSeed)
 	}
@@ -514,6 +524,7 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 // with no earlier approval of R and once from the fourth run's R, whose start task names the
 // person's approval of v2, asks for a request of the latest version and names R1's path.
 func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	held := &outboxHold{}
 	r := newPersonHandoverRig(t, 16)
 	r.tune = func(o *overrides) { o.holdOutbox = held.holds }
@@ -603,8 +614,8 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 	// 5. A new version of R's Verification document adding a check of G's requirement.
 	five := r.openRun(held, []string{"Glacier melt sensor", "Alpine hydrology study", "Mountain climate programme"}, stayingOptions{grandparent: true})
 	base = r.firstReads(five)
-	r.writeDocument(five.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(five.parent.Key, "p2")}},
-		rigCheck{id: "k2", serves: []string{specBlock(five.grand.Key, "g1")}}))
+	r.writeDocument(five.root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(five.parent.Key, "p2")}},
+		verificationCheck{id: "k2", serves: []string{specBlock(five.grand.Key, "g1")}}))
 	r.quiet(five.root.Key)
 	r.stays("run 5, R's Verification document adding a check of G's g1", five.root.Key, base)
 	r.approve(five.parent.PrimaryArtifactID)
@@ -752,24 +763,77 @@ func (r *personHandoverRig) applyAsTheDaemon(source, id string, fact intake.Fact
 
 // moveRecord writes key's record in phase to, as close_scratch_dispatch_test.go writes a record in
 // merging, once every write the daemon queued on key has run: a phase the rig runs no agent to
-// reach.
+// reach. Its task is moved with it (recordTaskAt).
 func (r *personHandoverRig) moveRecord(key string, to phase.Phase) {
 	t := r.t
 	t.Helper()
 	r.dispatchRowsDone(key)
 	r.quiet(key)
-	if err := pgx.BeginFunc(t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
-		issue, err := records.Issue(t.Context(), tx, key)
+		issue, err := records.Issue(ctx, tx, key)
 		if err != nil || issue == nil {
 			return fmt.Errorf("read the record of %s: %v", key, err)
 		}
 		issue.Phase = to
-		return records.PutIssue(t.Context(), tx, *issue)
+		if err := records.PutIssue(ctx, tx, *issue); err != nil {
+			return err
+		}
+		return recordTaskAt(ctx, tx, records, *issue)
 	}); err != nil {
 		t.Fatalf("record %s in %s: %v", key, to, err)
 	}
 }
+
+// recordTaskAt moves the task of issue's run to the place that stands in issue.Phase, as the
+// workflow's own move does (workflow's moveTask), for a record a test writes in a phase by hand:
+// issues.phase and the task's place are two records of where the issue stands, and every later
+// write of the issue (workflow.Engine.WriteIssue) refuses a record in which they disagree. The task
+// runs at the step that runs as the phase, at its retro or at its merge, and waits at no act at
+// admitted. A run with no plan rows has only its phase. It, seedTransact and
+// versionNewsPluginContract are the three seams of the approved-version-news driver that its
+// negative control gives an older base a version of (scripts/e2e/approved-version-news.sh,
+// control_compat), so they live here, in a file the control does not copy.
+func recordTaskAt(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) error {
+	stored, err := records.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil {
+		return err
+	}
+	task, err := stored.Task()
+	if err != nil {
+		return err
+	}
+	place, state := record.TaskPlace{}, record.TaskRunning
+	switch issue.Phase {
+	case phase.Admitted:
+		state = record.TaskWaiting
+	case phase.Retro:
+		place.Kind = record.PlaceRetro
+	case phase.Merging:
+		place.Kind = record.PlaceMerge
+	default:
+		roles, steps := planwords.BuiltinRoles(), stored.Steps[task.Task]
+		at := slices.IndexFunc(steps, func(step record.PlanStep) bool { return roles[step.Role].Phase == issue.Phase })
+		if at < 0 {
+			return fmt.Errorf("the task %s of %s runs no step as %s", task.Task, issue.Key, issue.Phase)
+		}
+		place = record.TaskPlace{Kind: record.PlaceStep, Position: steps[at].Position}
+	}
+	return records.MoveTask(ctx, tx, issue.Key, issue.Generation, task.Task, place, state)
+}
+
+// seedTransact runs write in one transaction on pool whose commit runs the hooks its writes
+// register (store.Transact), as a fact the daemon applies writes them: the approved-version-news
+// seed takes its transaction here (recordTaskAt says why it is a seam).
+func seedTransact(ctx context.Context, pool *store.Pool, write func(ctx context.Context, tx pgx.Tx) error) error {
+	return store.Transact(ctx, pool, write)
+}
+
+// versionNewsPluginContract is the contract the approved-version-news driver's claims register
+// with, this daemon's own. Since dispatch://INFRA-1569 the registry gives it
+// (api.DaemonAPIVersion()), where an older base declares it as a constant, so it is a seam of
+// that driver too (recordTaskAt says why it lives here).
+func versionNewsPluginContract() int { return api.DaemonAPIVersion() }
 
 // requestApprovalWithVerification asks the person, as an architect's session does with
 // `dispatch request-approval --include-verification`, to approve the latest version of
@@ -894,12 +958,14 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 		run.sibling = &sibling
 	}
 	if opt.openedBefore || opt.member != "" {
-		r.writeDocument(run.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(run.parent.Key, "p2")}}))
+		r.writeDocument(run.root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(run.parent.Key, "p2")}}))
 		r.registerBasis(run.grant(), run.root, 1, run.parent, run.basisVersion, basisReason)
 		r.openedOnBasis(run.root, run.parent, 1, run.basisVersion)
 		r.dispatchRowsDone(run.root.Key)
 		if opt.member != "" {
-			run.member = r.create(asSession, opt.member, map[string]any{"labels": []string{"legion"}, "parent": run.root.Key})
+			// The person files the member: Dispatch refuses a session that is no architect a create
+			// under a parent Legion runs (403 DOCUMENT_WRITER_NOT_ARCHITECT).
+			run.member = r.create(asPerson, opt.member, map[string]any{"labels": []string{"legion"}, "parent": run.root.Key})
 			r.setStatus(run.member.Key, "todo")
 			// The member is an open Dispatch child of the root, whose own phases have started, so
 			// the admission pass moves the root to awaiting_children, where it holds no slot, for
@@ -928,10 +994,10 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 		r.quiet(run.parent.Key)
 		served = "p4"
 	}
-	r.writeDocument(run.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(run.parent.Key, served)}}))
+	r.writeDocument(run.root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(run.parent.Key, served)}}))
 	if run.sibling != nil {
 		run.sibling.basisVersion = run.basisVersion
-		r.writeDocument(run.sibling.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(run.parent.Key, served)}}))
+		r.writeDocument(run.sibling.root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(run.parent.Key, served)}}))
 	}
 	return run
 }
@@ -948,7 +1014,10 @@ func (r *personHandoverRig) registerOn(run basisRun) {
 // and the request ask, its catch-up names that request, it keeps its phase (standing) and its
 // slot, or holds none where it waits on its open children in awaiting_children, and its
 // architect is told nothing of a basis; P's architect gets a resting-root notice
-// naming the root wherever the daemon records P in a live tree (told), and none elsewhere.
+// naming the root wherever the daemon records P in a live tree (told), and no resting-root notice
+// at all elsewhere. The notices are read as they were written (writtenNotices), whatever the
+// outbox did with their rows since, so a notice wrongly queued and then finished undelivered is
+// read as well.
 func (r *personHandoverRig) pendingRegistered(run basisRun, ask string, told bool, standing phase.Phase) {
 	t := r.t
 	t.Helper()
@@ -973,29 +1042,43 @@ func (r *personHandoverRig) pendingRegistered(run basisRun, ask string, told boo
 		t.Fatalf("%s stands at %s with slot %+v after the pending registration, want it at %s, in its slot unless it waits on its children\nstate %s",
 			run.root.Key, issue.Phase, issue.Slot, standing, body)
 	}
-	if ended := r.notices(run.root.Key, "basis-ended"); len(ended) != 0 {
-		t.Fatalf("the pending registration of %s queued basis-ended notices %+v, want none", run.root.Key, ended)
+	if ended := writtenNotices(t, r.pool, run.root.Key, "basis-ended"); len(ended) != 0 {
+		t.Fatalf("the pending registration of %s wrote basis-ended notices %+v, want none", run.root.Key, ended)
 	}
 	if caught := r.catchUpNow(run.root.Key); !caught.Pending || caught.Open || caught.Basis == nil || caught.Basis.Ask != ask || caught.Basis.Version != run.basisVersion {
 		t.Fatalf("the catch-up of %s's architect states its spec step %+v (basis %+v), want it pending on %s", run.root.Key, caught, caught.Basis, ask)
 	}
-	registered := fmt.Sprintf("%s registered its spec step on version %d of the primary document of %s", run.root.Key, run.basisVersion, run.parent.Key)
-	resting := r.notices(run.parent.Key, "resting-root")
-	if got := slices.ContainsFunc(resting, func(n record.Notice) bool {
-		return strings.Contains(n.Reason, registered) && strings.Contains(n.Reason, ask) && n.Version == run.basisVersion
-	}); got != told {
-		t.Fatalf("the resting-root notices keyed by %s = %+v; a notice naming %q is queued = %t, want %t", run.parent.Key, resting, registered, got, told)
+	registered, tells := restingRegistration(run, ask)
+	resting := writtenNotices(t, r.pool, run.parent.Key, "resting-root")
+	if got := slices.ContainsFunc(resting, tells); got != told || (!told && len(resting) != 0) {
+		t.Fatalf("the resting-root notices written for %s = %+v; a notice naming %q was written = %t, want %t, and none at all where the daemon records %s in no live tree",
+			run.parent.Key, resting, registered, got, told, run.parent.Key)
 	}
-	t.Logf("%s waits on %s's request %s at version %d, at %s in its slot; resting-root queued for %s: %t", run.root.Key, run.parent.Key, ask,
+	t.Logf("%s waits on %s's request %s at version %d, at %s in its slot; resting-root written for %s: %t", run.root.Key, run.parent.Key, ask,
 		run.basisVersion, standing, run.parent.Key, told)
+}
+
+// restingRegistration is the sentence of the resting-root notice that tells P's architect of the
+// pending registration of run's root on P's request ask (workflow's tellRegisteredBasis), and
+// whether a notice is that one.
+func restingRegistration(run basisRun, ask string) (string, func(record.Notice) bool) {
+	registered := fmt.Sprintf("%s registered its spec step on version %d of the primary document of %s", run.root.Key, run.basisVersion, run.parent.Key)
+	return registered, func(n record.Notice) bool {
+		return strings.Contains(n.Reason, registered) && strings.Contains(n.Reason, ask) && n.Version == run.basisVersion
+	}
 }
 
 // pendingEnded is what k11's negative control reads after an act that ends run's root's wait
 // without opening its step: the step is closed and registered on the root's own document with no
 // basis in the state, the row and the catch-up, the root stands where it stood, its architect gets
 // one basis-ended notice that names act, P's document, the version and the request, and nothing
-// opened; P's architect gets a resting-root notice naming the act wherever the daemon records P in
-// a live tree (told).
+// opened; P's architect gets one resting-root notice naming the act, beside the one of the
+// registration (restingRegistration), wherever the daemon records P in a live tree (told), and no
+// resting-root notice at all elsewhere. The notices of both architects are read as they were
+// written (writtenNotices), whatever the outbox did with their rows since: an act that takes P out
+// of a live tree (P set done, its label taken off) lets the outbox finish every notice keyed by P
+// undelivered as it next runs it, as it does for an architect that has ended, so the end's row may
+// be gone while the registration's still waits out its publish backoff.
 func (r *personHandoverRig) pendingEnded(run basisRun, ask, act string, told bool, standing phase.Phase) {
 	t := r.t
 	t.Helper()
@@ -1013,28 +1096,27 @@ func (r *personHandoverRig) pendingEnded(run basisRun, ask, act string, told boo
 	if issue := state.Issues[run.root.Key]; issue.Phase != standing || issue.Slot == nil {
 		t.Fatalf("%s stands at %s with slot %+v after its wait ended, want it at %s in its slot", run.root.Key, issue.Phase, issue.Slot, standing)
 	}
-	ended := r.notices(run.root.Key, "basis-ended")
+	ended := writtenNotices(t, r.pool, run.root.Key, "basis-ended")
 	waited := fmt.Sprintf("no longer waits on approval request %s of version %d", ask, run.basisVersion)
 	if len(ended) != 1 || ended[0].Ref != "dispatch://"+run.parent.Key+"/spec" || ended[0].Version != run.basisVersion ||
 		!strings.Contains(ended[0].Reason, act) || !strings.Contains(ended[0].Reason, waited) || !strings.Contains(ended[0].Reason, "The step stays closed") {
 		t.Fatalf("the basis-ended notices of %s = %+v, want one naming %q and that the step %s", run.root.Key, ended, act, waited)
 	}
-	if opened := r.notices(run.root.Key, "design-approved"); len(opened) != 0 {
-		t.Fatalf("%s holds design-approved notices %+v, want none: nothing opened its step", run.root.Key, opened)
+	if opened := writtenNotices(t, r.pool, run.root.Key, "design-approved"); len(opened) != 0 {
+		t.Fatalf("%s was written design-approved notices %+v, want none: nothing opened its step", run.root.Key, opened)
 	}
-	// The told mark (queueRestingRoot's processed event) says whether the daemon queued the end for
-	// P's architect, whatever became of the row since. The row says what it told: it is read while it
-	// stands, and an act that takes P out of a live tree (P set done, its label taken off) lets the
-	// outbox finish every notice keyed by P without delivery, as it does for an architect that has
-	// ended, so the row of such an act may be gone by the time this reads it.
-	marked := r.processed("resting-root-told", fmt.Sprintf("%s:%d:%s:ended:%s", run.root.Key, r.record(run.root.Key).Generation, run.parent.Key, ask))
-	resting := r.notices(run.parent.Key, "resting-root")
-	named := slices.ContainsFunc(resting, func(n record.Notice) bool {
-		return strings.Contains(n.Reason, act) && strings.Contains(n.Reason, run.root.Key) && strings.Contains(n.Reason, waited)
-	})
-	if marked != told || (told && !named && len(resting) != 0) {
-		t.Fatalf("the resting-root notices keyed by %s = %+v, told mark %t; one naming the end %q is queued = %t, want %t", run.parent.Key, resting, marked,
-			act, named, told)
+	resting := writtenNotices(t, r.pool, run.parent.Key, "resting-root")
+	named := 0
+	for _, n := range resting {
+		if strings.Contains(n.Reason, act) && strings.Contains(n.Reason, run.root.Key) && strings.Contains(n.Reason, waited) {
+			named++
+		}
+	}
+	_, tells := restingRegistration(run, ask)
+	registered := slices.ContainsFunc(resting, tells)
+	if told && (named != 1 || !registered) || !told && len(resting) != 0 {
+		t.Fatalf("the resting-root notices written for %s = %+v; %d name the end %q, and the registration's is among them = %t; want one and true where the daemon records %s in a live tree (told = %t), and none at all elsewhere",
+			run.parent.Key, resting, named, act, registered, run.parent.Key, told)
 	}
 	if caught := r.catchUpNow(run.root.Key); caught.Pending || caught.Open || caught.Basis != nil || caught.Artifact != run.root.PrimaryArtifactID {
 		t.Fatalf("the catch-up of %s's architect states its spec step %+v (basis %+v), want it closed on its own document with no basis", run.root.Key, caught, caught.Basis)
@@ -1074,7 +1156,8 @@ func (r *personHandoverRig) reopenedOnPending(run basisRun, standing phase.Phase
 // open on reads (R3's one act passed on): the step stays open on that basis, the root's architect
 // gets one basis-changes-requested notice naming P's document, the version, the person and reason,
 // and so does the architect that owns P wherever the daemon records P in a live tree (told),
-// naming the root.
+// naming the root. The notices keyed by P are read as they were written (writtenNotices), whatever
+// the outbox did with their rows since.
 func (r *personHandoverRig) basisChangesTold(run basisRun, reason string, told bool) {
 	t := r.t
 	t.Helper()
@@ -1088,11 +1171,11 @@ func (r *personHandoverRig) basisChangesTold(run basisRun, reason string, told b
 		!strings.Contains(notices[0].Reason, asked) || !strings.Contains(notices[0].Reason, "The step stays open.") || !strings.Contains(notices[0].Reason, quoted) {
 		t.Fatalf("the basis-changes-requested notices of %s = %+v, want one naming %q and %q", run.root.Key, notices, asked, quoted)
 	}
-	owner := r.notices(run.parent.Key, "basis-changes-requested")
+	owner := writtenNotices(t, r.pool, run.parent.Key, "basis-changes-requested")
 	if got := slices.ContainsFunc(owner, func(n record.Notice) bool {
 		return strings.Contains(n.Reason, asked) && strings.Contains(n.Reason, "The step of "+run.root.Key+" stays open.") && strings.Contains(n.Reason, quoted)
 	}); got != told {
-		t.Fatalf("the basis-changes-requested notices keyed by %s = %+v; one naming %s is queued = %t, want %t", run.parent.Key, owner, run.root.Key, got, told)
+		t.Fatalf("the basis-changes-requested notices written for %s = %+v; one naming %s was written = %t, want %t", run.parent.Key, owner, run.root.Key, got, told)
 	}
 	settled(t, r.d, "keep the spec step of "+run.root.Key+" open on its basis", func(s api.State) bool {
 		step := stepOf(s, run.root.Key)
@@ -1148,6 +1231,7 @@ func (r *personHandoverRig) basisChangesTold(run basisRun, reason string, told b
 // TestTreeRunsIsServedForEveryRootState (internal/api); R waiting on a person, in
 // TestAPendingBasisMeetsARootWaitingOnAPerson (internal/admit).
 func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	pause, held, drop := &registrationPause{}, &outboxHold{}, &consumerDrop{}
 	r := newPersonHandoverRig(t, 80)
 	r.tune = func(o *overrides) {
@@ -1156,6 +1240,10 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 		o.dropConsumedEvent = drop.drops
 	}
 	r.boot()
+	// The rig's database holds the outbox from the boot's migration on, so the record of what the
+	// daemon writes to it (writtenNotices) starts here, before any issue of the proof exists. The
+	// trigger stays on the database, and the restart below boots on it.
+	recordOutboxWrites(t, r.pool)
 
 	// The person approves v4: R's step opens, and so does S's.
 	approved := r.pendingWorld([]string{"Canal lock sequencer", "Inland waterway modernisation"},
@@ -1173,8 +1261,8 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	r.openedOnBasis(approved.sibling.root, approved.parent, 1, approved.basisVersion)
 	for _, root := range []string{approved.root.Key, approved.sibling.root.Key} {
 		opened := fmt.Sprintf("An ancestor's approval opened the spec step of %s.", root)
-		if !slices.ContainsFunc(r.notices(approved.parent.Key, "resting-root"), func(n record.Notice) bool { return strings.Contains(n.Reason, opened) }) {
-			t.Fatalf("the resting-root notices of %s name no opening of %s: %+v", approved.parent.Key, root, r.notices(approved.parent.Key, "resting-root"))
+		if resting := writtenNotices(t, r.pool, approved.parent.Key, "resting-root"); !slices.ContainsFunc(resting, func(n record.Notice) bool { return strings.Contains(n.Reason, opened) }) {
+			t.Fatalf("the resting-root notices written for %s name no opening of %s: %+v", approved.parent.Key, root, resting)
 		}
 	}
 	t.Logf("the person's approval of version %d of %s opened %s and %s; the message on %s:\n%s", approved.basisVersion, approved.parent.Key,
@@ -1220,7 +1308,18 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 		}},
 		{"P in Dispatch's retro after the daemon refused its sign-off", []string{"Recycling bin sensor", "Citywide waste reduction"}, func(run pendingRun) string {
 			r.moveRecord(run.parent.Key, phase.Accepting)
-			refused := r.applyAsTheDaemon("api", "sign-off-"+run.parent.Key, intake.SignOff{Issue: run.parent.Key})
+			// The sign-off names P's architect, P's generation and the run of the step P stands
+			// in, as the route reads them (api's signOff).
+			var entry record.StepEntry
+			if err := store.Transact(t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+				var err error
+				entry, err = record.NewStore().OpenStep(ctx, tx, run.parent.Key)
+				return err
+			}); err != nil {
+				t.Fatalf("read the run of the step %s stands in: %v", run.parent.Key, err)
+			}
+			refused := r.applyAsTheDaemon("api", "sign-off-"+run.parent.Key, intake.SignOff{Issue: run.parent.Key,
+				By: r.architectToken(run.parent.Key), Generation: r.record(run.parent.Key).Generation, Entry: entry})
 			if refused.Refusal == nil || refused.Refusal.Code != "SIGNOFF_RESTING_ROOT_IN_WORKFLOW" || !strings.Contains(refused.Refusal.Message, run.root.Key) {
 				t.Fatalf("the sign-off of %s while %s waits on its request = %+v, want SIGNOFF_RESTING_ROOT_IN_WORKFLOW naming %s", run.parent.Key, run.root.Key, refused.Refusal, run.root.Key)
 			}
@@ -1235,7 +1334,7 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 		{"the daemon's move of P into merging", []string{"Fountain pump controller", "Public square renewal"}, func(run pendingRun) string {
 			implementer := r.roleToken(run.parent.Key, claim.RoleImplementer)
 			r.moveRecord(run.parent.Key, phase.Retro)
-			if err := pgx.BeginFunc(t.Context(), r.pool, func(tx pgx.Tx) error {
+			if err := store.Transact(t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 				return record.NewStore().PutPhase(t.Context(), tx, record.PhaseRow{Issue: run.parent.Key, Role: claim.RoleImplementer, Claim: implementer})
 			}); err != nil {
 				t.Fatalf("record the implementer's retro phase of %s: %v", run.parent.Key, err)
@@ -1258,6 +1357,13 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 		run := r.pendingWorld(tc.names, pendingOptions{place: ancestorLive})
 		r.registerOn(run.basisRun)
 		r.pendingRegistered(run.basisRun, run.ask, true, phase.Admitted)
+		// The registration's own rows that read or write Dispatch for R run before the act, its
+		// pending-basis seed among them: the seed reads the daemon's store beside Dispatch
+		// (judgeBasisRead), and the settle of the fact it applies runs an admission pass, so a seed
+		// the outbox took up only after an act wrote P's record by hand (moveRecord) would read that
+		// record first: it would end the wait as the daemon recording P in retro before the move
+		// into merging, or move P from accepting to awaiting_children before its sign-off.
+		r.dispatchRowsDone(run.root.Key)
 		act := tc.act(run)
 		r.pendingEnded(run.basisRun, run.ask, act, true, phase.Admitted)
 		if tc.name == "the person's changes request on R's own document" {
@@ -1446,7 +1552,7 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	r.registerOn(later.basisRun)
 	r.openedOnBasis(later.root, later.parent, 1, later.basisVersion)
 	r.dispatchRowsDone(later.root.Key)
-	r.writeDocument(later.parent.Key, "verification.md", checksMarkdown(rigCheck{id: "pk1", serves: []string{specBlock(later.parent.Key, "p1")}}))
+	r.writeDocument(later.parent.Key, "verification.md", checksMarkdown(verificationCheck{id: "pk1", serves: []string{specBlock(later.parent.Key, "p1")}}))
 	request := r.requestApprovalWithVerification(later.parent.PrimaryArtifactID, "The Verification document is new; the spec stands at version 3.")
 	r.quiet(later.parent.Key)
 	dispatchCall(t, r.baseURL, http.MethodPost, "/api/v1/asks/"+request+"/answer",

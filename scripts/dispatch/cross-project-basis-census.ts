@@ -764,8 +764,8 @@ function parseArguments(argv: readonly string[]): RunOptions {
 }
 
 /** The resolved Dispatch of this session, as every command resolves it. */
-function dispatchConfig(): DispatchConfig {
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(
+async function dispatchConfig(): Promise<DispatchConfig> {
+  const { dispatch: resolution, warnings } = await sessionDispatchSettings(
     sessionConfigFile("command", process.env),
     process.env,
     { cwd: process.cwd() }
@@ -815,7 +815,7 @@ function printCensus(report: CensusReport): void {
 async function run(options: RunOptions): Promise<void> {
   const report =
     options.eventsFile === undefined
-      ? await liveCensus(dispatchConfig(), options)
+      ? await liveCensus(await dispatchConfig(), options)
       : censusReport(
           parseEventsFile(await readFile(options.eventsFile, "utf8"), options.eventsFile),
           options

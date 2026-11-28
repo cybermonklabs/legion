@@ -14,6 +14,7 @@ import (
 // NodeType.create, which documentFromJSON calls): the result must be the tree the read made,
 // attribute for attribute.
 func TestTheDisplayEncodingLeavesOutOnlyWhatTheSchemaFillsBack(t *testing.T) {
+	t.Parallel()
 	for _, path := range displayEncodingCorpus(t) {
 		markdown, err := os.ReadFile(path)
 		if err != nil {
@@ -48,6 +49,7 @@ func TestTheDisplayEncodingLeavesOutOnlyWhatTheSchemaFillsBack(t *testing.T) {
 // block id, no list marker the schema already knows and no spread the schema already knows,
 // and keeps the one attribute whose value is not its default (a tight item's `spread`).
 func TestTheDisplayEncodingWritesNoDefaultAttribute(t *testing.T) {
+	t.Parallel()
 	encoded, err := json.Marshal(ReadForDisplay("# Title\n\n- one\n- two\n", DisplayLatest).toDisplayJSON())
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +61,22 @@ func TestTheDisplayEncodingWritesNoDefaultAttribute(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"spread":false`) {
 		t.Errorf("the encoding dropped a tight list item's spread, which the schema defaults to true:\n\t%s", encoded)
+	}
+}
+
+// A typed block is written whole, every attribute standing at its schema's default included: its
+// schema can be installed over while a tree stored under it is still served (display_encode.go),
+// so none of it is left for the reader's schema to fill back.
+func TestTheDisplayEncodingWritesATypedBlockWhole(t *testing.T) {
+	t.Parallel()
+	encoded, err := json.Marshal(ReadForDisplay(":::callout{kind=\"note\"}\nBody.\n:::\n", DisplayLatest).toDisplayJSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kept := range []string{`"kind":"note"`, `"title":""`} {
+		if !strings.Contains(string(encoded), kept) {
+			t.Errorf("the encoding left %s out of a callout, which the callout schema defaults:\n\t%s", kept, encoded)
+		}
 	}
 }
 
@@ -79,22 +97,16 @@ func displayEncodingCorpus(t *testing.T) []string {
 
 // fillSchemaDefaults gives every node and mark of tree the attributes the encoding left out, as
 // the browser's schema gives them to a node built with none: the declared default of each
-// attribute the object does not name.
+// attribute the object does not name. It fills from the tables the encoding leaves out by, so the
+// two read one list; a typed block is in none of them, being written whole.
 func fillSchemaDefaults(tree *Node) {
 	Walk(tree, func(node *Node) bool {
-		node.Attrs = filledAttrs(node.Attrs, displayDefaultsFor(node.Type))
+		node.Attrs = filledAttrs(node.Attrs, displayNodeDefaults[node.Type])
 		for index := range node.Marks {
 			node.Marks[index].Attrs = filledAttrs(node.Marks[index].Attrs, displayMarkDefaults[node.Marks[index].Type])
 		}
 		return true
 	})
-}
-
-// displayDefaultsFor is the defaults the display encoding leaves out for one node type, which is
-// displayNodeDefaults' entry and nothing else: a typed block has none, so none of its attributes
-// is left out (display_encode.go's displayNodeAttrs, dispatch://INFRA-3404).
-func displayDefaultsFor(nodeType string) Attrs {
-	return displayNodeDefaults[nodeType]
 }
 
 // filledAttrs is attrs with every default it does not name written into it.

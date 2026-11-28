@@ -1,0 +1,5 @@
+kind: Added
+body: 'Dispatch keeps a merged pull request''s merge commit and time, and whether a commit holds it.'
+time: 2026-11-24T18:15:40Z
+custom:
+    Issue: pr5416

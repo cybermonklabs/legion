@@ -65,10 +65,12 @@ which fails the route rather than reporting a release it did not make — is sen
 next heartbeat, so the role is not left standing while this process's registrations renew its
 claim. The transcript's `envoy-role-claim` entry names the session claimed for and this process
 too: a release another process wrote on the same transcript ends no role here, and a claim
-another process wrote is pressed only while this process holds none. The queues, deadlines and
-shared role state behind all of this are `src/registration-state.ts`, beside the extension's
-other `src/` modules: a queued task acts through a handle that refuses every step past the
-task's deadline, or once its session is no longer the open session.
+another process wrote is pressed only while this process holds none. The shared role state
+behind all of this, its two serial queues and the handle each queued task acts through are
+`src/registration-state.ts`, beside the extension's other `src/` modules. It builds the queues
+from the generic serial queue of `src/task-queue.ts`, which holds each task's deadline timer. A
+queued task acts through a handle that refuses every step past the task's deadline, or once its
+session is no longer the open session.
 
 A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, and that
 session in `ENVOY_SESSION_ROLE_SESSION`: the id the pod starts the agent with (`omp
@@ -111,6 +113,57 @@ to a role nobody holds for an hour, unless its sender set `keep: false`, and han
 session that claims the role, so `/resume <id>` of the named session within that hour still gets
 them: that session's own record of the claim is acted on, and it claims the role again.
 
+A deployment can name, for each role, topics its holder follows while it holds the role:
+`ENVOY_ROLE_TOPICS`, a JSON object from role name to a list of topics, which a pod's launch sets
+as it sets `ENVOY_SESSION_ROLE`. For example, every message posted in a private Slack channel,
+mention or not, for the session holding an alert owner's role:
+
+```sh
+ENVOY_ROLE_TOPICS='{"ops-owner": ["notifications.slack.*.C0ALERTS.message"]}'
+```
+
+Each time a hold of a named role lands in this process, however it was taken (the launch's role,
+`envoy_role_set`, the Legion plugin's claim, a hold restored after a hand-back), the session
+follows that role's topics and registers them at once, so its consumer is filtered on them from
+the claim on rather than from the next heartbeat. A subject can be wanted twice, by the role and
+by the session itself (a topic it followed with `envoy_subscribe`, or one its transcript
+remembers), and it stays followed while either wants it. When the role ends, the subjects only
+the role wanted are closed, each exactly, and taken out of the listener's registry, as a plugin's
+role notices are; the session's own stay followed, the base of a `>` topic included. So a
+relaunched session follows them again as soon as it takes the role, a new session that claims it
+follows them too, and a session holding any other role follows none of them, though every pod
+carries the same variable. `envoy_unsubscribe` of a subject the held role wants keeps it, saying
+it lasts while the session holds the role, and drops only the session's own want of it;
+`envoy_subscribe` of one makes it the session's own too, so the role's end leaves it.
+`envoy_role_set` says which it now follows. They are not one plugin's: a move to another role
+with `envoy_role_set` closes them and follows the new role's. A topic an edge listener refuses
+leaves the role's and is not followed again for it until the role ends.
+
+A process that ends closes nothing, so the listener's row still holds the role's topics when that
+session id resumes. The resumed session follows as its own only what its transcript remembers as
+its own. The topics of the role it wants (its launch's role, its transcript's, else the role lane
+its own row holds) it opens before its first registration, so the follow stamps the transcript
+restored carry over and a post the stream kept while it was down is shown, but only where the
+listener names this session or nobody as the role's holder: where another session holds the role,
+the backlog on its topics is that session's, and nothing opens. A read that fails, and a 404 that
+names a lapsed holder which is another session, open nothing for the same reason; the claim opens
+them where it lands, so what the stream kept meanwhile is lost to this session rather than read by
+two. A claim refused naming this same
+session id (another process's claim, standing until its live window ends) keeps them open, so a
+post sent meanwhile is shown once the claim lands; a claim refused naming another holder closes
+them. Once after a resume, the pass reads the session's row and takes out every role topic nothing
+follows, reading again on a later pass if the read fails. A resumed daemon-launched controller,
+which unregisters every Slack topic an earlier session registered, keeps the role's by the same
+rule.
+
+A role name is read as the listener reads a claim's. Each topic must be one the notification
+stream stores and no subject private to one session, no longer than the listener's 4,032 bytes,
+with a wildcard only as a whole token and `>` only as the last one, a rule stricter than the
+listener's own; a value that is not such an object, two keys the listener reads as one role (the
+same key twice included) or a topic refused this way refuses the whole variable: no role follows
+any topic of it, the plugin logs `envoy: ENVOY_ROLE_TOPICS is refused, so no role follows a topic
+it names: <why>`, and each session start says the same. Unset, no role follows anything.
+
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so
 temporary registration drift does not hide the extension's actual delivery state.
@@ -122,10 +175,26 @@ result is one TOON block with recognized routing and delivery fields such as `to
 `id`, and `summary`; a structured `payload` appears once as `message`. Invalid JSON is represented
 as a safe `unrecognised` value rather than exposed as raw bytes.
 
+A collapsed card shows its first 12 lines and, when the words its sender wrote sit past them, the
+line that holds them: an Envoy message's `message`, or its `summary` when it carries no message,
+and a Dispatch message's `body` (`readInboundCard` in `@legion/envoy-client/inbound-card`). Ctrl+O
+shows the rest. Every card the session displays also reaches Dispatch's live view of the session,
+on the agent stream (`@legion/pi-shared/agent-stream`), as a user message that says who sent it
+and holds those words, with the card's `note` and `body_note` under them; a card with no such
+words, such as a Dispatch notification, an empty message or one of the plugin's own notices, shows
+there whole and verbatim. A card that delivers a Dispatch message to the session, or the agent's
+copy of a person's `!command` report, names that message in its `details` (`dispatchMessageId`)
+and stays out of the stream, since the live view shows the message from Dispatch's store and the
+report from its own frame.
+
 `envoy_inbox` returns the 50 most recent delivered envelopes as metadata (`event_id`, `at`, `from`,
 and `summary`) for recovery after an interrupt. `envoy_role_get` returns the current holder and
 last-seen timestamp for a role. `envoy_subscribe` reports listener warnings in both its text and
 details result, including subscriptions whose stream currently has no matching event.
+`envoy_role_set` does the same with the listener's warnings about the claim, one
+`Listener warning:` line each, such as a handover of the replaced session it did not make. Every
+role claim the plugin makes, the tool's, a pass's, a heartbeat's or the Legion plugin's, logs
+each warning of a claim that landed at warn level with the role and the session.
 
 The session's messages come from a durable consumer the listener keeps for it on Envoy's
 notification stream and relays on `notifications.envoy.deliver.<session id>`, which
@@ -157,7 +226,31 @@ is dropped, so a restart at the consumer's ack floor shows nothing again (up to 
 shown in 72 hours); a crash between
 showing a message and recording it can show it twice, never lose it. A registration the listener
 can give no consumer is refused by name, and the session says once that Envoy inbound is
-unavailable and asks again at every heartbeat.
+unavailable and asks again at every heartbeat. When a registration is accepted after that, the
+session says once that Envoy inbound is restored and that what the stream stored meanwhile
+arrives now. A registration the listener answers with the bus-outage 503 (its message bus did not
+answer) is held for two minutes from the first such answer, also where its retry got no answer or
+a 5xx that names no reason; after that the session is told once that its registration is not
+recorded for certain, since the retry may have landed, and, when one is accepted, that the
+listener recorded one. A retry the listener refuses with a reason, such as `consumer_limit`, is
+told at once as Envoy inbound unavailable. A refusal or a lost relay subject after that
+notice is told once more, as Envoy inbound unavailable, and the accepted registration after it
+says that Envoy inbound is restored. An edge listener's 503 `repositories_unknown` (it could not
+read the repositories of the session's projects) is told at once as Envoy GitHub topics withheld:
+the listener withholds the messages of the session's GitHub topics. If the listener already held
+the session's registration, it kept that registration and the session's consumer, so the session
+receives its other messages; if it held none, the session receives nothing until a registration
+is accepted. The notice, the pane note and the log line say both. The accepted registration after
+it says that the listener follows those topics again. A refusal or a lost relay subject after that
+notice is told once more, as Envoy inbound unavailable. At the session's start the first NATS
+dial can fail: the start warns in the pane that the session is not registered and keeps trying in
+the background, but the session is told that Envoy inbound is unavailable only when no
+registration is accepted within two minutes. The log does not wait: the first registration that
+finds no relay subject
+writes a warning at once, `envoy: a registration found that this session holds no relay subject`,
+with why the relay subject could not be opened, and a later one of the same outage writes no
+second one. A session whose stop has begun registers nothing, and is told neither that
+Envoy inbound is unavailable nor that it is restored.
 
 ## A person's message from Dispatch
 
@@ -175,7 +268,42 @@ shows an untagged turn twice: once from the stream and once as the message Dispa
 turn goes untagged when the record misses it: a typed turn the host starts under a new session
 id, and, on a host without `sendUserInput`, where the record finds a turn by its text until the
 run ends, a Send the host runs as a turn of its own after the run's `agent_end` and a prompt
-template or file command, whose stream carries the expanded text.
+template or file command, whose stream carries the expanded text. A turn read back from the
+transcript (below) is tagged by the tag the host wrote on it, where the transcript records that
+the session handled that Dispatch message (`handledMessages` in
+`@legion/pi-shared/dispatch-user-turn`); a `!command` report, which the host never writes as a
+turn, is not read back, and the page shows the person's line and the session's reply from
+Dispatch's store instead.
+
+## The live view after a restart
+
+The live view's replay is the session's answer from a ring of its newest messages held in the
+process (`AgentStreamPublisher` in `@legion/pi-shared/agent-stream`). A process that takes up a
+session whose transcript already holds turns (a pod's restart and `omp --continue`, a
+`--resume`, a `/resume`, a fork) fills that ring from the session's live context when it takes
+the session up (`restoreLocalSessionState`): the branch from the latest compaction's first kept
+entry on, or from the compaction itself where that entry does not stand before it on the branch,
+with no body before the cut read. A `/clear` (a `reset_boundary` entry) after that compaction, or
+on a branch with none, cuts it instead, and the ring is filled from the turns after the `/clear`
+(`liveContext` in `@legion/pi-shared/delivery-pictures`). It keeps to the ring's bounds: the
+newest 200 messages it carries, and 512 KiB for the replay's `frames` array, which the reply's
+envelope adds a few bytes to. So a person who opens the session after a restart sees the turns
+after that cut, within those bounds. Oh My Pi's terminal draws a resumed session from the same
+compaction cut by default (`display.collapseCompacted`), but where the cut left the first kept
+turn partial and a later user turn starts before the compaction, it hides that partial turn; the
+replay does not trim it. The process before the restart may have replayed more: its ring kept the
+turns from before a compaction it ran. A session that starts fresh has no turns to read back.
+
+Each message the ring keeps from the transcript is a copy, made as Oh My Pi copies a message for
+`message_end`, because Oh My Pi rewrites its own objects in place: a prune pass blanks a stale tool
+result's content with a placeholder (`blankToolResult`), such as `[Superseded by a newer read of
+this file]` or `[Uneventful result elided]`. So a restored tool result the session prunes after it
+is taken up keeps its output in the replay, as a result this process recorded does. A result
+pruned before the restart shows the placeholder: the prune is recorded in the transcript, and Oh
+My Pi blanks the result as it loads the session, before the ring can copy it, where the process
+before the restart still showed the output. The ring keys a card that names no id, such as one of
+the plugin's own notices, by what it says, since Oh My Pi hands `message_end` a copy of the
+message `message_start` was handed.
 
 ## A `task` subagent
 
@@ -323,7 +451,7 @@ From this directory:
 ```sh
 bun run test
 bun test extensions/envoy.test.ts -t "<name>"   # one test
-bunx tsc --noEmit
+bun run typecheck   # renders the Dispatch API types from the document first, then tsc --noEmit
 bun run lint
 bun run build
 ```
@@ -419,7 +547,8 @@ A session reads one envoy.json, with a section for Dispatch and one for Envoy:
 An Oh My Pi profile (`OMP_PROFILE` other than `default`) reads `$PI_CODING_AGENT_DIR/envoy.json`;
 any other session reads the file `ENVOY_CONFIG_FILE` names, else
 `${XDG_CONFIG_HOME:-~/.config}/legion/envoy.json`. The session's `dispatch` command reads the file
-the session chose, which the extension hands it in `ENVOY_CONFIG_FILE`. The `dispatch` section of a
+the session chose, which the extension hands it in `ENVOY_CONFIG_FILE` (`dispatch login` reads
+none, and `dispatch proxy` none without `DISPATCH_TOKEN_BROKER=1`). The `dispatch` section of a
 `<cwd>/.envoy/envoy.json` merges over it: its server is used only with the token written beside it,
 and its token only beside its own server. An `envoy` section there is not read, which the start
 notice says, and a checkout's file that is not valid refuses Dispatch alone, and only while
@@ -455,9 +584,16 @@ whose tasks reach nobody. When a
 section is off for a reason worth saying, the session says so once at its start:
 `envoy: no envoy.json at <path>: Dispatch and Envoy are off`, the lost `DISPATCH_URL` when
 `DISPATCH_TOKEN_FILE` is set and no server is named (`DISPATCH_TOKEN_FILE is set and DISPATCH_URL
-is not, so Dispatch is off: …`, which every `dispatch` command also prints), the section's error,
-what a checkout's file holds that is not read, or that inbound messages are off and why. Invalid configuration, an
-invalid URL, or an empty token makes every `dispatch` command exit 2 naming the source of the error.
+is not, so Dispatch is off: …`, which a `dispatch` call that resolves Dispatch also prints), the
+section's error, what a checkout's file holds that is not read, or that inbound messages are off
+and why. A `dispatch` call resolves Dispatch when it is a spec command's call, but not its
+`--help`, a call refused for its arguments or its session, or a dry run that asks Dispatch nothing
+(every dry run but `dispatch result`'s of a record), or when it is a `dispatch proxy` run or
+`--dry-run` under `DISPATCH_TOKEN_BROKER=1` whose arguments and session the proxy takes. Invalid
+configuration, an invalid URL, or an empty token makes such a call exit 2 naming the source of the
+error. A dry run that asks Dispatch nothing reads the file only for the server URLs that a
+dashboard-URL ref is read against, and refuses nothing for what it holds; `dispatch login` reads
+none of it.
 
 `~/.config/opencode/envoy.json` and a checkout's `.opencode/envoy.json` are not read. While the old
 user file is there and the session's file is missing, Dispatch and Envoy stay off unless a variable
@@ -485,8 +621,10 @@ write result names (`notifications.dispatch.issue.<KEY>.>` or
 `notifications.dispatch.document.<PROJECT>.<SLUG>.>`), which it names only when none of the
 session's subscriptions, as the Envoy listener records them, covers that owner.
 
-The shared specs in `@legion/contracts` supply each command's description and flags:
-`@legion/envoy-client`'s `dispatch-command.ts` derives one command per spec and one flag per field.
+The shared specs in `@legion/contracts` supply the description and flags of each command they
+define: `@legion/envoy-client`'s `dispatch-command.ts` derives one command per spec and one flag
+per field. `dispatch proxy` and `dispatch login`, which no spec defines, carry their own help
+(`@legion/envoy-client`'s README, "`dispatch proxy`" and "The `dispatch` command").
 
 `dispatch artifact` takes at most one upload source: a local `--path`, or inline `--content`.
 With neither, it makes an empty document under `--name`, which a person or an agent writes in
@@ -529,14 +667,18 @@ document, not for coordination between roles.
 
 ## AskGate
 
-AskGate reviews each Dispatch write of a session's main agent before the write posts. The charter
-check, one model call, judges the write against the rules in `extensions/askgate/rules.md` and
-answers `allow` or `revise`. A `revise` answer carries the reason and the fix. A call that opens a
-new ask for a person also gets the rules check (below), a second model call beside it. The gate
-reviews these calls:
+AskGate reviews the Dispatch writes that a session's main agent sends with the `dispatch` commands
+below, before each write posts. The charter check, one model call, judges the write against the
+rules in `extensions/askgate/rules.md` and answers `allow` or `revise`. A `revise` answer carries
+the reason and the fix. A call that opens a new ask for a person also gets the rules check
+(below), a second model call beside it. The gate reviews these calls:
 
 - `dispatch ask`, `dispatch message`, `dispatch edit-ask`, `dispatch comment`, `dispatch doc-edit`
   and `dispatch request-approval`
+- the four corrections of a post the gate already reviewed: `dispatch edit-comment`,
+  `dispatch delete-comment`, `dispatch edit-message` and `dispatch delete-message`. An edit's new
+  body is the text under review, as the `comment` or `message` that posted it was; a delete
+  carries no body, so what is under review is the call itself, which names the post it takes down
 - `dispatch issue` with `--spec` or `--spec-file`
 - `dispatch artifact` when it uploads a markdown document: inline text (`--content`,
   `--content-file`), a `--path` file whose name ends in `.md` or `.markdown`, or a `--name` that
@@ -544,9 +686,19 @@ reviews these calls:
 
 Every other Dispatch command is outside the gate, and its text posts unreviewed: among them
 `dispatch issue-update --reason`, `dispatch resolve-ask --reason` and `dispatch suggest`.
+`dispatch proxy` is outside the gate too. The comment POST that it sends for its command posts
+unreviewed, and needs no marker in `block` mode either (`@legion/envoy-client`'s README,
+"`dispatch proxy`", says why).
 
-The gate reads the arguments from the command's own `--dry-run`. The dry run sends nothing and
-contacts no Dispatch server, so a slow one most likely means a busy machine. The reads, the dry
+The gate reads the arguments from the command's own `--dry-run`. It runs the dry run with
+`DISPATCH_DRY_RUN_LOCAL=1`, and the CLI then checks the arguments alone. Without that variable,
+`dispatch artifact --dry-run` asks Dispatch to check the text as the call does: how it would store
+text given inline, read from `--content-file` or from stdin, or what it refuses of a Markdown
+`--path` file's bytes. The call itself runs without
+the variable. It asks Dispatch the same questions and refuses a text that Dispatch would store
+under another spelling, or that an upload refuses for the text alone. So the gate's dry run stores
+nothing and contacts no Dispatch server, and
+a slow one most likely means a busy machine. The reads, the dry
 run and the `cd`'s `pwd -P` probe, take at most half the call's deadline: the first run of each
 is cut at 20 s, or sooner when that half ends sooner, and a run cut there is run once more with
 what is left of that half (25 s at the 90 s default), when at least 2 s of it is left. The
@@ -607,10 +759,12 @@ provider, a review that failed) checks no file, so its file posts as the CLI rea
 - Nothing else is in the call: no second command, no other pipe, no `;`, `&&`, `||` or `&`, no
   assignment, no other redirect and no other comment.
 
-**Everything else runs, and the `dispatch` command enforces the review.** The gate reads no other
-form and refuses none: a call outside the literal grammar runs as written. What holds it back is
-the CLI. For each literal call it lets run, the gate mints a single-use marker; the CLI posts a
-gated write only when it consumes one, so a write sent any other way is refused in `block` mode:
+**Everything else runs, and the `dispatch` command enforces the review for each gated command.** The
+gate reads no other form and refuses none: a call outside the literal grammar runs as written. What
+holds it back is the CLI. For each literal call it lets run, the gate mints a single-use marker; the
+CLI posts a gated write through a gated command only when it consumes one, so such a write sent any
+other way is refused in `block` mode (the comment POST of `dispatch proxy`, which is no gated
+command, is the exception named above):
 
 - **The record.** While the gate is bound, pi-envoy keeps one owner-only file for its process in
   the `askgate/` directory of the CLI's state directory of each session id it binds
@@ -685,7 +839,7 @@ gated write only when it consumes one, so a write sent any other way is refused 
   ledger is read, so a read of the stored version would see the new text and count nothing.
 
 The gated writes are the same list for the gate and the CLI (`gatedWrite` in
-`@legion/envoy-client/askgate-marker`): the six commands above, an `issue` with a spec and an
+`@legion/envoy-client/askgate-marker`): the ten commands above, an `issue` with a spec and an
 `artifact` that uploads a markdown document. `--help`, `--dry-run` and every other command need no
 marker. So a pipe to a program other than one trailing `head` or `tail`, a loop, a variable,
 `xargs`, an alias, a script, `python3 -c`, `node -e`, or a process an eval cell starts runs, and
@@ -873,10 +1027,10 @@ extensionHandlers:
 ```
 
 When the limit is under 30 s, the gate logs one warning at start that names the key, the host's
-limit and the review's limit. It still reviews each write. The key must be at least 15,000 ms,
-since the gate does not bind on a limit that leaves under 10 s for a verdict. A session set under
-15,000 ms gets a gate that does not load, and a gate that did not load refuses every Dispatch
-write it would have reviewed.
+limit and the review's limit. It still reviews each gated Dispatch write. The key must be at least
+15,000 ms, since the gate does not bind on a limit that leaves under 10 s for a verdict. A session
+set under 15,000 ms gets a gate that does not load, and a gate that did not load refuses every
+Dispatch write it would have reviewed.
 
 `OMP_ASKGATE_DUMP` names a file that gets the two prompts of each model call.
 
@@ -993,7 +1147,9 @@ CLI outside the form the gate reads and carried an ask for a person (`outcome: "
   send the recorder back to the read and then to the append. Each append carries a key of its own,
   the sha256 of the session and the record's id, so an append Dispatch ran late is replayed to its
   next attempt rather than written twice; the same record sent again with another time in its body
-  gets `422 KEY_REUSED`, is not written, and is counted as not confirmed. Keys
+  gets `422 KEY_REUSED`, is not written, and is counted as not confirmed. An append Dispatch made
+  and gave no copy of its answer for (`409 KEY_COMMITTED`, or a replay of an answer it kept none
+  of) is in the document, so the record is written and counted nowhere as not confirmed. Keys
   belong to the login that sent them, and every Legion pod writes under the shared agent token,
   which is one login for all of them (`requestKeyLogin`,
   `packages/envoy/internal/dispatch/api/request_keys.go`); Dispatch keeps a key 24 h
@@ -1039,10 +1195,11 @@ runs as the same user as the session defeats it: it can set `askgate.enabled` to
 envoy.json, or point the session at another envoy.json with `OMP_PROFILE`, `PI_CODING_AGENT_DIR`,
 `ENVOY_CONFIG_FILE`, `XDG_CONFIG_HOME` or `HOME` in the launching shell.
 
-The CLI's check holds only for the CLI. It does not cover a direct HTTP request to Dispatch with
-the session's token, an older or a different `dispatch` binary, or a same-user process that
-removes the record or a marker file, sets `DISPATCH_STATE_DIR` or `DISPATCH_SESSION_ID` itself to
-act as another state directory or session id, or otherwise goes around the CLI. claude-envoy has
+The CLI's check holds only for the CLI's gated commands. It does not cover the comment POST of
+`dispatch proxy`, a direct HTTP request to Dispatch with the session's token, an older or a
+different `dispatch` binary, or a same-user process that removes the record or a marker file, sets
+`DISPATCH_STATE_DIR` or `DISPATCH_SESSION_ID` itself to act as another state directory or session
+id, or otherwise goes around the CLI. claude-envoy has
 no Dispatch write tool over MCP: Claude Code writes through the same CLI
 under host `claude`, where AskGate keeps no record, so nothing there asks for a marker. Use the
 gate for the writes of an agent that wants the review, and not as a boundary against a program

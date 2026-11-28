@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -24,11 +25,11 @@ type failingWriter struct {
 	Writer
 
 	mu sync.Mutex
-	// records is how many more calls of Record fail before the writes land again.
+	// records is how many more calls of RecordRuns fail before the writes land again.
 	records int
 }
 
-func (w *failingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+func (w *failingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
 	w.mu.Lock()
 	failing := w.records > 0
 	if failing {
@@ -38,7 +39,7 @@ func (w *failingWriter) Record(ctx context.Context, observation contracts.CIObse
 	if failing {
 		return false, errors.New("the CI record store refused the write")
 	}
-	return w.Writer.Record(ctx, observation)
+	return w.Writer.RecordRuns(ctx, observations)
 }
 
 // failWrites makes the pass bind a writer whose first records writes of check runs fail. Every
@@ -58,21 +59,21 @@ func (h *harness) failWrites(records int) *failingWriter {
 	return failing
 }
 
-// refusingWriter is a CI record writer that refuses the write of one named check exactly as
-// cistore refuses a record past its bound (bus.ErrTooLarge), and hands every other call to the
-// writer it wraps. cistore writes the record marked Overflowed under such a refusal, so the
-// head's record is there and holds the checks that fitted.
+// refusingWriter is a CI record writer that refuses a write of a head's runs carrying one named
+// check exactly as cistore refuses a record past its bound (bus.ErrTooLarge), and hands every
+// other call to the writer it wraps. cistore writes the record marked Overflowed under such a
+// refusal, holding none of the runs the refused write carried, so the head never settles.
 type refusingWriter struct {
 	Writer
 
 	check string
 }
 
-func (w *refusingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	if observation.CheckName == w.check {
+func (w *refusingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
+	if slices.ContainsFunc(observations, func(observation contracts.CIObservation) bool { return observation.CheckName == w.check }) {
 		return false, fmt.Errorf("record: %w", bus.ErrTooLarge)
 	}
-	return w.Writer.Record(ctx, observation)
+	return w.Writer.RecordRuns(ctx, observations)
 }
 
 // refuseWrites makes the pass bind a writer that refuses check's writes for the record's
@@ -94,6 +95,7 @@ func (h *harness) refuseWrites(check string) {
 // later pass would meet the same refusal, so reading the head in full at every pass would buy
 // nothing. The next pass reads it conditionally and GitHub answers 304.
 func TestARefusedWriteKeepsTheHeadsETags(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -101,23 +103,21 @@ func TestARefusedWriteKeepsTheHeadsETags(t *testing.T) {
 	// answer: GitHub refuses its Checks fields, which sends the pass to the REST reads these
 	// tests are about.
 	h.github.refuseChecks(gitHubRepository, headSHA)
+	ci := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA,
-		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
+		ci,
 		checkRun(2, "enormous", "completed", "success", otherApp, "2026-11-05T03:01:01Z"),
 	)
+	// The listener recorded ci-ok from its webhook, so the head has a record, and a refusal for
+	// the bounds leaves it there: cistore writes it as it was, marked Overflowed
+	// (TestRecordRunsPastTheRecordBoundWritesNoneOfThem), which this writer does not mimic.
+	h.post("check_run", webhookBody("check_run", ci), "d1")
 	h.refuseWrites("enormous")
 
 	h.pass()
 
-	if !h.logged("ci reconcile did not record a check run") {
+	if !h.logged("ci reconcile did not record the check runs of a head") {
 		t.Fatalf("the refused write was not named at WARN:\n%s", h.logs.String())
-	}
-	state, _, ok := h.record()
-	if !ok {
-		t.Fatal("the head has no record after the pass whose other write landed")
-	}
-	if _, held := state.Checks["ci-ok"]; !held {
-		t.Fatalf("the record holds %+v, want the check that fitted", state.Checks)
 	}
 	sentBefore := h.github.count()
 
@@ -141,6 +141,7 @@ func TestARefusedWriteKeepsTheHeadsETags(t *testing.T) {
 // of the head's two listings is read with the ETag GitHub answered the first pass with, GitHub
 // answers 304 to each, and the head's record is left exactly where it was.
 func TestNothingChangedSoNothingIsReadInFull(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -195,6 +196,7 @@ func TestNothingChangedSoNothingIsReadInFull(t *testing.T) {
 // settles. Were the ETag kept, GitHub would answer 304 for ever and the run the record lacks
 // would never reach it.
 func TestAWriteThatDidNotLandIsNotHiddenBehindAnETag(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -210,7 +212,7 @@ func TestAWriteThatDidNotLandIsNotHiddenBehindAnETag(t *testing.T) {
 	if _, _, ok := h.record(); ok {
 		t.Fatal("the head has a record although the pass's one write failed")
 	}
-	if !h.logged("ci reconcile did not record a check run") {
+	if !h.logged("ci reconcile did not record the check runs of a head") {
 		t.Fatalf("the failed write was not warned about:\n%s", h.logs.String())
 	}
 	sentBefore := h.github.count()
@@ -242,6 +244,7 @@ func TestAWriteThatDidNotLandIsNotHiddenBehindAnETag(t *testing.T) {
 // status and conclusion under a later updated_at -- is written and settles once, and a pass over
 // the answers as they now stand writes nothing and settles nothing more.
 func TestGitHubsOwnNewsIsWrittenOnce(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -288,6 +291,7 @@ func TestGitHubsOwnNewsIsWrittenOnce(t *testing.T) {
 // there is no record for it to have lost, and dropping them would read it in full at every pass
 // for ever.
 func TestAHeadWithNothingToRecordKeepsItsETags(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -334,6 +338,7 @@ func TestAHeadWithNothingToRecordKeepsItsETags(t *testing.T) {
 // second is read to its end and every run of both pages recorded, and a run added to the second
 // page afterwards is found by the next pass, whose first page answers 304.
 func TestAListingIsReadPageByPage(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()

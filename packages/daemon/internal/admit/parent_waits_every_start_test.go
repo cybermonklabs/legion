@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -113,12 +113,12 @@ func pwMidPhase(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, st
 	return token
 }
 
-// pwDeliver records start, a phase worker's start row of the parent, as delivered to token's
-// claim, as the outbox leaves a claim it ran that row on (supervise's queue): the claim holds the
-// row's task for its phase, run and entry, confirmed by a turn, it was given that entry where the
-// row carries one (a start at no entry leaves the entry the claim was given as it stands), and the
-// row is finished.
-func pwDeliver(t *testing.T, pool *pgxpool.Pool, token claim.Token, start record.SuperviseRequest) {
+// pwDeliver records start, a phase worker's start row of key, as delivered to token's claim, as
+// the outbox leaves a claim it ran that row on (supervise's queue): the claim holds the row's task
+// for its phase, run and entry, confirmed by a turn, it was given that entry where the row carries
+// one (a start at no entry leaves the entry the claim was given as it stands), and the row is
+// finished.
+func pwDeliver(t *testing.T, pool *pgxpool.Pool, key string, token claim.Token, start record.SuperviseRequest) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, entry, confirmed_at)
@@ -132,11 +132,11 @@ func pwDeliver(t *testing.T, pool *pgxpool.Pool, token claim.Token, start record
 	inTx(t, pool, func(tx pgx.Tx) {
 		var id int64
 		if err := tx.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
-			and payload->>'role' = $2 order by id desc limit 1`, spParent, string(start.Role)).Scan(&id); err != nil {
-			t.Fatalf("read the %s's start of %s: %v", start.Role, spParent, err)
+			and payload->>'role' = $2 order by id desc limit 1`, key, string(start.Role)).Scan(&id); err != nil {
+			t.Fatalf("read the %s's start of %s: %v", start.Role, key, err)
 		}
 		if err := record.NewStore().FinishOutbox(ctx, tx, id, ""); err != nil {
-			t.Fatalf("finish the %s's start %d of %s: %v", start.Role, id, spParent, err)
+			t.Fatalf("finish the %s's start %d of %s: %v", start.Role, id, key, err)
 		}
 	})
 }
@@ -513,13 +513,21 @@ type pwMove struct {
 // testing, starts no phase since cybermonklabs/legion#4464 (the issue keeps its phase while the
 // implementer merges the base forward), so it holds nothing; the test that follows the table reads
 // what it does instead.
-func pwMoves() []pwMove {
+func pwMoves(t *testing.T) []pwMove {
+	t.Helper()
 	complete := func(role claim.Role, summary, verdict, rec string) intake.HandoffComplete {
 		return intake.HandoffComplete{Generation: 1, Issue: spParent, Role: role, Claim: claim.Token(string(role)), Summary: summary,
 			Verdict: verdict, Commit: "head-42", HandoffRecord: rec, HandoffVersion: 1}
 	}
+	// The architect's own move names the claim that asked for it, which the request's refusals
+	// read (intake's BackwardMove.Request): a worker's move is judged by its role alone.
+	architect := pwRoleToken(t, spParent, claim.RoleArchitect)
 	back := func(by claim.Role, to phase.Phase, reason string) intake.BackwardMove {
-		return intake.BackwardMove{Issue: spParent, Requester: by, To: to, Reason: reason}
+		move := intake.BackwardMove{Issue: spParent, Requester: by, To: to, Reason: reason}
+		if by == claim.RoleArchitect {
+			move.By = architect
+		}
+		return move
 	}
 	return []pwMove{
 		{name: "the planner's completion", from: phase.Planning, source: "api",
@@ -662,9 +670,10 @@ func pwHeldFromTesting(t *testing.T, pool *pgxpool.Pool) *Admission {
 // fact `legion claims retry` applies) and a todo on a held root; and the admission pass's three
 // cases (StopForChildren): a parent in accepting, a start written and not delivered, and a worker
 // in the middle of its phase. A path added to awaitChildren later goes into this table.
-func pwPaths() []pwPath {
+func pwPaths(t *testing.T) []pwPath {
+	t.Helper()
 	var paths []pwPath
-	for _, move := range pwMoves() {
+	for _, move := range pwMoves(t) {
 		paths = append(paths, pwPath{name: move.name, at: move.from,
 			seed: func(t *testing.T, pool *pgxpool.Pool) *Admission {
 				admission := pwAdmission(t, 2)
@@ -774,7 +783,7 @@ func pwDropsForward(t *testing.T, path pwPath, forward pwForward) {
 	pool := migratedPool(t)
 	admission := path.seed(t, pool)
 	asked := path.at
-	if !slices.Contains(record.MergeForwardPhases, asked) {
+	if !classify.MergeForwardStands(record.Issue{Phase: asked}, phase.Order) {
 		asked = phase.Implementing
 	}
 	pwSeedForward(t, pool, forward.asked(asked))
@@ -805,7 +814,7 @@ func pwDropsForward(t *testing.T, path pwPath, forward pwForward) {
 // one live tree whose root, the parent, holds the slot its phase keeps, run through the workflow
 // engine and the admission pass as the daemon runs them.
 func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
-	for _, move := range pwMoves() {
+	for _, move := range pwMoves(t) {
 		t.Run(move.name, func(t *testing.T) { pwHoldsMove(t, move) })
 	}
 
@@ -825,7 +834,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	// each of the 15 paths into awaiting_children (pwPaths), under each of the three states of the
 	// merge forward its record holds (pwForwards), 45 cases in all (pwDropsForward).
 	t.Run("every move into awaiting_children tells the implementer of a merge forward it drops", func(t *testing.T) {
-		paths := pwPaths()
+		paths := pwPaths(t)
 		if len(paths) != 15 {
 			t.Fatalf("the paths into awaiting_children = %d, want the 15 there are", len(paths))
 		}
@@ -1020,7 +1029,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 
 		spPass(t, pool, admission)
 
-		const cause = "its reviewed head waited in accepting for the architect's sign-off"
+		const cause = "the head the step before accepting passed waited in accepting for the architect's sign-off"
 		pwHeld(t, pool, spParent, phase.Accepting, cause, spChild+" (todo)")
 		pwNotice(t, pool, phase.Accepting, phase.Accepting, cause, spChild+" (todo)")
 		pwStatuses(t, pool, spParent, pwInProgressOver("needs_review"))
@@ -1290,7 +1299,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("the retry's start = %+v over the phases row %+v; want the retry's own task on entry 3, the row's task the transition's", retry, row)
 		}
 		putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 1, supervise.StateWorking, "")
-		pwDeliver(t, pool, token, retry)
+		pwDeliver(t, pool, spParent, token, retry)
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 		spPass(t, pool, admission)
@@ -1339,7 +1348,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("the retry's start = %+v; want the retry's own task on entry 3, not the entry's work", retry)
 		}
 		putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 1, supervise.StateIdle, "")
-		pwDeliver(t, pool, token, retry)
+		pwDeliver(t, pool, spParent, token, retry)
 		retired, err := pool.Exec(context.Background(), `delete from pending_task_deliveries where claim_token = $1 and delivery_id = 'outbox:delivered'`,
 			string(token))
 		if err != nil || retired.RowsAffected() != 1 {
@@ -1394,7 +1403,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("the retry's start = %+v over the phases row %+v; want the retry's own task on entry 3, the row's task still empty", retry, row)
 		}
 		putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 1, supervise.StateWorking, "")
-		pwDeliver(t, pool, token, retry)
+		pwDeliver(t, pool, spParent, token, retry)
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 		spPass(t, pool, admission)
@@ -1429,7 +1438,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		if !resume.ResumeTask || resume.Entry != 0 || !strings.Contains(resume.Task, "Resume the existing phase work.") {
 			t.Fatalf("the catch-up's start = %+v, want the phase's resume task at no entry", resume)
 		}
-		pwDeliver(t, pool, token, resume)
+		pwDeliver(t, pool, spParent, token, resume)
 		if _, err := pool.Exec(context.Background(), `update claims set state = $2 where token = $1`,
 			string(token), string(supervise.StateWorking)); err != nil {
 			t.Fatalf("record the implementer's claim in the turn the resume task started: %v", err)
@@ -1829,6 +1838,50 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("awaiting-children notices = %+v, want none", told)
 		}
 	})
+
+	// The carried-slot exemption is specific to implementing. Other carried worker phases
+	// wait at the promotion itself if a child is open.
+	for _, carries := range []phase.Phase{phase.Testing, phase.Planning, phase.Reviewing, phase.Implementing} {
+		t.Run("a root handed over carrying its slot in "+string(carries)+" starts with no open child", func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := pwAdmission(t, 2)
+			carriedRoot(t, pool, spParent, carries, "A")
+			takeSlot(t, pool, spParent)
+
+			spPass(t, pool, admission)
+
+			if got := issue(t, pool, spParent); got.Phase != carries || got.ChildrenWait != nil || got.HandedOverFrom != "" || !treeOpen(t, pool, spParent) {
+				t.Fatalf("the promoted root = phase %s, held start %+v, handed over from %q; want %s in a tree of its own, nothing held",
+					got.Phase, got.ChildrenWait, got.HandedOverFrom, carries)
+			}
+			if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != phase.RoleFor(carries) || starts[0].task == "" {
+				t.Fatalf("worker starts = %+v, want the %s's start of the phase the root carries", starts, phase.RoleFor(carries))
+			}
+		})
+		if carries == phase.Implementing {
+			continue // The open-child row above covers the exemption.
+		}
+		t.Run("a root handed over carrying its slot in "+string(carries)+" waits at promotion for its open child", func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := pwAdmission(t, 2)
+			carriedRoot(t, pool, spParent, carries, "A")
+			takeSlot(t, pool, spParent)
+			seedMirrorChild(t, pool, spChild, "todo", spParent)
+
+			spPass(t, pool, admission)
+
+			got := issue(t, pool, spParent)
+			if got.Phase != phase.AwaitingChildren || got.ChildrenWait == nil || got.ChildrenWait.Start != carries {
+				t.Fatalf("the promoted root = phase %s, held start %+v; want awaiting_children holding %s",
+					got.Phase, got.ChildrenWait, carries)
+			}
+			if !reflect.DeepEqual(got.ChildrenWait.Children, []string{spChild}) || got.HandedOverFrom != "" || !treeOpen(t, pool, spParent) {
+				t.Fatalf("the promoted root's wait names %v, handed over from %q; want %s alone and a tree of its own",
+					got.ChildrenWait.Children, got.HandedOverFrom, spChild)
+			}
+			noWorkerLaunch(t, pool, spParent, phase.RoleFor(carries))
+		})
+	}
 
 	// A parent in retro, with a child filed and not released, that the implementer moves back to
 	// implementing starts implementing as today: the daemon has accepted it, so the rule does not

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // TestABrokerCallErrorNamesNoCredentialTheURLCarries: a session's renew against a broker that
@@ -20,6 +21,7 @@ import (
 // AGENT_SECRETS_URL redact.URL will not print, it names the URL as redact.NotPrinted and the
 // failure's class alone; for a clean one, it reads as net/http wrote it.
 func TestABrokerCallErrorNamesNoCredentialTheURLCarries(t *testing.T) {
+	t.Parallel()
 	s, err := newSession(1, 1, "runtime", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -34,12 +36,16 @@ func TestABrokerCallErrorNamesNoCredentialTheURLCarries(t *testing.T) {
 	}))
 	defer closing.Close()
 	overHTTPS := "https://" + strings.TrimPrefix(plain.URL, "http://")
+	// refused is a port this test holds that refuses each dial. The last four rows keep
+	// 127.0.0.1:1: their address does not parse, or names no host or no http scheme, so they dial
+	// nothing.
+	refused := testport.Refused(t)
 	for _, row := range []struct{ base, want string }{
-		{"http://127.0.0.1:1", `Post "http://127.0.0.1:1/v1/enrollments//renew": dial tcp 127.0.0.1:1: connect: connection refused`},
+		{"http://" + refused, `Post "http://` + refused + `/v1/enrollments//renew": dial tcp ` + refused + `: connect: connection refused`},
 		{overHTTPS, `Post "` + overHTTPS + `/v1/enrollments//renew": http: server gave HTTP response to HTTPS client`},
 		{closing.URL, `Post "` + closing.URL + `/v1/enrollments//renew": EOF`},
-		{"http://" + "tokuser9f3:hunter2pw@127.0.0.1:1", "Post " + np + "connection refused"},
-		{"http://127.0.0.1:1/?token=qtok77", "Post " + np + "connection refused"},
+		{"http://" + "tokuser9f3:hunter2pw@" + refused, "Post " + np + "connection refused"},
+		{"http://" + refused + "/?token=qtok77", "Post " + np + "connection refused"},
 		{"http://" + "tokuser9f3:hunter2pw%zz@127.0.0.1:1", "parse " + np + "not a valid URL"},
 		{"tokuser9f3:hunter2pw@127.0.0.1:1", "Post " + np + "the request failed"},
 		{"http:/tokuser9f3:hunter2pw@127.0.0.1:1", "Post " + np},

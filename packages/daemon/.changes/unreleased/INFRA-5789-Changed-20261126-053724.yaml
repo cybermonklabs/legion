@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  Each repository cache's pod now carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "true"`, with the bucket on or off, so the cluster autoscaler can move a cache pod and remove its node: a Sandbox is no controller the autoscaler knows, so until now it kept every node a cache pod ran on (`no.scale.down.node.pod.not.backed.by.controller`).
+  A move makes the pod again on the same volume, in the same zone; a `/tar` stream the move cuts fails its issue pod's provision, and the daemon makes that issue pod again.
+  The release runs a new image, so the daemon replaces each cache pod with an annotated one, keeping its Sandbox and volume, once the pod serves no `/tar` stream.
+time: 2026-11-26T05:37:24Z
+custom:
+    Issue: INFRA-5789

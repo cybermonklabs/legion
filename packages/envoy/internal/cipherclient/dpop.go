@@ -5,17 +5,13 @@ package cipherclient
 import (
 	"bytes"
 	"crypto/ecdsa"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/go-jose/go-jose/v4"
-	"github.com/google/uuid"
+	"github.com/sjawhar/envoy/internal/dpopproof"
 )
 
 // dpopTransport signs an RFC 9449 DPoP proof of its key for every request it carries.
@@ -34,7 +30,8 @@ type dpopTransport struct {
 // retried once with that nonce. The helper carries no proof on the device authorization request.
 //
 // Only the public half of key ever leaves the process: the proof embeds the public JWK and
-// nothing else of the key, and each session makes its own key in its own process.
+// nothing else of the key, whether the key is one this process made, a person's box key or a pod
+// role's own agent-secrets key (MachineKey).
 //
 // A request that presents an access token under the DPoP scheme (Authorization: DPoP <token>) is a
 // request to a resource server, and its proof also carries ath, the base64url-encoded SHA-256 of
@@ -98,37 +95,11 @@ func (d *dpopTransport) send(r *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-// proof is one DPoP proof for method on htu, carrying nonce and ath when they are not empty.
+// proof is one DPoP proof for method on htu, carrying nonce and ath when they are not empty. Every
+// proof this package makes goes through dpopproof.Sign, an HTTP request's (dpopTransport) and a
+// NATS connection's (ConnectionProof).
 func (d *dpopTransport) proof(method, htu, nonce, ath string) (string, error) {
-	return signProof(d.key, strings.ToUpper(method), htu, nonce, ath)
-}
-
-// signProof is one proof of key (typ dpop+jwt, ES256, the public key embedded) naming a fresh jti,
-// htm, htu and the time (iat), and nonce and ath when they are not empty: the one signer every
-// proof this package makes goes through, an HTTP request's (dpopTransport) and a NATS
-// connection's (ConnectionProof).
-func signProof(key *ecdsa.PrivateKey, htm, htu, nonce, ath string) (string, error) {
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key},
-		(&jose.SignerOptions{EmbedJWK: true}).WithType("dpop+jwt"))
-	if err != nil {
-		return "", err
-	}
-	claims := map[string]any{"jti": uuid.NewString(), "htm": htm, "htu": htu, "iat": time.Now().Unix()}
-	if nonce != "" {
-		claims["nonce"] = nonce
-	}
-	if ath != "" {
-		claims["ath"] = ath
-	}
-	payload, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-	sig, err := signer.Sign(payload)
-	if err != nil {
-		return "", err
-	}
-	return sig.CompactSerialize()
+	return dpopproof.Sign(d.key, strings.ToUpper(method), htu, nonce, ath)
 }
 
 // accessTokenHash is the ath claim for a request presenting an access token under the DPoP scheme,
@@ -139,11 +110,5 @@ func accessTokenHash(h http.Header) string {
 	if !found || !strings.EqualFold(scheme, "DPoP") || token == "" {
 		return ""
 	}
-	return tokenHash(token)
-}
-
-// tokenHash is the ath claim naming token: the base64url-encoded SHA-256 of its value.
-func tokenHash(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return base64.RawURLEncoding.EncodeToString(sum[:])
+	return dpopproof.TokenHash(token)
 }

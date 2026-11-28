@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // applyControllerTick is one turn: it re-reads from Dispatch the issues anything is currently
@@ -64,9 +66,13 @@ func (w *workflowRuntime) observeWaitedOn(ctx context.Context) []intake.IssueSta
 // phase (record.ChildWaitsOf), and every open child a parent waiting in awaiting_children waits
 // on (blockers.ChildRows). A candidate the rule exempts is read for nothing, as promotion admits
 // it whatever its links say and nothing consults the answer (blockers.Exempt), and the keys come
-// out in that judgement's own order, by the issue waiting on them. The open children of every
-// other started parent follow (record.LineFacts.StartedParentWaits), which the admission pass
-// moves into awaiting_children or leaves where it stands from the same judgement.
+// out in that judgement's own order, by the issue waiting on them. Then come the open children of
+// every other started parent (record.LineFacts.StartedParentWaits), which the admission pass moves
+// into awaiting_children or leaves where it stands from the same judgement, and of every parent
+// held before its retro (record.RetroHolds.Open, in record.LineFacts.RetroHolds), whose retro the
+// admission pass starts once none of them is open (admit's childrenWaits). Both kinds of parent
+// are sorted together by key, and each parent's open children are added in that order, a key
+// already added keeping the place it took first.
 //
 // An open child is in the set because the turn's re-read is what writes its row of the copy
 // again: a reading of all five values, each of which replaces the one an older reading wrote. A
@@ -77,62 +83,69 @@ func (w *workflowRuntime) observeWaitedOn(ctx context.Context) []intake.IssueSta
 //
 // parents is every issue whose phases have started (record.StartedParents): one in planning
 // through accepting, held from one of them, owing its worker a start, or waiting in
-// awaiting_children (dispatch://INFRA-3320 R13). A child filed under such an issue is in no
-// mirror row until a read of Dispatch shows it, and the admission pass holds the issue's next
-// start, or stops the phase under way, the moment the mirror does, so the turn reads the children
-// of each of them whatever the number of keys (readObserved). parents also holds every issue whose
-// own first phase the children-first rule can hold (record.ChildrenFirstCandidates), whose
-// children that rule reads too, and comes out sorted.
+// awaiting_children (dispatch://INFRA-3320 R13), and every parent held before its retro (R8), which
+// an open Dispatch child holds as well: the keys of record.LineFacts.RetroHolds, which holds an
+// entry for each such parent (record.RetroHeldParents) whatever holds it. A child filed under
+// such an issue is in no mirror row until a read of Dispatch shows it, and the admission pass
+// holds the issue's next start, stops the phase under way, or holds its retro, the moment the
+// mirror does, so the turn reads the children of each of them whatever the number of keys
+// (readObserved). parents also holds every issue whose own first phase the children-first rule
+// can hold (record.ChildrenFirstCandidates), whose children that rule reads too, and comes out
+// sorted.
 func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, error) {
-	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	issues, err := w.records.LiveIssues(ctx, tx, w.dispatchProject)
-	if err != nil {
-		return nil, nil, fmt.Errorf("list the issues of %s: %w", w.dispatchProject, err)
-	}
-	slots, err := w.records.Slots(ctx, tx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("list the admission slots: %w", err)
-	}
-	facts, err := record.ReadLineFacts(ctx, tx, w.records, w.dispatchProject, issues, w.gatedSteps)
-	if err != nil {
-		return nil, nil, err
-	}
-	// Judged through the one judgement admission itself promotes from (blockers.JudgeLine): the
-	// rows of every issue a blocker can hold come before the line, which leaves such an issue out
-	// and cannot judge that itself (record.LineFacts.Held); the issues the line names are read
-	// after it, since only the line says which they are. This read wants those keys alone and
-	// drops the held rows, so the clock it hands over decides nothing here.
-	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, w.records, w.dispatchProject, issues, slots, facts, nil, time.Now())
-	if err != nil {
-		return nil, nil, err
-	}
-	var keys []string
-	seen := make(map[string]struct{})
-	add := func(key string) {
-		if _, repeated := seen[key]; repeated {
-			return
+	var keys, parents []string
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issues, err := w.records.LiveIssues(ctx, tx, w.dispatchProject)
+		if err != nil {
+			return fmt.Errorf("list the issues of %s: %w", w.dispatchProject, err)
 		}
-		seen[key] = struct{}{}
-		keys = append(keys, key)
-	}
-	for _, blocked := range blockers.Blocked(rows, issues, line, facts) {
-		for _, blocker := range blocked.BlockedBy {
-			add(blocker)
+		slots, err := w.records.Slots(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("list the admission slots: %w", err)
 		}
-	}
-	parents := record.StartedParents(issues, facts.Owed)
-	for _, parent := range parents {
-		for _, child := range facts.StartedParentWaits[parent].Open {
-			add(child.Key)
+		facts, err := record.ReadLineFacts(ctx, tx, w.records, w.dispatchProject, issues, w.gatedSteps)
+		if err != nil {
+			return err
 		}
-	}
-	parents = append(parents, record.ChildrenFirstCandidates(issues, facts.Gates)...)
-	slices.Sort(parents)
-	return keys, slices.Compact(parents), nil
+		// Judged through the one judgement admission itself promotes from (blockers.JudgeLine):
+		// the rows of every issue a blocker can hold come before the line, which leaves such an
+		// issue out and cannot judge that itself (record.LineFacts.Held); the issues the line
+		// names are read after it, since only the line says which they are. This read wants those
+		// keys alone and drops the held rows, so the clock it hands over decides nothing here.
+		rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, w.records, w.dispatchProject, issues, slots, facts, nil, time.Now())
+		if err != nil {
+			return err
+		}
+		seen := make(map[string]struct{})
+		add := func(key string) {
+			if _, repeated := seen[key]; repeated {
+				return
+			}
+			seen[key] = struct{}{}
+			keys = append(keys, key)
+		}
+		for _, blocked := range blockers.Blocked(rows, issues, line, facts) {
+			for _, blocker := range blocked.BlockedBy {
+				add(blocker)
+			}
+		}
+		parents = slices.AppendSeq(record.StartedParents(issues, facts.Owed), maps.Keys(facts.RetroHolds))
+		slices.Sort(parents)
+		parents = slices.Compact(parents)
+		for _, parent := range parents {
+			for _, child := range facts.StartedParentWaits[parent].Open {
+				add(child.Key)
+			}
+			for _, child := range facts.RetroHolds[parent].Open {
+				add(child)
+			}
+		}
+		parents = append(parents, record.ChildrenFirstCandidates(issues, facts.Gates)...)
+		slices.Sort(parents)
+		parents = slices.Compact(parents)
+		return nil
+	})
+	return keys, parents, err
 }
 
 // readObserved is Dispatch's answer for keys and for the children of parents, in every project:
@@ -204,7 +217,7 @@ func (w *workflowRuntime) closedInMirror(ctx context.Context, listed []dispatch.
 		return nil
 	}
 	var rows []record.DispatchIssueRow
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = w.records.DispatchIssuesOf(ctx, tx, keys)
 		return err

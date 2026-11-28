@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { refusalCorpus as corpus } from "../../test/refusal-corpus";
+import { refusalCorpus as corpus, sentAs } from "../../test/refusal-corpus";
 import {
   BROKER_OAUTH_ERROR_CODES,
   isKnownBrokerRefusal,
@@ -61,18 +61,19 @@ describe("the broker's refusals as it writes them", () => {
 
   // A slot holds only what the trade sent: another person, another session, or a token in a slot
   // the trade did not fill is withheld.
-  test.each(
-    corpus.filter((text) => text.includes(sent.person) || text.includes(sent.session))
-  )("%p with a token in its slot is withheld", (description) => {
-    const token = randomBytes(20).toString("hex");
-    const echoed = description
-      .replaceAll(sent.person, `${token}@example.com`)
-      .replaceAll(sent.session, token);
-    expect(isKnownBrokerRefusal(echoed, sent)).toBe(false);
-    expect(
-      Bun.inspect(new BrokerRefusedError(400, "invalid_grant", echoed, "probe", sent))
-    ).not.toContain(token);
-  });
+  test.each(corpus.filter((text) => text.includes(sent.person) || text.includes(sent.session)))(
+    "%p with a token in its slot is withheld",
+    (description) => {
+      const token = randomBytes(20).toString("hex");
+      const echoed = description
+        .replaceAll(sent.person, `${token}@example.com`)
+        .replaceAll(sent.session, token);
+      expect(isKnownBrokerRefusal(echoed, sent)).toBe(false);
+      expect(
+        Bun.inspect(new BrokerRefusedError(400, "invalid_grant", echoed, "probe", sent))
+      ).not.toContain(token);
+    }
+  );
 
   // The policy's refusals are pinned to their own sentences (P-j): a refusal of another wording,
   // which could carry a token cut into pieces too short for the scrub, hex-encoded or reversed,
@@ -89,6 +90,29 @@ describe("the broker's refusals as it writes them", () => {
     expect(isKnownBrokerRefusal(description, sent)).toBe(false);
     expect(new BrokerRefusedError(400, "invalid_request", description, "probe", sent).said).toBe(
       "(its text is withheld)"
+    );
+  });
+
+  // A Dispatch sign-in's refusals, each as the broker's corpus holds it: its read trade
+  // (`oauth/exchange.go`), whose token is minted whole with the scopes its person approved, the
+  // trade of a restricted member's sign-in, and its device login's (`machine.Service`,
+  // `api/edge.go`): where the broker serves no sign-in, where it asks for a scope its person may
+  // not approve, where it names a device scope other than one of machine or dispatch, and a
+  // machine login's detail that carries actions. A device login's trade names no person, so no
+  // slot is held to one. A refusal the corpus drops, or one whose wording drifts from these
+  // hints, fails here, and each prints whole.
+  test.each([
+    "A Dispatch sign-in is minted whole with its approved scopes and cannot trade for 'read'.",
+    "a Dispatch sign-in acts in every project its person may reach; sign in to Dispatch in a browser instead.",
+    "DISPATCH_SIGNIN_OFF: this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off",
+    "is not consentable; a Dispatch sign-in may approve only person, p0",
+    "ACTIONS_ON_MACHINE_LOGIN: a machine login's launcher_credential detail carries no actions member, not even an empty list",
+    "SCOPE_INVALID: a device login names exactly one scope, machine or dispatch",
+  ])("the corpus holds %p, and it prints whole", (hint) => {
+    const description = sentAs(hint);
+    expect(isKnownBrokerRefusal(description)).toBe(true);
+    expect(new BrokerRefusedError(400, "invalid_scope", description, "probe").said).toBe(
+      description
     );
   });
 });

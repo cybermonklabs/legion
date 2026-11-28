@@ -21,6 +21,7 @@ import (
 // when it runs. Run against a reviewer that was given its phase's entry and is between turns, it
 // hands the reviewer its news as a task.
 func TestANewsOnlyStartIsQueuedForALiveReviewer(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Reviewing)
 	r.told(reconcileRoot, record.AudienceHolder, 4)
@@ -51,11 +52,13 @@ func TestANewsOnlyStartIsQueuedForALiveReviewer(t *testing.T) {
 // A news-only start goes only where nothing else will carry the news, and never where the record
 // says nothing may: not to a claim owed its phase start (that start carries the news), not to a
 // retired or failed claim (the phase's own repair revives it with a start that carries the news),
-// not to a claim an operator suspended, and not into a tree that lingers or to an issue not at
-// work, which are owed nothing. The reconcile queues none for such a claim, and a news-only start
-// that meets one when it runs finishes without acting. The live claim is the control: the same
-// reconcile queues its start, and the same start hands it the news.
+// not to an agent a suspension that holds is over (the operator's or the controller's, which no
+// start the daemon queues gets past), and not into a tree that lingers or to an issue not at work,
+// which are owed nothing. The reconcile queues none for such a claim, and a
+// news-only start that meets one when it runs finishes without acting. The live claim is the
+// control: the same reconcile queues its start, and the same start hands it the news.
 func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		state supervise.ClaimState
@@ -70,6 +73,7 @@ func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 		{name: "a retired claim", state: supervise.StateRetired, given: 1},
 		{name: "a failed claim", state: supervise.StateFailed, given: 1},
 		{name: "an operator-suspended claim", state: supervise.StateSuspended, by: supervise.SuspendedByOperator, given: 1},
+		{name: "an agent the controller suspended", state: supervise.StateSuspended, by: supervise.SuspendedByController, given: 1},
 		{name: "a lingering tree", state: supervise.StateIdle, given: 1, lingers: true},
 		{name: "an issue not at work", state: supervise.StateIdle, given: 1, held: true},
 	} {
@@ -132,6 +136,7 @@ func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 // (supervise.HoldsTask), and a newer task takes its place while no prompt of it waits on a result,
 // carrying its sentence in front of the news.
 func TestNoNewsOnlyStartIsQueuedBehindATaskTheHolderHasNotTaken(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		relaunch  bool
@@ -193,6 +198,7 @@ func TestNoNewsOnlyStartIsQueuedBehindATaskTheHolderHasNotTaken(t *testing.T) {
 // reconcile queues its news-only start, and the start wakes the claim as any start wakes one,
 // resuming its kept session and handing it the news.
 func TestANewsOnlyStartWakesAClaimAnIdleReleaseSuspended(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Reviewing)
 	r.told(reconcileRoot, record.AudienceHolder, 4)
@@ -222,6 +228,7 @@ func TestANewsOnlyStartWakesAClaimAnIdleReleaseSuspended(t *testing.T) {
 // accepting it owns: one news-only start carries both, queued once for the tree, and a second run
 // of the reconcile while that start is still to run queues no second.
 func TestTheRootArchitectsStartIsQueuedOncePerTree(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Implementing)
 	r.member(reconcileChild, reconcileRoot, phase.Accepting)
@@ -263,6 +270,7 @@ func TestTheRootArchitectsStartIsQueuedOncePerTree(t *testing.T) {
 // parent owns it, so the news goes to that sub-architect's claim, in the holder form, and the root
 // architect, owed nothing of its own, is queued nothing.
 func TestASubArchitectsStartIsQueuedForItsAcceptingChild(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Implementing)
 	r.member(reconcileChild, reconcileRoot, phase.Implementing)
@@ -304,6 +312,7 @@ func TestASubArchitectsStartIsQueuedForItsAcceptingChild(t *testing.T) {
 // the same tree with no architect on the child, whose news the root's architect carries and
 // answers itself.
 func TestAnAcceptingChildsOwnArchitectIsToldItsNewsAndTheRootsSummaryNamesIt(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Implementing)
 	r.member(reconcileChild, reconcileRoot, phase.Accepting)

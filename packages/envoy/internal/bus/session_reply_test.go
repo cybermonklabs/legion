@@ -11,12 +11,14 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A session reply subject is <inbox>.<session id>.<token>, the token 26 characters of
 // crypto/rand.Text and new on every call, and the session's grant entry admits it and no other
 // session's.
 func TestASessionReplySubjectNamesItsSessionAndARandomToken(t *testing.T) {
+	t.Parallel()
 	inbox := natsgo.NewInbox()
 	first, second := bus.SessionReplySubject(inbox, "ses_one"), bus.SessionReplySubject(inbox, "ses_one")
 	for _, reply := range []string{first, second} {
@@ -45,6 +47,7 @@ func TestASessionReplySubjectNamesItsSessionAndARandomToken(t *testing.T) {
 // session's connection is told of every refusal, which is the control that the refusals are the
 // grant's and the watcher is not deaf.
 func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
+	t.Parallel()
 	seed, public := testnats.User(t)
 	config := fmt.Sprintf(`authorization {
   users = [
@@ -95,15 +98,15 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 	if err := session.Flush(); err != nil {
 		t.Fatalf("flush the session: %v", err)
 	}
-	msg, err := heard.NextMsg(5 * time.Second)
+	// No span of its own: the delivery can come late on a loaded machine with nothing wrong.
+	msg, err := heard.NextMsgWithContext(testwait.Context(t))
 	if err != nil || msg.Subject != own {
 		t.Fatalf("the watcher heard %v (%v), want the session's own reply subject %s", msg, err, own)
 	}
 	if extra, err := heard.NextMsg(300 * time.Millisecond); err == nil {
 		t.Fatalf("the watcher heard a publish to %s, which the grant should refuse", extra.Subject)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	got := testwait.Until(t, fmt.Sprintf("the server to refuse each of %v (the last read is the refusals)", others), func() ([]string, bool) {
 		mu.Lock()
 		got := slices.Clone(refused)
 		mu.Unlock()
@@ -112,12 +115,9 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 				return strings.Contains(text, `Permissions Violation for Publish to "`+subject+`"`)
 			})
 		})
-		if len(missing) == 0 && len(got) == len(others) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server refused %v; want exactly one refusal for each of %v (missing %v)", got, others, missing)
-		}
-		time.Sleep(20 * time.Millisecond)
+		return got, len(missing) == 0
+	})
+	if len(got) != len(others) {
+		t.Fatalf("the server refused %v; want exactly one refusal for each of %v", got, others)
 	}
 }

@@ -155,6 +155,7 @@ const restingMover = "Each is a tree of its own: its own architect, or a person,
 // to rest on it and when it closes or leaves the workflow, at its start when the daemon recorded it
 // in no live tree then, and in each catch-up (k10, dispatch://INFRA-3320 R8).
 func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
+	t.Parallel()
 	t.Run("a resting root holds the sign-off until it is done, and the merge then closes the ancestor", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := testEngine(config.DesignGateRootIssues, nil)
@@ -368,7 +369,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 					t.Fatalf("the resting-root notice = %#v, want it to name P's spec at version 3 to its architect", notice)
 				}
 			}
-			want := tc.said + " Its spec step rests on the approval of LEGION-100. The sign-off and the close of LEGION-100 no longer wait for LEGION-208. " +
+			want := tc.said + " Its spec step rests on the approval of LEGION-100. The sign-off and the close of LEGION-100, and its retro where its task has no acceptance step, no longer wait for LEGION-208. " +
 				"The checks of LEGION-208 serve these requirements of LEGION-100: dispatch://LEGION-100/spec#b-p2@v3."
 			if resting[1].Reason != want {
 				t.Fatalf("the leave's resting-root reason = %q, want %q", resting[1].Reason, want)
@@ -406,7 +407,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 				t.Fatalf("resting-root notices keyed by P = %#v, want the registration's and the close's", resting)
 			}
 			want := "LEGION-208 is done. Its criteria and spec steps rest on the approval of LEGION-100. " +
-				"The sign-off and the close of LEGION-100 no longer wait for LEGION-208. " +
+				"The sign-off and the close of LEGION-100, and its retro where its task has no acceptance step, no longer wait for LEGION-208. " +
 				"The checks of LEGION-208 serve these requirements of LEGION-100: dispatch://LEGION-100/spec#b-p2@v3."
 			if closed := resting[1]; closed.Reason != want || closed.Ref != tc.ref || closed.Version != tc.version {
 				t.Fatalf("the close's resting-root notice = %#v, want %q naming %s at version %d", closed, want, tc.ref, tc.version)
@@ -454,7 +455,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		seedRecord(t, pool, func(tx pgx.Tx) error { return engine.StartArchitect(t.Context(), tx, ancestor) })
 		start := architectStartOf(t, pool, basisAncestor)
 		resting := "These roots rest on the approval of LEGION-100 and are still in the workflow: " + restingNamed + ". " +
-			"The daemon refuses the sign-off and the close of LEGION-100 while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
+			"The daemon refuses the sign-off and the close of LEGION-100, and holds its retro where its task has no acceptance step, while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
 			"Each root's own architect, or a person, moves it."
 		fresh := ArchitectStartTask(ArchitectStart{Root: ancestor, Gate: record.TreeGate{Steps: engine.GatedSteps()}})
 		if want := resting + "\n\n" + fresh; start.Task != want || start.Kept != nil || start.Entry == 0 {
@@ -466,7 +467,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		var narrowed string
 		seedRecord(t, pool, func(tx pgx.Tx) error {
 			read, err := ArchitectStartOf(t.Context(), tx, engine.store, engine.GatedSteps(), ancestor)
-			narrowed = NarrowRootTask(read, start.Entry, record.KeptDecisions{})
+			narrowed = NarrowRootTask(read, start.Entry, "")
 			return err
 		})
 		if narrowed != start.Task {
@@ -488,7 +489,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		claimReady(t, pool, engine, basisAncestor, claim.RoleArchitect, 1)
 		want := "the tree of LEGION-100 at generation 1 as the daemon records it now; start or resume it as your role says" +
 			"; resting on the approval of LEGION-100 and still in the workflow: " + restingNamed +
-			" (the daemon refuses the sign-off and the close of LEGION-100 while any of them is; each root's own architect, or a person, moves it)"
+			" (the daemon refuses the sign-off and the close of LEGION-100, and holds its retro where its task has no acceptance step, while any of them is; each root's own architect, or a person, moves it)"
 		if got := lastCatchUpReason(t, pool); got != want {
 			t.Fatalf("P's catch-up reason = %q, want %q", got, want)
 		}
@@ -502,26 +503,64 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 }
 
 // A hold refuses the sign-off and the close of a root whatever its code (acceptanceHold.refusal):
-// each hold the table names carries a text for both acts, a hold the table does not name refuses
-// both with its own code and the issues it names rather than letting either through, and no hold
-// refuses nothing.
+// each hold acceptanceHeld answers has its texts in the one table (acceptanceHolds), a refusal for
+// both acts, the words naming its issues and what its retro-held notice tells the owner, a hold the
+// table does not name refuses both with its own code and the issues it names rather than letting
+// either through, and no hold refuses nothing.
 func TestEveryAcceptanceHoldRefusesBothActs(t *testing.T) {
+	t.Parallel()
 	acts := []architectAct{actSignOff, actCloseRoot}
-	for code, texts := range acceptanceRefusals {
+	for _, code := range []string{signOffChildInWorkflow, signOffRestingRoot, signOffChildOpen} {
+		if _, named := acceptanceHolds[code]; !named {
+			t.Errorf("the hold %s has no texts in acceptanceHolds", code)
+		}
+	}
+	for code, texts := range acceptanceHolds {
 		for _, act := range acts {
-			if texts[act] == "" {
+			if texts.refusals[act] == "" {
 				t.Errorf("the hold %s has no refusal text for %s", code, act)
 			}
+		}
+		if texts.holding == "" || texts.retro == "" {
+			t.Errorf("the hold %s has the words %q naming its issues and %q for its retro-held notice, want both", code, texts.holding, texts.retro)
 		}
 	}
 	unnamed := acceptanceHold{code: "SIGNOFF_A_HOLD_NOT_IN_THE_TABLE", names: "LEGION-9"}
 	for _, act := range acts {
-		result, refuses := unnamed.refusal(act, "LEGION-8")
+		result, refuses := unnamed.refusal(act, "LEGION-8", "")
 		if !refuses || result.Refusal == nil || result.Refusal.Code != unnamed.code || !strings.Contains(result.Refusal.Message, "LEGION-9") {
 			t.Errorf("%s under a hold the table does not name = %t, %+v; want it refused with %s, naming LEGION-9", act, refuses, result.Refusal, unnamed.code)
 		}
 	}
-	if result, refuses := (acceptanceHold{}).refusal(actSignOff, "LEGION-8"); refuses || result.Refusal != nil {
+	if result, refuses := (acceptanceHold{}).refusal(actSignOff, "LEGION-8", ""); refuses || result.Refusal != nil {
 		t.Errorf("the sign-off under no hold = %t, %+v; want it not refused", refuses, result.Refusal)
+	}
+}
+
+// A sign-off's refusal over children says where a held acceptance goes back once no child is open:
+// the first step of the issue's walk after the implementer's (heldAcceptanceBack,
+// record.ReturnStep). Today's line keeps its words, testing; a walk of an implementer, a reviewer
+// and the owner's acceptance goes back to reviewing, and one of an implementer and the owner's
+// acceptance alone to accepting, the start it held, with no step named.
+func TestASignOffRefusalNamesTheStepAHeldAcceptanceGoesBackTo(t *testing.T) {
+	t.Parallel()
+	held := acceptanceHold{code: signOffChildOpen, names: "LEGION-209 (todo)"}
+	for _, tc := range []struct {
+		name string
+		w    Walk
+		says string
+	}{
+		{name: "today's line", w: todaysWalk(), says: "goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again."},
+		{name: "implementer reviewer acceptance", w: Walk{Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}},
+			says: "goes back by itself to the start it held, a held acceptance as reviewing; otherwise sign off again."},
+		{name: "implementer acceptance", w: Walk{Line: []phase.Phase{phase.Implementing, phase.Accepting, phase.Retro, phase.Merging}},
+			says: "goes back by itself to the start it held; otherwise sign off again."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, refuses := held.refusal(actSignOff, "LEGION-208", heldAcceptanceBack(tc.w))
+			if !refuses || result.Refusal == nil || !strings.Contains(result.Refusal.Message, tc.says) {
+				t.Fatalf("the sign-off's refusal = %t, %+v; want it to say %q", refuses, result.Refusal, tc.says)
+			}
+		})
 	}
 }

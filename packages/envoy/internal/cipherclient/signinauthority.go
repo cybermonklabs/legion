@@ -30,6 +30,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/ctxlock"
@@ -106,6 +107,8 @@ type SignInAuthority struct {
 	BrokerURL cipheraddr.Address
 	HTTP      *http.Client
 	Log       *slog.Logger
+	// now is the Now of each sign-in's client (Config.Now): time.Now unless a test replaces it.
+	now func() time.Time
 
 	// mu guards every member below: Current holds it from its read of held to the end of the
 	// trade that renews it, and Refused for its one check. A caller waits for it only while its
@@ -136,12 +139,12 @@ type SignInAuthority struct {
 //
 // Nobody signed in here is nil and no error, and so is a sign-in refused for good — the person
 // revoked it, or the issuer no longer honours their refresh token — which is remembered so the
-// next enrolment does not ask again. A refusal a later trade could still cure, the broker's 429
-// and a clock-skewed DPoP proof among them, is an error rather than that: remembering one of
-// those would enrol every later session under this machine for the life of the process. Every
-// other failure is an error too, which a caller must not read as "nobody is signed in": a
-// broker that did not answer says nothing about who is signed in here, and a box with two
-// sign-ins and nothing naming which is refused by name rather than acting as either
+// next enrolment does not ask again. A refusal a later trade could still cure, an outage (a 408
+// or the broker's 429) and a clock-skewed DPoP proof among them, is an error rather than that:
+// remembering one of those would enrol every later session under this machine for the life of
+// the process. Every other failure is an error too, which a caller must not read as "nobody is
+// signed in": a broker that did not answer says nothing about who is signed in here, and a box
+// with two sign-ins and nothing naming which is refused by name rather than acting as either
 // (SignInStore.Choose).
 //
 // One call at a time reads and renews the held credential, and a call that finds another doing
@@ -181,6 +184,7 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 			Session:   SessionFor(record),
 			HTTP:      a.HTTP,
 			Log:       a.Log,
+			Now:       a.now,
 		})
 		if err != nil {
 			return nil, err
@@ -188,22 +192,23 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 		a.held, a.heldFor, a.heldCredential = client, name, ""
 	}
 	token, err := a.held.Token(ctx)
-	var refusal *RefusedError
-	switch {
-	case errors.As(err, &refusal) && refusal.Permanent():
-		// A refusal a retry could cure — the broker's 429, a skewed DPoP proof — is not this
-		// sign-in ending: marking it refused on one of those would enrol every later session
-		// under this machine for the life of the process. The code is the answer's own text,
-		// so it is logged as the address lets it print (cipheraddr.Address.Words): beside an
-		// address that is not clean, whoever answers for it can write the credential the
-		// address carries into the code.
-		a.markRefused(name, record.Person, a.BrokerURL.Words(refusal.Code))
-		return nil, nil
-	case errors.Is(err, ErrSignInEnded):
-		// The issuer, not the broker, is what refused: a refresh token Google no longer
-		// honours is as final as a revoke, and asking it again at every enrolment would fail
-		// every enrolment on this box rather than fall back to the machine.
-		a.markRefused(name, record.Person, "invalid_grant")
+	if finalRefusal(err) {
+		// The sign-in is over: the broker refused it for good, or the issuer no longer honours
+		// the person's refresh token, which is as final as a revoke; asking again at every
+		// enrolment would fail every enrolment on this box rather than fall back to the machine.
+		// A refusal a retry could cure — a 408 or the broker's 429, a skewed DPoP proof, a person
+		// Dispatch holds — is not this sign-in ending: marking it refused on one of those would
+		// enrol every later session under this machine for the life of the process. A broker's
+		// code is the answer's own text, so it is logged as the address lets it print
+		// (cipheraddr.Address.Words): beside an address that is not clean, whoever answers for
+		// it can write the credential the address carries into the code. The issuer's ending
+		// carries no RefusedError, and its code is this package's own invalid_grant.
+		code := "invalid_grant"
+		var refusal *RefusedError
+		if errors.As(err, &refusal) {
+			code = a.BrokerURL.Words(refusal.Code)
+		}
+		a.markRefused(name, record.Person, code)
 		return nil, nil
 	}
 	if err != nil {
@@ -214,6 +219,23 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 	}
 	a.heldCredential = token.CredentialID
 	return &Authority{Key: a.held.Key(), CredentialID: token.CredentialID, Operator: record.Person}, nil
+}
+
+// SignedIn names the sign-in Current would act under, read from the store with no trade and no
+// wait for a trade in progress: its person, and its box key's thumbprint, which no other sign-in
+// shares, since each `agent-secrets login` makes a key of its own. Both are empty, with no error,
+// where nobody is signed in here. A store it cannot read, or two sign-ins with nothing naming
+// which, is an error, as it is for Current. A sign-in the broker has refused for good is still
+// named: it is still on the box, though Current trades it no more.
+func (a *SignInAuthority) SignedIn() (person, thumbprint string, err error) {
+	record, err := a.Store.Choose(a.Person)
+	switch {
+	case errors.Is(err, ErrNoSignIn):
+		return "", "", nil
+	case err != nil:
+		return "", "", err
+	}
+	return record.Person, record.Thumbprint, nil
 }
 
 // SignInWaitEnded says how a wait for person's sign-in on this machine, which another call holds

@@ -19,11 +19,12 @@ import (
 // row's phase with an open pull request; the move's named end is read before the fact's settle,
 // and the end the settle writes after it.
 func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	moved := 0
 	for i, row := range Table {
-		from, _, _, runs := stepOf(row.From)
+		from, _, _, runs := placeOnWalk(todaysWalk(), row.From)
 		if !runs {
 			continue
 		}
@@ -85,11 +86,12 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 // parent's wait in awaiting_children follows the step, and it runs no step of its own. With the
 // move's end named after the guard instead of before it, every one of these steps ends stopped.
 func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	held := 0
 	for i, row := range Table {
-		from, _, _, runs := stepOf(row.From)
+		from, _, _, runs := placeOnWalk(todaysWalk(), row.From)
 		if !runs {
 			continue
 		}
@@ -139,6 +141,7 @@ func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
 // linger's deadline ends the merge stopped. Only a fence of this tree at the generation of the
 // linger the merge waits in keeps the merge open (mergeCanLand).
 func TestAnUnmergedCloseEndsAMergeWhoseFenceIsAnEarlierLingers(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Reviewing)
 	root.Generation = 2

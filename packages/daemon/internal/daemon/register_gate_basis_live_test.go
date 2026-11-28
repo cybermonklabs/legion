@@ -139,6 +139,9 @@ var registerGateSent = []string{"POST /legion/v1/grants", "POST /legion/v1/gates
 // TestRegisterGateBasisToolLive drives the proof's steps against one booted daemon and one
 // Dispatch; across projects, two more.
 func TestRegisterGateBasisToolLive(t *testing.T) {
+	// Not parallel: a live proof whose daemon and scratch Dispatch run on the one NATS server
+	// LEGION_E2E_NATS_URL names, and which writes the file LEGION_E2E_DAEMON_LOG names and the
+	// dispatch.log beside it, which a proof beside it would share.
 	r := newRegisterGateBasisLive(t)
 	r.step("world", "P is approved with requirement blocks, and R is a view under it", r.world)
 	r.step("registration", "the tool registers R's spec step on P's approval, and the daemon records the basis", r.registers)
@@ -315,7 +318,7 @@ func (r *registerGateBasisLive) world() {
 	} else {
 		r.linkUnder(r.root, r.parent, false)
 	}
-	r.writeDocument(r.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(r.parent.Key, "p2")}}))
+	r.writeDocument(r.root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(r.parent.Key, "p2")}}))
 	if r.across {
 		r.quiet(r.root.Key)
 	} else {
@@ -414,7 +417,7 @@ func (r *registerGateBasisLive) opensAtTheTick() {
 	root := r.create(asSession, "Tidal gauge calibration", map[string]any{"labels": []string{"legion"}})
 	r.admit(root.Key)
 	r.setUnder(root, ancestor)
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(ancestor.Key, "q1")}}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(ancestor.Key, "q1")}}))
 	r.quiet(root.Key)
 	r.note("R2 = %s under P2 = %s, whose approval request %s of version 1 of its primary document %s is open on the person; R2's one check serves %s",
 		root.Key, ancestor.Key, ask, ancestor.PrimaryArtifactID, specBlock(ancestor.Key, "q1"))
@@ -480,7 +483,7 @@ func (r *registerGateBasisLive) refusedOnAnAcceptedBasis() {
 	root := r.create(asSession, "Buoy maintenance roster", map[string]any{"labels": []string{"legion"}})
 	r.admit(root.Key)
 	r.setUnder(root, ancestor)
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(ancestor.Key, "u1")}}))
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(ancestor.Key, "u1")}}))
 	r.quiet(root.Key)
 	r.note("P3 = %s: the person approved version %d of its primary document %s, and Dispatch shows it %s; R3 = %s under it, whose one check serves %s",
 		ancestor.Key, approved, ancestor.PrimaryArtifactID, r.issue(ancestor.Key).Status, root.Key, specBlock(ancestor.Key, "u1"))

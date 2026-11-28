@@ -58,7 +58,7 @@
 -- the work the entry was raised with, and not the task and reason of a retry that release made,
 -- which it kept on the queued start row and the claim's pending delivery, neither of which the
 -- stop reads. It stored the reviewer's entry_task with the round's two sentences, so the
--- reviewer's hold is its resume task (workflow's ResumePhaseTask), which carries neither, and the
+-- reviewer's hold is its resume task (workflow's resumeText), which carries neither, and the
 -- return names the round once; so is the hold of a row whose entry_task a clear emptied. An
 -- earlier release names the three columns in no statement: its inserts leave them '', 0 and 0,
 -- and its upserts leave them as they are. So an entry it raises leaves entry_given_entry at an

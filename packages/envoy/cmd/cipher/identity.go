@@ -266,9 +266,10 @@ func helperInstalled() bool {
 
 // cmdIdentity implements "identity": exit 0 when this process has a broker identity, 1 when it
 // does not, without the network and without changing anything. It never prints to stdout, so a
-// caller can put it in front of a command whose stdout is the caller's own (dotfiles'
-// secret-run, legion's envoy scripts), and it never registers anything: `register` from an
-// unregistered process would create a session, and self or whoami would ask the broker.
+// caller can put it in front of a command whose stdout is the caller's own (a wrapper that picks
+// its secrets store by the answer, legion's envoy scripts), and it never registers anything:
+// `register` from an unregistered process would create a session, and self or whoami would ask
+// the broker.
 //
 // A process has an identity when its key dir holds a launcher's key.pem (one with no
 // machine-session marker beside it, which a client before #4143 left for a machine's own
@@ -341,7 +342,7 @@ func identitySource(stdout, stderr io.Writer) int {
 	}
 	dir := keyDir()
 	awaitEnrollment(stderr, dir, wait)
-	name, detail, err := describeSource(dir)
+	name, detail, err := describeSource(dir, stderr)
 	if err != nil {
 		reportError(stderr, "agent-secrets identity", err)
 		return 1

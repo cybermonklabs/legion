@@ -2,7 +2,7 @@
 // constants a statement is assembled from, and the text of such a statement. It carries no
 // build tag and declares no test of its own, and each of those is deliberate.
 //
-// No tag, because its callers are on both sides of one. The eight static guards, and
+// No tag, because its callers are on both sides of one. The nine static guards, and
 // one_expression_guard_test.go beside them, carry `//go:build !race` for what that saves the
 // race job (lock_level_test.go's header says what), while two tests of this package use its
 // declarations untagged and run in the race job: ask_asked_of_test.go:480 normalises a
@@ -12,7 +12,7 @@
 // build and the package's test binary stops compiling.
 //
 // No test, because a test declared here would run wherever this file compiles - the race job
-// included - and the seventeen tests of those nine files are the text-check job's to run, once
+// included - and the twenty-two tests of those ten files are the text-check job's to run, once
 // each. What an untagged file of declarations costs the race build is its compile and the one
 // walk the census asks of it: nothing here walks or parses anything until a test calls it.
 
@@ -51,7 +51,7 @@ type moduleSource struct {
 const moduleRoot = "../../.."
 
 // sharedModuleSources is the module's parsed source, walked once per test binary: five of this
-// package's eight guards and one_expression_guard_test.go read the same files, and the text-check
+// package's nine guards and one_expression_guard_test.go read the same files, and the text-check
 // job's step runs all six in one go test. In the race build its one caller is the item-writer
 // census, which carries no tag. A failed walk's error is kept and reported by each test that asks
 // for the sources, as the copy-lock guard's graph is.

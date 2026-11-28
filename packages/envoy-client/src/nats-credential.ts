@@ -15,10 +15,13 @@
 
 import type { BrokerEnvironment } from "@legion/cipher-client/environment";
 import { SIGNIN_COMMAND } from "@legion/cipher-client/signins";
-import { DEFAULT_RENEW_BEFORE_MS } from "@legion/cipher-client/token-client";
+import { DEFAULT_RENEW_BEFORE_MS, renewalAt } from "@legion/cipher-client/token-client";
 import {
   BrokerRefusedError,
   BrokerTradeFailedError,
+  DeviceLoginEndedError,
+  DeviceLoginReplacedError,
+  isFinalRefusal,
   RegistrationPendingError,
   SignInEndedError,
   TokenClientClosedError,
@@ -184,7 +187,10 @@ function tradeUnanswered(source: string, deadlineMs: number): string {
  * pending (`RegistrationPendingError`, `TradeRetryingError`); a trade that got no answer, or an
  * answer that is not the grant's, is cipher-client's own text, which names the broker as
  * `urlForText` does and the failure by its class (`BrokerTradeFailedError`); a closed client is
- * its own words (`TokenClientClosedError`); an ended sign-in is its remedy; and any other failure
+ * its own words (`TokenClientClosedError`); an ended sign-in is its remedy; a device login the
+ * broker ended, or one another `dispatch login --device` replaced in its file, is cipher-client's
+ * own words with its cure (`DeviceLoginEndedError`, `DeviceLoginReplacedError`), which name the
+ * login and its file as fixed text and a command, and nothing the file holds; and any other failure
  * goes by `natsFailureReason`'s allowlist, which prints this package's own reasons
  * (`LoggableError`) whole, since any other text is the runtime's or the transport's, which quotes
  * what it was handed.
@@ -203,6 +209,8 @@ export function tradeFailureReason(error: unknown): string {
   if (error instanceof TokenClientClosedError) return error.message;
   if (error instanceof SignInEndedError)
     return `the issuer no longer honours the sign-in on this machine; run: ${SIGNIN_COMMAND}`;
+  if (error instanceof DeviceLoginEndedError) return scrub(error.message);
+  if (error instanceof DeviceLoginReplacedError) return scrub(error.message);
   return natsFailureReason(error);
 }
 
@@ -385,9 +393,6 @@ export function brokerNatsCredential(
   };
 }
 
-/** The least the keeper waits between two renewals, where the token in hand lives long enough for
- *  it: the wait is never longer than half the token's remaining life. */
-const RENEW_FLOOR_MS = 1_000;
 /** The keeper's retry after a renewal that landed no new token: doubling from the first to the
  *  last. */
 const RETRY_FIRST_MS = 2_000;
@@ -488,34 +493,47 @@ export function brokerTokenRefusals(token: RefusalCountedToken): {
   };
 }
 
-function warnedEvery(warn: (text: string) => void): {
+/**
+ * A warning given once, then again only every `WARN_AGAIN_MS` while its cause lasts, until
+ * `reset`. With `newTextAtOnce`, a text other than the last one warned is warned at once, and only
+ * a repeat of that same text waits out the half hour. Only the keeper's warning of a refusal no
+ * trade cures sets it: each such refusal's text is fixed and names its cure, and one cure can bring
+ * another (an ended device login's command writes a new key, which this process then refuses as
+ * replaced), which must not wait behind the first. The other warners leave it unset, since a
+ * transient failure's text changes at every retry (its counts and its seconds), and comparing it
+ * would warn at every retry.
+ */
+function warnedEvery(
+  warn: (text: string) => void,
+  options: { readonly newTextAtOnce?: boolean } = {}
+): {
   readonly warn: (text: string) => void;
   readonly reset: () => void;
 } {
   let warnedAt: number | undefined;
+  let warnedText: string | undefined;
   return {
     warn: (text) => {
       const now = Date.now();
-      if (warnedAt !== undefined && now - warnedAt < WARN_AGAIN_MS) return;
+      const held = options.newTextAtOnce !== true || text === warnedText;
+      if (held && warnedAt !== undefined && now - warnedAt < WARN_AGAIN_MS) return;
       warnedAt = now;
+      warnedText = text;
       warn(text);
     },
     reset: () => {
       warnedAt = undefined;
+      warnedText = undefined;
     },
   };
 }
 
-/** How long after `now` the keeper renews a token that lapses at `expiry`: the token client's
- *  window ahead of it (`DEFAULT_RENEW_BEFORE_MS`, inside which it trades), or halfway there for
- *  a token that lives less than twice that window; at least `RENEW_FLOOR_MS`, unless that is
- *  past half the token's remaining life (the broker allows one-second tokens), and at once for a
- *  token already lapsed. */
+/** How long after `now` the keeper renews a token that lapses at `expiry`: the token client's own
+ *  renewal moment as of `now` (`renewalAt` under its window, `DEFAULT_RENEW_BEFORE_MS`), which
+ *  comes no sooner than that client trades again, so the renewal lands a new token rather than the
+ *  one in hand; at once for a token already lapsed. */
 function renewDelay(expiry: number, now: number): number {
-  const remaining = expiry - now;
-  if (remaining <= 0) return 0;
-  const ahead = remaining - Math.min(DEFAULT_RENEW_BEFORE_MS, remaining / 2);
-  return Math.max(Math.min(RENEW_FLOOR_MS, remaining / 2), ahead);
+  return renewalAt(expiry, now, DEFAULT_RENEW_BEFORE_MS) - now;
 }
 
 /**
@@ -526,7 +544,14 @@ function renewDelay(expiry: number, now: number): number {
  * failure), is retried at 2 s doubling to a minute, and `warn` is told once, naming why, and again
  * every 30 minutes while it lasts; the token is never named. The connection keeps reconnecting on
  * its own meanwhile (`ignoreAuthErrorAbort`), and the authenticator starts a trade of its own at
- * each CONNECT it cannot sign, so the first live token admits it again.
+ * each CONNECT it cannot sign, so the first live token admits it again. A renewal refused in a way
+ * no trade cures (`isFinalRefusal`) is warned of on a cadence of its own, so a transient failure
+ * warned of just before does not hold its cure back, and a refusal whose text differs from the
+ * last one it warned of, the next cure after one already carried out, is warned of at once; its
+ * warning says that no renewal cures it and that, once the token in hand lapses, the server
+ * refuses each redial while the refusal lasts, rather than that the connection reconnects once a
+ * token is live. Such a renewal keeps the same retry schedule, which the token client answers as
+ * its own back-off allows (`token-client.ts`).
  *
  * It reads the connection's status too. A server that refuses the live token in hand
  * (`AUTHORIZATION_VIOLATION`, `AUTHENTICATION_EXPIRED`) is told to `warn` at once, naming the
@@ -541,7 +566,8 @@ function renewDelay(expiry: number, now: number): number {
  * connection is about to move off, is the renewal's to cure.
  *
  * Returns the function that stops it, its status reader included; the connection closing stops
- * it too.
+ * it too. A stopped keeper warns of nothing and renews nothing more, also where a renewal in
+ * flight at the stop fails after it.
  */
 export function keepNatsCredential(
   connection: Pick<NatsConnection, "reconnect" | "isClosed" | "closed" | "status">,
@@ -558,6 +584,13 @@ export function keepNatsCredential(
     warn(
       `the NATS connection's broker token ${why}; it is tried again, and the connection reconnects once a token is live`
     )
+  );
+  const ended = warnedEvery(
+    (why) =>
+      warn(
+        `the NATS connection's broker token ${why}; no renewal cures it, so once the token in hand lapses the NATS server refuses each redial of the connection while the refusal lasts`
+      ),
+    { newTextAtOnce: true }
   );
   const refusal = warnedEvery(warn);
   // nats.js's status() is a QueuedIterator, which has a stop() its declared type leaves out.
@@ -587,13 +620,18 @@ export function keepNatsCredential(
       if (stopped) return;
       if (credential.needsReconnect()) await connection.reconnect();
     } catch (error) {
+      // A keeper stopped while its renewal was in flight warns nothing and arms nothing, as its
+      // status reader does: its session stops or its connection closed, and neither renews again.
+      if (stopped) return;
       // The host moved to another session meanwhile: that session's renewal is the one that
       // counts, so the keeper renews again at once, for it, and has nothing to warn of.
       if (error instanceof SessionMovedError) {
         schedule(0);
         return;
       }
-      renewal.warn(`could not be renewed (${tradeFailureReason(error)})`);
+      (isFinalRefusal(error) ? ended : renewal).warn(
+        `could not be renewed (${tradeFailureReason(error)})`
+      );
       retry();
       return;
     }
@@ -608,6 +646,7 @@ export function keepNatsCredential(
     }
     retries = 0;
     renewal.reset();
+    ended.reset();
     schedule(renewDelay(credential.expiresAt().getTime(), Date.now()));
   };
   const tick = async () => {

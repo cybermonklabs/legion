@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -21,9 +22,7 @@ import (
 // ReturnFromChildren), which the API's harness has no admission pass to call.
 func inEngineFact(t *testing.T, h *harness, engine *workflow.Engine, fn func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
-	ctx, committed := intake.WithCommitHooks(context.Background())
-	ctx = engine.OpenFact(ctx)
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(engine.OpenFact(context.Background()), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := fn(ctx, tx); err != nil {
 			return err
 		}
@@ -31,7 +30,6 @@ func inEngineFact(t *testing.T, h *harness, engine *workflow.Engine, fn func(ctx
 	}); err != nil {
 		t.Fatalf("the engine's move: %v", err)
 	}
-	committed()
 }
 
 // The completion route's side of a parent's wait on its children (dispatch://INFRA-3320 R10 and
@@ -62,7 +60,7 @@ func staleTesterCompletionAfterTheReturn(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: parent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: parent,
 		Project: testProject, Title: parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: parent, Repo: "acme/widgets",
 			Number: 42, Branch: "legion/" + parent, HeadSHA: headSHA, CheckedHead: headSHA, Failing: []string{}})
 	}); err != nil {

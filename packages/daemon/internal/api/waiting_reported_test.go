@@ -67,6 +67,11 @@ func (s projectedSource) State(ctx context.Context, tx pgx.Tx) (api.State, []sup
 	return state, nil, err
 }
 
+func (s projectedSource) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: s.records, Project: waitProject, Steps: s.steps, Now: waitNow})
+	return observed, nil, err
+}
+
 // waitingStore is a migrated database of this package's template, with the records store and the
 // design-gate steps the deployment gates.
 func waitingStore(t *testing.T) (*store.Store, record.Store, []record.DesignStep) {
@@ -79,7 +84,7 @@ func waitingStore(t *testing.T) (*store.Store, record.Store, []record.DesignStep
 func seedWaitIssue(t *testing.T, st *store.Store, records record.Store, issue record.Issue, lifecycle bool) {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -101,7 +106,7 @@ func seedWaitIssue(t *testing.T, st *store.Store, records record.Store, issue re
 func seedWaitSlot(t *testing.T, st *store.Store, records record.Store, key string, index int) {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: index, AdmittedAt: waitNow})
 	}); err != nil {
 		t.Fatalf("seed the slot of %s: %v", key, err)
@@ -113,7 +118,7 @@ func seedWaitSlot(t *testing.T, st *store.Store, records record.Store, key strin
 func seedWaitMirror(t *testing.T, st *store.Store, records record.Store, key, status, parent string, waits ...string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: waitProject, Seq: 1,
 			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry(waits)})
 	}); err != nil {
@@ -185,12 +190,13 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		{key: queuedRoot, stands: phase.Admitted, status: "todo", tree: queuedRoot},
 		// The live tree the held child belongs to, and the child itself, held at admitted by a
 		// link: a child the workflow holds is out of the line altogether. The root was started in
-		// a phase short of its review, holding the row it was started with (record.KeepsSlot), and
-		// the held child is an open Dispatch child of it, so the admission pass stops that phase
-		// and the root waits in awaiting_children, holding no row (dispatch://INFRA-3320 R9, R11).
-		// A phase R9 does not reach would not keep this case: a root past its review holds no row
-		// either, and admission.active below lists the issues holding one, so the root is asserted
-		// as R9 makes it rather than moved past its review.
+		// implementing, a phase that keeps a slot, holding the row it was started with
+		// (record.KeepsSlot), and the held child is an open Dispatch child of it, so the admission
+		// pass stops that phase and the root waits in awaiting_children, holding no row
+		// (dispatch://INFRA-3320 R9, R11). A phase R9 does not reach would not keep this case: a
+		// root in retro or merging holds no row either, and admission.active below lists the
+		// issues holding one, so the root is asserted as R9 makes it rather than moved into one of
+		// them.
 		{key: treeRoot, stands: phase.Implementing, status: "in_progress", tree: treeRoot, slotted: true},
 		{key: heldChild, stands: phase.Admitted, status: "in_progress", tree: treeRoot, parent: treeRoot},
 		// An issue a person moved out of the workflow, and one at work waiting on nothing.
@@ -211,7 +217,7 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	}
 	// The design gate of the started root, opened: its architect has handed the work on, so its
 	// own first phase is what the open child holds.
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		approved := 1
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: startedChild, ArtifactID: "artifact-211",
 			LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true})
@@ -238,8 +244,9 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		t.Fatalf("run an admission pass: %v", err)
 	}
 
+	// The state route answers from the store's pool, as the daemon's server does.
 	server := api.NewServer("127.0.0.1", 8437, api.Options{
-		Steps: steps, State: projectedSource{records: records, steps: steps}, StateTransactions: st,
+		Steps: steps, State: projectedSource{records: records, steps: steps}, Pool: st.Pool(), StateTransactions: st.Pool(),
 	})
 	request := httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil)
 	recorder := httptest.NewRecorder()
@@ -255,8 +262,10 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	if err := json.Unmarshal(body, &served); err != nil {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
-	if got, want := slices.Sorted(maps.Keys(served.Admission)), []string{"active", "blocked", "cap", "held", "trees", "waiting"}; !slices.Equal(got, want) {
-		t.Fatalf("the admission object carries %v, want %v: a reader of the state reads the object it read before the change", got, want)
+	// The projection gives `p0Holders` on every state (the P0 start's entry); `p0Bound` is the daemon's
+	// source's, which this test's source is not.
+	if got, want := slices.Sorted(maps.Keys(served.Admission)), []string{"active", "blocked", "cap", "held", "p0Holders", "trees", "waiting"}; !slices.Equal(got, want) {
+		t.Fatalf("the admission object carries %v, want %v: a reader of the state reads the object it read before the change, and the P0 holders", got, want)
 	}
 
 	var state api.State

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
@@ -77,10 +78,11 @@ func ValidID(id string) bool {
 
 // CanonicalLogin trims the name Dispatch signs a person in with, their email (a record created
 // before people were named by email keeps the GitHub login it was decided under), and lowers its
-// ASCII letters (fold.ASCII) and nothing else. Every login comparison in the module goes through
-// this form on both sides.
+// ASCII letters and nothing else: fold.Login, the one spelling of that rule, which Dispatch's
+// model.CanonicalLogin reads too. Every login comparison in the module goes through this form on
+// both sides.
 func CanonicalLogin(login string) string {
-	return fold.ASCII(strings.TrimSpace(login))
+	return fold.Login(login)
 }
 
 // HumanActor is the audit actor of a change a person made: "human:" and their canonical login,
@@ -102,8 +104,8 @@ const judgePrefix = "judge:"
 
 // JudgeActor is the audit actor of a decision the model judge made: "judge:" and the id of the
 // model that decided it, which is what the audit row names in place of a person. It is no
-// person's login: a judge's approval is the broker's own, taken inside the bound the airlock
-// rules allow the judge, and the person who would otherwise have decided is named nowhere in it.
+// person's login: a judge's approval is the broker's own, taken inside the bound the key's judge
+// tag gives the judge, and the person who would otherwise have decided is named nowhere in it.
 func JudgeActor(modelID string) string {
 	return judgePrefix + modelID
 }
@@ -276,6 +278,92 @@ func validateLocations(locations []string) error {
 		return fmt.Errorf("locations mix the account form %s<account> with other entries", gitHubLocationPrefix)
 	}
 	return nil
+}
+
+// TargetLocations reads the targets a run names for its secrets, each ACCOUNT or
+// ACCOUNT/REPOSITORY as a person types it, as the locations of the request's one detail: the
+// account lowered (fold.ASCII), since a caller passes a login in whatever case GitHub gives it,
+// then each location held to parseLocation, the rule the broker reads it by; the locations
+// sorted, as Target sorts a record's repositories, and each once, so two runs of one target sign
+// the same locations and match the same grant. It answers nil for no target. Each refusal names
+// the rule a target breaks: the account or the repository a location cannot hold, a target
+// narrows one secret, all targets name one account, the account form stands alone, and there are
+// at most MaxTargetLocations once each is folded. A value a location cannot hold is not printed,
+// since a value in the wrong flag may be a pasted credential; the accounts and repositories the
+// other refusals name have passed GitHub's rules first.
+func TargetLocations(names, targets []string) ([]string, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	if len(names) != 1 {
+		return nil, fmt.Errorf("--target narrows a run of one secret name, and this run names %d: %s", len(names), strings.Join(names, ", "))
+	}
+	var account string
+	accountForm := false
+	locations := make([]string, 0, len(targets))
+	for i, target := range targets {
+		owner, repository, named := githubname.SplitEntry(target)
+		owner = fold.ASCII(owner)
+		location := gitHubLocationPrefix + owner
+		if named {
+			location = gitHubLocationPrefix + githubname.Entry(owner, repository)
+		}
+		_, _, ok := parseLocation(location)
+		switch {
+		case !ok && !githubname.ValidLogin(owner):
+			return nil, errors.New("--target names no GitHub login as its account: 1 to 39 letters, digits, '-' and '_', the first a letter or a digit (the value is not printed)")
+		case !ok:
+			return nil, errors.New("--target names no repository name GitHub can hold: 1 to 100 letters, digits, '.', '-' and '_', neither . nor .. (the value is not printed)")
+		case i > 0 && owner != account:
+			return nil, fmt.Errorf("--target names two accounts, %s and %s: all targets of one run name one account", account, owner)
+		}
+		account = owner
+		accountForm = accountForm || !named
+		locations = append(locations, location)
+	}
+	slices.Sort(locations)
+	locations = slices.Compact(locations)
+	if accountForm && len(locations) > 1 {
+		return nil, fmt.Errorf("--target mixes the account form %s with repository forms of it: give ACCOUNT alone, or ACCOUNT/REPOSITORY for each repository", account)
+	}
+	if len(locations) > MaxTargetLocations {
+		return nil, fmt.Errorf("--target names %d targets, more than %d", len(locations), MaxTargetLocations)
+	}
+	return locations, nil
+}
+
+// SecretDetails is the authorization_details of a request for names: one agent_secret detail
+// for each name, to inject, and locations, the target TargetLocations read, on the first, nil
+// for none. Every signer of a session's request builds its details here, so each carries the
+// target the same way.
+func SecretDetails(names, locations []string) []AuthorizationDetail {
+	details := make([]AuthorizationDetail, len(names))
+	for i, name := range names {
+		details[i] = AuthorizationDetail{Type: KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
+	}
+	if len(details) > 0 {
+		details[0].Locations = locations
+	}
+	return details
+}
+
+// SignedLocations is the locations of the one detail the request object compact signs, nil when
+// it signs none or more than one detail. It reads them without checking the signature or any
+// claim, so it serves a signer's check of an object another process signed for it to send,
+// never a decision about the request.
+func SignedLocations(compact string) ([]string, error) {
+	sig, err := jose.ParseSigned(compact, []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		return nil, fmt.Errorf("not an ES256 JWS: %w", err)
+	}
+	var c requestClaims
+	if err := json.Unmarshal(sig.UnsafePayloadWithoutVerification(), &c); err != nil {
+		return nil, fmt.Errorf("decode the request object: %w", err)
+	}
+	if len(c.AuthorizationDetails) != 1 {
+		return nil, nil
+	}
+	return c.AuthorizationDetails[0].Locations, nil
 }
 
 // RequestObject is the verified claims of a credential-request object plus the verbatim compact
@@ -488,6 +576,11 @@ func validateDetails(details []AuthorizationDetail) error {
 	if len(d.Locations) > 0 {
 		return errors.New("a launcher_credential detail carries no locations")
 	}
+	for i, action := range d.Actions {
+		if action == "" || i > 0 && action <= d.Actions[i-1] {
+			return errors.New("launcher_credential actions are sorted, unique, non-empty words")
+		}
+	}
 	return nil
 }
 
@@ -497,8 +590,10 @@ func validateDetails(details []AuthorizationDetail) error {
 // records with nobody to refuse it to is held to the same rules by Sanitize, which drops those
 // runes and cuts the rest: what a model judge wrote (judge/model.go, judge/judge.go) and the
 // reason a session's call gave a release (requests.callReasonOf). One definition here keeps a
-// reason a person reads in the grant log and a reason a requester signed to one rule.
-const MaxReasonRunes = 400
+// reason a person reads in the grant log and a reason a requester signed to one rule. It is
+// contracts.BrokerRequestReasonMax, generated from BROKER_REQUEST_REASON_MAX in
+// packages/contracts, so each client's check before it asks holds the bound this refusal does.
+const MaxReasonRunes = contracts.BrokerRequestReasonMax
 
 // ReasonRefuses reports whether r is a rune no reason may carry.
 func ReasonRefuses(r rune) bool {
@@ -823,34 +918,56 @@ func MayDecide(kind, approver, service, login string, groups Groups) bool {
 }
 
 // ErrNotJudgeable is wrapped around every reason the model judge may not decide a record: the
-// request names other than one agent secret, the airlock rules allow the judge no lifetime for
-// that secret or less than the record asks for, or the request's signed reason names no Dispatch
-// issue. A caller that only asks "is this the judge's to decide" collapses them with
-// errors.Is(err, ErrNotJudgeable); one that must say why keeps the wrapped reason.
+// request names other than agent secrets, a key the judge decided carries no judge tag or one
+// that gives the judge less than the record asks for, or the record names no lifetime. A caller
+// that only asks "is this the judge's to decide" collapses them with errors.Is(err,
+// ErrNotJudgeable); one that must say why keeps the wrapped reason.
 var ErrNotJudgeable = errors.New("not a request the model judge may decide")
 
-// JudgeAllowsLifetime reports whether a signed lifetime in seconds is within the seconds the
-// airlock rules give the judge for one secret, which proxyrules.Rules.JudgeSeconds answers as
-// bound. It is the one comparison three callers make — the judge's own check before the model
+// JudgeTagRefusal is MayJudge's refusal of a record because a key the judge decided is one its
+// judge tag does not admit now: the key carries no judge tag (Tagged false), or the tag gives the
+// judge fewer seconds (Bound) than the record's lifetime (Lifetime). It wraps ErrNotJudgeable. A
+// release that meets it on a grant the judge made ends that grant for good (requests'
+// endJudgedGrant), as a lowered max-grant does: putting the tag back must not revive a grant the
+// tag stopped admitting.
+type JudgeTagRefusal struct {
+	Name     string
+	Tagged   bool
+	Bound    uint32
+	Lifetime int
+}
+
+func (e JudgeTagRefusal) Error() string {
+	if !e.Tagged {
+		return fmt.Sprintf("%s: %q carries no judge tag, so the judge decides nothing of it", ErrNotJudgeable, e.Name)
+	}
+	return fmt.Sprintf("%s: the record asks for %d seconds of %q, past the %d its judge tag lets the judge decide", ErrNotJudgeable, e.Lifetime, e.Name, e.Bound)
+}
+
+func (e JudgeTagRefusal) Unwrap() error { return ErrNotJudgeable }
+
+// JudgeAllowsLifetime reports whether a signed lifetime in seconds is within the seconds a key's
+// judge tag gives the judge, which policy.Set.JudgeSeconds answers as bound. It is the one
+// comparison three callers make — the judge's own check before the model
 // (judge.lifetimeAllowed), MayJudge below, which holds a judged approval at decision time and
-// again on every release, and requests.judgeStillDecides, which re-reads the rules for a grant
+// again on every release, and requests.judgeStillDecides, which re-reads the tag for a grant
 // already made — and it is written once here, so a judge that approves and a state machine
 // that then refuses cannot drift apart. Each caller keeps its own refusal wording, which is
 // what a person reads; only the comparison is shared.
 //
-// It lives in this package rather than beside JudgeSeconds in proxyrules because MayJudge must
-// reach it and this package must not import proxyrules; the other two callers already import
-// this one. Both sides are widened to int64, the bound being a uint32 and the lifetime an int,
-// so neither is ever cut to the other's range.
+// It lives in this package rather than beside JudgeSeconds in policy because MayJudge must reach
+// it and this package must not import policy; the other two callers already import this one.
+// Both sides are widened to int64, the bound being a uint32 and the lifetime an int, so neither
+// is ever cut to the other's range.
 func JudgeAllowsLifetime(bound uint32, lifetimeSeconds int) bool {
 	return int64(lifetimeSeconds) <= int64(bound)
 }
 
-// MayJudge reports whether the model judge may grant this record at all: the airlock rules' own
-// bound on what a judge decides, read here so one rule answers for every caller. The record names
-// agent secrets alone; every key the judge decided is one the rules give the judge seconds of;
-// and the lifetime is within every one of those seconds. The error names the first that does
-// not hold. What the reason says is the judge's to read against each key's guidance, and no
+// MayJudge reports whether the model judge may grant this record at all: the bound the keys'
+// judge tags put on what a judge decides, read here so one rule answers for every caller. The
+// record names agent secrets alone; every key the judge decided carries a judge tag; and the
+// lifetime is within every one of those tags' seconds. The error names the first that does not
+// hold. What the reason says is the judge's to read against each key's guidance, and no
 // condition of this.
 //
 // decided answers which of the record's keys needed a decision when the request was written —
@@ -859,11 +976,10 @@ func JudgeAllowsLifetime(bound uint32, lifetimeSeconds int) bool {
 // nothing of it. A record none of whose keys needed a decision is no record the judge decided. A
 // nil decided is every key decided.
 //
-// judgeSeconds is the rules file's answer for one secret (proxyrules.Rules.JudgeSeconds); both
-// funcs are injected because this package must not import proxyrules or read the request rows. A
-// nil judgeSeconds is no bound at all and refuses, as a record with no lifetime does: an
-// unbounded grant is exactly what the judge's seconds are there to bound, so nothing the rules
-// say can admit it.
+// judgeSeconds is the live policy's answer for one secret (policy.Set.JudgeSeconds); both funcs
+// are injected because this package must not import policy or read the request rows. A nil
+// judgeSeconds is no bound at all and refuses, as a record with no lifetime does: an unbounded
+// grant is exactly what the judge's seconds are there to bound, so no tag can admit it.
 func MayJudge(body Body, obj RequestObject, judgeSeconds func(secret string) (uint32, bool), decided func(secret string) bool) error {
 	if len(obj.Details) == 0 {
 		return fmt.Errorf("%w: the request names no authorization detail", ErrNotJudgeable)
@@ -887,10 +1003,10 @@ func MayJudge(body Body, obj RequestObject, judgeSeconds func(secret string) (ui
 		judged++
 		bound, ok := judgeSeconds(d.Identifier)
 		if !ok {
-			return fmt.Errorf("%w: the rules let the judge decide nothing for %q", ErrNotJudgeable, d.Identifier)
+			return JudgeTagRefusal{Name: d.Identifier}
 		}
 		if !JudgeAllowsLifetime(bound, *body.LifetimeSeconds) {
-			return fmt.Errorf("%w: the record asks for %d seconds of %q, past the %d the rules let the judge decide", ErrNotJudgeable, *body.LifetimeSeconds, d.Identifier, bound)
+			return JudgeTagRefusal{Name: d.Identifier, Tagged: true, Bound: bound, Lifetime: *body.LifetimeSeconds}
 		}
 	}
 	if judged == 0 {
@@ -944,9 +1060,11 @@ func ReasonProjects(reason string) []string {
 
 // CheckReasonProjects refuses, as ErrRequestInvalid, the reason of a request being created whose
 // issue keys name more than MaxReasonProjects projects (ReasonProjects). It is a rule for a new
-// request alone — requests.Machine.Create and the machine login's creation call it — and never
-// part of VerifyRequestObject, so a request stored before the rule keeps verifying wherever it is
-// read again.
+// request alone, on a broker that holds a project-access client — requests.Machine.Create and the
+// machine login's creation call it there, and a broker with none, which reads no reason's
+// projects, takes any reason — and never part of VerifyRequestObject, so a request stored before
+// the rule, or by a broker with no such client, keeps verifying wherever it is read again, and its
+// reader asks Dispatch about every project it names (requests.Machine.maySee).
 func CheckReasonProjects(reason string) error {
 	if n := len(ReasonProjects(reason)); n > MaxReasonProjects {
 		return fmt.Errorf("%w: the reason names issue keys of %d projects; a request may name at most %d", ErrRequestInvalid, n, MaxReasonProjects)

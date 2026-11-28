@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,15 +23,17 @@ const liveRepo = "acme/widgets"
 
 // liveDispatch is workflowConfig's Dispatch stand-in — the calls every boot makes and an empty
 // issue list — grown into the board the daemon reads and writes: it holds each issue's status, parent and
-// labels, as Dispatch's own board does, answers the issue reads the daemon makes (the outbox's
+// labels, and the priorities of an issue a test gives them (prioritize), as Dispatch's own board does,
+// answers the issue reads the daemon makes (the outbox's
 // before a status write, a release's walk up an issue's parent chain, an event's walk up its
 // Dispatch chain to the top) and 404s an issue it does not hold, records every status and message
 // the daemon posted, so a step can read back what the daemon told Dispatch and tell a write that
 // never came from one it cannot see, serves the handoff records a step seeds (handoff), which a
 // phase completion names and the daemon reads back, and takes the record of each step the daemon
-// writes (putStep), the rating a retro gave the plan (putRating) and the plan of each run (putPlan)
-// from the daemon's own session alone, as Dispatch's routes take them, and refuses a write whose id
-// names another issue's record or plan 409 STEP_OTHER_ISSUE or PLAN_OTHER_ISSUE, as Dispatch's store
+// writes (putStep), the rating a retro gave the plan (putRating), the experiment and the variant of
+// the record's issue (putExperiment) and the plan of each run (putPlan) from the daemon's own
+// session alone, as Dispatch's routes take them, and refuses a write whose id names another issue's
+// record or plan 409 STEP_OTHER_ISSUE or PLAN_OTHER_ISSUE, as Dispatch's store
 // does, keeping nothing of it. Anything else is a call a live proof does not expect, and fails the
 // test as workflowConfig's stand-in does.
 type liveDispatch struct {
@@ -57,11 +60,33 @@ type liveDispatch struct {
 	plans map[string]map[string]any
 }
 
-// liveDispatchIssue is one issue as the board holds it: its status, its parent ("" for none), and
-// whether it is handed to Legion, which its labels say.
+// liveDispatchIssue is one issue as the board holds it: its status, its parent ("" for none),
+// whether it is handed to Legion, which its labels say, and its priorities, nil for an issue the
+// test gave none.
 type liveDispatchIssue struct {
 	status, parent string
 	handed         bool
+	priority       *liveDispatchPriority
+}
+
+// liveDispatchPriority is an issue's priorities as a Dispatch that resolves them serves them (J1 of
+// dispatch://INFRA-5793): own is the issue's own priority and resolved the one Dispatch resolves it
+// to, each a level from 0 for P0 to 3 for P3 or nil for null, and from the key of the issue the
+// resolved one comes from, "" for null, where it is the issue's own or none.
+type liveDispatchPriority struct {
+	own, resolved *int
+	from          string
+}
+
+// fields is the three keys a Dispatch that resolves priorities writes beside each other on an
+// issue it serves, the body of a read and the issue of an event alike: `priority`,
+// `resolved_priority` and `priority_from`, each null where it names none.
+func (p liveDispatchPriority) fields() map[string]any {
+	var from any
+	if p.from != "" {
+		from = p.from
+	}
+	return map[string]any{"priority": p.own, "resolved_priority": p.resolved, "priority_from": from}
 }
 
 // liveDispatchWrite is one write the daemon made to Dispatch: a status it set on an issue, or a
@@ -91,11 +116,26 @@ func (b *liveDispatch) show(key, status string) {
 }
 
 // place puts key on the board at status under parent ("" for none), labelled for Legion when
-// handed.
+// handed. A priority given to key before stays with it, as a move in Dispatch leaves it.
 func (b *liveDispatch) place(key, status, parent string, handed bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.issues[key] = liveDispatchIssue{status: status, parent: parent, handed: handed}
+	b.issues[key] = liveDispatchIssue{status: status, parent: parent, handed: handed, priority: b.issues[key].priority}
+}
+
+// prioritize gives key, which the board holds, the priorities its reads answer from then on. An
+// issue no test prioritizes is answered with none of the three keys, as a Dispatch before
+// INFRA-5793 answers it, so every proof that gives none reads each of them as missing, never as a
+// known none.
+func (b *liveDispatch) prioritize(key string, priority liveDispatchPriority) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	issue, held := b.issues[key]
+	if !held {
+		b.t.Fatalf("prioritize %s, an issue the Dispatch stand-in does not hold", key)
+	}
+	issue.priority = &priority
+	b.issues[key] = issue
 }
 
 // liveDispatchLabels is an issue's labels: Legion's when it is handed to Legion, none otherwise.
@@ -163,6 +203,10 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		_, _ = io.WriteString(w, `{"code":"`+dispatch.ArtifactNotFound+`","error":"artifact not found"}`)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/") && strings.HasSuffix(path, "/rating"):
 		b.putRating(key, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), "/rating"), req, w)
+	// Before the step route's arm, which takes every other PUT under /steps/ and would make a
+	// record whose id is <id>/experiment.
+	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/") && strings.HasSuffix(path, "/experiment"):
+		b.putExperiment(key, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), "/experiment"), req, w)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/"):
 		b.putStep(key, strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), req, w)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/plans/"):
@@ -204,17 +248,23 @@ func (b *liveDispatch) showIssue(key string, req *http.Request, w http.ResponseW
 	}
 }
 
-// issueBody is one issue as Dispatch answers it. The caller holds the lock.
+// issueBody is one issue as Dispatch answers it, the listing's row and the detail read alike, with
+// its three priority keys only where the test gave it priorities (prioritize). The caller holds the
+// lock.
 func (b *liveDispatch) issueBody(key string) map[string]any {
 	issue := b.issues[key]
 	var parent any
 	if issue.parent != "" {
 		parent = issue.parent
 	}
-	return map[string]any{
+	body := map[string]any{
 		"key": key, "project": b.project, "title": key, "status": issue.status, "parent": parent, "rank": "U",
 		"labels": liveDispatchLabels(issue.handed), "last_seq": 1, "resolved_repo": liveRepo,
 	}
+	if issue.priority != nil {
+		maps.Copy(body, issue.priority.fields())
+	}
+	return body
 }
 
 // showHandoff answers the handoff record read a completion makes: the seeded record, or Dispatch's
@@ -234,13 +284,14 @@ func (b *liveDispatch) showHandoff(id string, req *http.Request, w http.Response
 }
 
 // putStep takes one write of the step record id of key, as Dispatch's PUT
-// /api/v1/issues/{key}/steps/{id} does: only the session legion-daemon:<project> writes one (403
-// STEP_WRITER for any other writer), each field is written once and kept, a field a write leaves
-// out keeps what an earlier write gave it, and the answer is 200 with the record as it stands after
-// the write and its attempt: the place of the record among the issue's records of the same task,
-// kind and step, in the order of their first write. An id whose record is another issue's is
-// refused 409 STEP_OTHER_ISSUE (writeStep). The daemon sends a rating to the rating route alone
-// (dispatch.HTTPClient.PutStep), so no write here carries one.
+// /api/v1/issues/{key}/steps/{id} does for a credential that proves no session: only the session
+// legion-daemon:<project> writes one (403 STEP_WRITER for any other writer), each field is written
+// once and kept, a field a write leaves out keeps what an earlier write gave it, and the answer is
+// 200 with the record as it stands after the write and its attempt: the place of the record among
+// the issue's records of the same task, kind and step, in the order of their first write. An id
+// whose record is another issue's is refused 409 STEP_OTHER_ISSUE (writeStep). The daemon sends a
+// rating to the rating route alone and a variant to the experiment route alone
+// (dispatch.HTTPClient.PutStepRating and PutStepExperiment), so no write here carries either.
 func (b *liveDispatch) putStep(key, id string, req *http.Request, w http.ResponseWriter) {
 	write, ok := b.daemonWrite(key, "a step record", req, w)
 	if !ok {
@@ -267,9 +318,24 @@ func (b *liveDispatch) putRating(key, id string, req *http.Request, w http.Respo
 	b.writeStep(key, id, write, true, req, w)
 }
 
-// daemonWrite decodes a write to a record of key, which only the session legion-daemon:<project>
-// makes (403 STEP_WRITER for any other writer, naming what), and answers its fields without the
-// actor.
+// putExperiment takes the experiment and the variant of key's issue onto the step record id of
+// key, as Dispatch's PUT /api/v1/issues/{key}/steps/{id}/experiment does: the step write's body and
+// writer, which makes the record where the run's start and end have not landed, on a record of
+// key's (409 STEP_OTHER_ISSUE otherwise), each field written once. It does not refuse a pair for
+// its values, as Dispatch does (both required, each a name of the experiment's rule): the daemon
+// refuses one without the other where its row is queued (record's NewOutboxRow), and its settings
+// refuse a name off the rule at load, so no write of the daemon's carries one.
+func (b *liveDispatch) putExperiment(key, id string, req *http.Request, w http.ResponseWriter) {
+	write, ok := b.daemonWrite(key, "a step record", req, w)
+	if !ok {
+		return
+	}
+	b.writeStep(key, id, write, false, req, w)
+}
+
+// daemonWrite decodes a write to a record of key and answers its fields without the actor. It
+// takes the write only from the session legion-daemon:<project>, as Dispatch does for a credential
+// that proves no session, and refuses any other writer 403 STEP_WRITER, naming what.
 func (b *liveDispatch) daemonWrite(key, what string, req *http.Request, w http.ResponseWriter) (map[string]any, bool) {
 	var write map[string]any
 	if err := json.NewDecoder(req.Body).Decode(&write); err != nil {
@@ -381,14 +447,16 @@ func setOnce(nodes map[string]map[string]any, key, id string, write map[string]a
 	return stored
 }
 
-// putPlan takes the plan id of key, as Dispatch's PUT /api/v1/issues/{key}/plans/{id} does: only
-// the session legion-daemon:<project> writes one (403 STEP_WRITER for any other writer), a plan
-// names at least one task, each with at least one step (400 PLAN_INPUT otherwise, before the node
-// of its id is found, as the store checks a write's fields first), an id whose plan is another
-// issue's is refused 409 PLAN_OTHER_ISSUE and nothing of the write is kept, each field is set
-// once, and the answer is 200 with the plan as it stands after the write. It does not refuse a
-// plan for its generation, its source or its document, as Dispatch does: dispatch.PlanWrite names
-// the generation and the source on every write, the default plan names no document (workflow's
+// putPlan takes the plan id of key, as Dispatch's PUT /api/v1/issues/{key}/plans/{id} does for a
+// credential that proves no session: only the session legion-daemon:<project> writes one (403
+// STEP_WRITER for any other writer), a plan names at least one task, each with at least one step
+// (400 PLAN_INPUT otherwise, before the node of its id is found, as the store checks a write's
+// fields first), an id whose plan is another issue's is refused 409 PLAN_OTHER_ISSUE and nothing
+// of the write is kept, and the answer is 200 with the plan as it stands after the write. It keeps
+// the first value written to each field (setOnce), where Dispatch replaces the plan on a write
+// whose version is above the one it holds (dispatch.HTTPClient.PutPlan). It does not refuse a plan
+// for its generation, its source or its document, as Dispatch does: dispatch.PlanWrite names the
+// generation and the source on every write, the default plan names no document (workflow's
 // defaultPlan), and no test sends the board a plan Dispatch refuses for those values, so a second
 // copy of Dispatch's rules here would refuse nothing that reaches it.
 func (b *liveDispatch) putPlan(key, id string, req *http.Request, w http.ResponseWriter) {
@@ -470,10 +538,10 @@ func issueOfDispatchPath(path string) string {
 }
 
 // The board refuses a write whose id names a record or a plan of another issue, as Dispatch does:
-// 409 STEP_OTHER_ISSUE from both step routes and 409 PLAN_OTHER_ISSUE from the plan route, keeping
-// nothing of the write, so the record and the plan stay their first issue's as they were. Each
-// refused write but the rating of the step record is one Dispatch takes under its own issue, so
-// the 409 is the other-issue rule's. That rating is refused under its own issue too, for the
+// 409 STEP_OTHER_ISSUE from the three step routes and 409 PLAN_OTHER_ISSUE from the plan route,
+// keeping nothing of the write, so the record and the plan stay their first issue's as they were.
+// Each refused write but the rating of the step record is one Dispatch takes under its own issue,
+// so the 409 is the other-issue rule's. That rating is refused under its own issue too, for the
 // record's kind (400 STEP_INPUT), which is the control, and under another issue for its issue, not
 // its kind, since Dispatch's store judges the issue before the kind the record holds
 // (workflowstore's putNode). A plan Dispatch refuses for what it states is refused 400 PLAN_INPUT
@@ -481,6 +549,7 @@ func issueOfDispatchPath(path string) string {
 // its id (workflowstore's PutPlan): a plan with no task, and a task with no step, under the other
 // issue's key.
 func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
+	t.Parallel()
 	b := newLiveDispatch(t, "SR1")
 	first, other := "SR1-1", "SR1-2"
 	put := func(key, path string, write map[string]any) (int, string) {
@@ -539,6 +608,7 @@ func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
 		{"a write of " + first + "'s step record", "/steps/" + step, map[string]any{"model": "claude-opus"}, steprecord.CodeOtherIssue},
 		{"a rating of " + first + "'s retro record", "/steps/" + retro + "/rating", rating(), steprecord.CodeOtherIssue},
 		{"a rating of " + first + "'s step record", "/steps/" + step + "/rating", rating(), steprecord.CodeOtherIssue},
+		{"a variant of " + first + "'s step record", "/steps/" + step + "/experiment", map[string]any{"experiment": "planning", "variant": "b"}, steprecord.CodeOtherIssue},
 		{"a write of " + first + "'s plan", "/plans/" + plan, map[string]any{"generation": 2, "source": "default", "tasks": []any{map[string]any{"id": "default", "steps": []any{"tester"}}}}, steprecord.CodePlanOtherIssue},
 	} {
 		if status, answer := put(other, refused.path, refused.write); status != http.StatusConflict || !strings.Contains(answer, `"code":"`+refused.code+`"`) {

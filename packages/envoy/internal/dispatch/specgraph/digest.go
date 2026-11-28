@@ -8,16 +8,16 @@ import (
 	"strings"
 )
 
-// Digest is the lower-case hex SHA-256 of the statement's record: its block name, then each field
-// in the order of the grammar's attributes (id, kind, parent, serves, about), then its text. The
-// position is not in the record, so a move to another file keeps the digest.
+// Digest is the lower-case hex SHA-256 of the statement's record: its type, then each field in a
+// fixed order (id, kind, parent, serves, about), then its text. The position is not in the record,
+// so a move to another file keeps the digest.
 func (s Statement) Digest() string {
 	return digest("requirement", s.ID, string(s.Kind), s.Parent, recordList(s.Serves), recordList(s.About), s.Text)
 }
 
-// Digest is the lower-case hex SHA-256 of the check's record: its block name, then each field in
-// the order of the grammar's attributes (id, serves, subject, procedure, runner, selector, job,
-// time limit), then its claim, procedure and failing example. The position is not in the record.
+// Digest is the lower-case hex SHA-256 of the check's record: its type, then each field in a fixed
+// order (id, serves, subject, procedure, runner, selector, job, time limit), then its claim,
+// procedure and failing example. The position is not in the record.
 // It is the procedure digest a result of the check carries.
 func (c Check) Digest() string {
 	var test Test
@@ -32,9 +32,8 @@ func (c Check) Digest() string {
 		c.Claim, c.ProcedureText, c.FailingExample)
 }
 
-// Digest is the lower-case hex SHA-256 of the component's record: its block name, then each field
-// in the order of the grammar's attributes (id, name, kind, parent, joins), then its purpose. The
-// position is not in the record.
+// Digest is the lower-case hex SHA-256 of the component's record: its type, then each field in a
+// fixed order (id, name, kind, parent, joins), then its purpose. The position is not in the record.
 func (c Component) Digest() string {
 	kind := ""
 	if c.Interface {
@@ -43,7 +42,7 @@ func (c Component) Digest() string {
 	return digest("component", c.ID, c.Name, kind, c.Parent, recordList(c.Joins), c.Purpose)
 }
 
-// Digest is the lower-case hex SHA-256 of the term's record: its block name, its id and name, then
+// Digest is the lower-case hex SHA-256 of the term's record: its type, its id and name, then
 // its definition. The position is not in the record.
 func (t Term) Digest() string {
 	return digest("term", t.ID, t.Name, t.Definition)

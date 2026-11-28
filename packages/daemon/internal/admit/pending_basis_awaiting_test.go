@@ -43,10 +43,38 @@ func pendingRegistration(requestAsk string) intake.GateRegistered {
 }
 
 // ancestorAct is the person's review of kind on version 4 of LEGION-150's primary document, at seq
-// in LEGION-150's own event log.
+// in LEGION-150's own event log: a cue for LEGION-208's spec step waiting on ask-150, which queues
+// that step's pending-basis seed and opens or ends nothing itself.
 func ancestorAct(kind intake.DispatchArtifactKind, seq int64, reason string) intake.DispatchArtifact {
-	return intake.DispatchArtifact{Key: pendingAncestor, ArtifactID: pendingAncestorDoc, Kind: kind, Version: 4, Reason: reason, Actor: alice,
-		Mark: record.EventMark{Seq: seq, At: fixedNow.Add(-time.Duration(100-seq) * time.Minute)}}
+	mark := record.EventMark{Seq: seq, At: fixedNow.Add(-time.Duration(100-seq) * time.Minute)}
+	return intake.DispatchArtifact{Key: pendingAncestor, ArtifactID: pendingAncestorDoc, Kind: kind, Version: 4, Reason: reason, Actor: alice, Mark: mark}
+}
+
+// ancestorRead is the read of Dispatch LEGION-208's pending-basis seed makes once act, an
+// ancestorAct, is the last thing done to LEGION-150's document (intake.PendingBasisRead): act as
+// the latest review of version 4, the latest version, and LEGION-150 at work and labelled, for
+// the spec step of generation waiting on ask-150.
+func ancestorRead(act intake.DispatchArtifact, generation uint64) intake.PendingBasisRead {
+	read := dispatch.Approval{IssueKey: pendingAncestor, State: string(act.Kind), LatestVersion: 4, Version: new(4), At: act.Mark.At, Seq: act.Mark.Seq,
+		By: act.Actor}
+	if act.Reason != "" {
+		read.Reason = new(act.Reason)
+	}
+	return intake.PendingBasisRead{Issue: "LEGION-208", Step: record.DesignStepSpec, Generation: generation, ArtifactID: "artifact-208",
+		BasisArtifactID: pendingAncestorDoc, BasisVersion: 4, Ask: pendingAsk, RegisteredAt: fixedNow,
+		Read: intake.BasisRead{Approval: read, Ancestor: intake.AncestorRead{Status: "in_progress", HandedOver: true}}}
+}
+
+// applyAct applies act, an ancestorAct, under id, and then the read of Dispatch the pending-basis
+// seed it queued makes (ancestorRead) under id-read: the act leaves LEGION-208's spec step waiting
+// on ask-150, and the read decides.
+func applyAct(t *testing.T, pool *pgxpool.Pool, admission *Admission, id string, act intake.DispatchArtifact) {
+	t.Helper()
+	applyFact(t, pool, admission, id, act)
+	if gate := storedGate(t, pool, "LEGION-208"); !gate.PendingOnBasis() || record.GateOpen(*gate) || gate.Basis.Pending.Ask != pendingAsk {
+		t.Fatalf("the spec step after %s = %+v, want it still waiting on %s: an event opens and ends nothing", id, gate, pendingAsk)
+	}
+	applyFact(t, pool, admission, id+"-read", ancestorRead(act, issue(t, pool, "LEGION-208").Generation))
 }
 
 // basisNotices is every notice queued for LEGION-208's architect that tells a gate's opening, its
@@ -184,7 +212,7 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 			// The act answers the wait, and the pass that applied it resumes the root on the row
 			// it kept through the wait.
 			admission.HoldForCatchUp("LEGION-208")
-			applyFact(t, pool, admission, "act", tc.act)
+			applyAct(t, pool, admission, "act", tc.act)
 			root := issue(t, pool, "LEGION-208")
 			if !root.Answered() || root.Awaiting.AnsweredBy != tc.by {
 				t.Fatalf("the root after the act = %s (awaiting %+v), want its wait answered by %s", root.Phase, root.Awaiting, tc.by)
@@ -194,7 +222,7 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 			}
 			admission.ReleaseCatchUp("LEGION-208")
 			tick(t, pool, admission, "tick-2")
-			resumes := architectResumes(t, pool)
+			resumes := architectResumes(t, pool, config.DesignGateRootIssues)
 			if len(resumes) != 1 {
 				t.Fatalf("architect starts = %q, want one resume", resumes)
 			}
@@ -238,7 +266,7 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 				if root := issue(t, pool, "LEGION-208"); !root.Answered() || root.Awaiting.AnsweredBy != record.AnsweredByClosed {
 					t.Fatalf("the root after its architect resolved its request = %s (awaiting %+v), want its wait answered as closed", root.Phase, root.Awaiting)
 				}
-				applyFact(t, pool, admission, "ancestor-approved", ancestorAct(intake.DispatchArtifactApproved, 60, ""))
+				applyAct(t, pool, admission, "ancestor-approved", ancestorAct(intake.DispatchArtifactApproved, 60, ""))
 				if gate := storedGate(t, pool, "LEGION-208"); !gate.OnBasis() || !record.GateOpen(*gate) || gate.Basis.Version != 4 {
 					t.Fatalf("the spec step after the person's approval = %+v, want it open on version 4 of %s", gate, pendingAncestor)
 				}
@@ -247,7 +275,7 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 				}
 				admission.ReleaseCatchUp("LEGION-208")
 				tick(t, pool, admission, "tick-2")
-				resumes := architectResumes(t, pool)
+				resumes := architectResumes(t, pool, config.DesignGateRootIssues)
 				if len(resumes) != 1 {
 					t.Fatalf("architect starts = %q, want one resume", resumes)
 				}
@@ -267,7 +295,7 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 
 			// The resolve answers the wait as closed, and the pass that applied it resumes the
 			// root on the row it kept.
-			resumes := architectResumes(t, pool)
+			resumes := architectResumes(t, pool, config.DesignGateRootIssues)
 			if root := issue(t, pool, "LEGION-208"); root.Awaiting != nil || root.Phase != phase.Admitted || len(resumes) != 1 {
 				t.Fatalf("the root after its architect resolved its request = %s (awaiting %+v) with architect starts %q, want it resumed at admitted",
 					root.Phase, root.Awaiting, resumes)
@@ -283,7 +311,7 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 				}
 			}
 			t.Logf("resume: %s", resumes[0])
-			applyFact(t, pool, admission, "ancestor-approved", ancestorAct(intake.DispatchArtifactApproved, 60, ""))
+			applyAct(t, pool, admission, "ancestor-approved", ancestorAct(intake.DispatchArtifactApproved, 60, ""))
 			approved := gateNotices(t, pool, "LEGION-208", "design-approved")
 			if len(approved) != 1 || approved[0].Ref != "dispatch://LEGION-150/spec" || approved[0].Version != 4 || approved[0].Actor != "user:alice" ||
 				!strings.Contains(approved[0].Reason, "No person approved that version.") {

@@ -156,7 +156,7 @@ func childCatchUp(t *testing.T, pool *pgxpool.Pool, steps []record.DesignStep) m
 		if err != nil || child == nil {
 			t.Fatalf("read the child: %#v, %v", child, err)
 		}
-		if err := workflow.QueueCatchUp(ctx, tx, records, steps, *child, 1, "", fixedNow, time.Time{}); err != nil {
+		if err := workflow.QueueCatchUp(ctx, tx, records, steps, *child, 1, "", fixedNow); err != nil {
 			t.Fatalf("queue the child's catch-up: %v", err)
 		}
 	})
@@ -183,6 +183,11 @@ type carryState struct{ steps []record.DesignStep }
 func (s carryState) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
 	state, err := projection.Project(ctx, projection.Inputs{Tx: tx, Store: record.NewStore(), Project: testProject, Steps: s.steps, Now: fixedNow})
 	return state, nil, err
+}
+
+func (s carryState) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: record.NewStore(), Project: testProject, Steps: s.steps, Now: fixedNow})
+	return observed, nil, err
 }
 
 // childServedSpec is the child's spec step as GET /legion/v1/state serves it under steps: the route
@@ -309,7 +314,7 @@ func TestAHandOverCarriesAStepOpenOnABasisWithItsBasisAndItsRest(t *testing.T) {
 					mergerTasks = append(mergerTasks, start.task)
 				}
 			}
-			want := "Continue " + carryChild + ". Issue: " + carryChild + ". Phase: merging. Resume the existing phase work."
+			want := "Working copy: branch legion/" + carryChild + ".\nContinue " + carryChild + ". Issue: " + carryChild + ". Phase: merging. Resume the existing phase work."
 			if len(mergerTasks) != 1 || mergerTasks[0] != want {
 				t.Fatalf("the carried merger's tasks = %q, want one resuming merging with no view sentence: %q", mergerTasks, want)
 			}

@@ -1,0 +1,14 @@
+kind: Added
+custom:
+  Issue: pr4392
+body: |-
+  With `runtime.kubernetes.agent_secrets.exchange_audience` set, `legion claims release-names` has
+  the secrets broker release the claim's session ids
+  (`POST /v1/oauth/exchange/pod-sessions/release`) before it frees any name. It frees them only
+  after a `200` that counts every distinct name it sent, and from then on the broker refuses a
+  trade under each of those names that a registration of this daemon admitted. The daemon makes
+  the call up to three times, one second and then two seconds apart, and logs each failure at
+  Warn. When no attempt gets that `200`, the release frees nothing and answers `503` (no answer, a
+  `5xx`, a `408`, a `429`, or a `404` or `405` from an older broker) or `502` (any other `4xx`).
+  Run it again. A daemon with no `exchange_audience` registers no pod session and makes no such
+  call.

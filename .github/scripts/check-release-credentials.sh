@@ -40,10 +40,10 @@
 #    workflow-level group does not stand in for this one and does not weaken it: it coalesces runs
 #    before they start a job, so a waiting build is replaced by a newer push that still holds the
 #    commit and the replaced commit loses an image and a version number of its own, never its
-#    change (that file's header, above its `concurrency:` block, is the one copy of why); a run
-#    that reached release_publish has already built and pushed its image, and a run
-#    release-push.sh restart started is a workflow_dispatch in a group of its own, which no push
-#    replaces.
+#    change (.github/ci-notes/release-envoy-listener.md#why-only-the-newest-waiting-push-builds-and-why-a-dispatch-is-never-replaced
+#    is the one copy of why); a run that reached release_publish has already built and pushed its
+#    image, and a run release-push.sh restart started is a workflow_dispatch in a group of its own,
+#    which no push replaces.
 # 5. A job's `if:` that calls `always()` tests `needs.<X>.result` for every X whose
 #    `needs.<X>.outputs` it reads; one that calls no `always()` belongs to a job with no skippable
 #    ancestor — no job upstream of it through `needs`, at any distance, carrying an `if:` of its
@@ -113,7 +113,7 @@
 # action and no DEPENDENCY_USES entry is read through that action's action.yml: a composite
 # action's steps are read as a job's steps are (each `run:` under its own `shell:`), and any other
 # kind of action, or one this check cannot read, runs dependency code. Command position is found
-# by `.github/scripts/shell_commands.py` (`commands_of`), whose docstring gives the rules it reads a
+# by `.github/scripts/shell_commands.py#commands_of`, whose docstring gives the rules it reads a
 # `run:` by, as bash does: comments, quotes, line joins, substitutions, redirections, the
 # assignments and keywords before a command, and an interpreter, `-c` or `eval` looked through. A
 # variable in command position (`"$tool" build`), a command behind `xargs` or `nohup`, or a
@@ -272,8 +272,8 @@ CREDENTIALED_USES = {
 
 def is_release_push(command: str) -> bool:
     """Whether the command word names release-push.sh, at any path: what it is left with after a
-    path relative to the checkout sheds its prefix, so `.github/scripts/release-push.sh`,
-    `./release-push.sh` and a bare `release-push.sh` all read as the one script. dependency_command
+    path relative to the checkout sheds its prefix, so a bare `release-push.sh`, the relative
+    `./release-push.sh` and `.github/scripts/release-push.sh` all read as the one script. dependency_command
     asks it of a `fold-notes`, and rule 6 of a step that needs a checkout before it."""
     return PATH_PREFIX.sub("", command).rsplit("/", 1)[-1] == "release-push.sh"
 

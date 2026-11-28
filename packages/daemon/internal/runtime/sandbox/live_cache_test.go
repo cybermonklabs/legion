@@ -1,7 +1,7 @@
 //go:build e2e
 
 // The Stage 4a harness's repository cache checks: the cache the run's first issue pod made at
-// root-ready serves its repository only with its token, a second pod fills its feed from it alone,
+// root-ready serves its repository only with its token, a second pod fills its clone from it,
 // asking GitHub only for the delta, and an issue whose volume is lost is provisioned again through
 // the cache onto a commit of its pushed branch that neither the default branch nor the cache holds.
 // The rig is live_test.go.
@@ -27,9 +27,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// cacheStreamLine is the fetch container's last line when it filled the feed from the repository
-// cache: the tar's bytes, the cache's address, and the bytes and refs GitHub's delta brought.
-var cacheStreamLine = regexp.MustCompile(`workspace-init fetch: ([0-9,]+) bytes from the repository cache (http://\S+) in \S+, its history verified in \S+; ([0-9,]+) bytes from GitHub for the delta \(([0-9]+) refs?\)`)
+// cacheStreamLine is workspace-init's line after it fills a clone from the repository cache: the
+// tar's bytes, the cache's address, and the bytes and refs GitHub's delta brought.
+var cacheStreamLine = regexp.MustCompile(`workspace-init: ([0-9,]+) bytes from the repository cache (http://\S+) in \S+, its history verified in \S+; ([0-9,]+) bytes from GitHub for the delta \(([0-9]+) refs?\)`)
 
 // repository-cache: the cache the root's launch made (root-ready) is Ready as the runtime's stores
 // show it, at its Service, which the cluster holds as the controller made it — controlled by the
@@ -111,9 +111,9 @@ func (r *liveRig) cacheHealth(name string) (repocache.Health, string, error) {
 }
 
 // cache-second-pod: another issue pod of the run's repository (cache-b), launched while the cache
-// is Ready, fills its feed from the cache's tar and fetches from GitHub only the delta, under 1 MiB.
-// Its clone owns its objects rather than borrowing them from the feed, and git verifies that
-// connectivity after the feed is mounted read-only.
+// is Ready, fills its clone from the cache's tar and fetches from GitHub only the delta, under
+// 1 MiB. The clone owns its objects: it has no alternates path to another object store, and git
+// verifies its connectivity.
 func (r *liveRig) checkCacheSecondPod() error {
 	if _, err := r.awaitCacheReady(); err != nil {
 		return err
@@ -127,13 +127,14 @@ func (r *liveRig) checkCacheSecondPod() error {
 	}
 	clone := TreeRoot + "/repos/github.com/" + r.env.repo.Owner() + "/" + r.env.repo.Name()
 	if _, err := r.exec(c, "test", "!", "-e", clone+"/.git/objects/info/alternates"); err != nil {
-		return fmt.Errorf("cache-b's clone still borrows objects from the feed: %w", err)
+		return fmt.Errorf("cache-b's clone still has an alternates file: %w", err)
 	}
 	fsck, err := r.exec(c, "git", "--git-dir="+clone+"/.git", "fsck", "--connectivity-only", "--no-progress")
 	if err != nil {
 		return fmt.Errorf("git fsck of cache-b's clone: %w", err)
 	}
-	note("operator", "exec %s -- test ! -e %s/.git/objects/info/alternates; git fsck --connectivity-only: ok %s", SandboxName(c.token), clone, oneLine(fsck))
+	note("operator", "exec %s -- test ! -e %s/.git/objects/info/alternates; git fsck --connectivity-only: ok %s",
+		SandboxName(c.token), clone, oneLine(fsck))
 	return nil
 }
 
@@ -143,10 +144,10 @@ func (r *liveRig) checkCacheSecondPod() error {
 // its clone lacks that commit (deleted when the harness ends).
 // cache-b's Sandbox is then deleted while no runtime runs, which takes its pod and, with the pod,
 // the disk its workspace was on — what every stop of an issue now leaves (INFRA-80). Relaunched,
-// the new pod fills its new feed from the cache again, and, while the cache still lacks the
-// commit, GitHub's delta brings it (more than no bytes); the workspace is provisioned on the
-// branch the issue pushed, which is where its work survived: its @- is that commit, and the file
-// that commit added is in it.
+// the new pod fills its clone from the cache again, and, while the cache still lacks the commit,
+// GitHub's delta brings it (more than no bytes); the workspace is provisioned on the branch the
+// issue pushed, which is where its work survived: its @- is that commit, and the file that commit
+// added is in it.
 func (r *liveRig) checkCacheLostVolume() error {
 	status, err := r.awaitCacheReady()
 	if err != nil {
@@ -230,12 +231,12 @@ func (r *liveRig) checkCacheLostVolume() error {
 	if held, err := r.cacheHolds(status.Sandbox, branchHead); err != nil {
 		return err
 	} else if !held {
-		fetched, err := r.fetchLog(name)
+		initLog, err := r.initLog(name)
 		if err != nil {
 			return err
 		}
-		if match := cacheStreamLine.FindStringSubmatch(fetched); match == nil || printedCount(match[3]) <= 0 {
-			return fmt.Errorf("the cache still lacks %s, yet the recovered pod's fetch brought nothing from GitHub: %s", branchHead, strings.TrimSpace(fetched))
+		if match := cacheStreamLine.FindStringSubmatch(initLog); match == nil || printedCount(match[3]) <= 0 {
+			return fmt.Errorf("the cache still lacks %s, yet the recovered pod's workspace-init brought nothing from GitHub: %s", branchHead, strings.TrimSpace(initLog))
 		}
 	}
 	log, err := r.initLog(name)
@@ -263,7 +264,7 @@ func (r *liveRig) checkCacheLostVolume() error {
 
 // cacheHolds is whether the cache name's clone, asked inside its own pod, holds the object id.
 func (r *liveRig) cacheHolds(name, id string) (bool, error) {
-	clone, err := workspace.FeedRepository(CacheRoot, r.env.repo)
+	clone, err := workspace.CacheRepository(CacheRoot, r.env.repo)
 	if err != nil {
 		return false, err
 	}
@@ -391,30 +392,30 @@ func (r *liveRig) deleteBranchAt(branch, sha string) error {
 	return r.deleteBranch(branch)
 }
 
-// assertCacheFed is cache-stream's evidence for c's pod: its workspace-fetch log's last line names
-// the bytes it streamed from its repository's cache at the address the runtime gave it and the
-// GitHub delta, under 1 MiB, and nothing was cloned from GitHub.
+// assertCacheFed is cache-stream's evidence for c's pod: workspace-init's last line names the
+// bytes it streamed from its repository's cache at the address the runtime gave it and the GitHub
+// delta, under 1 MiB.
 func (r *liveRig) assertCacheFed(c *liveClaim) error {
-	log, err := r.fetchLog(SandboxName(c.token))
+	log, err := r.initLog(SandboxName(c.token))
 	if err != nil {
 		return err
 	}
 	repo := r.claimRepository(c)
 	address := r.rt.cacheURL(CacheSandboxName(r.env.project, repo))
 	match := cacheStreamLine.FindStringSubmatch(log)
-	if match == nil || match[2] != address || strings.Contains(log, "cloned "+repo.String()+" from GitHub") {
-		return fmt.Errorf("%s's workspace-fetch log does not name the stream from the cache at %s alone: %s", c.name, address, strings.TrimSpace(log))
+	if match == nil || match[2] != address {
+		return fmt.Errorf("%s's workspace-init log does not name the stream from the cache at %s: %s", c.name, address, strings.TrimSpace(log))
 	}
 	streamed, delta := printedCount(match[1]), printedCount(match[3])
 	if streamed <= 0 || delta < 0 || delta >= 1<<20 {
-		return fmt.Errorf("%s's feed came %d bytes from the cache and %d from GitHub, want some from the cache and under 1 MiB from GitHub: %s", c.name, streamed, delta, match[0])
+		return fmt.Errorf("%s's clone received %d bytes from the cache and %d from GitHub, want some from the cache and under 1 MiB from GitHub: %s", c.name, streamed, delta, match[0])
 	}
-	note("operator", "%s's workspace-fetch log: %s", c.name, match[0])
+	note("operator", "%s's workspace-init log: %s", c.name, match[0])
 	return nil
 }
 
-// printedCount is a byte count as workspace-init fetch prints it, digits grouped by commas; -1 when
-// it is no such count.
+// printedCount is a byte count as workspace-init prints it, digits grouped by commas; -1 when it
+// is no such count.
 func printedCount(printed string) int64 {
 	n, err := strconv.ParseInt(strings.ReplaceAll(printed, ",", ""), 10, 64)
 	if err != nil {
@@ -433,12 +434,6 @@ func (r *liveRig) awaitCacheReady() (CacheStatus, error) {
 		return found && status.Ready, nil
 	})
 	return status, err
-}
-
-// fetchLog is the workspace-fetch container's log of the pod name.
-func (r *liveRig) fetchLog(name string) (string, error) {
-	out, err := r.kubectl("logs", name, "-c", fetchContainer)
-	return out, err
 }
 
 // github is the run's repository's REST API under the implement App's write lease on that

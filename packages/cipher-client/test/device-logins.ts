@@ -1,17 +1,18 @@
 // packages/cipher-client/test/device-logins.ts
 //
-// A machine's device login as `dispatch login --device` leaves it (`src/device-login.ts`), and a
+// A machine's device login as `dispatch login --device` leaves it (`src/device-login.ts`), a
 // secrets broker serving the three routes a device login meets: the device authorization, the
 // token endpoint's device code, refresh and exchange grants, as `internal/cipher/oauth` serves
-// them. It is for every suite that drives a device login: this package's own, and envoy-client's
-// broker credential and `dispatch login --device`. Every key is made at run time, so the
-// repository holds no private key.
+// them, and the sleeps a test hands the poll. It is for every suite that drives a device login:
+// this package's own, and envoy-client's broker credential and `dispatch login --device`. Every
+// key is made at run time, so the repository holds no private key.
 
 import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { calculateJwkThumbprint, type JWK } from "jose";
+import { FORM_SCOPE, SCOPE_READ } from "../src/wire";
 
 /** One request the stand-in was sent: its form, and the DPoP proof's header and claims where it
  *  carried one, with the thumbprint of the key that header embeds. */
@@ -23,13 +24,15 @@ export interface DeviceLoginRequest {
   readonly proofThumbprint: string;
 }
 
-/** How the stand-in answers one poll of a device code: `invalid_client` is an OAuth refusal the
- *  poll does not expect, which the broker answers a client it does not know, and `unknown-code`
- *  one under a code no client knows; `invalid_grant` is the broker's answer to a code it no
- *  longer knows; `html-403` and `challenge-401` are 4xx answers with no OAuth error in them, as a
- *  proxy or a load balancer in front of the broker gives (an HTML page, a bare
- *  `WWW-Authenticate: DPoP` challenge); `busy-429` and `unavailable-503` are answers a later poll
- *  can get past. */
+/** How the stand-in answers one poll of a device code: `deny` is `access_denied` at 403, the
+ *  status the broker's OAuth library (authelia.com/provider/oauth2) answers it with, and every
+ *  other OAuth error is at 400 but `invalid_client`; `invalid_client` is an OAuth refusal the poll
+ *  does not expect, which the broker answers a client it does not know, and `unknown-code` one
+ *  under a code no client knows; `invalid_grant` is the broker's answer to a code it no longer
+ *  knows; `html-403` and `challenge-401` are 4xx answers with no OAuth error in them, as a proxy
+ *  or a load balancer in front of the broker gives (an HTML page, a bare
+ *  `WWW-Authenticate: DPoP` challenge); `busy-429`, `empty-429`, `empty-408` and
+ *  `unavailable-503` are answers a later poll can get past, the two `empty-` ones with no body. */
 export type PollAnswer =
   | "pending"
   | "slow_down"
@@ -42,6 +45,8 @@ export type PollAnswer =
   | "html-403"
   | "challenge-401"
   | "busy-429"
+  | "empty-429"
+  | "empty-408"
   | "unavailable-503";
 
 /** The OAuth error code the stand-in answers an `unknown-code` poll with: one no client knows,
@@ -81,13 +86,20 @@ export interface DeviceLoginBrokerOptions {
    * process's refresh must come while the first one's trade is out, so no clock decides it.
    */
   readonly refreshesBeforeTrade?: number;
-  /** How long an access token the stand-in mints lasts. Default 900 s, the broker's own. */
+  /** How long an access token the stand-in mints lasts, the broker's `BROKER_ACCESS_TOKEN_SECONDS`:
+   *  {@link STAND_IN_ACCESS_SECONDS} unless a row names another. */
   readonly accessSeconds?: number;
   /** Answer every refresh `400 invalid_grant`, as the broker answers one whose login ended, or
    *  `401 invalid_client`, a refusal of the refresh that is no end of the login. */
   readonly refuseRefresh?: true | "invalid_client";
+  /** Answer this many refreshes, then every later one `400 invalid_grant`, as the broker answers
+   *  one whose login ended: a row where a login the first refresh kept must then end. */
+  readonly refuseRefreshAfter?: number;
   /** Refuse the device authorization `400` with this OAuth error code. */
   readonly refuseAuthorization?: string;
+  /** The `error_description` of that refusal, in place of the stand-in's own: a sentence of the
+   *  broker's own, as `WriteRefusal` writes it (`<CODE>: <message>`). */
+  readonly refuseAuthorizationDescription?: string;
   /** The device authorization's `interval`, in seconds; 1 by default, and none where null. */
   readonly interval?: number | null;
   /** The device authorization's `expires_in`, in seconds; 600 by default. */
@@ -97,12 +109,28 @@ export interface DeviceLoginBrokerOptions {
   readonly userCode?: string;
   readonly verificationUri?: string;
   readonly verificationUriComplete?: string;
+  /** The OAuth scope each device-code and refresh answer carries; `machine` unless named. */
+  readonly scope?: string;
+  /** The approved Dispatch scopes a sign-in answer carries; absent for a machine login or an old broker. */
+  readonly dispatchScopes?: readonly string[];
   /** The credential id a grant answers, in place of {@link STAND_IN_CREDENTIAL}. */
   readonly credentialId?: string;
+  /** The status of every OAuth error the token endpoint answers a poll or a refresh with, in place
+   *  of its own, as Go's fake broker's `oauthErrorStatus` (`internal/cipher/helper`'s
+   *  broker_test.go): a broker, or a proxy before it, answering a 408, a 429 or a 5xx with a body
+   *  that still names an OAuth error, or naming one at another refusal status. */
+  readonly oauthErrorStatus?: number;
+  /** The `Retry-After` a `busy-429` answer carries, in seconds or as an HTTP date, as the broker's
+   *  own 429 carries one (its token endpoint's asks 1 s) and a proxy's may; none where unset. */
+  readonly retryAfter?: string;
 }
 
 /** The credential every device login of this stand-in holds. */
 export const STAND_IN_CREDENTIAL = "cred-device-1";
+
+/** How long an access token the stand-in mints lasts unless told otherwise: the broker's default
+ *  `BROKER_ACCESS_TOKEN_SECONDS`. */
+export const STAND_IN_ACCESS_SECONDS = 900;
 
 /** The user code every device authorization of this stand-in answers. */
 export const STAND_IN_USER_CODE = "WDJB-MJHT";
@@ -141,7 +169,7 @@ function part(compact: string, at: number): Record<string, unknown> | null {
 async function recorded(request: Request): Promise<DeviceLoginRequest> {
   const proof = request.headers.get("DPoP") ?? "";
   const proofHeader = proof === "" ? null : part(proof, 0);
-  const jwk = proofHeader?.["jwk"] as JWK | undefined;
+  const jwk = (proofHeader as { readonly jwk?: JWK } | null)?.jwk;
   return {
     form: new URLSearchParams(await request.text()),
     proofHeader,
@@ -150,9 +178,13 @@ async function recorded(request: Request): Promise<DeviceLoginRequest> {
   };
 }
 
-/** An OAuth error answer, as the broker writes one. */
-function oauthError(error: string, status = 400): Response {
-  return Response.json({ error, error_description: `the stand-in answered ${error}` }, { status });
+/** An OAuth error answer, as the broker writes one, with `description` in place of the stand-in's
+ *  own where one is given. */
+function oauthError(error: string, status = 400, description?: string): Response {
+  return Response.json(
+    { error, error_description: description ?? `the stand-in answered ${error}` },
+    { status }
+  );
 }
 
 /**
@@ -160,17 +192,29 @@ function oauthError(error: string, status = 400): Response {
  * code, {@link STAND_IN_USER_CODE} and a verification URI on its own origin, with no
  * `verification_uri_complete`, as the broker omits it; `POST /v1/oauth/token` answers a device
  * code as `polls` says, a refresh by minting a new refresh token and a new access token (or
- * `invalid_grant` under `refuseRefresh`), and an RFC 8693 exchange with a DPoP-bound access
- * token. The device code grant and a refresh carry the credential's id and expiry, as the
- * broker's token hooks add them (`machine.Service.TokenHooks`). A refresh revokes every access
- * token of the login but the one it answers, as the broker's `RotateRefreshToken` does, so an
- * exchange presenting any other after a refresh is refused `400 invalid_request`, with the
- * broker's own description of a token it no longer honours. Before the first refresh, any subject
- * token is taken, so a test may keep an access token of its own in the file.
+ * `invalid_grant` under `refuseRefresh`, and under `refuseRefreshAfter` for every refresh past
+ * the count it names), each OAuth error at `oauthErrorStatus` where it is set,
+ * and an RFC 8693 exchange with a DPoP-bound access token. The device code grant and a refresh
+ * carry the credential's id and expiry, as the broker's token hooks add them
+ * (`machine.Service.TokenHooks`). A refresh revokes every access token of the login but the one
+ * it answers, as the broker's `RotateRefreshToken` does, so an exchange presenting any other after
+ * a refresh is refused `400 invalid_request`, with the broker's own description of a token it no
+ * longer honours. Before the first refresh, any subject token is taken, so a test may keep an
+ * access token of its own in the file.
+ *
+ * Every token lives {@link DeviceLoginBrokerOptions.accessSeconds} on the clock of the process,
+ * which a test may move (`setSystemTime`). An exchange presenting an access token this stand-in
+ * minted that has run out is refused as the broker refuses a token it no longer honours. A read
+ * trade's token (`scope=read`) of such a token lives no longer than that token has left,
+ * truncated to whole seconds, as the broker's `clampNarrowed` bounds it and writes `expires_in`;
+ * a plain trade's is not bound by its subject's, as the broker's is not.
  */
 export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): DeviceLoginBroker {
   const polls = options.polls ?? ["approve"];
-  const accessSeconds = options.accessSeconds ?? 900;
+  const accessSeconds = options.accessSeconds ?? STAND_IN_ACCESS_SECONDS;
+  // An OAuth error of a poll or a refresh, at `oauthErrorStatus` in place of its own where set.
+  const tokenError = (error: string, status = 400): Response =>
+    oauthError(error, options.oauthErrorStatus ?? status);
   const authorizations: DeviceLoginRequest[] = [];
   const pollsSeen: DeviceLoginRequest[] = [];
   const refreshes: DeviceLoginRequest[] = [];
@@ -185,6 +229,8 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
   const trading: (() => void)[] = [];
   // The one access token the last refresh answered: every other is revoked from then on.
   let live: string | undefined;
+  // When each access token the device code and refresh grants minted lapses.
+  const lapses = new Map<string, number>();
   const hold = async (into: (() => void)[], ms: number): Promise<void> => {
     const { promise, resolve } = Promise.withResolvers<void>();
     into.push(resolve);
@@ -214,12 +260,14 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
   const loginAnswer = (): Response => {
     const access = fixtureSecret("login");
     loginTokens.push(access);
+    lapses.set(access, Date.now() + accessSeconds * 1000);
     return Response.json({
       access_token: access,
       token_type: "DPoP",
       expires_in: accessSeconds,
       refresh_token: fixtureSecret("refresh"),
-      scope: "machine",
+      scope: options.scope ?? "machine",
+      ...(options.dispatchScopes === undefined ? {} : { dispatch_scopes: options.dispatchScopes }),
       credential_id: options.credentialId ?? STAND_IN_CREDENTIAL,
       credential_expires_at: new Date(Date.now() + 30 * 86_400_000)
         .toISOString()
@@ -235,7 +283,11 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
       if (request.method === "POST" && pathname === "/v1/oauth/device_authorization") {
         authorizations.push(seen);
         if (options.refuseAuthorization !== undefined) {
-          return oauthError(options.refuseAuthorization);
+          return oauthError(
+            options.refuseAuthorization,
+            400,
+            options.refuseAuthorizationDescription
+          );
         }
         return Response.json({
           device_code: deviceCode,
@@ -254,23 +306,23 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
       switch (seen.form.get("grant_type")) {
         case "urn:ietf:params:oauth:grant-type:device_code": {
           pollsSeen.push(seen);
-          if (seen.form.get("device_code") !== deviceCode) return oauthError("invalid_grant");
+          if (seen.form.get("device_code") !== deviceCode) return tokenError("invalid_grant");
           const answer = polls[Math.min(pollsSeen.length, polls.length) - 1];
           switch (answer) {
             case "pending":
-              return oauthError("authorization_pending");
+              return tokenError("authorization_pending");
             case "slow_down":
-              return oauthError("slow_down");
+              return tokenError("slow_down");
             case "deny":
-              return oauthError("access_denied");
+              return tokenError("access_denied", 403);
             case "expired":
-              return oauthError("expired_token");
+              return tokenError("expired_token");
             case "invalid_grant":
-              return oauthError("invalid_grant");
+              return tokenError("invalid_grant");
             case "invalid_client":
-              return oauthError("invalid_client", 401);
+              return tokenError("invalid_client", 401);
             case "unknown-code":
-              return oauthError(STAND_IN_UNKNOWN_CODE);
+              return tokenError(STAND_IN_UNKNOWN_CODE);
             case "html-403":
               return new Response("<html><body><h1>403 Forbidden</h1></body></html>", {
                 status: 403,
@@ -282,7 +334,15 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
                 headers: { "WWW-Authenticate": 'DPoP algs="ES256"' },
               });
             case "busy-429":
-              return new Response("too many requests", { status: 429 });
+              return new Response("too many requests", {
+                status: 429,
+                headers:
+                  options.retryAfter === undefined ? {} : { "Retry-After": options.retryAfter },
+              });
+            case "empty-429":
+              return new Response(null, { status: 429 });
+            case "empty-408":
+              return new Response(null, { status: 408 });
             case "unavailable-503":
               return new Response("<html><body>503 Service Unavailable</body></html>", {
                 status: 503,
@@ -297,8 +357,14 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
           for (const release of holding.splice(0)) release();
           releaseReached(awaitingRefreshes);
           if (options.refreshOverlapMs !== undefined) await hold(holding, options.refreshOverlapMs);
-          if (options.refuseRefresh === true) return oauthError("invalid_grant");
-          if (options.refuseRefresh === "invalid_client") return oauthError("invalid_client", 401);
+          if (
+            options.refuseRefresh === true ||
+            (options.refuseRefreshAfter !== undefined &&
+              refreshes.length > options.refuseRefreshAfter)
+          ) {
+            return tokenError("invalid_grant");
+          }
+          if (options.refuseRefresh === "invalid_client") return tokenError("invalid_client", 401);
           const answer = loginAnswer();
           live = loginTokens.at(-1);
           for (const release of trading.splice(0)) release();
@@ -314,9 +380,9 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
           if (options.refreshesBeforeTrade !== undefined) {
             await untilRefreshes(awaitingRefreshedTrades, options.refreshesBeforeTrade);
           }
-          if (live !== undefined && seen.form.get("subject_token") !== live) {
-            revokedTrades.push(seen);
-            return Response.json(
+          const subject = seen.form.get("subject_token") ?? "";
+          const notHonoured = (): Response =>
+            Response.json(
               {
                 error: "invalid_request",
                 error_description:
@@ -324,14 +390,22 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
               },
               { status: 400 }
             );
+          if (live !== undefined && subject !== live) {
+            revokedTrades.push(seen);
+            return notHonoured();
           }
+          const lapse = lapses.get(subject);
+          const left =
+            lapse === undefined ? accessSeconds : Math.floor((lapse - Date.now()) / 1000);
+          if (left <= 0) return notHonoured();
+          const read = seen.form.get(FORM_SCOPE) === SCOPE_READ;
           const token = fixtureSecret("traded");
           tradeTokens.push(token);
           return Response.json({
             access_token: token,
             issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
             token_type: "DPoP",
-            expires_in: accessSeconds,
+            expires_in: read ? Math.min(accessSeconds, left) : accessSeconds,
           });
         }
         default:
@@ -364,7 +438,10 @@ export interface WrittenDeviceLogin {
  * Writes a device login for `broker` at `path` as `dispatch login --device` leaves one: a fresh
  * P-256 key as base64 PKCS#8 DER, the stand-in's credential, a random refresh token, an expiry
  * 30 days on, and the broker, in a 0600 file whose directory is 0700. `fields` replaces or adds
- * any member of the JSON (an `access_token` the login holds, a `broker` of another).
+ * any member of the JSON (an `access_token` the login holds, a `broker` of another). Beside an
+ * `access_token` it writes the life the stand-in gives one, `access_life_seconds`
+ * ({@link STAND_IN_ACCESS_SECONDS}), as a login of this build keeps it; a row writing a file an
+ * older build left gives that member as `undefined`, which leaves it out.
  */
 export async function writeDeviceLoginFile(
   path: string,
@@ -381,6 +458,7 @@ export async function writeDeviceLoginFile(
     refresh_token: refreshToken,
     expires_at: new Date(Date.now() + 30 * 86_400_000).toISOString(),
     broker,
+    ...("access_token" in fields ? { access_life_seconds: STAND_IN_ACCESS_SECONDS } : {}),
     ...fields,
   };
   await writeFile(path, JSON.stringify(json), { mode });
@@ -390,5 +468,34 @@ export async function writeDeviceLoginFile(
     key: privateKey,
     thumbprint: await calculateJwkThumbprint(publicKey.export({ format: "jwk" }) as JWK),
     refreshToken,
+  };
+}
+
+/** A sleep that waits for nothing and records each wait it was asked for. */
+export function recordedWaits(): { waits: number[]; sleep: (ms: number) => Promise<void> } {
+  const waits: number[] = [];
+  return {
+    waits,
+    sleep: async (ms) => {
+      waits.push(ms);
+    },
+  };
+}
+
+/** A sleep that waits for nothing, records each wait, and moves `clock` by it. */
+export function advancingWaits(): {
+  waits: number[];
+  sleep: (ms: number) => Promise<void>;
+  clock: () => number;
+} {
+  let now = 0;
+  const waits: number[] = [];
+  return {
+    waits,
+    clock: () => now,
+    sleep: async (ms) => {
+      waits.push(ms);
+      now += ms;
+    },
   };
 }

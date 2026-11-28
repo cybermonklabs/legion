@@ -2,6 +2,7 @@ package docs
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -29,8 +30,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+import "github.com/sjawhar/envoy/internal/clock"
 
 var (
 	// ErrIssueClosed rejects a document mutation after its issue is closed.
@@ -90,11 +94,27 @@ type Deps struct {
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
+	// Clock is the clock Shutdown's drain budget (ShutdownDrainBudget) runs on; nil means the real
+	// clock. A test hands a clocktest fake and moves it past the moments it means, so how long a
+	// loaded machine takes between them does not spend the budget.
+	Clock clock.Clock
+	// BuildCommit is the commit this process's binary was built from (cmd/dispatch's buildCommit),
+	// the empty string for an unstamped build. The block-index tick keys its build's event cursor
+	// on it, and compares it with the commit of every live server process to report whether
+	// another build serves beside this one (readEventsAfterCursor).
+	BuildCommit string
 	// RoomIdleTimeout is how long an idle room stays resident before ygo's idle sweeper evicts it
 	// (Server.RoomIdleTimeout); zero means roomIdleTimeout, a minute. The sweeper runs on the real
 	// clock, which nothing a test hands the service reaches, so a test whose verdict needs a room
 	// to leave residency only through a close it asked for hands a window that never ends.
 	RoomIdleTimeout time.Duration
+	// CloseMargin is how long after an issue's close the append gate of the store New builds still
+	// stores a browser update a room observed (observedBeforeClose); zero, which every deployment
+	// leaves it, is closeMargin. It reaches the store New builds alone, not a Persistence the
+	// caller hands. Only a test sets it: one that stands for a process whose room takes a browser's
+	// update after a close it never hears of gives a margin past any run, so whether the update is
+	// stored is not decided by how long a loaded machine takes between the close and the update.
+	CloseMargin time.Duration
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -155,6 +175,25 @@ type Service struct {
 	unrecordedMarkTTL time.Duration
 	// editNoticeQuiet is Deps.EditNoticeQuiet, with its default applied.
 	editNoticeQuiet time.Duration
+	// clock is Deps.Clock, the real clock when that is nil: the clock of Shutdown's drain budget.
+	clock clock.Clock
+	// buildCommit is Deps.BuildCommit.
+	buildCommit string
+	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
+	// as New sets it: the rule its marks, its event cursor and its index passes carry
+	// (markVersionedDocuments, readEventsAfterCursor, refs.PlanBlocks). A test sets another to run
+	// a build of that rule beside this one.
+	markingRule int
+	// eventHorizon is the event log's safe horizon the block-index tick reads, which
+	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
+	horizonOnce  sync.Once
+	eventHorizon *events.Horizon
+	// objectPassFinished is when this process's last object pass that a cursor row records
+	// finished with nothing left, in Unix nanoseconds by the service's clock (now), and zero before
+	// one has: a block-index tick owes the pass on the process's first tick with a proven horizon
+	// and once objectPassInterval has passed since (readEventsAfterCursor). A pass a tick runs
+	// before any horizon is proven (objectPassDebt with no recorded time) does not set it.
+	objectPassFinished atomic.Int64
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
 	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
@@ -214,6 +253,11 @@ type Service struct {
 	// before the version takes its document lock and reads it. Nil outside tests; tests use it to
 	// evict the warmed room or edit it in that window.
 	afterReadWarm func(room string)
+	// afterMarkMiss runs each time a look of VerifyMark has missed the mark and the call is about
+	// to wait for the room's next update or its wait (markTimer). Nil outside tests; tests use it
+	// to write the mark only once the call has looked and missed, so the call can find it only
+	// through the update's wake.
+	afterMarkMiss func(room string)
 	// afterReadCopy runs once a read of a room has copied the room's document (holdLive) and
 	// before that copy is offered to the room's replica (startFromRead). Nil outside tests;
 	// tests use it to commit into the room, and to leave the room's replica recovered, in the
@@ -245,9 +289,16 @@ type Service struct {
 	// describe its fork, at names where: "fork" once forkLive has brought the fork up to date,
 	// "margin", "docTree" and "capture" as a margin write (applyMargin) or a read joined to the
 	// write's transaction takes the rendering in place of reading the fork (reuseRendering), and
-	// "publish" just before publishLiveWrite releases the fork. Nil outside tests; tests use it to
-	// compare the rendering with a fresh read and render of the fork.
+	// "commit" as the commit hands the fork to the room's shadow (Ledger.commit), the last point
+	// the fork is the write's own: the room's worker measures on the shadow the browser updates
+	// the transaction's advisory lock held back (roomShadow.measure), whether the write's publish
+	// has begun or not. Nil outside tests; tests use it to compare the rendering with a fresh read
+	// and render of the fork.
 	checkRendering func(at string, write *liveWrite)
+	// beforePublish runs as a committed write's publish begins (publishLiveWrite), after the
+	// pause armed there (PauseAfterCommit) and before the publish releases the fork. Nil outside
+	// tests; tests use it to read the write and its room as the publish finds them.
+	beforePublish func(write *liveWrite)
 	// afterSettleAuthorsTake runs after a settlement has bounded the in-flight credits it lists
 	// and before it reads the tree it will version. Nil outside tests; tests use it to edit the
 	// room in that window.
@@ -277,6 +328,11 @@ type Service struct {
 	// version's own event; the write phase has not run. Nil outside tests; tests return an error from
 	// it to force the settlement to abandon after its version write, before its commit.
 	afterSettleVersionWrite func(room string) error
+	// afterBlockIndexWrite runs inside the block-index tick's transaction once that tick has
+	// written one document's node, its tuples and its projection rows, and before its commit.
+	// Nil outside tests; tests return an error from it to kill that transaction and find that
+	// none of the three survived it.
+	afterBlockIndexWrite func(artifactID string) error
 	// beforeSettleCommit runs once a settlement's room has taken in the versions the settlement
 	// appended and before the settlement's transaction commits (commitSettlement). Nil outside
 	// tests; tests use it to find the room ahead of the store's head in that window.
@@ -365,6 +421,11 @@ type Service struct {
 	// loads the document's tree (loadTree). Nil outside tests; tests use it to close the issue
 	// while the socket loads.
 	afterSocketIssueRead func(room string)
+	// afterSocketAdmitted runs in a document socket's admission (ServeHTTP) once its admission has
+	// read the document and decided it, and before the socket is held where the schema switch
+	// closes it (holdDocumentSocket). Nil outside tests; tests run a switch there, the gap the
+	// count of switches covers (schemaSwitches).
+	afterSocketAdmitted func(room string)
 	// afterSocketPreload runs in a cold document socket's admission (ServeHTTP) once it has offered
 	// the durable state it loaded to the room's load (offerPreload), and before it hands the socket
 	// to ygo. Nil outside tests; tests use it to hold two cold sockets of one room until both have
@@ -404,7 +465,12 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
-	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks).
+	// markTimer arms the wait VerifyMark gives a browser's update, markWait long: a wall timer
+	// (wallMarkTimer), set in New. Tests replace it, as they replace now, to read the duration it
+	// was armed with and to fire it themselves.
+	markTimer func(time.Duration) (<-chan time.Time, func() bool)
+	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks), and the
+	// block-index tick times its object pass by (objectPassInterval).
 	now      func() time.Time
 	settleWG sync.WaitGroup
 	// evictWG counts the forced evictions failRoomLocked spawns. They flush the room through
@@ -481,6 +547,15 @@ type Service struct {
 	roomSlots     roomSlots
 	residentRooms atomic.Int64
 	connections   atomic.Int64
+	// documentSockets holds the close of every document socket this process is serving, keyed by
+	// the record the socket holds (holdDocumentSocket): the schema switch closes them all
+	// (CloseDocumentSockets), and each socket forgets its own as it ends.
+	documentSockets sync.Map
+	// schemaSwitches counts the schema switches this process has run (CloseDocumentSockets). A
+	// socket's admission reads it before it reads the document and again once the socket is
+	// held, so a switch between the two, whose close found nothing to close, closes the socket
+	// all the same (ServeHTTP).
+	schemaSwitches atomic.Uint64
 	// residentBytes is the encoded bytes the loads ygo holds took, each load's own history and
 	// every update the room it left behind has committed since (residentLoad), for the room
 	// figures: loaded state only. The bytes a commit parks after the load - structs and deletions
@@ -723,6 +798,32 @@ func (s *Service) discardSuppressedSlot(room string, slot *suppressSlot) {
 	}
 }
 
+// consumeSuppressedPersistence takes the suppression slot of the writer whose update this is, and
+// reports whether the room's persistence leaves update to that writer. Slots are queued in the order
+// their writers prepare them, and updates reach the room's worker in the order ygo hands them on,
+// and the two need not agree: a published write and a settlement's repair each prepare a slot
+// before their transaction, and the document's lock can take the second one's first. So an update
+// takes its own slot wherever it stands in the queue: the one a repair's commit recorded it on
+// (recordSuppressedCommit), or the one a published write or a catch-up finished with it
+// (finishSuppressedPersistence), both set before ygo hands the update on. It waits for that
+// slot's writer to finish, which holds off the worker's removal of the update's class
+// (finishUpdateClass) until then.
+//
+// Paired with the first slot instead, an update that met another writer's slot there went by as
+// no slot's and left its own slot queued. A repair's update lost its class while the repair's
+// writer had still to store it (storeRepair, errUnclassifiedRepair), which fails the room. A
+// published write's or a catch-up's lost nothing, its class being stored, but its slot stayed at
+// the head, where a later repair's update met it and lost its class the same way.
+//
+// An update that is no writer's - a browser's - waits until the writer of the first slot queued
+// has finished that slot, and then goes by as no slot's. That holds back a browser's update that
+// ygo hands on ahead of the first writer's own update: it is stored only once that writer is done,
+// a repair's writer once its transaction has committed (finishSlots), a published write's once its
+// update is in the room (onLoadDocument), never while the writer is still in its write. A browser
+// update whose bytes match a repair's - a deletion leaves an update that carries no struct, only
+// its own deletes, so a browser's deletion of the items a repair deleted leaves the repair's bytes
+// - takes that repair's slot, and is stored all the same, its own class not being stored
+// (StoreUpdateContext).
 func (s *Service) consumeSuppressedPersistence(room string, update []byte) bool {
 	for {
 		s.suppressMu.Lock()
@@ -732,26 +833,36 @@ func (s *Service) consumeSuppressedPersistence(room string, update []byte) bool 
 			return false
 		}
 		slot := slots[0]
+		for _, candidate := range slots {
+			if bytes.Equal(candidate.committed, update) || bytes.Equal(candidate.update, update) {
+				slot = candidate
+				break
+			}
+		}
 		ready := slot.ready
 		s.suppressMu.Unlock()
 
 		<-ready
 
 		s.suppressMu.Lock()
-		slots = s.suppressed[room]
-		if len(slots) == 0 || slots[0] != slot {
+		at := -1
+		for index, queued := range s.suppressed[room] {
+			if queued == slot {
+				at = index
+				break
+			}
+		}
+		if at < 0 {
 			s.suppressMu.Unlock()
 			continue
 		}
 		if slot.canceled {
-			// A discarded repair's slot is consumed by that repair's own update alone. ygo runs the
-			// observers of two transactions in either order (renderedReplica), so another writer's
-			// update can reach the worker ahead of the repair's, and it is stored as any other.
+			// A discarded repair's slot is consumed by that repair's own update alone.
 			if !bytes.Equal(slot.committed, update) {
 				s.suppressMu.Unlock()
 				return false
 			}
-			s.consumeHeadSlotLocked(room)
+			s.consumeSlotLocked(room, at)
 			discarded := slot.discarded
 			s.suppressMu.Unlock()
 			return discarded
@@ -760,22 +871,28 @@ func (s *Service) consumeSuppressedPersistence(room string, update []byte) bool 
 			s.suppressMu.Unlock()
 			return false
 		}
-		s.consumeHeadSlotLocked(room)
+		s.consumeSlotLocked(room, at)
 		s.suppressMu.Unlock()
 		return true
 	}
 }
 
-// consumeHeadSlotLocked marks room's first suppression slot consumed and removes it. The caller
-// holds suppressMu.
-func (s *Service) consumeHeadSlotLocked(room string) {
+// consumeSlotLocked marks room's suppression slot at index at consumed and takes it out of the
+// queue in place: the head by reslicing, as the worker takes most slots, any other by moving the
+// slots after it down. The caller holds suppressMu.
+func (s *Service) consumeSlotLocked(room string, at int) {
 	slots := s.suppressed[room]
-	slots[0].consumed = true
-	if len(slots) == 1 {
+	slots[at].consumed = true
+	switch {
+	case len(slots) == 1:
 		delete(s.suppressed, room)
-		return
+	case at == 0:
+		s.suppressed[room] = slots[1:]
+	default:
+		copy(slots[at:], slots[at+1:])
+		slots[len(slots)-1] = nil
+		s.suppressed[room] = slots[:len(slots)-1]
 	}
-	s.suppressed[room] = slots[1:]
 }
 
 func (s *Service) cancelSuppressedPersistence(room string, slot *suppressSlot) {
@@ -842,6 +959,10 @@ func New(deps Deps) *Service {
 	if editNoticeQuiet <= 0 {
 		editNoticeQuiet = defaultEditNoticeQuiet
 	}
+	serviceClock := deps.Clock
+	if serviceClock == nil {
+		serviceClock = clock.Real()
+	}
 	if deps.Events == nil {
 		deps.Events = events.NewBroker()
 	}
@@ -863,6 +984,7 @@ func New(deps Deps) *Service {
 	if persist == nil {
 		pg := NewPgVersioned(deps.Store)
 		pg.processID = processID
+		pg.closeMargin = cmp.Or(deps.CloseMargin, closeMargin)
 		persist = pg
 	}
 	service := &Service{
@@ -875,9 +997,13 @@ func New(deps Deps) *Service {
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,
+		markTimer:         wallMarkTimer,
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
+		clock:             serviceClock,
+		buildCommit:       deps.BuildCommit,
+		markingRule:       refs.BlockIndexMarkingRule,
 		reads:             newDocumentReads(readBudget),
 		roomCap:           roomCap,
 		connectionCap:     connectionCap,
@@ -1115,7 +1241,8 @@ func poolFigures(stat *pgxpool.Stat) PoolFigures {
 // ones already queued - has room to finish: the live durableAppends counter waits for every append
 // a room's writer records, whenever Shutdown's scan found the room, not just the ones it already
 // held. A settlement it cuts short, and the close of its room's editors that follows it, get what
-// is left of the caller's deadline, so a caller's deadline has to exceed it.
+// is left of the caller's deadline, so a caller's deadline has to exceed it. The budget runs on
+// Deps.Clock, the real clock in production.
 const ShutdownDrainBudget = 9 * time.Second
 
 // Shutdown stops queued settlements and runs one worker per loaded room inside the drain budget:
@@ -1178,7 +1305,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 	s.stopAllSettleTimers()
-	drainCtx, cancelDrain := context.WithTimeout(ctx, ShutdownDrainBudget)
+	drainCtx, cancelDrain := s.clock.WithTimeout(ctx, ShutdownDrainBudget)
 	defer cancelDrain()
 	rooms := make([]string, 0, len(loaded))
 	for _, room := range loaded {
@@ -3303,10 +3430,15 @@ func (s *Service) failRoom(room string, cause error) {
 	s.failRoomLocked(room, state, cause)
 }
 
+// failRoomLocked fails room: it drops the room's settlement and starts the room's eviction
+// (evictFailed), which closes the room's sockets. It logs the failure and its cause once,
+// whichever of its callers made it; some of them log a cause of their own first, as livewrite.go
+// and the settlement retry above do.
 func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 	if state.failed != nil {
 		return
 	}
+	slog.Warn("dispatch: a document room failed", "room", room, "error", cause)
 	state.failed = cause
 	s.hooks.countRoomFailure(room)
 	state.failedDone = make(chan struct{})
@@ -3334,7 +3466,9 @@ func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 		if s.beforeFailedEviction != nil {
 			s.beforeFailedEviction(room)
 		}
-		_ = s.evictFailed(room, state)
+		if err := s.evictFailed(room, state); err != nil {
+			slog.Warn("dispatch: a failed document room's eviction failed", "room", room, "error", err)
+		}
 		close(done)
 	}()
 }

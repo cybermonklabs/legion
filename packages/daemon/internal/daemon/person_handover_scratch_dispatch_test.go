@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -232,18 +233,23 @@ type scratchReview struct {
 // overrides at each boot, as a proof that holds the outbox or a registration sets them. scratch
 // is the scratch Dispatch itself, which a proof that writes a row Dispatch's API refuses reaches
 // through its database, and which a second project's rig shares (newProjectRigOn).
+// experimentSource, set before boot, is the random source the booted daemon draws a `random`
+// experiment with; nil is the daemon's own. daemonLog, set before boot, also receives the
+// daemon's log, as a live proof keeps it for its evidence; nil keeps it in logs alone.
 type personHandoverRig struct {
-	t          *testing.T
-	baseURL    string
-	scratch    *scratchDispatch
-	cfg        config.Config
-	pool       *store.Pool
-	logs       *syncBuffer
-	github     string
-	rt         *fake.Runtime
-	d          *daemon
-	architects map[string]rigArchitect
-	tune       func(*overrides)
+	t                *testing.T
+	baseURL          string
+	scratch          *scratchDispatch
+	cfg              config.Config
+	pool             *store.Pool
+	logs             *syncBuffer
+	github           string
+	rt               *fake.Runtime
+	d                *daemon
+	architects       map[string]rigArchitect
+	tune             func(*overrides)
+	experimentSource func(uint64) (uint64, error)
+	daemonLog        io.Writer
 }
 
 // rigArchitect is one launch of a tree's architect and the session the rig registered for it:
@@ -269,12 +275,17 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 }
 
 // newPersonHandoverRigOn is newPersonHandoverRig over the scratch Dispatch board describes: the
-// NATS server it publishes its events on, which the daemon consumes from and which holds no stream
-// of an earlier run, the checkout it runs from, and where its output goes besides. A live proof
-// whose script owns the broker and runs the driver from the checkout's root
-// (register_gate_basis_live_test.go) names all three; every other proof takes newPersonHandoverRig.
+// NATS server it publishes its events on, a server the caller holds (the package's own, or the
+// one a live proof's script runs), which the daemon consumes Dispatch's events from and which
+// holds no stream of an earlier run, the checkout it runs from, and where its output goes
+// besides. A live proof whose script owns the broker and runs the driver from the checkout's root
+// (register_gate_basis_live_test.go, plan_experiment_live_test.go) names all three; every other
+// proof takes newPersonHandoverRig.
 func newPersonHandoverRigOn(t *testing.T, board scratchDispatchOptions, admissionCap int) *personHandoverRig {
 	t.Helper()
+	if board.natsURL == "" {
+		t.Fatal("newPersonHandoverRigOn was given no NATS server, and the daemon reads Dispatch's events off one")
+	}
 	// Dispatch takes a project key of at most ten characters; workflowConfig's is longer.
 	return newProjectRigOn(t, startScratchDispatchOn(t, board), board.natsURL, "P"+randomSuffix(t)[:9], "acme/widgets", admissionCap)
 }
@@ -335,11 +346,16 @@ func (r *personHandoverRig) boot() {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
 	o.controllerFirstWake = time.Hour
+	o.experimentSource = r.experimentSource
 	if r.tune != nil {
 		r.tune(&o)
 	}
 	r.rt = rt
-	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	var logged io.Writer = r.logs
+	if r.daemonLog != nil {
+		logged = io.MultiWriter(r.logs, r.daemonLog)
+	}
+	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
 
 // create creates an issue of the rig's project through Dispatch's API as identity, with fields
@@ -465,11 +481,14 @@ func (r *personHandoverRig) reviews(artifactID string) []scratchReview {
 	return listed
 }
 
-// editDocument applies ops to artifactID as a session through Dispatch's edits route, which
-// versions the document in the route's own transaction, and answers the version it wrote.
+// editDocument applies ops to artifactID as the person through Dispatch's edits route, which
+// versions the document in the route's own transaction, and answers the version it wrote. Each
+// document it edits is the spec of a labelled root. Once the daemon's role-holder publications
+// have marked the project, Dispatch refuses such a write from a session that is no architect of
+// the root (403 DOCUMENT_WRITER_NOT_ARCHITECT), and no architect holds these parked roots.
 func (r *personHandoverRig) editDocument(artifactID string, ops ...map[string]string) int {
 	r.t.Helper()
-	return r.editAs(artifactID, asSession, ops...)
+	return r.editAs(artifactID, asPerson, ops...)
 }
 
 // editAs is editDocument as identity: asPerson is the person at a browser.
@@ -487,7 +506,7 @@ func (r *personHandoverRig) editAs(artifactID string, identity scratchIdentity, 
 	return edited.Version.Number
 }
 
-// revise replaces find with with in artifactID as a session and answers the new version.
+// revise replaces find with with in artifactID as the person and answers the new version.
 func (r *personHandoverRig) revise(artifactID, find, with string) int {
 	r.t.Helper()
 	return r.editDocument(artifactID, map[string]string{"op": "replace", "find": find, "with": with})
@@ -553,9 +572,12 @@ func (r *personHandoverRig) approvalRequest(artifactID string, request map[strin
 	return requested.Ask.ID
 }
 
-// writeDocument writes content as key's document name, as a session uploads one: a new document,
+// writeDocument writes content as key's document name, as the person uploads one: a new document,
 // or the next version of the document of that name, whose role Dispatch reads from the name
-// (verification.md, decisions.md). It answers the document's id. An upload that replaces a
+// (verification.md, decisions.md). It answers the document's id. The person writes it because,
+// once the daemon's role-holder publications have marked the project, Dispatch refuses an upload of
+// an issue's spec or Verification document from a session that is no architect of its tree (403
+// DOCUMENT_WRITER_NOT_ARCHITECT), as editDocument says. An upload that replaces a
 // document key already holds names the token of the version it replaces, as Dispatch's upload
 // route requires (PRECONDITION_REQUIRED otherwise), and a first upload names none
 // (documentToken). Dispatch refuses a check whose `serves` names a block its block index does not
@@ -575,10 +597,9 @@ func (r *personHandoverRig) writeDocument(key, name, content string) string {
 	if token := r.documentToken(key, name); token != "" {
 		upload["precondition"] = map[string]string{"document": token}
 	}
-	body := withSessionActor(t, upload)
 	var last []byte
 	testwait.Eventually(t, "Dispatch to take "+name+" on "+key, func() bool {
-		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", body, asSession)
+		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", upload, asPerson)
 		last = answer
 		switch {
 		case status == http.StatusOK || status == http.StatusCreated:
@@ -652,15 +673,15 @@ func requirementBlock(id string) string {
 	return fmt.Sprintf(":::requirement{#%s}\n**%s.** The change delivers %s.\n:::\n", id, id, id)
 }
 
-// rigCheck is one check of a Verification document: its id and the blocks its `serves` names, in
+// verificationCheck is one check of a Verification document: its id and the blocks its `serves` names, in
 // Dispatch's reference form; none writes a check that serves nothing.
-type rigCheck struct {
+type verificationCheck struct {
 	id     string
 	serves []string
 }
 
 // checksMarkdown is a Verification document holding checks, in that order.
-func checksMarkdown(checks ...rigCheck) string {
+func checksMarkdown(checks ...verificationCheck) string {
 	var text strings.Builder
 	text.WriteString("# Verification\n\n")
 	for _, check := range checks {
@@ -738,7 +759,7 @@ func (r *personHandoverRig) notices(key, kind string) []record.Notice {
 func (r *personHandoverRig) processed(source, id string) bool {
 	r.t.Helper()
 	var marked bool
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 		var err error
 		marked, err = record.NewStore().Processed(r.t.Context(), tx, source, id)
 		return err
@@ -782,7 +803,7 @@ func (r *personHandoverRig) record(key string) record.Issue {
 func (r *personHandoverRig) gates(key string) map[record.DesignStep]record.DesignGate {
 	r.t.Helper()
 	var gates map[record.DesignStep]record.DesignGate
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 		var err error
 		gates, err = record.NewStore().GatesOf(r.t.Context(), tx, key)
 		return err
@@ -797,7 +818,7 @@ func (r *personHandoverRig) gates(key string) map[record.DesignStep]record.Desig
 func (r *personHandoverRig) entryTask(key string, role claim.Role) string {
 	r.t.Helper()
 	var rows []record.PhaseRow
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = record.NewStore().Phases(r.t.Context(), tx, key)
 		return err
@@ -1202,6 +1223,7 @@ func (r *personHandoverRig) cleaned(key string) {
 //     retitle's own sequence, no handover row is queued, and the one queue of step 2 is all the log
 //     holds.
 func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 
@@ -1286,16 +1308,17 @@ func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *
 //  5. the person approves the spec of a parked labelled child, under that root: nothing;
 //  6. the person approves the running root's registered gate document: its gate opens as today,
 //     the state's design gate approved at that version, and no handover is queued;
-//  7. the carried case: on a parked labelled root a session writes a decision block into the spec;
+//  7. the carried case: on a parked labelled root the person writes a decision block into the spec;
 //     the person approves it, which queues the root (todo, waiting), and parks it again; the
 //     person then answers the block, and Dispatch records a carried approval of the version the
 //     answer wrote, in the person's name: the daemon applies it writing nothing;
-//  8. the recorded parked root of step 1, its spec revised by a session, is approved by the person
+//  8. the recorded parked root of step 1, its spec revised by the person, is approved by the person
 //     at the new version: todo within 60 s, admission.waiting names it, and no design-approved
 //     notice is queued for it, since its own gate only records the approval;
-//  9. the root of step 3, parked again by the person and its spec revised by a session, is approved
-//     again by the person at the new version: todo again, a second queue.
+//  9. the root of step 3, parked again by the person and its spec revised by the person, is
+//     approved again by the person at the new version: todo again, a second queue.
 func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}
@@ -1337,8 +1360,10 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	r.applied(r.newestEvent(unlabelled.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))
 	r.notQueued(unlabelled.Key, "backlog", 0)
 
-	// 5. A parked labelled child.
-	child := r.create(asSession, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
+	// 5. A parked labelled child. The person files it: Dispatch refuses a session that is no
+	// architect a create of an issue Legion runs under a parent (403 DOCUMENT_WRITER_NOT_ARCHITECT),
+	// and a person's label hands over a root alone (intake's LabelledTriageRoot).
+	child := r.create(asPerson, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
 	r.setStatus(child.Key, "backlog")
 	review = r.approve(child.PrimaryArtifactID)
 	r.applied(r.newestEvent(child.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))
@@ -1420,6 +1445,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 // It shows the boot path. It does not show a daemon down for longer than the event stream keeps a
 // message.
 func TestABootListingQueuesAPersonsLabelAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 
 	// 1. The person's label falls while no daemon runs.
@@ -1495,6 +1521,7 @@ func TestABootListingQueuesAPersonsLabelAgainstScratchDispatch(t *testing.T) {
 //     todo under the daemon's own actor, admission.waiting names it, the daemon logged the one
 //     queue from source approval and left no handover row in its outbox.
 func TestPersonHandoverIsQueuedForAnApprovalMadeWithThePersonsTokenAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}

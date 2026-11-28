@@ -46,8 +46,9 @@ func TestARetiredWorkersSlotIsNotRepaired(t *testing.T) {
 		return pool
 	}
 	// The fact that drives the Dispatch pass: a todo issue of the project nobody handed to Legion,
-	// which admission records nothing of and promotes nothing for (Admission.applyFact). So the
-	// repair is the only thing the pass can write for the member.
+	// which admission records nothing of and promotes nothing for (Admission.applyFact), applied
+	// through the mirror as the daemon applies it, whose write of the issue's row is the record the
+	// pass runs for. So the repair is the only thing the pass can write for the member.
 	elsewhere := intake.DispatchIssue{Key: "LEGION-900", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated",
 		Status: "todo", Title: "an issue of another team", Rank: "Z"}
 
@@ -57,7 +58,7 @@ func TestARetiredWorkersSlotIsNotRepaired(t *testing.T) {
 		name string
 		run  func()
 	}{
-		{name: "the pass a Dispatch fact drives", run: func() { applyFact(t, pool, admission, "dispatch-1", elsewhere) }},
+		{name: "the pass a Dispatch fact drives", run: func() { applyMirrored(t, pool, admission, "dispatch-1", elsewhere, admission.engine) }},
 		{name: "the controller tick", run: func() { tick(t, pool, admission, "tick-1") }},
 		{name: "the boot's read", run: func() { reconcile(t, pool, admission, nil) }},
 	} {
@@ -76,7 +77,8 @@ func TestARetiredWorkersSlotIsNotRepaired(t *testing.T) {
 	// it and starts the phase again, as the one row that carries the task, held for the issue's
 	// own slot (workflow.StartOrOwe).
 	resumable := stopped(t, supervise.StateSuspended, supervise.SuspendedByDaemon)
-	applyFact(t, resumable, quiet(t, 1), "dispatch-1", elsewhere)
+	resumableAdmission := quiet(t, 1)
+	applyMirrored(t, resumable, resumableAdmission, "dispatch-1", elsewhere, resumableAdmission.engine)
 	rows := startsOf(t, resumable, member)
 	owed := owedStarts(t, resumable, member)
 	if len(rows) != 1 || len(owed) != 1 || owed[0].role != claim.RoleTester || owed[0].task == "" {

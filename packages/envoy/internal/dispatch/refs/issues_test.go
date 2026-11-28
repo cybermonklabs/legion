@@ -73,6 +73,7 @@ func repoName(repo *string) string {
 // exactly issueRepoCap links below the root is still answered, so the refusal is the cap's own
 // boundary and not a fixture that fails for every issue.
 func TestIssueRepositoryRefusesAChainPastTheDepthCap(t *testing.T) {
+	t.Parallel()
 	database := newIssueRepoChain(t, issueRepoCap+2)
 	ctx := context.Background()
 
@@ -102,6 +103,7 @@ func TestIssueRepositoryRefusesAChainPastTheDepthCap(t *testing.T) {
 // than answering with the project's default. The same issue resolves before the loop is closed,
 // so the refusal is the loop's.
 func TestIssueRepositoryRefusesALoopedParentChain(t *testing.T) {
+	t.Parallel()
 	database := newIssueRepoChain(t, 2)
 	ctx := context.Background()
 
@@ -255,6 +257,7 @@ func issueRepoSetAnswer(t *testing.T, database *store.Store, key string) string 
 // project that has no default, and a key no issue has. The spread check below says the ground
 // still holds all four answers, so an agreement on "none" everywhere cannot pass for one.
 func TestIssueRepositoryAnswersWhatMainsLateralDid(t *testing.T) {
+	t.Parallel()
 	database := newIssueRepoGround(t)
 	seen := map[string]bool{}
 	for _, ground := range []struct{ key, is string }{
@@ -279,6 +282,62 @@ func TestIssueRepositoryAnswersWhatMainsLateralDid(t *testing.T) {
 	for _, answer := range []string{"refused", "none", issueRepoChainDefault, issueRepoOwnRepo} {
 		if !seen[answer] {
 			t.Errorf("no issue of the ground resolved to %s, so the comparison never covered it", answer)
+		}
+	}
+}
+
+// An issue's repository is read only from ancestors of its own project: the walk ends at its
+// first ancestor of another project as at a root, and the issue takes its own project's default.
+// BETA-1 sits under ALPHA-1, which names acme/alpha, and takes BETA's default acme/beta. BETA-3's
+// chain leaves BETA and comes back, BETA-3 under ALPHA-2 under BETA-4, and it takes nothing from
+// BETA-4's acme/beta4 either; ALPHA-2 takes nothing from BETA-4, and resolves to ALPHA's default
+// alone. ALPHA-5 under ALPHA-1 and BETA-6 under BETA-5 still inherit, which is the control.
+func TestIssueRepositoryStopsAtTheProjectEdge(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the fixture: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "ALPHA")
+	createReferenceProject(t, tx, "BETA")
+	for project, repo := range map[string]string{"ALPHA": "acme/alpha-default", "BETA": "acme/beta"} {
+		if _, err := tx.Exec(ctx, `update projects set default_repo = $1 where key = $2`, repo, project); err != nil {
+			t.Fatalf("set %s's default repository: %v", project, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into issues (key, project_key, number, title, parent_key, repo, created_by, rank) values
+			('ALPHA-1', 'ALPHA', 1, 'Names a repository', null, 'acme/alpha', '{"kind":"user","id":"alice"}', '00000001'),
+			('ALPHA-5', 'ALPHA', 5, 'Under its own project', 'ALPHA-1', null, '{"kind":"user","id":"alice"}', '00000005'),
+			('BETA-1', 'BETA', 1, 'Under another project', 'ALPHA-1', null, '{"kind":"user","id":"alice"}', '00000001'),
+			('BETA-4', 'BETA', 4, 'Names a repository', null, 'acme/beta4', '{"kind":"user","id":"alice"}', '00000004'),
+			('ALPHA-2', 'ALPHA', 2, 'Between two of BETA', 'BETA-4', null, '{"kind":"user","id":"alice"}', '00000002'),
+			('BETA-3', 'BETA', 3, 'Back in its project', 'ALPHA-2', null, '{"kind":"user","id":"alice"}', '00000003'),
+			('BETA-5', 'BETA', 5, 'Names a repository', null, 'acme/beta5', '{"kind":"user","id":"alice"}', '00000005'),
+			('BETA-6', 'BETA', 6, 'Under its own project', 'BETA-5', null, '{"kind":"user","id":"alice"}', '00000006')
+	`); err != nil {
+		t.Fatalf("write the issues: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the fixture: %v", err)
+	}
+
+	for _, want := range []struct{ key, repo, is string }{
+		{"BETA-1", "acme/beta", "an issue under an issue of another project"},
+		{"BETA-3", "acme/beta", "an issue whose chain leaves its project and comes back"},
+		{"ALPHA-2", "acme/alpha-default", "an issue under an issue of another project that names one"},
+		{"ALPHA-5", "acme/alpha", "an issue under its own project's issue"},
+		{"BETA-6", "acme/beta5", "another issue under its own project's issue"},
+	} {
+		resolved, err := IssueRepository(ctx, database.Pool, want.key)
+		if err != nil {
+			t.Fatalf("resolve %s: %v", want.key, err)
+		}
+		if resolved == nil || *resolved != want.repo {
+			t.Errorf("%s, %s, resolved to %s, want %s", want.key, want.is, repoName(resolved), want.repo)
 		}
 	}
 }

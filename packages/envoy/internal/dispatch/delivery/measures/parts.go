@@ -1,0 +1,177 @@
+package measures
+
+import "time"
+
+// Every delivery and CI number is one rule split in two (dispatch://INFRA-2916, R7 and R12): a day
+// builder (the functions named <Measure>Day) turns the rows of one UTC day into that day's parts,
+// and one exported fold (the functions named Fold<Measure>) turns any set of parts into the
+// answer. The delivery routes build the parts of their window's days from the rows they read and
+// fold them (Compute, PRChecks, DeployJobs, LeadTimes). A later slice of cybermonklabs/legion#3976
+// stores the parts as day rows and folds them through the same folds, so each rule has one
+// statement and a read that both families serve has one answer.
+//
+// A fold reads the parts of its own series and passes over the rest, so it can be handed every
+// part of its eval. A count or a sum adds Sum; a share is the summed Num over the summed Den, never
+// the mean of the days' shares; a quantile reads SortedSamples.Quantile over every sample of the
+// days in ascending order (MergedSamples), which is the quantile of every value of those days,
+// never the mean of the days' quantiles. For pointer-returning folds (FoldDeployFrequency,
+// FoldDeployRunSuccess, FoldReworkShare), a set that holds no part of the fold's series reads nil,
+// never 0, while a part built for a day with no rows is a zero part and reads as zero counts (and
+// nil shares). Value-returning cell folds (FoldLeadTime, FoldTiming, FoldTimeToRestore) return a
+// zero-count struct with nil quantile and rate pointers when no sample or result is present, and
+// FoldChangeFailureRate returns zero failure counts and rates in this slice (no failure source),
+// with its totals still counted.
+
+// DayPart is one series' part of one UTC day: what a day row of cybermonklabs/legion#3976's store
+// holds beside its key (project, eval and repository) and its bookkeeping, so a fold reads a
+// stored row and a part built on request alike, and its JSON keys are the stored row's. Sum, Num,
+// Den, Max and LastValue are nil where the part holds no such value.
+// A builder fills the columns its series' fold reads: a sum N and Sum; a share N (the rows its
+// denominator counts), Num and Den; a quantile N, Sum, Max and Samples, every value of the day.
+// Counts are the named sub-counts a fold sums beside the value (CountWithPRs and the rest).
+// LastValue is the value measured last and LastAt its moment, nil where LastValue is.
+// LastRecordedAt and LastReading say which write stored it, a logged eval's reading by its
+// recorded_at and id, which breaks a tie of two parts' LastAt for the `last` fold of the logged
+// evals cybermonklabs/legion#3976 adds; they are nil and "" where the part records no write.
+// ViaRepository is how many of the day's rows reached the part's project through a repository
+// rather than an issue (dispatch://INFRA-2916, D1); the builders here read no project, and leave it
+// to the caller that attributes their rows.
+type DayPart struct {
+	Series string `json:"series"`
+	// Day is the UTC midnight the day starts at.
+	Day            time.Time          `json:"day"`
+	N              int                `json:"n"`
+	Sum            *float64           `json:"sum"`
+	Num            *float64           `json:"num"`
+	Den            *float64           `json:"den"`
+	Max            *float64           `json:"max"`
+	Samples        []float64          `json:"samples"`
+	Counts         map[string]float64 `json:"counts"`
+	LastValue      *float64           `json:"last_value"`
+	LastAt         *time.Time         `json:"last_at"`
+	LastRecordedAt *time.Time         `json:"last_recorded_at"`
+	LastReading    string             `json:"last_reading"`
+	ViaRepository  int                `json:"via_repository"`
+}
+
+// The series the delivery and CI evals' parts are named by.
+const (
+	// SeriesDeploys is deploy-frequency's: the successful deploys (a sum).
+	SeriesDeploys = "deploys"
+	// SeriesRuns is deploy-run-success's: the runs that reached production over those that
+	// concluded (a share).
+	SeriesRuns = "runs"
+	// SeriesPRs is rework-share's: the rework pull requests over every one (a share).
+	SeriesPRs = "prs"
+	// SeriesPerDeploy, SeriesUpperBound and SeriesPerPR are change-fail-rate's three shares.
+	SeriesPerDeploy  = "per_deploy"
+	SeriesUpperBound = "upper_bound"
+	SeriesPerPR      = "per_pr"
+	// SeriesMinutes is the minutes of every lead time, of failed-deploy-recovery and of each CI
+	// eval (a quantile).
+	SeriesMinutes = "minutes"
+	// JobSeriesPrefix and a job's name are pr-ci's series of that one job (a quantile): the
+	// series the slowest-jobs table ranks.
+	JobSeriesPrefix = "job:"
+)
+
+// The named counts a part carries beside its value.
+const (
+	CountWithPRs   = "with_prs"
+	CountCancelled = "cancelled"
+	CountSuccess   = "success"
+	CountFailure   = "failure"
+	CountPending   = "pending"
+	CountRejected  = "rejected"
+	CountReverts   = "reverts"
+)
+
+// CountPart is a sum's part: count rows, with counts beside them. The part helpers and the fold
+// helpers below are exported because the Legion builders and folds (legion/metrics) build and add
+// up their parts by the same rules.
+func CountPart(day time.Time, series string, count int, counts map[string]float64) DayPart {
+	sum := float64(count)
+	return DayPart{Series: series, Day: day, N: count, Sum: &sum, Counts: counts}
+}
+
+// RatioPart is a share's part: numerator over denominator, N the rows the denominator counts.
+func RatioPart(day time.Time, series string, numerator, denominator int, counts map[string]float64) DayPart {
+	num, den := float64(numerator), float64(denominator)
+	return DayPart{Series: series, Day: day, N: denominator, Num: &num, Den: &den, Counts: counts}
+}
+
+// SamplesPart is a quantile's part: every value of the day, with their count, sum and largest.
+// The sum is taken in the order of samples.
+func SamplesPart(day time.Time, series string, samples []float64, counts map[string]float64) DayPart {
+	part := DayPart{Series: series, Day: day, N: len(samples), Samples: samples, Counts: counts}
+	if part.Samples == nil {
+		part.Samples = []float64{}
+	}
+	sum, largest := 0.0, 0.0
+	for i, value := range samples {
+		sum += value
+		if i == 0 || value > largest {
+			largest = value
+		}
+	}
+	if len(samples) > 0 {
+		part.Max = &largest
+	}
+	part.Sum = &sum
+	return part
+}
+
+// Folded is one series' parts added up: how many parts were of the series (Parts, which is 0
+// where none was), and their sums, numerators, denominators and counts.
+type Folded struct {
+	Parts         int
+	Sum, Num, Den float64
+	Counts        map[string]float64
+}
+
+// FoldSeries adds up the parts of series among parts, in the order parts are given.
+func FoldSeries(parts []DayPart, series string) Folded {
+	var f Folded
+	for _, part := range parts {
+		if part.Series != series {
+			continue
+		}
+		f.Parts++
+		f.Sum += ValueOrZero(part.Sum)
+		f.Num += ValueOrZero(part.Num)
+		f.Den += ValueOrZero(part.Den)
+		for name, count := range part.Counts {
+			if f.Counts == nil {
+				f.Counts = map[string]float64{}
+			}
+			f.Counts[name] += count
+		}
+	}
+	return f
+}
+
+// share is the summed numerator over the summed denominator, nil when the denominator is 0.
+func (f Folded) share() *float64 {
+	if f.Den == 0 {
+		return nil
+	}
+	return new(f.Num / f.Den)
+}
+
+// partsByDay is parts by the UTC day each is of, YYYY-MM-DD.
+func partsByDay(parts []DayPart) map[string][]DayPart {
+	byDay := map[string][]DayPart{}
+	for _, part := range parts {
+		key := utcDay(part.Day)
+		byDay[key] = append(byDay[key], part)
+	}
+	return byDay
+}
+
+// ValueOrZero is *value, 0 where value is nil: a part's Sum, Num or Den as a fold adds it.
+func ValueOrZero(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}

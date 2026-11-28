@@ -13,6 +13,8 @@ import (
 // on the same database at once must still come up: its registration waits for the dead row to
 // lapse (processes.Register) rather than refusing beside a process that no longer runs.
 func TestADevSignInServerRestartedAfterAKillStarts(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break (the restart's waitHealthy,
+	// 30 s, past a 15 s registry row).
 	database := storetest.Open(t)
 	options := dispatchOptions{Env: map[string]string{
 		"DISPATCH_DEV_SIGNIN":              "1",

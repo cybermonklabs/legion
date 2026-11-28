@@ -12,10 +12,14 @@
 # run's queue branch and id, which merge-group-cancels.sh reads beside the RUNS this script
 # exports. That job checks out with `sparse-checkout: .github`, so this script and the one it runs
 # are both in the checkout when the step runs.
-# The runner sets $GITHUB_REPOSITORY, which both `gh` calls name, for every step. Both calls go
-# through gh-read.sh's gh_wait_reset, which waits out a spent API budget within the step's
-# JOB_TIMEOUT_MINUTES and fails by name past it: a refused list fails the step as it did, and a
-# refused cancel warns as it did.
+# The runner sets $GITHUB_REPOSITORY, which both `gh` calls name, for every step. The list goes
+# through gh-read.sh's gh_read, its three-attempt ladder over gh_wait_reset, so one refusal GitHub
+# lifts by itself is read again rather than failing the merge group: merge-group run 45467602844
+# (pull request #5331's second group) went red whole when the list answered HTTP 500 once, in job
+# 138706588845. A list still refused after the three attempts fails the step as it did. Each cancel
+# goes through gh_wait_reset alone, which waits out a spent API budget within the step's
+# JOB_TIMEOUT_MINUTES and fails by name past it, and a refused cancel warns as it did.
+# Its tests are in cancel-started-act.test.sh, which ci.yaml's test job runs.
 #
 # Run from the repository root, with those three and $GITHUB_REPOSITORY set:
 #   .github/scripts/cancel-started-act.sh
@@ -24,10 +28,10 @@ set -euo pipefail
 # shellcheck source=.github/scripts/gh-read.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
-# The `--limit` is 100 because the queue builds up to 20 groups at once and this pull
-# request's own groups are among them: gh's default of 20 runs could leave an older
+# The `--limit` is 100, well above the number of groups main's merge queue builds at once, and
+# this pull request's own groups are among those: gh's default of 20 runs could leave an older
 # group of it out of the list, and so out of the act.
-RUNS=$(gh_wait_reset gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml \
+RUNS=$(gh_read gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml \
   --event merge_group --limit 100 --json databaseId,headBranch,status,createdAt)
 export RUNS
 acts=$(.github/scripts/merge-group-cancels.sh)

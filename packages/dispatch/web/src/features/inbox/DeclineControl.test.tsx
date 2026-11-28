@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { act, render, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: one row needs a write that passes maxLength.
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -14,10 +15,17 @@ import { ApiError, api, type DeclineAskInput, NetworkError } from "../../api/cli
 import { inboxQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { Ask, AskRead, DispatchEvent, InboxRow } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
 import { issueAsk } from "./inbox-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 let whoAmI: Mock<typeof api.whoAmI>;
 let getReferences: Mock<typeof api.getReferences>;
@@ -293,6 +301,57 @@ test("the decline dialog counts what is left to write, and sends no note when em
     expect(record.textContent).toContain("alice declined to answer");
     // A decline with no note holds no reason, so the line ends with the act itself.
     expect(record.textContent).not.toContain("declined to answer -");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A pick writes into the box without typing, so a note can pass the bound the field's own
+// `maxLength` holds typing to. Both ways out of the box answer to one test of that: the button
+// and Ctrl+Enter, which has no form to submit and so reaches `onFormlessSubmit`.
+test("a note past the bound sends by neither the button nor Ctrl+Enter", async () => {
+  const user = userEvent.setup();
+  const open = openAsk();
+  const sent: DeclineAskInput[] = [];
+  const { view } = renderCard(
+    <AskCard
+      ask={open}
+      declineAsk={async (_id, input) => {
+        sent.push(input);
+        return declinedAsk("");
+      }}
+      getAskThread={async () => thread(declinedAsk(""))}
+      initialThread={thread(open)}
+    />
+  );
+  const card = within(view.container);
+  try {
+    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
+    const field = within(dialog).getByLabelText("Note (optional)") as HTMLTextAreaElement;
+    // What a pick does and typing cannot: a write that passes the box's own `maxLength`, which
+    // user-event honours as a browser does, so there is no user-event form for this one.
+    fireEvent.change(field, { target: { value: "x".repeat(DISPATCH_EVENT_BODY_MAX + 5) } });
+    expect(within(dialog).getByText("-5 characters left")).toBeTruthy();
+
+    const decline = within(dialog).getByRole("button", { name: "Decline to answer" });
+    expect(decline).toBeDisabled();
+    await user.click(decline);
+    await user.click(field);
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    // The refused presses are not waited on: a send the box let through would reach
+    // `declineAsk` through the write's own queue, and the in-bound send below goes through that
+    // same queue. So the row brings the note back inside the bound, presses the keys again, and
+    // waits on that one send to land: anything the refused presses let through would stand in
+    // `sent` before it.
+    fireEvent.change(field, { target: { value: "short" } });
+    expect(within(dialog).getByText(`${DISPATCH_EVENT_BODY_MAX - 5} characters left`)).toBeTruthy();
+    await user.click(field);
+    await user.keyboard("{Control>}{Enter}{/Control}");
+
+    await waitFor(() => expect(sent).toEqual([{ note: "short" }]));
   } finally {
     view.unmount();
   }

@@ -1,0 +1,19 @@
+# proxy-placeholder-left-bounded: the default placeholder prefix is read only where no letter or
+# digit comes before it, so a live placeholder written right after a letter goes upstream unswapped.
+# must fail: TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused
+# Applied with patch -p1 from a copy.
+
+diff --git a/packages/envoy/internal/cipher/proxy/leftover.go b/packages/envoy/internal/cipher/proxy/leftover.go
+index eb45c2a0aeb1..19700a202b62 100644
+--- a/packages/envoy/internal/cipher/proxy/leftover.go
++++ b/packages/envoy/internal/cipher/proxy/leftover.go
+@@ -150,7 +150,8 @@ func headerPlaceholder(prefixes []placeholderPrefix, v string) string {
+ func placeholderInPrefixes(text string, prefixes []placeholderPrefix) string {
+ 	for i := range len(text) {
+ 		for _, prefix := range prefixes {
+-			if !strings.HasPrefix(text[i:], prefix.text) || prefix.leftBounded && i > 0 && placeholder.ASCIILetterOrDigit(text[i-1]) {
++			// MUTANT: the default prefix has the kind-prefix left boundary too.
++			if !strings.HasPrefix(text[i:], prefix.text) || i > 0 && placeholder.ASCIILetterOrDigit(text[i-1]) {
+ 				continue
+ 			}
+ 			if found := placeholderAtPrefix(text[i:], prefix); found != "" {

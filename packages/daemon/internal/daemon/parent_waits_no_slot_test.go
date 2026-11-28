@@ -20,6 +20,7 @@ import (
 // tick's re-read, which is the only read that reaches a child filed and not released, the restart
 // between the move and the return, and the release of the waiting parent's pod.
 func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
+	t.Parallel()
 	parent := startedParent
 	filed := dispatch.IssueSummary{Key: filedChild, Status: "triage", Parent: &parent, LastSeq: 1}
 
@@ -128,7 +129,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		if err := st.PutClaim(ctx, supervise.Claim{Token: token, Project: project, Tree: startedParent, Issue: startedParent,
 			Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: supervise.StateSuspended,
 			SuspendedBy: supervise.SuspendedByReleased, Session: "ses-implementer", SessionFile: "/tmp/implementer.jsonl",
-			PluginContract: api.DaemonAPIVersion}); err != nil {
+			PluginContract: api.DaemonAPIVersion()}); err != nil {
 			t.Fatalf("seed the released implementer: %v", err)
 		}
 		runner := &outbox{pool: pool, records: record.NewStore(), project: project, dispatchProject: "CAPTURE", trees: st,

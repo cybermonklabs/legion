@@ -25,7 +25,7 @@ func derivedHandler(t *testing.T) (http.Handler, *store.Store) {
 		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 		return service
 	})
-	return withDeadline(handler), database
+	return withDeadline(t, handler), database
 }
 
 // A message is inserted in the batch that appends its event, so the message the route answers and
@@ -34,6 +34,7 @@ func derivedHandler(t *testing.T) (http.Handler, *store.Store) {
 // spelled it in; its author as the jsonb column decodes. Each equals the stored row, as it did when
 // the route read the row back from the insert.
 func TestDerivedMessageIsTheStoredRow(t *testing.T) {
+	t.Parallel()
 	handler, database := derivedHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Derived message", "A spec")
 	path := "/api/v1/issues/" + issue.Key + "/messages"
@@ -81,6 +82,7 @@ func TestDerivedMessageIsTheStoredRow(t *testing.T) {
 // in the read phase rather than returned by the update, on the row and on the ask.edited event's
 // copy of the row alike.
 func TestDerivedApprovalMoveEditedAtIsTheRowsEditedAt(t *testing.T) {
+	t.Parallel()
 	handler, database := derivedHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Derived approval move", "A spec")
 	requested := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{
@@ -128,6 +130,7 @@ func TestDerivedApprovalMoveEditedAtIsTheRowsEditedAt(t *testing.T) {
 // phase's batch (docs.QueueReview): the update names the event the statements before it appended
 // (store.LatestEventID), so the row's event_seq is that artifact.approved event's sequence.
 func TestDerivedReviewEventSeqIsItsEventsSequence(t *testing.T) {
+	t.Parallel()
 	handler, database := derivedHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Derived review", "A spec")
 	requested := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{

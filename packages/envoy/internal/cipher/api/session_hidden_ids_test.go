@@ -117,7 +117,7 @@ func newSessionHiddenRig(t *testing.T) *sessionHiddenRig {
 	pods, err := exchange.NewSet([]exchange.AccountEntry{
 		{Account: workerAccount, Project: "PRIV", Person: testApprover},
 		{Account: otherAccount, Project: "PUB", Person: testApprover},
-	}, nil, nil, nil, "")
+	}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
