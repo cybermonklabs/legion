@@ -71,8 +71,10 @@ internal/repocache; leg 2 is internal/store's with the small packages and the ra
 tests, the session client's left-setting test (a step of its own, which runs that test of
 internal/ompsessions by name with -v so that its summary line reaches the log), the forced-order
 tests and Stage 1; leg 3 is internal/workspace, internal/runtime/sandbox, internal/workflow,
-internal/admit, internal/api and the rest, about 874 s of package time over four cores, and the
-stamped shape gate, which reuses the test build of internal/api that leg 3's plain step compiled.
+internal/admit, internal/api and the rest, about 924 s of package time over four cores (874 s in
+those groups, and 50 s for internal/conversation/omp and internal/conversation/claude in
+pull-request run 45683245721), and the stamped shape gate, which reuses the test build of
+internal/api that leg 3's plain step compiled.
 
 The rules the legs keep:
 

@@ -5,13 +5,15 @@
 // the release .omp-pin names): it creates and migrates omp_session_files and
 // omp_session_files_parts, the lease table omp_session_leases, and the blob and reference tables
 // omp_session_files_blobs and omp_session_files_refs, when it starts, keys a session by the path
-// its file would have had (the
-// session file a claim records), and reads a session as the row's content followed by its parts in
-// offset order. Legion reads it to hold a resume to a session the table holds (Written, the role
-// launcher's check) and to find the file of a session named by its id alone (FindByID, the same
-// launcher's lookup), seeds it once from the files sessions were kept in before (Import,
-// `legion sessions import`), and keeps a Claude Code session's files in it as Oh My Pi's own writes
-// would (Append and Replace, the role launcher's, which no Oh My Pi runs beside).
+// its file would have had (the session file a claim records), and reads a session as the row's
+// content followed by its parts in offset order.
+//
+// The role launcher checks a session's write time with Written and resolves a resume by id with
+// FindByID. It uses Read, Append and Replace to keep Claude Code session files in the table.
+// The `legion sessions import` command copies session files into the table with Import.
+// HasTable checks whether the session table is readable, Titles lists session titles and headers
+// from the table, and Describe and DescribeFile read metadata from session content or files.
+// ReadBlob reads and verifies the bytes of an image stored under its SHA-256 hash.
 //
 // Every statement runs in a transaction that one message opens and pins, OpenRead or OpenWrite
 // (open.go), which sets back for the transaction each setting of LeftSettings that another client
@@ -41,6 +43,7 @@ import (
 
 	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/pgdsn"
+	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
 
 // Oh My Pi's two session-storage variables (session-storage-config.ts): StorageVariable set to
@@ -634,6 +637,25 @@ func Written(ctx context.Context, conn *Conn, path string) (at time.Time, ok boo
 	return time.UnixMilli(mtime), true, nil
 }
 
+// HasTable returns true if the connection's login can read public.omp_session_files.
+// If the table is absent, it returns false without an error. It returns an error if the
+// database does not answer, the login cannot read the table, or a row-security policy would
+// affect the read (OpenRead sets row_security off). The pinned transaction (inTransaction) also
+// rejects views, foreign tables, and servers without restrict_nonsystem_relation_kind support.
+func HasTable(ctx context.Context, conn *Conn) (bool, error) {
+	err := inTransaction(ctx, conn, true, func(p pinned) error {
+		_, err := p.exec(ctx, "SELECT 1 FROM public.omp_session_files LIMIT 0")
+		return err
+	})
+	switch {
+	case isUndefinedTable(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read the session table: %w", err)
+	}
+	return true, nil
+}
+
 // FindByID is the path of the newest session the table holds under the session id id, for a start
 // of the role launcher that names a session by its id alone (shimwire.LauncherStart.ResumeSession):
 // the path of the row whose path ends in `_<id>.jsonl`, the one with the greatest mtime_ms, then
@@ -799,7 +821,8 @@ const partBytes = 1024 * 1024
 
 // MovedError is Append's and Replace's refusal of a session whose row is not the one its writer
 // last saved: another writer moved it since, and nothing was written. Saved is the byte_len the
-// writer last saved and Held the one the table holds, either Absent for no row.
+// writer last saved and Held the one the table holds, either Absent for no row. It Is
+// conversation.ErrMoved, the refusal every appender of a conversation shares.
 type MovedError struct {
 	Path        string
 	Saved, Held int64
@@ -809,6 +832,9 @@ func (e *MovedError) Error() string {
 	return fmt.Sprintf("session %s moved under its writer: the table holds %s where the writer last saved %s",
 		e.Path, describeLength(e.Held), describeLength(e.Saved))
 }
+
+// Is makes a MovedError match conversation.ErrMoved.
+func (e *MovedError) Is(target error) bool { return target == conversation.ErrMoved }
 
 func describeLength(n int64) string {
 	if n == Absent {

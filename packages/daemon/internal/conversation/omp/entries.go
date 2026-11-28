@@ -1,0 +1,252 @@
+package omp
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+
+	"github.com/sjawhar/legion/daemon/internal/conversation"
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+)
+
+// sessionVersion is the one session header version this reader knows: the pinned Oh My Pi's
+// CURRENT_SESSION_VERSION. Older files Oh My Pi migrates when it loads them, and a newer one it
+// would read as current; the reader refuses both rather than guess.
+const sessionVersion = 3
+
+// entryTypes are the pinned Oh My Pi's session entry types (session-entries.ts SessionEntry). Any
+// other type refuses the session.
+var entryTypes = map[string]bool{
+	"message": true, "model_usage": true, "thinking_level_change": true, "model_change": true,
+	"service_tier_change": true, "compaction": true, "branch_summary": true, "custom": true,
+	"custom_message": true, "label": true, "title_change": true, "ttsr_injection": true,
+	"session_init": true, "mode_change": true, "credential_pin": true, "reset_boundary": true,
+}
+
+// header is a session file's header record: its first record, after the title slot.
+type header struct {
+	Type          string `json:"type"`
+	Version       *int   `json:"version"`
+	ID            string `json:"id"`
+	Timestamp     string `json:"timestamp"`
+	Cwd           string `json:"cwd"`
+	ParentSession string `json:"parentSession"`
+}
+
+// entry is one session entry, with the fields any type the reader acts on carries.
+type entry struct {
+	Type         string          `json:"type"`
+	ID           string          `json:"id"`
+	ParentID     *string         `json:"parentId"`
+	Timestamp    string          `json:"timestamp"`
+	ActiveLeafID json.RawMessage `json:"activeLeafId"`
+	// message
+	Message *message `json:"message"`
+	// custom, custom_message
+	CustomType  string          `json:"customType"`
+	Data        json.RawMessage `json:"data"`
+	Content     json.RawMessage `json:"content"`
+	Attribution *string         `json:"attribution"`
+	// compaction, branch_summary
+	Summary                      string                     `json:"summary"`
+	FirstKeptEntryID             string                     `json:"firstKeptEntryId"`
+	ProviderReplayThroughEntryID string                     `json:"providerReplayThroughEntryId"`
+	Method                       string                     `json:"method"`
+	PreserveData                 map[string]json.RawMessage `json:"preserveData"`
+	// compaction, branch_summary, custom_message
+	Details json.RawMessage `json:"details"`
+	// thinking_level_change
+	ThinkingLevel *string `json:"thinkingLevel"`
+	// model_change
+	Model string  `json:"model"`
+	Role  *string `json:"role"`
+}
+
+// message is a message entry's message, with the fields of every role the reader acts on.
+type message struct {
+	Role             string          `json:"role"`
+	Content          json.RawMessage `json:"content"`
+	Attribution      string          `json:"attribution"`
+	Steering         bool            `json:"steering"`
+	Timestamp        *float64        `json:"timestamp"`
+	HistoryRewriteAt *float64        `json:"historyRewriteAt"`
+	ProviderPayload  json.RawMessage `json:"providerPayload"`
+	// assistant
+	API             string          `json:"api"`
+	Provider        string          `json:"provider"`
+	Model           string          `json:"model"`
+	StopReason      string          `json:"stopReason"`
+	ErrorID         float64         `json:"errorId"`
+	ErrorMessage    string          `json:"errorMessage"`
+	RequestControls json.RawMessage `json:"requestControls"`
+	RetryRecovery   json.RawMessage `json:"retryRecovery"` // true in older builds, an object now
+	Continued       json.RawMessage `json:"continued"`
+	// toolResult
+	ToolCallID       string          `json:"toolCallId"`
+	ToolName         string          `json:"toolName"`
+	IsError          bool            `json:"isError"`
+	PrunedAt         *float64        `json:"prunedAt"`
+	ProviderMetadata json.RawMessage `json:"providerMetadata"`
+	Details          json.RawMessage `json:"details"`
+	// custom
+	CustomType string `json:"customType"`
+	// bashExecution, pythonExecution
+	ExcludeFromContext bool          `json:"excludeFromContext"`
+	Command            string        `json:"command"`
+	Code               string        `json:"code"`
+	Output             string        `json:"output"`
+	ExitCode           *float64      `json:"exitCode"`
+	Cancelled          bool          `json:"cancelled"`
+	Images             []block       `json:"images"`
+	Meta               executionMeta `json:"meta"`
+	// fileMention
+	Files []mentionedFile `json:"files"`
+}
+
+// block is a content block of a message, with the fields of every block type.
+type block struct {
+	Type              string `json:"type"`
+	Text              string `json:"text"`
+	TextSignature     string `json:"textSignature"`
+	Thinking          string `json:"thinking"`
+	ThinkingSignature string `json:"thinkingSignature"`
+	Data              string `json:"data"`
+	MimeType          string `json:"mimeType"`
+	Detail            string `json:"detail"`
+	URL               string `json:"url"`
+	ProviderFile      struct {
+		Provider string `json:"provider"`
+		ID       string `json:"id"`
+	} `json:"providerFile"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	Arguments        json.RawMessage `json:"arguments"`
+	CustomWireName   string          `json:"customWireName"`
+	Namespace        string          `json:"namespace"`
+	ProviderMetadata json.RawMessage `json:"providerMetadata"`
+	NativeBlock      json.RawMessage `json:"block"`
+	From             json.RawMessage `json:"from"`
+	To               json.RawMessage `json:"to"`
+}
+
+type mentionedFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	Image   *block `json:"image"`
+}
+
+// parsed is a session's records as Oh My Pi's loader reads them.
+type parsed struct {
+	header  header
+	entries []*entry
+}
+
+// parseSession reads content as Oh My Pi's lenient JSONL loader does (session-loader.ts): a
+// first line that is a title slot is set aside, a blank line or a line that is not JSON (a torn
+// last record) is skipped, and the first record must be the session header. Unlike the loader,
+// a well-formed record of a type, or a header version, the pinned Oh My Pi does not write refuses
+// the session.
+func parseSession(content []byte, resolve func(string) ([]byte, error)) (*parsed, error) {
+	var p parsed
+	blobs := sessionBlobs{read: resolve}
+	first := true
+	sawHeader := false
+	for len(content) > 0 {
+		line := content
+		if i := bytes.IndexByte(content, '\n'); i >= 0 {
+			line, content = content[:i], content[i+1:]
+		} else {
+			content = nil
+		}
+		line = bytes.TrimSpace(line)
+		wasFirst := first
+		first = false
+		if len(line) == 0 || !json.Valid(line) {
+			continue
+		}
+		if wasFirst {
+			if _, _, ok := ompsessions.ParseTitleSlot(line); ok {
+				continue
+			}
+		}
+		if !sawHeader {
+			if err := json.Unmarshal(line, &p.header); err != nil || p.header.Type != "session" || p.header.ID == "" {
+				return nil, conversation.Unknown("the session's first record is not an Oh My Pi session header")
+			}
+			if p.header.Version == nil || *p.header.Version != sessionVersion {
+				version := "none"
+				if p.header.Version != nil {
+					version = fmt.Sprint(*p.header.Version)
+				}
+				return nil, conversation.Unknown("session header version %s", version)
+			}
+			sawHeader = true
+			continue
+		}
+		var e entry
+		if err := json.Unmarshal(line, &e); err != nil {
+			return nil, conversation.Unknown("a session record Oh My Pi's entry shape does not fit: %v", err)
+		}
+		if e.Type == "session" {
+			// The loader keeps every later header record out of the entries.
+			continue
+		}
+		if !entryTypes[e.Type] {
+			return nil, conversation.Unknown("session entry type %q", e.Type)
+		}
+		if e.ID == "" {
+			return nil, conversation.Unknown("a %s entry with no id", e.Type)
+		}
+		if len(e.ActiveLeafID) != 0 && e.ActiveLeafID[0] != '"' && string(e.ActiveLeafID) != "null" {
+			return nil, conversation.Unknown("entry %s has a non-string activeLeafId", e.ID)
+		}
+		if e.Type == "message" && e.Message == nil {
+			return nil, conversation.Unknown("message entry %s with no message", e.ID)
+		}
+		restored, err := blobs.restoreEntry(line)
+		if err != nil {
+			return nil, err
+		}
+		if !bytes.Equal(restored, line) {
+			e = entry{}
+			if err := json.Unmarshal(restored, &e); err != nil {
+				return nil, conversation.Unknown("a restored session record Oh My Pi's entry shape does not fit: %v", err)
+			}
+		}
+		p.entries = append(p.entries, &e)
+	}
+	if !sawHeader {
+		return nil, conversation.Unknown("no Oh My Pi session header")
+	}
+	return &p, nil
+}
+
+// parseBlocks reads a message's content: a string is one text block, an array its blocks, each of
+// a type allowed lists. A content of any other shape, or a block of another type, refuses.
+func parseBlocks(raw json.RawMessage, allowed map[string]bool, where string) ([]block, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, conversation.Unknown("%s has no content", where)
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return []block{{Type: "text", Text: text}}, nil
+	}
+	var blocks []block
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil, conversation.Unknown("%s content Oh My Pi's block shape does not fit: %v", where, err)
+	}
+	for _, b := range blocks {
+		if !allowed[b.Type] {
+			return nil, conversation.Unknown("%s content block type %q", where, b.Type)
+		}
+	}
+	return blocks, nil
+}
+
+// The block types each kind of content holds (pi-ai types.ts): a user, developer, custom or tool
+// result message holds text and images; an assistant message also thinking, redacted thinking
+// and tool calls. The transform checks whether native Anthropic blocks need replay.
+var (
+	inputBlocks     = map[string]bool{"text": true, "image": true}
+	assistantBlocks = map[string]bool{"text": true, "image": true, "thinking": true, "redactedThinking": true, "toolCall": true, "fallback": true, "anthropicServerTool": true}
+)

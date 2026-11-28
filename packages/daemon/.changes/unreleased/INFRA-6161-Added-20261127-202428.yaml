@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  The daemon's code can now read and append to Oh My Pi conversations in session files and in the Postgres session table.
+  It can also read and append to Claude Code transcripts.
+  Contract tests exercise the readers and appenders with the pinned Oh My Pi and Claude Code releases.
+  `internal/ompsessions` adds `HasTable`, `Titles`, `Describe`, `DescribeFile`, and `ReadBlob`.
+  Its `MovedError` now matches `conversation.ErrMoved`.
+  The running daemon does not use the new readers, appenders, or session helpers yet.
+  Its behavior is unchanged.
+time: 2026-11-27T20:24:28Z
+custom:
+    Issue: INFRA-6161
