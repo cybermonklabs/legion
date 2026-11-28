@@ -98,6 +98,12 @@ type Issue struct {
 	// plans has none.
 	Plans []RunPlan
 
+	// PlanTuples is how many tuples the issue's plan nodes hold, every value tuple and relation,
+	// counted in the statement that reads Plans (workflowstore.IssuesPlans), so it counts the
+	// tuples of exactly the plans this population read. A stored row keeps it (legionfacts'
+	// plan_tuples), which tells a row that read every plan write from one that missed one.
+	PlanTuples int64
+
 	// Observed is every value a read found changed, by legion_observations field (legion's
 	// FieldPhase, FieldSlot, ClaimFieldPrefix+role and the rest), oldest first within a field.
 	Observed map[string][]Mark
@@ -791,8 +797,9 @@ func (p *Population) readHandoffs(ctx context.Context, pool *store.Pool, keys []
 }
 
 // readPlans reads each version of the plan of each run of the issues (workflowstore.IssuesPlans), oldest first:
-// what the fallback timeline reads the order of a task's steps from (Issue.phaseLine). A plan
-// whose tasks are not exactly one keeps no steps, which reads as the default steps.
+// what the fallback timeline reads the order of a task's steps from (Issue.phaseLine), with the
+// count of the tuples of each issue's plan nodes that the same statement read (Issue.PlanTuples).
+// A plan whose tasks are not exactly one keeps no steps, which reads as the default steps.
 func (p *Population) readPlans(ctx context.Context, pool *store.Pool, keys []string) error {
 	plans, err := workflowstore.IssuesPlans(ctx, pool, keys)
 	if err != nil {
@@ -803,7 +810,8 @@ func (p *Population) readPlans(ctx context.Context, pool *store.Pool, keys []str
 		if issue == nil {
 			continue
 		}
-		for _, made := range held {
+		issue.PlanTuples = held.Tuples
+		for _, made := range held.Versions {
 			var steps []string
 			if len(made.Plan.Tasks) == 1 {
 				for _, step := range made.Plan.Tasks[0].Steps {

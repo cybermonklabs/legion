@@ -254,13 +254,15 @@ const (
 	// (touchedBy), its read holds the delivery settings, its freshness is the hub's one verdict,
 	// and a deployment with no delivery settings is DELIVERY_NOT_CONFIGURED.
 	viewReadsDelivery viewReads = iota + 1
-	// viewReadsLegion is one project's Legion daemon as the Legion intake recorded it: the view's
-	// spec holds that project, each record of its daemon or a write of its Legion setting marks it
-	// (dirtyLegionProject), and so does each connection of the hub's listener (dirtyLegionViews),
-	// since no delivery change touches it; it judges no freshness. A project that names no daemon
-	// is LEGION_NOT_CONFIGURED to the board alone, whose read answers legion.ErrNoSettings for it:
-	// one issue's read answers an issue of such a project with its configured false body
-	// (readLegionIssue), so a legion_issue view is never refused it.
+	// viewReadsLegion is one project's Legion daemon as the Legion intake recorded it, and for the
+	// board the stored per-issue facts of the issues it shows: the view's spec holds that project,
+	// each record of its daemon or a write of its Legion setting marks it (dirtyLegionProject), and
+	// so does each connection of the hub's listener (dirtyLegionViews); the one delivery change
+	// that touches it is the write of a facts row of its project, which marks the board alone
+	// (touchedBy); it judges no freshness. A project that names no daemon is LEGION_NOT_CONFIGURED
+	// to the board alone, whose read answers legion.ErrNoSettings for it: one issue's read answers
+	// an issue of such a project with its configured false body (readLegionIssue), so a
+	// legion_issue view is never refused it.
 	viewReadsLegion
 )
 
@@ -298,7 +300,8 @@ type deliveryLiveClasses struct {
 	body reflect.Type
 	// lists are sent item by item, each item by its "id" field.
 	lists []string
-	// maps are sent entry by entry, by key.
+	// maps are sent entry by entry, by key, an entry whole when its revision changes: its
+	// encoding's, or the body's own for a map the body revises itself (deliveryLiveMapReviser).
 	maps []string
 	// counts are {facet: {value: count}}, sent count by count.
 	counts []string
@@ -320,7 +323,9 @@ type deliveryLiveClasses struct {
 	// GET route reads of a query, including the key one view of this kind is held under.
 	parse func(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError
 	// read is the kind's own read and compute, outside the hub's lock: it fills the parts of the
-	// read its kind holds and answers the body, which the caller encodes by these classes.
+	// read its kind holds and answers the body, which the caller encodes by these classes. It
+	// records its compute, from its last database read to its answer, in into.times.compute, and
+	// the caller times the rest of the call as the recompute's read (deliveryRecomputeTimes).
 	read func(h *deliveryHub, ctx context.Context, spec deliveryLiveSpec, now time.Time, into *deliveryViewRead) (any, error)
 }
 
@@ -363,14 +368,46 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		read:  (*deliveryHub).readPipelineView,
 	},
 	// The Legion board is one project's small, whole picture, so every field of it but its
-	// computed_at is sent whole: its twelve columns are a fixed order rather than a list a page
-	// merges by id (the page's applyDelta sorts each list it knows, which a column order would
-	// have to be taught), and the header and the settings the daemon reports each move as a
-	// block.
+	// computed_at and its issues is sent whole: its twelve columns are a fixed order rather than
+	// a list a page merges by id (the page's applyDelta sorts each list it knows, which a column
+	// order would have to be taught), and the header and the settings the daemon reports each
+	// move as a block.
+	//
+	// The header's revision leaves out its facts_cursor_age_seconds, as the body's computed_at is
+	// left out of every delta: the age is the time since the facts consumer's oldest cursor moved,
+	// measured at the read (legionfacts.CursorAge), so it moves with the clock on every recompute
+	// in a new second, and a revision that kept it would send the header on each of them though
+	// nothing the board shows moved. The GET answers the age, and a header that is sent for
+	// anything else carries the age of the recompute that sent it.
+	//
+	// The issues map is sent entry by entry, by issue key, because the facts consumer writes one
+	// issue's row per change: a whole field would resend every issue's stored facts whenever one
+	// issue's moved, and a project holds a row for every issue Legion ever worked.
+	//
+	// An entry is sent only when its stored row moved. Each read closes every open row at its own
+	// clock (legionfacts.Row.At), so an open issue's hours, work time, slot hours and last moment
+	// of work, and the as_of they are of, differ on every recompute, each record the Legion intake
+	// makes of the daemon among them. So the board revises the map itself (legionBoardResponse's
+	// mapRevisions), from the typed values it built each entry of rather than from the entry's
+	// encoding: an entry's revision leaves out each value whose rate the entry's growth carries,
+	// and the as_of they are of, of which it keeps only whether it is null (legionBoardFacts'
+	// appendKept). A recompute that moved only the clock sends no entry, where it would otherwise
+	// resend every open issue's (about 2,600 at INFRA's size), and a value that comes to grow is
+	// left out once its rate joins the growth, which moves the revision itself. What the revision
+	// keeps moves whenever the stored row does: a write of a row whose values moved stamps its
+	// updated_at (legionfacts.WriteProject), and its growth, why it waits, its close, each value
+	// that stands and every other value the entry carries are kept as stored. An entry whose
+	// values grow carries its as_of and its growth, so a page closes the values it holds at its
+	// own clock by the rule the read closes them by; one whose values stand carries null for both.
+	// An entry that is sent goes whole, its values grown to the moment of the recompute that sent
+	// it. The board encodes the map's entries itself as well (legionBoardResponse's encodedMap),
+	// and the hub writes the body from them, the one body the GET answers, so no entry is read
+	// back out of the body's encoding.
 	legionBoardView: {
 		body: reflect.TypeFor[legionBoardResponse](),
+		maps: []string{"issues"},
 		whole: map[string][]string{
-			"project": nil, "header": nil, "columns": nil, "settings": nil,
+			"project": nil, "header": {"facts_cursor_age_seconds"}, "columns": nil, "settings": nil,
 		},
 		out:   []string{"computed_at"},
 		reads: viewReadsLegion,
@@ -400,8 +437,9 @@ func (spec deliveryLiveSpec) classes() deliveryLiveClasses {
 	return deliveryLiveKinds[spec.kind]
 }
 
-// deliveryLiveRevision is a value's revision: the 64-bit FNV-1a of its JSON encoding, as 16
-// lowercase hex digits.
+// deliveryLiveRevision is a value's revision: the 64-bit FNV-1a of its encoding, as 16 lowercase
+// hex digits. The encoding is the value's JSON but for a Legion board's issues entry, whose
+// revision is over the byte form of the values it keeps (legionBoardFacts' appendKept).
 func deliveryLiveRevision(encoded []byte) string {
 	hash := fnv.New64a()
 	_, _ = hash.Write(encoded)

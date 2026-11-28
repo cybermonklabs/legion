@@ -1,0 +1,28 @@
+package legionfacts
+
+import "time"
+
+// close.go is the one computation a reader of the stored facts makes (dispatch://INFRA-2916, R21):
+// it closes each part of an issue still running at the reader's own clock. Every reader of a
+// stored row reads it through At - the board's two reads (ReadOpen, ReadShownClosed) and the
+// reads of the closed rows (ReadClosedIn) - so no reader keeps a rule of its own for how a fact
+// grows, and none reads an in-process cache.
+
+// At is the row as of now: each fact that grows after the moment the row is closed at (AsOf)
+// grown by its rate over the time between (metrics.ClosedFacts.FactsAt), a bar still open ending at
+// now, and AsOf moved to now. That is what the computation answers run at now over the same
+// inputs (metrics.ClosedFacts), since no input of the issue is newer than AsOf. Every other
+// field is the row's own, and a row with no growth reads as stored: a closed issue's, but for a
+// slot it never gave up, whose hours run to the computation's end (metrics.Growth).
+//
+// A now at or before AsOf answers the row as stored: a reader whose clock stands behind the
+// writer's reads the facts as of the newest input rather than shrinking them. A reader that
+// counts an open issue as of a day closes it at that day's end, and the same call answers it.
+func (row Row) At(now time.Time) Row {
+	if len(row.Growth) == 0 || !now.After(row.AsOf) {
+		return row
+	}
+	row.IssueFacts = row.FactsAt(now)
+	row.AsOf = now
+	return row
+}

@@ -13,6 +13,8 @@ import after from "../../../contracts/fixtures/live/after.json";
 import delta from "../../../contracts/fixtures/live/delta.json";
 import error from "../../../contracts/fixtures/live/error.json";
 import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
+import legionDelta from "../../../contracts/fixtures/live/legion_delta.json";
+import legionSnapshot from "../../../contracts/fixtures/live/legion_snapshot.json";
 import snapshot from "../../../contracts/fixtures/live/snapshot.json";
 import { REQUEST_DEADLINE_MS } from "../../web/src/api/client";
 import { RECONNECT_SPREAD_MS, reconnectDelayMs } from "../../web/src/api/live-socket";
@@ -28,6 +30,7 @@ import {
   type ProbeCloseLine,
   type ProbeCompareLine,
   type ProbeEndLine,
+  type ProbeFrameLine,
   type ProbeHeld,
   type ProbeLine,
   type ProbeOpenLine,
@@ -466,6 +469,103 @@ test(
         runs: { equal: false, extra: [], missing: ["99"] },
       },
       { equal: true, measures: { differ: [], equal: true }, prs: null, runs: null },
+    ]);
+  },
+  // The wait for the delta line, then the wait for the exit after SIGINT.
+  rowLimit("short", "short")
+);
+
+const legionView: DeliveryLiveView = { kind: "legion", project: "ACME" };
+const legionTarget = "/api/v1/projects/ACME/legion/board";
+
+/** `args` with the Legion board in place of the timeline. */
+const legionArgs = (dispatch: { readonly url: string }) =>
+  args(dispatch).map((arg) => (arg === JSON.stringify(view) ? JSON.stringify(legionView) : arg));
+
+/** Replay the Go diff's own frames, including the removed issue's null entry. */
+function sendLegionFrames(socket: ServerWebSocket<undefined>, sub: string) {
+  socket.send(forSub(legionSnapshot, sub));
+  socket.send(forSub(legionDelta, sub));
+}
+
+/** The GET reads an hour after the last recompute. ACME-2 grows for 2.5 hours from the
+ *  snapshot, ACME-3 for one hour from the delta, and ACME-4 is gone. */
+function legionRead(childWorkHours = 7) {
+  const readAt = "2026-10-03T02:30:00Z";
+  return {
+    ...legionSnapshot.body,
+    ...legionDelta.set,
+    computed_at: readAt,
+    header: { ...legionDelta.set.header, facts_cursor_age_seconds: 3607 },
+    issues: {
+      "ACME-1": legionSnapshot.body.issues["ACME-1"],
+      "ACME-2": {
+        ...legionSnapshot.body.issues["ACME-2"],
+        as_of: readAt,
+        hours_by_phase: { design: 1.5, implementing: 5.5 },
+        slot_hours: 5.5,
+        work_hours: childWorkHours,
+        work_last_at: readAt,
+      },
+      "ACME-3": {
+        ...legionDelta.maps.issues["ACME-3"],
+        as_of: readAt,
+        hours_by_phase: { design: 1.25 },
+        slot_hours: 1.25,
+        work_hours: 1.25,
+        work_last_at: readAt,
+      },
+    },
+  };
+}
+
+test(
+  "a legion view's --compare grows each issues entry of the push and of the GET to one moment and finds them equal",
+  async () => {
+    const dispatch = probeDispatch({
+      onSubscribe: sendLegionFrames,
+      routes: { [legionTarget]: legionRead() },
+    });
+    const run = runProbe([...legionArgs(dispatch), "--compare"]);
+    await lineBy(run, "delta line", () => run.lines.some((line) => line.type === "delta"));
+    expect(await exitAfter(run, "SIGINT")).toBe(0);
+
+    expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view: legionView }]);
+    // The snapshot counts the board's one map, and the delta names the entry it sends.
+    const frames = run.lines.filter(
+      (line): line is ProbeFrameLine => line.type === "snapshot" || line.type === "delta"
+    );
+    expect(frames.map((line) => [line.type, line.maps])).toEqual([
+      ["snapshot", { issues: 4 }],
+      ["delta", { issues: ["ACME-3", "ACME-4"] }],
+    ]);
+    expect(dispatch.reads.map((url) => url.pathname)).toEqual([legionTarget]);
+    expect(
+      comparisons(run.lines).map(({ equal, measures, prs, runs }) => ({
+        equal,
+        measures,
+        prs,
+        runs,
+      }))
+    ).toEqual([{ equal: true, measures: { differ: [], equal: true }, prs: null, runs: null }]);
+  },
+  // The wait for the delta line, then the wait for the exit after SIGINT.
+  rowLimit("short", "short")
+);
+
+test(
+  "a legion view's --compare names an issues value that differs past 0.001 hour at one moment, and exits 1",
+  async () => {
+    const dispatch = probeDispatch({
+      onSubscribe: sendLegionFrames,
+      routes: { [legionTarget]: legionRead(7.02) },
+    });
+    const run = runProbe([...legionArgs(dispatch), "--compare"]);
+    await lineBy(run, "delta line", () => run.lines.some((line) => line.type === "delta"));
+    expect(await exitAfter(run, "SIGINT")).toBe(1);
+
+    expect(comparisons(run.lines).map(({ equal, measures }) => ({ equal, measures }))).toEqual([
+      { equal: false, measures: { differ: ["issues.ACME-2.work_hours"], equal: false } },
     ]);
   },
   // The wait for the delta line, then the wait for the exit after SIGINT.

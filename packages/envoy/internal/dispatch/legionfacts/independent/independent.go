@@ -8,10 +8,11 @@
 //
 // It is the second side of that requirement's check (k1 and k9), which compares every fact of
 // every issue against a reading of the requirement. A check whose two sides are one function can
-// never fail, so this package imports nothing it is compared with, legion/metrics among them: it
-// reads `events`, `handoffs` and `legion_observations` itself, with statements of its own, and
-// works the numbers out from the requirement's words. Where this reading and the computation
-// disagree, one of them is wrong and the check has found it.
+// never fail, so this package imports nothing it is compared with, legion/metrics and
+// workflowstore among them: it reads `events`, `handoffs`, `legion_observations` and the plan rows
+// of `workflow_nodes` and `workflow_tuples` itself, with statements of its own, and works the
+// numbers out from the requirement's words. Where this reading and the computation disagree, one
+// of them is wrong and the check has found it.
 //
 // It takes the scope and the window as arguments and answers both beside the facts it reads
 // (Reading), so a caller can print what it read: the check's test logs them beside the scope and
@@ -43,8 +44,8 @@ func (s Scope) String() string { return s.Project }
 
 // Window is the stretch of time one reading measures over: To is the moment of the computation,
 // which bounds what the reading takes from the log (the issues created by To, and their events,
-// titles, handoffs and observations as of To) and is where an open issue's work time runs to.
-// An issue's parent and its close come from its current `issues` row, as legion/metrics reads
+// titles, handoffs, plans and observations as of To) and is where an open issue's work time runs
+// to. An issue's parent and its close come from its current `issues` row, as legion/metrics reads
 // them, and not as of To: the close counts where the row's closed_at is by To, so an issue closed
 // by To and opened again after it reads open at To, and a parent set after To is the parent the
 // reading walks.
@@ -97,12 +98,15 @@ func (f Facts) ZeroHours() bool {
 	return true
 }
 
-// Reading is one run of this reading: the scope and the window it covered, and the facts of
-// every issue the scope has Legion phase work for.
+// Reading is one run of this reading: the scope and the window it covered, the facts of every
+// issue the scope has Legion phase work for, and the keys of those it read by a plan whose steps
+// are not the default steps, in key order: the issues whose phases before their first observation
+// a plan can order otherwise than the default steps do (lineAt).
 type Reading struct {
-	Scope  Scope
-	Window Window
-	Issues map[string]Facts
+	Scope      Scope
+	Window     Window
+	Issues     map[string]Facts
+	OtherSteps []string
 }
 
 // Read answers the facts of every issue the scope has Legion phase work for, open or closed, as
@@ -120,11 +124,15 @@ func Read(ctx context.Context, db Querier, scope Scope, window Window) (Reading,
 	}
 	measured := newReading(held)
 	issues := map[string]Facts{}
+	var otherSteps []string
 	for _, key := range held.keys {
 		if !held.issues[key].worked() {
 			continue
 		}
 		issues[key] = measured.factsOf(key)
+		if held.issues[key].otherSteps() {
+			otherSteps = append(otherSteps, key)
+		}
 	}
-	return Reading{Scope: scope, Window: window, Issues: issues}, nil
+	return Reading{Scope: scope, Window: window, Issues: issues, OtherSteps: otherSteps}, nil
 }

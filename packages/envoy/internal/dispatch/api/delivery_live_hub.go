@@ -176,18 +176,18 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 }
 
 // The channels the delivery hub listens on, all on its listener's one connection (startLocked).
-// delivery_changes carries no payload and is notified as a delivery_changes row commits (migration
-// 0100); delivery_freshness carries the settings row's freshness columns as JSON (0100);
-// legion.StateChannel carries a project key and is notified by the Legion intake after each
-// batch of state events it applied and each whole read of that project's Legion daemon, and after
-// each write of its Legion setting (settings_legion.go), which with
-// Dispatch's own events is all that moves a Legion board; and workflowstore.RunsChannel carries
-// an issue key and is notified as a write of one of that issue's runs commits, which with the
-// project's notifies on legion.StateChannel is all that moves the issue's legion_issue view.
-const (
-	deliveryChangesChannel   = "delivery_changes"
-	deliveryFreshnessChannel = "delivery_freshness"
-)
+// delivery.ChangesChannel carries no payload and is notified as a delivery_changes row commits
+// (migration 0100), as a pending change row of the change log's outbox commits (20261117100001),
+// whose drain the hub runs before it reads, and as a drain that moved rows commits, and the
+// delivery package declares it beside the row; delivery_freshness carries the settings row's
+// freshness columns as JSON (0100); legion.StateChannel carries a project key and is notified by
+// the Legion intake after each batch of state events it applied and each whole read of that
+// project's Legion daemon, and after each write of its Legion setting (settings_legion.go), which
+// with Dispatch's own events and the project's stored facts (delivery.ChangeKindIssueFacts) is all
+// that moves a Legion board; and workflowstore.RunsChannel carries an issue key and is notified as
+// a write of one of that issue's runs commits, which with the project's notifies on
+// legion.StateChannel is all that moves the issue's legion_issue view.
+const deliveryFreshnessChannel = "delivery_freshness"
 
 // deliveryHubFeedBuffer is the hub's slots on the relay's feed: more than one relay page
 // (maxEventReplay), which the relay publishes at once, so a page never overflows an intake that
@@ -261,11 +261,12 @@ type hubGeneration struct {
 	views map[string]*deliveryView // by canonical view key
 	conns map[deliveryLiveConn]map[string]*deliverySub
 
-	// changeSeq and changeAt are the last delivery change read and its at, to tell a reset log;
-	// epoch counts the resets, so a recompute that read across one stores no change position.
-	changeSeq int64
-	changeAt  time.Time
-	epoch     int64
+	// change is where the hub stands in the delivery change log (delivery.ChangeCursor): the last
+	// change read and its at, to tell a reset log, and its ReadAt the hub's last read of the log to
+	// its end, to tell one pruned past changes it never read; epoch counts the resets, so a
+	// recompute that read across one stores no change position.
+	change delivery.ChangeCursor
+	epoch  int64
 	// p0 is the open P0 issues, the issues not done whose resolved priority is 0
 	// (delivery.OpenP0Keys), which decide the marks of the views that show the unowned P0 list
 	// (showsIssue): as the read made with each feed found them (applyFeed), then as each recompute
@@ -321,6 +322,9 @@ type deliveryView struct {
 	notBefore             time.Time
 	cause                 string
 	computing             bool
+	// marks counts every mark of the view since a recompute's read last took them over, by what
+	// made it (countMark), for that recompute's line to name (finishRecompute); nil while none.
+	marks map[string]int
 	// reading is set once recompute's read holds its change position and takes the view's marks
 	// over, and until it installs that read's answer. heardIssues and heardSessions record what
 	// the events applied meanwhile acted on (applyEventLocked): each issue with whether it was a
@@ -434,6 +438,24 @@ const (
 	deliveryCauseExpiry    = "expiry"
 )
 
+// What marked a view, as a recompute's line counts it (deliveryView.marks), beside a subscribe
+// (deliveryCauseSubscribe) and a delivery change, which counts by its own kind (delivery.Change's
+// Kind, issue_facts among them): an event the relay delivered (applyEventLocked, and the events a
+// read heard, recheckHeardLocked); a record the Legion intake made of a project's daemon, a batch
+// of its state events or a whole read, or a write of the project's Legion setting
+// (dirtyLegionProject); a write of an issue's run (dirtyLegionIssue); a connection of the listener
+// (dirtyLegionViews); the event feed taken (applyFeed); a lost change cursor (catchUpChanges); and
+// the retry of a read that failed (recompute).
+const (
+	deliveryMarkEvent       = "event"
+	deliveryMarkLegionState = "legion_state"
+	deliveryMarkLegionRun   = "legion_run"
+	deliveryMarkConnected   = "connected"
+	deliveryMarkFeed        = "feed"
+	deliveryMarkCursorLost  = "cursor_lost"
+	deliveryMarkRetry       = "retry"
+)
+
 // deliveryLivePresets are the preset windows a page offers, in days.
 var deliveryLivePresets = []int{7, 14, 28, 84}
 
@@ -469,7 +491,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",
 		Dial:        h.dial,
-		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel, legion.StateChannel, workflowstore.RunsChannel},
+		Channels:    []string{delivery.ChangesChannel, deliveryFreshnessChannel, legion.StateChannel, workflowstore.RunsChannel},
 		ListenIdle:  h.listenIdle,
 		PingTimeout: h.pingTimeout,
 		Backoff:     h.backoff,
@@ -520,7 +542,7 @@ func (h *deliveryHub) note(n deliveryHubNote) {
 // marks the legion_issue views of its issue.
 func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	switch channel {
-	case deliveryChangesChannel:
+	case delivery.ChangesChannel:
 		signal(g.wakeChanges)
 	case deliveryFreshnessChannel:
 		h.applyFreshness(g, payload)
@@ -544,7 +566,7 @@ func (h *deliveryHub) dirtyLegionProject(g *hubGeneration, project string) {
 	defer h.mu.Unlock()
 	for _, view := range g.views {
 		if view.spec.classes().reads == viewReadsLegion && view.spec.project == project {
-			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			h.markDirtyLocked(g, view, now, deliveryMarkLegionState)
 		}
 	}
 }
@@ -558,7 +580,7 @@ func (h *deliveryHub) dirtyLegionIssue(g *hubGeneration, issue string) {
 	defer h.mu.Unlock()
 	for _, view := range g.views {
 		if view.spec.issue != "" && view.spec.issue == issue {
-			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			h.markDirtyLocked(g, view, now, deliveryMarkLegionRun)
 		}
 	}
 }
@@ -578,7 +600,7 @@ func (h *deliveryHub) dirtyLegionViews(g *hubGeneration) {
 	defer h.mu.Unlock()
 	for _, view := range g.views {
 		if view.spec.classes().reads == viewReadsLegion {
-			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			h.markDirtyLocked(g, view, now, deliveryMarkConnected)
 		}
 	}
 }

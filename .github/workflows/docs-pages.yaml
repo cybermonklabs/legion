@@ -239,6 +239,8 @@ on:
       - 'packages/envoy/internal/dispatch/identity/**'
       - 'packages/envoy/internal/dispatch/itemblocks/**'
       - 'packages/envoy/internal/dispatch/legion/*'
+      - 'packages/envoy/internal/dispatch/legion/metrics/*'
+      - 'packages/envoy/internal/dispatch/legionfacts/*'
       - 'packages/envoy/internal/dispatch/model/**'
       - 'packages/envoy/internal/dispatch/outbox/**'
       - 'packages/envoy/internal/dispatch/prioritystore/**'

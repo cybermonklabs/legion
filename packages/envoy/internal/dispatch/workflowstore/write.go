@@ -51,7 +51,8 @@ var (
 // write's own transaction, so Postgres delivers it at the commit, to every Dispatch process that
 // listens, and never for a write rolled back; and only where the write appended a tuple, so a write
 // sent again, which sets nothing, sends nothing, and each signal comes with a rise of that count. A
-// plan's write (PutPlan) sends nothing: a plan is no run.
+// plan's write (PutPlan) signals PlansChannel instead, so this channel keeps its one meaning: a
+// plan is no run.
 const RunsChannel = "dispatch_workflow_runs"
 
 // PutStep writes one run of one step inside the caller's transaction and answers its node as it

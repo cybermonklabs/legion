@@ -298,6 +298,68 @@ func TestPatchRenamesAddsRemoves(t *testing.T) {
 	expectRefusal(t, "removing every session", emptied, http.StatusBadRequest, "SESSION_GROUP_INPUT")
 }
 
+// TestAPatchThatChangesNothingKeepsTheLiveViewEqualToTheRead: a live Delivery view hears of a
+// session group's write only through its change row, so a PATCH that moves what the read answers
+// for the group writes one, and a PATCH that writes none leaves the group as the read answered it.
+// Three edits change nothing and each answers the group with the same updated_at and logs no
+// session_group change: the group's own name sent again, a session it holds sent for addition and
+// one it does not hold sent for removal. The trigger skips an update that differs only in
+// updated_at, so a PATCH that moved updated_at and nothing else would log no change row, and the
+// view would keep the old updated_at, which the read answers, until some later write's delta. A
+// rename moves updated_at and logs exactly one change.
+func TestAPatchThatChangesNothingKeepsTheLiveViewEqualToTheRead(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	group := createSessionGroup(t, handler, "Crew", "s1", "s2")
+	path := "/api/v1/delivery/session-groups/" + group.ID
+	changes := func() int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(t.Context(), `select count(*) from delivery_changes where kind = 'session_group'`).Scan(&count); err != nil {
+			t.Fatalf("count session_group changes: %v", err)
+		}
+		return count
+	}
+	updatedAt := func(label string, response interface{ Result() *http.Response }) time.Time {
+		t.Helper()
+		result := response.Result()
+		defer result.Body.Close()
+		var body struct {
+			UpdatedAt time.Time `json:"updated_at"`
+		}
+		if result.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", label, result.StatusCode)
+		}
+		if err := json.NewDecoder(result.Body).Decode(&body); err != nil {
+			t.Fatalf("%s: decode group: %v", label, err)
+		}
+		return body.UpdatedAt
+	}
+
+	first := updatedAt("first rename", dispatchRequest(t, handler, http.MethodPatch, path, map[string]any{"name": "Release crew"}, "alice"))
+	for _, nothing := range []struct {
+		label string
+		body  map[string]any
+	}{
+		{"the same name again", map[string]any{"name": "Release crew"}},
+		{"a held session added", map[string]any{"add": []string{"s1"}}},
+		{"an unheld session removed", map[string]any{"remove": []string{"s9"}}},
+	} {
+		before := changes()
+		again := updatedAt(nothing.label, dispatchRequest(t, handler, http.MethodPatch, path, nothing.body, "alice"))
+		if logged := changes() - before; !again.Equal(first) || logged != 0 {
+			t.Errorf("%s: a PATCH that changes nothing answered updated_at %s, was %s, and logged %d session_group change rows, want the same updated_at and none",
+				nothing.label, again.Format(time.RFC3339Nano), first.Format(time.RFC3339Nano), logged)
+		}
+	}
+	before := changes()
+	renamed := updatedAt("a rename", dispatchRequest(t, handler, http.MethodPatch, path, map[string]any{"name": "Crew B"}, "alice"))
+	if logged := changes() - before; renamed.Equal(first) || logged != 1 {
+		t.Errorf("a rename answered updated_at %s, was %s, and logged %d session_group change rows, want a moved updated_at and one",
+			renamed.Format(time.RFC3339Nano), first.Format(time.RFC3339Nano), logged)
+	}
+}
+
 func TestDeleteSessionGroup(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)

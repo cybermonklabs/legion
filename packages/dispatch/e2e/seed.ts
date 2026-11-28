@@ -25,6 +25,9 @@ const tables = [
   "legion_settings",
   "delivery_settings",
   "delivery_changes",
+  // The change log's outbox (migration 20261117100001), whose pending rows a drain moves into
+  // delivery_changes: a row a scenario left pending would land in the next scenario's log.
+  "delivery_changes_pending",
   "delivery_session_group_members",
   "delivery_session_groups",
   "delivery_run_jobs",
@@ -48,6 +51,15 @@ const tables = [
   // foreign key reaches it, so the closure below does not find it: a title a row stored would
   // otherwise name a session of the same id in the next row's Delivery and Pipeline pages.
   "session_titles",
+  // Each issue's stored Legion facts, the facts consumer's cursors, the build that last read each
+  // project whole (migrations 20261117100000 and 20261117100003), which no foreign key reaches, so
+  // the closure below does not find them: a row a scenario stored would show its issue's facts on
+  // the board of a later scenario whose issue takes the same key. Each Legion filing
+  // (20261117100007) goes with its project too; it is named here beside them.
+  "issue_facts",
+  "issue_facts_cursor",
+  "issue_facts_computed",
+  "issue_filings",
   "refs",
   "messages",
   "broadcasts",

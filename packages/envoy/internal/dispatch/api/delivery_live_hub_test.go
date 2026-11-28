@@ -292,7 +292,7 @@ func (r *hubRig) hubAcquires() int64 { return r.hubStore.Pool.Stat().AcquireCoun
 func (r *hubRig) changeCursor() int64 {
 	r.hub.mu.Lock()
 	defer r.hub.mu.Unlock()
-	return r.hub.generation.changeSeq
+	return r.hub.generation.change.Seq
 }
 
 // settle waits until the hub has acted on everything the test's setup wrote, so none of it counts
@@ -307,16 +307,35 @@ func (r *hubRig) changeCursor() int64 {
 // ends on what it waits for, and its one bound is the test binary's deadline.
 func (r *hubRig) settle(t *testing.T) {
 	t.Helper()
-	latest, err := delivery.LatestChangeSeq(t.Context(), r.database.Pool)
+	head, err := delivery.ChangesHead(t.Context(), r.database.Pool)
 	if err != nil {
 		t.Fatalf("read the newest delivery change: %v", err)
 	}
+	latest := head.Seq
 	testwait.Until(t, fmt.Sprintf("the hub's change cursor to reach %d, the newest delivery change", latest), func() (int64, bool) {
 		seq := r.changeCursor()
 		return seq, seq >= latest
 	})
 	r.waitForEventCursor(t, eventHead(t, r.database), "the log's head before the measurement")
 	r.waitNothingOwed(t, latest)
+}
+
+// settleConnected waits for the listener's first connection and then settles, so the work that
+// connection causes has run before the caller marks: deliveryHub.intake's connected case catches
+// the change log up, draining its outbox first (catchUpChanges), and marks every Legion view for a
+// recompute (dirtyLegionViews). settle alone does not wait for it: the listener dials on a
+// goroutine of its own, and until it has connected the intake owes nothing for it (intakeOwes), so
+// a connection that lands after the mark wakes the hub for nothing the test did. A test whose
+// listener connects and that counts the recomputes, frames or deltas after its mark, or waits on
+// their absence, takes this in place of settle; a rig whose dial refuses every connection takes
+// settle, since its listener never connects. It waits on the note waitConnected's first wait
+// reads, without that helper's wait for a still pool, which only a count of the hub's connections
+// needs: settle already waits for the feed, and for the recompute the connection marks as
+// waitNothingOwed reads what is owed.
+func (r *hubRig) settleConnected(t *testing.T) {
+	t.Helper()
+	r.waitFor(t, 0, "the listener's first connection", listenerConnected)
+	r.settle(t)
 }
 
 // waitNothingOwed waits until the hub owes no work for anything committed up to latest: nothing
@@ -350,7 +369,7 @@ func (r *hubRig) waitNothingOwed(t *testing.T, latest int64) {
 			}
 		}
 		slices.Sort(busy)
-		return generation.changeSeq, busy
+		return generation.change.Seq, busy
 	}
 	testwait.Until(t, fmt.Sprintf("the hub to owe nothing for the delivery changes through %d (what it still owed)", latest), func() (string, bool) {
 		intake := r.intakeOwes()
@@ -888,14 +907,19 @@ func truncateChanges(t *testing.T, database *store.Store) {
 	}
 }
 
-// latestChange is the newest delivery change's seq.
+// latestChange is the change log's newest seq once its outbox is drained, as the hub drains it
+// before each read (delivery.DrainPending): a test that writes facts or filings rows by SQL,
+// outside the writers that drain after their commit, reads their changes in the log this way.
 func latestChange(t *testing.T, database *store.Store) int64 {
 	t.Helper()
-	seq, err := delivery.LatestChangeSeq(context.Background(), database.Pool)
+	if _, err := delivery.DrainPending(context.Background(), database.Pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
+	head, err := delivery.ChangesHead(context.Background(), database.Pool)
 	if err != nil {
 		t.Fatalf("read the newest change: %v", err)
 	}
-	return seq
+	return head.Seq
 }
 
 func TestAProductionJobFlipsTheWaitingPullRequestsItShips(t *testing.T) {
@@ -1168,6 +1192,61 @@ func TestResumeFromBeforeTheKeptDayGetsASnapshot(t *testing.T) {
 	rig.hub.Subscribe(kept, frame)
 	kept.freshness(t, "the verdict for a resume with nothing to catch up")
 	rig.requireNothingSent(t, kept, "a resume from the change the view's body reflects")
+}
+
+// TestAHubThatReadNothingForADayCatchesUpWhatThePruneTook: a hub that has read nothing of the
+// change log for longer than its retention (a catch-up failing for a day; here no listener wakes
+// it) finds the change its cursor rests on pruned, and with it a merge in its view's window that
+// it never read. It reads the log as lost and recomputes every view, so the merge reaches the
+// view. Read as a change pruned in its time, the cursor would read only the change the prune kept
+// after it, which touches no timeline, and the view would never learn of the merge.
+func TestAHubThatReadNothingForADayCatchesUpWhatThePruneTook(t *testing.T) {
+	t.Parallel()
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		hub.dial = func(context.Context) (*pgx.Conn, error) { return nil, context.DeadlineExceeded }
+	})
+	seedHubSettings(t, rig.database)
+	now := rig.clock.Now()
+	upsertPR(t, rig.database, hubPR(1, now.Add(-2*time.Hour)))
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
+	conn.snapshot(t, "t")
+	if rig.changeCursor() == 0 {
+		t.Fatal("the hub's cursor rests on no change")
+	}
+	upsertPR(t, rig.database, hubPR(2, now.Add(-time.Hour)))
+	if _, err := rig.database.Pool.Exec(t.Context(), `update delivery_changes set at = now() - interval '2 days'`); err != nil {
+		t.Fatalf("age the change log by two days: %v", err)
+	}
+	if _, err := delivery.PruneChanges(t.Context(), rig.database.Pool); err != nil {
+		t.Fatalf("prune the change log: %v", err)
+	}
+	if _, err := rig.database.Pool.Exec(t.Context(), `insert into delivery_changes (kind, repo, ref) values ('issue_filings', 'NONE', 'NONE-1')`); err != nil {
+		t.Fatalf("log a change after the prune: %v", err)
+	}
+	// The hub last read the log, and the change at its cursor, a day and an hour ago. The change's
+	// time is the database's, the clock a change's at is written by and CursorLost's young branch
+	// reads, so the change is past the retention by that clock whatever the wall clock's hour; the
+	// read's is the hub's, the clock ReadAt is stamped by and the stalled branch reads.
+	var recordedAt time.Time
+	if err := rig.database.Pool.QueryRow(t.Context(), `select now() - interval '25 hours'`).Scan(&recordedAt); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	rig.hub.mu.Lock()
+	lastRead := now.Add(-25 * time.Hour)
+	rig.hub.generation.change.At, rig.hub.generation.change.ReadAt = &recordedAt, lastRead
+	epoch := rig.hub.generation.epoch
+	rig.hub.mu.Unlock()
+	rig.hub.catchUpNow()
+	rig.hub.mu.Lock()
+	resets := rig.hub.generation.epoch - epoch
+	rig.hub.mu.Unlock()
+	if resets != 1 {
+		t.Fatalf("the catch-up after a day with no read counted %d resets of the log, want 1: it read past the merge the prune took as a change pruned in its time", resets)
+	}
+	if got := liveUpsertIDs(t, conn.delta(t, "t"), "prs"); !slices.Contains(got, "acme/widgets#2") {
+		t.Fatalf("after a day with no read the delta upserts %v, want acme/widgets#2, the merge the prune took", got)
+	}
 }
 
 func TestAReconnectCatchesUpWhatTheListenerMissed(t *testing.T) {
@@ -2289,7 +2368,7 @@ func acquires(database *store.Store) int64 { return database.Pool.Stat().Acquire
 // connection, and a measurement of what one change costs is taken after them.
 func (r *hubRig) waitConnected(t *testing.T) {
 	t.Helper()
-	r.waitFor(t, 0, "the listener's connection", func(note deliveryHubNote) bool { return note.what == "connected" })
+	r.waitFor(t, 0, "the listener's connection", listenerConnected)
 	r.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
 	awaitStill(t, "the shared pool's acquires", 300*time.Millisecond, func() int64 { return acquires(r.deps.Store) })
 }

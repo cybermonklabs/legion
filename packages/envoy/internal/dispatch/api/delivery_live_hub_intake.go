@@ -144,28 +144,26 @@ func (h *deliveryHub) applyFeed(g *hubGeneration, taken hubEventFeed) {
 	now := h.clock.Now()
 	h.mu.Lock()
 	g.p0, g.p0Heard = taken.p0, nil
-	h.dirtyAllLocked(g, now)
+	h.dirtyAllLocked(g, now, deliveryMarkFeed)
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "events seeded", eventID: taken.feed.head})
 }
 
-// readChangeCursor reads where the delivery change log stands.
+// readChangeCursor moves the cursor to the head of the delivery change log, a read of the log to
+// its end, whose ReadAt is the hub's clock as it stood before the read.
 func (h *deliveryHub) readChangeCursor(g *hubGeneration) bool {
-	ctx, pool := g.readContext(), h.server.deps.Store.Pool
-	seq, err := delivery.LatestChangeSeq(ctx, pool)
-	var at *time.Time
-	if err == nil && seq > 0 {
-		at, err = delivery.ChangeAt(ctx, pool, seq)
-	}
+	checked := h.clock.Now()
+	head, err := delivery.ChangesHead(g.readContext(), h.server.deps.Store.Pool)
 	if err != nil {
 		if g.ctx.Err() == nil {
 			slog.Warn("dispatch: delivery live hub could not read where the change log stands; retrying", "error", err)
 		}
 		return false
 	}
+	head.ReadAt = checked
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	g.changeSeq, g.changeAt = seq, timeOrZero(at)
+	g.change = head
 	return true
 }
 
@@ -178,57 +176,53 @@ func (h *deliveryHub) catchUp(g *hubGeneration) {
 }
 
 // catchUpChanges reads every delivery change after the cursor, marking the views each can touch.
-// Before each read it checks for a reset log: one holding no row as far as the cursor, or one whose
-// row at the cursor was recorded at another time than the hub read (a TRUNCATE ... RESTART IDENTITY
-// refilled past it, e2e/seed.ts:150). A reset moves the cursor to the newest row and marks every
-// view dirty.
+// It first moves the change log's pending rows into the log (delivery.DrainPending): a Legion
+// facts or filings write's change rows wait there until a drain moves them, their notification wakes this
+// hub at the write's commit, and the write's own drain may not have run, its process killed
+// between the two. Before each read it checks for a lost cursor by the log's one rule
+// (delivery.CursorLost), on the hub's own clock; a lost cursor moves to the newest row and marks
+// every view dirty.
+//
+// The clock is read once before each page, for the check and for the cursor's ReadAt: a page
+// shorter than its limit and a move to the newest row read the log to its end and take that
+// reading, and a full page moves the cursor and leaves its ReadAt where it stood
+// (delivery.ChangeCursor and its Through).
 func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 	ctx, pool := g.readContext(), h.server.deps.Store.Pool
+	if _, err := delivery.DrainPending(ctx, pool); err != nil {
+		return err
+	}
 	for {
 		h.mu.Lock()
-		seq, at := g.changeSeq, g.changeAt
+		cursor := g.change
 		h.mu.Unlock()
-		latest, err := delivery.LatestChangeSeq(ctx, pool)
+		checked := h.clock.Now()
+		lost, err := delivery.CursorLost(ctx, pool, cursor, checked)
 		if err != nil {
 			return err
 		}
-		reset := latest < seq
-		if !reset && seq > 0 && h.clock.Now().Sub(at) < delivery.ChangeRetention {
-			read, err := delivery.ChangeAt(ctx, pool, seq)
+		if lost {
+			head, err := delivery.ChangesHead(ctx, pool)
 			if err != nil {
 				return err
 			}
-			reset = read == nil || !read.Equal(at)
-		}
-		if reset {
-			var latestAt *time.Time
-			if latest > 0 {
-				if latestAt, err = delivery.ChangeAt(ctx, pool, latest); err != nil {
-					return err
-				}
-			}
+			head.ReadAt = checked
 			now := h.clock.Now()
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			g.changeSeq, g.changeAt = latest, timeOrZero(latestAt)
+			g.change = head
 			g.epoch++
-			h.dirtyAllLocked(g, now)
+			h.dirtyAllLocked(g, now, deliveryMarkCursorLost)
 			return nil
 		}
-		changes, err := delivery.ChangesSince(ctx, pool, seq, deliveryLivePage)
+		changes, err := delivery.ChangesSince(ctx, pool, cursor.Seq, deliveryLivePage)
 		if err != nil {
 			return err
 		}
 		now := h.clock.Now()
 		h.mu.Lock()
-		for _, change := range changes {
-			for _, view := range g.views {
-				if change.Seq > max(view.seq, view.readingSeq) && view.touchedBy(change, now) {
-					h.markDirtyLocked(g, view, now, deliveryCauseChange)
-				}
-			}
-			g.changeSeq, g.changeAt = change.Seq, change.At
-		}
+		h.markChangesLocked(g, changes, now)
+		g.change = g.change.Through(changes, deliveryLivePage, checked)
 		h.mu.Unlock()
 		if len(changes) < deliveryLivePage {
 			return nil
@@ -297,7 +291,7 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 		_, p0 := g.p0[issueKey]
 		h.dirtyIssueLocked(g, issueKey, p0, now)
 	case "architecture.synced":
-		h.dirtyAllLocked(g, now)
+		h.dirtyAllLocked(g, now, deliveryMarkEvent)
 	}
 	if event.Actor.Kind == "session" && event.Actor.ID != "" {
 		origin := event.Actor.Origin
@@ -311,7 +305,7 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 		title := origin.SessionTitle
 		for _, view := range g.views {
 			if view.showsSessionRetitled(event.Actor.ID, title) {
-				h.markDirtyLocked(g, view, now, deliveryCauseChange)
+				h.markDirtyLocked(g, view, now, deliveryMarkEvent)
 			}
 			if view.reading {
 				if view.heardSessions == nil {
@@ -380,7 +374,7 @@ func (g *hubGeneration) installP0Locked(open map[string]struct{}) {
 func (h *deliveryHub) dirtyIssueLocked(g *hubGeneration, key string, p0 bool, now time.Time) {
 	for _, view := range g.views {
 		if view.showsIssue(key, p0) {
-			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			h.markDirtyLocked(g, view, now, deliveryMarkEvent)
 		}
 		if view.reading {
 			if view.heardIssues == nil {
@@ -397,13 +391,13 @@ func (h *deliveryHub) dirtyIssueLocked(g *hubGeneration, key string, p0 bool, no
 func (h *deliveryHub) recheckHeardLocked(g *hubGeneration, view *deliveryView, now time.Time) {
 	for key, p0 := range view.heardIssues {
 		if view.showsIssue(key, p0) {
-			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			h.markDirtyLocked(g, view, now, deliveryMarkEvent)
 			break
 		}
 	}
 	for session, title := range view.heardSessions {
 		if view.showsSessionRetitled(session, title) {
-			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			h.markDirtyLocked(g, view, now, deliveryMarkEvent)
 			break
 		}
 	}
@@ -426,15 +420,34 @@ func (view *deliveryView) showsSessionRetitled(session, title string) bool {
 	return ok && shown != title
 }
 
-func (h *deliveryHub) dirtyAllLocked(g *hubGeneration, now time.Time) {
+func (h *deliveryHub) dirtyAllLocked(g *hubGeneration, now time.Time, mark string) {
 	for _, view := range g.views {
-		h.markDirtyLocked(g, view, now, deliveryCauseChange)
+		h.markDirtyLocked(g, view, now, mark)
 	}
 }
 
-// markDirtyLocked marks view for a recompute and wakes g's worker. A subscribe's mark waits for no
-// quiet.
-func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now time.Time, cause string) {
+// markChangesLocked marks, for each change, the views it can touch (touchedBy) whose answer does
+// not already hold it: a change at or before a view's last answer, or the position of the read
+// under way, marks nothing.
+func (h *deliveryHub) markChangesLocked(g *hubGeneration, changes []delivery.Change, now time.Time) {
+	for _, change := range changes {
+		for _, view := range g.views {
+			if change.Seq > max(view.seq, view.readingSeq) && view.touchedBy(change, now) {
+				h.markDirtyLocked(g, view, now, change.Kind)
+			}
+		}
+	}
+}
+
+// markDirtyLocked marks view for a recompute and wakes g's worker, counting the mark by what made
+// it (countMark): a subscribe (deliveryCauseSubscribe), whose mark waits for no quiet and is the
+// recompute's cause, or a change of any kind (a delivery change's kind or a deliveryMark), whose
+// cause is deliveryCauseChange.
+func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now time.Time, mark string) {
+	cause := deliveryCauseChange
+	if mark == deliveryCauseSubscribe {
+		cause = deliveryCauseSubscribe
+	}
 	if !view.dirty {
 		view.dirty, view.firstDirty, view.cause = true, now, cause
 	}
@@ -442,22 +455,60 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 	if cause == deliveryCauseSubscribe {
 		view.immediate, view.cause = true, cause
 	}
+	view.countMark(mark)
 	signal(g.wakeWork)
 }
 
-// touchedBy is whether a delivery change can move the view's answer (plan v4 Task 7 Step 7's
-// table). The view's window is the one its last answer resolved, a preset's end the present; a
-// change whose rows carry no time at all (a pull request never merged, a job of a run not stored)
-// is taken as touching timeline and measures views. Pipeline lead times read only merged pull
-// requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a Pipeline view.
-func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
-	if view.spec.classes().reads != viewReadsDelivery {
-		// The view reads no delivery row at all: what moves a Legion board is a read of the
-		// daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked), and what
-		// moves a legion_issue view is a read of its project's daemon or a write of one of its
-		// runs (workflowstore.RunsChannel).
-		return false
+// countMark counts one mark of the view by what made it, for the recompute whose read takes the
+// view's marks over (deliveryHub.read).
+func (view *deliveryView) countMark(mark string) {
+	if view.marks == nil {
+		view.marks = map[string]int{}
 	}
+	view.marks[mark]++
+}
+
+// touchedBy is whether a delivery change can move the view's answer (plan v4 Task 7 Step 7's
+// table), by the change's kind: a write of the stored facts or of a filing is answered by its own
+// arm, and every other kind is a delivery row, which moves only a view that reads the delivery
+// rows (touchedByDeliveryRow, behind that test).
+func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
+	switch change.Kind {
+	case delivery.ChangeKindIssueFacts:
+		// One issue's stored Legion facts, which the Legion board is the one reader of
+		// (legionfacts.ReadOpen and legionfacts.ReadShownClosed). The board's reads take the rows
+		// of every open issue and of the issues it shows, every issue of each tree a card stands
+		// in among them, so a row of an issue the board names nowhere yet - a new member of a shown
+		// tree, the first row of an issue, a row a build's whole read writes - moves its answer as
+		// a row of an issue it does name does: the change marks the board of its project, which
+		// the trigger carries in the change's repo (migration 20261117100002), and a closed row of
+		// a tree the board does not show is recomputed into the same body and sends nothing. No
+		// other kind of view reads a facts row, so every delivery view and every legion_issue view
+		// is left: a build's whole read rewrites every row of a project whose values or writer
+		// moved, and a timeline, measures or pipeline answer cannot move when one does.
+		return view.spec.kind == legionBoardView && view.spec.project == change.Repo
+	case delivery.ChangeKindIssueFilings:
+		// One filing of a Legion session. No view reads a filing: the Legion board reads the
+		// stored facts (legionfacts.ReadOpen and legionfacts.ReadShownClosed) and the daemon's
+		// state, a legion_issue view its project's daemon and its runs, and the delivery views
+		// read the delivery rows alone.
+		return false
+	default:
+		// A delivery row. A view that reads none moves by other things: a Legion board by a read
+		// of its daemon (legion.StateChannel), a write of one of its issues (dirtyIssueLocked) or
+		// a write of its stored facts (the arm above), and a legion_issue view by a read of its
+		// project's daemon or a write of one of its runs (workflowstore.RunsChannel).
+		return view.spec.classes().reads == viewReadsDelivery && view.touchedByDeliveryRow(change, now)
+	}
+}
+
+// touchedByDeliveryRow is whether a change of a delivery row can move the answer of a view that
+// reads the delivery rows. The view's window is the one its last answer resolved, a preset's end
+// the present; a change whose rows carry no time at all (a pull request never merged, a job of a
+// run not stored) is taken as touching timeline and measures views. Pipeline lead times read only
+// merged pull requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a
+// Pipeline view. A kind no arm names is taken as touching every such view.
+func (view *deliveryView) touchedByDeliveryRow(change delivery.Change, now time.Time) bool {
 	var times []time.Time
 	for _, t := range []*time.Time{change.TOld, change.TNew} {
 		if t != nil {

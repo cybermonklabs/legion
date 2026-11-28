@@ -37,12 +37,17 @@
  *
  *  Ctrl-C or SIGTERM ends the watch at any time. Then `--body-file` writes the body it holds, and
  *  `--compare` reads the matching GET routes for the last window it applied and writes, for each,
- *  whether the pull request ids, run ids and every measure are equal. Dispatch refusing the view
- *  ends the watch at once and the probe exits 1 with neither: no body is written and no route is
- *  read.
+ *  whether the pull request ids, run ids and every measure are equal (for a legion view, the
+ *  board's every field but `computed_at` and `header.facts_cursor_age_seconds`, each `issues`
+ *  entry of both bodies grown to one moment first, `legionIssuesAt`, and its values compared to
+ *  0.001 hour). Dispatch refusing the view ends the watch at once and the probe exits 1 with
+ *  neither: no body is written and no route is read.
  *
  *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
  *      --view '{"kind":"timeline","window":{"preset":28},"query":""}' --minutes 10 --compare
+ *
+ *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
+ *      --view '{"kind":"legion","project":"INFRA"}' --minutes 10 --compare
  *
  *  It exits 0 when every comparison is equal or none was asked for; 1 when one is not, a read
  *  fails or receives nothing for `--read-within`, `--compare` was asked for and no snapshot
@@ -50,7 +55,11 @@
  *  Dispatch refuses the view, or a frame breaks the contract; 2 on a usage error. */
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
+import {
+  type LegionBoardFacts,
+  type LegionBoardResponse,
+  LIVE_SOCKET_MAX_AGE_CLOSE,
+} from "@legion/contracts";
 
 import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import {
@@ -229,6 +238,11 @@ const PIPELINE_FIELDS: Readonly<Record<PipelineField, true>> = {
   targets: true,
 };
 
+/** The hours a legion view's `issues` entries may differ by once both are grown to one moment
+ *  (0.001 hour, 3.6 s): the server rounds each grown value as its computation rounds, and the
+ *  probe grows each value again from the rounded one. */
+export const LEGION_HOURS_TOLERANCE = 0.001;
+
 const SERVER_FRAME_TYPES: Readonly<Record<DeliveryServerFrame["type"], true>> = {
   delta: true,
   error: true,
@@ -281,6 +295,8 @@ const isTimeline = (body: DeliveryLiveBody): body is DeliveryTimelineWithMeasure
 const isMeasures = (body: DeliveryLiveBody): body is DeliveryMeasuresResponse =>
   "flags_source" in body;
 const isPipeline = (body: DeliveryLiveBody): body is DeliveryPipelineResponse => "days" in body;
+const isLegionBoard = (body: DeliveryLiveBody): body is LegionBoardResponse =>
+  "columns" in body && "header" in body;
 
 function mapValues<V, W>(
   record: Readonly<Record<string, V>>,
@@ -355,8 +371,8 @@ function duration(flag: string, raw: string, unit: "minutes" | "seconds"): numbe
 }
 
 /** The view `--view` names. The probe checks what it reads itself (the kind, a timeline or
- *  measures view's window and query, a pipeline view's `at`); Dispatch judges the rest and answers
- *  a view it refuses with an error frame. */
+ *  measures view's window and query, a pipeline view's `at`, a legion view's project); Dispatch
+ *  judges the rest and answers a view it refuses with an error frame. */
 function parseView(text: string): DeliveryLiveView {
   let value: unknown;
   try {
@@ -384,8 +400,16 @@ function parseView(text: string): DeliveryLiveView {
     if ("at" in value && typeof value.at !== "string") {
       throw new UsageError(`a pipeline view's "at" is an RFC 3339 time`);
     }
+  } else if (kind === "legion") {
+    if (!("project" in value) || typeof value.project !== "string" || value.project === "") {
+      throw new UsageError(
+        `a legion view's "project" is the key of the project whose board it shows`
+      );
+    }
   } else {
-    throw new UsageError(`--view's "kind" is timeline, measures or pipeline, not ${String(kind)}`);
+    throw new UsageError(
+      `--view's "kind" is timeline, measures, pipeline or legion, not ${String(kind)}`
+    );
   }
   // Checked above as far as the probe reads it; Dispatch refuses the rest of a malformed view.
   const view = value as DeliveryLiveView;
@@ -461,11 +485,20 @@ function listChanges(
   return { remove: [...changes.remove], upsert: changes.upsert.map((item) => item.id) };
 }
 
-/** What a snapshot's body holds, counted. Only a timeline body has lists, maps and counts. */
+/** What a snapshot's body holds, counted. A timeline body has lists, maps and counts, and a
+ *  Legion board one map, its `issues`; no other body has any. */
 function holds(body: DeliveryLiveBody): Sections {
-  if (!isTimeline(body)) {
-    return { counts: null, maps: null, prs: null, runs: null, session_groups: null, set: null };
-  }
+  const none: Sections = {
+    counts: null,
+    maps: null,
+    prs: null,
+    runs: null,
+    session_groups: null,
+    set: null,
+  };
+  if (isLegionBoard(body))
+    return { ...none, maps: { issues: Object.keys(body.issues ?? {}).length } };
+  if (!isTimeline(body)) return none;
   return {
     counts: Object.fromEntries(
       COUNTS.map((name) => [
@@ -736,12 +769,17 @@ function compareIds(
 }
 
 /** The JSON paths at or below `path` where `a` and `b` differ; an array whose length differs is
- *  one difference, at its own path. */
-function differences(a: unknown, b: unknown, path: string): string[] {
+ *  one difference, at its own path, and two numbers within `tolerance` of each other are the
+ *  same. At the default tolerance of 0 two numbers are the same only where they are `===`, so NaN
+ *  differs from NaN, 0 and -0 are the same, and an infinity is the same as itself alone. */
+function differences(a: unknown, b: unknown, path: string, tolerance = 0): string[] {
   if (a === b) return [];
+  if (typeof a === "number" && typeof b === "number") {
+    return Math.abs(a - b) <= tolerance ? [] : [path];
+  }
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return [path];
-    return a.flatMap((item, index) => differences(item, b[index], `${path}[${index}]`));
+    return a.flatMap((item, index) => differences(item, b[index], `${path}[${index}]`, tolerance));
   }
   if (
     typeof a === "object" &&
@@ -754,7 +792,9 @@ function differences(a: unknown, b: unknown, path: string): string[] {
     const left = new Map<string, unknown>(Object.entries(a));
     const right = new Map<string, unknown>(Object.entries(b));
     const keys = [...new Set([...left.keys(), ...right.keys()])].sort();
-    return keys.flatMap((key) => differences(left.get(key), right.get(key), `${path}.${key}`));
+    return keys.flatMap((key) =>
+      differences(left.get(key), right.get(key), `${path}.${key}`, tolerance)
+    );
   }
   return [path];
 }
@@ -767,6 +807,71 @@ function compareFields<F extends string>(
   // Object.keys of a literal record holds exactly the keys its type names.
   const names = Object.keys(fields) as F[];
   const differ = names.flatMap((field) => differences(held[field], answer[field], field));
+  return { differ, equal: differ.length === 0 };
+}
+
+/** A Legion board's `issues` entry grown to `moment`, the rule the server's read closes a row by
+ *  (`legionfacts.Row.At`): each value its `growth` names plus its rate times the hours from its
+ *  `as_of`, and `as_of` moved to `moment`. An entry whose values stand (no `as_of`), and a moment
+ *  at or before its `as_of`, is the entry as it stands. For comparison alone, `work_last_at` is
+ *  answered as hours since the epoch, so one tolerance in hours holds every value, and an hours
+ *  column that grows to nothing is left out, as the server leaves it. */
+export function legionEntryAt(entry: LegionBoardFacts, moment: number): Record<string, unknown> {
+  const asOf = entry.as_of === null ? null : Date.parse(entry.as_of);
+  const hours = asOf === null || moment <= asOf ? 0 : (moment - asOf) / 3_600_000;
+  const growth = entry.growth;
+  const phases: Record<string, number> = { ...(entry.hours_by_phase ?? {}) };
+  for (const [column, rate] of Object.entries(growth?.hours_by_phase ?? {})) {
+    phases[column] = (phases[column] ?? 0) + rate * hours;
+  }
+  for (const [column, value] of Object.entries(phases)) {
+    if (Math.abs(value) < LEGION_HOURS_TOLERANCE / 2) delete phases[column];
+  }
+  const lastAt = entry.work_last_at === null ? null : Date.parse(entry.work_last_at) / 3_600_000;
+  return {
+    ...entry,
+    as_of: null,
+    growth:
+      growth === null ? null : { ...growth, hours_by_phase: { ...(growth.hours_by_phase ?? {}) } },
+    hours_by_phase: phases,
+    slot_hours: entry.slot_hours + (growth?.slot_hours ?? 0) * hours,
+    work_hours: entry.work_hours + (growth?.work_hours ?? 0) * hours,
+    work_last_at: lastAt === null ? null : lastAt + (growth?.work_last_at ?? 0) * hours,
+  };
+}
+
+/** Every `issues` entry of a board grown to `moment` (`legionEntryAt`). */
+export function legionIssuesAt(
+  issues: LegionBoardResponse["issues"],
+  moment: number
+): Record<string, Record<string, unknown>> {
+  return mapValues(issues ?? {}, (entry) => legionEntryAt(entry, moment));
+}
+
+/** A Legion board held from the live view against the board the GET answers: every field but
+ *  `computed_at`, which moves on every compute, and `header.facts_cursor_age_seconds`, which the
+ *  read measures at its own moment; each `issues` entry of both grown to the GET's `computed_at`
+ *  first, so a push and a read made at two moments compare as one, and its values held to
+ *  `LEGION_HOURS_TOLERANCE`. */
+export function compareLegionBoards(
+  held: LegionBoardResponse,
+  answer: LegionBoardResponse
+): NonNullable<Checked["measures"]> {
+  const moment = Date.parse(answer.computed_at);
+  const without = (board: LegionBoardResponse) => {
+    const { computed_at: _computed, issues: _issues, header, ...rest } = board;
+    const { facts_cursor_age_seconds: _age, ...kept } = header;
+    return { ...rest, header: kept };
+  };
+  const differ = [
+    ...differences(without(held), without(answer), "board"),
+    ...differences(
+      legionIssuesAt(held.issues, moment),
+      legionIssuesAt(answer.issues, moment),
+      "issues",
+      LEGION_HOURS_TOLERANCE
+    ),
+  ];
   return { differ, equal: differ.length === 0 };
 }
 
@@ -828,9 +933,18 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
         })),
       ];
     }
+    case "legion": {
+      if (!isLegionBoard(body)) throw new Error("the legion view's snapshot is not a Legion board");
+      return [
+        read<LegionBoardResponse>(
+          `/api/v1/projects/${encodeURIComponent(view.project)}/legion/board`,
+          (answer) => ({ measures: compareLegionBoards(body, answer), prs: null, runs: null })
+        ),
+      ];
+    }
     default:
-      // The delivery-live probe drives only the timeline, measures and pipeline views; the
-      // `/ws/live` `legion` view is read by no page and no probe row.
+      // The probe drives the timeline, measures, pipeline and legion views; the `/ws/live`
+      // `legion_issue` view is read by no probe row.
       throw new Error(`the delivery-live probe drives no ${view.kind} view`);
   }
 }

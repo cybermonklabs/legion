@@ -8,10 +8,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts/independent"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -29,24 +35,21 @@ const issueFloor = 200
 // grown to the read's end, against a reading written from the requirement's words (package
 // independent), over one history of more than 200 issues with Legion phase work.
 //
-// It fails where the two disagree on any fact, below the floor of issues, and where the
-// history's issue with no measured work is missing from either side.
+// The history holds one tree the sampler never saw whose issues ran a plan of the steps
+// `implementer reviewer acceptance:owner` (legiontest.Spec's PlannedTree), so the two sides also
+// meet where an issue's plan orders its phases before observations (k28).
+//
+// It fails where the two disagree on any fact, below the floor of issues, where the history's
+// issue with no measured work is missing from either side, and where no issue of the planned tree
+// has hours that the order of the default steps would put in another phase.
 func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Now: now, AwaitingChildren: true})
+	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Now: now, AwaitingChildren: true, PlannedTree: true})
 
-	population, err := metrics.ReadProject(t.Context(), database.Pool, fixture.Project, now)
-	if err != nil {
-		t.Fatalf("read the project's population: %v", err)
-	}
-	computed := map[string]metrics.IssueFacts{}
-	for key, closed := range metrics.ProjectFactsClosed(population, nil) {
-		computed[key] = closed.FactsAt(population.To)
-	}
+	computed, defaults, population := computedFacts(t, database.Pool, fixture.Project, now)
 	computedScope := population.Project
 	computedWindow := independent.Window{From: population.From, To: population.To}
-
 	scope := independent.Scope{Project: fixture.Project}
 	window := independent.Window{To: now}
 	reading, err := independent.Read(t.Context(), database.Pool, scope, window)
@@ -54,7 +57,11 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 		t.Fatalf("read the project independently: %v", err)
 	}
 
-	compared, zeroHours, awaitingChildren, differences := 0, 0, 0, 0
+	planned := map[string]bool{}
+	for _, key := range fixture.Planned {
+		planned[key] = true
+	}
+	compared, zeroHours, awaitingChildren, plannedCompared, differences := 0, 0, 0, 0, 0
 	for _, key := range slices.Sorted(maps.Keys(union(reading.Issues, computed))) {
 		mine, read := reading.Issues[key]
 		theirs, computedIt := computed[key]
@@ -69,6 +76,9 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 			continue
 		}
 		compared++
+		if planned[key] {
+			plannedCompared++
+		}
 		if mine.ZeroHours() {
 			zeroHours++
 		}
@@ -95,10 +105,270 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 	if differences > 0 {
 		t.Errorf("%d facts differ between the reading and the computation", differences)
 	}
+	// The planned tree is what makes this comparison read the plan rule: were none of its hours
+	// in another phase by the default steps' order, a reading that ignored every plan would pass.
+	moved := 0
+	for _, key := range fixture.Planned {
+		if phaseHoursDiffer(computed[key].PhaseHours, defaults[key].PhaseHours) {
+			moved++
+		}
+	}
+	if moved == 0 {
+		t.Errorf("no issue of the %d of the tree that ran a plan of other steps has hours the default steps would put in another phase, so the comparison read no plan rule",
+			len(fixture.Planned))
+	}
 	t.Logf("the independent reading covered scope %s over window %s; the computation covered scope %s over window %s",
 		reading.Scope, reading.Window, computedScope, computedWindow)
 	t.Logf("%d issues compared, %d of them with hours that are all zero, %d roots with awaiting_children hours, %d differences",
 		compared, zeroHours, awaitingChildren, differences)
+	t.Logf("%d of the issues compared are of the tree that ran a plan of the steps implementer reviewer acceptance:owner, and %d of them have hours the default steps would put in another phase",
+		plannedCompared, moved)
+}
+
+// computedFacts is the computation's facts of every issue of project at now, as the stored rows
+// hold them (metrics.ProjectFactsClosed) grown to now, beside the same facts under the default
+// steps and the population they were computed from. The defaults are computed from that one
+// population with every issue's plans taken out, so each issue reads the order of the default
+// steps: what that order makes of the same history. No rule of the computation writes to the
+// population it reads (metrics.Population.at), so the second computation reads the inputs the
+// first read, less the plans, and the population answered holds no plan.
+func computedFacts(t *testing.T, pool *store.Pool, project string, now time.Time) (computed, defaults map[string]metrics.IssueFacts, population *metrics.Population) {
+	t.Helper()
+	population, err := metrics.ReadProject(t.Context(), pool, project, now)
+	if err != nil {
+		t.Fatalf("read the population of %s: %v", project, err)
+	}
+	computed = grownFacts(population)
+	for _, issue := range population.Issues {
+		issue.Plans = nil
+	}
+	return computed, grownFacts(population), population
+}
+
+// grownFacts is ProjectFactsClosed's facts of every issue of population, grown to its To.
+func grownFacts(population *metrics.Population) map[string]metrics.IssueFacts {
+	grown := map[string]metrics.IssueFacts{}
+	for key, closed := range metrics.ProjectFactsClosed(population, nil) {
+		grown[key] = closed.FactsAt(population.To)
+	}
+	return grown
+}
+
+// phaseHoursDiffer is whether two readings of one issue's hours by phase put more than a tenth of
+// an hour of some phase apart, over every phase either names.
+func phaseHoursDiffer(left, right map[string]float64) bool {
+	for phase := range union(left, right) {
+		if math.Abs(left[phase]-right[phase]) > hourTolerance {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultSteps is the one task of the plan the daemon writes for a run whose owner gave none.
+var defaultSteps = []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
+
+// planCase is one issue, alone in a project of its own and never observed, whose phases come from
+// its event log alone and are ordered by the plans its runs ran.
+type planCase struct {
+	t       *testing.T
+	pool    *store.Pool
+	project string
+	key     string
+	start   time.Time
+	seq     int
+}
+
+// hour is the moment hours after the case's issue was created.
+func (c *planCase) hour(hours float64) time.Time {
+	return c.start.Add(time.Duration(hours * float64(time.Hour)))
+}
+
+// exec runs one statement of the case's seed and fails the test where it fails.
+func (c *planCase) exec(what, sql string, args ...any) {
+	c.t.Helper()
+	if _, err := c.pool.Exec(c.t.Context(), sql, args...); err != nil {
+		c.t.Fatalf("%s of %s: %v", what, c.key, err)
+	}
+}
+
+// event writes one event of the issue at its next sequence number.
+func (c *planCase) event(kind, actor, payload string, hours float64) {
+	c.t.Helper()
+	c.seq++
+	c.exec("write an event", `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ($1, $2, $3, $4::jsonb, $5::jsonb, false, $6)
+	`, c.key, c.seq, kind, actor, payload, c.hour(hours))
+}
+
+// worked writes an event of the session titled for role working the issue: that role's first
+// event on it, where it is the role's first.
+func (c *planCase) worked(role string, hours float64) {
+	c.t.Helper()
+	c.event("comment.created", legiontest.SessionActor(role, c.key), `{}`, hours)
+}
+
+// status writes a status a person gave the issue.
+func (c *planCase) status(status string, hours float64) {
+	c.t.Helper()
+	c.event("issue.updated", `{"kind":"user","id":"alice"}`, `{"status":"`+status+`"}`, hours)
+}
+
+// handoffAuthors is the role whose session writes each handoff word.
+var handoffAuthors = map[string]string{"plan": "planner", "implement": "implementer", "test": "tester", "review": "reviewer"}
+
+// handedOff writes one handoff of the issue under word, by the session of the role that hands it
+// on.
+func (c *planCase) handedOff(word string, hours float64) {
+	c.t.Helper()
+	c.exec("write a handoff", `
+		insert into handoffs (issue_key, phase, version, body, author, created_at)
+		values ($1, $2, 1, '{}', $3::jsonb, $4)
+	`, c.key, word, legiontest.SessionActor(handoffAuthors[word], c.key), c.hour(hours))
+}
+
+// ran writes the plan of the issue's run of generation, made at hours, as the daemon writes it
+// (workflowstore.PutPlan): one task for each list of steps, the source default where that is the
+// default steps alone and the owner's document otherwise.
+func (c *planCase) ran(generation int64, hours float64, tasks ...[]string) {
+	c.t.Helper()
+	write := workflowstore.PlanWrite{ID: uuid.NewString(), Issue: c.key, Generation: new(generation)}
+	for index, steps := range tasks {
+		write.Tasks = append(write.Tasks, workflowstore.PlanTask{ID: "task-" + string(rune('a'+index)), Steps: steps})
+	}
+	if len(tasks) == 1 && slices.Equal(tasks[0], defaultSteps) {
+		write.Source = new(workflowstore.PlanSourceDefault)
+	} else {
+		write.Source = new(workflowstore.PlanSourceOwner)
+		write.Document = workflowstore.PlanDocument{ArtifactID: uuid.NewString(), Version: 1}
+	}
+	daemon := model.Actor{Kind: "session", ID: "legion-daemon:" + c.project}
+	if err := pgx.BeginFunc(c.t.Context(), c.pool, func(tx pgx.Tx) error {
+		_, err := workflowstore.PutPlan(c.t.Context(), tx, write, daemon, c.hour(hours))
+		return err
+	}); err != nil {
+		c.t.Fatalf("write the plan of run %d of %s: %v", generation, c.key, err)
+	}
+}
+
+// TestTheIndependentReadingFollowsEachPlanRuleAsTheComputationDoes: before an issue's first
+// observation its phases are ordered by its plan, and the reading states that rule in its own code
+// and reads the plan rows with a statement of its own. One row for each case of the rule: each
+// seeds one issue that is never observed, writes the plan of each of its runs as the daemon does
+// (workflowstore.PutPlan) and its events, and compares the reading with metrics.ProjectFactsClosed
+// to a tenth of an hour and each count exactly.
+//
+// Each row also computes the same history with every plan taken away, which reads the default
+// steps' order, and says whether the plan moves hours into another phase. Where the rule falls
+// back to the default steps (no plan, a plan of two tasks, a step that names no phase) nothing
+// moves, though the plan's steps differ from the default ones; in every other row hours move, so a
+// reading that kept the default order there differs from the computation.
+func TestTheIndependentReadingFollowsEachPlanRuleAsTheComputationDoes(t *testing.T) {
+	database := storetest.Open(t)
+	start := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	now := start.Add(24 * time.Hour)
+	// throughEveryStep is one log of the implementer, the reviewer and the tester, each with its
+	// first event and its handoff: by the default steps' order it is implementing 0-2, testing
+	// 2-3, reviewing 3-5, accepting 5-8 and reviewing 8-10, and by a plan of the steps
+	// `implementer reviewer tester` it is implementing 0-2, reviewing 2-5, testing 5-8 and retro
+	// 8-10.
+	throughEveryStep := func(c *planCase) {
+		c.worked("implementer", 0)
+		c.handedOff("implement", 2)
+		c.worked("reviewer", 3)
+		c.handedOff("review", 5)
+		c.worked("tester", 6)
+		c.handedOff("test", 8)
+	}
+	reviewerFirst := []string{"implementer", "reviewer", "tester"}
+	for index, row := range []struct {
+		name   string
+		closed float64
+		write  func(c *planCase)
+		moves  bool
+	}{
+		{"no plan reads the default steps", 10, throughEveryStep, false},
+		{"a plan of two tasks reads the default steps", 10, func(c *planCase) {
+			c.ran(1, 0, reviewerFirst, []string{"implementer"})
+			throughEveryStep(c)
+		}, false},
+		{"a plan with a step that names no phase reads the default steps", 10, func(c *planCase) {
+			c.ran(1, 0, []string{"implementer", "reviewer", "tester", "writer"})
+			throughEveryStep(c)
+		}, false},
+		// The implementer's first event and the implement handoff fall before the plan was made,
+		// so they read it as the first run's: the handoff starts reviewing.
+		{"an event before every plan reads the first run's plan", 10, func(c *planCase) {
+			c.ran(1, 2.5, reviewerFirst)
+			throughEveryStep(c)
+		}, true},
+		// The first run ran the default steps and the second run's plan, made at hour 4, puts the
+		// reviewer first: the marks before hour 4 read the default steps (implementing 0-2,
+		// testing 2-3, reviewing 3-5) and the marks after it the second plan (testing 5-8, retro
+		// 8-10).
+		{"each moment reads the newest plan made at or before it, a second run's from its making on", 10, func(c *planCase) {
+			c.ran(1, 0, defaultSteps)
+			c.ran(2, 4, reviewerFirst)
+			throughEveryStep(c)
+		}, true},
+		// Under `implementer reviewer` the implement handoff starts reviewing, and the review
+		// handoff, the last step's, starts retro: by the default steps it is testing, then
+		// accepting.
+		{"a handoff starts the phase after the one its word ends on the plan", 7, func(c *planCase) {
+			c.ran(1, 0, []string{"implementer", "reviewer"})
+			c.worked("implementer", 0)
+			c.handedOff("implement", 2)
+			c.handedOff("review", 5)
+		}, true},
+		// Under `implementer reviewer tester` the tester's first event puts the issue past
+		// reviewing, so the reviewer's first event after it starts nothing: testing runs 2-6. By
+		// the default steps' order reviewing comes after testing, and starts at hour 4.
+		{"a role's first event of a phase the plan puts behind the issue starts nothing", 6, func(c *planCase) {
+			c.ran(1, 0, reviewerFirst)
+			c.worked("implementer", 0)
+			c.worked("tester", 2)
+			c.worked("reviewer", 4)
+		}, true},
+		// A plan whose owner's acceptance is the one step after the implementer's holds no
+		// reviewing, so `needs_review` names accepting: by the default steps it names reviewing.
+		{"needs_review names the first of reviewing and accepting the plan holds", 4, func(c *planCase) {
+			c.ran(1, 0, []string{"implementer", "acceptance:owner"})
+			c.worked("implementer", 0)
+			c.status("needs_review", 2)
+		}, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			project := "PLAN" + string(rune('A'+index))
+			c := &planCase{t: t, pool: database.Pool, project: project, key: project + "-1", start: start}
+			c.exec("write the project", `insert into projects (key, name, default_assignee) values ($1, $1, 'alice')`, project)
+			c.exec("write the issue", `
+				insert into issues (key, project_key, number, title, status, rank, created_by, created_at, closed_at)
+				values ($1, $2, 1, 'One issue of a plan case', 'done', '00000001', '{"kind":"system","id":"test"}', $3, $4)
+			`, c.key, project, start, c.hour(row.closed))
+			row.write(c)
+
+			computed, defaults, _ := computedFacts(t, database.Pool, project, now)
+			reading, err := independent.Read(t.Context(), database.Pool, independent.Scope{Project: project}, independent.Window{To: now})
+			if err != nil {
+				t.Fatalf("read %s independently: %v", project, err)
+			}
+			mine, read := reading.Issues[c.key]
+			theirs, computedIt := computed[c.key]
+			if !read || !computedIt || len(reading.Issues) != 1 || len(computed) != 1 {
+				t.Fatalf("the reading holds %d issues and the computation %d, want %s alone on both sides", len(reading.Issues), len(computed), c.key)
+			}
+			if differences := compareFacts(t, c.key, mine, theirs); differences > 0 {
+				t.Errorf("%d facts of %s differ between the reading and the computation", differences, c.key)
+			}
+			if moved := phaseHoursDiffer(theirs.PhaseHours, defaults[c.key].PhaseHours); moved != row.moves {
+				t.Errorf("the plan moves hours into another phase: %t, want %t; by the plan %v, by the default steps %v",
+					moved, row.moves, theirs.PhaseHours, defaults[c.key].PhaseHours)
+			}
+			t.Logf("%s: by the reading %v, by the computation %v, by the default steps %v",
+				c.key, mine.PhaseHours, theirs.PhaseHours, defaults[c.key].PhaseHours)
+		})
+	}
 }
 
 // TestIndependentReadAsOfSnapshotAndTitleTieBreak: Read stands what it takes from the log as of

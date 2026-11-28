@@ -392,41 +392,28 @@ func runSuggestionRules(ctx context.Context, tx pgx.Tx, rules [3]string, args ..
 // (events.Horizon.Safe, one observation; Await on a process's first pass, below), judges page
 // after page up to it (sweepSuggestionOutcomePages), and answers when the loop should run again.
 //
-// A safe of 0 is a horizon that has proven nothing yet: one snapshot never proves its own A
-// (events.Horizon), so the first pass after a process starts reads 0 however much the log holds.
-// That pass takes a horizon with Await instead, which is at or above every id committed before
-// the call, rather than start a null cursor at the highest id at or below 0 (startSuggestionCursor)
-// and leave every later pass paging the log from its start.
+// A safe of 0 is a horizon that has proven nothing yet, which the first pass after a process
+// starts reads unless its own observation's snapshot proved it (events.Horizon), however much the
+// log holds. That pass takes a horizon with Await instead (events.Horizon.SafeOrAwait), which is
+// at or above every id committed before the call, rather than start a null cursor at the highest
+// id at or below 0 (startSuggestionCursor) and leave every later pass paging the log from its start.
 //
-// A pass that leaves an id standing above the horizon it read has read less than the log holds:
-// an event that committed while a lower id was still open, which this pass could not judge by. It
-// asks for a pass schedule.minGap away rather than for the soonest thing it held back, because
-// nothing announces the moment those open writes end and the horizon moves, so a horizon held
-// back costs one pass per gap instead of a loop re-reading as fast as it can. The wait loses
-// nothing: each pass works out afresh what it held back for being younger than settle, and the
-// late commit's own notification on dispatch_events wakes the loop as any other commit does.
-//
-// Two answers say an id stands above what this pass read, and a pass needs both: Pending, this
-// pass's own observation having seen an id above H, and a horizon now proven past the safe this
-// pass read, which is what Pending reads as settled once another reader of the one Horizon - the
-// relay, the delivery hub - proves that observation while this pass's pages run. Neither alone
-// covers the other: without the second, a pass whose gap closed under it would ask for nothing
-// and leave those events to the next commit's wake.
+// A pass that leaves an id standing above the horizon it read (events.Horizon.HeldBack) has read
+// less than the log holds: an event that committed while a lower id was still open, which this
+// pass could not judge by. It asks for a pass schedule.minGap away rather than for the soonest
+// thing it held back. The wait loses nothing: each pass works out afresh what it held back for
+// being younger than settle, and the late commit's own notification on dispatch_events wakes the
+// loop as any other commit does.
 func suggestionOutcomePass(ctx context.Context, pool *store.Pool, horizon *events.Horizon, schedule suggestionSchedule) (time.Time, error) {
-	safe, err := horizon.Safe(ctx)
+	safe, err := horizon.SafeOrAwait(ctx)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("read the event log's safe horizon: %w", err)
-	}
-	if safe == 0 {
-		if safe, err = horizon.Await(ctx); err != nil {
-			return time.Time{}, fmt.Errorf("await the event log's safe horizon: %w", err)
-		}
+		return time.Time{}, err
 	}
 	next, err := sweepSuggestionOutcomePages(ctx, pool, safe, schedule.page, schedule.settle)
 	if err != nil {
 		return time.Time{}, err
 	}
-	if horizon.Gap() != events.GapNone || horizon.Proven() > safe {
+	if horizon.HeldBack(safe) {
 		return time.Now().Add(schedule.minGap), nil
 	}
 	return next, nil

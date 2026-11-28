@@ -1,0 +1,195 @@
+{
+  "type": "delta",
+  "sub": "legion-1",
+  "seq": "42",
+  "changed_at": "2026-10-03T01:29:00Z",
+  "set": {
+    "columns": [
+      {
+        "id": "queue",
+        "label": "Queue",
+        "cards": []
+      },
+      {
+        "id": "design",
+        "label": "Design",
+        "cards": [
+          {
+            "key": "ACME-3",
+            "title": "The queued root",
+            "priority": 2,
+            "resolved_priority": 2,
+            "priority_from": null,
+            "phase": "admitted",
+            "phase_since": "2026-10-02T21:00:00Z",
+            "slot": 1,
+            "waiting_place": null,
+            "roles": [
+              "architect"
+            ],
+            "blocked_by": [],
+            "waiting_on": null,
+            "slot_use": "working",
+            "waiting": null,
+            "tree": "ACME-3",
+            "children": 0
+          }
+        ]
+      },
+      {
+        "id": "planning",
+        "label": "Planning",
+        "cards": []
+      },
+      {
+        "id": "implementing",
+        "label": "Implementing",
+        "cards": [
+          {
+            "key": "ACME-2",
+            "title": "The implementer's child",
+            "priority": 1,
+            "resolved_priority": 1,
+            "priority_from": null,
+            "phase": "implementing",
+            "phase_since": "2026-10-02T21:00:00Z",
+            "slot": 0,
+            "waiting_place": null,
+            "roles": [
+              "implementer"
+            ],
+            "blocked_by": [],
+            "waiting_on": null,
+            "slot_use": "working",
+            "waiting": null,
+            "tree": "ACME-1",
+            "children": 0
+          }
+        ]
+      },
+      {
+        "id": "testing",
+        "label": "Testing",
+        "cards": []
+      },
+      {
+        "id": "reviewing",
+        "label": "Reviewing",
+        "cards": []
+      },
+      {
+        "id": "accepting",
+        "label": "Accepting",
+        "cards": []
+      },
+      {
+        "id": "retro",
+        "label": "Retro",
+        "cards": []
+      },
+      {
+        "id": "merging",
+        "label": "Merging",
+        "cards": []
+      },
+      {
+        "id": "awaiting_children",
+        "label": "Waiting on children",
+        "cards": [
+          {
+            "key": "ACME-1",
+            "title": "The parent waiting on its child",
+            "priority": 1,
+            "resolved_priority": 1,
+            "priority_from": null,
+            "phase": "awaiting_children",
+            "phase_since": "2026-10-02T20:00:00Z",
+            "slot": null,
+            "waiting_place": null,
+            "roles": [],
+            "blocked_by": [
+              "ACME-2"
+            ],
+            "waiting_on": null,
+            "slot_use": null,
+            "waiting": {
+              "reason": "blocked",
+              "since": "2026-10-02T20:00:00Z",
+              "blocked_by": [
+                "ACME-2"
+              ]
+            },
+            "tree": "ACME-1",
+            "children": 0
+          }
+        ]
+      },
+      {
+        "id": "awaiting_person",
+        "label": "Waiting on a person",
+        "cards": []
+      },
+      {
+        "id": "held",
+        "label": "Held",
+        "cards": []
+      }
+    ],
+    "header": {
+      "slots_in_use": 2,
+      "slot_cap": 3,
+      "p0_holders": null,
+      "trees": 2,
+      "queue_length": 0,
+      "read_at": "2026-10-03T01:29:30Z",
+      "read_ok": true,
+      "read_error": null,
+      "facts_updated_at": "2026-10-02T23:40:00Z",
+      "facts_cursor_age_seconds": 7
+    }
+  },
+  "items": {},
+  "maps": {
+    "issues": {
+      "ACME-3": {
+        "opened_at": "2026-10-02T21:00:00Z",
+        "closed_at": null,
+        "hours_by_phase": {
+          "design": 0.25
+        },
+        "work_hours": 0.25,
+        "review_rounds": 0,
+        "root_key": "ACME-3",
+        "tree_depth": 0,
+        "slot_hours": 0.25,
+        "waiting_reason": "",
+        "work_first_at": "2026-10-03T01:15:00Z",
+        "work_last_at": "2026-10-03T01:30:00Z",
+        "updated_at": "2026-10-03T01:29:00Z",
+        "as_of": "2026-10-03T01:30:00Z",
+        "growth": {
+          "hours_by_phase": {
+            "design": 1
+          },
+          "work_hours": 1,
+          "slot_hours": 1,
+          "work_last_at": 1
+        }
+      },
+      "ACME-4": null
+    }
+  },
+  "counts": {},
+  "revs": {
+    "maps": {
+      "issues": {
+        "ACME-3": "463ff56df253b502",
+        "ACME-4": null
+      }
+    },
+    "fields": {
+      "columns": "4b449d9fe37d0ffa",
+      "header": "3465a82e58eabecb"
+    }
+  }
+}

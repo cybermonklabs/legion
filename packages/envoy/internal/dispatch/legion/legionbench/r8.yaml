@@ -1,0 +1,146 @@
+# R8's Job (dispatch://INFRA-5577, check k14) on the build farm: legionbench/r8.sh, whole, in one
+# pod, `main`'s tip and then this head one after the other (r8.sh says what each arm runs). The code
+# arrives as a git bundle in the build farm's input bucket, so the Job needs no GitHub token and no
+# pushed branch: the pod clones the public repository, fetches every head the bundle lists into it
+# and checks out BENCH, the commit holding legionbench, whose r8.sh it runs with MAIN and HEAD as
+# its two arms (MAIN may be `origin/main`, which r8.sh resolves and records). The bundle holds the
+# commits the public repository lacks, under whatever heads it lists (one of a jj workspace's HEAD
+# lists no branch):
+#   git bundle create legion.bundle HEAD --not origin/main
+#   gcloud storage cp legion.bundle gs://<input bucket>/in/builds/infra-5577/<RUN>/legion.bundle
+# The log is the evidence: judge it by its RESULT and FAIL lines and its closing VERDICT line, never
+# by the Job's phase. The container exits 0 once it has printed that verdict, FAIL lines or not, so
+# a failed check never runs the measurement again; only a pod that ends before its verdict (a lost
+# machine, an eviction, a failed clone) is retried. Each run's output goes to
+# gs://<bucket>/out/builds/infra-5577/<RUN>/. PROFILE=1 adds a CPU profile of each arm's server
+# over the drive's window to the record, as work/out/main.cpu.pprof and work/out/head.cpu.pprof
+# (r8.sh's R8_PROFILE); 0 takes none. Fill the ${…} variables (and only those, so the script's own
+# variables are left for the shell). LABEL_DOMAIN is the build farm's label domain and BUCKET its
+# input and output bucket, the deployment's own; this public file names neither, so the render
+# refuses when one is unset, as it refuses any variable unset:
+#   export RUN=<run> BENCH=<commit> MAIN=origin/main HEAD=<commit> SCALE=1 HEAD_FACTS=1 DURATION=10m PROFILE=0 \
+#     OMP_SESSION=<id> OMP_SESSION_TITLE=<title> LABEL_DOMAIN=<domain> BUCKET=<bucket>
+#   python3 -c 'import os, re, sys; names = ("RUN", "BENCH", "MAIN", "HEAD", "SCALE", "HEAD_FACTS", "DURATION", "PROFILE", "OMP_SESSION", "OMP_SESSION_TITLE", "LABEL_DOMAIN", "BUCKET"); missing = [n for n in names if not os.environ.get(n)]; missing and sys.exit("r8.yaml: set " + ", ".join(missing)); sys.stdout.write(re.sub(r"\$\{(" + "|".join(names) + r")\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
+#     < r8.yaml > "$TMPDIR/r8.yaml"
+#   kubectl -n builds create --dry-run=server -f "$TMPDIR/r8.yaml" && kubectl -n builds create -f "$TMPDIR/r8.yaml"
+# The pod holds no service-account token, so it cannot read its node's labels, and the downward
+# API gives it only the node's name, which its MARK start line prints. So the submitter reads the
+# node's machine type once the pod runs (and again for a retried pod, which may run on another
+# node), with <job> the name the create prints:
+#   node=$(kubectl -n builds get pods -l batch.kubernetes.io/job-name=<job> --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].spec.nodeName}')
+#   kubectl get node "$node" -o jsonpath='{.metadata.labels.node\.kubernetes\.io/instance-type}'
+# The submitter records that type with the run's result, beside the path of its log, and compares
+# the run only with runs on the same type. The two arms run in this one pod, so they share its node
+# and r8.sh's comparison of them holds on any type.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: infra5577-r8-
+  namespace: builds
+  labels:
+    owner: infra-5577-bench
+    ${LABEL_DOMAIN}/omp-session: &omp-session "${OMP_SESSION}"
+  annotations:
+    ${LABEL_DOMAIN}/omp-session-title: &omp-session-title "${OMP_SESSION_TITLE}"
+    # A run takes about 43 minutes on 8 CPUs and 32 GiB of an on-demand E2 machine, the first
+    # choice of the class default, which tries E2, then C4D, then other families: two builds, two
+    # loads at ten times the run volume, two catch-ups and two 10-minute drives. The cost is that
+    # time on a whole e2-standard-16, the node the class gives this pod, at E2's on-demand rate of
+    # about $0.54 an hour, rounded up to the next cent.
+    ${LABEL_DOMAIN}/cost-usd: "0.39"
+    ${LABEL_DOMAIN}/expected-cpu-hours: "6"
+    ${LABEL_DOMAIN}/expected-memory-gib-hours: "23"
+    ${LABEL_DOMAIN}/branch: "legion/INFRA-5577"
+    ${LABEL_DOMAIN}/head: "${BENCH}"
+spec:
+  # A pod that ends before its verdict runs the measurement again from the start: it keeps nothing
+  # between pods. The Job's deadline counts across every pod, so it is the pod's own once per
+  # attempt: (backoffLimit + 1) x 14400 s.
+  backoffLimit: 1
+  podReplacementPolicy: Failed
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 28800
+  template:
+    metadata:
+      labels:
+        ${LABEL_DOMAIN}/kind: legion-r8-bench
+        ${LABEL_DOMAIN}/omp-session: *omp-session
+        # A timed run: the two arms' recomputes are compared within this pod, which must not share
+        # its CPU. Without this label build-cpu-burst would set the CPU request from the kind's row
+        # in build-kind-sizes for this namespace and class where that is under the limit, or to
+        # under half the limit for a kind with no row, and the pod would share its CPU.
+        ${LABEL_DOMAIN}/cpu-qos: "guaranteed"
+      annotations:
+        ${LABEL_DOMAIN}/omp-session-title: *omp-session-title
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      runtimeClassName: gvisor
+      activeDeadlineSeconds: 14400
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        cloud.google.com/compute-class: default
+      volumes:
+      # Everything the run writes: the clone and its worktrees, the Go and Bun caches, the builds,
+      # the Postgres data with its WAL (one database at ten times the run volume at a time: main's is
+      # dropped before this head's load) and the logs.
+      - name: scratch
+        emptyDir: {sizeLimit: 58Gi}
+      containers:
+      - name: r8
+        # The worker image of release 23.16.4, the multi-architecture index digest: Go 1.27.3, Bun,
+        # PostgreSQL 18, psql, git and gcloud. r8.sh builds the NATS server each arm's server runs
+        # on with go install, at the release packages/envoy/go.mod requires, so the run takes none
+        # from the image.
+        image: ghcr.io/cybermonklabs/legion-worker@sha256:c040f32384bcac221423e42e6848ab6bacd50a9657313fc0bcb401fa6ca0cf21
+        env:
+        - {name: HOME, value: /scratch/home}
+        - {name: TMPDIR, value: /scratch/tmp}
+        - {name: GOCACHE, value: /scratch/gocache}
+        - {name: GOMODCACHE, value: /scratch/gomod}
+        - {name: BUN_INSTALL_CACHE_DIR, value: /scratch/buncache}
+        - {name: RUN, value: "${RUN}"}
+        - {name: BENCH, value: "${BENCH}"}
+        - {name: MAIN, value: "${MAIN}"}
+        - {name: HEAD, value: "${HEAD}"}
+        - {name: SCALE, value: "${SCALE}"}
+        - {name: HEAD_FACTS, value: "${HEAD_FACTS}"}
+        - {name: DURATION, value: "${DURATION}"}
+        - {name: PROFILE, value: "${PROFILE}"}
+        - {name: BUCKET, value: "${BUCKET}"}
+        - name: NODE_NAME
+          valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+        volumeMounts:
+        - {name: scratch, mountPath: /scratch}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -euo pipefail
+          mkdir -p "$HOME" "$TMPDIR" "$GOCACHE" "$GOMODCACHE" "$BUN_INSTALL_CACHE_DIR"
+          echo "MARK start $(date -u +%FT%TZ) run=$RUN bench=$BENCH main=$MAIN head=$HEAD scale=$SCALE head_facts=$HEAD_FACTS duration=$DURATION profile=$PROFILE node=$NODE_NAME"
+          gcloud storage cp "gs://$BUCKET/in/builds/infra-5577/$RUN/legion.bundle" /scratch/legion.bundle
+          git clone --filter=blob:none --no-checkout https://github.com/cybermonklabs/legion /scratch/src
+          cd /scratch/src
+          git bundle verify /scratch/legion.bundle
+          git fetch /scratch/legion.bundle $(git bundle list-heads /scratch/legion.bundle | awk '{print "+" $2 ":refs/bundle/" NR}')
+          git checkout --detach "$BENCH"
+          echo "MARK checkout $(git rev-parse HEAD) main=$(git rev-parse "$MAIN^{commit}") head=$(git rev-parse "$HEAD^{commit}")"
+          rc=0
+          R8_WORK=/scratch/work R8_SOURCE=/scratch/src R8_MAIN="$MAIN" R8_HEAD="$HEAD" R8_SCALE="$SCALE" \
+            R8_HEAD_FACTS="$HEAD_FACTS" R8_DURATION="$DURATION" R8_PROFILE="$PROFILE" \
+            bash packages/envoy/internal/dispatch/legion/legionbench/r8.sh 2>&1 | tee /scratch/out.txt || rc=${PIPESTATUS[0]}
+          echo "MARK failures:"; grep '^FAIL' /scratch/out.txt || echo "MARK none"
+          echo "MARK end $(date -u +%FT%TZ) rc=$rc"
+          # The record: the log, the arms' summaries, the probe's frames, the facts read, the CPU
+          # profiles (PROFILE=1), and the drives', the servers' and the NATS servers' logs.
+          tar -C /scratch -czf /scratch/record.tgz out.txt work/out $(cd /scratch && ls work/*.log 2>/dev/null) || true
+          gcloud storage cp /scratch/record.tgz "gs://$BUCKET/out/builds/infra-5577/$RUN/r8-record.tgz" || echo "MARK the record did not reach the bucket"
+          # The verdict: a pass is r8.sh exiting 0 with no FAIL line. The run is over once it is
+          # printed, so the container exits 0 and the Job retries no failed check.
+          failures=$(grep -c '^FAIL' /scratch/out.txt || true)
+          if [ "$rc" -eq 0 ] && [ "$failures" -eq 0 ]; then verdict=pass; else verdict=fail; fi
+          echo "VERDICT $verdict rc=$rc fail_lines=$failures"
+          exit 0
+        resources:
+          requests: {cpu: "8", memory: 32Gi, ephemeral-storage: 60Gi}
+          limits: {cpu: "8", memory: 32Gi, ephemeral-storage: 60Gi}

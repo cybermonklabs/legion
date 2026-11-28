@@ -14,7 +14,7 @@ import (
 func TestABoardEntrysRatesAreTheGrowthOfTheFactsItCarries(t *testing.T) {
 	growth := Growth{
 		"work_hours": 1, "slot_hours": 2, "work_last_at": 1, "phase_hours.implementing": 1,
-		"phase_hours.reviewing": 0, "parked_hours": 1, "queued_hours": 1, "slot_wait_hours": 1,
+		"phase_hours.reviewing": 0, "backlog_or_icebox_hours": 1, "queued_hours": 1, "slot_wait_hours": 1,
 		"implementing_hours_after_first_review": 1, "testing_hours_after_first_review": 1,
 		"work_first_at": 1, "bars.implementer.hours": 1, "bars.implementer.segments.idle": 1,
 		"idle_by_role.reviewer": 1,
@@ -35,7 +35,7 @@ func TestABoardEntrysRatesAreTheGrowthOfTheFactsItCarries(t *testing.T) {
 	for name, still := range map[string]Growth{
 		"an empty growth": nil,
 		"a growth of facts the entry does not carry": {
-			"parked_hours": 1, "work_first_at": 1, "bars.implementer.hours": 1, "idle_by_role.reviewer": 1,
+			"backlog_or_icebox_hours": 1, "work_first_at": 1, "bars.implementer.hours": 1, "idle_by_role.reviewer": 1,
 			"phase_hours.design": 0,
 		},
 	} {

@@ -32,7 +32,7 @@ type Growth map[string]float64
 const (
 	growthWorkHours      = "work_hours"
 	growthSlotHours      = "slot_hours"
-	growthParkedHours    = "parked_hours"
+	growthParkedHours    = "backlog_or_icebox_hours"
 	growthQueuedHours    = "queued_hours"
 	growthSlotWaitHours  = "slot_wait_hours"
 	growthImplementing   = "implementing_hours_after_first_review"

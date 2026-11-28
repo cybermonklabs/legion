@@ -30,7 +30,7 @@ var jitterN = func(n time.Duration) time.Duration {
 // Jittered is d plus up to a tenth of d again, drawn afresh each call, so the waits of processes
 // that booted together drift apart. The jitter only ever adds, so a jittered wait is never shorter
 // than the d it was asked for. RunWoken relies on that: a leased loop whose attempt did not run
-// waits Jittered(MinGap) before it tries again, so no retry comes sooner than its least gap. A loop
+// waits Jittered(Retry) before it tries again, so no retry comes sooner than its Retry. A loop
 // that must pass again within its interval waits JitteredWithin instead.
 func Jittered(d time.Duration) time.Duration {
 	return d + jitterN(d/10)

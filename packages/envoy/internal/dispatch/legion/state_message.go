@@ -86,10 +86,11 @@ func holdPart(ctx context.Context, tx pgx.Tx, project string, message stateMessa
 // all its rows at one moment, 1 µs after the project's newest row where that is later than the
 // read's time (recordObservations), since the daemon's clock can as well be past Dispatch's. So
 // whichever of the two Dispatch writes last is each field's newest, whatever the two clocks say.
-// A batch's rows keep their own times: the batch is one daemon transaction, at one `at`.
+// A batch's rows keep their own times: the batch is one daemon transaction, at one `at`. The
+// insert runs under the observations' lock in the same round trip (insertObservations).
 func recordEvents(ctx context.Context, tx pgx.Tx, project string, at time.Time, observations []Observation) (int64, error) {
 	issueKeys, fields, values := observationColumns(observations)
-	tag, err := tx.Exec(ctx, `
+	written, err := insertObservations(ctx, tx, `
 		with moved as (
 			select moved.issue_key, moved.field, moved.value::jsonb as value
 			from unnest($2::text[], $3::text[], $4::text[]) as moved(issue_key, field, value)
@@ -105,7 +106,7 @@ func recordEvents(ctx context.Context, tx pgx.Tx, project string, at time.Time, 
 	if err != nil {
 		return 0, fmt.Errorf("store the Legion observations of %s's state events: %w", project, err)
 	}
-	return tag.RowsAffected(), nil
+	return written, nil
 }
 
 // lastValues is each field the events name at its last value, in sequence order: one fact can

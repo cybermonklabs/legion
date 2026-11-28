@@ -35,12 +35,17 @@ export type DeliveryLiveView =
 
 /** The timeline's lists sent item by item, by id. */
 export type DeliveryLiveList = "prs" | "runs" | "session_groups";
-/** The timeline's maps sent entry by entry, by key. */
-export type DeliveryLiveMap =
-  | "issue_titles"
-  | "session_titles"
-  | "session_pr_counts"
-  | "components";
+/** The body field each map is sent out of, by the map's name: the timeline's four maps, and a
+ *  Legion board's `issues`, the stored facts of each issue it carries. */
+interface DeliveryLiveMapFields {
+  readonly issue_titles: DeliveryTimelineWithMeasures["issue_titles"];
+  readonly session_titles: DeliveryTimelineWithMeasures["session_titles"];
+  readonly session_pr_counts: DeliveryTimelineWithMeasures["session_pr_counts"];
+  readonly components: DeliveryTimelineWithMeasures["components"];
+  readonly issues: LegionBoardResponse["issues"];
+}
+/** The maps sent entry by entry, by key: the timeline's, and a `legion` view's `issues`. */
+export type DeliveryLiveMap = keyof DeliveryLiveMapFields;
 /** The timeline's two-level count maps, sent count by count: `{facet: {value: count}}`. */
 export type DeliveryLiveCounts = "facet_counts" | "color_counts";
 
@@ -154,7 +159,7 @@ export interface DeliveryLiveDelta {
   /** A key's new value, or null when it left. */
   readonly maps: {
     readonly [M in DeliveryLiveMap]?: Readonly<
-      Record<string, NonNullable<DeliveryTimelineWithMeasures[M]>[string] | null>
+      Record<string, NonNullable<DeliveryLiveMapFields[M]>[string] | null>
     >;
   };
   /** A count's new value, or null when it left. */

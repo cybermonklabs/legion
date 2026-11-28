@@ -1,0 +1,27 @@
+-- 20261128041128_issue_facts_plan_tuples.up.sql
+--
+-- issue_facts keeps, for each row, how many tuples its issue's plans held when the row was
+-- computed (dispatch://INFRA-5577, R2), so the Legion facts consumer can find a plan write whose
+-- signal it never heard.
+--   plan_tuples  the count of the tuples of the issue's plan nodes, every value tuple and relation
+--                from a node of kind plan that is part of the issue, that the computation read:
+--                counted in the statement that read the plans (workflowstore.IssuesPlans and
+--                PlanTuplesOf, through legion/metrics.Issue.PlanTuples). A plan is an input of the
+--                row, and its write (workflowstore.PutPlan) appends no event: it signals its
+--                issue on dispatch_workflow_plans, and the consumer computes that issue again. No
+--                tuple is updated or deleted and every write that moves a plan appends one, so the
+--                count only rises; a signal lost while the consumer's listener had no connection
+--                leaves a row whose count differs from the count now, which the consumer reads at
+--                its start and after each connection of its listener (legionfacts.plansMoved) and
+--                computes again. A pass writes the count also where no other value of the row
+--                moved (legionfacts.upsert compares it with the rest). No reader of the facts
+--                reads it.
+--
+-- One column with a constant default, which Postgres records in the catalogue without rewriting a
+-- row, so the alter holds ACCESS EXCLUSIVE on issue_facts for the catalogue change alone. A row
+-- written before it, or by a build that names its columns in its writes and not this one, holds 0;
+-- the first whole read of each project by this build (legionfacts.legionProjects) writes every
+-- row's count, and a row a build without the column writes is another build's (written_build),
+-- which the build a project's record names computes again (legionfacts.otherBuildsRows). The
+-- census answers 0.
+alter table issue_facts add column plan_tuples bigint not null default 0;

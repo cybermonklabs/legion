@@ -1,0 +1,52 @@
+kind: Added
+body: |-
+  Dispatch computes each issue's Legion facts once and stores them as rows (`issue_facts`): its
+  work hours by board column, the work time they come out of, its review rounds, its root and
+  depth in the tree, the hours it held an admission slot, why it waits, the first and last moment
+  of its work, and the values the six Legion measures read. The filings a Legion session made are
+  stored in `issue_filings`. One computation answers them all, so no two views of one issue can
+  disagree.
+  A leased consumer keeps the rows true to their inputs. It wakes on the issue's own events, on
+  each record the Legion state intake makes of the daemon, on the delivery change feed and on each
+  write of the issue's plan, recomputes the issue whose inputs moved with its ancestors, and
+  recomputes the subtree of an issue that moved to another tree, by its parent link or by the tree
+  its daemon reports, with the tree it left, and it rewrites no row on a timer. A plan write that
+  stores something new notifies `dispatch_workflow_plans` with its issue's key at its commit; each
+  row keeps the count of its plans' tuples it read (`plan_tuples`), and when the consumer starts
+  and each time its listener connects again it recomputes every issue whose count moved, so a
+  plan write made while no listener heard it moves its row as well. It reads the daemon's
+  observations by id, and every insert into `legion_observations` now takes one advisory lock
+  before it draws its ids and holds it to its commit, so the ids are commit order while the
+  intake writes two projects at once. An open issue's row holds its facts as of the newest input
+  they read and how fast each grows after it, so a row whose inputs did not move is never
+  rewritten, and every read gives each fact at the read's own clock. Each build reads a project
+  whole once, as does a cursor whose rows the feed has pruned; during a roll the older build
+  deletes no row or filing and the newer build computes again every row and filing the older one
+  writes, so once the older process has stopped every row and filing is the running build's. The
+  previous release's intake takes no such lock, so once no live process serves another stamped
+  build, the running build reads each project whole once more, which gives an issue an
+  observation that release committed below the consumer's cursor. Every process of the build
+  reads one record of the last moment two stamped builds served at once, so a process that starts
+  after the roll ended makes that read as well, and a process that finds it made reads nothing
+  whole.
+  The board at `GET /api/v1/projects/{key}/legion/board` gains `issues`, a map keyed by issue key
+  of the stored rows of every open issue with Legion phase work and of every issue the board
+  shows: each card's issue and every issue of a tree a card stands in. The rows are read by key,
+  by tree root and as the project's open rows, each through an index, and the read computes
+  nothing but each open fact's growth to the moment of the read; the live push carries the same
+  map, entry by entry. Its header says the oldest `updated_at` of the rows it served and the age
+  of the consumer's cursor.
+  Each card now says what the slot it holds is used for (`working`, `between_turns`,
+  `held_children`, `held_person` or `held_idle`), why it waits (`ready`, `slot`, `blocked` or
+  `person`, with a parent in `awaiting_children` waiting as `blocked` on its open children) with
+  the time since and the issues a blocker link holds it on, and its place in the daemon's waiting
+  line. Both rules live beside the twelve columns rather than in the route, because the stored
+  rows answer them too.
+  A facts write logs one change of the new kind `issue_facts` for each row it changes, carrying
+  the project, the issue and the issue's close before and after the write, which wakes the open
+  Legion boards of its project and no other view; a filings write logs `issue_filings`, which
+  wakes no view. Each server process opens one more connection to Postgres for the consumer's
+  lease: 121. The live hub's recompute line carries each stage's time and the marks it took over.
+time: 2026-11-24T08:52:28Z
+custom:
+    Issue: INFRA-5577

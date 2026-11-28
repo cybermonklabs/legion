@@ -4,6 +4,10 @@
 // (agent-secrets, agent-secrets-helper) was built as, for `--version` and the helper's startup
 // line, and the commit every program that connects to NATS names in its connection name
 // (ConnectionBuild), which legacy-subjects-gate.sh reads from the hub's census of connections.
+// cmd/dispatch also stores String, followed by a suffix each process draws at its start, in the
+// Legion facts consumer's record of the build that last read each project whole (processBuild),
+// where it is the build of any binary no release stamped a commit into: the suffix makes two runs
+// of one unstamped binary two builds.
 package buildversion
 
 import (

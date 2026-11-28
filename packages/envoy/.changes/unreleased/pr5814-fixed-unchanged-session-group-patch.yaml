@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A `PATCH /api/v1/delivery/session-groups/{id}` that changes neither the group's name nor its
+  sessions (its own name again, a session it holds, one it does not) now writes nothing and
+  answers the group as it stands, whoever sends it. It used to move the group's `updated_at`,
+  which the read answers, without logging a change, so an open Delivery page kept the old one.
+time: 2026-11-24T08:52:28Z
+custom:
+    Issue: INFRA-5577

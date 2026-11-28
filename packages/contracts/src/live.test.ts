@@ -8,6 +8,8 @@ import event from "../fixtures/live/event.json";
 import eventsStart from "../fixtures/live/events_start.json";
 import freshness from "../fixtures/live/freshness.json";
 import heartbeat from "../fixtures/live/heartbeat.json";
+import legionDelta from "../fixtures/live/legion_delta.json";
+import legionSnapshot from "../fixtures/live/legion_snapshot.json";
 import snapshot from "../fixtures/live/snapshot.json";
 import subscribeAgent from "../fixtures/live/subscribe_agent.json";
 import subscribeEvents from "../fixtures/live/subscribe_events.json";
@@ -31,6 +33,8 @@ import {
   type DispatchEvent,
   type EventsLiveResume,
   type EventsLiveView,
+  type LegionBoardFacts,
+  type LegionBoardResponse,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
@@ -160,13 +164,53 @@ const ITEM_CHANGE_KEYS = allOf<keyof DeliveryLiveItemChanges<DeliveryLiveList>>(
   "remove",
 ]);
 const LISTS = allOf<DeliveryLiveList>()(["prs", "runs", "session_groups"]);
-const MAPS = allOf<DeliveryLiveMap>()([
+/** The maps a timeline body holds, and the one a Legion board's does. */
+const TIMELINE_MAPS = allOf<Extract<DeliveryLiveMap, keyof DeliveryTimelineWithMeasures>>()([
   "issue_titles",
   "session_titles",
   "session_pr_counts",
   "components",
 ]);
+const LEGION_MAPS = allOf<Extract<DeliveryLiveMap, keyof LegionBoardResponse>>()(["issues"]);
+const MAPS = allOf<DeliveryLiveMap>()([
+  "issue_titles",
+  "session_titles",
+  "session_pr_counts",
+  "components",
+  "issues",
+]);
 const COUNTS = allOf<DeliveryLiveCounts>()(["facet_counts", "color_counts"]);
+const LEGION_BOARD_KEYS = allOf<keyof LegionBoardResponse>()([
+  "project",
+  "header",
+  "columns",
+  "issues",
+  "settings",
+  "computed_at",
+]);
+/** A Legion board's fields sent whole: every field but its map and its computed_at. */
+const LEGION_WHOLE = allOf<Exclude<keyof LegionBoardResponse, DeliveryLiveMap | "computed_at">>()([
+  "project",
+  "header",
+  "columns",
+  "settings",
+]);
+const LEGION_FACTS_KEYS = allOf<keyof LegionBoardFacts>()([
+  "opened_at",
+  "closed_at",
+  "hours_by_phase",
+  "work_hours",
+  "review_rounds",
+  "root_key",
+  "tree_depth",
+  "slot_hours",
+  "waiting_reason",
+  "work_first_at",
+  "work_last_at",
+  "updated_at",
+  "as_of",
+  "growth",
+]);
 
 const REVISION = /^[0-9a-f]{16}$/;
 
@@ -189,13 +233,15 @@ test("a snapshot frame is the timeline's GET body with a revision for every key 
     expect(keysOf(frame.body)).toEqual(sorted(TIMELINE_KEYS));
     expect(keysOf(frame.revs)).toEqual(sorted(REVS_KEYS));
     expect(keysOf(frame.revs.items)).toEqual(sorted(LISTS));
-    expect(keysOf(frame.revs.maps)).toEqual(sorted(MAPS));
+    expect(keysOf(frame.revs.maps)).toEqual(sorted(TIMELINE_MAPS));
     expect(keysOf(frame.revs.counts)).toEqual(sorted(COUNTS));
     for (const list of LISTS) {
       const ids = frame.body[list].map((item: { id: string | number }) => String(item.id));
       expect(sorted(ids)).toEqual(keysOf(frame.revs.items[list]));
     }
-    for (const map of MAPS) expect(keysOf(frame.revs.maps[map])).toEqual(keysOf(frame.body[map]));
+    for (const map of TIMELINE_MAPS) {
+      expect(keysOf(frame.revs.maps[map])).toEqual(keysOf(frame.body[map]));
+    }
     for (const counts of COUNTS) {
       expect(keysOf(frame.revs.counts[counts])).toEqual(keysOf(frame.body[counts]));
     }
@@ -219,7 +265,9 @@ test("a delta frame carries lists by id, maps by key, counts two levels deep, an
     expect(LISTS).toContain(list as DeliveryLiveList);
     expect(keysOf(changes)).toEqual(sorted(ITEM_CHANGE_KEYS));
   }
-  for (const map of Object.keys(delta.maps)) expect(MAPS).toContain(map as DeliveryLiveMap);
+  for (const map of Object.keys(delta.maps)) {
+    expect(TIMELINE_MAPS).toContain(map as (typeof TIMELINE_MAPS)[number]);
+  }
   for (const counts of Object.keys(delta.counts)) {
     expect(COUNTS).toContain(counts as DeliveryLiveCounts);
   }
@@ -244,6 +292,74 @@ test("a delta frame carries lists by id, maps by key, counts two levels deep, an
     expect(revision === null || REVISION.test(String(revision))).toBe(true);
   }
   for (const revision of leaves(delta.revs.fields, 1)) expect(revision).toMatch(REVISION);
+});
+
+test("a legion view's snapshot is the board's GET body with a revision for every issues entry and every field sent whole", () => {
+  const frame = legionSnapshot;
+  expect(keysOf(frame)).toEqual(sorted(SNAPSHOT_KEYS));
+  expect(frame.type).toBe("snapshot");
+  expect(frame.seq).toMatch(/^\d+$/);
+  expect(keysOf(frame.body)).toEqual(sorted(LEGION_BOARD_KEYS));
+  expect(keysOf(frame.revs)).toEqual(sorted(REVS_KEYS));
+  // The board has no list and no count map: its one map is its issues, by issue key.
+  expect(frame.revs.items).toEqual({});
+  expect(frame.revs.counts).toEqual({});
+  for (const map of Object.keys(frame.revs.maps)) expect(MAPS).toContain(map as DeliveryLiveMap);
+  expect(keysOf(frame.revs.maps)).toEqual(sorted(LEGION_MAPS));
+  expect(keysOf(frame.revs.maps.issues)).toEqual(keysOf(frame.body.issues));
+  expect(keysOf(frame.revs.fields)).toEqual(sorted(LEGION_WHOLE));
+  const issues = frame.body.issues as NonNullable<LegionBoardResponse["issues"]>;
+  for (const entry of Object.values(issues)) {
+    expect(keysOf(entry)).toEqual(sorted(LEGION_FACTS_KEYS));
+    // An entry whose values grow carries the moment they are of and how fast each grows; one
+    // whose values stand carries null for both.
+    expect(entry.as_of === null).toBe(entry.growth === null);
+  }
+  // This fixture holds an entry of each kind: growing, standing open, and closed.
+  expect(Object.values(issues).some((entry) => entry.growth !== null)).toBe(true);
+  expect(
+    Object.values(issues).some((entry) => entry.growth === null && entry.closed_at === null)
+  ).toBe(true);
+  expect(Object.values(issues).some((entry) => entry.closed_at !== null)).toBe(true);
+  for (const revision of [...leaves(frame.revs.maps, 2), ...leaves(frame.revs.fields, 1)]) {
+    expect(revision).toMatch(REVISION);
+  }
+});
+
+test("a legion view's delta sends an issues entry whole when its stored row moved, null for one that left, and the fields that moved", () => {
+  expect(keysOf(legionDelta)).toEqual(sorted(DELTA_KEYS));
+  expect(legionDelta.type).toBe("delta");
+  expect(legionDelta.seq).toMatch(/^\d+$/);
+  expect(legionDelta.items).toEqual({});
+  expect(legionDelta.counts).toEqual({});
+  for (const map of Object.keys(legionDelta.maps)) {
+    expect(MAPS).toContain(map as DeliveryLiveMap);
+    expect(LEGION_MAPS).toContain(map as (typeof LEGION_MAPS)[number]);
+  }
+  for (const field of Object.keys(legionDelta.set)) {
+    expect(LEGION_WHOLE).toContain(field as (typeof LEGION_WHOLE)[number]);
+  }
+  const sent = legionDelta.maps.issues as NonNullable<DeliveryLiveDelta["maps"]["issues"]>;
+  for (const entry of Object.values(sent)) {
+    if (entry !== null) expect(keysOf(entry)).toEqual(sorted(LEGION_FACTS_KEYS));
+  }
+  // This fixture's change moves one of each: ACME-3 took a slot, so its card moved and its stored
+  // row was written again; ACME-4's row went, the oldest the board served, so the header moved;
+  // and ACME-2's open values only grew with the clock, so its entry is not sent.
+  expect(Object.keys(sent).sort()).toEqual(["ACME-3", "ACME-4"]);
+  expect(sent["ACME-4"]).toBeNull();
+  expect(sent["ACME-3"]?.growth).not.toBeNull();
+  expect(Object.keys(legionDelta.set).sort()).toEqual(["columns", "header"]);
+  // The header the delta sends carries the cursor's age of the recompute that sent it, though
+  // the age alone sends nothing.
+  expect(Object.keys(legionDelta.set.header)).toContain("facts_cursor_age_seconds");
+
+  expect(keysOf(legionDelta.revs.maps.issues)).toEqual(keysOf(sent));
+  expect(keysOf(legionDelta.revs.fields)).toEqual(keysOf(legionDelta.set));
+  for (const revision of leaves(legionDelta.revs.maps, 2)) {
+    expect(revision === null || REVISION.test(String(revision))).toBe(true);
+  }
+  for (const revision of leaves(legionDelta.revs.fields, 1)) expect(revision).toMatch(REVISION);
 });
 
 test("an error frame names its code and its message", () => {

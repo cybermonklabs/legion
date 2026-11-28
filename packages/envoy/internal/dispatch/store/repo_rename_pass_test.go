@@ -28,6 +28,10 @@ const renamedRepositoriesSeed = `
 		('INFRA-2', 'INFRA', 2, 'Two', '{"kind":"user","id":"alice"}', 'U2', 'sjawhar/legion', '2026-01-01T00:00:00Z'),
 		('INFRA-3', 'INFRA', 3, 'Three', '{"kind":"user","id":"alice"}', 'U3', 'sjawhar/legion-smoke', '2026-01-01T00:00:00Z'),
 		('INFRA-4', 'INFRA', 4, 'Four', '{"kind":"user","id":"alice"}', 'U4', 'sjawhar/dotfiles', '2026-01-01T00:00:00Z');
+	insert into issue_facts (project_key, issue_key, repo) values
+		('INFRA', 'INFRA-1', 'SJawhar/Legion'),
+		('INFRA', 'INFRA-3', 'sjawhar/legion-smoke'),
+		('INFRA', 'INFRA-4', null);
 	insert into artifacts (id, issue_key, project_key, slug, name, kind, created_by) values
 		('7c1e8a52-3f4b-4d6e-9a0b-1c2d3e4f5a6b', 'INFRA-1', 'INFRA', 'verification', 'verification.md', 'doc', '{"kind":"user","id":"alice"}');
 	insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
@@ -101,6 +105,7 @@ const renamedRepositoriesSeed = `
 var renamedRepositoriesAfter = map[string]string{
 	`select string_agg(key || '=' || coalesce(repo, ''), ' ' order by key) from issues`:                                         "INFRA-1=cybermonklabs/legion INFRA-2=cybermonklabs/legion INFRA-3=sjawhar/legion-smoke INFRA-4=sjawhar/dotfiles",
 	`select string_agg(key || '=' || default_repo, ' ' order by key) from projects`:                                             "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke",
+	`select string_agg(issue_key || '=' || coalesce(repo, 'null'), ' ' order by issue_key) from issue_facts`:                    "INFRA-1=cybermonklabs/legion INFRA-3=sjawhar/legion-smoke INFRA-4=null",
 	`select string_agg(check_block_id || '=' || coalesce(commit_repo, 'null'), ' ' order by check_block_id) from check_results`: "c1=cybermonklabs/legion c2=sjawhar/legion-smoke c3=null",
 	`select string_agg(url, ' ' order by issue_key) from issue_external_links`: "https://github.com/cybermonklabs/legion/pull/7 https://github.com/cybermonklabs/legion/issues/1955 " +
 		"https://github.com/sjawhar/legion-smoke/issues/599 https://github.com/sjawhar/dotfiles/pull/3",
@@ -251,7 +256,7 @@ func TestTheRenamePassWritesEveryFieldAndASecondRunWritesNothing(t *testing.T) {
 		rows += int64(record["rows"].(float64))
 	}
 	for field, want := range map[string]float64{
-		"issues.repo": 2, "projects.default_repo": 1, "check_results.commit_repo": 1, "issue_external_links.url": 2,
+		"issues.repo": 2, "projects.default_repo": 1, "issue_facts.repo": 1, "check_results.commit_repo": 1, "issue_external_links.url": 2,
 		"pull_request_heads.repo": 1, "pull_request_heads.url": 1, "branch_commits.repo": 1, "commit_holds.repo": 1, "deploys.repo": 1,
 		"delivery_pull_requests.repo": 1, "delivery_pull_requests.url": 1, "delivery_pull_requests.attribution_cited_issues": 1,
 		"delivery_runs.repo": 1, "delivery_run_jobs.repo": 2, "delivery_runs.url": 1, "delivery_run_warnings.repo": 1,

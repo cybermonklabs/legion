@@ -345,6 +345,7 @@ packages/envoy:
     5:
       - internal/testnats                       # 142 s
       - internal/pgmigrate                      # 84 s
+      - internal/dispatch/legionfacts           # ~70 s
       - loadtest                                # 41 s
       - internal/cistore                        # 25 s
       - clitest                                 # 16 s
@@ -449,6 +450,9 @@ packages/envoy:
       - pgdsn
       - internal/dispatch/answerswindow
       - internal/dpopproof/dpopprooftest
+      - internal/dispatch/legionfacts/independent/cmd
+      - internal/dispatch/legion/legionbench
+      - internal/dispatch/legion/legionbench/cmd
   # envoy-go-race (.github/workflows/ci-job-envoy-go-race.yaml, job envoy-go-race-legs): under the
   # race detector, the packages of ci_job_reads.py's ENVOY_RACE_LANE entry for envoy-go-race.
   envoy-go-race:

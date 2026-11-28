@@ -304,22 +304,32 @@ func (candidate MadePlan) compare(other MadePlan) int {
 		cmp.Compare(candidate.Plan.ID, other.Plan.ID))
 }
 
+// IssuePlans is what IssuesPlans answers of one issue: each version of the plan of each of its
+// runs, oldest first, and Tuples, how many tuples its plan nodes hold (PlanTuplesOf), counted in
+// the statement that read the versions, so the count is of exactly the plans read.
+type IssuePlans struct {
+	Versions []MadePlan
+	Tuples   int64
+}
+
 // IssuesPlans answers, by issue, each version of the plan of each run of each issue of keys, with
-// the moment that version's write made it, oldest first in compare's order. One run keeps one
-// plan node, whose made_at is its first write's, and a later version replaces the node's tasks
-// whole (planFact); every write of the tasks appends a value tuple of them, stamped with the
-// write's moment (putNode). So each version is read from its tuple, with its document version from
-// the tuple the same write appended, and the metrics' fallback timeline reads each mark by the
-// version in force at that mark, not the whole run by the newest. An issue Legion never ran answers
-// none. It reads the `part_of` tuples into those issues (workflow_tuples_inbound, whose predicate
-// the literal to_kind implies), joins each to its node row and the node's own tasks tuples, so it
-// costs their plans alone.
-func IssuesPlans(ctx context.Context, q Queryer, keys []string) (map[string][]MadePlan, error) {
+// the moment that version's write made it, oldest first in compare's order, and the count of the
+// tuples of the issue's plan nodes. One run keeps one plan node, whose made_at is its first
+// write's, and a later version replaces the node's tasks whole (planFact); every write of the
+// tasks appends a value tuple of them, stamped with the write's moment (putNode). So each version
+// is read from its tuple, with its document version from the tuple the same write appended, and
+// the metrics' fallback timeline reads each mark by the version in force at that mark, not the
+// whole run by the newest. An issue Legion never ran answers none. It reads the `part_of` tuples
+// into those issues (workflow_tuples_inbound, whose predicate the literal to_kind implies), joins
+// each to its node row and the node's own tasks tuples, so it costs their plans alone. The count
+// is a term of the same statement, so it sees the snapshot the versions are read in: a plan write
+// that commits while the statement runs is in both or in neither.
+func IssuesPlans(ctx context.Context, q Queryer, keys []string) (map[string]IssuePlans, error) {
 	rows, err := q.Query(ctx, `
 		select t.to_id, n.id,
 			n.attributes || coalesce(jsonb_build_object('`+AttributeTasks+`', v.to_id::jsonb), '{}'::jsonb)
 				|| coalesce(jsonb_build_object('`+AttributeVersion+`', w.to_id::bigint), '{}'::jsonb),
-			coalesce(v.at, n.made_at)
+			coalesce(v.at, n.made_at), `+PlanTuplesOf("t.to_id")+`
 		from workflow_tuples t join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id
 		left join workflow_tuples v on v.from_kind = n.kind and v.from_id = n.id and v.kind = '`+AttributeTasks+`'
 			and v.to_kind = '`+KindValue+`' and v.asserted
@@ -332,25 +342,52 @@ func IssuesPlans(ctx context.Context, q Queryer, keys []string) (map[string][]Ma
 		return nil, fmt.Errorf("read the plans of %d issues: %w", len(keys), err)
 	}
 	defer rows.Close()
-	plans := map[string][]MadePlan{}
+	plans := map[string]IssuePlans{}
 	for rows.Next() {
 		var issue, id string
 		var attributes []byte
 		var made time.Time
-		if err := rows.Scan(&issue, &id, &attributes, &made); err != nil {
+		var tuples int64
+		if err := rows.Scan(&issue, &id, &attributes, &made, &tuples); err != nil {
 			return nil, fmt.Errorf("read the plans of %d issues: %w", len(keys), err)
 		}
 		plan, err := planFrom(id, attributes)
 		if err != nil {
 			return nil, err
 		}
-		plans[issue] = append(plans[issue], MadePlan{Plan: plan, Made: made.UTC()})
+		held := plans[issue]
+		held.Versions = append(held.Versions, MadePlan{Plan: plan, Made: made.UTC()})
+		held.Tuples = tuples
+		plans[issue] = held
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the plans of %d issues: %w", len(keys), err)
 	}
 	for _, held := range plans {
-		slices.SortFunc(held, MadePlan.compare)
+		slices.SortFunc(held.Versions, MadePlan.compare)
 	}
 	return plans, nil
+}
+
+// PlanTuplesOf is the SQL term that counts the tuples of the plan nodes of one issue, the issue
+// whose key the SQL expression issue gives: every value tuple and every relation of each node of
+// kind plan that an asserted `part_of` tuple ties to that issue. It counts a plan's tuples as
+// IssueRunsRevision counts a run's, and for the reason it gives: nothing updates or deletes a
+// tuple, and every write that moves a plan appends one (putNode), so the count rises with each
+// commit of such a write and with nothing else, whichever order two writes commit in. It reads the
+// `part_of` tuples through workflow_tuples_inbound and each node's own tuples through
+// workflow_tuples_values and workflow_tuples_current, as IssueRunsRevision does. IssuesPlans reads
+// it beside the plans, and the Legion facts consumer compares a stored row's count with it
+// (legionfacts' plansMoved), so the two count by this one term.
+func PlanTuplesOf(issue string) string {
+	return `(select count(*)
+		from workflow_tuples part, lateral (
+			select 1 from workflow_tuples v
+			where v.from_kind = part.from_kind and v.from_id = part.from_id and v.to_kind = '` + KindValue + `'
+			union all
+			select 1 from workflow_tuples r
+			where r.from_kind = part.from_kind and r.from_id = part.from_id and r.to_kind <> '` + KindValue + `'
+		) tuples
+		where part.to_kind = '` + KindIssue + `' and part.to_id = ` + issue + ` and part.kind = '` + RelationPartOf + `'
+			and part.from_kind = '` + KindPlan + `' and part.asserted)`
 }
