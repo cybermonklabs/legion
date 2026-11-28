@@ -1116,7 +1116,7 @@ func (e *Engine) closesByChecks(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return false, nil
 	}
-	return e.mergedThisGeneration(ctx, tx, issue)
+	return true, nil
 }
 
 // mergedThisGeneration says whether the work of issue's current generation merged, so it closes by
