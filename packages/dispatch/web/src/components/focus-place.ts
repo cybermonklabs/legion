@@ -1560,15 +1560,27 @@ function pressPlaces(element: Element): Element[] {
  * in a list portalled out of the selection bar is a press in the bar. A loss the reader caused
  * keeps the hand-off that pulls the focus to the control now at the lost one's place; one they did
  * not - a live update taking a row away, a refetch emptying a bar - and every loss with nothing
- * armed leaves the focus on the body, and scrolls nothing. A component hand-off that can move the
+ * armed leaves the focus on the body, and scrolls nothing, except in the pending-writes indicator,
+ * whose own hand-off answers those too (below). A component hand-off that can move the
  * focus to another row reads this one rule unless it answers its own press without it, as these
  * do, for example: the Agents page's follow of a row the reader's own pin moved (`AgentsPage`'s
  * `focusAfterPin`), which runs only in the commit after that pin, from its own record of it, and
  * hands a focused control of the moved row the reader cannot see whole to the row now at that
  * row's place (`controlsLikeRow`); and the issue page's Unpin (`IssuePins`), which hands the
  * focus to the next pin's link, else the one before, else the section's heading, in the press
- * itself, before its row goes. A hand-off to the lost control's own row, as AskCard's is, is no
- * move to another row.
+ * itself, before its row goes. The pending-writes indicator
+ * (`features/writes/PendingWritesIndicator.tsx`'s `usePanelFocusReturn`) reads this rule, and
+ * keeps a hand-off of its own for a loss the reader did not cause, one that answers no press: a
+ * late write that lands or is refused while its Stop trying holds the focus takes that control off
+ * the page, and the browser leaves the focus on the body, where a keyboard reader loses their
+ * place. For such a loss it moves the focus, with no scroll, to the first button in the lost
+ * control's row that takes it, as the Retry a refused write's row offers, else the panel's first
+ * button, which can be another write's Stop trying, else the element the focus came from, else
+ * the page's main region (`app.tsx`'s `main-content`). For a loss the reader's press caused it
+ * goes the same way, but passes over a button, or the element the focus came from, that the
+ * reader cannot see now (`inSightNow`), and moves nothing once they had scrolled the lost control
+ * out of their sight (`outOfSight`). A hand-off to the lost control's own row, as AskCard's is,
+ * is no move to another row.
  */
 export function causedByReader(element: Element): boolean {
   return armed !== null && pressPlaces(element).some((place) => pressMadeIn(place));

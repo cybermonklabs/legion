@@ -139,8 +139,9 @@ export const INBOX_PRIORITY_VALUES = ["P0", "P1", "P2", "P3", NO_FILTER_VALUE] a
 export const INBOX_URGENCY_VALUES = [...ASK_URGENCIES, NO_FILTER_VALUE] as const;
 export const INBOX_TYPE_VALUES = INBOX_ROW_TYPES;
 
-/** Each filter field's vocabulary, the one table both the address and the Filter panel read:
- *  the words the address keeps for the field, and the values the field's control lists, in that
+/** Each filter field's vocabulary, the table the address reads: the words the address keeps for
+ *  the field. The Filter panel reads the lists above directly (`features/inbox/InboxBar.tsx`'s
+ *  `fieldOptions`), and this table holds them, so the field's control lists them in the same
  *  order. The address drops any other word, which would match no row: this file's Inbox block
  *  (`parseInboxSearch`), the grammar the Inbox runs until the later piece of INFRA-3135 that
  *  converts the Inbox, drops it, and so does `features/inbox/inbox-route.ts`, which holds the
