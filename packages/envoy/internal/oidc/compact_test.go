@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	gooidc "github.com/coreos/go-oidc/v3/oidc"
-
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -122,19 +120,18 @@ func TestATokenCarryingWhiteSpaceVerifiesAsBefore(t *testing.T) {
 	}
 }
 
-// The sign-in's verifier (newVerifier) checks signatures with go-oidc's own RemoteKeySet, which
-// verifies the JWS JSON serialization too, so verify's own refusal is the one compact check that
-// verifier has: a JSON-form ID token is refused as malformed there, and a compact one, white
-// space and all, verifies.
+// The sign-in's verifier (discoverCodeFlow) reads the issuer's keys through a Keys of its own, as
+// every other verifier of this package does, and takes the compact serialization alone: a
+// JSON-form ID token is refused as malformed, and a compact one, white space and all, verifies.
 func TestTheSignInVerifierTakesOnlyTheCompactSerialization(t *testing.T) {
 	issuer := oidctest.New(t)
 	signing := oidctest.NewKey(t, "signing-key")
 	issuer.Publish(signing)
-	provider, err := gooidc.NewProvider(context.Background(), issuer.URL())
+	discovered, err := discoverCodeFlow(context.Background(), issuer.URL(), testAudience, "client-secret")
 	if err != nil {
-		t.Fatalf("gooidc.NewProvider(%s): %v", issuer.URL(), err)
+		t.Fatalf("discoverCodeFlow(%s): %v", issuer.URL(), err)
 	}
-	verifier := newVerifier(provider, issuer.URL(), testAudience)
+	verifier := discovered.verifier
 	compact := issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience))
 	if claims, err := verifier.Verify(context.Background(), compact); err != nil || claims.Subject != testSubject {
 		t.Fatalf("the compact form: claims %+v, err %v; want it verified", claims, err)

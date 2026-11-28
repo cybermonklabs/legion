@@ -171,8 +171,9 @@ func NewWithKeysFor(issuer string, audiences []string, keys *Keys) (*Verifier, e
 	return newWithKeys(issuer, audiences, keys), nil
 }
 
-// newWithKeys is the verifier NewWithKeys and NewWithKeysFor return, of audiences, which holds one
-// or more: one go-oidc verifier of each audience, in the order listed, all on keys.
+// newWithKeys is the verifier NewWithKeys and NewWithKeysFor return, and the code flow's ID-token
+// verifier (discoverCodeFlow), of audiences, which holds one or more: one go-oidc verifier of each
+// audience, in the order listed, all on keys.
 func newWithKeys(issuer string, audiences []string, keys *Keys) *Verifier {
 	set := keySet{keys: keys}
 	// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the verifier a discovered
@@ -197,17 +198,6 @@ func supportedSigningAlgs() []string {
 		algs = append(algs, string(alg))
 	}
 	return algs
-}
-
-// newVerifier is the sign-in flow's verifier, built on a discovered provider
-// and so on go-oidc's own RemoteKeySet: a CodeFlow verifies the ID tokens of
-// the person signing in, which no other part of this package reads keys for,
-// so there is no second reader to share a *Keys with (codeflow.go).
-func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
-	return &Verifier{
-		byAudience: []audienceVerifier{{audience: audience, verifier: provider.Verifier(&gooidc.Config{ClientID: audience})}},
-		issuer:     issuer,
-	}
 }
 
 // Verify checks raw against the issuer's published keys, a listed audience
@@ -246,9 +236,7 @@ func (v *Verifier) VerifyClaims(ctx context.Context, raw string, into ...any) (C
 // joined by dots, and anything else is refused as malformed before go-oidc sees it: go-jose also
 // verifies the JWS JSON serialization, whose text can carry a second, unsigned claim set between
 // dots, so the one serialization taken is the one whose middle segment is the signed payload.
-// This refusal is the only compact check the sign-in's verifier has, since its keys come from
-// go-oidc's own RemoteKeySet (newVerifier). A refusal's class is read from raw as given, as it
-// was before.
+// A refusal's class is read from raw as given, as it was before.
 func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Claims, error) {
 	compact := stripSpaces(raw)
 	if !compactSerialization(compact) {
