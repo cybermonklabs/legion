@@ -115,8 +115,8 @@ export function joinSplitLinks(element: Element): void {
 function joinPass(element: Element): boolean {
   let joined = false;
   for (const anchor of [...element.querySelectorAll<HTMLAnchorElement>("a")]) {
-    // An anchor an earlier one took the words of has left the element; one to this dashboard
-    // stays as it is.
+    // An anchor an earlier one took the words of has left the element; one the reference pass
+    // reads, or one a pass made its own, stays as it is (`joinable`).
     if (!element.contains(anchor) || !joinable(anchor)) continue;
     let piece: ChildNode = anchor;
     while (piece.parentElement !== element && marksOnly(piece.parentElement, piece)) {
