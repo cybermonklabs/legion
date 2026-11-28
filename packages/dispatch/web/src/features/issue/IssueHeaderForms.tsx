@@ -1,7 +1,8 @@
-import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
+import { type FormEvent, type ReactNode, type Ref, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import { TruncatedText } from "../../components/TruncatedText";
+import { useFocusHandOff } from "../../hooks/useFocusHandOff";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
   borderTransparent,
@@ -40,6 +41,9 @@ interface HeaderFormProps {
   onCancel: () => void;
   /** Closes the editor after a save that was sent or queued. */
   onSaved: () => void;
+  /** The form, for the hand-off of the editor's opener once a save closes it
+   *  (`useSavedEditorHandOff`). */
+  ref?: Ref<HTMLFormElement>;
   /** Whether the header's issue write is out, which holds Save. */
   saving: boolean;
 }
@@ -57,6 +61,30 @@ function useFocusOnOpen() {
 }
 
 /**
+ * The focus of an editor of Details that its own save closes. Save route or Save parent, or Enter
+ * in the editor's field, takes the form away with the focus inside it, and the close draws the
+ * control that opened the editor again in its place: that control takes the focus
+ * (`useFocusHandOff`), so a keyboard reader goes on from the row they saved rather than from the
+ * page's body. Only a save hands it on: the editor notes it (`saved`) as its save closes it.
+ * Answers the ref of the form, the ref of the control that opens the editor, and the editor's
+ * `onSaved`.
+ */
+function useSavedEditorHandOff(onEditingChange: (editing: boolean) => void): {
+  formRef: Ref<HTMLFormElement>;
+  onSaved: () => void;
+  opener: Ref<HTMLButtonElement>;
+} {
+  const opener = useRef<HTMLButtonElement>(null);
+  const saved = useRef(false);
+  const formRef = useFocusHandOff(() => opener.current, saved);
+  const onSaved = () => {
+    saved.current = true;
+    onEditingChange(false);
+  };
+  return { formRef, onSaved, opener };
+}
+
+/**
  * The editor of the issue's message route. Its groups, in this order, wrapping whole: the route's
  * field, then Save route and Cancel, then the line that says why a route is refused, drawn only
  * while the draft is no route.
@@ -66,6 +94,7 @@ export function IssueRouteForm({
   isClosed,
   onCancel,
   onSaved,
+  ref,
   saving,
 }: HeaderFormProps): ReactNode {
   const input = useFocusOnOpen();
@@ -74,7 +103,7 @@ export function IssueRouteForm({
     if (drafts.requestRouteSubmit()) onSaved();
   };
   return (
-    <form className="flex flex-wrap items-center gap-2" onSubmit={save}>
+    <form className="flex flex-wrap items-center gap-2" onSubmit={save} ref={ref}>
       <input
         aria-label="Message route"
         aria-describedby={`${routeHintId} issue-route-help`}
@@ -126,6 +155,7 @@ export function IssueParentForm({
   onCancel,
   onSaved,
   project,
+  ref,
   saving,
 }: HeaderFormProps & { project: string }): ReactNode {
   const input = useFocusOnOpen();
@@ -134,7 +164,7 @@ export function IssueParentForm({
     if (drafts.requestParentSubmit()) onSaved();
   };
   return (
-    <form className="flex flex-wrap items-center gap-2" onSubmit={save}>
+    <form className="flex flex-wrap items-center gap-2" onSubmit={save} ref={ref}>
       <label className="sr-only" htmlFor="issue-parent">
         Parent
       </label>
@@ -169,7 +199,7 @@ export function IssueParentForm({
 }
 
 /** Whether an editor of Details is open, held by the header, which closes it with Details. */
-interface DetailsEditorProps extends Omit<HeaderFormProps, "onSaved"> {
+interface DetailsEditorProps extends Omit<HeaderFormProps, "onSaved" | "ref"> {
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
 }
@@ -187,6 +217,7 @@ export function IssueRouteDetails({
 }: DetailsEditorProps): ReactNode {
   const { drafts, isClosed } = form;
   const agentText = useAgentText();
+  const handOff = useSavedEditorHandOff(onEditingChange);
   // A `session:` route is an agent: its button names it as `AgentName` does, with the agent's own
   // live link beside it. A role route is its address.
   const routeSession = sessionOfAddress(drafts.route);
@@ -204,6 +235,7 @@ export function IssueRouteDetails({
       className={`inline-flex min-h-11 min-w-0 max-w-full items-center truncate rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
       disabled={isClosed}
       onClick={() => onEditingChange(true)}
+      ref={handOff.opener}
       title={drafts.route === "" ? undefined : drafts.route}
       type="button"
     >
@@ -213,7 +245,7 @@ export function IssueRouteDetails({
   return (
     <>
       {editing ? (
-        <IssueRouteForm {...form} onSaved={() => onEditingChange(false)} />
+        <IssueRouteForm {...form} onSaved={handOff.onSaved} ref={handOff.formRef} />
       ) : routeSession === undefined ? (
         routeButton(drafts.route === "" ? "No route" : drafts.route)
       ) : (
@@ -244,8 +276,16 @@ export function IssueParentDetails({
   project,
   ...form
 }: DetailsEditorProps & { parent: string | null; project: string }): ReactNode {
+  const handOff = useSavedEditorHandOff(onEditingChange);
   if (editing) {
-    return <IssueParentForm {...form} onSaved={() => onEditingChange(false)} project={project} />;
+    return (
+      <IssueParentForm
+        {...form}
+        onSaved={handOff.onSaved}
+        project={project}
+        ref={handOff.formRef}
+      />
+    );
   }
   return (
     <span className="flex min-w-0 flex-wrap items-center gap-2">
@@ -265,6 +305,7 @@ export function IssueParentDetails({
         className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
         disabled={form.isClosed}
         onClick={() => onEditingChange(true)}
+        ref={handOff.opener}
         type="button"
       >
         {parent === null ? "None" : "Edit"}

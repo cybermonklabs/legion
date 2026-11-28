@@ -1,9 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
 import type { LegionRole } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import type { Agent, IssueCollaboratorAgent, IssueCollaborators } from "../../api/types";
 import { CollaboratorsTab, collaboratorSections } from "./CollaboratorsTab";
@@ -57,18 +58,24 @@ function live(sessionId: string): Agent {
   };
 }
 
-function renderTab(collaborators: IssueCollaborators, agents: readonly Agent[] = []) {
+/** The tab on `collaborators`, with `agents` the registry's live sessions; `inMain` draws it in
+ *  the shell's main content, as the app shell draws it. */
+function renderTab(
+  collaborators: IssueCollaborators,
+  agents: readonly Agent[] = [],
+  { inMain = false }: { inMain?: boolean } = {}
+) {
   const read = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaborators);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([...agents]);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const tab = <CollaboratorsTab issueKey="CORE-1" />;
   const view = render(
     <MemoryRouter>
-      <QueryClientProvider client={client}>
-        <CollaboratorsTab issueKey="CORE-1" />
-      </QueryClientProvider>
+      <QueryClientProvider client={client}>{inMain ? <main>{tab}</main> : tab}</QueryClientProvider>
     </MemoryRouter>
   );
   return {
+    client,
     read,
     view,
     restore: () => {
@@ -181,6 +188,53 @@ test("the Collaborators tab says when Legion's record could not be read, and whe
     expect(empty.read).toHaveBeenCalledWith("CORE-1");
   } finally {
     empty.restore();
+  }
+});
+
+// A collaborator's row is an `<li>` that carries no row marker: it is a row of its list by its
+// element alone (`row-marker.ts`'s `ROW_SELECTOR`). A refetch that takes the row holding the focus
+// away - a session the server no longer lists for the issue - is a loss the reader did not cause,
+// so with the tab in the page's main content, as the shell draws it, the focus goes into no other
+// row of the list and nothing scrolls: the reader's next key opens no conversation they did not
+// pick.
+test("a collaborator's row a refetch takes away from under the focus hands it to no other row", async () => {
+  const agents = [
+    otherAgent("newer", "2026-10-26T02:00:00Z"),
+    otherAgent("older", "2026-10-26T01:00:00Z"),
+    otherAgent("quiet", null),
+  ];
+  const collaborators: IssueCollaborators = {
+    agents,
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  };
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  const tab = renderTab(collaborators, [], { inMain: true });
+  try {
+    const others = await screen.findByRole("region", { name: "Other agents" });
+    const name = within(others).getByRole("link", { name: "older" });
+    act(() => name.focus());
+
+    tab.read.mockResolvedValue({
+      ...collaborators,
+      agents: agents.filter((agent) => agent.session_id !== "older"),
+    });
+    await act(async () => {
+      await tab.client.refetchQueries();
+    });
+    await waitFor(() => expect(name).not.toBeInTheDocument());
+    await afterFrameAndTasks();
+
+    expect(sessionsIn(others)).toEqual(["newer", "quiet"]);
+    const focused = document.activeElement;
+    for (const row of within(others).getAllByRole("listitem")) {
+      expect(row.contains(focused)).toBe(false);
+    }
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    tab.restore();
+    scrolls.mockRestore();
   }
 });
 

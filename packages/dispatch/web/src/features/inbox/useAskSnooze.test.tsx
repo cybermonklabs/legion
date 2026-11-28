@@ -1,6 +1,6 @@
 /**
- * The snooze writes (`useAskSnooze`, `useAskSnoozeMany`) against the Inbox read they move the
- * rows in: a read asked while a snooze is out waits for Dispatch's answer.
+ * The snooze writes (`useAskSnoozeWrites`, `useAskSnoozeMany`) against the Inbox read they move
+ * the rows in: a read asked while a snooze is out waits for Dispatch's answer.
  */
 
 import { expect, spyOn, test } from "bun:test";
@@ -17,22 +17,25 @@ import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { AskSnooze, DispatchEvent, InboxRow } from "../../api/types";
 import { FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
+import { SnoozeWrites } from "./ask-snooze-fixture";
 import { issueAsk } from "./inbox-fixture";
 import { type AskSnoozeFailure, useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
 
 const UNTIL = "2026-11-20T09:00:00Z";
 
 /**
- * `use` beside the Inbox's read, under Dispatch's own client signed in as alice, with
- * `GET /api/v1/inbox` answering what `served.rows` holds when it is asked: what Dispatch holds,
- * which the test moves as Dispatch takes each write.
+ * `use` beside the Inbox's read and under the Inbox's snooze writes, under Dispatch's own client
+ * signed in as alice, with `GET /api/v1/inbox` answering what `served.rows` holds when it is
+ * asked: what Dispatch holds, which the test moves as Dispatch takes each write.
  */
 function renderBesideInbox<T>(served: { rows: InboxRow[] }, use: () => T) {
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served.rows);
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <QueryClientProvider client={client}>
+      <SnoozeWrites>{children}</SnoozeWrites>
+    </QueryClientProvider>
   );
   const hook = renderHook(() => ({ inbox: useQuery(inboxQuery()).data, write: use() }), {
     wrapper,
@@ -668,6 +671,58 @@ test("a snooze Dispatch refuses waits for no event, and the next snooze event en
     await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(hook.result.current.inbox).toEqual(served.rows);
   } finally {
+    hook.unmount();
+    getInbox.mockRestore();
+  }
+});
+
+// A refusal puts back the refused ask's own moment and nothing else. Another ask's snooze, pressed
+// after it and taken while it was out, keeps the moment Dispatch took, though the read of the
+// Inbox that would bring that moment is still to come: the cache as it stood at the refused press
+// would bring that ask back out of Later.
+test("a refused snooze puts back its own ask's moment alone, and keeps the moment of another ask Dispatch took while it was out", async () => {
+  const served = { rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" })] };
+  const verdicts = heldSnoozeVerdicts();
+  const { client, getInbox, hook } = renderBesideInbox(served, () => ({
+    first: useAskSnooze("ask-1"),
+    second: useAskSnooze("ask-2"),
+  }));
+  const reads = Promise.withResolvers<void>();
+  try {
+    await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, null]));
+    // Every read of the Inbox from here waits, so the cache holds what the writes made of it.
+    getInbox.mockImplementation(async () => {
+      await reads.promise;
+      return served.rows;
+    });
+    act(() => hook.result.current.write.second.submit(UNTIL));
+    await waitFor(() => expect([...verdicts.keys()]).toEqual(["ask-2"]));
+    act(() => hook.result.current.write.first.submit(UNTIL));
+    await waitFor(() => expect([...verdicts.keys()].sort()).toEqual(["ask-1", "ask-2"]));
+    expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, UNTIL]);
+
+    served.rows = [issueAsk({ id: "ask-1", snoozed_until: UNTIL }), issueAsk({ id: "ask-2" })];
+    await act(async () => {
+      verdicts.get("ask-1")?.resolve({ snoozed_until: UNTIL });
+      await settle();
+    });
+    await waitFor(() => expect(hook.result.current.write.first.pending).toBe(false));
+    await act(async () => {
+      verdicts.get("ask-2")?.reject(refusal());
+      await settle();
+    });
+    await waitFor(() => expect(hook.result.current.write.second.failed).toBe(true));
+    expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, null]);
+
+    // The read then answers what Dispatch holds, which is the same.
+    await act(async () => {
+      reads.resolve();
+      await settle();
+    });
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, null]);
+  } finally {
+    reads.resolve();
     hook.unmount();
     getInbox.mockRestore();
   }

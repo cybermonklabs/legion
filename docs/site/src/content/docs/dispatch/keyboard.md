@@ -8,9 +8,9 @@ sidebar:
 Dispatch can be driven from the keyboard. Press `?` on any page to see the shortcuts that page
 offers.
 
-`Ctrl` below means `⌘` on a Mac, and `Alt` means `⌥` (Option). A shortcut written `g i` is a
-sequence: press `g`, let go, then press `i` within a second. While you wait, the keys pressed so far
-show in the bottom right corner.
+`Ctrl` in a key below means `⌘` (Cmd) on a Mac, not the Control key (`⌃`), and `Alt` means `⌥`
+(Option). A shortcut written `g i` is a sequence: press `g`, let go, then press `i` within a
+second. While you wait, the keys pressed so far show in the bottom right corner.
 
 While you type in a text field, only `Ctrl+K`, `Escape`, and `Ctrl+Alt+M` in a document work as
 shortcuts, so single letters never interrupt your typing.

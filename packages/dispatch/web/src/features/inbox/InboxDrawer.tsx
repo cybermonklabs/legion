@@ -7,10 +7,10 @@ import {
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import type { InboxRoute } from "../refs/routes";
 import { DIALOG_SCOPE } from "../shell/keymap";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { Inbox } from "./Inbox";
+import type { InboxRoute } from "./inbox-route";
 
 /**
  * The Inbox as a peek over whatever page is open (LEGION-547): the same list, cards and actions

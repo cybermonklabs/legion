@@ -41,13 +41,12 @@ import type { OwnedAsk } from "../inbox/ask-name";
 import { askTurnHolder } from "../inbox/ask-turn";
 import { askUrgency } from "../inbox/ask-urgency";
 import { handOffFocus, useAnswerFormFocus } from "../inbox/useAnswerFormFocus";
-import type { AskAnswerForm } from "../inbox/useAskAnswerForm";
+import { type AskAnswerForm, clarificationRefusal } from "../inbox/useAskAnswerForm";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import type { DwellRef } from "../shell/useDwell";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { stoppedNote } from "../writes/useKeyedWrite";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
@@ -246,7 +245,6 @@ export function AskBody({
     choiceShown,
     clarification,
     completed,
-    disabledWhileOut,
     displayedAsk,
     edits,
     formRefusal,
@@ -307,15 +305,12 @@ export function AskBody({
     takeFormRefusalFocus,
   });
   const tooltips = useTooltips();
-  const holdsFocus = !tooltips;
-  // Ask back instead takes the focus as it is drawn. Outside `NoTooltips` its callback is a new
-  // one at each render, which focuses it again at each render, as on `main`. Inside it is this
-  // one callback, stable across renders as the form's callback ref (`useAnswerFormFocus`) is,
-  // which focuses it once: a focus taken at each render would move the reader's focus while a
-  // write is out - from Answer with it anyway, say, whose answer is out. The choice leaves the
-  // page, and the button with it, as the clarification lands outside `NoTooltips`, and inside
-  // once the ask is read again after it; a focus the button still holds then goes where the
-  // form's own hand-off puts it, not to the body.
+  // Ask back instead takes the focus as it is drawn, once: this one callback, stable across
+  // renders as the form's callback ref (`useAnswerFormFocus`) is, focuses it once, since a focus
+  // taken at each render would move the reader's focus while a write is out - from Answer with it
+  // anyway, say, whose answer is out. The choice leaves the page, and the button with it, once the
+  // form stops refusing after the clarification lands, and a focus the button still holds then
+  // goes where the form's own hand-off puts it, not to the body.
   const focusAskBackInstead = useCallback(
     (button: HTMLButtonElement | null) => {
       if (button === null) return undefined;
@@ -375,19 +370,17 @@ export function AskBody({
     : ON_PAGE.action;
   const answerField = (
     <>
-      {/* Inside `NoTooltips` the box is the page's (`ON_PAGE.field`), with its label and the line
-          under it in the page's words, and while the body refuses it is `readOnly` rather than
-          `disabled`, and takes no Ctrl+Enter, paste or drop (`refusing`). Outside it is
-          `disabled` while the write is out, as on `main`. The Inbox's Enter puts the caret in the
-          box by its `data-ask-answer` (`askAnswer`), as its 1 to 9 find an option by
-          `data-ask-option` (`Inbox.tsx`). It grows with its text up to half the window
-          (`growingField`), so a reason that Dispatch wrote after a form refusal shows whole and
-          Answer stays on the screen. */}
+      {/* While the body refuses the box is `readOnly`, never `disabled`, and takes no Ctrl+Enter,
+          paste or drop (`refusing`). Inside `NoTooltips` the box is the page's
+          (`ON_PAGE.field`), with its label and the line under it in the page's words. The
+          Inbox's Enter puts the caret in the box by its `data-ask-answer` (`askAnswer`), as its
+          1 to 9 find an option by `data-ask-option` (`Inbox.tsx`). It grows with its text up to
+          half the window (`growingField`), so a reason that Dispatch wrote after a form refusal
+          shows whole and Answer stays on the screen. */}
       <MentionField
         askAnswer={true}
         body={answerText}
         className={`font-normal ${growingField}`}
-        disabled={disabledWhileOut}
         fieldClassName={tooltips ? undefined : ON_PAGE.field}
         fieldRef={answerFieldRef}
         hintClassName={tooltips ? undefined : `text-xs ${ON_PAGE.quiet}`}
@@ -422,7 +415,7 @@ export function AskBody({
         }
         placeholder={answerPlaceholder}
         project={askDocumentProject(ask, displayedAsk, owner)}
-        readOnly={holdsFocus && refusing}
+        readOnly={refusing}
         rows={2}
         writing={dispatchWritingBox("ask-answer", "ask-answer")}
       />
@@ -431,12 +424,12 @@ export function AskBody({
   );
   const submitButton = (
     <button
-      // While nothing can be sent it is `disabled` alone, on both sides of `NoTooltips`; while the
-      // body refuses, that is read from the form as the refusal found it (`held`).
+      // While nothing can be sent it is `disabled` alone; while the body refuses, that is read
+      // from the form as the refusal found it (`held`).
       aria-disabled={cannotAnswer || uploading ? undefined : refusedWhileOut}
       aria-describedby={submitHint === undefined ? undefined : submitHintId}
       className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
-      disabled={cannotAnswer || disabledWhileOut || uploading}
+      disabled={cannotAnswer || uploading}
       title={tooltips ? submitHint : undefined}
       type="submit"
       {...marks?.pageChrome}
@@ -465,11 +458,10 @@ export function AskBody({
       <button
         aria-disabled={refusedWhileOut}
         className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
-        disabled={disabledWhileOut}
         onClick={() => {
           if (!refusing) sendClarification();
         }}
-        ref={tooltips ? (node) => node?.focus() : focusAskBackInstead}
+        ref={focusAskBackInstead}
         type="button"
         {...marks?.pageChrome}
       >
@@ -478,7 +470,6 @@ export function AskBody({
       <button
         aria-disabled={refusedWhileOut}
         className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-        disabled={disabledWhileOut}
         onClick={() => {
           if (!refusing) sendAnswer(answerText);
         }}
@@ -496,7 +487,6 @@ export function AskBody({
           <button
             aria-disabled={refusedWhileOut}
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-            disabled={disabledWhileOut}
             onClick={() => {
               if (!refusing) cancelChanging();
             }}
@@ -507,12 +497,12 @@ export function AskBody({
           </button>
         ) : (
           <button
-            // While it has no text to send it is `disabled` alone, on both sides of `NoTooltips`;
-            // while the body refuses, that is read from the form as the refusal found it (`held`),
-            // so the text the landing clears leaves it refused and not `disabled`.
+            // While it has no text to send it is `disabled` alone; while the body refuses, that is
+            // read from the form as the refusal found it (`held`), so the text the landing clears
+            // leaves it refused and not `disabled`.
             aria-disabled={nothingToAskBack || uploading ? undefined : refusedWhileOut}
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-            disabled={nothingToAskBack || disabledWhileOut || uploading}
+            disabled={nothingToAskBack || uploading}
             onClick={() => {
               if (!refusing) sendClarification();
             }}
@@ -723,8 +713,8 @@ export function AskBody({
       {/* The options, and under them the answer box, which always stands in place. */}
       <form
         className="mt-3 space-y-3"
-        // While the body refuses a submit sends nothing: inside `NoTooltips` a press of Answer,
-        // or Enter in an option, still reaches it then (`refusing`).
+        // While the body refuses a submit sends nothing: a press of Answer, or Enter in an
+        // option, still reaches it then (`refusing`).
         onSubmit={(event) => {
           if (refusing) event.preventDefault();
           else submit(event);
@@ -733,9 +723,9 @@ export function AskBody({
         {...marks?.authorText}
       >
         {(displayedAsk.options ?? []).length === 0 ? null : (
-          // Inside `NoTooltips`, while the body refuses, the options are refused by their group's
-          // `aria-disabled`, which ARIA passes to each option in it: an option row puts no
-          // attribute of its own on its input (`AskChoiceRow`).
+          // While the body refuses, the options are refused by their group's `aria-disabled`,
+          // which ARIA passes to each option in it: an option row puts no attribute of its own on
+          // its input (`AskChoiceRow`).
           <fieldset aria-disabled={refusedWhileOut} className="min-w-0 space-y-2">
             <legend className="sr-only" {...marks?.pageChrome}>
               {ASK_FORM_WORDS.options}
@@ -743,7 +733,6 @@ export function AskBody({
             {(displayedAsk.options ?? []).map((option) => (
               <AskChoiceRow
                 checked={selected.includes(option.label)}
-                disabled={disabledWhileOut}
                 hotkey
                 key={option.label}
                 multiple={displayedAsk.multiple}
@@ -762,7 +751,6 @@ export function AskBody({
             {isApproval ? null : (
               <AskChoiceRow
                 checked={otherSelected}
-                disabled={disabledWhileOut}
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
@@ -785,21 +773,13 @@ export function AskBody({
             retrying={mutation.isPending}
           />
         )}
-        {clarification.isError ? (
+        {clarification.error === null ? null : (
           <QueryError
-            message={
-              // A question back the reader stopped may have been sent, and Retry makes that very
-              // press again (`retryLast`).
-              stoppedNote(
-                clarification,
-                ASK_FORM_WORDS.stopped.clarification,
-                ASK_FORM_WORDS.stopped.clarification_done
-              ) ?? ASK_FORM_WORDS.clarification_failed
-            }
+            message={clarificationRefusal(clarification)}
             onRetry={() => submitGuard.retryLast(clarification)}
             retrying={clarification.isPending}
           />
-        ) : null}
+        )}
       </form>
       {/* The person's way out of a question they will not answer, under the form that answers
           it. An approval request draws none: it is answered with Approve or Request changes. */}

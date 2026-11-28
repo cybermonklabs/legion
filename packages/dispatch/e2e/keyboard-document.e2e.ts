@@ -8,6 +8,7 @@ import {
   selectEditorText,
 } from "./editor";
 import { nextFrames } from "./frames";
+import { modKey } from "./keyboard-palette";
 import { commentWithBody } from "./margin-helpers";
 import { devices, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -38,14 +39,14 @@ test("Ctrl+Alt+M comments on the selected text as the bar's Comment does, and on
 
     // A caret selects nothing, so the bar would show no Comment, and the chord opens nothing.
     await placeCaret(page, "after", "quick");
-    await page.keyboard.press("Control+Alt+KeyM");
+    await page.keyboard.press(`${await modKey(page)}+Alt+KeyM`);
     await nextFrames(page);
     await expect(form).toHaveCount(0);
     await expect(commentMarks(page)).toHaveCount(0);
     await expect(documentEditor(page)).toHaveText(initialMarkdown);
 
     await selectEditorText(page, "brown");
-    await page.keyboard.press("Control+Alt+KeyM");
+    await page.keyboard.press(`${await modKey(page)}+Alt+KeyM`);
     await expect(form).toContainText("brown");
     await expect(form.getByLabel("Comment")).toBeFocused();
     await expect(commentMarks(page)).toHaveCount(1);
@@ -53,7 +54,7 @@ test("Ctrl+Alt+M comments on the selected text as the bar's Comment does, and on
 
     // The caret is in the composer: the chord types nothing there and opens no other comment.
     await page.keyboard.type("Why brown?");
-    await page.keyboard.press("Control+Alt+KeyM");
+    await page.keyboard.press(`${await modKey(page)}+Alt+KeyM`);
     await nextFrames(page);
     await expect(form.getByLabel("Comment")).toHaveValue("Why brown?");
     await expect(form).toHaveCount(1);
@@ -86,7 +87,7 @@ test("Ctrl+Alt+M comments on a project document", async ({ browser }) => {
     const form = composer(page);
 
     await selectEditorText(page, "quick");
-    await page.keyboard.press("Control+Alt+KeyM");
+    await page.keyboard.press(`${await modKey(page)}+Alt+KeyM`);
     await form.getByLabel("Comment").fill("Which quick?");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect

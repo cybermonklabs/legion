@@ -188,11 +188,11 @@ function TitleCell({ item }: { item: PriorityItem }) {
   return (
     <div className="min-w-0 space-y-1">
       {/* The title is read here and renamed on the priority's own page, which it opens: a
-          click, or `o` and Enter on the focused row, which open the row's `data-issue-link`.
+          click, or `o` and Enter on the focused row, which open the row's `data-priority-link`.
           It wraps whole, however long, in the type of the Issues table's titles. */}
       <Link
         className={`flex w-full min-w-0 ${linkText} ${linkHoverText}`}
-        data-issue-link
+        data-priority-link
         to={priorityPath(item.priority.id)}
       >
         <span className={`min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}>{title}</span>

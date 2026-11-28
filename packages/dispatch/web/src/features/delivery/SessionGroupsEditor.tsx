@@ -5,6 +5,8 @@ import { api, type WriteBounds, type WriteMethod } from "../../api/client";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup, DeliveryTimelineWithMeasures } from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
+import { pressOfWrite } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -24,7 +26,9 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
 import { applyDelta } from "./lib/applyDelta";
+import { prCount } from "./lib/facets";
 import { storedSessionTitle } from "./lib/sessionTitles";
+import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
 /** One change to the groups: what it is, as the editor's sentences name it (`the rename of the
  *  group Crew`), the group it changes, the method of its request and one attempt of it. A delete
@@ -104,16 +108,29 @@ function arrivedSince(over: DeliverySessionGroup, group: DeliverySessionGroup): 
 const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
 const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`;
 
+/** What a group's card says before why the live update carrying its write is not drawn, once the
+ *  hold for it ran out (`useHoldUntilDrawn`): the editor reads its groups from that update. */
+const SESSION_GROUPS_NOT_LOADED = "Couldn't load the session groups.";
+
 /** One group: its name, renamable, its members, each removable, and the window's selected
- *  sessions to add. While any group write is pending, every mutating button is disabled so a
- *  second click cannot race the one request that decides the membership.
+ *  sessions to add, drawn as an item of the editor's list of groups, keyed by the group's id.
+ *  While any group write is pending, every mutating button is held so a second click cannot race
+ *  the one request that decides the membership. A write of this card's own that lands keeps them
+ *  held until the update carrying it brings the group's new `updated_at` - a Rename's own answer,
+ *  which the card writes into the page's groups reads (`writeGroup`), or Dispatch's live update -
+ *  or takes the group away (`useHoldUntilDrawn`); a refusal lets them go at once. An update that
+ *  never comes lets them go at the write deadline, and the card says why until it comes. The card
+ *  and its buttons stay the same elements through that update. Rename with no new name and Add
+ *  selected with no session to add are held as well. Every hold is by `aria-disabled`, not
+ *  `disabled` (`heldPress`): a held button keeps its Tab stop and the focus the reader's press
+ *  left on it, and a press on it does nothing.
  *
  *  Its groups, in this order, each on a line of its own: Name (the name's field and Rename),
  *  Sessions (its members as chips, each with its ✕: the first ten, then "+N" for the rest) and
- *  Actions (Add selected, Delete group). A chip shrinks to the list's width and its name wraps
- *  inside it (`AgentName`'s own `[overflow-wrap:anywhere]`): below the wide layout a link is
- *  `inline-flex` (the 44 px touch rule in styles.css), and a cut line there would end in no
- *  ellipsis. */
+ *  Actions (Add selected, Delete group), then the line that says why an update is not drawn,
+ *  while there is one. A chip shrinks to the list's width and its name wraps inside it
+ *  (`AgentName`'s own `[overflow-wrap:anywhere]`): below the wide layout a link is `inline-flex`
+ *  (the 44 px touch rule in styles.css), and a cut line there would end in no ellipsis. */
 function GroupCard({
   group,
   storedTitle,
@@ -125,6 +142,8 @@ function GroupCard({
   storedTitle: (session: string) => string | undefined;
   selected: readonly string[];
   pending: boolean;
+  /** Sends `change`, and calls `press`'s `onError` if Dispatch refuses it, or its `onSuccess`
+   *  with Dispatch's answer (`null` where it had none to give) once Dispatch has made it. */
   write: (
     change: GroupChange,
     press?: { onError?: () => void; onSuccess?: (answer: unknown) => void }
@@ -165,7 +184,23 @@ function GroupCard({
     setLanded((before) => (before === undefined ? renamed : laterGroup(before, renamed)));
     setRename((now) => (now.sent?.press === press ? NO_RENAME : now));
   };
+  const [drawing, holdUntilDrawn, undrawn] = useHoldUntilDrawn(group.updated_at);
+  const held = pending || drawing;
+  // The press's render hands its own `holdUntilDrawn`, so the hold is on the version pressed on,
+  // and on the press the write began under (`pressOfWrite`), read here at that press. The hold is
+  // put on as the write lands, before what the landing does with Dispatch's answer.
+  const send = (change: GroupChange, outcome?: Parameters<typeof write>[1]) => {
+    const press = pressOfWrite();
+    write(change, {
+      onError: outcome?.onError,
+      onSuccess: (answer) => {
+        holdUntilDrawn(press);
+        outcome?.onSuccess?.(answer);
+      },
+    });
+  };
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
+  const nothingToRename = name.trim() === "" || name.trim() === current.name;
   return (
     <fieldset aria-label={group.name} className={`grid gap-2 rounded border p-3 ${borderDefault}`}>
       <div className="flex items-center gap-2">
@@ -180,13 +215,12 @@ function GroupCard({
         />
         <button
           className={secondaryButtonCompact}
-          disabled={pending || name.trim() === "" || name.trim() === current.name}
-          onClick={() => {
+          {...heldPress(held || nothingToRename, () => {
             // This Rename, by identity: its own landing, and no rename that arrives meanwhile,
             // clears the draft, and only while the draft is still as this Rename sent it.
             const press = {};
             setRename({ draft: name, sent: { press } });
-            write(
+            send(
               {
                 group,
                 method: "PATCH",
@@ -220,7 +254,7 @@ function GroupCard({
                 },
               }
             );
-          }}
+          })}
           type="button"
         >
           Rename
@@ -241,16 +275,15 @@ function GroupCard({
             <button
               aria-label={`Remove ${text.sessionText(session, storedTitle(session))}`}
               className={dismissButtonText}
-              disabled={pending}
-              onClick={() =>
-                write({
+              {...heldPress(held, () =>
+                send({
                   group,
                   method: "PATCH",
                   run: (bounds) =>
                     api.updateDeliverySessionGroup(group.id, { remove: [session] }, bounds),
                   what: `the removal of ${text.sessionText(session, storedTitle(session))} from ${group.name}`,
                 })
-              }
+              )}
               type="button"
             >
               ✕
@@ -261,47 +294,55 @@ function GroupCard({
       <div className="flex gap-2">
         <button
           className={secondaryButtonCompact}
-          disabled={pending || addable.length === 0}
-          onClick={() =>
-            write({
+          {...heldPress(held || addable.length === 0, () =>
+            send({
               group,
               method: "PATCH",
               run: (bounds) => api.updateDeliverySessionGroup(group.id, { add: addable }, bounds),
               what: `the sessions added to ${group.name}`,
             })
-          }
+          )}
           type="button"
         >
           Add selected
         </button>
         <button
           className={`${secondaryButtonCompact} ${dangerText}`}
-          disabled={pending}
-          onClick={() =>
-            write({
+          {...heldPress(held, () =>
+            send({
               group,
               method: "DELETE",
               run: (bounds) => api.deleteDeliverySessionGroup(group.id, bounds),
               what: `the deletion of the group ${group.name}`,
             })
-          }
+          )}
           type="button"
         >
           Delete group
         </button>
       </div>
+      {undrawn === undefined ? null : (
+        <QueryError message={`${SESSION_GROUPS_NOT_LOADED} ${undrawn}.`} />
+      )}
     </fieldset>
   );
 }
 
-/** The Delivery page's session-groups editor, opened from the Parent agent facet: the window's
- *  sessions with their titles, pull request counts and groups, to select and name as a new group,
- *  and every group, to rename, add the selected sessions to, remove members from, or delete. Every
- *  session is an `AgentName`; a member no pull request of the window names has no stored title, so
- *  it reads by its registry title, else its short id. A save reaches the page's live views as
- *  Dispatch's own delta, so it refreshes only the `["delivery"]` reads that are not live (an open
- *  run's drill-down), and a refusal shows as the server wrote it, after the change it refused. A
- *  dialog (`useDialog`), at the right edge as the drill-down is, open while it is mounted.
+/** The Delivery page's session-groups editor, opened from **Edit groups** at the foot of the
+ *  page's Filter panel: the window's sessions with their titles, pull request counts and groups,
+ *  to select and name as a new group, and every group, to rename, add the selected sessions to,
+ *  remove members from, or delete. Every session is an `AgentName`; a member no pull request of
+ *  the window names has no stored title, so it reads by its registry title, else its short id. A
+ *  session's count, how many pull requests of the window it is first on whatever the page's facets
+ *  and search, is drawn only while `counted` holds, the page's word that the answer on screen
+ *  is the one for the window its address names: while a new window's read is out, the previous
+ *  window's answer stays on screen and its counts are that window's. A new facet's or search's
+ *  read in the same window leaves them drawn, since its answer counts them the same. While
+ *  `counted` does not hold, each session is listed with its group alone. A save reaches the
+ *  page's live views as Dispatch's own delta, so it refreshes only the `["delivery"]` reads that
+ *  are not live (an open run's drill-down), and a refusal shows as the server wrote it, after the
+ *  change it refused. A dialog (`useDialog`), at the right edge as the drill-down is, open while
+ *  it is mounted.
  *
  *  Its groups, in this order, each on a line of its own: Heading (the title, Close at the right),
  *  the note on what a group is, Sessions (the window's sessions, one row each), New group (the
@@ -316,11 +357,15 @@ export function SessionGroupsEditor({
   onClose,
   groups,
   titles,
+  counted = true,
   counts,
 }: {
   onClose: () => void;
   groups: readonly DeliverySessionGroup[];
   titles: Readonly<Record<string, string>>;
+  /** Whether the answer `counts` comes from is the one for the window the page's address names
+   *  (the page's `windowCounted`); an editor given none counts. */
+  counted?: boolean;
   counts: Readonly<Record<string, number>>;
 }): ReactNode {
   const id = useId();
@@ -420,6 +465,11 @@ export function SessionGroupsEditor({
           {sessions.map((session) => {
             const count = counts[session] ?? 0;
             const inGroup = groupOf.get(session);
+            // No count while the answer on screen is not the one for the address's window
+            // (`counted`): the session's group alone.
+            const detail = [counted ? prCount(count) : undefined, inGroup]
+              .filter((part) => part !== undefined)
+              .join(" · ");
             return (
               <li className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm" key={session}>
                 {/* The checkbox's label keeps the name; the agent's live link sits beside it. */}
@@ -442,12 +492,13 @@ export function SessionGroupsEditor({
                   sessionId={session}
                   storedTitle={storedTitle(session)}
                 />
-                <span
-                  className={`min-w-0 max-w-full text-xs [overflow-wrap:anywhere] ${textMutedOnSurface}`}
-                >
-                  {count} PR{count === 1 ? "" : "s"}
-                  {inGroup === undefined ? "" : ` · ${inGroup}`}
-                </span>
+                {detail === "" ? null : (
+                  <span
+                    className={`min-w-0 max-w-full text-xs [overflow-wrap:anywhere] ${textMutedOnSurface}`}
+                  >
+                    {detail}
+                  </span>
+                )}
               </li>
             );
           })}
@@ -466,10 +517,13 @@ export function SessionGroupsEditor({
             placeholder="Group name"
             value={name}
           />
+          {/* Held, as a card's Rename and Add selected are, while its write is out and while it
+              has nothing to create: no name, or no session selected. A create that lands empties
+              the name, and the button the reader pressed keeps the focus through both
+              (`heldPress`). */}
           <button
             className={secondaryButtonCompact}
-            disabled={name.trim() === "" || selected.length === 0 || save.isPending}
-            onClick={create}
+            {...heldPress(name.trim() === "" || selected.length === 0 || save.isPending, create)}
             type="button"
           >
             Create group
@@ -494,17 +548,22 @@ export function SessionGroupsEditor({
 
       {groups.length === 0 ? null : (
         <section className="grid gap-2">
-          <h3 className={sectionLabel}>Groups</h3>
-          {groups.map((group) => (
-            <GroupCard
-              group={group}
-              key={group.id}
-              pending={save.isPending}
-              selected={selected}
-              storedTitle={storedTitle}
-              write={(change, press) => save.mutate(change, press)}
-            />
-          ))}
+          <h3 className={sectionLabel} id={`${id}-groups`}>
+            Groups
+          </h3>
+          <ul aria-labelledby={`${id}-groups`} className="grid gap-2">
+            {groups.map((group) => (
+              <li key={group.id}>
+                <GroupCard
+                  group={group}
+                  pending={save.isPending}
+                  selected={selected}
+                  storedTitle={storedTitle}
+                  write={(change, press) => save.mutate(change, press)}
+                />
+              </li>
+            ))}
+          </ul>
         </section>
       )}
     </aside>

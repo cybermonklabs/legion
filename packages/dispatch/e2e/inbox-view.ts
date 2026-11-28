@@ -22,6 +22,7 @@ import {
   patchIssue,
   requestApproval,
 } from "./api";
+import { chooseDisplay, openDisplayMenu } from "./filters";
 import { openFilterFields } from "./inbox-filter";
 import { inboxList } from "./inbox-pane";
 import {
@@ -345,16 +346,18 @@ export function sortedIds(
     .map((row) => row.id);
 }
 
-/** The ids the list is drawing, top to bottom. */
-export async function drawnIds(page: Page): Promise<string[]> {
-  return page
+/** The ids the list inside `within` is drawing, top to bottom: the page's, or a drawer's own,
+ *  never the page's under it. */
+export async function drawnIds(within: Page | Locator): Promise<string[]> {
+  return within
     .locator("[data-inbox-row]")
     .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
 }
 
-/** Every band heading the list is drawing, top to bottom, with its count. */
-export async function bandHeadings(page: Page): Promise<string[]> {
-  return inboxList(page)
+/** Every band heading the list inside `within` - the page, or a drawer - is drawing, top to
+ *  bottom, with its count. */
+export async function bandHeadings(within: Page | Locator): Promise<string[]> {
+  return inboxList(within)
     .locator("h2 button")
     .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
 }
@@ -370,21 +373,13 @@ export async function openField(page: Page, field: string): Promise<Locator> {
   return options;
 }
 
-/** The **View** menu, opened. Its trigger says whether it is open already. */
+/** The **View** display menu's panel, opened. */
 export async function openView(page: Page): Promise<Locator> {
-  const menu = page.getByRole("menu", { name: "View" });
-  const trigger = page.locator("[data-inbox-view]");
-  if ((await expandedState("the View menu", trigger)) === "shut") await trigger.click();
-  await expect(menu).toHaveCount(1);
-  return menu;
+  return openDisplayMenu(page);
 }
 
 /** Picks one choice of one **View** section; the sections share value words, so each is read
- *  through its own fieldset. */
+ *  through its own fieldset, and each choice by the value its radio carries. */
 export async function chooseView(page: Page, section: string, value: string): Promise<void> {
-  const menu = await openView(page);
-  await menu
-    .getByRole("group", { name: section })
-    .locator(`[data-inbox-view-choice="${value}"]`)
-    .click();
+  await chooseDisplay(page, section, value);
 }

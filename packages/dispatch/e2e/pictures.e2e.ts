@@ -15,7 +15,7 @@ import {
   getArtifact,
   getIssueArtifactText,
 } from "./api";
-import { documentEditor, openSpec, typeAtEnd } from "./editor";
+import { documentEditor, openSpec, pickVersion, typeAtEnd } from "./editor";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { pastePicture } from "./sends";
 import { sessionIds } from "./session-ids";
@@ -295,7 +295,7 @@ test("a picture written into a spec draws in the editor and in a past version, w
     expect((await getIssueArtifactText(issue.key, "spec")).markdown).toContain(latestSyntax);
 
     // The past version draws it through the read-only view.
-    await page.getByRole("combobox", { name: "Version" }).selectOption(String(pictured));
+    await pickVersion(page, pictured);
     const versionView = page.getByTestId("version-view");
     await expectDrawn(versionView.getByRole("img", { name: "shot.png" }), src);
     await expectDrawn(versionView.getByRole("img", { name: "latest shot" }), src);

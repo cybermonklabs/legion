@@ -17,6 +17,8 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
+import { afterFrameAndTasks } from "../../__tests__/frames";
+import { pickIn } from "../../__tests__/issue-picks";
 import { answerAskSnoozes, answerInboxDismisses } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -43,6 +45,7 @@ import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
 import { issueAsk } from "./inbox-fixture";
+import { type InboxListRow, rowId } from "./list-row";
 import {
   dismissesThread,
   dismissRefusalText,
@@ -50,6 +53,7 @@ import {
   inboxDismissBody,
   useInboxDismiss,
 } from "./useInboxDismiss";
+import { useInboxSelection } from "./useInboxSelection";
 
 // A thread row's checkbox is named after its subject's plain-text reading (`PlainText`), which
 // reads nothing until the lazy Markdown engine has loaded, and the rows find each checkbox by that
@@ -183,6 +187,97 @@ test("the row's Dismiss sends the row's own id and drawn version and takes it ou
   });
   settle.resolve({ dismissed: 1 });
   await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+});
+
+/** A thread row's own Dismiss, by the row's id. */
+function dismissOf(id: string): HTMLElement {
+  const control = document.querySelector<HTMLElement>(`[data-inbox-dismiss="${id}"]`);
+  if (control === null) throw new Error(`${id} Dismiss missing`);
+  return control;
+}
+
+/** The `detail` of each click the document hears, in order, until `stop`: which click of a
+ *  pointer's run it is, or 0 for a click no pointer made. */
+function clickDetails(): { details: number[]; stop: () => void } {
+  const details: number[] = [];
+  const hear = (event: MouseEvent) => {
+    details.push(event.detail);
+  };
+  document.addEventListener("click", hear, true);
+  return { details, stop: () => document.removeEventListener("click", hear, true) };
+}
+
+// A row's Dismiss takes its row out of the list at once, so the row below moves up under the
+// pointer, and the second click of a double click lands on that row's Dismiss. The control acts on
+// the first click of a pointer's run alone, so the gesture sends one dismiss, of the row pressed,
+// and leaves the row that moved up listed. Every dismiss is one write in turn (`inbox:dismiss`),
+// so a second would be sent once the first has landed.
+test("a double click on a row's Dismiss sends one dismiss, though its second click lands on the Dismiss of the row that moved up", async () => {
+  const user = userEvent.setup();
+  const dismissed = answerInboxDismisses();
+  const landing = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(landing.promise);
+  const clicks = clickDetails();
+  try {
+    renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+    // One run of the pointer: the second click is the double click's (`detail` 2).
+    await user.pointer([
+      { keys: "[MouseLeft]", target: dismissOf("reply:c1") },
+      { keys: "[MouseLeft]", target: dismissOf("reply:c9") },
+    ]);
+    await afterFrameAndTasks();
+    expect(clicks.details).toEqual([1, 2]);
+    expect(rowIds()).toEqual(["reply:c9"]);
+
+    await act(async () => {
+      landing.resolve({ dismissed: 1 });
+    });
+    await afterFrameAndTasks();
+    await afterFrameAndTasks();
+    expect(dismissed.mock.calls.map((call) => call[0])).toEqual([
+      { seen_replies: { "reply:c1": SEEN }, threads: ["reply:c1"] },
+    ]);
+  } finally {
+    clicks.stop();
+  }
+});
+
+// A click after the pointer has moved starts a run of its own (`detail` 1), and Enter on a
+// focused Dismiss clicks it with no pointer (`detail` 0): each is a press of its own row, made
+// while the dismisses before it are still out, and each row leaves at once. The writes go one in
+// turn (`inbox:dismiss`), each once the one before it has landed.
+test("a Dismiss clicked after the pointer moved, and one pressed with Enter, each dismiss their own row", async () => {
+  const user = userEvent.setup();
+  const dismissed = answerInboxDismisses();
+  const landing = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(landing.promise);
+  const clicks = clickDetails();
+  try {
+    renderInbox(seeded([replyRow("c1"), replyRow("c5"), replyRow("c9")]));
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c5", "reply:c9"]));
+    await user.click(dismissOf("reply:c1"));
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c5", "reply:c9"]));
+    await user.click(dismissOf("reply:c5"));
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c9"]));
+    act(() => dismissOf("reply:c9").focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(rowIds()).toEqual([]));
+    expect(clicks.details).toEqual([1, 1, 0]);
+
+    await act(async () => {
+      landing.resolve({ dismissed: 1 });
+    });
+    await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(3));
+    expect(dismissed.mock.calls.map((call) => call[0])).toEqual(
+      ["reply:c1", "reply:c5", "reply:c9"].map((id) => ({
+        seen_replies: { [id]: SEEN },
+        threads: [id],
+      }))
+    );
+  } finally {
+    clicks.stop();
+  }
 });
 
 test("a refused dismiss puts the row back where it stood and says so", async () => {
@@ -378,6 +473,70 @@ test("a read of either view or the count asked while a dismiss is out waits for 
       inboxThreads: ["c9", "c5"],
     })
   );
+});
+
+/** The selection one list keeps, over one listed Reply row, `c1`, with the client that serves it:
+ *  `dismissedHere` and `forgetDismissed` are read off it. */
+function renderSelection() {
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const row: InboxListRow = { kind: "thread", thread: replyRow("c1") };
+  const id = rowId(row);
+  const { result } = renderHook(
+    () =>
+      useInboxSelection({
+        asOf: undefined,
+        candidates: [row],
+        drawnIds: new Set([id]),
+        filters: {},
+        rows: new Map([[id, row]]),
+        showDismissed: false,
+      }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  return { id, result };
+}
+
+// INFRA-3135, round 29 (the architect's ruling of 2026-11-26 06:2xZ): the bar's hand-off parks the
+// focus in the row the reader marked last while its Dismiss is out, and the list's hand hold skips
+// a row named here (`dismissedHere`). A name that ended when Dispatch took the press, while a read
+// still drew the row, let that hold keep the row for the parked focus, and in WebKit the row never
+// left the page (builds Job `infra-3135-infra-3135-r30e-d70p`). So the name stands until the page
+// no longer draws the row.
+test("a Dismiss Dispatch took names its row until the page no longer draws it", async () => {
+  const dismissed = answerInboxDismisses();
+  const answer = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(answer.promise);
+  const { id, result } = renderSelection();
+  act(() => result.current.dismissRows([dismissThreadRow(replyRow("c1"))]));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+  expect(result.current.dismissedHere(id)).toBe(true);
+
+  await act(async () => {
+    answer.resolve({ dismissed: 1 });
+    await settle();
+  });
+  // Dispatch took it, and the page still draws the row: a read has not dropped it yet.
+  act(() => result.current.forgetDismissed((drawn) => drawn === id));
+  expect(result.current.dismissedHere(id)).toBe(true);
+  // The page has let the row go.
+  act(() => result.current.forgetDismissed(() => false));
+  expect(result.current.dismissedHere(id)).toBe(false);
+});
+
+// The rollback of a refused Dismiss puts the row back as an ordinary row, so nothing of the press
+// is left to wait for, and its name ends at once, whatever the page draws.
+test("a Dismiss Dispatch refused no longer names its row", async () => {
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(new ApiError(409, { error: "conflict" }));
+  const { id, result } = renderSelection();
+  act(() => result.current.dismissRows([dismissThreadRow(replyRow("c1"))]));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(result.current.dismissedHere(id)).toBe(false));
 });
 
 /** A `user_thread_state.updated` the live feed delivers: `payload.login`'s read of the Inbox's
@@ -739,10 +898,8 @@ test("a bulk snooze the reader stopped says it may have been saved, not that it 
     await user.click(asksMark as HTMLElement);
     await screen.findByText("1 selected");
     jest.useFakeTimers();
-    await userOnFakeClock().selectOptions(
-      screen.getByLabelText("Snooze selected asks"),
-      "tomorrow"
-    );
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(userOnFakeClock(), () => picker, "Tomorrow");
     await stopTheLateWrite(client);
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toBe(

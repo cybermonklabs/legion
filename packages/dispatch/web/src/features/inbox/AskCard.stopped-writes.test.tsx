@@ -4,6 +4,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { openList } from "../../__tests__/list-picks";
 import { stopTheLateWrite, untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError, type WriteBounds } from "../../api/client";
@@ -54,12 +55,11 @@ test("a hand-on the reader stopped says what Retry does, not a message's words",
   const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
   const card = within(view.container);
   try {
-    const control = await card.findByLabelText<HTMLSelectElement>("Hand this question to");
     // The people are read only once the reader reaches for the control (`AskHandOn`).
-    await userEvent.setup().click(control);
-    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    const list = await openList(userEvent.setup(), "Hand this question to");
+    await waitFor(() => expect(within(list).getByRole("option", { name: "bob" })).toBeTruthy());
     jest.useFakeTimers();
-    await userOnFakeClock().selectOptions(control, "bob");
+    await userOnFakeClock().click(within(list).getByRole("option", { name: "bob" }));
     await stopTheLateWrite(queryClient);
 
     // The alert's paragraph, without its Retry button's name.
@@ -265,12 +265,11 @@ test("a stopped hand-on's Retry after the card moves to another ask hands on the
     <AskCard ask={open} initialThread={thread(open, [])} />
   );
   try {
-    const control = await screen.findByLabelText<HTMLSelectElement>("Hand this question to");
     // The people are read only once the reader reaches for the control (`AskHandOn`).
-    await userEvent.setup().click(control);
-    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    const list = await openList(userEvent.setup(), "Hand this question to");
+    await waitFor(() => expect(within(list).getByRole("option", { name: "bob" })).toBeTruthy());
     jest.useFakeTimers();
-    await userOnFakeClock().selectOptions(control, "bob");
+    await userOnFakeClock().click(within(list).getByRole("option", { name: "bob" }));
     await stopTheLateWrite(queryClient);
     const stopped = handAskTo.mock.calls.length;
 

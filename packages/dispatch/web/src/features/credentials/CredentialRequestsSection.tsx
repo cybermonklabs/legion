@@ -4,7 +4,11 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
+import { invalidateWaitingForPaused } from "../../api/query-client";
+import { useListReadBound } from "../../api/read-bound";
 import type { CredentialPendingRow } from "../../api/types";
+import { pressOfWrite, type WritePress } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
 import { LabelPill } from "../../components/Pill";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
@@ -102,6 +106,10 @@ function PendingRowLine({ row }: { row: CredentialPendingRow }): ReactNode {
   );
 }
 
+/** What the section says when its list failed to load, and what an expired row says before why
+ *  the list read after its dismissal has not settled. */
+const CREDENTIAL_REQUESTS_NOT_LOADED = "Couldn't load credential requests.";
+
 /** One expired request's lines: the summary a pending row shows, marked "Expired", with a Dismiss
  *  button, and when its deadline passed (the line says only that it passed when the broker names
  *  no deadline). Nobody decided it before that deadline, and every decision of it is refused now,
@@ -110,11 +118,18 @@ function PendingRowLine({ row }: { row: CredentialPendingRow }): ReactNode {
  *  included. Each row makes its own dismissal and shows its own refusal under it (the broker's
  *  message: `NOT_APPROVER`, `RECORD_PENDING`, `RECORD_TERMINAL`, `NOT_FOUND`), as
  *  `RevocableList` does for a revoke; a dismissal that lands and one refused both read the list
- *  again, since either answer says what the broker now holds. The submit guard drops a second
- *  press that lands before the button disables. */
+ *  again, since either answer says what the broker now holds. Dismiss is held (`heldPress`), not
+ *  disabled, while its write is out and through the read that takes the row away, so it keeps the
+ *  focus until the row goes; the submit guard drops a second press that lands before the hold is
+ *  drawn. Every expired row's dismissal reads the one list again, so every row takes that list's
+ *  one hold (`useListReadBound`): a later dismissal forgets why an earlier one's read had not
+ *  settled, whichever row's it was, and a row says why that read has not settled only where its
+ *  own dismissal made the latest one. */
 function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
+  const [unsettledOf, holdThrough] = useListReadBound(credentialPendingQuery().queryKey);
+  const unsettled = unsettledOf(row.record_id);
   const label =
     `Dismiss expired ${requestKindLabel(row).toLowerCase()} ${requestIdentifiers(row)}`.trimEnd();
   // The row shows a refused dismissal itself, under its own line. The press carries the request
@@ -123,10 +138,25 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
   const dismiss = useKeyedWrite({
     inline: true,
     label: (press: { readonly label: string; readonly recordId: string }) => press.label,
-    onSettled: () => {
-      submitGuard.release();
+    onError: () => {
       void queryClient.invalidateQueries({ queryKey: credentialPendingQuery().queryKey });
     },
+    onSettled: () => submitGuard.release(),
+    // Pending, and Dismiss held, through the read of the list that takes the row away. That read
+    // settles either way, and a failed one lets the button go. A read that has not settled by the
+    // request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets
+    // it go then, and the row says why the list is not read yet (`useListReadBound`), until it
+    // settles or another row's dismissal makes the next one.
+    // The read waits on a fetch the network had already paused, which that deadline ends too
+    // (`invalidateWaitingForPaused`). The hold is the press's the dismissal began under
+    // (`pressOfWrite`).
+    onMutate: pressOfWrite,
+    onSuccess: (_result, { recordId }, press: WritePress) =>
+      holdThrough(
+        recordId,
+        invalidateWaitingForPaused(queryClient, credentialPendingQuery().queryKey),
+        press
+      ),
     method: "POST",
     write: ({ recordId }, bounds) => api.dismissCredentialRequest(recordId, bounds),
   });
@@ -139,10 +169,9 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
         <button
           aria-label={label}
           className={secondaryButtonCompact}
-          disabled={dismiss.isPending}
-          onClick={() =>
+          {...heldPress(dismiss.isPending, () =>
             submitGuard.guard(() => dismiss.mutate({ label, recordId: row.record_id }))
-          }
+          )}
           type="button"
         >
           Dismiss
@@ -168,23 +197,30 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
             : apiErrorMessage(dismiss.error, "Could not dismiss this request.")}
         </p>
       ) : null}
+      {/* A list read that has not settled is said as the section says a list that failed to
+          load, in the same line. */}
+      {!dismiss.isError && unsettled !== undefined ? (
+        <p className={dangerText}>
+          {CREDENTIAL_REQUESTS_NOT_LOADED} {unsettled}.
+        </p>
+      ) : null}
     </>
   );
 }
 
 /** The Inbox's supplementary credential-requests section, mounted above the ask sections, from the
- *  Inbox's own reading of the list (`useCredentialRequests`), which its banner and empty state read
- *  too. A pending request's line leads to where it is decided; an expired one's is marked, links
- *  nowhere and offers Dismiss (`ExpiredRowLines`), and the broker lists every pending row before
- *  the expired ones. A Dispatch with no secrets broker lists none, so the whole section hides
- *  silently - the one deliberate quiet path; a failure is surfaced only when no list has ever
- *  loaded (a later poll failing keeps showing the last list it held, `useCredentialRequests`'s
- *  `status` stays `listed`). Calls `useAgents` once for every row in the list (before either early
- *  return, so the hook always runs), rather than once per `CredentialSessionLines` instance, for
- *  every row's directory and machine; the shell's one poller (`AgentRegistryPoller`) refreshes
- *  that list, so N listed rows never phase N polls of their own (LEGION-587's review, round 3). A
- *  Dispatch sign-in names no session, so its row shows its reason where another shows its session
- *  (`SignInReasonLine`). */
+ *  Inbox's own reading of the list (`useCredentialRequests`), which its Blocked on you control and
+ *  its empty state read too. A pending request's line leads to where it is decided; an expired
+ *  one's is marked, links nowhere and offers Dismiss (`ExpiredRowLines`), and the broker lists
+ *  every pending row before the expired ones. A Dispatch with no secrets broker lists none, so the
+ *  whole section hides silently - the one deliberate quiet path; a failure is surfaced only when no
+ *  list has ever loaded (a later poll failing keeps showing the last list it held,
+ *  `useCredentialRequests`'s `status` stays `listed`). Calls `useAgents` once for every row in
+ *  the list (before either early return, so the hook always runs), rather than once per
+ *  `CredentialSessionLines` instance, for every row's directory and machine; the shell's one
+ *  poller (`AgentRegistryPoller`) refreshes that list, so N listed rows never phase N polls of
+ *  their own (LEGION-587's review, round 3). A Dispatch sign-in names no session, so its row shows
+ *  its reason where another shows its session (`SignInReasonLine`). */
 export function CredentialRequestsSection({
   credentials: { requests, status },
 }: {
@@ -195,7 +231,7 @@ export function CredentialRequestsSection({
     true
   );
   if (status === "failed") {
-    return <p className={dangerText}>Couldn't load credential requests.</p>;
+    return <p className={dangerText}>{CREDENTIAL_REQUESTS_NOT_LOADED}</p>;
   }
   if (requests.length === 0) {
     return null;

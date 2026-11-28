@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   ApiError,
   api,
@@ -9,8 +10,16 @@ import {
   type WriteRequest,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { advancesIssuesParams } from "../../api/queries";
+import { advancesIssuesParams, advancesIssuesQuery, projectIssuesQuery } from "../../api/queries";
+import { invalidateWaitingForPaused } from "../../api/query-client";
+import { useReadBound } from "../../api/read-bound";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
+import {
+  actionWriteBegins,
+  holdHandOff,
+  pressOfWrite,
+  type WritePress,
+} from "../../components/focus-place";
 import { issueProject } from "../../lib/issue-key";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
@@ -32,7 +41,12 @@ import {
   startNextWrites,
   WRITES_IN_FLIGHT,
 } from "./issues-table-model";
-import { type TableAction, tableEpicWrite, useTableRecovery } from "./issues-table-recovery";
+import {
+  stepsByWriteKey,
+  type TableAction,
+  tableEpicWrite,
+  useTableRecovery,
+} from "./issues-table-recovery";
 
 interface Patch {
   key: string;
@@ -62,19 +76,33 @@ interface Confirmation {
   /** Told of a Cancel, an Escape or a press on the backdrop, beside the dialog closing: what a
    *  Finish that waits on the answer hears. */
   cancel?: () => void;
+  /** Which press opened the question, where the List's confirm of it arms a hand-off there too
+   *  (`IssuesTable`), so the going of what the action takes away is the reader's doing. `"bar"`:
+   *  a press on the selection bar's own actions - its Move to epic (`askTarget`), its Start next
+   *  over a selection larger than the page, and its New epic from these, through the name dialog -
+   *  whose confirm arms the bar's hand-off at the bar's root. `"merge"`: an epic group's Merge…
+   *  (`askMerge`), whose confirm arms it at the group's Epic actions. A Finish's question
+   *  (`askOnFinish`) has none. */
+  origin?: "bar" | "merge";
 }
 /** What a question says, before the page knows what its yes and its Cancel do. */
-type Question = Omit<Confirmation, "cancel" | "run">;
+type Question = Omit<Confirmation, "cancel" | "origin" | "run">;
 /** What an action that moves issues under an epic is, as the question it asks says it: what the
- *  action does (`lead`), said before the question's own sentences, and its name. */
+ *  action does (`lead`), said before the question's own sentences, and its name; and which press
+ *  began it (`origin`), which the question it asks carries (`Confirmation`'s `origin`). */
 interface TargetAction {
   readonly lead?: string;
   readonly noun: "merge" | "move";
+  readonly origin?: "bar" | "merge";
 }
 /** The epic whose name the reader is typing: a new one for the selected issues, or a rename. */
 export type EpicNaming =
   | { kind: "new"; keys: readonly string[] }
   | { kind: "rename"; key: string; title: string };
+
+/** What the list says when its read failed, and what an action's notice says before why the list
+ *  read after it has not settled. */
+export const ISSUES_NOT_LOADED = "Could not load issues.";
 
 /** The one sentence a merge records on the source issue, written and recognised in one place.
  *  A resume compares the whole sentence against the source's own messages, because the server
@@ -169,7 +197,29 @@ export function useIssueTableActions({
   const writes = useWrites();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>();
+  // Why the read of this table's listing after an action has not settled, once its hold ran out,
+  // which the next action takes away as its hold begins: one hold for every table of the listing
+  // (`useReadBound`).
+  const [unsettled, holdThrough] = useReadBound(
+    ("project" in listing ? projectIssuesQuery(listing.project, []) : advancesIssuesQuery(listing))
+      .queryKey
+  );
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
+  // The issues the action in hand is taking out of the view, which `leaving` names: each issue its
+  // writes are for, from the reader's press that began it (`perform`, and `askTarget` while its dry
+  // run is out), and an issue the action finds only as it runs - a merge's issues as its own read
+  // finds them - from its write's send at the latest (`apply`). An issue whose write is refused or
+  // stopped stays where it is, so its name ends at once (`apply`, and `finish` for the writes it
+  // waits on or sends again).
+  const [taking, setTaking] = useState<ReadonlySet<string>>(new Set());
+  /** Ends the name of `key` at once (`taking`): a write for it was refused or stopped. */
+  const release = (key: string) =>
+    setTaking((current) => {
+      if (!current.has(key)) return current;
+      const kept = new Set(current);
+      kept.delete(key);
+      return kept;
+    });
   const [duplicateEpic, setDuplicateEpic] = useState<DuplicateEpic>();
   const [unansweredEpic, setUnansweredEpic] = useState<string>();
   const [naming, setNaming] = useState<EpicNaming>();
@@ -179,6 +229,10 @@ export function useIssueTableActions({
   // The table going away ends the question a Finish waits on, as a Cancel does: the Finish ends,
   // with nothing more written, rather than wait on a dialog nobody can see.
   useEffect(() => () => answering.current?.(false), []);
+  // The press the action in hand began under (`perform`), else null: each write the action
+  // begins counts that press's bound from there (`actionWriteBegins`), so the press stays live
+  // while its action writes, however many writes it makes.
+  const actionPress = useRef<WritePress>(null);
   // The project a write of this table may name, which a scoped table has none of: the epic
   // actions are withheld rather than sent against a listing that belongs to no project.
   const project = "project" in listing ? listing.project : undefined;
@@ -195,6 +249,7 @@ export function useIssueTableActions({
       : api.listIssues(advancesIssuesParams(listing));
 
   const request = <T>(value: WriteRequest<T>, label: string, issue: string, key: string) => {
+    actionWriteBegins(actionPress.current);
     const answer = writes.run({
       kind: plainWrite,
       detail: null,
@@ -218,6 +273,13 @@ export function useIssueTableActions({
     // its whole batch once rather than re-serialising the store on every step.
     if (minted === undefined)
       recovery.record(Object.fromEntries(sends.map(({ key, write }) => [key, write])), id);
+    // Each issue is named from its write's send at the latest (`taking`): a merge finds its issues
+    // only once its own read of the listing has answered.
+    setTaking((current) =>
+      operations.every(({ key }) => current.has(key))
+        ? current
+        : new Set([...current, ...operations.map(({ key }) => key)])
+    );
     const results = await settledWithLimit(
       sends,
       WRITES_IN_FLIGHT,
@@ -227,7 +289,11 @@ export function useIssueTableActions({
           `Update ${key} from the issues table`,
           key,
           write
-        );
+        ).catch((error: unknown) => {
+          // Refused or stopped, the write leaves its issue where it is, so the name ends now.
+          release(key);
+          throw error;
+        });
         if (answer !== null) mergeIssue(client, answer);
         setMoved((current) => new Set([...current, key]));
         return key;
@@ -277,20 +343,58 @@ export function useIssueTableActions({
     }
     return operations.map(({ key }) => key);
   };
+  /** Runs `action`, which the reader's press began and whose writes are for the issues `sends`
+   *  as the table lists them: those are named as leaving from the press (`taking`). `press` is
+   *  the press the action began under (`pressOfWrite`), the one armed now unless the caller read
+   *  it earlier, as a move does before its dry run (`askTarget`); `duplicate` answers a create
+   *  Dispatch refused as a near copy of an epic. */
   const perform = async (
     said: string,
+    sends: readonly string[],
     action: () => Promise<readonly string[] | undefined>,
-    duplicate?: (error: ApiError) => void
+    {
+      duplicate,
+      press = pressOfWrite(),
+    }: {
+      readonly duplicate?: (error: ApiError) => void;
+      readonly press?: WritePress;
+    } = {}
   ) => {
+    // The action's whole run keeps the armed hand-off of the reader's press that began it live
+    // (`holdHandOff`), until its controls are let go. An action of several writes runs on after
+    // its first writes are answered: Start next writes one step at a time, New epic moves the
+    // issues after the create, and a batch sends `WRITES_IN_FLIGHT` writes at a time. Without
+    // this hold the press could end before the action did, and the bar's going would read as no
+    // doing of the reader's. Each write the action begins counts the press's bound from there
+    // (`actionPress`), so writes that together outlast the bound - Start next over ten issues at
+    // 7 s a step - keep the press live to the action's end. Every hold here is that press's,
+    // never a later press of the reader's.
+    const endHold = holdHandOff(press);
+    actionPress.current = press;
     setBusy(true);
     setNotice(undefined);
     setMoved(new Set());
+    setTaking(new Set(sends));
+    // Whether the action may have changed what the list draws: it answered what it changed, or a
+    // write landed while it ran, or ended without Dispatch's verdict (the reader stopped it) and
+    // so may have landed. A write Dispatch refused (`ApiError`) changed nothing.
+    let mayHaveChanged = false;
+    // Whether the action answered what it changed. Only such an action clears the selection.
+    let answered = false;
+    const unwatch = writes.onOutcome((outcome) => {
+      if (
+        outcome.kind === "landed" ||
+        (outcome.kind === "refused" && !(outcome.refusal instanceof ApiError))
+      )
+        mayHaveChanged = true;
+    });
     try {
       const changed = await action();
       if (changed !== undefined) {
+        mayHaveChanged = true;
+        answered = true;
         setNotice({ kind: "success", text: said });
         setMoved(new Set(changed));
-        clearSelection();
       }
     } catch (error) {
       if (error instanceof ApiError && error.code === "POSSIBLE_DUPLICATE" && duplicate)
@@ -298,10 +402,43 @@ export function useIssueTableActions({
       else
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
-      setBusy(false);
-      void client.invalidateQueries({ queryKey: ["issues"] });
+      unwatch();
+      if (actionPress.current === press) actionPress.current = null;
+      // An action that may have changed the list keeps its controls held (`busy`) through the read
+      // of the list that draws what it changed - a row's Start next gone once its issue starts
+      // next. The hold above lasts until then, so that going is still the press's doing
+      // (`causedByReader`). A batch that saved some of its changes before a refusal changed the
+      // list too. The read settles either way, and a failed one lets them go. A read that has not
+      // settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is
+      // offline - lets them go then, and the notice says why the list is not read yet
+      // (`useReadBound`). An action that changed nothing - every write refused, or none made -
+      // lets them go at once, while the list is still read again behind them.
+      // An action that answered what it changed clears the selection in the same batch that lets
+      // its controls go. So the selection bar, held, stays until that read settles or the
+      // deadline passes, and its hand-off reads the view the action left. A marked row that left
+      // the view is not in it, and the focus goes to the row now at its place
+      // (`useLastMarkedPlace`). Where the row marked last is still listed, the focus goes to its
+      // checkbox. An action that failed or changed nothing keeps the selection.
+      // Read again waiting on a fetch the network has paused, since the hold below has a bound
+      // of its own (`invalidateWaitingForPaused`, `useReadBound`).
+      const listed = invalidateWaitingForPaused(client, ["issues"]);
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
+      if (mayHaveChanged) await holdThrough(listed, press);
+      // The bar's going and its hand-off are one render. This line runs outside any event of the
+      // reader's - the turn a write's answer takes, or the read's own bound - so React would
+      // commit it at normal priority and run the bar's hand-off, a passive effect
+      // (`components/SelectionBar.tsx`), in a later task: a frame would paint with the focus on
+      // the page's body. The press ends a frame and a task from here (`endHold`,
+      // `afterComponents`), which can come before that hand-off and leave it reading a press
+      // already answered, so it would move nothing. `flushSync` commits the going here and runs
+      // the bar's effects with it, so the focus is on the marked row's checkbox in the render
+      // the bar goes, before the press ends.
+      flushSync(() => {
+        if (answered) clearSelection();
+        setBusy(false);
+      });
+      endHold();
     }
   };
   const titleOf = (key: string) => issues.find((issue) => issue.key === key)?.title ?? key;
@@ -405,13 +542,15 @@ export function useIssueTableActions({
    * rule needs the epic in work first, the page sends the dry run of its move into work and asks
    * one question (`targetQuestion`): a yes is `go(true)`, which makes that status change before
    * the action's own writes, and a Cancel writes nothing. Where the rule needs nothing, as the
-   * dry run finds the epic too, it is `go(false)` at once.
+   * dry run finds the epic too, it is `go(false)` at once, and where only the dry run's answer
+   * says so, `go(false, press)`: the action that follows that answer is the doing of the press
+   * that asked for the dry run (`pressOfWrite`), whatever the reader has pressed since.
    */
   const askTarget = (
     target: string,
     moving: readonly string[],
     action: TargetAction,
-    go: (intoWork: boolean) => void
+    go: (intoWork: boolean, press?: WritePress) => void
   ) => {
     const rows = listed(moving);
     const held = issues.find((issue) => issue.key === target);
@@ -421,13 +560,15 @@ export function useIssueTableActions({
       go(false);
       return;
     }
+    const press = pressOfWrite();
     setBusy(true);
     setNotice(undefined);
+    setTaking(new Set(moving));
     targetQuestion(target, rows, action).then(
       (question) => {
         setBusy(false);
-        if (question === undefined) go(false);
-        else setConfirming({ ...question, run: () => go(true) });
+        if (question === undefined) go(false, press);
+        else setConfirming({ ...question, origin: action.origin, run: () => go(true) });
       },
       (error: unknown) => {
         setBusy(false);
@@ -506,20 +647,34 @@ export function useIssueTableActions({
     const open = openSelected(keys);
     const skipped = skippedClosed(keys.length - open.length);
     if (!open.length) {
+      // Refused with no write, the action is answered at once, as an action that writes is at the
+      // end of `perform`: a hold on what answers the reader's press, begun and ended with the
+      // refusal (`holdHandOff`). So Move, which its own press leaves held with no epic staged,
+      // keeps that press live no longer, since a hold that only says there is nothing to do keeps
+      // no press live, and a live update that then empties the bar is no doing of the reader's.
+      const answered = holdHandOff();
       setNotice({ kind: "error", text: `Only open issues can change epic.${skipped}` });
+      answered();
       return;
     }
     const said =
       (epic === null
         ? `Took ${named(open)} out of ${open.length === 1 ? "its epic" : "their epics"}.`
         : `Moved ${named(open)} to the epic “${titleOf(epic)}”.`) + skipped;
-    const move = (intoWork: boolean) =>
-      void perform(said, async () => {
-        if (intoWork && epic !== null) await moveIntoWork(epic);
-        return apply(open.map((key) => ({ key, input: { parent: epic } })));
-      });
+    const move = (intoWork: boolean, press?: WritePress) =>
+      void perform(
+        said,
+        open,
+        async () => {
+          if (intoWork && epic !== null) await moveIntoWork(epic);
+          return apply(open.map((key) => ({ key, input: { parent: epic } })));
+        },
+        { press }
+      );
+    // Only the bar moves issues to an epic (`IssueTableSelection`'s Move and Take out of epic), so
+    // the question this asks is the bar's.
     if (epic === null) move(false);
-    else askTarget(epic, open, { noun: "move" }, move);
+    else askTarget(epic, open, { noun: "move", origin: "bar" }, move);
   };
   /** The rank writes of a start-next action, sent in order, stopping the moment the reader
    *  dismisses it. One loop and one guard serve the first attempt and the resume; `failure`
@@ -570,6 +725,7 @@ export function useIssueTableActions({
     const record = recovery.begin({ kind: "startNext", keys: queued });
     void perform(
       `${named(queued)} now ${queued.length === 1 ? "starts" : "start"} next.`,
+      queued,
       async () => {
         const ran = await runStartNext(record, items, (remaining, error) => {
           // One step goes at a time, so the first of `remaining` is the one `apply` wrote. One
@@ -587,7 +743,8 @@ export function useIssueTableActions({
     );
   };
   /** A start-next the reader has not seen the whole of: `Select all N matching` picked rows
-   *  off the page, and each one is a write, so the count is put to them first. */
+   *  off the page, and each one is a write, so the count is put to them first. Only the bar asks
+   *  first (`IssueTableSelection`), so that question is the bar's. */
   const startNext = (keys: readonly string[], confirmFirst = false) => {
     if (!canBegin()) return;
     const queued = queuedInOrder(items, keys);
@@ -596,6 +753,7 @@ export function useIssueTableActions({
         title: "Start these next?",
         body: `${queued.length} issues move to the head of Legion's queue, one write each.`,
         confirmLabel: "Start next",
+        origin: "bar",
         run: () => runQueued(queued),
       });
       return;
@@ -603,15 +761,22 @@ export function useIssueTableActions({
     runQueued(queued);
   };
   /** `title` is the name the reader gave, `force` makes the epic past a near copy Dispatch named,
-   *  and `intoWork` is the reader's yes to the new epic's move into work, which the action asks
-   *  for before its create where an issue it moves is in work (D12). */
+   *  `intoWork` is the reader's yes to the new epic's move into work, which the action asks for
+   *  before its create where an issue it moves is in work (D12), and `origin` says the name came
+   *  from the dialog the bar's New epic from these opened, so that question is the bar's. */
   const newEpic = async (
     keys: readonly string[],
     {
       force = false,
       intoWork,
+      origin,
       title: chosenTitle,
-    }: { readonly force?: boolean; readonly intoWork?: true; readonly title?: string } = {}
+    }: {
+      readonly force?: boolean;
+      readonly intoWork?: true;
+      readonly origin?: "bar";
+      readonly title?: string;
+    } = {}
   ) => {
     if (project === undefined || unansweredEpic || !canBegin()) return;
     const open = openSelected(keys);
@@ -630,11 +795,15 @@ export function useIssueTableActions({
     const title = chosenTitle.trim();
     if (!title) return;
     setNaming(undefined);
+    // The duplicate's notice goes in the commit that marks the List busy (`perform`), so Create
+    // anyway's own press never disables it under the focus: its going walks the focus back over
+    // the main content from where the notice stood (`IssuesTable`).
     setDuplicateEpic(undefined);
     const rows = listed(open);
     if (intoWork === undefined && targetMustMove(undefined, rows)) {
       setConfirming({
         ...newEpicQuestion(`“${title}”`, rows),
+        origin,
         run: () => void newEpic(keys, { force, intoWork: true, title }),
       });
       return;
@@ -646,7 +815,9 @@ export function useIssueTableActions({
     recovery.record({ create: key }, record.id);
     await perform(
       `Made the epic “${title}” from ${named(open)}.${skipped}`,
+      open,
       async () => {
+        actionWriteBegins(actionPress.current);
         const creation = writes.run({
           kind: tableEpicWrite,
           detail: recoveryKey,
@@ -690,11 +861,13 @@ export function useIssueTableActions({
         recovery.dismiss();
         return changed;
       },
-      (error) => {
-        const refused = writes.rows().find((row) => row.key === key);
-        if (refused) writes.discard(refused.id);
-        recovery.dismiss();
-        setDuplicateEpic({ keys, title, message: error.message, intoWork });
+      {
+        duplicate: (error) => {
+          const refused = writes.rows().find((row) => row.key === key);
+          if (refused) writes.discard(refused.id);
+          recovery.dismiss();
+          setDuplicateEpic({ keys, title, message: error.message, intoWork });
+        },
       }
     );
   };
@@ -706,7 +879,9 @@ export function useIssueTableActions({
     const title = chosenTitle.trim();
     setNaming(undefined);
     if (title && title !== titleOf(key))
-      void perform(`Renamed the epic to “${title}”.`, () => apply([{ key, input: { title } }]));
+      void perform(`Renamed the epic to “${title}”.`, [key], () =>
+        apply([{ key, input: { title } }])
+      );
   };
   /**
    * Refuses the close of a merge's source `source` while an issue the merge does not move is open
@@ -800,20 +975,24 @@ export function useIssueTableActions({
     if (!canBegin()) return;
     const members = mergeMembers(issues, from);
     const lead = mergeLead(from, into, members.length);
-    askTarget(into, members, { lead, noun: "merge" }, (intoWork) => {
+    askTarget(into, members, { lead, noun: "merge", origin: "merge" }, (intoWork) => {
       if (intoWork) void mergeEpic(from, into, true);
       else
         setConfirming({
           title: "Merge this epic?",
           body: lead,
           confirmLabel: "Merge",
+          origin: "merge",
           run: () => void mergeEpic(from, into),
         });
     });
   };
   const mergeEpic = (from: string, into: string, intoWork = false) => {
     if (!canBegin()) return;
-    return perform(`Merged “${titleOf(from)}” into “${titleOf(into)}”.`, async () => {
+    // The issues under the source as the table lists them, and the source, which closes: the run
+    // reads the listing afresh and names any other issue it moves as it sends its write (`apply`).
+    const sends = [...mergeMembers(issues, from), from];
+    return perform(`Merged “${titleOf(from)}” into “${titleOf(into)}”.`, sends, async () => {
       const descendants = await listAll();
       const members = mergeMembers(descendants, from);
       const record = recovery.begin({ kind: "merge", keys: members, source: from, target: into });
@@ -867,7 +1046,9 @@ export function useIssueTableActions({
       if (!(await goOnFinish(record, question))) return false;
       // With no issue in work, the create goes again with the action's other refused writes.
       if (question === undefined) return true;
-      await recovery.settle(record, (step) => step === "create");
+      // The create goes again from Pending changes, a write of this action's all the same, which
+      // counts the bound of the press the action began under as it is sent (`settle`).
+      await recovery.settle(record, (step) => step === "create", actionPress.current);
       if (!recovery.active(record.id)) return false;
       const made = recovery.current.current?.target;
       if (made === undefined) throw new Error(unknownKey);
@@ -981,8 +1162,24 @@ export function useIssueTableActions({
   const finish = () => {
     const interrupted = recovery.current.current;
     if (!interrupted) return;
-    void perform("Finished the interrupted action.", async () => {
-      await recovery.settle(interrupted, () => false);
+    // A write of the interrupted action that Finish waits on or sends again (`recovery.settle`)
+    // and that is refused or stopped again leaves its issue where it is, so that issue's name ends
+    // at once, as `apply` ends the name of a write it sends: those writes are Pending changes' own
+    // and never pass through `apply`. Each is known by its row there, the step it is for read off
+    // the key the record holds: a write sent again keeps its row, and can be sent under a new key.
+    const steps = stepsByWriteKey(interrupted.writes);
+    const stepOfRow = new Map(
+      writes.rows().flatMap((row) => {
+        const step = steps.get(row.key);
+        return step === undefined ? [] : [[row.id, step] as const];
+      })
+    );
+    const unwatch = writes.onOutcome((outcome) => {
+      const step = outcome.kind === "refused" ? stepOfRow.get(outcome.write.id) : undefined;
+      if (step !== undefined) release(step);
+    });
+    void perform("Finished the interrupted action.", interrupted.keys, async () => {
+      await recovery.settle(interrupted, () => false, actionPress.current);
       // The record while it is still the one in hand, as the writes waited on left it: a create
       // that landed names its epic.
       const held = () => (recovery.active(interrupted.id) ? recovery.current.current : undefined);
@@ -999,7 +1196,9 @@ export function useIssueTableActions({
       }
       const guarded = held();
       if (!guarded) return undefined;
-      await recovery.settle(guarded, resend);
+      // The refused writes go again from Pending changes, writes of this action's all the same,
+      // each counting the bound of the press the action began under as it is sent (`settle`).
+      await recovery.settle(guarded, resend, actionPress.current);
       const settled = held();
       if (!settled) return undefined;
       const current = await listAll();
@@ -1008,13 +1207,32 @@ export function useIssueTableActions({
       recovery.dismiss();
       setUnansweredEpic(undefined);
       return record.keys;
-    });
+    }).finally(unwatch);
   };
   const interrupted = busy ? undefined : recovery.action;
   return {
     busy,
-    notice,
+    // A list read that has not settled is said after what the action did, in the words the List
+    // says for a list read that failed.
+    notice:
+      unsettled === undefined
+        ? notice
+        : {
+            kind: "error" as const,
+            text: `${notice === undefined ? "" : `${notice.text} `}${ISSUES_NOT_LOADED} ${unsettled}.`,
+          },
     moved,
+    // Whether the press of this action is taking row `key` out of the view: an issue the action's
+    // writes are for (`taking`), from the reader's press, not from its write's answer, so a row is
+    // named while its write is still out, as the bar's hand-off and the List's anchor read it. The
+    // name ends at once where that write is refused or stopped, and for every row once the action
+    // is over (`busy`) and the list read after it has settled (`unsettled`): the commit that lets
+    // the action go draws that read at the latest, and a read that outlived the hold is drawn in
+    // the commit that ends `unsettled`, so by then each row the press took away has left the
+    // list and each row still listed stays. The List's anchor asks the render before a commit as
+    // well (`ViewportAnchor`'s `leaving`), so the rows are named in that commit. A row a later live
+    // update takes away is not named. With no action out, `leaving` is undefined and names no row.
+    leaving: busy || unsettled !== undefined ? (key: string) => taking.has(key) : undefined,
     duplicateEpic,
     setDuplicateEpic,
     unansweredEpic,

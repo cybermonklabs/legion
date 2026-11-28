@@ -34,7 +34,11 @@ export function EpicNameDialog({
   initial?: string;
   submitLabel: string;
   onCancel: () => void;
-  onSubmit: (name: string) => void;
+  /** Runs on the reader's submit with the name they gave and the control that submitted it: the
+   *  form's submit button, which a click presses and through which the browser submits Enter in
+   *  the field, else the form itself. A caller can arm a hand-off with it before the action runs
+   *  (`IssuesTable`). */
+  onSubmit: (name: string, control: HTMLElement) => void;
 }): ReactNode {
   const nameRef = useRef<HTMLInputElement>(null);
   const dialog = useDialog<HTMLFormElement>({
@@ -46,7 +50,9 @@ export function EpicNameDialog({
   const trimmed = name.trim();
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (trimmed !== "") onSubmit(trimmed);
+    const { currentTarget, nativeEvent } = event;
+    const submitter = nativeEvent instanceof SubmitEvent ? nativeEvent.submitter : null;
+    if (trimmed !== "") onSubmit(trimmed, submitter ?? currentTarget);
   };
   return (
     <>

@@ -3,8 +3,13 @@ import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { ApiError } from "../../api/client";
 import { focusIsFreeFor } from "../doc/form-refusals";
 
-/** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
- *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
+/** Moves focus from inside the form to the form's nearest focusable ancestor instead of letting
+ *  it fall to the document body, so j/k/Enter/Escape still start from the same place: whoever
+ *  caused the loss, and with no scroll. In the Inbox's list layout that ancestor is the ask's own
+ *  row, the reader's own place, so the focus goes to no other row; a row whose ask was answered
+ *  or withdrawn elsewhere stays in the list, with the card's closed state, while it holds the
+ *  focus. In the reading column it is the column's own focus stop. The Inbox's j, k and Enter
+ *  answer from either. */
 export function handOffFocus(form: HTMLElement): void {
   if (!form.contains(document.activeElement)) return;
   form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
@@ -17,12 +22,14 @@ export type AnswerForm = [
   trackForm: (form: HTMLFormElement | null) => (() => void) | undefined,
 ];
 
-/** The form's callback ref. When the form leaves while a control inside it has focus - the ask
- *  was answered or resolved elsewhere and the body swaps to its record - focus is handed off
- *  without any event; React detaches a ref before removing its node, so the form is still in the
- *  document when this cleanup runs. The form is also kept in `formRef` for the disabled-control
- *  hand-off below. The callback must be stable across renders: React re-runs a changed callback
- *  ref's cleanup on every commit, and that cleanup moves focus. */
+/** The form's callback ref. When the form leaves while a control inside it has focus - the body
+ *  swapping to its record once the ask is answered, or resolved elsewhere - its cleanup runs the
+ *  hand-off without any event, which moves the focus to the form's nearest focusable ancestor,
+ *  the list layout's row or the reading column's focus stop, with no scroll (`handOffFocus`);
+ *  React detaches a ref before removing its node, so the form is still in the document when this
+ *  cleanup runs. The form is also kept in `formRef` for the disabled-control hand-off below. The
+ *  callback must be stable across renders: React re-runs a changed callback ref's cleanup on
+ *  every commit, and that cleanup can move focus. */
 function useFormRef(): AnswerForm {
   const formRef = useRef<HTMLFormElement | null>(null);
   const track = useCallback((form: HTMLFormElement | null) => {
@@ -56,13 +63,13 @@ export function useAnswerFormFocus({
   pending,
   takeFormRefusalFocus,
 }: AnswerFormFocusOptions): AnswerForm {
-  // A control that disables itself under the reader's focus - Ask back while sending and once
-  // its text is sent - would have the browser drop focus to the document body (in the Inbox, out
-  // of the row, which then lets the row go) with nothing the body could act on afterwards; the
-  // same hand-off as a vanishing form, in the commit that disables it, before the browser looks.
-  // While the form refuses a press inside `NoTooltips` (`refusing`, `useAskAnswerForm`), its
-  // controls are `aria-disabled`, not `disabled`, so this moves no focus then. The control it
-  // took the focus from is kept for a refusal of the form, below.
+  // A control that disables itself under the reader's focus - Ask back once its text is sent and
+  // the form no longer refuses - would have the browser drop focus to the document body (in the
+  // Inbox, out of the row, which then lets the row go) with nothing the body could act on
+  // afterwards; the same hand-off as a vanishing form, in the commit that disables it, before the
+  // browser looks. While the form refuses a press (`refusing`, `useAskAnswerForm`), its controls
+  // are `aria-disabled`, not `disabled`, so this moves no focus then. The control it took the
+  // focus from is kept for a refusal of the form, below.
   const [formRef, trackForm] = useFormRef();
   const handedOffFrom = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
@@ -73,19 +80,23 @@ export function useAnswerFormFocus({
       handOffFocus(form);
     }
   });
-  // A refusal of the form is an answer the reader acts on in this form, so the control they
-  // pressed gets the focus back once it is enabled again. A body drawn again after the press - the
-  // host took the card that wrote out of the page - holds no pressed control, and takes the focus
-  // the press owes onto Answer, the press the refusal's next step names, unless the reader has put
-  // the focus elsewhere; a pressed control no longer in the page stands for the same kind of
-  // control in the form: Answer, or the answer field. Another card of the same ask on the page
-  // shows the refusal and takes no focus. An answer that lands leaves the focus where the hand-off
-  // put it, as every answered form does.
+  // A refusal of the form is an answer the reader acts on in this form, so the focus is on the
+  // control they pressed once the refusal shows. The form holds its controls while the answer is
+  // out (`refusing`), and a held control keeps the focus, so a focus still inside the form stays
+  // where it is: on the pressed control, or where the reader moved it in the form. A control that
+  // disabled itself under the focus meanwhile gets the focus back once it is enabled again. A
+  // body drawn again after the press - the host took the card that wrote out of the page - holds
+  // no pressed control, and takes the focus the press owes onto Answer, the press the refusal's
+  // next step names, unless the reader has put the focus elsewhere; a pressed control no longer
+  // in the page stands for the same kind of control in the form: Answer, or the answer field.
+  // Another card of the same ask on the page shows the refusal and takes no focus. An answer that
+  // lands leaves the focus where the hand-off put it, as every answered form does.
   useEffect(() => {
     if (pending) return;
     const pressed = handedOffFrom.current;
     handedOffFrom.current = null;
     if (formRefusal === null || !takeFormRefusalFocus(formRef.current)) return;
+    if (pressed === null && formRef.current?.contains(document.activeElement) === true) return;
     if (pressed === null && !focusIsFreeFor(formRef.current)) return;
     const control =
       pressed?.isConnected === true

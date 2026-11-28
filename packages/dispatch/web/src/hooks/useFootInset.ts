@@ -40,8 +40,10 @@ import { type RefObject, useLayoutEffect } from "react";
  *     thread's and a phone reply's in the Conversation, and a phone margin thread's (`ThreadCard`'s
  *     composer frame), all through `MentionComposer`. From `sm` up the docked composer sticks to
  *     the top and counts nothing.
- *   - The issues table's selection bar from `sm` up (`IssueTableSelection`). Below `sm` it sits
- *     under the header and counts nothing.
+ *   - The shared selection bar from `sm` up (`SelectionBar`), over the issues table's and the
+ *     Inbox's marked rows. Below `sm` it sits under the header and counts nothing. The issues
+ *     table's publishes its band's upper edge too (`useFootInset`'s `topProperty`), the room the
+ *     table keeps at its end for it.
  *   - The margin's sheet below `xl` while it is collapsed (`MarginSheet`).
  *   - The Agents page's broadcast composer, sticky to the foot of the page's scroll
  *     (`AgentsPage`), wherever it is on screen, stuck or resting at the end of the list: the
@@ -224,7 +226,7 @@ import { type RefObject, useLayoutEffect } from "react";
  *   marked, and again after a window resize, once the inline value is removed. The document's
  *   scroller, the element that carries `data-document-scroll`, always takes the room that way, as
  *   padding: a page sized to the window reads main's bottom padding as the room it keeps at the
- *   foot - the issues table's box is the window less that padding (`issues-table-layout.ts`) - so
+ *   foot - the issues table's box is the window less that padding (`components/table-layout.ts`) - so
  *   a spacer there would lengthen the document under the box instead, and each scroll to the end
  *   and the measure after it would grow the box by that scroll. Its box grows with the room, or
  *   the page it holds gives way to it, and either way its foot stays 0.
@@ -355,6 +357,12 @@ export const MARK_ATTRIBUTE = "data-foot-clearance";
 /** The custom property that holds a scroller's end room, on its own inline style. */
 export const CLEARANCE_PROPERTY = "--foot-clearance";
 
+/** The event the hook fires on the document element each time it writes or unsets a page
+ *  element's `topProperty` (`useFootInset`). The room the page keeps by that property resizes
+ *  nothing a `ResizeObserver` watches, so what is laid out against that room listens for this:
+ *  the issues table's box fits its height to it again (`components/table-layout.ts`). */
+export const FOOT_TOP_EVENT = "foot-top-change";
+
 /** The attribute by which the page states, on `<main>` or, in the new issue page's frame, on the
  *  frame's column, that the document scrolls that element's content (`FOOT_LAYERS` says why the
  *  hook cannot tell, and why the frame's room goes in its column). */
@@ -416,6 +424,24 @@ function floorOf(element: Element): number {
   if (floor === null) return 0;
   const size = Number(floor[1]);
   return floor[2] === "px" ? size : size * remPixels();
+}
+
+/** Reads a float's box and floor, or drops it if it has no height. Reports whether it changed. */
+function measureFloat(floats: Map<Element, Float>, element: Element): boolean {
+  const { height, left, right } = element.getBoundingClientRect();
+  if (height <= 0) return floats.delete(element);
+  const floor = floorOf(element);
+  const held = floats.get(element);
+  if (
+    held?.height === height &&
+    held.floor === floor &&
+    held.left === left &&
+    held.right === right
+  ) {
+    return false;
+  }
+  floats.set(element, { floor, height, left, right });
+  return true;
 }
 
 /** The band of a float while the property it reads holds `inset`: on its floor, or `gap` above
@@ -500,10 +526,20 @@ function footHeldAbove(scroller: HTMLElement): PageBand | undefined {
 
 /** Writes `pixels` to `property` in `style` as `${pixels}px`, or removes the property while
  *  `pixels` is 0 (`setProperty` with an empty value removes it), and leaves a property that
- *  already holds that alone. */
-function writePixels(style: CSSStyleDeclaration, property: string, pixels: number): void {
+ *  already holds that alone. Answers whether it wrote. */
+function writePixels(style: CSSStyleDeclaration, property: string, pixels: number): boolean {
   const value = pixels === 0 ? "" : `${pixels}px`;
-  if (style.getPropertyValue(property) !== value) style.setProperty(property, value);
+  if (style.getPropertyValue(property) === value) return false;
+  style.setProperty(property, value);
+  return true;
+}
+
+/** Writes a page element's `topProperty` on the document element (`writePixels`) and, where that
+ *  changed it, fires `FOOT_TOP_EVENT` there, so what is laid out against the room the property
+ *  gives is laid out again in the same task, before anything reads it. */
+function writeTop(property: string, pixels: number): void {
+  const root = document.documentElement;
+  if (writePixels(root.style, property, pixels)) root.dispatchEvent(new Event(FOOT_TOP_EVENT));
 }
 
 /** The scroller under a point of a float, as `scrollerUnder` finds it: the scroller, its foot
@@ -711,21 +747,41 @@ function standsInRoom(scroller: HTMLElement, room: number): boolean {
 }
 
 /**
+ * Reads the box of every held float again (`measureFloat`) and, where one changed, places the
+ * floats anew (`publishFloats`), since a float's `ResizeObserver` can arrive after the frame that
+ * runs a pass. In WebKit the status corner's box went to 0 as the selection bar went, before its
+ * observer ran, and a pass that read the corner where it was placed gave `main` 42px of end room
+ * for it, which the reader then stood in, so the room stayed (`standsInRoom`).
+ */
+function measureHeldFloats(): void {
+  let changed = false;
+  for (const floats of layerFloats.values()) {
+    for (const element of floats.keys()) {
+      if (measureFloat(floats, element)) changed = true;
+    }
+  }
+  if (changed) placedFloats = publishFloats();
+}
+
+/**
  * One pass over the scrollers under the floats (`FOOT_LAYERS` says what those are and why each
- * part holds). It finds the scroller under each point of each float and the floats found over
- * each scroller, and gives each scroller whose clearance is more than 0 its end room. Room a
- * scroller would lose - all it holds, where the pass does not find it, or the part above what it
- * now needs - it keeps whole while the reader stands in that part (`standsInRoom`), and every
- * other scroller marked before that it does not find it unmarks. After a window resize it
- * unmarks every scroller first, so each mark it keeps is read afresh. It reads every box before
- * it writes anything, and between unmarking and marking a scroller it reads only styles, so the
- * browser never lays out a scroller without its end room and clips a scroll at its end. It
- * then listens, or stops, as `listenWhileNeeded` says.
+ * part holds). It first reads every held float's box again (`measureHeldFloats`), so it works
+ * from each float as it is now, never as the last `publish` placed it. It then finds the scroller
+ * under each point of each float and the floats found over each scroller, and gives each scroller
+ * whose clearance is more than 0 its end room. Room a scroller would lose - all it holds, where
+ * the pass does not find it, or the part above what it now needs - it keeps whole while the
+ * reader stands in that part (`standsInRoom`), and every other scroller marked before that it
+ * does not find it unmarks. After a window resize it unmarks every scroller first, so each mark
+ * it keeps is read afresh. Once the floats are placed it reads every box before it writes
+ * anything, and between unmarking and marking a scroller it reads only styles, so the browser
+ * never lays out a scroller without its end room and clips a scroll at its end. It then listens,
+ * or stops, as `listenWhileNeeded` says.
  * The document's scroller that holds an element sticky to its foot the spacer lands above takes
  * its room above that element (`footHeldAbove`), from that element's top.
  */
 function clearScrollers(): void {
   clearFrame = 0;
+  measureHeldFloats();
   const screen = window.innerHeight;
   const gap = remPixels();
   const found = new Map<HTMLElement, FoundScroller & { readonly floats: Band[] }>();
@@ -773,6 +829,50 @@ function clearScrollers(): void {
   }
   for (const [scroller, taken] of next) if (!kept.has(scroller)) mark(scroller, taken);
   listenWhileNeeded();
+  for (const waiting of afterPass.splice(0)) waiting();
+}
+
+/** What waits for the end of the pass that is asked for (`afterFootPass`). */
+const afterPass: (() => void)[] = [];
+
+/**
+ * Runs `settled` once the pass that is asked for now has given every marked scroller its end room,
+ * or at once where no pass is pending. The selection bar's hand-off waits on this before it lands:
+ * the bar's going gives the room its foot had back to the list in that pass, so the box a landing
+ * is measured against is the one the pass leaves (`components/SelectionBar.tsx`).
+ */
+export function afterFootPass(settled: () => void): void {
+  if (clearFrame === 0) {
+    settled();
+    return;
+  }
+  afterPass.push(settled);
+}
+
+/**
+ * Runs the foot pass at once (`clearScrollers`, which first reads the boxes of the held floats
+ * again), cancels any queued frame, and reports whether any scroller's end room changed. The
+ * selection bar's hand-off calls this before fitting the list and again after the landing
+ * scrolls the list. The first pass drops floats that no longer have a box. The second can
+ * release room that the list's scroll kept at its end, before the first painted frame.
+ */
+export function footPassNow(): boolean {
+  if (clearFrame !== 0) cancelAnimationFrame(clearFrame);
+  const before = new Map(marks);
+  clearScrollers();
+  if (marks.size !== before.size) return true;
+  for (const [scroller, now] of marks) {
+    const prev = before.get(scroller);
+    if (
+      prev === undefined ||
+      prev.way !== now.way ||
+      prev.room !== now.room ||
+      (prev.way === "padding" && now.way === "padding" && prev.own !== now.own)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Asks for a pass at the next animation frame, once however often it is asked. */
@@ -831,17 +931,15 @@ function followFloats(placed: readonly PlacedFloat[]): void {
  * Publishes every layer's property, from the bottom up (`FOOT_LAYERS` says what each holds). The
  * obstacles start as the page bands. For each layer that has a property, it chooses that property
  * for the floats of the layer above (`freeInset`), writes it, and adds those floats' bands at that
- * property to the obstacles of the layers higher up. The gap is 1rem. Then it holds every float
- * at the properties it has just chosen, for the scrollers under the floats, and asks for a pass
- * over them while a float has a box, or runs one at once as the last float goes, which takes the
- * room the reader is out of (`followFloats`).
+ * property to the obstacles of the layers higher up. The gap is 1rem. Returns the placed
+ * floats for the pass over the scrollers below them.
  *
  * It measures nothing. A published property moves the floats that read it, but the hook places a
  * float's band from that property, not from where the float is. No page element reads a layer's
  * property, so a published one moves none. End room in a scroller can move a page element the
  * scroller holds that is not fixed: that is why a scroller has a ceiling (`FOOT_LAYERS`).
  */
-function publish(): void {
+function publishFloats(): PlacedFloat[] {
   const style = document.documentElement.style;
   const gap = remPixels();
   const screen = window.innerHeight;
@@ -858,7 +956,12 @@ function publish(): void {
       placed.push({ band, element, left: float.left, right: float.right });
     }
   }
-  followFloats(placed);
+  return placed;
+}
+
+/** Publishes and schedules the usual foot pass, or runs it at once if the last float went. */
+function publish(): void {
+  followFloats(publishFloats());
 }
 
 /**
@@ -884,15 +987,26 @@ function publish(): void {
  * parent element itself, or, where that is `display: contents` and has no box, the nearest
  * ancestor that has one, found again at each measure, since a resize can change which that is.
  *
- * A float is measured only when its own size changes or the window resizes, and the hook holds
- * its height, its floor (`--foot-floor`) and its left and right edges, read again at each
- * measure, since a window resize can cross a breakpoint that changes the floor and moves the
- * edges. A float with no box (height 0) counts nothing.
+ * A float is measured when its own size changes, when the window resizes, and at the start of
+ * each pass over the scrollers (`clearScrollers`). The hook reads its height, floor
+ * (`--foot-floor`) and left and right edges each time: a resize can cross a breakpoint that
+ * changes the floor or edges.
+ * A float with no box (height 0) counts nothing.
+ *
+ * `topProperty`, given for a page element, names a property the hook writes on the document
+ * element at each measure: the upper edge of the element's band, how far above the screen's bottom
+ * edge its top stands, while it counts, and unset while it counts nothing or is no longer a foot
+ * element. It is the one property a page element's band publishes for the page to read: the
+ * issues table keeps that much room at its end for its selection bar (`SelectionBar`'s
+ * `SELECTION_BAR_TOP_PROPERTY`). The bar is fixed, so that room moves no foot element, and it
+ * resizes nothing a `ResizeObserver` watches either: each write that changes the property fires
+ * `FOOT_TOP_EVENT` on the document element, on which the table's box fits itself to the room.
  */
 export function useFootInset(
   ref: RefObject<HTMLElement | null>,
   active: boolean,
-  layer: FootLayer
+  layer: FootLayer,
+  topProperty?: string
 ): void {
   useLayoutEffect(() => {
     const element = ref.current;
@@ -949,15 +1063,14 @@ export function useFootInset(
       } else {
         pageBands.delete(element);
       }
+      if (topProperty !== undefined) writeTop(topProperty, pageBands.get(element)?.hi ?? 0);
       publish();
     };
-    const measureFloat = () => {
-      const { height, left, right } = element.getBoundingClientRect();
-      if (height > 0) floats.set(element, { floor: floorOf(element), height, left, right });
-      else floats.delete(element);
+    const measureLayerFloat = () => {
+      measureFloat(floats, element);
       publish();
     };
-    const measure = layer === "page" ? measurePage : measureFloat;
+    const measure = layer === "page" ? measurePage : measureLayerFloat;
     sizes.observe(element);
     window.addEventListener("resize", measure);
     measure();
@@ -968,7 +1081,8 @@ export function useFootInset(
       cancelAnimationFrame(frame);
       pageBands.delete(element);
       floats.delete(element);
+      if (topProperty !== undefined) writeTop(topProperty, 0);
       publish();
     };
-  }, [active, layer, ref]);
+  }, [active, layer, ref, topProperty]);
 }

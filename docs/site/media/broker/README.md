@@ -108,9 +108,10 @@ request's command ran with the secret.
 
 The current `inbox-credential-request.png`, `credential-request.png` and
 `credential-request-approved.png` were taken instead from Dispatch's browser harness, which runs
-the real broker page (`packages/dispatch/e2e/run-broker.sh`), at this config's viewport and scale,
-on a machine without the `sudo` the rig's agent machine needs; their request is a pod's request
-for the harness's `ALICE_DEPLOY_KEY`. A rig run replaces them with the `DEMO_API_KEY` request.
+the real broker page (`packages/dispatch/e2e/run-broker.sh`), at the viewport and scale
+`screenshots.spec.ts` sets (1280 by 800 at device scale factor 2), on a machine without the `sudo`
+the rig's agent machine needs; their request is a pod's request for the harness's
+`ALICE_DEPLOY_KEY`. A rig run replaces them with the `DEMO_API_KEY` request.
 
 ## The walkthrough
 

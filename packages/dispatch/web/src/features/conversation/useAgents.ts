@@ -1,9 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { isAgentListRefilling } from "../../api/client";
 import type { Agent } from "../../api/types";
-import { agentsQuery, EMPTY_AGENTS, useRegistryPolling } from "../refs/agent-registry";
+import {
+  agentsQuery,
+  EMPTY_AGENTS,
+  useAgentListSettled,
+  useRegistryPolling,
+} from "../refs/agent-registry";
 
 /**
  * The agent registry list. `agents` keeps the rows of the last successful read through a failed
@@ -14,6 +18,9 @@ import { agentsQuery, EMPTY_AGENTS, useRegistryPolling } from "../refs/agent-reg
  * list gave through a failed refresh, as the live view's header and transcript line do from the
  * kept rows. `refilling` is the failed read's reason when Envoy answered that its list is
  * refilling (`isAgentListRefilling`), which a view says in place of an unreachable listener.
+ * Each field says what the list's reads last settled, as the registry's do (`useAgentRegistry`):
+ * `isPending` holds only until a first read settles, and a failure - `isError`, `error` and
+ * `refilling` - stands through every later read until one succeeds.
  * `refreshWhileOpen` keeps the list fresh through the shell's one poller (`AgentRegistryPoller`)
  * while this caller is mounted and enabled, instead of an interval of its own.
  */
@@ -30,7 +37,7 @@ export function useAgents(
   refilling: boolean;
 } {
   useRegistryPolling(enabled && refreshWhileOpen);
-  const { data, error, isError, isPending, refetch } = useQuery({
+  const { data, error, errorUpdateCount, refetch, status } = useQuery({
     ...agentsQuery(),
     enabled,
     // The poller refreshes what a polled caller reads; refetching it again on mount would put
@@ -38,19 +45,25 @@ export function useAgents(
     refetchOnMount: !refreshWhileOpen,
   });
   const agents = data ?? EMPTY_AGENTS;
-  const current = !isError && data !== undefined;
-  const refilling = isError && isAgentListRefilling(error);
+  // What the reads last settled, rather than what a read is doing now (`useAgentListSettled`): a
+  // view that read a list gone back to pending as no answer yet would put its loading state in
+  // place of the failure it said, and say the failure again when the read lands on it.
+  const { current, failure, isError, refilling } = useAgentListSettled({
+    error,
+    errorUpdateCount,
+    status,
+  });
 
   return useMemo(
     () => ({
       agents,
       current,
-      error: error instanceof Error ? error.message : isError ? "network error" : undefined,
+      error: isError ? (failure instanceof Error ? failure.message : "network error") : undefined,
       isError,
-      isPending,
+      isPending: !current && !isError,
       refetch,
       refilling,
     }),
-    [agents, current, error, isError, isPending, refetch, refilling]
+    [agents, current, failure, isError, refetch, refilling]
   );
 }

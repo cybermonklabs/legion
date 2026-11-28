@@ -26,6 +26,7 @@ import {
   putIssueRoleHolders,
 } from "./api";
 import { runDispatch } from "./dispatch-cli";
+import { listTrigger } from "./filters";
 import { inboxRow } from "./inbox-pane";
 import { gotoIssue, openDetails } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
@@ -137,7 +138,7 @@ async function expectPageControl(
   await page.goto(`/issues/${key}`);
   const header = page.getByTestId("issue-header");
   await expect(
-    header.getByRole("combobox", { name: `Priority of ${key}` }),
+    listTrigger(header, `Priority of ${key}`),
     `the priority control of ${key}'s header`
   ).toHaveCount(1);
   await expect(header, `${key}'s priority control`).toContainText(inherited(level, from));
@@ -202,7 +203,7 @@ test("a sub-issue shows the priority it inherits, and the issue it comes from, o
     const priorityCell = page
       .locator(`[data-issue-row="${tree.child}"]`)
       .getByRole("cell")
-      .filter({ has: page.getByRole("combobox", { name: `Priority of ${tree.child}` }) });
+      .filter({ has: listTrigger(page, `Priority of ${tree.child}`) });
     await expect(priorityCell, "the child's Priority cell").toContainText(
       inherited("P0", tree.root)
     );

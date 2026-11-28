@@ -3,6 +3,7 @@ import {
   agentGroupToggle,
   agentRow,
   type FakeSession,
+  openAgentFilters,
   openAgents,
   pickAgentFilter,
   setLiveSessions,
@@ -10,6 +11,7 @@ import {
   toggleAgentGroup,
 } from "./agents";
 import { createAsk, createComment, createIssue, createProject } from "./api";
+import { modKey } from "./keyboard-palette";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -147,7 +149,7 @@ test("the query survives a reload through the page's address, / focuses the box 
     await expect(page.getByRole("searchbox", { name: "Search agents" })).toHaveValue("scrum");
     await expect(page.getByRole("dialog", { name: "Search" })).toHaveCount(0);
     // The page's actions and Dispatch-wide hits stay one key away.
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
   } finally {
     await alice.close();
@@ -234,6 +236,8 @@ test("a ?machine= no live session reports hides every row honestly, and the Mach
     // live session reports the machine.
     await page.goto("/agents?machine=ended-host");
     await expect(page.getByRole("heading", { name: "Agents", level: 1 })).toBeVisible();
+    // The three filters are in the panel the row's one **Filter** trigger opens.
+    await openAgentFilters(page);
     const machine = agentFilter(page, "machine");
     const titles = shownAgentRows(page).locator("h2");
 

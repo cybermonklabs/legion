@@ -8,6 +8,7 @@ import {
 import { setLiveSessions } from "./agents";
 import { getArtifactText } from "./api";
 import { documentEditor, openSpec, placeCaret } from "./editor";
+import { modKey } from "./keyboard-palette";
 import {
   commentField,
   highlightedRow,
@@ -269,7 +270,7 @@ test("a space or Escape closes the picker over the typed words, a query nothing 
     // Ctrl+K reference dialog is imported nowhere" holds that the dialog's module is gone.
     await field.fill("");
     await openRefPicker(field, "@ca");
-    await field.press("Control+k");
+    await field.press(`${await modKey(page)}+k`);
     await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
     await expect(page.getByRole("combobox", { name: "Search" })).toBeFocused();
     await expect(page.getByRole("dialog")).toHaveCount(1);

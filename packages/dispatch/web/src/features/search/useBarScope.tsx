@@ -1,6 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useState } from "react";
-import { useLocation } from "react-router-dom";
 
+import { usePageAddress } from "../../lib/page-address";
 import { borderDefault, textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { useIssuePageChoice } from "../issue-page/choice";
@@ -49,7 +49,7 @@ export function useBarScope(
    *  alone, since with words in it that key rubs out a letter. */
   query: string
 ): BarScope {
-  const location = useLocation();
+  const address = usePageAddress();
   // Where the reader draws today's page, an address of the new issue page alone is in no issue
   // or project, as on `main` (`unknownToShell`), and each value the page gives below says so.
   const newPage = useIssuePageChoice()[0] === "outline";
@@ -58,24 +58,24 @@ export function useBarScope(
   // anywhere does. The route reads it to tell which issue a query that is a bare number names,
   // and a reader who wants this project alone adds its chip.
   const [pageProject] = useState(() =>
-    unknownToShell(location.pathname, newPage) ? undefined : routeProjectOf(location.pathname)
+    unknownToShell(address.pathname, newPage) ? undefined : routeProjectOf(address.pathname)
   );
   const [blockScope] = useState(scopeAtCursor);
-  const [projectScope] = useState(() => scopeOfProject(location.pathname, newPage));
+  const [projectScope] = useState(() => scopeOfProject(address.pathname, newPage));
   const [scopeLevel, setScopeLevel] = useState<BarScopeLevel>("page");
   // The issues the issue list had selected as this open was made, so no render of the list
   // behind the bar moves a chip the reader is looking at.
   const [selectedIssues] = useState(readSelectedIssues);
   // The document page's own read, under the key that page uses, so the chip names the document
   // by its name with no request of its own.
-  const [documentRoute] = useState(() => documentRouteOf(location.pathname, location.search));
+  const [documentRoute] = useState(() => documentRouteOf(address.pathname, address.search));
   // The issue the bar was opened over, which is what an offer acts on while the chip is at page
   // level.
-  const [pageIssue] = useState(() => issueOfPage(location.pathname, location.search, newPage));
+  const [pageIssue] = useState(() => issueOfPage(address.pathname, address.search, newPage));
   const documentName = useProjectArtifact(documentRoute).data?.name;
   const pageScope = scopeOfPage(
-    location.pathname,
-    location.search,
+    address.pathname,
+    address.search,
     documentName,
     selectedIssues,
     newPage
@@ -101,10 +101,10 @@ export function useBarScope(
       }
       return false;
     },
-    // What the bar will act on, above the box, with the two keys that move it. The filter chips
-    // below the box are another thing and read as one: they say which items the words search,
-    // each with a Remove control of its own, while this says what the bar acts on and is moved
-    // by Tab and Backspace alone.
+    // What the bar will act on, above the row of controls, with the two keys that move it. The
+    // filter chips in that row are another thing and read as one: they say which items the
+    // words search, each with a Remove control of its own, while this says what the bar acts
+    // on and is moved by Tab and Backspace alone.
     header:
       scope === undefined ? null : (
         <div

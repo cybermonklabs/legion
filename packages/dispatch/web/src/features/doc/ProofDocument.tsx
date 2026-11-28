@@ -1303,27 +1303,32 @@ export function ProofDocument({
             aria-label="Block references"
             className="pointer-events-none absolute top-0 right-0 z-10 w-8"
           >
-            {blockReferencesQuery.data
-              .filter((block) => block.references.comments + block.references.asks > 0)
-              .map((block) => {
-                const count = block.references.comments + block.references.asks;
-                return (
-                  <button
-                    aria-label={`${count} references on block`}
-                    className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
-                    data-block-references={block.id}
-                    key={block.id}
-                    onClick={() => {
-                      marginRef.current.filterToBlock(block.id);
-                      focusInEditor(() => editorRef.current?.focusBlock(block.id));
-                    }}
-                    style={{ top: `${blockPlacements.get(block.id)?.top ?? 0}px` }}
-                    type="button"
-                  >
-                    {count}
-                  </button>
-                );
-              })}
+            {/* One item per block, each button placed against the aside at its block's height:
+                the items are static, so the aside stays the box each button is placed in. */}
+            <ul>
+              {blockReferencesQuery.data
+                .filter((block) => block.references.comments + block.references.asks > 0)
+                .map((block) => {
+                  const count = block.references.comments + block.references.asks;
+                  return (
+                    <li key={block.id}>
+                      <button
+                        aria-label={`${count} references on block`}
+                        className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
+                        data-block-references={block.id}
+                        onClick={() => {
+                          marginRef.current.filterToBlock(block.id);
+                          focusInEditor(() => editorRef.current?.focusBlock(block.id));
+                        }}
+                        style={{ top: `${blockPlacements.get(block.id)?.top ?? 0}px` }}
+                        type="button"
+                      >
+                        {count}
+                      </button>
+                    </li>
+                  );
+                })}
+            </ul>
           </aside>
         ) : null}
       </article>

@@ -11,6 +11,7 @@
 import { expect } from "@playwright/test";
 
 import { answerAsk, createAsk, createIssue, createProject } from "./api";
+import { modKey } from "./keyboard-palette";
 import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
 import { stubbed } from "./stub/stub-test";
 
@@ -138,7 +139,7 @@ groupTest("each palette group is named by its owner row @pr", async ({ page, sce
   await page.goto("/");
   await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
   await page.locator("body").focus();
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   await page.getByRole("combobox", { name: "Search" }).fill("conversation");
   const group = page.getByRole("group", { name: new RegExp(`^${scene.issue}: `) });
   await expect(group).toBeVisible();

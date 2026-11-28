@@ -22,13 +22,13 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { createComment, createIssue, createProject, editComment, getArtifactText } from "./api";
 import { blockId, documentEditor, openSpec, placeCaret } from "./editor";
+import { settledScrollTop } from "./frames";
 import {
   expectHeldAndResponsive,
   failMermaidWorkersOnCall,
   holdMermaidWorkers,
   holdWorkerSource,
   recordMermaidWorkers,
-  settledScrollTop,
   withoutScrollAnchoring,
 } from "./mermaid-helpers";
 import { type BrowserContext, expect, type Locator, type Page, test } from "./test";

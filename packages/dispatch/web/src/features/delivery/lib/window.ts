@@ -33,7 +33,9 @@ export const PRESET_LABELS: Record<WindowPreset, string> = {
   "84d": "Last 84 days",
 };
 
-function isPreset(value: string | null): value is WindowPreset {
+/** Whether `value` names one of the presets (`WINDOW_PRESETS`): read from the address, and from
+ *  the Window list's options (`WindowControl`). */
+export function isPreset(value: string | null): value is WindowPreset {
   return WINDOW_PRESETS.some((preset) => preset === value);
 }
 
@@ -71,6 +73,24 @@ export function readWindow(params: URLSearchParams): WindowChoice {
   }
   const preset = params.get("window");
   return { kind: "preset", preset: isPreset(preset) ? preset : DEFAULT_WINDOW_PRESET };
+}
+
+/** The brush window a drag on the chart set, as the address names its two ends (`ws`, `we`), or
+ *  none. Both ends are times and the end is no earlier than the start; any other pair - one end
+ *  alone, a word that is no time, an end before its start - would leave no merge inside it and
+ *  filter every pull request out of the chart, the list and the count, so it is no brush and the
+ *  page shows its whole window. Takes the two texts rather than the parameters so a caller can
+ *  memoize on them. */
+export function readBrush(
+  start: string | null,
+  end: string | null
+): { start: string; end: string } | null {
+  if (start === null || end === null) return null;
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs
+    ? { start, end }
+    : null;
 }
 
 /** The live socket's window for a choice: a preset by its days, whose end Dispatch keeps at the

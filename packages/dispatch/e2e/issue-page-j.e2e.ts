@@ -39,7 +39,7 @@ import {
   withOpenedAsk,
 } from "./api";
 import { expectTimeout } from "./expect-timeout";
-import { nextFrames } from "./frames";
+import { nextFrames, settledScrollTop } from "./frames";
 import {
   seedNoChildren,
   seedNoSummary,
@@ -124,7 +124,6 @@ import { withIssuePage } from "./issue-page-option";
 import { IPHONE_13 } from "./issue-page-p";
 import { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
 import { verificationCheck } from "./issue-page-v";
-import { settledScrollTop } from "./mermaid-helpers";
 import { settledValue } from "./settled";
 import { expect, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";

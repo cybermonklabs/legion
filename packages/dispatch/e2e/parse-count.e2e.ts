@@ -29,6 +29,7 @@ import {
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { modKey } from "./keyboard-palette";
 import {
   countParses,
   type ParseCounts,
@@ -369,9 +370,12 @@ function surfaces(seeded: Seeded): Surface[] {
     {
       name: "the search palette",
       show: async (page) => {
+        // The key waits for the Inbox's heading: pressed as the page loads, before the shell
+        // has registered its keys, it can open nothing.
         await page.goto("/");
+        await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
         await page.locator("body").focus();
-        await page.keyboard.press("Control+k");
+        await page.keyboard.press(`${await modKey(page)}+k`);
         const search = page.getByRole("combobox", { name: "Search" });
         await search.fill(searchTerm);
         await expect(

@@ -49,10 +49,13 @@ export function recordCommits<Host>(draw: () => string): Commits<Host> {
   };
 }
 
-/** What a badge picker draws - a `<select>` laid over its badge, as `PriorityEditor` and
- *  `AssigneeControl` draw one: the value the select holds and the text of the badge before it. */
-export function drawnPick(select: HTMLSelectElement): string {
-  return `${select.value} ${select.previousElementSibling?.textContent}`;
+/** What a badge picker draws - the shared list's single pick whose trigger shows a badge, as
+ *  `PriorityEditor` and `AssigneeControl` draw one: what the trigger's name says after the list's
+ *  name, as a `<select>` says its value, and the text the trigger shows. */
+export function drawnPick(trigger: HTMLElement): string {
+  const [, ...shown] = trigger.getAttribute("aria-labelledby")?.split(" ") ?? [];
+  const named = shown.map((id) => document.getElementById(id)?.textContent).join(" ");
+  return `${named} ${trigger.textContent}`;
 }
 
 /** TanStack Query's notifications to the observers of its caches, held back from now on. */

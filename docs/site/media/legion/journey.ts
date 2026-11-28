@@ -3,6 +3,8 @@
 // section's screenshots (`shots.config.ts` beside this file) and its narrated walkthrough
 // (`../walkthroughs/legion-issue-journey.ts`) show what a real journey leaves in Dispatch. Every
 // name, key, commit and URL is example data.
+import type { Page } from "@playwright/test";
+
 import { dispatchApi, expect, fakeEnvoy } from "../harness";
 
 export const PROJECT = "SHOP";
@@ -34,6 +36,9 @@ export function agent(key: string, role: AgentRole) {
 export interface Example {
   readonly title: string;
   readonly spec: string;
+  /** The requirements the human who filed the issue marks in its spec, above the acceptance
+   *  criteria that check them (`markRequirements`). */
+  readonly requirements: string;
   /** The design the architect adds to the spec, with one decision block. */
   readonly design: string;
   /** The decision block's id and the option the human picks. */
@@ -58,6 +63,20 @@ A signed-in shopper can save the cart they are building and pick it up again lat
 - A shopper with items in their cart can save it from the cart page.
 - A saved cart opens from their account on another device, with the same items and quantities.
 - A saved cart untouched for 30 days is removed, and the shopper is emailed a week before.
+`,
+  requirements: `## Requirements
+
+:::requirement{#r1}
+A signed-in shopper saves the cart they are building, and the saved cart holds every line of it and its quantity.
+:::
+
+:::requirement{#r2}
+A saved cart belongs to the shopper's account rather than to the device that saved it, so any device they sign in on opens it.
+:::
+
+:::requirement{#r3}
+A saved cart nobody has touched for 30 days is removed, and the shopper is told a week before it goes.
+:::
 `,
   design: `## Design
 
@@ -93,6 +112,16 @@ A shopper sees when their order will arrive before they pay.
 
 - Each shipping option at checkout shows the date the order would arrive.
 - Choosing another shipping option shows that option's date.
+`,
+  requirements: `## Requirements
+
+:::requirement{#r1}
+Checkout shows a delivery date beside every shipping option, before the shopper pays.
+:::
+
+:::requirement{#r2}
+Each date is the one that shipping option would deliver on, so a shopper who picks another option sees that option's date.
+:::
 `,
   design: `## Design
 
@@ -153,6 +182,25 @@ export async function file(example: Example): Promise<Tracked> {
     title: example.title,
   });
   return { key: issue.key, spec: issue.primary_artifact_id };
+}
+
+/** The human who filed the issue marks its requirements, above the acceptance criteria that
+ *  check them, and waits for the Spec tab's list to hold every one: it is read out of the block
+ *  index that the accepted write fills. The Spec tab lists a spec's requirements under the
+ *  document (`web/src/features/issue/SpecRequirements.tsx`), and a spec that marks none shows an
+ *  empty panel there, which a screenshot and a walkthrough both refuse. Each requirement is
+ *  flagged `has no check`: the example issues carry no Verification document, and the issue
+ *  page's documentation describes that flag. */
+export async function markRequirements(issue: Tracked, example: Example): Promise<void> {
+  const api = await dispatchApi();
+  await api.editArtifact(issue.spec, {
+    ops: [{ before: "heading:Acceptance criteria", markdown: example.requirements, op: "insert" }],
+    summary: "Mark the requirements",
+  });
+  const marked = example.requirements.match(/^:::requirement\{/gm)?.length ?? 0;
+  await expect
+    .poll(async () => (await api.getIssueCoverage(issue.key)).requirements?.length ?? 0)
+    .toBe(marked);
 }
 
 /** The handover: a human labels the issue `legion` and sets it to todo. */
@@ -247,6 +295,10 @@ export async function setStatus(issue: Tracked, status: string): Promise<void> {
   const api = await dispatchApi();
   await api.patchIssue(issue.key, { status }, DAEMON);
 }
+
+/** The issue header's Status: the shared list's single pick, whose trigger carries the status it
+ *  shows (`data-issue-status`), as the native select it replaced carried its value. */
+export const statusOf = (page: Page) => page.locator("[data-issue-status]");
 
 /** The reviewer approved, so on the default steps the issue is in accepting: the architect posts
  *  its acceptance of the reviewed head and signs off, and, the acceptance being the task's last

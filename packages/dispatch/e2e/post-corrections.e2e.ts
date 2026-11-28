@@ -22,6 +22,7 @@ import {
   seedMessageThread,
   THREAD_SESSION,
 } from "./inbox-threads";
+import { modKey } from "./keyboard-palette";
 import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
@@ -374,7 +375,7 @@ test("an open search palette prints none of a comment its author deletes", async
     await page.goto("/");
     await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
     await page.locator("body").focus();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const box = page.getByRole("combobox", { name: "Search" });
     const dialog = page.getByRole("dialog", { name: "Search" });
     await expect(box).toBeFocused();
@@ -394,7 +395,7 @@ test("an open search palette prints none of a comment its author deletes", async
     await expect(dialog).not.toContainText("window closes at noon", { timeout: 15_000 });
 
     await page.keyboard.press("Escape");
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await expect(box).toBeFocused();
     await box.fill("zarquonpalette");
     // The reopened palette has answered before the absence is read: its "No results" line is

@@ -11,6 +11,7 @@ import { expect } from "@playwright/test";
 import { openAgents } from "./agents";
 import { recordClipboard } from "./clipboard";
 import { openBoard, openInbox, seedBoard, seedInbox } from "./keyboard";
+import { modKey } from "./keyboard-palette";
 import { stubbed } from "./stub/stub-test";
 
 /** Nothing seeded: the two chord rows need a page with the keymap bound, which the Agents page
@@ -154,7 +155,7 @@ inboxTest(
     await expect(page.getByRole("dialog")).toHaveCount(0);
 
     // The search toggle is the one shortcut that still works while typing.
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const search = page.getByRole("dialog", { name: "Search" });
     await expect(search).toBeVisible();
     await page.keyboard.press("Escape");

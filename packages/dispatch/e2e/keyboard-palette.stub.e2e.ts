@@ -18,8 +18,9 @@ import {
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { listTrigger } from "./filters";
 import { selectedRow } from "./inbox-pane";
-import { openIssue, searchPath } from "./keyboard-palette";
+import { modKey, openIssue, searchPath } from "./keyboard-palette";
 import { stubbed } from "./stub/stub-test";
 
 /** One issue per row, so each keeps the title it was written with, and the second project the
@@ -118,7 +119,7 @@ test("a failed palette search keeps its Retry action @pr", async ({ page, scene 
   // timers, which the page's own clock fires.
   await page.clock.install();
   await openIssue(page, scene.failedSearch, "Failed palette search");
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   const dialog = page.getByRole("dialog", { name: "Search" });
   const input = page.getByRole("combobox", { name: "Search" });
   await input.fill("astrolabe");
@@ -228,7 +229,7 @@ inboxTest(
     // and the movement rows are still absent while the row's own action is offered.
     await page.keyboard.press("j");
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", scene.askId);
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
 
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
@@ -265,7 +266,7 @@ boardTest(
     await page.keyboard.press("j");
     await expect(card).toBeFocused();
 
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
@@ -297,7 +298,7 @@ test("a fresh open starts on an empty query, so it lists the new page's actions 
   await page.goto(`/projects/${scene.project}/issues`);
   await expect(page.getByRole("heading", { level: 1, name: "Core" })).toBeVisible();
   await page.locator("body").focus();
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   await input.fill("astrolabe");
   await expect(dialog.getByRole("option")).toHaveCount(1);
   await page.keyboard.press("Escape");
@@ -315,7 +316,7 @@ test("a fresh open starts on an empty query, so it lists the new page's actions 
       .getByRole("heading", { level: 1, name: "Astrolabe calibration" })
   ).toBeVisible();
   await page.locator("body").focus();
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   await expect(input).toHaveValue("");
   await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
 });
@@ -332,7 +333,7 @@ listTest(
     await page.keyboard.press("j");
     await expect(row).toBeFocused();
 
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
@@ -361,7 +362,7 @@ inboxTest(
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", scene.askId);
     await row.focus();
     await page.keyboard.press("x");
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
 
     const dialog = page.getByRole("dialog", { name: "Search" });
@@ -369,7 +370,7 @@ inboxTest(
     const snooze = actions.getByRole("option", {
       name: "Snooze the focused ask, or every selected ask",
     });
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await expect(snooze).toHaveCount(1);
     await expect
       .soft(actions.getByRole("option", { name: "Select or deselect the selected ask" }))
@@ -383,14 +384,14 @@ inboxTest(
     await page.keyboard.press("Escape");
     await expect(row).not.toBeFocused();
     await expect(bar).toContainText("1 selected");
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await expect(snooze).toHaveCount(1);
     await expect.soft(actions.getByRole("option", { name: "Clear the selection" })).toHaveCount(0);
 
     // It runs on the page the palette opened over: the bulk picker takes focus, the mark kept.
     await snooze.click();
     await expect(dialog).toHaveCount(0);
-    await expect(bar.getByRole("combobox", { name: "Snooze selected asks" })).toBeFocused();
+    await expect(listTrigger(bar, "Snooze selected asks")).toBeFocused();
     await expect(bar).toContainText("1 selected");
   }
 );
@@ -404,7 +405,7 @@ test("below xl the margin is the route's own sheet, so Shift+M and its row chang
   const stored = () => page.evaluate(() => localStorage.getItem("dispatch.shell.margin:alice"));
   const before = await stored();
 
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   const dialog = page.getByRole("dialog", { name: "Search" });
   const actions = dialog.getByRole("group", { name: "Actions" });
   await expect(actions.getByRole("option", { name: "Create issue" })).toBeVisible();
@@ -435,7 +436,7 @@ architectureTest(
     await page.keyboard.press("j");
     await expect(row).toBeFocused();
 
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
@@ -462,7 +463,7 @@ test("Keyboard shortcuts is a row that opens its own dialog, and a project is a 
 
   // `Go to project…` is no row of its own: its key opens this same bar, where the projects
   // are rows the reader types their way to, and Enter opens the one they chose.
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   await expect(actions.getByRole("option", { name: "Go to project…" })).toHaveCount(0);
   await page.getByRole("combobox", { name: "Search" }).fill("operations");
   await dialog.getByRole("group", { name: "Projects" }).getByRole("option").click();
@@ -471,7 +472,7 @@ test("Keyboard shortcuts is a row that opens its own dialog, and a project is a 
 
   // A row runs once the bar has closed, so a row that opens another dialog opens it.
   await page.locator("body").focus();
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   await actions.getByRole("option", { name: "Keyboard shortcuts" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
@@ -482,7 +483,7 @@ test("the arrows keep the highlighted row in view when the list is longer than t
   scene,
 }) => {
   await openIssue(page, scene.longList, "Long list");
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   const input = page.getByRole("combobox", { name: "Search" });
   const rows = page
     .getByRole("dialog", { name: "Search" })
@@ -513,7 +514,7 @@ nestedArchitectureTest(
     await page.keyboard.press("j");
     await expect(row).toBeFocused();
 
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
@@ -546,7 +547,7 @@ test("on a short window the palette fits the screen and each highlighted row sho
   ] as const) {
     await page.setViewportSize({ height, width });
     await page.locator("body").focus();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await expect(dialog.getByRole("group", { name: "Actions" })).toBeVisible();
     await expect.soft(dialog, `${width}x${height}`).toBeInViewport({ ratio: 1 });
     // The input names a row as the palette opens, and each ArrowDown moves it on. Each move is
@@ -574,7 +575,7 @@ test("a window that shrinks under an open palette keeps the highlighted row in v
 }) => {
   await page.setViewportSize({ height: 900, width: 1440 });
   await openIssue(page, scene.shrinkingWindow, "Shrinking window");
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   const input = page.getByRole("combobox", { name: "Search" });
   await expect(
     page.getByRole("dialog", { name: "Search" }).getByRole("group", { name: "Actions" })

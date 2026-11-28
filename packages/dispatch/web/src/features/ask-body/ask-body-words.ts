@@ -122,7 +122,6 @@ export const ASK_HAND_ON_WORDS = Object.freeze({
   hand_to: "Hand this question to",
   handed_on_by: "handed on by",
   handing_on: "Handing on…",
-  nobody: "Nobody",
 } as const);
 
 /** Decline to answer, and the dialog it opens. */

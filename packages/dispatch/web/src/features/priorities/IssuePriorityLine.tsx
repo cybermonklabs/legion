@@ -8,7 +8,7 @@ import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
 import { MultiSelect } from "../../components/MultiSelect";
-import { usePageWords } from "../../components/tooltips";
+import { type PageWords, usePageWords, withoutEllipsis } from "../../components/tooltips";
 import {
   dangerText,
   focusVisibleRing,
@@ -55,9 +55,24 @@ export function addPriorityControlName(issueKey: string): string {
  *  none, where it draws "Add a priority" - and "Edit priorities" everywhere else, since there it
  *  adds and takes off alike, as the labels' trigger is named "Edit labels". That is the page's
  *  word `edit_priorities` (`shared-writes.test.ts` holds the two equal), written out here for the
- *  same reason. The hand-offs of Details find the trigger by this name (`usePriorityHandOffs`). */
+ *  same reason. Inside `NoTooltips`, while a write of the line and the reads after it are out,
+ *  the trigger is named for its save instead (`savingPriorityTriggerName`). The hand-offs of
+ *  Details find the trigger by this name (`usePriorityHandOffs`). */
 export function priorityTriggerName(issueKey: string, adds: boolean): string {
   return adds ? addPriorityControlName(issueKey) : "Edit priorities";
+}
+
+/** The name of the picker's trigger on `issueKey`'s line inside `NoTooltips` while a write of the
+ *  line and the reads after it are out, where the trigger draws the page's `saving_priorities`
+ *  ("Saving priorities…") whatever it held, and `words` are the page's words: those words with
+ *  their trailing ellipsis dropped, then the list's `control_name_of` and the issue's key ("Saving
+ *  priorities of CORE-1"), as `labelsControlName` names a saving labels control, so a voice user
+ *  says what they read (WCAG 2.5.3). */
+export function savingPriorityTriggerName(
+  issueKey: string,
+  words: Pick<PageWords, "ANSWER_LINES" | "CONTROL_LABELS">
+): string {
+  return `${withoutEllipsis(words.ANSWER_LINES.saving_priorities)} ${words.CONTROL_LABELS.control_name_of} ${issueKey}`;
 }
 
 /** On a phone, the picker's trigger moves 12 px back over the line's gap and starts its square
@@ -109,10 +124,12 @@ interface Draft {
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their
  * marks and carries no `title`: each priority is a link of its order and title, with the word
- * that it is inherited after it, and the line's own label before them all. There `inRow` draws
- * it as the value of a row of Details, which draws the label: no `Advances` of its own, a line
- * that wraps and cuts no word, and "Add a priority" on the picker's trigger while the issue
- * advances none, which is then named by `addPriorityControlName`.
+ * that it is inherited after it, and the line's own label before them all; and while a write of
+ * the line and the reads after it hold the picker's trigger, the trigger says "Saving
+ * priorities…" (`savingPriorityTriggerName`). There `inRow` draws it as the value of a row of
+ * Details, which draws the label: no `Advances` of its own, a line that wraps and cuts no word,
+ * and "Add a priority" on the picker's trigger while the issue advances none, which is then named
+ * by `addPriorityControlName`.
  */
 export function IssuePriorityLine({
   disabled,
@@ -239,10 +256,17 @@ export function IssuePriorityLine({
   // Its name then begins with the words it draws and ends with the joining word and the issue's
   // key ("Add a priority to CORE-1"), so a voice user says what they read (WCAG 2.5.3 Label in
   // Name). Everywhere else it draws "+" and is named "Edit priorities", as the labels' trigger is
-  // named "Edit labels". `priorityTriggerName` gives both names.
+  // named "Edit labels". Inside `NoTooltips`, while the write and the reads after it hold the
+  // trigger, it says "Saving priorities…" in place of either, as the labels' says "Saving
+  // labels…", and is named by those words (`savingPriorityTriggerName`); `priorityTriggerName`
+  // gives every other name.
   const addWords =
     page !== null && inRow && advances.length === 0 ? page.CONTROL_LABELS.add_priority : null;
-  const triggerName = priorityTriggerName(issue.key, addWords !== null);
+  const savingWords = page !== null && saving ? page : null;
+  const triggerName =
+    savingWords === null
+      ? priorityTriggerName(issue.key, addWords !== null)
+      : savingPriorityTriggerName(issue.key, savingWords);
 
   const picker = (
     <MultiSelect
@@ -251,6 +275,8 @@ export function IssuePriorityLine({
       // `setOpen` is what refuses to reopen until the save has landed, and `aria-disabled` is
       // how the reader is told it is busy without focus being taken away.
       ariaDisabled={saving}
+      // The trigger draws its own look, a square holding "+", so it ends in no chevron.
+      chevron={false}
       disabled={disabled}
       emptyMessage={
         priorities.isPending
@@ -300,7 +326,9 @@ export function IssuePriorityLine({
           +
         </span>
       ) : (
-        <span {...page.pageChrome}>{addWords ?? "+"}</span>
+        <span {...page.pageChrome}>
+          {savingWords === null ? (addWords ?? "+") : savingWords.ANSWER_LINES.saving_priorities}
+        </span>
       )}
     </MultiSelect>
   );

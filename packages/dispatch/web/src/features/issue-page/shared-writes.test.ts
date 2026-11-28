@@ -19,6 +19,7 @@ import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
+import { pickNamed } from "../../__tests__/list-picks";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -384,8 +385,12 @@ test("the four control names are those of today's pages", async () => {
   );
   try {
     const scope = within(view.container);
-    expect(scope.getByRole("combobox", { name: "Assignee of CORE-1" })).toBeInTheDocument();
-    expect(scope.getByRole("combobox", { name: "Repository of CORE-1" })).toBeInTheDocument();
+    expect(
+      scope.getByRole("button", { name: pickNamed("Assignee of CORE-1") })
+    ).toBeInTheDocument();
+    expect(
+      scope.getByRole("button", { name: pickNamed("Repository of CORE-1") })
+    ).toBeInTheDocument();
     expect(
       await scope.findByRole("button", { name: "Edit components of CORE-1" })
     ).toBeInTheDocument();

@@ -30,8 +30,9 @@ export function IconRail({
   project,
   user,
 }: {
-  /** The one number the sidebar's Inbox carries, which is part of the entry's name. */
-  inboxCount: number;
+  /** The one number the sidebar's Inbox carries, which is part of the entry's name: none until
+   *  every read it adds up has answered (`useInboxCount`), and none at zero, as the sidebar's. */
+  inboxCount: number | undefined;
   navigationOpen: boolean;
   onOpenNavigation: () => void;
   /** The project of the issue on the page, which the rail marks as where the reader is. */
@@ -53,7 +54,7 @@ export function IconRail({
       </Link>
       <RailLink
         icon={INBOX_ICON}
-        label={inboxCount === 0 ? "Inbox" : `Inbox ${inboxCount}`}
+        label={inboxCount === undefined || inboxCount === 0 ? "Inbox" : `Inbox ${inboxCount}`}
         to="/"
       />
       <RailLink icon={AGENTS_ICON} label="Agents" to="/agents" />

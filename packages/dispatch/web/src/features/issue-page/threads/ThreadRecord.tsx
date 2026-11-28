@@ -12,7 +12,7 @@ import { DashboardAskBody } from "../../dashboard/DashboardAskBody";
 import { isViewer } from "../../refs/actor";
 import { postDeletion } from "../../refs/post-marks";
 import { EVENT_FRESH } from "../../refs/reference-target";
-import { takesTypedText } from "../../shell/keymap";
+import { takesText } from "../../shell/keymap";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS, THREADS_WORDS } from "../page-words";
@@ -257,10 +257,10 @@ export function OpenedRecord({
         // A `MentionComposer` box takes Escape on its own form and marks it handled, so the
         // page's keys never hear it: the record takes the caret out here, and marks the press
         // handled so the page's Escape does not close the record on it as well. A field holds
-        // the caret where it takes typed text as the page's keys read it (`takesTypedText`), so
+        // the caret where it takes typed text as the page's keys read it (`takesText`), so
         // Escape on a checkbox or a button is the page's.
         if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
-        if (!(event.target instanceof HTMLElement) || !takesTypedText(event.target)) return;
+        if (!(event.target instanceof HTMLElement) || !takesText(event.target)) return;
         event.preventDefault();
         event.target.blur();
       }}

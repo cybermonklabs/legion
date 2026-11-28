@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { pickIn } from "../../__tests__/issue-picks";
 import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -104,9 +105,15 @@ test("picking an assignee inside the drawer lists that person there, writes noth
     await within(dialog).findByText("Which approach?");
     expect(within(dialog).queryByText("Bob's question?")).not.toBeInTheDocument();
 
-    // The five fields sit behind the bar's one **Filter** button.
+    // The five controls sit behind the row's one **Filter** trigger, in a panel `AnchoredPanel`
+    // portals onto the body: the trigger is the drawer's, the panel it opens is reached from
+    // the screen, as the assignee popover inside it already was.
     await user.click(within(dialog).getByRole("button", { name: "Filter" }));
-    await user.click(within(dialog).getByRole("button", { name: "Filter by assignee" }));
+    await user.click(
+      within(await screen.findByRole("dialog", { name: "Filter" })).getByRole("button", {
+        name: "Filter by assignee",
+      })
+    );
     // The popover is portalled onto the body, so it is reached from the screen, not the drawer,
     // and from its own listbox: every open ask's card carries a people picker of its own (the
     // hand-on control), whose options name the same people.
@@ -141,9 +148,10 @@ test("Snooze inside the drawer folds the row into Later, same as the Inbox page"
 
     const row = within(dialog).getByTestId("ask-ask-a").closest<HTMLElement>("[data-inbox-row]");
     if (row === null) throw new Error("ask-a row missing");
-    await user.selectOptions(
-      within(row).getByLabelText("Snooze CORE-1: Which approach?"),
-      "tomorrow"
+    await pickIn(
+      user,
+      () => within(row).getByLabelText("Snooze CORE-1: Which approach?"),
+      "Tomorrow"
     );
 
     await waitFor(() =>

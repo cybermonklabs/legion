@@ -103,7 +103,6 @@ function OptionText({
 export function AskChoiceRow({
   checked,
   className = "",
-  disabled = false,
   hotkey = false,
   multiple,
   name,
@@ -115,7 +114,6 @@ export function AskChoiceRow({
 }: {
   checked: boolean;
   className?: string;
-  disabled?: boolean;
   hotkey?: boolean;
   multiple: boolean;
   name: string;
@@ -138,7 +136,6 @@ export function AskChoiceRow({
       <input
         checked={checked}
         data-ask-option={hotkey ? "" : undefined}
-        disabled={disabled}
         name={name}
         onChange={onChange}
         type={multiple ? "checkbox" : "radio"}
