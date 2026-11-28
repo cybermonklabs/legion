@@ -538,7 +538,7 @@ def old_filters:
                elif ($kinds | type) != "object" or ($session | type) != "boolean" then {unknown: "the hub runs an auth callout, and this gate's list of the auth service's kinds (lib/legacy-subjects-gate-callout-publishers.json) does not say, kind by kind and for a session, whether its grant publishes a notification subject"}
                else ($p.broker.value | nats_services) as $s
                  | ([$s.entries // [] | .[] | .kind | select(($kinds[.] | type) != "boolean")] | unique) as $unlisted
-                 | if $s.error then {unknown: "the hub runs an auth callout, and its auth service's BROKER_NATS_SERVICES cannot be read: an entry is no <kind>/<machine id or ->/<scope>=<account>: \($s.error.entry | .[:120] | printable)"}
+                 | if $s.error then {unknown: "the hub runs an auth callout, and its auth service's BROKER_NATS_SERVICES cannot be read: an entry is no <kind>/<machine id or ->/<scope>=<account>[=<issuer name>[,<issuer name>…]]: \($s.error.entry | .[:120] | printable)"}
                    elif ($unlisted | length) > 0 then {unknown: "the hub runs an auth callout, and its auth service admits entries of the kind(s) \($unlisted | map(printable) | join(", ")), which this gate's list (lib/legacy-subjects-gate-callout-publishers.json) does not classify, so whether their grant publishes a notification subject cannot be read"}
                    else {ids: ([$s.entries[] | select($kinds[.kind]) | .identity] + (if $session then ["session/*"] else [] end))} end
                end) as $callout

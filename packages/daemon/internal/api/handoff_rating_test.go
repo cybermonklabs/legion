@@ -404,12 +404,13 @@ func TestANewPluginMustRate(t *testing.T) {
 	}
 }
 
-// "PlanRatingContract or later" holds above the contract too, where TestANewPluginMustRate's claim
-// cannot reach: every claim the harness registers declares this daemon's own contract. The claim
-// here records a later one and the daemon still serves it, a claim in its turn (staleClaim), as
-// after a later release rolled back to this daemon while its worker was in the retro's turn. Its
-// retro's completion with no rating is refused PLAN_RATING_REQUIRED with nothing recorded, and
-// the same completion with a rating is taken (mustRate).
+// "PlanRatingContract or later" holds above this daemon's own contract too, which no claim the
+// harness registers declares: TestANewPluginMustRate's claim records this daemon's own contract
+// (DaemonAPIVersion), and TestAPluginAtTheRatingContractMustRate's records PlanRatingContract
+// itself. The claim here records one above this daemon's and the daemon still serves it, a claim
+// in its turn (staleClaim), as after a later release rolled back to this daemon while its worker
+// was in the retro's turn. Its retro's completion with no rating is refused PLAN_RATING_REQUIRED
+// with nothing recorded, and the same completion with a rating is taken (mustRate).
 func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)

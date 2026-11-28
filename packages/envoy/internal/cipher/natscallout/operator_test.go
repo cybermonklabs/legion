@@ -57,24 +57,25 @@ func startReplica(t *testing.T, urls []string, keys testnats.CalloutKeys, servic
 }
 
 // readUnsignedToken is a stub ServiceToken: the account, issue and expiry an unsigned platform
-// token names (unsignedServiceToken), read without verifying it.
-func readUnsignedToken(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
+// token names (unsignedServiceToken), read without verifying it, from the one issuer of a bare
+// BROKER_K8S_OIDC_ISSUER URL, whose name is "".
+func readUnsignedToken(_ context.Context, raw string) (ServiceIdentity, error) {
 	parts := strings.Split(raw, ".")
 	if len(parts) != 3 {
-		return "", false, time.Time{}, time.Time{}, errors.New("the token is no JWT")
+		return ServiceIdentity{}, errors.New("the token is no JWT")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", false, time.Time{}, time.Time{}, err
+		return ServiceIdentity{}, err
 	}
 	var claims struct {
 		Sub      string `json:"sub"`
 		Iat, Exp int64
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", false, time.Time{}, time.Time{}, err
+		return ServiceIdentity{}, err
 	}
-	return claims.Sub, false, time.Unix(claims.Iat, 0), time.Unix(claims.Exp, 0), nil
+	return ServiceIdentity{Account: claims.Sub, Issued: time.Unix(claims.Iat, 0), Expiry: time.Unix(claims.Exp, 0)}, nil
 }
 
 // tokenLives is a natscred.TokenReader that answers a fresh unsigned token of account at each

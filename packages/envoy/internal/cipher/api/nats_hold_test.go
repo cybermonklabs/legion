@@ -1,8 +1,10 @@
 // nats_hold_test.go drives the NATS writer hold's routes (/v1/nats-hold and the three under it)
 // over HTTP on a test Postgres, with the operator's real token verifier: the auth service's
-// platform-token verifier (natscallout.PlatformTokens) over a local issuer standing in for the
-// cluster's, and the operator entry BROKER_NATS_SERVICES lists beside one entry of every other
-// kind. Every write is signed with the test's own Ed25519 key, the one the routes are given.
+// platform-token verifier (natscallout.PlatformTokens) over two local issuers standing in for two
+// clusters' issuers of BROKER_K8S_OIDC_ISSUER, first and second, and the operator entry
+// BROKER_NATS_SERVICES lists beside one entry of every other kind, each naming no issuer and so
+// taking the first alone. Every write is signed with the test's own Ed25519 key, the one the
+// routes are given.
 package api_test
 
 import (
@@ -61,18 +63,21 @@ var holdServices = strings.Join([]string{
 }, " ")
 
 // holdRig is the hold's routes on an httptest server over a migrated schema of the test's own:
-// the pool a test's admin reaches the tables through, the operator's signing key, and the issuer
-// that mints every entry's platform token. restart mounts the routes afresh on the same tables,
-// as a broker process that starts again does.
+// the pool a test's admin reaches the tables through, the operator's signing key, the issuer
+// that mints every entry's platform token, the first of the rig's BROKER_K8S_OIDC_ISSUER, and
+// the second issuer, whose tokens no entry takes. restart mounts the routes afresh on the same
+// tables, as a broker process that starts again does.
 type holdRig struct {
-	t      *testing.T
-	url    string
-	pool   *pgxpool.Pool
-	key    ed25519.PrivateKey
-	issuer *oidctest.Issuer
-	signer *oidctest.Key
-	deps   api.Deps
-	mux    atomic.Pointer[http.ServeMux]
+	t            *testing.T
+	url          string
+	pool         *pgxpool.Pool
+	key          ed25519.PrivateKey
+	issuer       *oidctest.Issuer
+	signer       *oidctest.Key
+	second       *oidctest.Issuer
+	secondSigner *oidctest.Key
+	deps         api.Deps
+	mux          atomic.Pointer[http.ServeMux]
 }
 
 func newHoldRig(t *testing.T) *holdRig {
@@ -91,14 +96,11 @@ func newHoldRig(t *testing.T) *holdRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issuer := oidctest.New(t)
-	signer := issuer.PublishKey(t, "nats-key")
-	verifier, err := oidc.New(context.Background(), issuer.URL(), holdNATSAudience)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tokens := natscallout.PlatformTokens{K8sIssuer: issuer.URL(), K8s: enroll.K8sPodVerifier{Verifier: verifier}}
-	services, err := config.ParseNATSServices(holdServices)
+	issuer, second := oidctest.New(t), oidctest.New(t)
+	signer, secondSigner := issuer.PublishKey(t, "nats-key"), second.PublishKey(t, "nats-key-second")
+	issuers := []oidc.NamedIssuer{{Name: "first", URL: issuer.URL()}, {Name: "second", URL: second.URL()}}
+	tokens := natscallout.PlatformTokens{K8sIssuers: issuers, K8s: enroll.K8sPodVerifier{Issuers: oidc.NewIssuerSet(issuers, holdNATSAudience, 0)}}
+	services, err := config.ParseNATSServices(holdServices, issuers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,9 +110,9 @@ func newHoldRig(t *testing.T) *holdRig {
 			operator = entry
 		}
 	}
-	rig := &holdRig{t: t, pool: pool, key: private, issuer: issuer, signer: signer, deps: api.Deps{NATSHold: api.NATSHold{
+	rig := &holdRig{t: t, pool: pool, key: private, issuer: issuer, signer: signer, second: second, secondSigner: secondSigner, deps: api.Deps{NATSHold: api.NATSHold{
 		Pool: pool, Schema: parsed.Query().Get("search_path"), Keys: []ed25519.PublicKey{public},
-		OperatorToken: tokens.Verify, OperatorAccount: operator.Account, OperatorGoogle: operator.Google,
+		OperatorToken: tokens.Verify, OperatorAccount: operator.Account, OperatorGoogle: operator.Google, OperatorIssuers: operator.Issuers,
 	}}}
 	rig.restart()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { rig.mux.Load().ServeHTTP(w, req) }))
@@ -128,13 +130,26 @@ func (r *holdRig) restart() {
 	r.mux.Store(mux)
 }
 
-// token is account's platform token for the NATS audience, live for ten minutes, as `kubectl
-// create token --duration 10m` mints the operator's.
+// token is account's platform token for the NATS audience from the rig's first issuer, live for
+// ten minutes, as `kubectl create token --duration 10m` mints the operator's.
 func (r *holdRig) token(account string) string {
-	claims := r.issuer.Claims(account, holdNATSAudience)
+	return mintHoldToken(r.t, r.issuer, r.signer, account)
+}
+
+// secondToken is token from the rig's second issuer, which no entry of the rig names: the
+// operator's account name in another cluster, which is another ServiceAccount.
+func (r *holdRig) secondToken(account string) string {
+	return mintHoldToken(r.t, r.second, r.secondSigner, account)
+}
+
+// mintHoldToken is account's platform token for the NATS audience from issuer, signed with key,
+// live for ten minutes.
+func mintHoldToken(t *testing.T, issuer *oidctest.Issuer, key *oidctest.Key, account string) string {
+	t.Helper()
+	claims := issuer.Claims(account, holdNATSAudience)
 	now := time.Now()
 	claims["iat"], claims["exp"] = now.Add(-5*time.Second).Unix(), now.Add(10*time.Minute).Unix()
-	return r.issuer.Mint(r.t, r.signer, claims)
+	return issuer.Mint(t, key, claims)
 }
 
 // holdAnswer is one answer of the hold's routes: its status and its JSON members.
@@ -658,10 +673,11 @@ func (r *holdRig) holdTables() string {
 }
 
 // TestOnlyTheOperatorWritesTheHold: every route of the hold, called with the token of a listener,
-// dispatch, daemon, measure and probe entry, and with a person's broker access token, is 403
+// dispatch, daemon, measure and probe entry, with the operator's account's token from the second
+// issuer, which the operator entry does not name, and with a person's broker access token, is 403
 // not_operator and changes no row, though every write it sends is signed by the operator's key
-// and would land as the operator's. Fails if the routes accept any listed service: the listener's
-// PUT lands.
+// and would land as the operator's. Fails if the routes accept any listed service, or the
+// operator's account from any issuer: the listener's PUT, or the second issuer's, lands.
 func TestOnlyTheOperatorWritesTheHold(t *testing.T) {
 	rig := newHoldRig(t)
 	rig.bootstrap()
@@ -670,6 +686,12 @@ func TestOnlyTheOperatorWritesTheHold(t *testing.T) {
 	rig.do(http.MethodPut, "/v1/nats-hold/records", rig.operator(), rig.recordBody("hold-o", "cohort", "cohort", 0, `{"threshold":3}`)).require(t, "the cohort", http.StatusOK, "")
 	rig.do(http.MethodPut, "/v1/nats-hold/cutover", rig.operator(), rig.cutoverBody("session", "done", "hold-o", 3)).require(t, "the cutover", http.StatusOK, "")
 	before := rig.holdTables()
+	// The control: the second issuer's token of the operator's account verifies, as the second
+	// issuer's, so its refusal below is the operator entry's issuer rule and not its verification.
+	second, err := rig.deps.NATSHold.OperatorToken(context.Background(), rig.secondToken(holdOperatorAccount))
+	if err != nil || second.Account != holdOperatorAccount || second.Issuer != "second" {
+		t.Fatalf("the second issuer's token of the operator's account = %+v, %v; want it verified as the second issuer's", second, err)
+	}
 
 	_, person, _ := approvedLogin(t, ciphertest.NewRig(t))
 	callers := []struct{ name, token string }{
@@ -678,6 +700,7 @@ func TestOnlyTheOperatorWritesTheHold(t *testing.T) {
 		{"a daemon entry", rig.token(holdDaemonAccount)},
 		{"a measure entry", rig.token(holdMeasureAccount)},
 		{"a probe entry", rig.token(holdProbeAccount)},
+		{"the operator's account from an issuer its entry does not name", rig.secondToken(holdOperatorAccount)},
 		{"a person's broker access token", person.AccessToken},
 	}
 	for _, caller := range callers {

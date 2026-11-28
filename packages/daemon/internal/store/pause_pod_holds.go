@@ -182,20 +182,28 @@ func (s *Store) PausePodHoldOf(ctx context.Context, project, issue string) (Paus
 	return h, true, nil
 }
 
-// OpenPausePodHolds is every hold standing on a pod of project, by issue: the pods the resume
-// ends the holds of where a role is live (decision 22), and the pods a project release names when
-// it refuses (departure 1). project is the Dispatch key.
+// OpenPausePodHolds is openPausePodHolds read in a read-only transaction of its own (ReadOnly),
+// for the resume's end of the holds of pods with a live role (internal/daemon's
+// projectPause.endLiveHolds). project is the project token.
 func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PausePodHold, error) {
-	var holds []PausePodHold
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
-			where project = $1 and ended_at is null order by issue`, project)
-		if err != nil {
-			return err
-		}
-		holds, err = scanPausePodHolds(rows)
-		return err
+	return ReadOnly(ctx, s.pool, "read the pod holds of "+project, func(ctx context.Context, tx pgx.Tx) ([]PausePodHold, error) {
+		return openPausePodHolds(ctx, tx, project)
 	})
+}
+
+// openPausePodHolds is every hold standing on a pod of project, by issue, read in tx. It has two
+// callers: the resume, which ends the hold of each of those pods in which a role is live (decision
+// 22, internal/daemon's projectPause.endLiveHolds through OpenPausePodHolds), and a project
+// release's refusal, which names each of those pods (departure 1, releasePauseRefusal, in a
+// read-only transaction of its own and in StartProjectRelease's). project is the project token,
+// as the claims table holds it; the hold's own Dispatch key is read as the key it lowercases.
+func openPausePodHolds(ctx context.Context, tx pgx.Tx, project string) ([]PausePodHold, error) {
+	rows, err := tx.Query(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
+		where lower(project) = $1 and ended_at is null order by issue`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
+	}
+	holds, err := scanPausePodHolds(rows)
 	if err != nil {
 		return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
 	}

@@ -4171,6 +4171,12 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		// given, and sending that entry's task is what brings its pod back. The one other start
 		// of a released claim is the boot's one-time repair of a merger the `awaiting_merge`
 		// cutover left stopped (workflow's cutoverMergerRepair), which no wake would start.
+		//
+		// A claim the project release stopped has no skip either. One behind its entry is sent
+		// that entry's work here like any other, a start the outbox holds while the release
+		// holds every start; the daemon's next boot, whose own start of every such claim reads
+		// the queued start, then writes none of its own (workflow's booted, StartFor), and a pass
+		// after the boot's start reads that start's entry and writes no second (OwedEntry).
 
 		// An agent the operator or the project's controller suspended is passed over whatever
 		// entry its claim stands on: `legion claims suspend`, or the controller's own suspend,
@@ -4434,6 +4440,14 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 // backstop (store.PodRecords.WaitsForItsSlot), since a row this repair will finish brings no
 // worker back: a change to this fence changes that one too.
 //
+// A row whose phase alone the issue has left — its issue still in the workflow, its tree
+// running, at the row's generation — and whose role holds a claim stored suspended by the project
+// release is finished with that claim's start written in its place (record.ReleaseStoppedStart),
+// which is due at once and stands in no part of the waiting line. A row of an issue out of the
+// workflow, of a tree that lingers or has left, or of another generation is finished alone,
+// whatever its claim: the boot leaves such a claim to the close, the re-admission or the
+// promotion, and so does this.
+//
 // A tree that lingers is read by the absence of its root rather than by its root's deadline: a
 // lingering root is in phase done at a status that is not todo, which is exactly what the
 // project's live read leaves out (record.Store.LiveIssues), so its record is not here to carry
@@ -4446,8 +4460,9 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 // A row the fences keep is weighed once more, against the claim it would start: a stop that
 // outlived the row's own start ends the row too, since the row's retry would otherwise start
 // the stopped worker again the moment a slot came (stopOutlivedStart). That second read is one
-// batched RoleClaims call over the rows the fences kept, and no read at all when they kept none:
-// the rule reads nothing of the queued rows beside those claims.
+// batched RoleClaims call over the rows the fences kept and the rows of a phase the issue has
+// left, and no read at all when there are none: neither rule reads anything of the queued rows
+// beside those claims.
 //
 // It runs before the waiting line is judged, and so before the cap loop hands out any slot
 // (promoteHolds). That is what keeps the line and this repair from disagreeing: the line offers
@@ -4470,13 +4485,37 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 		token claim.Token
 	}
 	finished := false
+	// finishOwed finishes owed, a row the fences end, as the outbox's fence would, and finishPast
+	// does so and says so.
+	finishOwed := func(owed record.OwedStart) error {
+		// No live lease holds the row (record.Store.OwedStarts), so the token it carries is
+		// either none at all or the one a dead lane left on it, and the delete names that token:
+		// a lane that took the row between this pass's read and this write keeps it, and the
+		// next pass repairs what is left.
+		if err := a.store.FinishOutbox(ctx, tx, owed.ID, owed.LeaseToken); err != nil {
+			return fmt.Errorf("finish the start %s owed a worker it can no longer reach: %w", owed.Issue, err)
+		}
+		finished = true
+		return nil
+	}
+	finishPast := func(owed record.OwedStart) error {
+		if err := finishOwed(owed); err != nil {
+			return err
+		}
+		store.OnCommit(ctx, func() {
+			a.log.Info("admission: finished a held start whose issue has moved past it", "issue", owed.Issue, "row", owed.ID,
+				"role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
+		})
+		return nil
+	}
 	kept := make([]owedRow, 0, len(facts.OwedRows))
+	var moved []owedRow
 	tokens := make([]claim.Token, 0, len(facts.OwedRows))
 	for _, owed := range facts.OwedRows {
 		issue, recorded := byKey[owed.Issue]
 		root, rooted := byKey[issue.Tree]
-		if recorded && rooted && !record.OutOfWorkflow(issue.Status) && !root.Lingers() &&
-			owed.Generation == issue.Generation && owed.Phase == issue.Phase {
+		runs := recorded && rooted && !record.OutOfWorkflow(issue.Status) && !root.Lingers() && owed.Generation == issue.Generation
+		if runs && owed.Phase == issue.Phase {
 			// The fences keep this row, so it stands for the stop rule below. A row whose issue
 			// and role yield no claim token has no run to read, as the slot repair's holders have
 			// none (resumeSlottedWorkers): it stays owed and the rule passes over it rather than
@@ -4489,18 +4528,20 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 			tokens = append(tokens, token)
 			continue
 		}
-		// No live lease holds the row (record.Store.OwedStarts), so the token it carries is
-		// either none at all or the one a dead lane left on it, and the delete names that token:
-		// a lane that took the row between this pass's read and this write keeps it, and the
-		// next pass repairs what is left.
-		if err := a.store.FinishOutbox(ctx, tx, owed.ID, owed.LeaseToken); err != nil {
-			return finished, fmt.Errorf("finish the start %s owed a worker it can no longer reach: %w", owed.Issue, err)
+		// The issue has left the row's phase alone: the row is finished below, once its role's
+		// claim is read, which says whether that claim's start takes the row's place
+		// (record.ReleaseStoppedStart). A row whose issue and role yield no claim token has no
+		// claim to read and is finished here with the rest.
+		if runs && owed.Phase != "" {
+			if token, err := claim.NewToken(project, owed.Issue, owed.Role); err == nil {
+				moved = append(moved, owedRow{owed: owed, token: token})
+				tokens = append(tokens, token)
+				continue
+			}
 		}
-		finished = true
-		store.OnCommit(ctx, func() {
-			a.log.Info("admission: finished a held start whose issue has moved past it", "issue", owed.Issue, "row", owed.ID,
-				"role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
-		})
+		if err := finishPast(owed); err != nil {
+			return finished, err
+		}
 	}
 	if len(tokens) == 0 {
 		return finished, nil
@@ -4508,6 +4549,25 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	held, err := a.store.RoleClaims(ctx, tx, tokens)
 	if err != nil {
 		return finished, err
+	}
+	for _, movedRow := range moved {
+		owed := movedRow.owed
+		if !held[movedRow.token].ProjectReleased() {
+			if err := finishPast(owed); err != nil {
+				return finished, err
+			}
+			continue
+		}
+		if err := finishOwed(owed); err != nil {
+			return finished, err
+		}
+		if err := a.enqueue(ctx, tx, owed.Issue, record.ReleaseStoppedStart(byKey[owed.Issue].Tree, owed.Role, owed.Generation), a.now()); err != nil {
+			return finished, err
+		}
+		store.OnCommit(ctx, func() {
+			a.log.Info("admission: a held start whose issue has moved past it starts the claim the project release stopped with no task",
+				"issue", owed.Issue, "row", owed.ID, "role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
+		})
 	}
 	for _, keptRow := range kept {
 		owed := keptRow.owed

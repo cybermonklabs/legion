@@ -47,7 +47,12 @@ const sandboxNamespace = "legion"
 // pod's processes through onPodReady — in this rig, a real `legion launcher` per role.
 type issueSandboxAPI struct {
 	// url is the server a test served the API on (serve), empty until one did.
-	url     string
+	url string
+	// prefix opens every uid this API stamps and every disk it names, so two of them standing for
+	// two clusters never stamp one uid on two objects: a claim's locator names its pod by uid,
+	// and a pod of one cluster read as a pod of the other would be a restart adopting what it
+	// never ran. An API standing alone leaves it empty.
+	prefix  string
 	mu      sync.Mutex
 	rv      int64
 	objects map[string]map[string]map[string]any
@@ -60,11 +65,16 @@ type issueSandboxAPI struct {
 	// disks are the disks of the Sandboxes' pods, by Sandbox name, while they exist: an issue
 	// pod's disk is its own generic ephemeral volume, whose claim `<pod>-issue` the pod owns, so
 	// a Sandbox's arrival stands for its pod's disk and only the Sandbox's foreground delete,
-	// which garbage collection carries through the pod to the claim, takes it. deletes are the
-	// options each Sandbox delete was asked with, and created every Sandbox a test's daemon made.
-	disks   map[string]bool
-	deletes map[string]metav1.DeleteOptions
-	created []string
+	// which garbage collection carries through the pod to the claim, takes it. diskIDs names each
+	// disk a Sandbox's arrival made by an id no other disk of this API had, so a pod the
+	// controller makes again for the same Sandbox is told from a pod on a new disk; diskCount
+	// numbers them. deletes are the options each Sandbox delete was asked with, and created
+	// every Sandbox a test's daemon made.
+	disks     map[string]bool
+	diskIDs   map[string]string
+	diskCount int
+	deletes   map[string]metav1.DeleteOptions
+	created   []string
 	// onPodReady runs, off the API's lock, for every pod the controller created and reported
 	// Ready, with the pod's own uid and each of its roles' launcher tokens; onPodGone for every
 	// pod it deleted. Both are the rig's.
@@ -122,14 +132,15 @@ func kubeResourceOf(name string) (kubeResource, bool) {
 // newIssueSandboxAPI is the API holding sandboxes, each with the disk of the pod it stands for.
 // It serves nothing of itself: a caller mounts it on a server of its own, or calls serve.
 func newIssueSandboxAPI(sandboxes ...map[string]any) *issueSandboxAPI {
-	a := &issueSandboxAPI{objects: map[string]map[string]map[string]any{},
-		watches: map[string][]chan kubeEvent{}, disks: map[string]bool{}, deletes: map[string]metav1.DeleteOptions{}}
+	a := &issueSandboxAPI{objects: map[string]map[string]map[string]any{}, watches: map[string][]chan kubeEvent{},
+		disks: map[string]bool{}, diskIDs: map[string]string{}, deletes: map[string]metav1.DeleteOptions{}}
 	for _, r := range kubeResources {
 		a.objects[r.resource] = map[string]map[string]any{}
 	}
 	for _, object := range sandboxes {
 		name := object["metadata"].(map[string]any)["name"].(string)
-		a.objects["sandboxes"][name], a.disks[name] = object, true
+		a.objects["sandboxes"][name] = object
+		a.newDiskLocked(name)
 	}
 	return a
 }
@@ -321,7 +332,7 @@ func (a *issueSandboxAPI) createPodLocked(name string, sandbox map[string]any) s
 		}
 	}
 	a.uids++
-	podUID := fmt.Sprintf("uid-pod-%d", a.uids)
+	podUID := fmt.Sprintf("%suid-pod-%d", a.prefix, a.uids)
 	podSpec["nodeName"] = "ip-192-0-2-7"
 	pod := map[string]any{
 		"apiVersion": "v1", "kind": "Pod",
@@ -532,13 +543,6 @@ func (a *issueSandboxAPI) uid(name string) string {
 	return uid
 }
 
-// disk is whether the disk of the Sandbox's pod, the claim that pod owns, still exists.
-func (a *issueSandboxAPI) disk(name string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.disks[name]
-}
-
 // deleted is the options of the Sandbox's delete, and whether one was requested.
 func (a *issueSandboxAPI) deleted(name string) (metav1.DeleteOptions, bool) {
 	a.mu.Lock()
@@ -709,12 +713,13 @@ func (a *issueSandboxAPI) create(w http.ResponseWriter, r *http.Request, kind ku
 		return
 	}
 	a.uids++
-	meta["uid"], meta["generation"] = fmt.Sprintf("uid-%s-%d", kind.resource, a.uids), float64(1)
+	meta["uid"], meta["generation"] = fmt.Sprintf("%suid-%s-%d", a.prefix, kind.resource, a.uids), float64(1)
 	meta["creationTimestamp"] = time.Now().UTC().Format(time.RFC3339)
 	object["apiVersion"], object["kind"] = kind.apiVersion, kind.kind
 	stored := a.putLocked(kind.resource, name, object)
 	if kind.resource == "sandboxes" {
-		a.disks[name], a.created = true, append(a.created, name)
+		a.newDiskLocked(name)
+		a.created = append(a.created, name)
 		// The controller makes the headless Service of a Sandbox that asks for one as soon as the
 		// Sandbox arrives, so a test that runs no controller loop still sees it.
 		if spec, _ := stored["spec"].(map[string]any); spec["service"] == true {
@@ -882,6 +887,7 @@ func (a *issueSandboxAPI) remove(w http.ResponseWriter, r *http.Request, kind ku
 		a.deletes[name] = options
 		if options.PropagationPolicy != nil && *options.PropagationPolicy == metav1.DeletePropagationForeground {
 			delete(a.disks, name)
+			delete(a.diskIDs, name)
 		}
 	}
 	a.mu.Unlock()

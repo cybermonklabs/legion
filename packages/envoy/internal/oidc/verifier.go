@@ -1,11 +1,15 @@
-// Package oidc verifies OIDC tokens against one issuer and one or more audiences — a
-// Kubernetes pod's projected service-account token, for the Dispatch server and
-// the Envoy listener — and signs a person in to Dispatch with the authorization
+// Package oidc verifies OIDC tokens — a Kubernetes pod's projected service-account
+// token among them — against one issuer and one or more audiences (Verifier,
+// LazyVerifier), as the Dispatch server and the Envoy listener do, or against a
+// set of named issuers that share one list of audiences (IssuerSet), as the
+// secrets broker does for the clusters it trusts, each token checked by the
+// issuer it names. It also signs a person in to Dispatch with the authorization
 // code flow against its sign-in issuer (CodeFlow).
 package oidc
 
 import (
 	"context"
+	"crypto"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -116,6 +120,10 @@ type Verifier struct {
 	// itself. classify then reports no failure as ErrExpired: an exp it reads is from a payload
 	// whose signature, issuer or audience failed, and says nothing about a token's age.
 	skipExpiry bool
+	// keys is the key source newWithKeys checks signatures against, which LazyVerifier.Key answers
+	// from, so a caller that needs the key itself reads the one cache the verifier reads. It is nil
+	// for a verifier newWithKeys did not build, which no LazyVerifier holds.
+	keys KeySource
 }
 
 // audienceVerifier is one audience a Verifier lists and go-oidc's verifier of the tokens issued
@@ -138,24 +146,35 @@ func New(ctx context.Context, issuer, audience string) (*Verifier, error) {
 	return NewWithKeys(issuer, audience, keys), nil
 }
 
+// KeySource answers the public key a token naming kid and signed with alg is checked against. A
+// *Keys is one, reading the issuer's published set, and so is a *LazyVerifier, reading it once the
+// issuer is discovered. So is one issuer of an IssuerSet read through the set (IssuerSet.Key),
+// whose error matches ErrIssuerUnavailable while that issuer cannot be read.
+type KeySource interface {
+	Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error)
+}
+
 // NewWithKeys returns a verifier for tokens issuer issued to audience, checking
 // every signature against keys. It exists so that one key cache serves a
-// process's whole use of an issuer: the broker reads the cluster issuer's set
-// both to verify account, pod and service-login tokens and, for the RFC 8693
+// process's whole use of an issuer: the broker reads Google's set both to
+// verify a listed caller's Google identity token and, for the RFC 8693
 // exchange, to hand the key itself to the OAuth provider (Keys), and building
 // both from one *Keys makes one discovery read at boot, keeps one set in
 // memory, and bounds the reads a token naming an unpublished key id prompts at
 // one per MinRefresh while reads succeed, and one per FailureSpacing while they
-// fail, across both of them.
-func NewWithKeys(issuer, audience string, keys *Keys) *Verifier {
+// fail, across both of them. A LazyVerifier builds its verifier as it does
+// (newWithKeys), over the Keys its read of the discovery document makes
+// (NewKeys), and answers LazyVerifier.Key from those keys. Over an IssuerSet's
+// issuer, it verifies that issuer's tokens for an audience other than the
+// set's, reading the issuer's discovery document and key set only as the set
+// reads them, as the broker's NATS auth service does.
+func NewWithKeys(issuer, audience string, keys KeySource) *Verifier {
 	return newWithKeys(issuer, []string{audience}, keys)
 }
 
-// NewWithKeysFor is NewWithKeys for tokens issuer issued to any of audiences, all checked against
-// the one keys. The caller passes one or more audiences and none of them twice; config.Load holds
-// that for the broker's BROKER_K8S_OIDC_AUDIENCE. An empty list is refused with an error here,
-// where the verifier is built, since a verifier of no audience could take no token. The verifier
-// keeps no reference to audiences.
+// newWithKeys is the verifier NewWithKeys returns and a LazyVerifier builds (newLazyVerifier), of
+// audiences, which holds one or more: one go-oidc verifier of each audience, in the order listed,
+// all on keys.
 //
 // A token is judged by the listed audience it carries, so a token fails for the reason it fails
 // at a verifier of that audience alone: Verify checks it with the go-oidc verifier of the first
@@ -164,16 +183,7 @@ func NewWithKeys(issuer, audience string, keys *Keys) *Verifier {
 // an audience the list does not hold is ErrAudience, expired or not, as at a verifier of one
 // audience. Each token gets one signature check. An aud written into a forged token gains
 // nothing, because the verifier chosen checks aud again on the payload the signature covers.
-func NewWithKeysFor(issuer string, audiences []string, keys *Keys) (*Verifier, error) {
-	if len(audiences) == 0 {
-		return nil, errors.New("oidc: a verifier needs one or more audiences")
-	}
-	return newWithKeys(issuer, audiences, keys), nil
-}
-
-// newWithKeys is the verifier NewWithKeys and NewWithKeysFor return, of audiences, which holds one
-// or more: one go-oidc verifier of each audience, in the order listed, all on keys.
-func newWithKeys(issuer string, audiences []string, keys *Keys) *Verifier {
+func newWithKeys(issuer string, audiences []string, keys KeySource) *Verifier {
 	set := keySet{keys: keys}
 	// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the verifier a discovered
 	// provider builds, defaults to RS256 alone: the pair named here is the pair keySet parses and
@@ -187,7 +197,7 @@ func newWithKeys(issuer string, audiences []string, keys *Keys) *Verifier {
 			SupportedSigningAlgs: algs,
 		})}
 	}
-	return &Verifier{byAudience: byAudience, issuer: issuer}
+	return &Verifier{byAudience: byAudience, issuer: issuer, keys: keys}
 }
 
 // supportedSigningAlgs names keySetAlgorithms as go-oidc's configuration takes them.
@@ -210,8 +220,22 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 	}
 }
 
+// UnverifiedIssuer is raw's iss claim, read without verifying anything, from raw with every space
+// removed (stripSpaces) as Verify reads it. A raw that is not three dot-separated segments whose
+// middle one is a base64url claim set answers an empty iss and the reason. A caller that trusts
+// several issuers picks with it the one verifier a token is for, as LazyVerifier.Issues,
+// IssuerSet, the broker's NATS audiences and natscallout's PlatformTokens do; no claim anyone is
+// admitted on comes from it.
+func UnverifiedIssuer(raw string) (string, error) {
+	claims, err := decodeUnverifiedClaims(stripSpaces(raw))
+	if err != nil {
+		return "", err
+	}
+	return claims.Issuer, nil
+}
+
 // Verify checks raw against the issuer's published keys, a listed audience
-// (NewWithKeysFor), and the token's expiry. Every error wraps exactly one of
+// (newWithKeys), and the token's expiry. Every error wraps exactly one of
 // ErrMalformed, ErrIssuer, ErrAudience, ErrExpired, ErrCancelled,
 // ErrIssuerUnavailable, and ErrSignature.
 func (v *Verifier) Verify(ctx context.Context, raw string) (Claims, error) {
@@ -306,6 +330,8 @@ func (v *Verifier) verifierOf(compact string) *gooidc.IDTokenVerifier {
 // the issuer's key set could not be read at all, as ErrIssuerUnavailable:
 // keySetErr is the key source's own error, which keyset.go carries past the %v
 // go-oidc formats it with, and an ErrKeySet in it means no verdict was reached.
+// A source that answers ErrIssuerUnavailable itself, an IssuerSet's issuer it
+// has not read or whose key set it cannot read, is answered with that error.
 // ErrNoKey is not that case and stays in the signature class, a token signed by
 // something the issuer never had.
 //
@@ -349,6 +375,8 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 		return fmt.Errorf("%w: %q, want one of %q", ErrAudience, []string(claims.Audience), listed)
 	case !v.skipExpiry && claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):
 		return fmt.Errorf("%w at %s", ErrExpired, time.Unix(int64(claims.Expiry), 0).UTC().Format(time.RFC3339))
+	case errors.Is(keySetErr, ErrIssuerUnavailable):
+		return keySetErr
 	case errors.Is(keySetErr, ErrKeySet):
 		return fmt.Errorf("%w: %w", ErrIssuerUnavailable, keySetErr)
 	default:

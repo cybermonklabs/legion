@@ -523,7 +523,7 @@ func waitSubject(asks []record.RootAsk, steps []record.DesignStep, gates map[rec
 // So it holds neither the wait nor the telling of a person's act, which would otherwise wait
 // behind that sentence for as long as the agent's own turns kept it unread
 // (dispatch://INFRA-3276 R3). Nor is news of the approved design alone, queued as a start
-// (startsWork) or held as a task (supervise.HoldsWork): it hands the architect no work of the
+// (StartsWork) or held as a task (supervise.HoldsWork): it hands the architect no work of the
 // root's, and the start can wait on its backoff for as long as the architect's turn runs.
 func owed(run record.RoleRun) (string, bool) {
 	if queuedStart(run) {

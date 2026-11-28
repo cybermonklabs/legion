@@ -246,7 +246,9 @@ func TestASandboxOfAnotherProjectIssueOrTreeIsRefusedBeforeAuthorize(t *testing.
 		name string
 		call func(*Runtime, context.Context, string, string, func(context.Context) (bool, error)) error
 	}{
-		{name: "the close", call: (*Runtime).SuspendIssue},
+		{name: "the close", call: func(r *Runtime, ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
+			return r.SuspendIssue(ctx, issue, tree, authorize)
+		}},
 		{name: "the release", call: func(r *Runtime, ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
 			_, err := r.ReleaseIssue(ctx, issue, tree, authorize, nil)
 			return err

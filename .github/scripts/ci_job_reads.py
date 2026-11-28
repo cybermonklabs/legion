@@ -1424,31 +1424,36 @@ def hold_session_client_left_tests():
 hold_session_client_left_tests()
 
 
-# ---------------------------------------------------------------- the supervise table's pure pins
-# The two tests of internal/supervise/table_test.go whose subject is the table itself rather than a
-# claim in motion: TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState, which holds every
-# event of the sealed set to a row or a named ignore in every state, and TestNoTwoEventTypesShareAKind.
-# Each reads source and nothing else - sealed() reads the sealed set through
-# `packages/daemon/internal/supervise/table_test.go#sealedSource`, which parses every non-test .go file of the
-# directory, and the type-check of those files reads the source of every package they import too,
-# since `packages/daemon/internal/supervise/table_test.go#readSealedSet` builds the checker with
-# importer.ForCompiler(..., "source", ...), so the whole import closure is
-# read from source: of this repository internal/claim, phase, runtime, wait, treelifecycle and
-# backoff and what those import, which packages/daemon/**/*.go carries, and outside it the
-# standard library and the module cache - and neither starts a database, a container, tmux or jj,
-# so they are text-check work: they run in the text-checks job, where they wait behind no fixture,
-# and the daemon-go plain step, which runs their package, skips them by name, so each runs once
-# per run of the router (dispatch://INFRA-1413, R3).
-# The other three tests of that file drive a machine and stay in the plain step. Nothing of the file
-# moves package - all five read unexported identifiers of internal/supervise - which is why these
-# two are run by name rather than moved into a package of text checks.
+# ---------------------------------------------------------------- the supervise package's pure pins
+# The four tests of internal/supervise whose subject is the package's own source rather than a
+# claim in motion: of table_test.go, TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState,
+# which holds every event of the sealed set to a row or a named ignore in every state,
+# TestNoTwoEventTypesShareAKind, TestStatesIsEveryDeclaredStateOnce, which holds States() to the
+# ClaimState constants, and TestSuspendSourcesIsEveryDeclaredSourceOnce, which holds
+# SuspendSources() to the SuspendSource constants.
+# Each reads source and nothing else -
+# `packages/daemon/internal/supervise/table_test.go#sealedSource` parses every non-test .go file of
+# the directory, and the type-check of those files reads the source of every package they import
+# too, since `packages/daemon/internal/supervise/table_test.go#readSealedSet` builds the checker
+# with importer.ForCompiler(..., "source", ...), so the whole import closure is read from source: of
+# this repository internal/claim, phase, runtime, wait, treelifecycle and backoff and what those
+# import, which packages/daemon/**/*.go carries, and
+# outside it the standard library and the module cache - and none starts a database, a container,
+# tmux or jj, so they are text-check work: they run in the text-checks job, where they wait behind
+# no fixture, and the daemon-go plain step, which runs their package, skips them by name, so each
+# runs once per run of the router (dispatch://INFRA-1413, R3).
+# The other three tests of table_test.go drive a machine and stay in the plain step. Nothing of the
+# file moves package - all seven of its tests read unexported identifiers of internal/supervise -
+# which is why these four are run by name rather than moved into a package of text checks.
 # Both step texts are built from this one list, and check-ci-filters.sh pins each step's whole
 # script, so the -skip and the -run cannot come to name different tests.
 SUPERVISE_TABLE_TESTS = ["TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState",
-                         "TestNoTwoEventTypesShareAKind"]
+                         "TestNoTwoEventTypesShareAKind",
+                         "TestStatesIsEveryDeclaredStateOnce",
+                         "TestSuspendSourcesIsEveryDeclaredSourceOnce"]
 SUPERVISE_TABLE_PACKAGE = "internal/supervise"
 SUPERVISE_TABLE_SOURCE = f"{DAEMON}/{SUPERVISE_TABLE_PACKAGE}"
-SUPERVISE_TABLE_STEP = "Test the supervise table's two pure pins (no database)"
+SUPERVISE_TABLE_STEP = "Test the supervise package's four pure pins (no database)"
 SUPERVISE_TABLE_PATTERN = names_pattern(SUPERVISE_TABLE_TESTS)
 SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
@@ -1456,11 +1461,12 @@ SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SU
 # moved out of the plain legs, into a race leg or the text checks, while these tests stayed here
 # would run them in that step too.
 if SUPERVISE_TABLE_PACKAGE not in DAEMON_PLAIN_PACKAGES:
-    raise ValueError(f"the table pins are in {SUPERVISE_TABLE_PACKAGE}, which no plain leg of {GO_LEGS} runs, so "
+    raise ValueError(f"the pure pins are in {SUPERVISE_TABLE_PACKAGE}, which no plain leg of {GO_LEGS} runs, so "
                      f"nothing skips them there; name that package's step here, or move the -skip to the step "
                      f"that runs them")
-# The plain legs' step skips both lists' tests, the supervise table's pins and the session client's
-# left-setting test, as one anchored pattern of their names, sorted as each list's own pattern is.
+# The plain legs' step skips both lists' tests, the supervise package's pure pins and the session
+# client's left-setting test, as one anchored pattern of their names, sorted as each list's own
+# pattern is.
 DAEMON_PLAIN_SKIP = names_pattern(SUPERVISE_TABLE_TESTS + SESSION_CLIENT_LEFT_TESTS)
 DAEMON_PLAIN_SCRIPT = legs_script(DAEMON, DAEMON_PLAIN_JOB,
                                   f"go test -count=1 -timeout 15m -skip {DAEMON_PLAIN_SKIP}")
@@ -1481,11 +1487,11 @@ def hold_supervise_table_tests():
     -tags (declared_tests), since neither step passes -tags and a name behind a tag is one the -run
     cannot reach and the -skip need not skip.
     hold_plugin_pack_tests()'s second rule - that its list name every test of the one file that job
-    took whole - is not ported here, because this list is part of a file's tests rather than all of
+    took whole - is not ported here, because this list is part of its files' tests rather than all of
     them. That rule holds a gate whose reads are keyed on test names: the plugin-pack gate declares
     the lockfile, skills/ and the prepack because those three tests read them, so a test of that file
     left out of the list would run in the daemon-go race step, whose filter names none of them. These
-    two pins read source alone - the package's own, and the source of everything it imports, which
+    four pins read source alone - the package's own, and the source of everything it imports, which
     their type-checker reads from source too (`packages/daemon/internal/supervise/table_test.go#readSealedSet`)
     and which of this repository is packages/daemon's own packages - and both jobs' filters
     already carry it: text_checks through packages/daemon/**/*.go and daemon_go_tests through the

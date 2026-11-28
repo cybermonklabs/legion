@@ -357,7 +357,7 @@ func newControllerSandboxRig(t *testing.T, first controllerSandboxSetting) *cont
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
 	kube.onPodReady = r.pods.podReady
-	kube.onPodGone = r.pods.launchers.podGone
+	kube.onPodGone = func(pod string) { r.pods.launchers.podGone(kube.prefix, pod) }
 	kube.run(t)
 	// Registered before any boot, so it runs after every daemon's stop: the logs it prints carry
 	// the shutdown's own lines.
@@ -398,20 +398,21 @@ func (r *controllerSandboxRig) restart(to controllerSandboxSetting) {
 
 // runtimeFor is the runtime factory a boot on cfg runs with: the real Sandbox runtime
 // (sandbox.New) over the fake cluster, built from the daemon's own options (sandboxOptions) and
-// the worker stream, store and connection directory the boot hands it, as
+// the worker stream, store, connection directory and project release mark the boot hands it, as
 // idleWakeRig.newRuntime builds it, with what the controller's launch reads beside them: its
 // GitHub bundle and the owners' directories, the provisioning tokens and repository set every
 // runtime is refused without (checkSupervision), and the rig's `legion` and agent command.
 func (r *controllerSandboxRig) runtimeFor(cfg config.Config) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, _ appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
+		held func() bool,
 	) (legionruntime.Runtime, error) {
 		opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, r.project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil),
 			slog.New(slog.NewJSONHandler(r.logs, nil)))
 		if err != nil {
 			return nil, fmt.Errorf("sandboxOptions: %w", err)
 		}
-		opts.Conns, opts.StreamURL, opts.Store = listener, address, st
+		opts.Conns, opts.StreamURL, opts.Store, opts.ProjectReleaseHolds = listener, address, st, held
 		opts.Tokens = idleRigTokens{}
 		opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			rendered := ghconfig.Render("ghs_controller_sandbox", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))
@@ -809,7 +810,7 @@ func (p *controllerSandboxPods) podReady(pod, uid string, roles map[string]strin
 		p.logf("the pod %s/%s holds no controller launcher token", pod, uid)
 		return
 	}
-	p.launchers.podReady(pod, uid, map[string]string{role: token}, func(_, dir string, processes *idleRigPodProcesses) {
+	p.launchers.podReady(p.kube.prefix, pod, uid, map[string]string{role: token}, nil, func(_, dir string, processes *idleRigPodProcesses) {
 		processes.run(func(ctx context.Context) { p.watchGenerations(ctx, processes, dir) })
 	})
 }

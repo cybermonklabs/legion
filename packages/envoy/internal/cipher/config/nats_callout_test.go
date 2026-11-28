@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -126,6 +127,20 @@ func TestNATSCalloutSettings(t *testing.T) {
 		}
 		if cfg.NATS.Enabled() || entryTexts(cfg.NATS.Services) != e["BROKER_NATS_SERVICES"] || len(cfg.NATS.URLs) != 0 || cfg.NATS.SeedFile != "" {
 			t.Fatalf("an environment naming only edge-listener services configured %+v, want them read and no service", cfg.NATS)
+		}
+	})
+	// The cluster issuer a Kubernetes edge listener needs is BROKER_K8S_OIDC_ISSUER in either form:
+	// named entries do as well as one URL, and the edge listener's entry names its own among them,
+	// which the broker's API reads it with.
+	t.Run("a Kubernetes edge listener beside named cluster issuers", func(t *testing.T) {
+		e := namedIssuersEnv()
+		e["BROKER_NATS_SERVICES"] = "edge-listener/edge-a/PRIV=system:serviceaccount:example-ns:example-edge-listener=" + secondIssuer.Name
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if edges := cfg.NATS.EdgeListeners(); len(edges) != 1 || !slices.Equal(edges[0].Issuers, []string{secondIssuer.Name}) {
+			t.Fatalf("an edge listener naming the issuer %s read as %+v, want that issuer alone", secondIssuer.Name, edges)
 		}
 	})
 	// An edge listener is a caller of the broker's API, so its entry needs the issuer whose

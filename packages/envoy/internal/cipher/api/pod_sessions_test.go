@@ -159,8 +159,8 @@ func TestThePodSessionRouteRegistersAJobAccountsPod(t *testing.T) {
 	}
 	const fixed = "example-sweeper"
 	policy, err := exchange.NewSet([]exchange.AccountEntry{
-		{Account: workerAccount, Job: job(ciphertest.ExchangeProject)},
-		{Account: otherAccount, Job: job("public,PRIVA"), Session: fixed},
+		{Account: workerAccount, Job: job(ciphertest.ExchangeProject), Issuers: []string{""}},
+		{Account: otherAccount, Job: job("public,PRIVA"), Session: fixed, Issuers: []string{""}},
 	}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
@@ -196,7 +196,7 @@ func withExchangeAccounts(t *testing.T, accounts ...string) func(*api.Deps) {
 	t.Helper()
 	entries := make([]exchange.AccountEntry, 0, len(accounts))
 	for _, account := range accounts {
-		entries = append(entries, exchange.AccountEntry{Account: account, Project: ciphertest.ExchangeProject, Person: ciphertest.ExchangePerson})
+		entries = append(entries, exchange.AccountEntry{Account: account, Project: ciphertest.ExchangeProject, Person: ciphertest.ExchangePerson, Issuers: []string{""}})
 	}
 	policy, err := exchange.NewSet(entries, nil, nil, nil, nil, "")
 	if err != nil {

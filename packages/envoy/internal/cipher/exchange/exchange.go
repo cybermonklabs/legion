@@ -18,8 +18,9 @@
 //     (system:serviceaccount:<namespace>:<name>) gives the person and the project, or no project
 //     for an entry that names none (<service account>==<person>), or neither for an entry that
 //     names no person, whose token acts as the account itself (<service account>==), or a job
-//     list, or a read entry keyed on it gives a service and the session its token reads as, and
-//     the token must carry the pod it is bound to;
+//     list, and names the issuers the token may come from, or a read entry keyed on it gives a
+//     service and the session its token reads as and names the issuers the token may come from,
+//     and the token must carry the pod it is bound to;
 //   - a continuous-integration workflow run's GitHub token, where an entry keyed on the
 //     repository, the workflow's path and the ref it ran on gives the project and the person, or
 //     a result entry keyed on the repository and the workflow's path, with a pattern of the refs
@@ -71,11 +72,12 @@ import (
 )
 
 // Why a subject token is refused. Each stands for one answer an operator can act on: list the
-// identity (ErrNoEntry), list it once (ErrTwoEntries), mint the token in a pod rather than by hand
-// (ErrNoPodBinding), ask under the session the entry fixes (ErrSessionMismatch), name a session
-// (ErrSessionRequired), name a usable one (ErrSessionInvalid), present a token that carries the
-// claims its kind must (ErrClaimMissing), verify the machine's or the person's address with its
-// provider (ErrEmailNotVerified), sign in with an account of the configured Workspace domain
+// identity (ErrNoEntry), list it once (ErrTwoEntries), name the token's issuer on the identity's
+// entry (ErrIssuerNotNamed), mint the token in a pod rather than by hand (ErrNoPodBinding), ask
+// under the session the entry fixes (ErrSessionMismatch), name a session (ErrSessionRequired),
+// name a usable one (ErrSessionInvalid), present a token that carries the claims its kind must
+// (ErrClaimMissing), verify the machine's or the person's address with its provider
+// (ErrEmailNotVerified), sign in with an account of the configured Workspace domain
 // (ErrNotInDomain), present the machine's own identity token beside the person's
 // (ErrNoActorToken), mint the machine's token on a Compute Engine instance or unpin its entry
 // (ErrNoComputeEngine), run the machine where its entry allows (ErrMachineNotAllowed), of a
@@ -88,6 +90,7 @@ import (
 var (
 	ErrNoEntry           = errors.New("exchange: no entry lists this identity")
 	ErrTwoEntries        = errors.New("exchange: two entries list this identity")
+	ErrIssuerNotNamed    = errors.New("exchange: the identity's entry does not name the issuer of its token")
 	ErrNoPodBinding      = errors.New("exchange: the subject token is bound to no pod")
 	ErrSessionMismatch   = errors.New("exchange: the request names a session the entry does not fix")
 	ErrSessionRequired   = errors.New("exchange: the request names no session and the entry fixes none")
@@ -533,10 +536,10 @@ type Reservation struct {
 }
 
 // AccountEntry lists one Kubernetes service account and what a pod running as it may write.
-// Account is required. Person is required of an entry that names a project, and Job and Person
-// are never both set: an entry names the person its pods act for, with a project or none, or a
-// job list, or neither, for an entry whose pods act as the account itself. Session is not
-// required.
+// Account and Issuers are required. Person is required of an entry that names a project, and Job
+// and Person are never both set: an entry names the person its pods act for, with a project or
+// none, or a job list, or neither, for an entry whose pods act as the account itself. Session is
+// not required.
 type AccountEntry struct {
 	// Account is the subject a pod's projected token carries,
 	// system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard.
@@ -560,6 +563,14 @@ type AccountEntry struct {
 	// oauthwire.LegionDaemonSessionPrefix + Project makes the entry a Legion daemon's own
 	// (Claims.LegionStatus).
 	Session string
+	// Issuers are the names, in BROKER_K8S_OIDC_ISSUER, of the issuers whose tokens the account's
+	// pods exchange: the entry's own, or the first issuer's alone where it names none, which
+	// config.Load fills in. The same account name in another cluster is another ServiceAccount,
+	// so Pod refuses a token of any other issuer, and a pod of the account that enrolled with
+	// such a token is given neither Person nor Project (PodProjects), so a private project's
+	// secret goes to none of that cluster's pods. The one issuer of a list written as a bare URL
+	// has the empty name.
+	Issuers []string
 }
 
 // ReadEntry lists one Kubernetes service account whose pods may read and may write nothing: the
@@ -583,6 +594,14 @@ type ReadEntry struct {
 	// nobody whose session a request could name, and it is one of the set's Reservations, held
 	// for the account as AccountEntry.Session is.
 	Session string
+	// Issuers are the names, in BROKER_K8S_OIDC_ISSUER, of the issuers whose tokens the account's
+	// pods exchange: the entry's own, or the first issuer's alone where it names none, which
+	// config.Load fills in, as it does an AccountEntry's. The same account name in another cluster
+	// is another ServiceAccount, and a read token reads everything a Dispatch read route answers,
+	// across every project, so Pod refuses a token of any other issuer, and the account's pods
+	// exchange only on the clusters of the issuers their entry names. The one issuer of a list
+	// written as a bare URL has the empty name.
+	Issuers []string
 }
 
 // WorkflowEntry lists one GitHub workflow of one repository on one ref, and what a run of it may
@@ -731,7 +750,8 @@ func mappingOf(person, project string, job JobProjects) mapping {
 }
 
 // NewSet validates every entry and builds the set the exchange decides against. It refuses,
-// naming the entry it refuses: an empty or blank required field, an account or repository that is
+// naming the entry it refuses: an empty or blank required field, an account or read entry that
+// names no issuer, whose pods' tokens no issuer could carry, an account or repository that is
 // not of its grammar, a fixed session name that is not usable, an identity listed twice, since
 // two answers for one identity is a configuration whose meaning depends on order, two workflows
 // whose principals spell alike, and a session name two entries fix, since one name belongs to one
@@ -752,7 +772,8 @@ func mappingOf(person, project string, job JobProjects) mapping {
 // one; an identity a job entry and an entry naming a person both list is an identity listed
 // twice.
 //
-// reads are the read entries, which list Kubernetes service accounts as accounts does. An
+// reads are the read entries, which list Kubernetes service accounts as accounts does, each
+// naming the issuers its pods' tokens come from as an account entry does (ReadEntry.Issuers). An
 // account both lists name is refused, naming its read entry, for the reason an identity listed
 // twice is: it would have two answers, a token that writes as its person and one that only reads.
 // A read entry's session is required as well as usable, and is reserved for the account as an
@@ -802,12 +823,16 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if err := checkGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, true); err != nil {
 			return nil, err
 		}
+		if len(entry.Issuers) == 0 {
+			return nil, fmt.Errorf("exchange: %s: the issuers are required, since an entry naming none takes no pod's token", where)
+		}
 		if _, listed := set.accounts[entry.Account]; listed {
 			return nil, fmt.Errorf("exchange: %s: the account is listed twice, and one account writes as one identity", where)
 		}
 		if err := reserve(where, entry.Session, AccountPrincipal(entry.Account)); err != nil {
 			return nil, err
 		}
+		entry.Issuers = slices.Clone(entry.Issuers)
 		set.accounts[entry.Account] = entry
 		set.mapped[AccountPrincipal(entry.Account)] = mappingOf(entry.Person, entry.Project, entry.Job)
 	}
@@ -822,6 +847,9 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if !ValidSession(entry.Session) {
 			return nil, fmt.Errorf("exchange: %s: the session is required, since a read entry fixes the session its token names, and %s", where, sessionRule)
 		}
+		if len(entry.Issuers) == 0 {
+			return nil, fmt.Errorf("exchange: %s: the issuers are required, since an entry naming none takes no pod's token", where)
+		}
 		if _, listed := set.reads[entry.Account]; listed {
 			return nil, fmt.Errorf("exchange: %s: the account is listed twice, and one account reads as one identity", where)
 		}
@@ -831,6 +859,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if err := reserve(where, entry.Session, AccountPrincipal(entry.Account)); err != nil {
 			return nil, err
 		}
+		entry.Issuers = slices.Clone(entry.Issuers)
 		set.reads[entry.Account] = entry
 		set.mapped[AccountPrincipal(entry.Account)] = mapping{}
 	}
@@ -955,8 +984,10 @@ func (s *Set) Reservations() []Reservation {
 // account entry naming no person and no job list, and a read entry, answer neither, and true. A
 // job entry answers no person and its whole list: a named list's one project, or a public list's
 // private projects, beside which its token reaches every public project. It is how a reader
-// holding no token — a release for a pod or a machine — reads the list that pod's or that
-// machine's token would carry. The slice is the caller's own.
+// holding no token — a release for a machine — reads the list that machine's token would carry.
+// It reads no issuer: a pod's account is answered for one issuer by PodProjects, since a token
+// of an issuer its entry does not name is another cluster's ServiceAccount. The slice is the
+// caller's own.
 func (s *Set) MappedProjects(principal string) (person string, projects []string, ok bool) {
 	entry, listed := s.mapped[principal]
 	if !listed {
@@ -965,19 +996,20 @@ func (s *Set) MappedProjects(principal string) (person string, projects []string
 	return entry.person, slices.Clone(entry.projects), true
 }
 
-// ProjectsForAccount is the projects this configuration gives a token minted for one account,
-// and false for an account no entry lists. An account that opens with "system:serviceaccount:"
-// is read as a Kubernetes subject, any other as a Google account address, so a caller passes the
-// string its own configuration holds and spells no principal. It reads the same entries Pod and
-// Google mint from, so a grant made from this answer and the token of that account cannot
-// disagree. A workflow is no account and is answered false.
-func (s *Set) ProjectsForAccount(account string) ([]string, bool) {
-	principal := GooglePrincipal(account)
-	if strings.HasPrefix(account, oauthwire.AccountSubjectPrefix) {
-		principal = AccountPrincipal(account)
+// PodProjects is the person and the projects the entry of a Kubernetes service account gives a
+// pod of that account whose token the issuer named issuer, in BROKER_K8S_OIDC_ISSUER, signed: what
+// MappedProjects answers for AccountPrincipal(account), and false, with no person and no project,
+// for an account no account or read entry lists and for an issuer its entry does not name. It
+// reads the issuers of the listing Pod reads, so it takes the issuers Pod takes. The same account
+// name in another cluster is another ServiceAccount, so Pod refuses such a token
+// (ErrIssuerNotNamed), and a reader holding no token — a release for a service's pod, read
+// against the issuer its enrollment recorded — gives that pod neither the entry's person nor its
+// project. The slice is the caller's own.
+func (s *Set) PodProjects(account, issuer string) (person string, projects []string, ok bool) {
+	if listing, listed := s.listing(account); !listed || !slices.Contains(listing.issuers(), issuer) {
+		return "", nil, false
 	}
-	_, projects, ok := s.MappedProjects(principal)
-	return projects, ok
+	return s.MappedProjects(AccountPrincipal(account))
 }
 
 // entryProjects is the list a token an operator's entry maps carries: that entry's one project,
@@ -1084,13 +1116,17 @@ func checkGrant(where, person, project string, job JobProjects, session string, 
 	return nil
 }
 
-// Pod answers the claims for a pod's Kubernetes service-account token. The token's own shape is
-// read first — the account it was minted for, and the pod it is bound to — and the entry for that
-// account second, so an operator reading the refusal learns which of the two to fix.
+// Pod answers the claims for a pod's Kubernetes service-account token, which the issuer named
+// issuer, in BROKER_K8S_OIDC_ISSUER, signed. The token's own shape is read first — the account it
+// was minted for, and the pod it is bound to — and the entry for that account second, so an
+// operator reading the refusal learns which of the two to fix. The entry must name issuer: an
+// account entry and a read entry each name their Issuers. The same account name in another
+// cluster is another ServiceAccount, so a token of an issuer the entry does not name is refused
+// (ErrIssuerNotNamed).
 //
 // A token carrying no pod uid is refused however the account is listed: Kubernetes mints such a
 // token to anyone holding the account's credentials, and it proves only that the account exists,
-// where a bound one proves Kubernetes minted it for one pod of this cluster. It does not prove
+// where a bound one proves Kubernetes minted it for one pod of its cluster. It does not prove
 // that pod still runs: the broker's exchange verifies the token offline against the issuer's
 // published keys and asks the cluster nothing, so a token whose pod has been deleted is exchanged
 // until its own expiry, which the Kubernetes subject token's lifetime tolerance
@@ -1126,7 +1162,7 @@ func checkGrant(where, person, project string, job JobProjects, session string, 
 // as a person's pod does, and none where it fixes one.
 //
 // Pod answers LegionStatus for a Legion daemon's own entry alone (Claims.LegionStatus).
-func (s *Set) Pod(token map[string]any, session string, projects []string) (Claims, error) {
+func (s *Set) Pod(token map[string]any, issuer, session string, projects []string) (Claims, error) {
 	account, err := claimString(token, "sub")
 	if err != nil {
 		return Claims{}, err
@@ -1135,6 +1171,9 @@ func (s *Set) Pod(token map[string]any, session string, projects []string) (Clai
 	listing, err := s.podEntry(account, uid)
 	if err != nil {
 		return Claims{}, err
+	}
+	if issuers := listing.issuers(); !slices.Contains(issuers, issuer) {
+		return Claims{}, fmt.Errorf("%w: the entry of %s names the issuers %q, and its token is of %q", ErrIssuerNotNamed, account, issuers, issuer)
 	}
 	name, err := resolveSession(listing.fixed(), session, account)
 	if err != nil {
@@ -1182,23 +1221,42 @@ func (l podListing) fixed() string {
 	return l.account.Session
 }
 
+// issuers are the names of the issuers whose tokens the listing's account exchanges: an account
+// entry's Issuers, or a read entry's.
+func (l podListing) issuers() []string {
+	if l.readOnly {
+		return l.read.Issuers
+	}
+	return l.account.Issuers
+}
+
 // podEntry is the reading of a pod's identity that Pod and Registration both begin with: the
 // pod uid the token must carry, refused first because a token bound to no pod proves only that
 // the account exists, and then the entry that lists the account, an account entry or a read
 // entry. Both refuse in this order, in these words, because they are this one helper: a
-// registrar and the exchange that reads its row refuse the same pods for the same reasons, which
-// Registration's doc promises.
+// registrar and the exchange that reads its row refuse the same pods for these two reasons,
+// which Registration's doc promises.
 func (s *Set) podEntry(account, uid string) (podListing, error) {
 	if uid == "" {
 		return podListing{}, fmt.Errorf("%w: %s presented a token bound to no pod, which proves only that the account exists", ErrNoPodBinding, account)
 	}
-	if entry, listed := s.accounts[account]; listed {
-		return podListing{account: entry}, nil
-	}
-	if entry, listed := s.reads[account]; listed {
-		return podListing{read: entry, readOnly: true}, nil
+	if listing, listed := s.listing(account); listed {
+		return listing, nil
 	}
 	return podListing{}, fmt.Errorf("%w: no entry lists the service account %s", ErrNoEntry, account)
+}
+
+// listing is the entry that lists a pod's account, its account entry or else its read entry, and
+// false for an account neither lists. Pod, Registration and PodProjects all read it, so they take
+// one entry, and its issuers, for an account.
+func (s *Set) listing(account string) (podListing, bool) {
+	if entry, listed := s.accounts[account]; listed {
+		return podListing{account: entry}, true
+	}
+	if entry, listed := s.reads[account]; listed {
+		return podListing{read: entry, readOnly: true}, true
+	}
+	return podListing{}, false
 }
 
 // Registration refuses what a pod-session registration must refuse before it is written: a token
@@ -1206,8 +1264,9 @@ func (s *Set) podEntry(account, uid string) (podListing, error) {
 // registration because its name is the configuration's. A read entry is always that last: it
 // fixes the session its token names. The first two refusals are podEntry, the one reading of a
 // pod's identity Pod makes too, so a registrar and the exchange that reads its row refuse the
-// same pods for the same reasons; what it does not decide is whether the name belongs to the
-// account, which only the claim on the name answers (oauthstore.Store.BindSession).
+// same pods for those two reasons. What it does not decide is whether the name belongs to the
+// account, which only the claim on the name answers (oauthstore.Store.BindSession), and whether
+// the entry names the issuer of the token the pod exchanges, which Pod decides on that token.
 func (s *Set) Registration(account, podUID, session string) error {
 	listing, err := s.podEntry(account, podUID)
 	if err != nil {

@@ -340,6 +340,12 @@ func outcomeOf(started bool) freshOutcome {
 // not the project is paused.
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
 	by supervise.SuspendSource) (status int, notRestarted string, effect freshOutcome, ok bool) {
+	// A fresh session stops the claim and starts it again, which the project release holds at
+	// both doors, before anything of the claim is read or asked, except at the agent door, whose
+	// read of an operator's hold (agentDoor) answers SUSPENDED_BY_OPERATOR first.
+	if s.releaseRefused(w, r, "fresh-session") {
+		return 0, "", freshStarted, false
+	}
 	c := m.Claim()
 	if c.KeeperRetries() {
 		// The keeper's resume is the rule's, which an operator's suspension holds against (the

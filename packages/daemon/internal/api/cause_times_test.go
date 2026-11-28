@@ -295,7 +295,9 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	// A caller below causeTimesContract is below dispatchCredentialContract too, the one frozen row
 	// above it, so its log holds the cause times' line first and the Dispatch credential's second,
 	// then the line of each band above them (narrowingsExpected), which is that band's test's to
-	// name. It reads carriedState, as TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does.
+	// name. It reads carriedState, as TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does:
+	// it carries each entry's keys, the project release entry's `projectRelease` among them, which
+	// the populated state alone does not, so every entry's band writes its line.
 	carried := carriedState(t)
 	_, narrowings := stateNarrowedStating(t, carried, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"

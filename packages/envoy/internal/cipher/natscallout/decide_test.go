@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -108,21 +109,23 @@ func introspector(sessions ...*session) func(context.Context, string) (oauthwire
 }
 
 // platformToken is a service's platform identity token as the stub ServiceToken reads it: the
-// account it names and its life.
+// account it names, the name of the issuer that signed it ("" for a Google token and for the one
+// issuer of a bare BROKER_K8S_OIDC_ISSUER URL), and its life.
 type platformToken struct {
 	account        string
 	google         bool
+	issuer         string
 	issued, expiry time.Time
 }
 
 // serviceTokens verifies each raw token tokens names, and refuses every other.
-func serviceTokens(tokens map[string]platformToken) func(context.Context, string) (string, bool, time.Time, time.Time, error) {
-	return func(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
+func serviceTokens(tokens map[string]platformToken) func(context.Context, string) (ServiceIdentity, error) {
+	return func(_ context.Context, raw string) (ServiceIdentity, error) {
 		token, ok := tokens[raw]
 		if !ok {
-			return "", false, time.Time{}, time.Time{}, errors.New("the token did not verify")
+			return ServiceIdentity{}, errors.New("the token did not verify")
 		}
-		return token.account, token.google, token.issued, token.expiry, nil
+		return ServiceIdentity{Account: token.account, Google: token.google, Issuer: token.issuer, Issued: token.issued, Expiry: token.expiry}, nil
 	}
 }
 
@@ -139,13 +142,22 @@ const (
 	edgeAccount            = "system:serviceaccount:example-ns:example-edge-listener"
 )
 
+// oneIssuer is BROKER_K8S_OIDC_ISSUER as one bare URL, the one issuer every deployment had before
+// it named several, which has no name; twoIssuers names two, first and second.
+var (
+	oneIssuer  = []oidc.NamedIssuer{{URL: "https://cluster.example"}}
+	twoIssuers = []oidc.NamedIssuer{{Name: "first", URL: "https://first.example"}, {Name: "second", URL: "https://second.example"}}
+)
+
+// exampleServices are entries of a broker whose BROKER_K8S_OIDC_ISSUER is one bare URL, so each
+// Kubernetes account's token is taken from that issuer, whose name is "".
 var exampleServices = []config.NATSService{
-	{Kind: config.NATSDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
-	{Kind: config.NATSListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
-	{Kind: config.NATSWebhookListener, MachineID: "example-webhook", Account: webhookListenerAccount, AllProjects: true},
-	{Kind: config.NATSDaemon, Account: daemonAccount, AllProjects: true},
+	{Kind: config.NATSDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", Issuers: []string{""}, AllProjects: true},
+	{Kind: config.NATSListener, MachineID: "example-hub", Account: listenerAccount, Issuers: []string{""}, AllProjects: true},
+	{Kind: config.NATSWebhookListener, MachineID: "example-webhook", Account: webhookListenerAccount, Issuers: []string{""}, AllProjects: true},
+	{Kind: config.NATSDaemon, Account: daemonAccount, Issuers: []string{""}, AllProjects: true},
 	{Kind: config.NATSMeasure, Account: measureAccount, Google: true, AllProjects: true},
-	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon", Issuers: []string{""}},
 }
 
 // A session's live token and a proof over this connection's nonce are answered with a user of
@@ -216,6 +228,74 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	}
 }
 
+// A Kubernetes service's token is taken only from an issuer its entry names, and an entry that
+// names none takes the first issuer of BROKER_K8S_OIDC_ISSUER alone: the same account's token
+// from another issuer is another cluster's ServiceAccount, refused as an account no entry lists.
+// A Google entry names no issuer, and a subject no entry lists is refused from every issuer.
+func TestAServiceTokenIsTakenFromTheIssuersItsEntryNames(t *testing.T) {
+	const stranger = "system:serviceaccount:example-ns:stranger"
+	now := time.Now()
+	services, err := config.ParseNATSServices("daemon/-/*="+daemonAccount+" listener/example-hub/*="+listenerAccount+"=first,second"+
+		" measure/-/*=google:"+measureAccount, twoIssuers)
+	require.NoError(t, err)
+	token := func(account, issuer string) platformToken {
+		return platformToken{account: account, issuer: issuer, issued: now, expiry: now.Add(time.Hour)}
+	}
+	tokens := map[string]platformToken{
+		"daemon-of-first":    token(daemonAccount, "first"),
+		"daemon-of-second":   token(daemonAccount, "second"),
+		"listener-of-first":  token(listenerAccount, "first"),
+		"listener-of-second": token(listenerAccount, "second"),
+		"stranger-of-first":  token(stranger, "first"),
+		"stranger-of-second": token(stranger, "second"),
+		"measure":            {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
+	}
+	deps := Deps{ServiceToken: serviceTokens(tokens)}
+	for raw, listed := range map[string]bool{
+		"daemon-of-first": true, "daemon-of-second": false,
+		"listener-of-first": true, "listener-of-second": true,
+		"stranger-of-first": false, "stranger-of-second": false,
+		"measure": true,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, err := Decide(t.Context(), deps, services, serviceRequest(raw))
+			if listed {
+				require.NoError(t, err)
+				return
+			}
+			var refused *Refusal
+			require.True(t, errors.As(err, &refused), "%v", err)
+			require.Equal(t, labelServiceNotListed, refused.Label)
+			require.Equal(t, "service not listed: "+tokens[raw].account, refused.Reason)
+		})
+	}
+}
+
+// An edge listener's token is taken only from an issuer its entry names, as every Kubernetes
+// service's is: its token of the issuer its entry names is answered with the edge's grant
+// (natsgrant.Edge), and its token of another issuer is refused as an account no entry lists,
+// never answered with that grant.
+func TestAnEdgeListenersTokenIsTakenFromTheIssuersItsEntryNames(t *testing.T) {
+	now := time.Now()
+	services, err := config.ParseNATSServices("edge-listener/edge-a/PRIV="+edgeAccount+"=first", twoIssuers)
+	require.NoError(t, err)
+	tokens := map[string]platformToken{
+		"edge-of-first":  {account: edgeAccount, issuer: "first", issued: now, expiry: now.Add(time.Hour)},
+		"edge-of-second": {account: edgeAccount, issuer: "second", issued: now, expiry: now.Add(time.Hour)},
+	}
+	deps := Deps{ServiceToken: serviceTokens(tokens)}
+	decision, err := Decide(t.Context(), deps, services, serviceRequest("edge-of-first"))
+	require.NoError(t, err)
+	want, err := natsgrant.Edge("edge-a", []string{"PRIV"})
+	require.NoError(t, err)
+	require.Equal(t, Decision{Name: "edge-listener/edge-a", Grant: want, Expires: now.Add(time.Hour)}, decision)
+	_, err = Decide(t.Context(), deps, services, serviceRequest("edge-of-second"))
+	var refused *Refusal
+	require.True(t, errors.As(err, &refused), "%v", err)
+	require.Equal(t, labelServiceNotListed, refused.Label)
+	require.Equal(t, "service not listed: "+edgeAccount, refused.Reason)
+}
+
 // The lane deny reaches the services the auth service admits (check l5 of dispatch://INFRA-3589):
 // a listener's grant denies a publish on Dispatch's lane and on GitHub's lane, the webhook
 // listener's, the listener that receives GitHub's webhook, denies Dispatch's lane alone, and
@@ -254,9 +334,9 @@ func TestADottedMachineIDStartsAndDelivers(t *testing.T) {
 	for _, kind := range []config.NATSServiceKind{config.NATSListener, config.NATSWebhookListener, config.NATSDispatch} {
 		t.Run(string(kind), func(t *testing.T) {
 			text := string(kind) + "/" + machineID + "/*=" + listenerAccount
-			services, err := config.ParseNATSServices(text)
+			services, err := config.ParseNATSServices(text, oneIssuer)
 			require.NoError(t, err)
-			require.Equal(t, []config.NATSService{{Kind: kind, MachineID: machineID, Account: listenerAccount, AllProjects: true, Text: text}}, services)
+			require.Equal(t, []config.NATSService{{Kind: kind, MachineID: machineID, Account: listenerAccount, Issuers: []string{""}, AllProjects: true, Text: text}}, services)
 			require.Equal(t, string(kind)+"/"+machineID, services[0].Name())
 			grant := serviceGrant(services[0])
 			durable, queue := bus.ListenerDurable(machineID), bus.ListenerQueue(machineID)
@@ -290,7 +370,7 @@ func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
 		{entry: "edge-listener/edge-a/PRIV,OTHER=" + edgeAccount, projects: []string{"OTHER", "PRIV"}},
 	} {
 		t.Run(test.entry, func(t *testing.T) {
-			services, err := config.ParseNATSServices(test.entry)
+			services, err := config.ParseNATSServices(test.entry, oneIssuer)
 			require.NoError(t, err)
 			decision, err := Decide(t.Context(), deps, services, serviceRequest("edge-token"))
 			require.NoError(t, err)
@@ -319,9 +399,9 @@ func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
 func TestADottedEdgeMachineIDIsGrantedItsSpelledPrefix(t *testing.T) {
 	const machineID = "host.example.internal"
 	text := "edge-listener/" + machineID + "/PRIV=" + edgeAccount
-	services, err := config.ParseNATSServices(text)
+	services, err := config.ParseNATSServices(text, oneIssuer)
 	require.NoError(t, err)
-	require.Equal(t, []config.NATSService{{Kind: config.NATSEdgeListener, MachineID: machineID, Account: edgeAccount, Projects: []string{"PRIV"}, Text: text}}, services)
+	require.Equal(t, []config.NATSService{{Kind: config.NATSEdgeListener, MachineID: machineID, Account: edgeAccount, Issuers: []string{""}, Projects: []string{"PRIV"}, Text: text}}, services)
 	require.Equal(t, "edge-listener/"+machineID, services[0].Name())
 	grant := serviceGrant(services[0])
 	require.Equal(t, []string{
@@ -414,8 +494,8 @@ func TestRefusals(t *testing.T) {
 		Introspect: func(ctx context.Context, _ string) (oauthwire.Introspection, error) {
 			return oauthwire.Introspection{}, ctx.Err()
 		},
-		ServiceToken: func(ctx context.Context, _ string) (string, bool, time.Time, time.Time, error) {
-			return "", false, time.Time{}, time.Time{}, ctx.Err()
+		ServiceToken: func(ctx context.Context, _ string) (ServiceIdentity, error) {
+			return ServiceIdentity{}, ctx.Err()
 		},
 	}
 	spent, cancel := context.WithCancel(context.Background())
@@ -632,15 +712,16 @@ func TestAGrantNamingASystemSubjectIsRefused(t *testing.T) {
 }
 
 // The deployment's operator identity and the writer hold's probe, as BROKER_NATS_SERVICES lists
-// them (config.ParseNATSServices), beside exampleServices.
+// them (config.ParseNATSServices), beside exampleServices: each a Kubernetes account of the one
+// issuer of a bare BROKER_K8S_OIDC_ISSUER URL, as exampleServices' are.
 const (
 	operatorAccount = "system:serviceaccount:envoy-operator:envoy-operator"
 	probeAccount    = "system:serviceaccount:envoy-operator:envoy-hold-probe"
 )
 
 var (
-	operatorEntry = config.NATSService{Kind: config.NATSOperator, Account: operatorAccount, AllProjects: true}
-	probeEntry    = config.NATSService{Kind: config.NATSProbe, Account: probeAccount, AllProjects: true}
+	operatorEntry = config.NATSService{Kind: config.NATSOperator, Account: operatorAccount, Issuers: []string{""}, AllProjects: true}
+	probeEntry    = config.NATSService{Kind: config.NATSProbe, Account: probeAccount, Issuers: []string{""}, AllProjects: true}
 	// holdServices are exampleServices with the operator and the probe listed.
 	holdServices = append(append([]config.NATSService{}, exampleServices...), operatorEntry, probeEntry)
 )
@@ -651,12 +732,13 @@ var (
 // client a decision admits - a session, a listed service, the hold's probe - is refused
 // hold_unknown while the row is unknown, naming nothing but that, and is decided as before while it
 // is known, held included (refusing them under held is a later task's). A decision reads the row
-// once, and only for a client it would otherwise admit: a client with no credential or an unlisted
-// one costs the broker's Postgres nothing.
+// once, and only for a client it would otherwise admit: a client with no credential, an unlisted
+// one, and the operator's account's token from an issuer its entry does not name, which is another
+// ServiceAccount and refused as unlisted, cost the broker's Postgres nothing.
 //
 // It fails when the operator is refused for the hold (the unknown row's operator line), when a
-// client other than the operator is admitted while the row is unknown, or when the operator's user
-// outlives 10 minutes.
+// client other than the operator is admitted while the row is unknown, when the operator's user
+// outlives 10 minutes, or when the operator's account is admitted from another issuer.
 func TestTheOperatorsGrantIsTheHoldsPhase(t *testing.T) {
 	now := time.Now()
 	signer := newHoldSigner(t)
@@ -667,6 +749,7 @@ func TestTheOperatorsGrantIsTheHoldsPhase(t *testing.T) {
 		"listener-token":       {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
 		"probe-token":          {account: probeAccount, issued: now, expiry: now.Add(time.Hour)},
 		"unlisted-token":       {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
+		"other-operator-token": {account: operatorAccount, issuer: "other", issued: now, expiry: now.Add(time.Hour)},
 	}
 	stub := &holdStub{}
 	deps := Deps{Introspect: introspector(a), ServiceToken: serviceTokens(tokens), Now: func() time.Time { return now },
@@ -723,12 +806,16 @@ func TestTheOperatorsGrantIsTheHoldsPhase(t *testing.T) {
 				require.Equal(t, "hold_unknown: the NATS writer hold cannot be read", refused.Reason)
 				require.ErrorIs(t, refused.Cause, errNoHoldRow, "the reporter's line does not say why")
 			}
-			for _, refusedFirst := range []Request{serviceRequest("unlisted-token"), {UserNkey: "UUSER", ServerID: "NSERVER"}} {
+			for _, refusedFirst := range []Request{serviceRequest("unlisted-token"), serviceRequest("other-operator-token"), {UserNkey: "UUSER", ServerID: "NSERVER"}} {
 				before := stub.called()
 				_, err := Decide(t.Context(), deps, holdServices, refusedFirst)
 				require.Error(t, err)
 				require.Zero(t, stub.called()-before, "a client refused before its grant read the hold row")
 			}
+			_, err := Decide(t.Context(), deps, holdServices, serviceRequest("other-operator-token"))
+			var refused *Refusal
+			require.True(t, errors.As(err, &refused), "the operator's account was admitted from an issuer its entry does not name")
+			require.Equal(t, labelServiceNotListed, refused.Label)
 		})
 	}
 }

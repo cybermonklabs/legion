@@ -25,6 +25,14 @@ import (
 // exactly the stale ones. A claim in an open update round is served on its previous contract
 // (staleClaim) so that it can finish its turn, push and signal here; refusing it would leave the
 // round no early answer from it, and the round would wait for its bound.
+//
+// The project release asks its roles under a round of its own, "release:<id>", through the
+// plugin's same operation, which takes any round, so the plugin needs no change of its own. An
+// answer naming the running release's round is handed to the release (Options.ProjectRelease),
+// which checks the claim's session and generation and records the answer on its own record; the
+// claim's machine is asked nothing, so no round column of the claim records it. Any other round
+// goes to the machine, which refuses one its claim is not in, a release's round no release runs
+// any more among them.
 func (s *server) readyForUpdate(w http.ResponseWriter, r *http.Request) {
 	var req claim.ReadyForUpdateRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
@@ -40,6 +48,15 @@ func (s *server) readyForUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, decided := s.decision(r, req.ClaimToken)
 	defer decided()
+	// requireFields refused an empty round above, so a release that runs no ask ("") matches none.
+	if s.projectRelease != nil && req.Round == s.projectRelease.AskRound() {
+		if err := s.projectRelease.Answer(ctx, req.ClaimToken, req.SessionID, req.Generation, req.Head); err != nil {
+			s.claimFailure(w, r, "ready_for_update", req.ClaimToken, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	err := m.Handle(ctx, supervise.PodUpdateSignalled{
 		Claim: req.ClaimToken, Generation: req.Generation, Session: req.SessionID,
 		Round: req.Round, Head: req.Head,

@@ -9,6 +9,7 @@
 package testbuild
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,8 +26,8 @@ import (
 const RootEnv = "LEGION_E2E_REPO_ROOT"
 
 // shared is this test process's build directory and the build of each command. Main sets main
-// before the package's tests run; EnvoyBinary refuses to run without it, since only Main removes
-// the directory.
+// before the package's tests run; EnvoyBinary and Dir refuse to run without it, since only Main
+// removes the directory.
 var shared struct {
 	main bool
 
@@ -55,6 +56,16 @@ func EnvoyBinary(t testing.TB, command string) string {
 		t.Fatal(built.err)
 	}
 	return built.path
+}
+
+// Dir is the one directory this process builds into, made on first use and removed by Main. It
+// refuses with an error when Main does not run the package's tests, as EnvoyBinary refuses, since
+// only Main removes the directory.
+func Dir() (string, error) {
+	if !shared.main {
+		return "", errors.New("testbuild.Dir needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(testbuild.Main(m.Run)) }")
+	}
+	return buildDir()
 }
 
 // Main runs a package's tests and removes the directory their binaries were built into, answering

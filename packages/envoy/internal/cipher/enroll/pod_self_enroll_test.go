@@ -49,7 +49,10 @@ func newPodRig(t *testing.T) podRig {
 	t.Helper()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
-	svc.ServiceLogins = map[string]string{selfAccount: podLoginService, launcherAccount: podLoginService}
+	svc.ServiceLogins = map[string]ServiceLogin{
+		selfAccount:     {Service: podLoginService, Issuers: []string{""}},
+		launcherAccount: {Service: podLoginService, Issuers: []string{""}},
+	}
 	svc.ServicesByAccount = map[string]string{workerPodAccount: podLoginService}
 	return podRig{svc: svc, issuer: issuer, key: key}
 }
@@ -108,7 +111,7 @@ func newLoginKey(t *testing.T) loginKey {
 // serviceOf is the service BROKER_SERVICE_LOGINS gives account, as machine.Service.TokenLogin
 // resolves it before issuing the credential.
 func (r podRig) serviceOf(account string) string {
-	return r.svc.ServiceLogins[account]
+	return r.svc.ServiceLogins[account].Service
 }
 
 // loginWithKey is login proving key, so a test can log in twice with one key as a daemon does.
@@ -606,7 +609,7 @@ func TestATokenLoginEndsNoEnrollmentOfAnotherServicesPods(t *testing.T) {
 	r := newPodRig(t)
 	ctx := context.Background()
 	const otherService, otherPodAccount = "other-service", "system:serviceaccount:other:other-worker"
-	r.svc.ServiceLogins[otherLauncherAccount] = otherService
+	r.svc.ServiceLogins[otherLauncherAccount] = ServiceLogin{Service: otherService, Issuers: []string{""}}
 	r.svc.ServicesByAccount[otherPodAccount] = otherService
 
 	theirs := r.login(t, otherLauncherAccount, "pod-uid-other-daemon")

@@ -74,8 +74,10 @@ const (
 	resultsBranch   = "refs/heads/topic"
 	commitSHA       = "0123456789abcdef0123456789abcdef01234567"
 	// podAudience and workflowAudience are what each issuer's tokens must be minted for; a token
-	// carrying anything else is not spendable at this broker.
+	// carrying anything else is not spendable at this broker. clusterName is the cluster issuer's
+	// name, which every account entry names.
 	podAudience      = "https://broker.example"
+	clusterName      = "cluster"
 	workflowAudience = "https://broker.example/ci"
 	// signInDomain is the Google Workspace domain a person signing in on a machine must belong
 	// to, BROKER_SIGNIN_DOMAIN's value in these tests, and deviceAudience the audience the
@@ -137,17 +139,17 @@ func newExchangeFixture(t *testing.T, adjust func(*oauth.Config)) *exchangeFixtu
 	config := oauth.ExchangeConfig{
 		Policy: newPolicyListing(t,
 			[]exchange.AccountEntry{
-				{Account: account, Project: project, Person: person},
-				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
-				{Account: otherAccount, Project: otherProject, Person: otherPerson},
+				{Account: account, Project: project, Person: person, Issuers: []string{clusterName}},
+				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession, Issuers: []string{clusterName}},
+				{Account: otherAccount, Project: otherProject, Person: otherPerson, Issuers: []string{clusterName}},
 			},
-			[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
+			[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession, Issuers: []string{clusterName}}},
 			[]exchange.WorkflowEntry{
 				{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 				{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
 			},
 			[]exchange.ResultWorkflowEntry{{Repository: repository, Workflow: resultsWorkflow, RefPattern: "refs/heads/*", Project: project, Person: person}}),
-		Kubernetes: oauth.IssuerConfig{Issuer: cluster.URL(), Audience: podAudience, Keys: clusterKeys},
+		Kubernetes: []oauth.IssuerConfig{{Name: clusterName, Issuer: cluster.URL(), Audience: podAudience, Keys: clusterKeys}},
 		GitHub:     oauth.IssuerConfig{Issuer: github.URL(), Audience: workflowAudience, Keys: githubKeys},
 	}
 	inner := newFixtureWith(t, func(c *oauth.Config) {
@@ -1216,9 +1218,9 @@ func TestARePointedNameIsItsNewEntrysWhicheverReplicaReservesLast(t *testing.T) 
 
 	next := old.replica(t, newPolicy(t,
 		[]exchange.AccountEntry{
-			{Account: account, Project: project, Person: person},
-			{Account: daemonAccount, Project: project, Person: person},
-			{Account: otherAccount, Project: otherProject, Person: otherPerson, Session: daemonSession},
+			{Account: account, Project: project, Person: person, Issuers: []string{clusterName}},
+			{Account: daemonAccount, Project: project, Person: person, Issuers: []string{clusterName}},
+			{Account: otherAccount, Project: otherProject, Person: otherPerson, Session: daemonSession, Issuers: []string{clusterName}},
 		},
 		[]exchange.WorkflowEntry{
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
@@ -1575,6 +1577,105 @@ func TestAnExchangeWithNoListedIdentityIsRefusedByName(t *testing.T) {
 	}
 }
 
+// TestTheExchangeChecksEachPodTokenByTheClusterItNames: given three more cluster issuers beside the
+// fixture's, the exchange takes a token of the second for an account whose entry names it, checked
+// against that issuer's keys alone. The read entry here names the fixture's issuer alone, so a
+// token of that issuer for its account is minted the token that only reads. It refuses 400
+// invalid_request, with no access token, a token of an issuer it is not given, reading nothing of
+// that issuer, the read entry's account's included, a token naming the second issuer and signed
+// with another issuer's key under a key id the second publishes, a token of the second issuer for
+// an account whose entry names the first alone, and a token of the second issuer for the read
+// entry's account. A token of an issuer whose discovery document cannot be read, and one of an
+// issuer whose key set cannot be read, are answered 503 OIDC_ISSUER_UNAVAILABLE with no access
+// token.
+func TestTheExchangeChecksEachPodTokenByTheClusterItNames(t *testing.T) {
+	away, down, keyless, stranger := oidctest.New(t), oidctest.New(t), oidctest.New(t), oidctest.New(t)
+	// One key id across away and stranger, so the forged token below names a key away publishes
+	// and only the key itself is wrong.
+	awayKey, downKey, keylessKey, strangerKey := away.PublishKey(t, "cluster-key"), down.PublishKey(t, "down-key"), keyless.PublishKey(t, "keyless-key"), stranger.PublishKey(t, "cluster-key")
+	down.FailDiscovery(http.StatusServiceUnavailable)
+	keyless.FailKeys(http.StatusServiceUnavailable)
+	lazy := func(name string, issuer *oidctest.Issuer) oauth.IssuerConfig {
+		return oauth.IssuerConfig{Name: name, Issuer: issuer.URL(), Audience: podAudience, Keys: oidc.NewLazyVerifier(issuer.URL(), podAudience)}
+	}
+	f := newExchangeFixture(t, func(c *oauth.Config) {
+		c.Exchange.Kubernetes = append(slices.Clone(c.Exchange.Kubernetes), lazy("away", away), lazy("down", down), lazy("keyless", keyless))
+		c.Exchange.Policy = newPolicyListing(t, []exchange.AccountEntry{
+			{Account: account, Project: project, Person: person, Issuers: []string{clusterName, "away", "down", "keyless"}},
+			{Account: otherAccount, Project: otherProject, Person: otherPerson, Issuers: []string{clusterName}},
+		}, []exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession, Issuers: []string{clusterName}}}, nil, nil)
+	})
+	key := newKey(t)
+	tokenOf := func(issuer *oidctest.Issuer, signer *oidctest.Key, of, uid string) string {
+		claims := issuer.Claims(of, podAudience)
+		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": uid}}
+		return issuer.Mint(t, signer, claims)
+	}
+
+	t.Run("a token of the second issuer the account's entry names is taken", func(t *testing.T) {
+		f.registers(t, account, "pod-uid-away", "implementer-g1")
+		f.introspectsAs(t, f.exchanged(t, exchangeForm(tokenOf(away, awayKey, account, "pod-uid-away"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key), "implementer-g1", person, project)
+	})
+	t.Run("a read entry's token of the first issuer is taken and only reads", func(t *testing.T) {
+		answer := f.introspected(t, f.exchanged(t, exchangeForm(tokenOf(f.cluster, f.clusterKey, readAccount, "pod-uid-read"), oauthwire.SubjectTokenTypeKubernetes, ""), key))
+		want := oauthwire.Introspection{Active: true, Scope: oauthwire.ScopeRead, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key), Session: readSession, Service: readService, ProjectScope: oauthwire.ProjectScopeNone, ExpiresAt: answer.ExpiresAt}
+		if !reflect.DeepEqual(answer, want) {
+			t.Fatalf("Introspect = %+v, want %+v", answer, want)
+		}
+	})
+	refused := func(t *testing.T, status int, body map[string]any, says string) {
+		t.Helper()
+		hint, _ := body["error_description"].(string)
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil || !strings.Contains(hint, says) {
+			t.Fatalf("answered %d %v, want 400 invalid_request, no access token and a refusal naming %q", status, body, says)
+		}
+	}
+	t.Run("a token of an issuer the exchange is not given is refused and reads nothing of it", func(t *testing.T) {
+		status, body := f.exchange(t, exchangeForm(tokenOf(stranger, strangerKey, account, "pod-uid-stranger"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+		refused(t, status, body, "Claim 'iss' from token names no issuer this broker's exchange takes.")
+		if reads := stranger.DiscoveryRequests() + stranger.JWKSFetches(); reads != 0 {
+			t.Fatalf("the issuer the exchange is not given was read %d times, want none", reads)
+		}
+	})
+	t.Run("a read entry's token of an issuer the exchange is not given is refused and reads nothing of it", func(t *testing.T) {
+		status, body := f.exchange(t, exchangeForm(tokenOf(stranger, strangerKey, readAccount, "pod-uid-stranger"), oauthwire.SubjectTokenTypeKubernetes, ""), key)
+		refused(t, status, body, "Claim 'iss' from token names no issuer this broker's exchange takes.")
+		if reads := stranger.DiscoveryRequests() + stranger.JWKSFetches(); reads != 0 {
+			t.Fatalf("the issuer the exchange is not given was read %d times, want none", reads)
+		}
+	})
+	t.Run("a read entry's token of the second issuer is refused", func(t *testing.T) {
+		status, body := f.exchange(t, exchangeForm(tokenOf(away, awayKey, readAccount, "pod-uid-read-away"), oauthwire.SubjectTokenTypeKubernetes, ""), key)
+		refused(t, status, body, readAccount)
+	})
+	t.Run("a token naming the second issuer and signed with another issuer's key is refused", func(t *testing.T) {
+		// Refused in the library's words for a token it could not verify, not as a token of an
+		// issuer the exchange does not take: the key it was checked against is the second
+		// issuer's.
+		status, body := f.exchange(t, exchangeForm(tokenOf(away, strangerKey, account, "pod-uid-away"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+		refused(t, status, body, "Unable to parse the JSON web token")
+	})
+	t.Run("a token of the second issuer for an account whose entry names the first alone is refused", func(t *testing.T) {
+		status, body := f.exchange(t, exchangeForm(tokenOf(away, awayKey, otherAccount, "pod-uid-other"), oauthwire.SubjectTokenTypeKubernetes, ""), key)
+		refused(t, status, body, otherAccount)
+	})
+	for _, c := range []struct {
+		name   string
+		issuer *oidctest.Issuer
+		signer *oidctest.Key
+	}{
+		{"a token of an issuer whose discovery document cannot be read is answered 503", down, downKey},
+		{"a token of an issuer whose key set cannot be read is answered 503", keyless, keylessKey},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			status, body := f.exchange(t, exchangeForm(tokenOf(c.issuer, c.signer, account, "pod-uid-unread"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+			if status != http.StatusServiceUnavailable || body["code"] != "OIDC_ISSUER_UNAVAILABLE" || body["access_token"] != nil {
+				t.Fatalf("answered %d %v, want 503 OIDC_ISSUER_UNAVAILABLE and no access token", status, body)
+			}
+		})
+	}
+}
+
 // fakeAccess is Dispatch's project-access answers for the exchange's tests: which person sees
 // which project, which projects Dispatch holds, and each person's member kind. It records every
 // question, can be made unreachable, and caches nothing, so a test changes an answer and the next
@@ -1882,7 +1983,7 @@ func TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject(t *testing.T) 
 	trade := func(t *testing.T, access projectaccess.Access) (*exchangeFixture, int, map[string]any) {
 		t.Helper()
 		f := newExchangeFixture(t, func(c *oauth.Config) {
-			c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil)
+			c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person, Issuers: []string{clusterName}}}, nil)
 			c.Exchange.Projects = access
 		})
 		f.registers(t, account, "pod-uid-1", "public-session-1")
@@ -2030,7 +2131,7 @@ func TestANamedTokenStoresItsProjectUnderTheOlderClaimToo(t *testing.T) {
 	}
 
 	public := newExchangeFixture(t, func(c *oauth.Config) {
-		c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil)
+		c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person, Issuers: []string{clusterName}}}, nil)
 	})
 	public.registers(t, account, "pod-uid-1", "public-session-1")
 	public.exchanged(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t))
@@ -2079,7 +2180,7 @@ func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
 	}
 
 	public := newExchangeFixture(t, func(c *oauth.Config) {
-		c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: otherAccount, Person: person}}, nil)
+		c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: otherAccount, Person: person, Issuers: []string{clusterName}}}, nil)
 		c.Exchange.Projects = access
 	})
 	public.registers(t, otherAccount, "pod-uid-2", "public-session-1")
@@ -2126,8 +2227,8 @@ func newJobFixture(t *testing.T, access *fakeAccess) *signInFixture {
 	return newSignInFixtureWith(t, func(c *oauth.Config) {
 		c.Exchange.Policy = newPolicy(t,
 			[]exchange.AccountEntry{
-				{Account: jobAccount, Job: jobList(t, project)},
-				{Account: publicJobAccount, Job: jobList(t, "public,PRIVB,PRIVA"), Session: publicJobSession},
+				{Account: jobAccount, Job: jobList(t, project), Issuers: []string{clusterName}},
+				{Account: publicJobAccount, Job: jobList(t, "public,PRIVB,PRIVA"), Session: publicJobSession, Issuers: []string{clusterName}},
 			},
 			[]exchange.WorkflowEntry{{Repository: repository, Workflow: jobWorkflow, Ref: ref, Job: jobList(t, "public,PRIVA")}},
 			exchange.GoogleEntry{Account: jobMachine, Service: signInFleet, Job: jobList(t, project)})

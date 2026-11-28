@@ -91,52 +91,6 @@ const ListenerAccount = "system:serviceaccount:example-ns:example-listener"
 // ListenerCaller is the name that second account calls as.
 const ListenerCaller = "listener"
 
-// The one account every Rig's BROKER_EXCHANGE_ACCOUNTS lists and what a pod running as it may
-// write: ExchangeSession is the session name the entry fixes, so a token minted for that pod
-// carries it and a request naming any other is refused.
-const (
-	ExchangeAccount = "system:serviceaccount:example-ns:example-worker"
-	ExchangeProject = "EXAMPLE"
-	ExchangePerson  = "ada@example.com"
-	ExchangeSession = "example-worker"
-)
-
-// The second account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: its entry fixes no session, as
-// a Legion issue pod's does, so each pod of it trades only for a session a registrar registered for
-// that pod (POST /v1/oauth/exchange/pod-sessions), with the key the registration names. Every
-// Rig's BROKER_POD_REGISTRARS lists DaemonAccount as a registrar of its pods.
-const ExchangeRolesAccount = "system:serviceaccount:example-ns:example-roles"
-
-// The third account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: a Legion daemon's own pod, whose
-// entry fixes DaemonExchangeSession, the session a daemon of ExchangeProject writes Dispatch
-// under, and names the Rig's approver (Operator) as its person, since Dispatch refuses every
-// write of a token that names none (SIGN_IN_REQUIRED). It is an account of its own rather than
-// DaemonAccount, which a Rig lists for no exchange: the registration route refuses a pod token of
-// an account the exchange does not list (POD_ACCOUNT_NOT_LISTED), and a test of that refusal
-// presents the daemon's own login token.
-const (
-	DaemonExchangeAccount = "system:serviceaccount:legion-system:legion-daemon-exchange"
-	DaemonExchangeSession = "legion-daemon:" + ExchangeProject
-)
-
-// The fourth account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: a pod of a second project,
-// OtherProject, whose entry fixes OtherProjectSession and names the Rig's approver as its person,
-// so a test holds a token that Dispatch serves for its person and that names a project other
-// than ExchangeProject.
-const (
-	OtherProjectAccount = "system:serviceaccount:other-ns:other-project-worker"
-	OtherProject        = "OTHER"
-	OtherProjectSession = "other-project-worker"
-)
-
-// The one workflow every Rig's BROKER_EXCHANGE_WORKFLOWS lists and what a run of it may write. It
-// fixes no session, so a run names its own.
-const (
-	ExchangeRepository = "example-org/example-repo"
-	ExchangeWorkflow   = ".github/workflows/release.yaml"
-	ExchangeRef        = "refs/heads/main"
-)
-
 // Rig is a live broker HTTP server (real handlers, real Postgres) plus a direct handle to its
 // store — enough to drive a machine login, a session enrollment, and an agent-secret request
 // end to end over genuine HTTP, and to reach into the store directly for what the API itself has
@@ -187,8 +141,9 @@ type Rig struct {
 	podIssuer *oidctest.Issuer
 	podKey    *oidctest.Key
 	// serviceLogins is the broker's live BROKER_SERVICE_LOGINS: DaemonAccount, as legion-daemon,
-	// and each account WithPersonPod names, as the service it names.
-	serviceLogins map[string]string
+	// and each account WithPersonPod names, as the service it names, each from the one issuer the
+	// Rig trusts.
+	serviceLogins map[string]enroll.ServiceLogin
 	// podOperators is the broker's live BROKER_POD_OPERATORS: each account WithPersonPod names,
 	// answering its person, and no account by default. It is one map, which the enroll.Service
 	// and the requests.Machine share, and which the machine.Service reads through that
@@ -458,19 +413,19 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
-	podVerifier, err := oidc.New(context.Background(), issuer.URL(), podAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
+	// The one issuer the Rig trusts, as a deployment's BROKER_K8S_OIDC_ISSUER names one cluster: a
+	// bare URL, so the issuer has no name.
+	podIssuers := []oidc.NamedIssuer{{URL: issuer.URL()}}
+	podVerifier := enroll.K8sPodVerifier{Issuers: oidc.NewIssuerSet(podIssuers, podAudience, 0)}
 
-	serviceLogins := map[string]string{DaemonAccount: "legion-daemon"}
+	serviceLogins := map[string]enroll.ServiceLogin{DaemonAccount: {Service: "legion-daemon", Issuers: []string{""}}}
 	// BROKER_POD_OPERATORS: one map, empty unless WithPersonPod names an account. An empty map
 	// maps no account, as nil does, so a Rig without the option decides as a broker with the
 	// setting unset does. Each mapped account logs in with its own token as its service, as
-	// config.Load requires.
+	// config.Load requires, and from the Rig's one issuer, as DaemonAccount does.
 	podOperators := map[string]string{}
 	for _, pod := range config.personPods {
-		serviceLogins[pod.account] = pod.service
+		serviceLogins[pod.account] = enroll.ServiceLogin{Service: pod.service, Issuers: []string{""}}
 		podOperators[pod.account] = pod.person
 	}
 	// BROKER_SERVICES: the account every pod MintPodToken mints a token for runs as, bound to the
@@ -490,7 +445,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	// *projectaccess.Client, and a nil one put in the interface field is a non-nil Access that
 	// panics at its first read, so a rig with no client would ask Dispatch on every enrollment.
 	enr := &enroll.Service{
-		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
+		Store: st, Lease: config.lease, Pod: podVerifier, Issuers: podIssuers,
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
@@ -560,7 +515,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		},
 		// The one verifier serves both, as the broker's own wiring does: a pod enrolling and a
 		// listed caller present tokens of the same issuer for the same audience.
-		AccountTokens: enroll.K8sPodVerifier{Verifier: podVerifier},
+		AccountTokens: podVerifier,
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach, PodRegistrars: podRegistrars,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
@@ -596,44 +551,22 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 
 // Caller is the account a caller name carries, for an api.Deps a test wires itself as well as for
 // the Rig's own: the broker's boot reads BROKER_API_ACCOUNTS this way, and a name its table does
-// not know fails t here exactly as it would refuse that boot.
+// not know fails t here exactly as it would refuse that boot. Its issuers are the ones the boot
+// gives a Kubernetes account's entry that names none under one bare BROKER_K8S_OIDC_ISSUER URL,
+// as every such rig is wired: that one issuer, which has no name. A Google account's entry names
+// no issuer, and nothing reads its issuers.
 func Caller(t *testing.T, name string) api.Account {
 	t.Helper()
 	account, known := api.AccountFor(name)
 	if !known {
 		t.Fatalf("api.AccountFor(%q): the broker knows no caller of that name", name)
 	}
+	account.Issuers = []string{""}
 	return account
 }
 
 // MachineLoginURL is the rig broker's machine-login page, the device grant's verification_uri.
 const MachineLoginURL = "https://dispatch.example/credentials/machine"
-
-// newExchangeSet is the token exchange's entries a rig's broker trades on, the one set cmd/cipherd
-// builds from its exchange settings: the four accounts and the one workflow the Rig's constants
-// name.
-func newExchangeSet(t *testing.T) *exchange.Set {
-	t.Helper()
-	set, err := exchange.NewSet(
-		[]exchange.AccountEntry{
-			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
-			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
-			{Account: DaemonExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: DaemonExchangeSession},
-			{Account: OtherProjectAccount, Project: OtherProject, Person: ExchangePerson, Session: OtherProjectSession},
-		},
-		nil,
-		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
-		nil,
-		nil,
-		// The rig lists no machine, so there is no box a person could have signed in on and no
-		// domain to hold one to.
-		"",
-	)
-	if err != nil {
-		t.Fatalf("exchange.NewSet: %v", err)
-	}
-	return set
-}
 
 // DeviceLifetime is how long a device code and its user code the rig broker issues wait for a
 // person's decision (oauth.Config.DeviceLifetime), as long as cmd/cipherd's pending machine login.
@@ -672,7 +605,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 	}
 	exchangeConfig := oauth.ExchangeConfig{
 		Policy:     policy,
-		Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
+		Kubernetes: []oauth.IssuerConfig{{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys}},
 		GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
 		Projects:   config.projectAccess,
 		Hold:       config.hold,

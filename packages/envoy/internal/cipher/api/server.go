@@ -53,9 +53,10 @@ type Deps struct {
 	// such a caller — its name, its powers and every refusal — is the Kubernetes caller's.
 	GoogleAPIAccounts map[string]Account
 	// AccountTokens verifies those callers' projected ServiceAccount tokens, against the same
-	// Kubernetes issuer and audiences a pod enrolls with, any audience BROKER_K8S_OIDC_AUDIENCE
-	// lists (cmd/cipherd passes the one verifier it builds). Nil is a broker that trusts no
-	// Kubernetes issuer, where no Kubernetes caller authenticates.
+	// Kubernetes issuers and audiences a pod enrolls with, any audience BROKER_K8S_OIDC_AUDIENCE
+	// lists from any issuer BROKER_K8S_OIDC_ISSUER names (cmd/cipherd passes the one verifier it
+	// builds), each token against the issuer it names. Nil is a broker that trusts no Kubernetes
+	// issuer, where no Kubernetes caller authenticates.
 	AccountTokens enroll.PodVerifier
 	// GoogleAccountTokens verifies a Google caller's identity token, against the issuer and
 	// audience BROKER_GOOGLE_OIDC_ISSUER and BROKER_GOOGLE_OIDC_AUDIENCE name — the audience
@@ -74,11 +75,13 @@ type Deps struct {
 	// admits no registration at all.
 	PodRegistrars PodRegistrars
 	// PodRegistrationTokens verifies a registration's pod token at
-	// BROKER_POD_REGISTRATION_AUDIENCE, against the cluster issuer and key set Enroll.Pod verifies
-	// the audiences BROKER_K8S_OIDC_AUDIENCE lists with (cmd/cipherd builds both on one
-	// oidc.Keys). Only POST /v1/oauth/exchange/pod-sessions reads it, beside Enroll.Pod, so no
-	// other route accepts a token of that audience. Nil is a broker with no such audience, whose
-	// registration route accepts the listed audiences alone.
+	// BROKER_POD_REGISTRATION_AUDIENCE, each token against the issuer of BROKER_K8S_OIDC_ISSUER its
+	// iss names, through the keys of the issuer set Enroll.Pod verifies the audiences
+	// BROKER_K8S_OIDC_AUDIENCE lists with (cmd/cipherd builds it on that set,
+	// loggedIssuers.audience), so a token of an issuer the broker cannot read is
+	// oidc.ErrIssuerUnavailable through either. Only POST /v1/oauth/exchange/pod-sessions reads it,
+	// beside Enroll.Pod, so no other route accepts a token of that audience. Nil is a broker with
+	// no such audience, whose registration route accepts the listed audiences alone.
 	PodRegistrationTokens enroll.PodVerifier
 	// Policy is the live agent-secret policy, which POST /v1/secrets/{name}/reread rereads one
 	// name of (policy.Current.RefreshOne).
@@ -202,9 +205,10 @@ type Deps struct {
 	DatabasePing func(context.Context) error
 	// EdgeListeners is each edge listener's entry of BROKER_NATS_SERVICES
 	// (config.NATSCallout.EdgeListeners): GET /v1/project-repositories answers the account an entry
-	// names, presenting its own identity token as a listed caller does, about the projects that
-	// entry lists and no others, and refuses every other account. cmd/cipherd reads them whether or
-	// not it runs the NATS auth service. Nil lists none, where that route answers no caller.
+	// names, presenting its own identity token as a listed caller does, a Kubernetes one from an
+	// issuer the entry names, about the projects that entry lists and no others, and refuses every
+	// other account and issuer. cmd/cipherd reads them whether or not it runs the NATS auth service.
+	// Nil lists none, where that route answers no caller.
 	EdgeListeners []EdgeListener
 	// ProjectRepositories reads Dispatch's answer for GET /v1/project-repositories, fresh on
 	// every call (projectrepos.Client, at BROKER_PROJECT_ACCESS_URL with the account token
@@ -406,10 +410,10 @@ const (
 // forged tokens past that bucket costs no verification and no fetch of the issuer's keys; a
 // listed caller must then hold the power its row declares, a service's token must name an
 // account BROKER_SERVICE_LOGINS lists and BROKER_POD_OPERATORS does not map (serviceCaller), and
-// an edge listener's must name an account an edge-listener entry of BROKER_NATS_SERVICES names
-// (edgeListenerCaller). The NATS writer hold's routes (operatorAuth) spend that bucket before the
-// operator's token is verified, for the same reason, and the approval page's routes spend it
-// too: see the authSignIn case.
+// an edge listener's must name an account an edge-listener entry of BROKER_NATS_SERVICES names,
+// from an issuer that entry names (edgeListenerCaller). The NATS writer hold's routes
+// (operatorAuth) spend that bucket before the operator's token is verified, for the same reason,
+// and the approval page's routes spend it too: see the authSignIn case.
 // A session route and a launcher route ask the hold gate after authenticate, as their own step in
 // handle (routeHandler.hold).
 func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiRoute) (caller, bool) {
@@ -659,20 +663,24 @@ type GoogleVerifier interface {
 // credential accountAuth's routes take, and answers the caller BROKER_API_ACCOUNTS names it:
 // its name and its powers, which authenticate then checks against the route's. The token is
 // verified as identityAccount verifies it; a sound one naming an account BROKER_API_ACCOUNTS does
-// not name is 403 ACCOUNT_NOT_LISTED, the one refusal that is the broker's list and not the
+// not name, or names with issuers that do not hold the one that signed its Kubernetes token
+// (issuerNamed), is 403 ACCOUNT_NOT_LISTED, the one refusal that is the broker's list and not the
 // credential.
 func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
-	account, google, ok := s.identityAccount(w, r)
+	identity, ok := s.identityAccount(w, r)
 	if !ok {
 		return caller{}, false
 	}
 	accounts := s.deps.APIAccounts
-	if google {
+	if identity.Google {
 		accounts = s.deps.GoogleAPIAccounts
 	}
-	listed, found := accounts[account]
+	listed, found := accounts[identity.Account]
 	if !found {
 		writeError(w, http.StatusForbidden, "ACCOUNT_NOT_LISTED", "this account is not in BROKER_API_ACCOUNTS")
+		return caller{}, false
+	}
+	if !issuerNamed(w, identity, listed.Issuers, "ACCOUNT_NOT_LISTED", "BROKER_API_ACCOUNTS entry") {
 		return caller{}, false
 	}
 	return caller{account: listed}, true
@@ -681,27 +689,45 @@ func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, 
 // edgeListenerCaller authenticates an edge listener's own identity token for authenticate, the
 // credential edgeListenerAuth's routes take, and answers the edge-listener entry of
 // BROKER_NATS_SERVICES that names its account (Deps.EdgeListeners). The token is the one a listed
-// caller presents, verified the same way (identityAccount); a sound one naming an account no
-// edge-listener entry names is 403 NOT_AN_EDGE_LISTENER, whatever else lists that account: the
-// Envoy listener's entry of kind listener, or its BROKER_API_ACCOUNTS name, makes it no edge
-// listener.
+// caller presents, verified the same way (identityAccount), and its entry is held to the issuers
+// it names as a BROKER_API_ACCOUNTS entry is (issuerNamed); a sound one naming an account no
+// edge-listener entry names, or one whose entry does not name the issuer that signed its
+// Kubernetes token, is 403 NOT_AN_EDGE_LISTENER, whatever else lists that account: the Envoy
+// listener's entry of kind listener, or its BROKER_API_ACCOUNTS name, makes it no edge listener.
 func (s *server) edgeListenerCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
-	account, google, ok := s.identityAccount(w, r)
+	identity, ok := s.identityAccount(w, r)
 	if !ok {
 		return caller{}, false
 	}
 	for _, edge := range s.deps.EdgeListeners {
-		if edge.Account == account && edge.Google == google {
-			return caller{edge: edge}, true
+		if edge.Account != identity.Account || edge.Google != identity.Google {
+			continue
 		}
+		if !issuerNamed(w, identity, edge.Issuers, "NOT_AN_EDGE_LISTENER", "edge-listener entry of BROKER_NATS_SERVICES") {
+			return caller{}, false
+		}
+		return caller{edge: edge}, true
 	}
 	writeError(w, http.StatusForbidden, "NOT_AN_EDGE_LISTENER", "this account is named by no edge-listener entry of BROKER_NATS_SERVICES")
 	return caller{}, false
 }
 
-// identityAccount verifies r's bearer, a caller's own identity token, and answers the account it
-// names and whether that is a Google account, or writes the refusal: the one verification
-// accountCaller and edgeListenerCaller share.
+// issuerNamed reports whether the entry that lists identity's account, whose issuer names are
+// issuers, takes identity's token (PlatformIdentity.TakenFrom), or writes the refusal. The refusal
+// is the 403 code of an account the entry's list does not name, its sentence naming entry. It is
+// the issuer check accountCaller holds a BROKER_API_ACCOUNTS entry to and edgeListenerCaller an
+// edge listener's entry of BROKER_NATS_SERVICES.
+func issuerNamed(w http.ResponseWriter, identity PlatformIdentity, issuers []string, code, entry string) bool {
+	if identity.TakenFrom(issuers) {
+		return true
+	}
+	writeError(w, http.StatusForbidden, code, "this account's "+entry+" does not name the issuer that signed its token")
+	return false
+}
+
+// identityAccount verifies r's bearer, a caller's own identity token, and answers what it says
+// of its caller (PlatformIdentity), or writes the refusal: the one verification accountCaller and
+// edgeListenerCaller share.
 //
 // A caller presents one of two tokens: a Kubernetes service account's own projected token, which
 // names the account by its subject, or a machine's Google identity token, which names it by its
@@ -709,24 +735,28 @@ func (s *server) edgeListenerCaller(w http.ResponseWriter, r *http.Request) (cal
 // Which verifier judges a token is the token's own issuer: a verifier answers oidc.ErrIssuer for
 // a token of any issuer but its own, which is the one error that means "not mine" rather than a
 // refusal, so a token neither verifier claims is simply invalid and no token is ever judged
-// twice.
+// twice. The Kubernetes verifier holds every issuer BROKER_K8S_OIDC_ISSUER names, and answers
+// oidc.ErrIssuer for a token of any other, a Google token among them.
 //
 // The taxonomy is the one a daemon's token login uses (machine.Service.VerifyServiceToken) and
 // means the same thing for either kind: a broker that trusts no issuer for its callers at all
 // (ACCOUNT_TOKENS_OFF), a token that has expired, one that does not verify — which for a Google
 // token includes one naming no verified account, since the email claim is what names the caller
 // — and one that lives longer than machine.MaxTokenLoginLifetime from its issue, so a copied
-// token is spendable for at most an hour. Each is a 401, and no refusal repeats the token.
-func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (account string, google, ok bool) {
+// token is spendable for at most an hour. Each is a 401. A Kubernetes token whose issuer the
+// broker cannot read yet is 503 OIDC_ISSUER_UNAVAILABLE, since nothing was decided about it. No
+// refusal repeats the token.
+func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (PlatformIdentity, bool) {
 	if s.deps.AccountTokens == nil && s.deps.GoogleAccountTokens == nil {
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKENS_OFF", "this broker trusts no token issuer for its API callers, so no caller authenticates with an identity token")
-		return "", false, false
+		return PlatformIdentity{}, false
 	}
 	raw := bearer(r)
 	if s.deps.AccountTokens != nil {
 		claims, err := s.deps.AccountTokens.VerifyAccount(r.Context(), raw)
 		if !errors.Is(err, oidc.ErrIssuer) {
-			return claims.Subject, false, s.liveIdentityToken(w, err, claims.IssuedAt, claims.Expiry)
+			identity := PlatformIdentity{Account: claims.Subject, Issuer: claims.Issuer.Name, Issued: claims.IssuedAt, Expiry: claims.Expiry}
+			return identity, s.liveIdentityToken(w, err, identity)
 		}
 	}
 	if s.deps.GoogleAccountTokens != nil {
@@ -734,30 +764,36 @@ func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (accoun
 		if !errors.Is(err, oidc.ErrIssuer) {
 			if err == nil && (token.Identity.Account == "" || !token.Identity.EmailVerified) {
 				writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the Google identity token names no verified account, so it names no caller (ask for it with format=full)")
-				return "", false, false
+				return PlatformIdentity{}, false
 			}
-			return token.Identity.Account, true, s.liveIdentityToken(w, err, token.IssuedAt, token.Expiry)
+			identity := PlatformIdentity{Account: token.Identity.Account, Google: true, Issued: token.IssuedAt, Expiry: token.Expiry}
+			return identity, s.liveIdentityToken(w, err, identity)
 		}
 	}
 	writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's token names no issuer this broker trusts for its API callers")
-	return "", false, false
+	return PlatformIdentity{}, false
 }
 
 // liveIdentityToken is identityAccount's judgement of one token its verifier judged, whichever
-// kind it is: err is what the verifier answered. It reports whether the token is sound, or
-// writes the refusal.
-func (s *server) liveIdentityToken(w http.ResponseWriter, err error, issuedAt, expiry time.Time) bool {
+// kind it is: err is what the verifier answered, and identity what the token says of its caller:
+// its Google flag picks the outage's answer, and its Issued and Expiry its lifetime. It reports
+// whether the token is sound, or writes the refusal. A Kubernetes token's oidc.ErrIssuerUnavailable
+// is 503 OIDC_ISSUER_UNAVAILABLE; the Google verifier's outage stays the 401 it was.
+func (s *server) liveIdentityToken(w http.ResponseWriter, err error, identity PlatformIdentity) bool {
 	switch {
 	case errors.Is(err, oidc.ErrExpired):
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED", "the caller's identity token has expired")
 		return false
+	case !identity.Google && errors.Is(err, oidc.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w)
+		return false
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's identity token does not verify")
 		return false
-	case issuedAt.IsZero():
+	case identity.Issued.IsZero():
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the caller's identity token names no issue time (iat)")
 		return false
-	case expiry.Sub(issuedAt) > machine.MaxTokenLoginLifetime+s.deps.Proof.Skew:
+	case identity.Expiry.Sub(identity.Issued) > machine.MaxTokenLoginLifetime+s.deps.Proof.Skew:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the caller's identity token lives longer than an hour from its issue")
 		return false
 	}
@@ -769,20 +805,27 @@ func (s *server) liveIdentityToken(w http.ResponseWriter, err error, issuedAt, e
 // machine.ServiceAccount, which serviceAuth hands the handler. It is the token login's own
 // check (machine.Service.VerifyServiceToken), so a route of this class and a daemon's token
 // login accept exactly the same credential: the same verifier, the same hour-from-issue bound
-// on a copied token, and the same list. An account the list does not name is 403
-// ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a broker that
-// trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's routes then
-// authenticate no one. No refusal repeats the token.
+// on a copied token, and the same list, issuers and all. An account the list does not name, or
+// names with issuers that do not hold its token's, is 403 ACCOUNT_NOT_LISTED, the credential
+// being sound and the broker's list refusing; a token whose issuer the broker cannot read yet is
+// 503 OIDC_ISSUER_UNAVAILABLE; a broker that trusts no Kubernetes token issuer answers 401
+// ACCOUNT_TOKENS_OFF, as this class's routes then authenticate no one. No refusal repeats the
+// token.
 //
 // A verified account that BROKER_POD_OPERATORS maps to a person (machine.ServiceAccount.Person)
 // is 403 PERSON_ACCOUNT, and the refusal names the account. A mapped account is a person's
 // account, and it is never a service's caller. So a person's pod calls no route of this class.
-// The refusal is the same for a token bound to a pod and for a token bound to no pod.
+// The refusal is the same for a token bound to a pod and for a token bound to no pod. A mapped
+// account's token from an issuer its BROKER_SERVICE_LOGINS entry does not name is refused 403
+// ACCOUNT_NOT_LISTED before that, as every account's is.
 func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	account, err := s.deps.MachineLogin.VerifyServiceToken(r.Context(), bearer(r))
 	switch {
 	case errors.Is(err, machine.ErrTokenLoginsOff):
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKENS_OFF", "this broker trusts no Kubernetes token issuer, so no service authenticates with a ServiceAccount token")
+		return caller{}, false
+	case errors.Is(err, machine.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w)
 		return caller{}, false
 	case errors.Is(err, machine.ErrTokenExpired):
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED", "the ServiceAccount token has expired")
@@ -791,7 +834,7 @@ func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, 
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the ServiceAccount token lives longer than an hour from its issue")
 		return caller{}, false
 	case errors.Is(err, machine.ErrAccountNotListed):
-		writeError(w, http.StatusForbidden, "ACCOUNT_NOT_LISTED", "this ServiceAccount is not in BROKER_SERVICE_LOGINS")
+		writeError(w, http.StatusForbidden, "ACCOUNT_NOT_LISTED", "this ServiceAccount is not in BROKER_SERVICE_LOGINS for the issuer that signed its token")
 		return caller{}, false
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the ServiceAccount token does not verify")
@@ -959,6 +1002,21 @@ func logUnavailable(op string, err error, attrs ...any) {
 // line.
 func answerUnavailable(w http.ResponseWriter, code, op string) {
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
+}
+
+// writeIssuerUnavailable answers a ServiceAccount token whose issuer the broker cannot read yet —
+// its discovery document has not been read, or the token's key is not among the keys the broker
+// holds from its key set's last good read and the key set cannot be read now
+// (oidc.ErrIssuerUnavailable) — with 503 OIDC_ISSUER_UNAVAILABLE and Dispatch's sentence for the
+// same fault (serviceTokenActor). It is a 5xx because nothing was decided about the token: the
+// Legion daemon stops trying after a 4xx and tries again after a 5xx. It logs nothing, since the
+// clusters' verifier the broker builds (cmd/cipherd, loggedIssuers) logs an issuer once when a
+// token of it is first answered this and once when a token of it verifies again, and a line here
+// would repeat the first for every token. The answer recorder (internal/cipher/answer) counts
+// each such answer in broker_answers_total as outcome failed with code HTTP_503, since it reads a
+// code from a 4xx answer alone, and writes no line for it.
+func writeIssuerUnavailable(w http.ResponseWriter) {
+	writeError(w, http.StatusServiceUnavailable, oidc.IssuerUnavailableCode, oidc.IssuerUnavailableMessage)
 }
 
 // writeMemberKindUncheckable answers a refusal the broker made because it could not learn whether

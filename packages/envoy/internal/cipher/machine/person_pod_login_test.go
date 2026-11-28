@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 const (
@@ -37,30 +38,32 @@ const (
 
 // newPersonPodFixture is newFixture with the settings of a deployment that maps one account to a
 // person. BROKER_SERVICE_LOGINS gives adaPodAccount ada's own login service, gives
-// daemonTokenAccount legion-daemon, and gives adaWorkerAccount its own service.
-// BROKER_POD_OPERATORS maps adaPodAccount to ada, and no other account.
+// daemonTokenAccount legion-daemon, and gives adaWorkerAccount its own service, each from
+// tokenIssuer, the one issuer the broker trusts. BROKER_POD_OPERATORS maps adaPodAccount to ada,
+// and no other account.
 func newPersonPodFixture(t *testing.T) *Service {
 	t.Helper()
 	svc := newFixture(t)
-	svc.Enroll.ServiceLogins = map[string]string{
-		adaPodAccount:      adaLoginService,
-		daemonTokenAccount: "legion-daemon",
-		adaWorkerAccount:   adaWorkerService,
+	svc.Enroll.Issuers = []oidc.NamedIssuer{tokenIssuer}
+	svc.Enroll.ServiceLogins = map[string]enroll.ServiceLogin{
+		adaPodAccount:      {Service: adaLoginService, Issuers: []string{tokenIssuer.Name}},
+		daemonTokenAccount: {Service: "legion-daemon", Issuers: []string{tokenIssuer.Name}},
+		adaWorkerAccount:   {Service: adaWorkerService, Issuers: []string{tokenIssuer.Name}},
 	}
 	svc.Enroll.PodOperators = map[string]string{adaPodAccount: adaPerson}
 	return svc
 }
 
 // personPodTokenLogin logs account in as POST /v1/launcher-credentials/token does. svc's verifier
-// answers a token of account bound to podUID ("" for a token bound to no pod), VerifyServiceToken
-// maps that token, and TokenLogin issues the credential under a fresh key, from a request object
-// that names service. It answers VerifyServiceToken's answer and the credential as
-// enroll.Service.Create reads it, by the id and the key of this login.
+// answers a token of tokenIssuer for account bound to podUID ("" for a token bound to no pod),
+// VerifyServiceToken maps that token, and TokenLogin issues the credential under a fresh key, from
+// a request object that names service. It answers VerifyServiceToken's answer and the credential
+// as enroll.Service.Create reads it, by the id and the key of this login.
 func personPodTokenLogin(t *testing.T, svc *Service, account, podUID, service string) (ServiceAccount, enroll.Credential) {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Now()
-	svc.Enroll.Pod = fakeTokens{claims: enroll.AccountClaims{Subject: account, PodUID: podUID, IssuedAt: now, Expiry: now.Add(time.Hour)}}
+	svc.Enroll.Pod = fakeTokens{claims: enroll.AccountClaims{Subject: account, PodUID: podUID, IssuedAt: now, Expiry: now.Add(time.Hour), Issuer: tokenIssuer}}
 	key, err := proof.NewKey()
 	if err != nil {
 		t.Fatal(err)

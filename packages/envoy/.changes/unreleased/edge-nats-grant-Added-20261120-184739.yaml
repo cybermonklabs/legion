@@ -28,7 +28,12 @@ body: |-
   subscriber, so one aimed at a stream delete deletes that stream on nats-server 2.15.1 (2.15.3
   refuses a reply into `$JS.API.`). The infra README's
   "Permission sets" says how far. The NATS auth service answers an `edge-listener` entry of
-  `BROKER_NATS_SERVICES` with it, for the projects the entry lists. A listener started with
+  `BROKER_NATS_SERVICES`,
+  `edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>[=<issuer name>[,<issuer name>…]]`, with it,
+  for the projects the entry lists, once the edge listener's token verifies for its NATS audience
+  (`BROKER_NATS_K8S_AUDIENCE` or `BROKER_NATS_GOOGLE_AUDIENCE`, which such an entry now needs as
+  every other entry does) and, for a Kubernetes account, comes from an issuer the entry names. A
+  listener started with
   `ENVOY_EDGE_PROJECTS` names every inbox under that prefix, reads each bucket with stream message
   gets (`bus.WithStreamMessageReads`), reads the stream and ends its start, naming it, when the
   server has none, subscribes no role lane, publishes no Legion wake report, keeps no role message

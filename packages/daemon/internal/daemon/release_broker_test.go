@@ -53,7 +53,7 @@ import (
 // then has it forget, whose names the release frees: its id, the one name of kind session, and
 // its file's base name.
 const (
-	releasePod     = "pod-uid-released"
+	releasePodUID  = "pod-uid-released"
 	releaseIssue   = "LEGION-450"
 	releaseSession = "ses-released"
 	releaseFile    = "/sessions/released.jsonl"
@@ -234,8 +234,8 @@ func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
 	}
 	t.Cleanup(sup.stop)
 	rt.ScriptSpawn(fake.SpawnResult{Locator: runtime.Locator{
-		Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(releasePod, 1),
-		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-450", PodUID: releasePod, Container: runtime.IssuePodContainer, Generation: 1},
+		Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(releasePodUID, 1),
+		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-450", PodUID: releasePodUID, Container: runtime.IssuePodContainer, Generation: 1},
 	}})
 	machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: releaseIssue, Issue: releaseIssue,
 		Role: claim.RoleTester, State: supervise.StateQueued}, "")
@@ -246,7 +246,7 @@ func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	podToken := broker.MintAccountPodToken(t, ciphertest.ExchangeRolesAccount, releasePod, time.Hour)
+	podToken := broker.MintAccountPodToken(t, ciphertest.ExchangeRolesAccount, releasePodUID, time.Hour)
 	conn := fake.NewConn()
 	conn.SetAgentSecretsToken(podToken)
 	conns.Register(token, conn)
@@ -302,7 +302,7 @@ func (r *releaseRig) trade() error {
 	r.t.Helper()
 	subject, err := cipherclient.MachineIdentity(getenvOf(map[string]string{
 		cipherclient.IdentityVar:         cipherclient.IdentityKubernetes,
-		cipherclient.MachineTokenFileVar: writeSecret(r.t, "exchange-token", r.broker.MintSubjectToken(r.t, ciphertest.ExchangeRolesAccount, releasePod)),
+		cipherclient.MachineTokenFileVar: writeSecret(r.t, "exchange-token", r.broker.MintSubjectToken(r.t, ciphertest.ExchangeRolesAccount, releasePodUID)),
 	}))
 	if err != nil {
 		r.t.Fatal(err)

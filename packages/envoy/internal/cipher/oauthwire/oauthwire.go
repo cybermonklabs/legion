@@ -395,9 +395,8 @@ func BaseProjectScope(word string) string {
 }
 
 // AccountSubjectPrefix opens a Kubernetes service account's subject,
-// system:serviceaccount:<namespace>:<name>. It tells a Kubernetes subject from a Google account
-// address where a reader holds one string that may be either (exchange.Set.ProjectsForAccount);
-// whether a string is a whole subject is AccountSubject's to answer.
+// system:serviceaccount:<namespace>:<name>, and AccountSubject's pattern; whether a string is a
+// whole subject is AccountSubject's to answer.
 const AccountSubjectPrefix = "system:serviceaccount:"
 
 // AccountSubject is a Kubernetes service account's whole subject, the one a pod's projected token

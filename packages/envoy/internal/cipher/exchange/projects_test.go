@@ -23,7 +23,7 @@ func TestATradeNamesOnlyProjectsItsPersonSeesUnderItsEntry(t *testing.T) {
 		decide func([]string) (exchange.Claims, error)
 	}{
 		{"an account entry", func(p []string) (exchange.Claims, error) {
-			return set.Pod(podToken(workerAccount, podUID), "implementer-g1", p)
+			return set.Pod(podToken(workerAccount, podUID), firstIssuer, "implementer-g1", p)
 		}},
 		{"a workflow entry", func(p []string) (exchange.Claims, error) {
 			return set.Workflow(workflowToken(repository, runRef(workflow), runRef(workflow), ref), "release-bot", p)
@@ -54,7 +54,7 @@ func TestATradeNamesOnlyProjectsItsPersonSeesUnderItsEntry(t *testing.T) {
 		}
 	})
 	t.Run("a read entry's service", func(t *testing.T) {
-		claims, err := set.Pod(podToken(readerAccount, podUID), "", []string{project})
+		claims, err := set.Pod(podToken(readerAccount, podUID), firstIssuer, "", []string{project})
 		if !errors.Is(err, exchange.ErrProjectsNoPerson) || !strings.Contains(err.Error(), readerAccount) {
 			t.Fatalf("a read entry's pod naming %s = %+v, %v; want ErrProjectsNoPerson naming its account", project, claims, err)
 		}
@@ -100,7 +100,7 @@ func TestAJobTradeNamesOnlyProjectsOfItsEntry(t *testing.T) {
 	}{
 		{name: "named ACME", decisions: []decision{
 			{"a pod", func(p []string) (exchange.Claims, error) {
-				return set.Pod(podToken(jobAccount, podUID), "example-job-1", p)
+				return set.Pod(podToken(jobAccount, podUID), firstIssuer, "example-job-1", p)
 			}},
 			{"a workflow", func(p []string) (exchange.Claims, error) {
 				return set.Workflow(actionsToken(repository, fixedJobWorkflow, ref), "", p)
@@ -112,7 +112,7 @@ func TestAJobTradeNamesOnlyProjectsOfItsEntry(t *testing.T) {
 			taken: [][]string{nil, {project}, nil}, refused: [][]string{{"OTHER"}, {project, "OTHER"}}},
 		{name: "public [PRIVA PRIVB]", decisions: []decision{
 			{"a pod", func(p []string) (exchange.Claims, error) {
-				return set.Pod(podToken(publicJobAccount, podUID), "example-job-2", p)
+				return set.Pod(podToken(publicJobAccount, podUID), firstIssuer, "example-job-2", p)
 			}},
 			{"a workflow", func(p []string) (exchange.Claims, error) {
 				return set.Workflow(actionsToken(repository, jobWorkflow, ref), "example-run-1", p)
@@ -181,46 +181,6 @@ func TestMappedProjects(t *testing.T) {
 		projects[0] = "CHANGED"
 		if _, again, _ := set.MappedProjects(principal); !slices.Equal(again, want) {
 			t.Fatalf("MappedProjects(%s) after the caller changed its copy = %v, want %v: the set stays as it was built", principal, again, want)
-		}
-	}
-}
-
-// TestProjectsForAccountAnswersWhatTheTokenWouldCarry: the projects a token minted for one
-// account carries, read from the very entries Pod and Google mint from, so a grant made from this
-// answer and the token of that account cannot disagree.
-func TestProjectsForAccountAnswersWhatTheTokenWouldCarry(t *testing.T) {
-	set := listed(t)
-	for _, c := range []struct {
-		name     string
-		account  string
-		projects []string
-		ok       bool
-	}{
-		{"a Kubernetes subject", workerAccount, []string{project}, true},
-		{"a Google account naming a person", pinnedAccount, []string{project}, true},
-		{"a Google account naming none", poolAccount, nil, true},
-		{"an unlisted Kubernetes subject", "system:serviceaccount:example-ns:example-other", nil, false},
-		{"a named job account", jobAccount, []string{project}, true},
-		{"a public job account", publicJobAccount, []string{privA, privB}, true},
-		{"a public job Google account", jobMachineAccount, []string{privA, privB}, true},
-		{"an unlisted Google account", strangerAccount, nil, false},
-		{"a workflow's repository, which is no account", repository, nil, false},
-	} {
-		got, ok := set.ProjectsForAccount(c.account)
-		if !slices.Equal(got, c.projects) || ok != c.ok {
-			t.Errorf("ProjectsForAccount(%s, %q) = %v, %v; want %v, %v", c.name, c.account, got, ok, c.projects, c.ok)
-		}
-		if c.ok {
-			var minted exchange.Claims
-			var err error
-			if strings.HasPrefix(c.account, "system:serviceaccount:") {
-				minted, err = set.Pod(podToken(c.account, podUID), "example-session", nil)
-			} else {
-				minted, err = set.Google(googleToken(c.account, true, cloudProject, instanceName), "example-session", nil)
-			}
-			if err != nil || !slices.Equal(minted.Projects, got) {
-				t.Errorf("the token minted for %s carries %v (%v), and ProjectsForAccount answers %v: the two must agree", c.account, minted.Projects, err, got)
-			}
 		}
 	}
 }

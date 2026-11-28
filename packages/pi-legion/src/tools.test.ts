@@ -2978,9 +2978,9 @@ test("the read_state summary gives the P0 holders and the P0 bound in force", as
 });
 
 // The daemon's refusals reach the controller as every other write's do: the code, then the
-// daemon's sentence, which names the pause that stands, the last pause, or the setting that
-// turns the pause off. The bodies are the daemon's goldens, which carry that pause beside the
-// sentence; the client reads the code and the sentence.
+// daemon's sentence, which names the pause that stands, the last pause, the setting that turns the
+// pause off, or the project release that runs. The bodies are the daemon's goldens, which carry
+// that pause beside the sentence; the client reads the code and the sentence.
 test("a refused pause and a refused resume tell the controller the daemon's code and its sentence", async () => {
   const refusals = [
     [
@@ -2994,6 +2994,12 @@ test("a refused pause and a refused resume tell the controller the daemon's code
       "/legion/v1/project/pause",
       "project-pause-unavailable.json",
       "PAUSE_UNAVAILABLE",
+    ],
+    [
+      { op: "pause", reason: "a pause while a release runs" },
+      "/legion/v1/project/pause",
+      "project-pause-releasing.json",
+      "PROJECT_RELEASING",
     ],
     [
       { op: "resume" },

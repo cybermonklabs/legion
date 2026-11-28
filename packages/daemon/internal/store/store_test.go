@@ -1101,15 +1101,30 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // column. So does one that changes a table a version of the list creates, as the givers of a plan
 // version (20261124033010) and the parent of a plan task (20261124022547) add a column to
 // 20261117034837's issue_plans and plan_tasks: applied as main's, before that table exists, each
-// fails on the missing table. 20261126163320 is the last migration that writes outbox_kind_check:
-// it stands above main's 20261126110259, 20261122154643, 20261119203047 and 20261119003157, which
-// write it too, and main's 20261111090000, 20261111091500, 20261116144907 and 20261123212127 write
-// none. The cache trimmer's two, 20261111090000 and 20261111091500, read no column a version of
-// the list adds either, so neither is in the list. The project pause's 20261115194357 is in it as
-// well, though it rewrites no kind list: a database migrated before the pause takes it in the
-// upgrade, over a row of every kind the schema admits, and its held_by_pause column on the outbox
-// must take them all. Any other version left out makes the cases below weaker, never red, which is
-// why the comment says where the list comes from.
+// fails on the missing table. dispatch://INFRA-3320's 20261114232555 is in it
+// as a rewrite of a check of its own: it writes issues_phase_check again with awaiting_children,
+// which 20261029120700 of the list writes without it, so applied as main's, before that version,
+// it would leave a check that refuses the phase. Its 20261114064234, the basis columns, is in it as
+// that branch's own: it rewrites no check and reads only tables 0004_record made, so where it runs
+// changes no case below. #4065's 20261115060739 is in it as a rewrite of claims_suspended_by_check
+// (controller), and its 20261115121838 as main recorded it. dispatch://INFRA-3583's
+// 20261115073241, the project release's record and suspension source, is in it because main has
+// not recorded it either; it writes claims_suspended_by_check again after 20261115060739, with
+// controller and project_release both, so on a fresh database and on one a released daemon
+// migrated it is the last word on that check. A database that recorded 20261115073241 with its
+// earlier list, before 20261115060739 existed (a build of this branch from before its merge of
+// main migrated it, as a worker pod's shared test Postgres), applies 20261115060739 after it,
+// which writes the check without project_release: no released build carries that earlier list,
+// so such a database is a test database, and it is recreated rather than migrated.
+// 20261126163320 is the last migration that writes outbox_kind_check: it stands above main's
+// 20261126110259, 20261122154643, 20261119203047 and 20261119003157, which write it too, and
+// main's 20261111090000, 20261111091500, 20261116144907 and 20261123212127 write none, nor does
+// 20261115073241. The cache trimmer's two, 20261111090000 and 20261111091500, read no column a
+// version of the list adds either, so neither is in the list. The project pause's 20261115194357
+// is in it as well, though it rewrites no kind list: a database migrated before the pause takes it
+// in the upgrade, over a row of every kind the schema admits, and its held_by_pause column on the
+// outbox must take them all. Any other version left out makes the cases below weaker, never red,
+// which is why the comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -1117,11 +1132,11 @@ var thisRelease = map[int]bool{
 	20261102003600: true, 20261105081500: true, 20261105183200: true, 20261107095842: true,
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261114064234: true,
-	20261114232555: true, 20261115060739: true, 20261115121838: true, 20261115194357: true,
-	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
-	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
-	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124022547: true,
-	20261124033010: true, 20261126110259: true, 20261126163320: true,
+	20261114232555: true, 20261115060739: true, 20261115073241: true, 20261115121838: true,
+	20261115194357: true, 20261116144907: true, 20261116165926: true, 20261117000528: true,
+	20261117004117: true, 20261117023932: true, 20261117034837: true, 20261117064152: true,
+	20261119003157: true, 20261119203047: true, 20261122154643: true, 20261123212127: true,
+	20261124022547: true, 20261124033010: true, 20261126110259: true, 20261126163320: true,
 }
 
 const idleRelease = 20261101222956

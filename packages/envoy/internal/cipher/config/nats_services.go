@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -58,6 +59,10 @@ type NATSService struct {
 	Account string
 	// Google is whether Account is a Google service account.
 	Google bool
+	// Issuers names the issuers of BROKER_K8S_OIDC_ISSUER a Kubernetes account's token is taken
+	// from (AccountIssuers): those the entry names, or the first issuer of the list alone where it
+	// names none. A Google account has none.
+	Issuers []string
 	// AllProjects is the grant whole; otherwise the projects come from the broker's exchange
 	// list for Account, but for an edge listener, whose projects are Projects.
 	AllProjects bool
@@ -86,31 +91,36 @@ const (
 )
 
 // ParseNATSServices reads BROKER_NATS_SERVICES: whitespace-separated <kind>/<machine id or ->/<* or
-// ->=<account> entries, in order, where * is the grant whole and - means "the projects this
-// account's exchange entry lists", and the account is written as BROKER_API_ACCOUNTS writes one
-// (ParseAccount). An edge listener's entry writes, in place of * or -, the projects it serves:
-// edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>. It refuses, naming the entry: an entry of
-// none of these forms or of an unknown kind; a dispatch, listener, webhook-listener or
-// edge-listener entry with no machine id, and a daemon, measure, operator or probe entry with one;
-// an empty machine id, one holding a wildcard, a space or a control character
-// (natsgrant.MachineIDToken), and one the listener itself refuses (bus.CheckListenerMachineID: one
-// holding the escape character '%', or whose durable name is too long), so the auth service takes
-// every machine id a listener starts with, a dotted one among them, whose names the grant escapes
-// as the listener does (bus.ListenerSpelling), an edge listener's inbox prefix among them; a
-// measure entry with -, since its grant holds a KV read no project scope can hold and it reads no
-// project's messages; an operator or probe entry with -, since the writer hold and the buckets
-// command reach no project's messages and no project scope can hold a stream create; a second
-// operator or probe entry, since a deployment has one operator identity and one probe; an edge
-// listener's entry with * or -, or whose projects are no list of at most oauthwire.MaxProjects
-// project keys named once each; an account ParseAccount refuses (a namespace's default account, a
-// Google default or service-agent account); and an account given twice, since one account connects
-// as one service.
-func ParseNATSServices(raw string) ([]NATSService, error) {
+// ->=<account>[=<issuer name>[,<issuer name>…]] entries, in order, where * is the grant whole and
+// - means "the projects this account's exchange entry lists", and the account is written as
+// BROKER_API_ACCOUNTS writes one (ParseAccount), and so are the issuer names a Kubernetes
+// account's token is taken from, of issuers, the list BROKER_K8S_OIDC_ISSUER names
+// (CutIssuerNames, AccountIssuers). An edge listener's entry writes, in place of * or -, the
+// projects it serves, and names its issuers as every other entry does:
+// edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>[=<issuer name>[,<issuer name>…]]. It
+// refuses, naming the entry: an entry of none of these forms or of an unknown kind; a dispatch,
+// listener, webhook-listener or edge-listener entry with no machine id, and a daemon, measure,
+// operator or probe entry with one; an empty machine id, one holding a wildcard, a space or a
+// control character (natsgrant.MachineIDToken), and one the listener itself refuses
+// (bus.CheckListenerMachineID: one holding the escape character '%', or whose durable name is too
+// long), so the auth service takes every machine id a listener starts with, a dotted one among
+// them, whose names the grant escapes as the listener does (bus.ListenerSpelling), an edge
+// listener's inbox prefix among them; a measure entry with -, since its grant holds a KV read no
+// project scope can hold and it reads no project's messages; an operator or probe entry with -,
+// since the writer hold and the buckets command reach no project's messages and no project scope
+// can hold a stream create; a second operator or probe entry, since a deployment has one operator
+// identity and one probe; an edge listener's entry with * or -, or whose projects are no list of
+// at most oauthwire.MaxProjects project keys named once each; an account ParseAccount refuses (a
+// namespace's default account, a Google default or service-agent account); an entry ending in "="
+// with no issuer name after it, and the issuer names AccountIssuers refuses (one the list does not
+// hold, one named twice, one on a google: entry, and any while the list is one bare URL or empty);
+// and an account given twice, since one account connects as one service.
+func ParseNATSServices(raw string, issuers []oidc.NamedIssuer) ([]NATSService, error) {
 	var services []NATSService
 	seen := map[string]string{}
 	kinds := map[NATSServiceKind]string{}
 	for _, text := range strings.Fields(raw) {
-		entry, err := parseNATSService(text)
+		entry, err := parseNATSService(text, issuers)
 		if err != nil {
 			return nil, err
 		}
@@ -127,12 +137,13 @@ func ParseNATSServices(raw string) ([]NATSService, error) {
 	return services, nil
 }
 
-func parseNATSService(text string) (NATSService, error) {
+func parseNATSService(text string, issuers []oidc.NamedIssuer) (NATSService, error) {
 	form := func() error {
-		return fmt.Errorf("%s must be <kind>/<machine id or ->/<* or ->=<account> entries, an edge-listener entry's projects <KEY>[,<KEY>…] in place of * or -, the kind one of dispatch, listener, webhook-listener, edge-listener, daemon, measure, operator or probe and the account system:serviceaccount:<namespace>:<name> or google:<service account email>, got %q", NATSServicesVariable, text)
+		return fmt.Errorf("%s must be <kind>/<machine id or ->/<* or ->=<account>[=<issuer name>[,<issuer name>…]] entries, an edge-listener entry's projects <KEY>[,<KEY>…] in place of * or -, the kind one of dispatch, listener, webhook-listener, edge-listener, daemon, measure, operator or probe and the account system:serviceaccount:<namespace>:<name> or google:<service account email>, got %q", NATSServicesVariable, text)
 	}
-	head, account, ok := strings.Cut(text, "=")
-	if !ok {
+	withAccount, names, named := CutIssuerNames(text)
+	head, account, ok := strings.Cut(withAccount, "=")
+	if !ok || !named {
 		return NATSService{}, form()
 	}
 	parts := strings.Split(head, "/")
@@ -187,6 +198,9 @@ func parseNATSService(text string) (NATSService, error) {
 		return NATSService{}, err
 	}
 	entry.Account, entry.Google = parsed.Address, parsed.Google
+	if entry.Issuers, err = AccountIssuers(NATSServicesVariable, text, names, entry.Google, issuers); err != nil {
+		return NATSService{}, err
+	}
 	return entry, nil
 }
 
@@ -206,14 +220,18 @@ func edgeProjects(text, scope string) ([]string, error) {
 }
 
 // EdgeListeners is each edge listener's entry of Services as the broker's API reads it
-// (api.Deps.EdgeListeners): the account its platform token names and the projects the entry
-// lists, the projects GET /v1/project-repositories answers it about. An entry of any other kind
-// is none, whatever projects its own grant reaches.
+// (api.Deps.EdgeListeners): the account its platform token names, the issuers a Kubernetes
+// account's token is taken from, and the projects the entry lists, the projects
+// GET /v1/project-repositories answers it about. An entry of any other kind is none, whatever
+// projects its own grant reaches.
 func (n NATSCallout) EdgeListeners() []api.EdgeListener {
 	var edges []api.EdgeListener
 	for _, entry := range n.Services {
 		if entry.Kind == NATSEdgeListener {
-			edges = append(edges, api.EdgeListener{Account: entry.Account, Google: entry.Google, Projects: slices.Clone(entry.Projects)})
+			edges = append(edges, api.EdgeListener{
+				Account: entry.Account, Google: entry.Google,
+				Issuers: slices.Clone(entry.Issuers), Projects: slices.Clone(entry.Projects),
+			})
 		}
 	}
 	return edges

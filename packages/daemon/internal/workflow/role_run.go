@@ -121,13 +121,13 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 // startActs is whether queued is a start for current with an id above stop, the newest stop that
 // still acts (actingStop), which is a start that will reach the claim. queuedStartActs and
 // ArchitectRelaunchOf both read it, so they count the same starts. A start queued for news alone
-// is no such start (startsWork): it finishes without acting at a claim that failed or retired, so
+// is no such start (StartsWork): it finishes without acting at a claim that failed or retired, so
 // it is no relaunch of an architect's claim either.
 func startActs(queued record.QueuedSupervise, stop int64, current phase.Phase) bool {
-	return startsWork(queued.Request) && queued.Request.Phase == current && queued.ID > stop
+	return StartsWork(queued.Request) && queued.Request.Phase == current && queued.ID > stop
 }
 
-// startsWork says whether a queued supervise row is a start that brings its role the work it names:
+// StartsWork says whether a queued supervise row is a start that brings its role the work it names:
 // every start but one queued for news of the approved design alone (record.SuperviseRequest.News).
 // Such a start names the member's phase only so that it finishes once the member has left that
 // phase. It carries no task of the phase and no entry. It reaches only a claim that was already
@@ -142,8 +142,11 @@ func startActs(queued record.QueuedSupervise, stop int64, current phase.Phase) b
 // queuedStart), and the cutover's start of a stopped merger (oweCutoverMerger). Counted as a start,
 // such a row would turn each of them off for as long as it waits, and a merger's waits for the
 // whole time its design gate stays closed. An architect's would hold back the sweep's start of the
-// entry its row names while the news waits behind a turn of the architect's own.
-func startsWork(request record.SuperviseRequest) bool {
+// entry its row names while the news waits behind a turn of the architect's own. The outbox's
+// phase and entry fences read it too (the daemon's releaseStoppedStart): a start they would finish
+// starts a claim the project release stopped only where this answers true, since StartFor counts
+// no other row as that claim's start, and the boot writes the claim's own start beside such a row.
+func StartsWork(request record.SuperviseRequest) bool {
 	return request.Op == "start" && !request.News
 }
 
@@ -201,12 +204,12 @@ func GivenEntry(run record.RoleRun) int64 {
 }
 
 // queuedStart says whether a start of the role that brings it work still waits in the outbox
-// (startsWork), which is one arm of owed and the only one the sweep's own reading keeps for a role
+// (StartsWork), which is one arm of owed and the only one the sweep's own reading keeps for a role
 // with no claim at all (ArchitectStartPending). A start queued for news alone is not one: it
 // reaches no claim that does not exist, and it hands no entry's work to one that does.
 func queuedStart(run record.RoleRun) bool {
 	for _, queued := range run.Queued {
-		if startsWork(queued.Request) {
+		if StartsWork(queued.Request) {
 			return true
 		}
 	}

@@ -11,11 +11,11 @@
 # plugin-pack.py: with them goes the Bun install, which no other test of this module needs, and with
 # that the lockfile and the workspace manifests, and with them skills/ and the prepack script
 # that stages each plugin's partition of it, which no other test of this module reads.
-# The plain step leaves three tests out as well. Two are internal/supervise's table pins
+# The plain step leaves five tests out as well. Four are internal/supervise's pure pins
 # (SUPERVISE_TABLE_TESTS), which the text-check job runs by name: they read that package's
 # source and the source of everything it imports, which their type-checker reads from source
 # too (`packages/daemon/internal/supervise/table_test.go#importer.ForCompiler`) and which of this repository
-# is packages/daemon's own packages, so no read leaves this job with them. The third is
+# is packages/daemon's own packages, so no read leaves this job with them. The fifth is
 # internal/ompsessions' left-setting test (SESSION_CLIENT_LEFT_TESTS), which a step of its own in
 # plain leg 2 runs by name with -v, so that its summary line reaches the log: the step runs the
 # package the plain step runs there, and starts its servers from PgBouncer, which the plain legs'
@@ -57,7 +57,7 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     # way_back_doc_test.go holds those copies to the guide.
     pinned_step(DAEMON_PLAIN_LEGS_JOB, DAEMON_PLAIN_STEP, DAEMON, DAEMON_PLAIN_SCRIPT, [
         (DAEMON, [f"./{p}/" for p in DAEMON_PLAIN_PACKAGES],
-         f"go test over each plain leg's packages of {GO_LEGS}, the supervise table's two pure pins and the "
+         f"go test over each plain leg's packages of {GO_LEGS}, the supervise package's four pure pins and the "
          f"session client's left-setting test skipped by name",
          {}),
     ], workflow=DAEMON_FILE),

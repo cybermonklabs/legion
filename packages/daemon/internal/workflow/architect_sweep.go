@@ -148,7 +148,7 @@ func ArchitectCarried(ctx context.Context, tx pgx.Tx, store record.Store, root r
 // entry's work. The machine refuses the start's task behind it and sends it first, so it holds
 // the row back as owed answers. owed's other arms hold as they are: a start still queued, and a
 // claim still starting. A start still queued is any start row of the architect at the root's
-// generation that brings it work (startsWork), a wake's and the resume of a cancelled idle release
+// generation that brings it work (StartsWork), a wake's and the resume of a cancelled idle release
 // (the daemon's releaseResume) among them, though neither carries an entry: it holds the row back
 // until a lane has run it, and the passes after that read the claim it brought back by the arms
 // above. A start queued for news alone is no such row, and holds nothing back. owed itself answers

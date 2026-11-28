@@ -313,22 +313,25 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // role sessions is queued when the write changes the session the row names as the holder of c's
 // role (roleHolder, EnqueueRoleHolders): the agent registers, a new session takes the role, or the
 // claim leaves the states that hold it (supervise.HoldsRole) — it retires, fails, or is suspended
-// by any source but the idle release's — or comes back to them. The idle release's suspension and
-// a pause's stop, which both suspend as released, keep the session and its role, and so does the
-// launch that resumes that session, so none of them queues a publication. The state event is
-// queued when the write moves the state the state route serves at c's issue's role, or lists c's
-// issue first (storedClaim.unlisted, queueClaimState). The release of a left session's Dispatch
-// claim is queued when the write moves the claim off a session the stored row names — a fresh
-// session that clears it, or a new session written over it — as one claim_release row of c's
-// issue that names that session (enqueueLeftSessionRelease): while c's issue runs, no move's row
-// and no boot row releases the Dispatch claim that session holds (left_sessions.go says why). All
-// three are read against the row the write replaces, read under its lock (lockedClaim). The three
-// switches (queuesRoleHolders, queuesState, queuesLeftSessionRelease) depend on no stored row, so
-// putClaim reads them inside tx before it takes that lock: a write for which all three are off
-// writes the row without reading it first (upsertClaim) and queues nothing. A write that changes
-// none queues nothing either. A write of a claim of another project's issue queues no publication
-// and no release, since only that project's daemon runs a row keyed by its issue
-// (queuesRoleHolders, queuesLeftSessionRelease).
+// by any source but the idle release's or the project release's — or comes back to them. The idle
+// release's suspension and a pause's stop, which both suspend as released, and the project
+// release's stop keep the session and its role, and so does the launch that resumes that session,
+// so none of them queues a publication. The state event is queued when the write moves the state
+// the state route serves at c's issue's role, or lists c's issue first (storedClaim.unlisted,
+// queueClaimState). The release of a left session's Dispatch claim is queued when the write moves
+// the claim off a session the stored row names — a fresh session that clears it, or a new session
+// written over it — as one claim_release row of c's issue that names that session
+// (enqueueLeftSessionRelease): while c's issue runs, no move's row and no boot row releases the
+// Dispatch claim that session holds (left_sessions.go says why). Those same stops move no claim off
+// its session, the project release's included, whose claim the next boot starts again over the
+// session it kept, so none of them queues a release either. All three are read against the row
+// the write replaces, read under its lock (lockedClaim). The three switches (queuesRoleHolders,
+// queuesState, queuesLeftSessionRelease) depend on no stored row, so putClaim reads them inside tx
+// before it takes that lock: a write for which all three are off writes the row without reading
+// it first (upsertClaim) and queues nothing. A write that changes none queues nothing either. A
+// write of a claim of another project's issue queues no publication and no release, since only
+// that project's daemon runs a row keyed by its issue (queuesRoleHolders,
+// queuesLeftSessionRelease).
 // A write that queued a row wakes that row's lane once tx commits, as the hook of tx's commit
 // (wakeRoleHolders, wakeLeftSessionRelease, and the state events' wake, PublishState): no caller
 // wakes it. Every claim write goes through here — PutClaim, PutClaimAndDelivery, RetireDelivery,
@@ -765,7 +768,8 @@ func runsNothingStates() []string { return claimStateNames(supervise.RunsNothing
 // text array a query binds: the store names no state of that set itself.
 func goneStates() []string { return claimStateNames(supervise.GoneStates()) }
 
-// claimStateNames is states as the text array a query binds.
+// claimStateNames is states as the text array a query binds, so the store names no state of
+// supervise's sets itself.
 func claimStateNames(states []supervise.ClaimState) []string {
 	names := make([]string, len(states))
 	for i, state := range states {
@@ -823,10 +827,22 @@ func (s *Store) HasLegacySandboxClaims(ctx context.Context, project string) (boo
 // ClaimByBootTokenHash finds the claim whose current launch minted the boot token with this hash
 // — how a shim's hello and an agent's registration find the claim they belong to.
 func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervise.Claim, bool, error) {
+	return s.claimWhere(ctx, "c.boot_token_hash = $1", hash)
+}
+
+// ClaimByToken is token's claim as the store holds it, and whether it holds one: the one claim a
+// request a role's shim answers goes over (the sandbox runtime's runningRoleConn), read alone.
+func (s *Store) ClaimByToken(ctx context.Context, token claim.Token) (supervise.Claim, bool, error) {
+	return s.claimWhere(ctx, "c.token = $1", string(token))
+}
+
+// claimWhere is the one claim claimSelect reads under where, in a read-only transaction of its
+// own, and whether a row matched.
+func (s *Store) claimWhere(ctx context.Context, where string, args ...any) (supervise.Claim, bool, error) {
 	var c supervise.Claim
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		c, err = scanClaim(tx.QueryRow(ctx, claimSelect+" where c.boot_token_hash = $1", hash))
+		c, err = scanClaim(tx.QueryRow(ctx, claimSelect+" where "+where, args...))
 		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -371,9 +371,14 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// disk shape is replaced below, as for any other replacement. The image rule of a launch
 	// installing a stale-plugin pair (podImageDrift) reads only a pod no round covers, so it never
 	// meets this one: an installing launch into a covered pod asks the daemon as any launch does,
-	// and where the round is over it installs nothing into the new pod (below).
+	// and where the round is over it installs nothing into the new pod (below). A launch the
+	// project release holds is refused before RoundPodEnds is asked, so the daemon does not read
+	// the workspace or record a replacement for a launch that will be refused anyway.
 	kind := launchReplacement
 	if !replace && covered && r.roundPodEnds != nil {
+		if err := r.releaseHolds("launch " + string(spec.Claim)); err != nil {
+			return runtime.Locator{}, err
+		}
 		ends, err := r.roundPodEnds(bounded, spec.Claim, string(pod.UID))
 		if err != nil {
 			return fail("read the update round over its pod", err)
@@ -428,8 +433,20 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		// the configured image, whose plugins are already current, so nothing is installed into it.
 		l.spec.Plugins = nil
 	}
-	taken := r.launchTaken(bounded, l, s, pod, kind, replacement, took, live)
 	if replace {
+		// A pod this launch would replace or make is refused while the project release holds
+		// every pod, before a launcher of the pod reads its workspace for a launch's own
+		// replacement (launchTaken), before the daemon records what that launch takes, and before
+		// the live pod is suspended under it: the release reads and deletes that pod itself, and a
+		// launch that ended its processes would leave it with nothing to read. A round's own
+		// replacement was recorded in RoundPodEnds, which forgets that record where the mark was
+		// set while it read the workspace. A mark set after RoundPodEnds read it clear is refused
+		// here, and the record stands: the release settles it under the pod's launch turn before
+		// it deletes the pod (SuspendIssue's settle, internal/daemon's settleReplacements).
+		if err := r.releaseHolds("launch " + string(spec.Claim)); err != nil {
+			return runtime.Locator{}, err
+		}
+		taken := r.launchTaken(bounded, l, s, pod, kind, replacement, took, live)
 		// The daemon records what the replacement is about to take before anything takes it
 		// (Options.LaunchTakes), so a launch, or a daemon, that stops once the disk is taken
 		// still leaves the daemon its word of it (GPT-6.1 Sol's points 1 and 2 on #5285). A
@@ -493,6 +510,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			return fail("write its launcher secrets", err)
 		}
 		template := r.podTemplate(l)
+		if err := r.releaseHolds("launch " + string(spec.Claim) + ": set its sandbox running"); err != nil {
+			return runtime.Locator{}, err
+		}
 		running, err := r.patch(bounded, s,
 			jsonPatchOp{Op: "add", Path: "/spec/podTemplate", Value: template},
 			jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: modeRunning},
@@ -558,6 +578,16 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	carried := l.secrets[dispatchTokenKey] != ""
 	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r), carried); err != nil {
 		return fail("record the addresses its generation is handed", err)
+	}
+	// The release's hold is read once more before the role starts, whether the pod was kept or
+	// replaced: the claim's launching write came before this launch reached the runtime, so either
+	// the release's mark is set before its stop set is read, which then holds this claim and stops
+	// it, or this read sees the mark and the launch waits (runtime.ErrProjectReleased, uncharged).
+	// Without it a launch into a kept pod that passed the launch gate just before the mark would
+	// start its role after the release read its stop set, and the release would delete the pod
+	// under it.
+	if err := r.releaseHolds("launch " + string(spec.Claim) + ": start its role"); err != nil {
+		return runtime.Locator{}, err
 	}
 	// The check's digest is decided against the exact launcher's served tarball. For a kept pod
 	// whose template records none, record that digest only after the launcher that will receive
@@ -1293,6 +1323,9 @@ func (r *Runtime) replaceSupersededSandbox(ctx context.Context, l launch, s *san
 // no annotations of its own, so this sets the one key rather than the manifest threading it. So a
 // Sandbox that this creates carries no reset mark (volumeResetAnnotation).
 func (r *Runtime) createSandbox(ctx context.Context, l launch) (*sandbox, error) {
+	if err := r.releaseHolds("create sandbox " + l.name); err != nil {
+		return nil, err
+	}
 	manifest := r.sandboxManifest(l)
 	held, _ := r.strandedPod(l.name)
 	if held != "" {

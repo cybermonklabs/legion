@@ -91,6 +91,14 @@ func TestEachStandaloneReadOfTheStoreOpensReadOnlyAndReadsNoID(t *testing.T) {
 			_, err := s.DuePodBackstops(ctx, "legion", time.Now())
 			return err
 		}},
+		{name: "OpenPausePodHolds", run: func(ctx context.Context, s *Store) error {
+			_, err := s.OpenPausePodHolds(ctx, "legion")
+			return err
+		}},
+		{name: "ProjectReleaseStopSet", run: func(ctx context.Context, s *Store) error {
+			_, err := s.ProjectReleaseStopSet(ctx, "legion")
+			return err
+		}},
 	} {
 		t.Run(read.name, func(t *testing.T) {
 			ctx := context.Background()

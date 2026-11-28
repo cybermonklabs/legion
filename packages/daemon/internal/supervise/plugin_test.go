@@ -12,6 +12,8 @@ package supervise
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -299,6 +301,54 @@ func TestAStaleRegistrationWithNoDeclaredContractNamesIt(t *testing.T) {
 	var refusal claim.Refusal
 	if !errors.As(err, &refusal) || refusal != claim.StalePluginContract(0, 24) {
 		t.Fatalf("register with no declared contract = %v, want the refusal naming 0 and 24", err)
+	}
+}
+
+// A stale registration whose uncharged relaunch the launch check refuses with the project
+// release's routine wait (errReleaseHolds) is answered the stale-plugin refusal, as every other
+// stale registration is: the release holds the relaunch, so nothing is relaunched or charged, and
+// the claim keeps the process that registered. One line at Info says so (staleRelaunchHeldLine),
+// and nothing is written at Warn or above: the register route answers every error that is no
+// refusal as a failure, at Error and with a 500, which for a wait the operator who released the
+// project asked for would send whoever reads the log to look at nothing.
+//
+// The negative control is staleRegistration answering the relaunch's refusal with its error, as
+// it did before: the registration is then answered the release's wait, not the stale-plugin
+// refusal.
+func TestAStaleRegistrationTheReleaseHoldsIsRefusedStaleAndRelaunchesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.launch()
+	h.m.deps.PluginContract = 24
+	h.m.deps.PluginRelaunchable = true
+	h.m.deps.Store = &heldCheckStore{memStore: h.store, refusal: errReleaseHolds}
+	loc := h.locator()
+	from := len(h.records.since(0))
+
+	err := h.handle(RequestRegister{
+		Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
+		CapabilityHash: []byte("capability"), PluginContract: 1,
+	})
+	var refusal claim.Refusal
+	if !errors.As(err, &refusal) || refusal != claim.StalePluginContract(1, 24) {
+		t.Fatalf("register while the release holds the relaunch = %v, want the stale-plugin refusal naming 1 and 24", err)
+	}
+
+	h.wantState(StateRegistered)
+	h.wantBudgets(Budgets{})
+	if c := h.claim(); c.Locator == nil || *c.Locator != loc || c.PluginRelaunchFor != 0 {
+		t.Fatalf("the claim records the process %+v and a relaunch made for %d, want the process that registered, %+v, and no relaunch",
+			c.Locator, c.PluginRelaunchFor, loc)
+	}
+	h.wantCalls("Spawn", 1)
+	h.wantCalls("Resume", 0)
+	h.wantCalls("Suspend", 0)
+	if got := h.records.levels(staleRelaunchHeldLine); !slices.Equal(got, []slog.Level{slog.LevelInfo}) {
+		t.Fatalf("the release's hold of the relaunch is logged at %v, want once at Info", got)
+	}
+	for _, r := range h.records.since(from) {
+		if r.level >= slog.LevelWarn {
+			t.Fatalf("the log holds %q at %s; want nothing at Warn or above while the release holds the relaunch", r.message, r.level)
+		}
 	}
 }
 

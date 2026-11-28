@@ -178,6 +178,11 @@ type overrides struct {
 	runtime runtimeFactory
 	// clock is the machines' time; nil is the wall clock.
 	clock supervise.Clock
+	// podStartClock is the clock of the pod start gate (podStarts); nil is the machines' clock. A
+	// test whose machine clock fires no timer (the idle rig's stillClock) gives the gate the wall
+	// clock, so the roles of one pod start one session load at a time and each next start comes a
+	// settle after the registration before it, as in a deployment, rather than never.
+	podStartClock supervise.Clock
 	// getenv is the environment the OMP invocation is resolved against; nil is the process's.
 	getenv func(string) string
 	// environ is the environment provider keys are resolved under (`secrets get`) and the NATS
@@ -271,12 +276,12 @@ type overrides struct {
 	// that default, which a kubernetes-runtime test without a real cluster has no other way to
 	// drive, since such a test configures no runtime.kubernetes.plugins and links no plugin pair.
 	pluginRelaunchable *bool
-	// checkLaunch stands in for the store's own CheckLaunch (supervise.Store), wrapping the real
-	// store so every launch's recheck refuses first when this does, then asks the real store
-	// (launchGatedStore, internal/daemon/launchgate.go): a test's way to refuse a relaunch the way
+	// checkLaunch stands in for the store's own CheckLaunch (supervise.Store): every launch's
+	// recheck asks it after the project release's mark and before the real store
+	// (launchGatedStore, internal/daemon/launchgate.go), a test's way to refuse a relaunch the way
 	// a reserved tree cleanup or a transient store error would, without a lifecycle this pod has
-	// none of to reserve. nil, in production, is nothing: every launch reaches the real store's
-	// own check.
+	// none of to reserve. nil, in production, adds nothing: a launch the mark lets through reaches
+	// the real store's own check.
 	checkLaunch func(context.Context, supervise.Claim) error
 	// holdOutbox answers whether the workflow's outbox leaves row unrun for now (outbox.hold):
 	// the row is put back, due again a moment later, and runs on the first claim the hook lets
@@ -483,6 +488,21 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if err != nil {
 		st.Close()
 		return err
+	}
+	// A project release lives in the process that started it, so a release no boot has ended is
+	// one an earlier process left: this boot ends it before anything of the workflow runs, and the
+	// claims it stopped, still suspended by `project_release`, are started again by the boot's
+	// own fact (workflow's booted). The line is logged after the end has committed: the end runs
+	// in a transaction of its own, which has committed once the call returns nil, so the line never
+	// tells of an end that rolled back.
+	ended, err := st.EndProjectReleasesAtBoot(boot, plan.project, time.Now().UTC())
+	if err != nil {
+		st.Close()
+		return err
+	}
+	if ended > 0 {
+		log.Info("legion daemon: the boot ended the project releases an earlier process left; it starts the claims they stopped",
+			"project", cfg.Project, "releases", ended)
 	}
 	if cfg.DispatchURL != "" {
 		log.Info("legion workflow boot stage", "stage", "store")
@@ -1385,6 +1405,9 @@ type plan struct {
 	// kubernetes, whose probe reports it, and for a replaced runtime.
 	modelFallback func(ctx context.Context) string
 	clock         supervise.Clock
+	// podStartClock is the pod start gate's clock (overrides.podStartClock), the machines' clock
+	// where no test gives it one.
+	podStartClock supervise.Clock
 	orphanSweep   time.Duration
 	// controllerRetry is the controller keeper's first wait before it retries a failed controller.
 	controllerRetry time.Duration
@@ -1416,9 +1439,13 @@ type plan struct {
 	strandedReported func()
 	// beforeServingLatched is overrides.beforeServingLatched; nil runs nothing.
 	beforeServingLatched func(ctx context.Context)
-	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
-	// reaches the real store's own CheckLaunch.
+	// checkLaunch is overrides.checkLaunch; nil adds no refusal of a test's to the launch check
+	// (gateLaunch), so every launch the release does not hold reaches the real store's own check.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// release is the daemon-wide mark of a project release (projectRelease): the launch check,
+	// the runtime, the machines, the periodic work, the outbox and the operator's routes all read
+	// it. One per process, never nil: a daemon starts with the mark clear.
+	release *projectRelease
 	// enqueue writes outbox rows of an issue, all of them in one transaction, the workflow's own
 	// enqueue (workflowRuntime.enqueueOutbox); nil in a deployment with no workflow, which has no
 	// outbox to write to and no Dispatch issue to write on. run fills it beside repository, before
@@ -1503,10 +1530,14 @@ func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
 // records and of the launches since their last read (workflowRuntime.cacheRepositories; none
 // without a workflow). The rename rule every role's gh bundle resolves a configured pair by, one
 // repository at a time (appauth.GitHubCredential, repositories.servesRepository), is the repository
-// state's own and is given to the factory where it is built. openSupervision hands it the plan the
-// workflow completed, so no factory reads a field the workflow sets after prepare.
+// state's own and is given to the factory where it is built. held is whether the daemon's project
+// release holds every pod now (projectRelease.held), which the Sandbox runtime reads at every act
+// that would make one (sandbox.Options.ProjectReleaseHolds); a runtime that runs no pod takes it
+// and reads nothing of it. openSupervision hands it the plan the workflow completed, so no factory
+// reads a field the workflow sets after prepare.
 type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source,
-	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error)
+	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository,
+	held func() bool) (runtime.Runtime, error)
 
 // writeOnIssue posts one message on the issue, with the document it links when it links one,
 // through the outbox's Dispatch message row that the plan's enqueue writes, and answers whether
@@ -1562,6 +1593,10 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if clock == nil {
 		clock = supervise.RealClock{}
 	}
+	podStartClock := o.podStartClock
+	if podStartClock == nil {
+		podStartClock = clock
+	}
 	orphanSweep := o.orphanSweep
 	if orphanSweep == 0 {
 		orphanSweep = orphanSweepInterval
@@ -1584,10 +1619,11 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut(),
 		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, privateNameRules: reads.privateNameRules, nats: reads.nats, instructions: instructions, instructionsCopies: copies,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
-		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
+		tools: reads.tmux.tools, clock: clock, podStartClock: podStartClock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
+		release:    &projectRelease{},
 		holdOutbox: o.holdOutbox, gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
 	}
@@ -1773,10 +1809,12 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 // works (claimRepository over the workflow's repository), which a pane adopted after a restart
 // holds its write token for; a daemon with no GitHub Apps hands the runtime none, and its panes
 // hold no gh files. The private server's environment is scrubbed before anything is launched on
-// it.
+// it. It reads nothing of the project release's mark: a pane is no pod, and a daemon on this
+// runtime refuses the release itself, so nothing ever sets the mark here.
 func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, served func(ghrepo.Repository) bool, installed *appauth.Installed, left *appauth.LeftOut, log *slog.Logger) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, streamAddress string, tokens appauth.Source,
-		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
+		_ func() bool) (runtime.Runtime, error) {
 		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
 		opts.StreamAddress, opts.Conns = streamAddress, listener
 		if tokens != nil {
@@ -1920,6 +1958,10 @@ type supervision struct {
 	supervisor *supervisor
 	tokens     *api.BootTokens
 	claims     []supervise.Claim
+	// releaseStopped is the claims the boot read that a project release stopped and whose
+	// sessions do not hold their roles yet (readReleaseStoppedClaims), which attach gives the
+	// workflow and the outbox. Nil, in a supervision a test builds by hand, holds no claim.
+	releaseStopped *releaseStoppedClaims
 	// refreshGate is the daemon's one stale-plugin refresh gate, the same object every machine of
 	// this supervision holds on its Deps (supervise.RefreshGate, built in run and handed to
 	// openSupervision beside the wake limiter). Supervision keeps the reference because the
@@ -2211,6 +2253,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		return nil, err
 	}
 	claims = ofProject(claims, p.project)
+	releaseStopped, err := readReleaseStoppedClaims(boot, st, p.project, claims, log)
+	if err != nil {
+		return nil, err
+	}
 	reports, err := st.CapabilityReports(boot)
 	if err != nil {
 		return nil, err
@@ -2239,7 +2285,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		// A daemon with no workflow has no records to read, so it keeps no repository cache.
 		cached = func() []ghrepo.Repository { return nil }
 	}
-	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, cached)
+	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, cached, p.release.held)
 	if err != nil {
 		cancel()
 		endDrain()
@@ -2251,7 +2297,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	sup.deps = supervise.Deps{
 		Runtime: rt,
 		Conns:   listener,
-		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
+		Store:   pruning(gateLaunch(tokens.Recording(st), p.release, p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, copies: p.instructionsCopies, secrets: p.secrets, prompts: p.prompts,
 			identity: p.identity, knownIdentity: p.knownIdentity, repository: p.launchRepository, owner: p.owner, log: log,
@@ -2313,10 +2359,12 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			Burst:    cfg.WorkerWakeBurst,
 		},
 		RefreshGate:        refreshGate,
-		PodStarts:          podStarts(cfg, p.clock),
+		PodStarts:          podStarts(cfg, p.podStartClock),
 		PluginContract:     api.DaemonAPIVersion(),
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+		// The machines hand no claim its task while the project release holds every start.
+		ProjectReleaseHolds: p.release.held,
 	}
 	if pauses != nil {
 		sup.deps.Paused, sup.deps.PauseStopped, sup.deps.WakeLetOut, sup.deps.WakeQueued =
@@ -2329,6 +2377,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	supervisionOf := newSupervision(cfg, log, p, rt, sup, claims, reports)
 	supervisionOf.stream, supervisionOf.tokens, supervisionOf.reportStore, supervisionOf.pauses = listener, tokens, st, pauses
 	supervisionOf.refreshGate = refreshGate
+	supervisionOf.releaseStopped = releaseStopped
 	supervisionOf.cancel, supervisionOf.draining, supervisionOf.endDrain, supervisionOf.decided = cancel, draining, endDrain, api.NewRouteDecisions()
 	supervisionOf.stopping, supervisionOf.beginStop, supervisionOf.sessionStops = stopping, beginStop, &sessionStops
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
@@ -2336,6 +2385,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// any machine exists, as every answer the workflow lends supervision is on the plan built
 	// before it.
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
+	// A release whose record did not commit clears the mark, and every task the machines held
+	// back while it stood is sent then rather than at each claim's next event. Set here, at boot,
+	// before anything can set the mark.
+	p.release.unmarked = sup.sendHeldTasks
 	return supervisionOf, nil
 }
 
@@ -3034,10 +3087,11 @@ func noPluginInstall(cfg config.Config, c supervise.Claim) bool {
 }
 
 // podStarts is the gate the machines of this daemon start their roles' processes through
-// (supervise.Deps.PodStarts, dispatch://INFRA-5297): one per daemon, on the machines' own clock,
-// under the Kubernetes runtime alone, where every role of an issue runs in the issue's one pod
-// under one memory limit. tmux runs each role in a pane of the host's, with no pod for two loads
-// to meet in, so it gets none and no start waits.
+// (supervise.Deps.PodStarts, dispatch://INFRA-5297): one per daemon, on the machines' own clock
+// unless a test gives it one of its own (overrides.podStartClock), under the Kubernetes runtime
+// alone, where every role of an issue runs in the issue's one pod under one memory limit. tmux runs
+// each role in a pane of the host's, with no pod for two loads to meet in, so it gets none and no
+// start waits.
 func podStarts(cfg config.Config, clock supervise.Clock) *supervise.PodStarts {
 	if cfg.Runtime.Name != "kubernetes" {
 		return nil
@@ -3096,21 +3150,41 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		claims, err := s.supervisor.Claims(ctx)
-		if err != nil {
-			if ctx.Err() == nil {
-				s.log.Error("reconcile orphans: read the claims", "error", err)
-			}
-			continue
+		s.sweepOnce(ctx)
+	}
+}
+
+// sweepOnce is one pass of the sweep (reconcileOrphans). While the project release holds every
+// start, the pass skips each act of it that makes a pod or starts a role: the orphan
+// reconciliation, which makes and repairs the repository caches as it sweeps them, the
+// stale-plugin refresh, which relaunches, and the pod update sweep, which replaces pods. It reads
+// the mark and runs those acts holding the mark's sweep turn (projectRelease.sweep), which the
+// release takes once it has set the mark (projectRelease.awaitSweep), so the release waits for a
+// pass in flight that read the mark clear, and records, reads, asks and deletes nothing until that
+// pass has ended those acts: a pod update round of it writes no record of a replacement after the
+// release's settle read the records of its pod, and ends no round as a replacement made over the
+// pod the release deleted. A release whose request ends while it waits clears the mark and records
+// nothing, and every pass after runs those acts again. The stall backstop and the silence
+// report run outside that turn, and still run while the mark holds: neither makes a pod itself,
+// and what each starts is held where it starts — the launch check refuses the backstop's
+// relaunch, and the outbox holds the starts the silence report's facts queue.
+func (s *supervision) sweepOnce(ctx context.Context) {
+	claims, err := s.supervisor.Claims(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("reconcile orphans: read the claims", "error", err)
 		}
+		return
+	}
+	s.plan.release.sweep(func() {
 		if err := s.runtime.ReconcileOrphans(ctx, knownClaims(claims), orphanGrace); err != nil && ctx.Err() == nil {
 			s.log.Error("reconcile orphans", "error", err)
 		}
 		s.refreshStalePlugins(claims, "sweep")
 		s.reconcilePodUpdates(ctx, claims)
-		s.backstopStalledTurns(ctx, claims)
-		s.tellSilentPhaseWorkers(ctx, claims)
-	}
+	})
+	s.backstopStalledTurns(ctx, claims)
+	s.tellSilentPhaseWorkers(ctx, claims)
 }
 
 // halt begins the stop, once. It sets when the stop and the API's drain must end by (stopBy,
@@ -3266,6 +3340,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var keeper *controllerKeeper
 	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
 		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, cfg.ControllerTurnBound, s.log)
+		keeper.release = p.release
 	}
 	// The readiness latch the API's /readyz answers from. It is built here, unset: by the time
 	// this runs the runtime is built and the launcher acceptor installed, and what is left of the
@@ -3321,6 +3396,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
+		// The operator's starts are refused 409 while the project release holds every start.
+		ProjectReleaseHolds: p.release.held,
+		// The release itself: its routes, and the answers of the roles it asks.
+		ProjectRelease: newProjectReleaser(s, st, workflow),
 		// A test's seam alone (overrides.gateRegistrationRead); nil in production.
 		GateRegistrationRead: p.gateRegistrationRead,
 		Pause:                pauses,
@@ -4109,6 +4188,21 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 			return api.State{}, nil, err
 		}
 		state.Repositories = s.repositories.view(live, caches)
+	}
+	// The project's newest release, read in the same snapshot as every other durable fact here,
+	// so the body shows the release as its own GET answers it at that moment
+	// (dispatch://INFRA-3583 R7: a released daemon still serves its API, and the state shows the
+	// release and its result).
+	release, found, err := s.store.ReadProjectReleaseTx(ctx, tx, s.projectToken)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	if found {
+		view, err := api.ProjectReleaseResponseOf(release)
+		if err != nil {
+			return api.State{}, nil, err
+		}
+		state.ProjectRelease = &view
 	}
 	return state, claims, nil
 }

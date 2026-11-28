@@ -6,11 +6,12 @@ import (
 	"testing"
 )
 
-// The ranks run released, daemon, controller, operator, weakest first: the controller's suspension
-// outranks the daemon's, which is a park, a linger, a close or a carry of the claim's issue, since
-// it holds against every rule, and ranks under the operator's.
+// The ranks run released, project release, daemon, controller, operator, weakest first: the
+// controller's suspension outranks the daemon's, which is a park, a linger, a close or a carry of
+// the claim's issue, since it holds against every rule, and ranks under the operator's. The project
+// release's stands between the idle release's and the daemon's (suspensionRank).
 func TestSuspensionRankPutsTheControllerUnderTheOperator(t *testing.T) {
-	ordered := []SuspendSource{SuspendedByReleased, SuspendedByDaemon, SuspendedByController, SuspendedByOperator}
+	ordered := []SuspendSource{SuspendedByReleased, SuspendedByProjectRelease, SuspendedByDaemon, SuspendedByController, SuspendedByOperator}
 	for i, source := range ordered {
 		if got, want := suspensionRank(source), i+1; got != want {
 			t.Errorf("suspensionRank(%q) = %d, want %d", source, got, want)

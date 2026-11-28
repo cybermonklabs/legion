@@ -38,21 +38,51 @@ type NATSHold struct {
 	// 400 bad_signature, so with none every write is.
 	Keys []ed25519.PublicKey
 	// OperatorToken verifies a platform identity token for the NATS audiences, as the auth service
-	// verifies a service's (cmd/cipherd passes natscallout.PlatformTokens.Verify), and answers the
-	// account it names, whether that is a Google account, and when the token was issued and
-	// expires. Nil, a broker with no NATS audience, admits no caller.
-	OperatorToken func(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error)
+	// verifies a service's (cmd/cipherd passes natscallout.PlatformTokens.Verify), and answers what
+	// it says of its account (PlatformIdentity). Nil, a broker with no NATS audience, admits no
+	// caller.
+	OperatorToken func(ctx context.Context, raw string) (PlatformIdentity, error)
 	// OperatorAccount and OperatorGoogle are the operator entry's account and whether it is a
 	// Google account: the one caller the routes admit. An empty OperatorAccount, a list with no
-	// operator entry, admits none.
+	// operator entry, admits none. OperatorIssuers are the names of the issuers of
+	// BROKER_K8S_OIDC_ISSUER a Kubernetes operator's token is taken from (config.NATSService's
+	// Issuers: those the entry names, or the first issuer alone where it names none), as the auth
+	// service takes it: the same account name in another cluster is another ServiceAccount.
 	OperatorAccount string
 	OperatorGoogle  bool
+	OperatorIssuers []string
 	// RowFloor is this process's one floor of the hold row (signedrecord.Floor): the routes put
 	// every verified row they serve, write or restore through it, and the auth service's hold view
 	// (natscallout.NewHoldView) puts every row it reads through the same one, so neither half of the
 	// process trusts a row the other has moved past. cmd/cipherd makes one; nil gives the routes a
 	// floor of their own, as a test that runs no view does.
 	RowFloor *signedrecord.Floor
+}
+
+// PlatformIdentity is what a verified platform identity token says of its account, as the auth
+// service's verifier (natscallout.PlatformTokens.Verify) and the API's identityAccount both answer
+// it. Each of its readers reads this one struct: the auth service (natscallout, as
+// ServiceIdentity) of a service's token, the hold routes (NATSHold.OperatorToken) of the
+// operator's, and the API's identity-token callers (accountCaller and edgeListenerCaller) of a
+// listed caller's or an edge listener's.
+type PlatformIdentity struct {
+	// Account is the account the token names.
+	Account string
+	// Google is whether Account is a Google account.
+	Google bool
+	// Issuer is the name of the issuer of BROKER_K8S_OIDC_ISSUER that signed a Kubernetes token:
+	// "" for a Google token, and for the one issuer of a bare URL.
+	Issuer string
+	// Issued and Expiry are when the token was issued and when it expires.
+	Issued, Expiry time.Time
+}
+
+// TakenFrom reports whether an entry whose issuer names are issuers takes p's token: a Google
+// token always, since a Google entry names no issuer, and a Kubernetes token only from an issuer
+// the entry names, since the same account name in another cluster is another ServiceAccount, which
+// the entry does not list.
+func (p PlatformIdentity) TakenFrom(issuers []string) bool {
+	return p.Google || slices.Contains(issuers, p.Issuer)
 }
 
 // longestOperatorToken is the longest life the operator's token may have from its issue, the bound
@@ -62,31 +92,35 @@ const longestOperatorToken = machine.MaxTokenLoginLifetime + ciphertoken.ProofCl
 
 // operatorCaller authenticates the operator's own platform token for authenticate, the one
 // credential operatorAuth's routes take: verified as the auth service verifies a service's, no
-// longer lived than an hour from its issue and not expired, naming the operator entry's account.
-// Anything else is 403 not_operator, whatever was wrong with it, so a caller learns nothing of the
-// operator's identity from the refusal, and none repeats the token.
+// longer lived than an hour from its issue and not expired, naming the operator entry's account
+// and, for a Kubernetes token, signed by an issuer that entry names, since the same account name
+// in another cluster is another ServiceAccount. Anything else is 403 not_operator, whatever was
+// wrong with it, so a caller learns nothing of the operator's identity from the refusal, and none
+// repeats the token: a token of the operator's account name from another issuer is refused as
+// every other account's is.
 func (s *server) operatorCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	hold := s.deps.NATSHold
 	if hold.OperatorToken == nil || hold.OperatorAccount == "" {
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "this broker admits no operator: BROKER_NATS_SERVICES lists no operator entry, or no NATS audience verifies its token", nil)
 		return caller{}, false
 	}
-	account, google, issued, expiry, err := hold.OperatorToken(r.Context(), bearer(r))
+	identity, err := hold.OperatorToken(r.Context(), bearer(r))
 	switch {
 	case err != nil:
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "the caller's token does not verify as a platform token of the NATS audiences", nil)
 		return caller{}, false
-	case issued.IsZero() || expiry.Sub(issued) > longestOperatorToken:
+	case identity.Issued.IsZero() || identity.Expiry.Sub(identity.Issued) > longestOperatorToken:
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "the caller's token names no issue time or lives longer than an hour from it", nil)
 		return caller{}, false
-	case !expiry.After(time.Now()):
+	case !identity.Expiry.After(time.Now()):
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "the caller's token has expired", nil)
 		return caller{}, false
-	case account != hold.OperatorAccount || google != hold.OperatorGoogle:
+	case identity.Account != hold.OperatorAccount || identity.Google != hold.OperatorGoogle ||
+		!identity.TakenFrom(hold.OperatorIssuers):
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "the caller's token names an account other than the operator entry's", nil)
 		return caller{}, false
 	}
-	return caller{operator: account}, true
+	return caller{operator: identity.Account}, true
 }
 
 // holdStore is the store of the hold's tables the routes write.

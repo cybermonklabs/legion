@@ -520,8 +520,9 @@ func proxyPassword(names map[string]AirlockName) string {
 // AirlockConnection is what one proxy connection's password proves: the live grant behind it and
 // every airlock name it may carry. It runs the checks that must hold on EVERY connection - the
 // grant's liveness, its enrollment's lease, whether Dispatch calls the enrollment's person a
-// restricted member, and the names its operator withheld from a grant nobody decided - and no
-// others; the full release checks run once per grant per pod, in AirlockValues.
+// restricted member, the names its operator withheld from a grant nobody decided, and the project
+// rule of the names it carries (airlockProjectRule) - and no others; the full release checks run
+// once per grant per pod, in AirlockValues.
 type AirlockConnection struct {
 	GrantID, EnrollmentID, RequestID string
 	// SessionID and RuntimeID are the enrollment's: the session the grant belongs to, empty for
@@ -602,17 +603,17 @@ func (m *Machine) AirlockConnection(ctx context.Context, presented string) (Airl
 	var live bool
 	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
-		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''),
+		e.runtime_id, coalesce(e.session_id, ''),
 		`+grantAndEnrollmentLive("g", "e")+`,
-		e.kind, e.operator, e.subject, e.projects, c.service
+		`+credentialColumnsOf("e")+`, c.service
 		from airlock_placeholders p
 		join grants g on g.id = p.grant_id
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id
 		where p.placeholder_sha256 = $1`, placeholder.Hash(presented)).
-		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &decidedBy,
-			&conn.RuntimeID, &conn.SessionID, &conn.Operator, &live, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service)
+		Scan(slices.Concat([]any{&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &decidedBy,
+			&conn.RuntimeID, &conn.SessionID, &live}, enr.credentialDest(), []any{&enr.Service})...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AirlockConnection{}, ErrGrantNotLive
 	}
@@ -623,6 +624,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, presented string) (Airl
 		return AirlockConnection{}, ErrGrantNotLive
 	}
 	enr.ID = conn.EnrollmentID
+	conn.Operator = deref(enr.Operator)
 	restricted, err := m.restrictedOperator(ctx, enr)
 	if err != nil {
 		return AirlockConnection{}, err
@@ -712,7 +714,7 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 	}
 	rows, err := m.Store.Pool.Query(ctx, `select g.id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
 		p.name, p.slot, p.placeholder,
-		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''), e.kind, e.operator, e.subject, e.projects, c.service
+		e.runtime_id, coalesce(e.session_id, ''), `+credentialColumnsOf("e")+`, c.service
 		from grants g
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
@@ -736,13 +738,14 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 	for rows.Next() {
 		var row liveGrant
 		var name, slot, placeholder string
-		if err := rows.Scan(&row.conn.GrantID, &row.conn.RequestID, &row.conn.Expires, &row.reason, &row.decidedBy,
+		if err := rows.Scan(slices.Concat([]any{&row.conn.GrantID, &row.conn.RequestID, &row.conn.Expires, &row.reason, &row.decidedBy,
 			&name, &slot, &placeholder,
-			&row.conn.RuntimeID, &row.conn.SessionID, &row.conn.Operator, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service); err != nil {
+			&row.conn.RuntimeID, &row.conn.SessionID}, enr.credentialDest(), []any{&enr.Service})...); err != nil {
 			return nil, err
 		}
 		if len(grants) == 0 || grants[len(grants)-1].conn.GrantID != row.conn.GrantID {
 			row.conn.EnrollmentID = enrollmentID
+			row.conn.Operator = deref(enr.Operator)
 			row.held = map[string]map[string]string{}
 			grants = append(grants, &row)
 		}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -65,7 +66,7 @@ func (ts *testServer) audienceToken(t *testing.T, account, podUID, audience stri
 // too, before POD_CALLER_IS_THE_POD, since the list check comes first.
 func TestASessionAccountLoginCannotRegister(t *testing.T) {
 	ts := newTestServerWith(t, withExchangeAccounts(t, workerAccount, sessionAccount))
-	ts.ServiceLogins[sessionAccount] = "example-session"
+	ts.ServiceLogins[sessionAccount] = enroll.ServiceLogin{Service: "example-session", Issuers: []string{""}}
 	login := ts.accountToken(t, sessionAccount, "pod-uid-session", time.Hour)
 	for _, c := range []struct{ name, podToken, podAccount string }{
 		{"a Legion pod", ts.accountToken(t, workerAccount, "pod-uid-worker", time.Hour), workerAccount},

@@ -1,21 +1,46 @@
 package requests
 
 import (
+	"crypto/ecdsa"
 	"errors"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
+
+// mapFixtureSubjectToPriv replaces m's exchange set with one operator's entry
+// (BROKER_EXCHANGE_ACCOUNTS) mapping fixtureSubject, the account the fixture service's pods run
+// as, to PRIV for insider, under the fixture's one issuer (fixtureIssuer): each such pod's
+// credential names PRIV (Exchange.PodProjects), so its requests and grants are PRIV's.
+func mapFixtureSubjectToPriv(t *testing.T, m *Machine) {
+	t.Helper()
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: []string{""}}}, nil, nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	m.Exchange = set
+}
+
+// privatePod is PRIV's pod: a pod of the fixture's service whose runtime id is runtimeID, enrolled
+// once mapFixtureSubjectToPriv has mapped its account to PRIV.
+func privatePod(t *testing.T, m *Machine, runtimeID string) (string, *ecdsa.PrivateKey) {
+	t.Helper()
+	mapFixtureSubjectToPriv(t, m)
+	return newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, runtimeID)
+}
 
 // TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople: the production path of a
 // private project's agent is a pod whose account an operator's entry maps to the project
 // (BROKER_EXCHANGE_ACCOUNTS); its enrollment's own projects column stays empty, and its projects
-// come from that entry (Exchange.MappedProjects), as the release path already reads them. Each of
+// come from that entry (Exchange.PodProjects), as the release path already reads them. Each of
 // its requests is that project's, so dispatch://INFRA-3885's c-d2-secret-release holds for it as
 // for a session that named PRIV: "A private project's request is decided, listed and shown on the
 // approval page only to a person who can see the project". Two requests of PRIV's pod: an
@@ -32,12 +57,7 @@ import (
 // carol "PRIV, private, which the session does not name".
 func TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, nil, "")
-	if err != nil {
-		t.Fatalf("exchange.NewSet: %v", err)
-	}
-	m.Exchange = set
-	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-priv-"+t.Name())
+	pod, podKey := privatePod(t, m, "pod-priv-"+t.Name())
 
 	plain, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "carol's unannounced PRIV acquisition: rotate the vendor key", "SHARED_KEY"), "")
 	if err != nil || plain.RecordID == nil {
@@ -84,5 +104,80 @@ func TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople(t *tes
 	}
 	if decision, err := m.ApplyDecision(t.Context(), *plain.RecordID, true, outsider); !errors.Is(err, pgx.ErrNoRows) || errors.Is(err, record.ErrNotApprover) {
 		t.Errorf("an approval by %s, outside PRIV, of PRIV's pod's request for SHARED_KEY = %+v, %v; want pgx.ErrNoRows alone, as for an id no record has", outsider, decision, err)
+	}
+}
+
+// recordIssuer sets the URL of the issuer enrollmentID's pod enrolled under, as Create records the
+// issuer whose token proved the pod (enrollments.issuer); nil records none, as an enrollment made
+// before enrollments recorded one does.
+func recordIssuer(t *testing.T, m *Machine, enrollmentID string, issuer *string) {
+	t.Helper()
+	if _, err := m.Store.Pool.Exec(t.Context(), `update enrollments set issuer=$2 where id=$1`, enrollmentID, issuer); err != nil {
+		t.Fatalf("record the pod's issuer: %v", err)
+	}
+}
+
+// firstIssuer and secondIssuer are the two issuers the broker trusts in the tests of a pod's issuer.
+var (
+	firstIssuer  = oidc.NamedIssuer{Name: "dispatch", URL: "https://kubernetes.dispatch.example"}
+	secondIssuer = oidc.NamedIssuer{Name: "us-central1", URL: "https://container.googleapis.com/v1/projects/example/locations/us-central1/clusters/example"}
+)
+
+// TestAServicesPodNamesItsEntrysProjectOnlyForAnIssuerTheEntryNames: a service's pod names the
+// project its account's BROKER_EXCHANGE_ACCOUNTS entry maps only while that entry names the issuer
+// whose token enrolled the pod, which the enrollment records by URL and the broker reads as that
+// issuer's name in BROKER_K8S_OIDC_ISSUER (Machine.Issuers): the same account name in another
+// cluster is another ServiceAccount, whose token the exchange refuses too (exchange.Set.Pod). The
+// broker trusts two issuers, dispatch and us-central1, and the entry maps the pod's account to
+// PRIV. A pod that names PRIV is given PRIV_KEY at once, and the record of its request for the
+// untagged SHARED_KEY names PRIV among its session's projects; a pod that names no project is
+// denied PRIV_KEY project-not-named, and its record names no project. An enrollment that records
+// no issuer, made before enrollments recorded one, is the first issuer's, and one that records an
+// issuer the setting no longer holds is no issuer's.
+func TestAServicesPodNamesItsEntrysProjectOnlyForAnIssuerTheEntryNames(t *testing.T) {
+	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	m.Issuers = []oidc.NamedIssuer{firstIssuer, secondIssuer}
+	for i, c := range []struct {
+		name string
+		// enrolledWith is the URL the pod's enrollment records, nil for none.
+		enrolledWith *string
+		// issuers are the issuer names the pod account's entry names.
+		issuers []string
+		names   bool
+	}{
+		{"the second issuer's pod, while its entry names both", &secondIssuer.URL, []string{firstIssuer.Name, secondIssuer.Name}, true},
+		{"the second issuer's pod, once its entry names the first alone", &secondIssuer.URL, []string{firstIssuer.Name}, false},
+		{"a pod recording no issuer, while its entry names the first", nil, []string{firstIssuer.Name}, true},
+		{"a pod recording no issuer, while its entry names the second alone", nil, []string{secondIssuer.Name}, false},
+		{"a pod of an issuer the setting no longer holds", new("https://gone.example"), []string{firstIssuer.Name, secondIssuer.Name}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: c.issuers}}, nil, nil, nil, nil, "")
+			if err != nil {
+				t.Fatalf("exchange.NewSet: %v", err)
+			}
+			m.Exchange = set
+			pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-issuer-"+strconv.Itoa(i))
+			recordIssuer(t, m, pod, c.enrolledWith)
+
+			request, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "deploy", "PRIV_KEY"), "")
+			if c.names && (err != nil || request.GrantID == nil) {
+				t.Fatalf("Create(PRIV_KEY) from a pod naming PRIV = %+v, %v; want a grant at once", request, err)
+			}
+			if !c.names {
+				deniedFor(t, "a request for PRIV_KEY from a pod naming no project", request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
+			}
+			plain, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "rotate the vendor key", "SHARED_KEY"), "")
+			if err != nil || plain.RecordID == nil {
+				t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending", plain, err)
+			}
+			detail, err := m.ReadRecord(t.Context(), *plain.RecordID)
+			if err != nil {
+				t.Fatalf("ReadRecord(%s): %v", *plain.RecordID, err)
+			}
+			if named := slices.Contains(detail.SessionProjects, privProject); named != c.names {
+				t.Fatalf("the record of the pod's request for SHARED_KEY names the session's projects %v; want PRIV among them: %v", detail.SessionProjects, c.names)
+			}
+		})
 	}
 }

@@ -12,7 +12,7 @@ import (
 // member's phase only so that it finishes once the member has left that phase. It carries no task
 // of the phase, and it finishes without acting at a claim that failed (the daemon's
 // newsOnlyRefusal). So no rule that asks whether a queued start brings a role its phase's work
-// counts it (startsWork), and each reads a role with only such a start queued as it reads one
+// counts it (StartsWork), and each reads a role with only such a start queued as it reads one
 // with nothing queued:
 //
 //   - a failed claim is one a start must bring back (StartFor, which the promotion and the report

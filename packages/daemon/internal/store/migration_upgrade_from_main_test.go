@@ -212,14 +212,15 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 // Dispatch's issues (cybermonklabs/legion#4598, 20261120055717) and marked a launch that had Oh My
 // Pi resume a claim's session by its id (cybermonklabs/legion#4581, 20261120042902), and every
 // other embedded version, the step record's three, 20261119003157, 20261120042902 and
-// 20261120055717 among them, is one main's run applied. One rewrites claims_suspended_by_check,
-// one deletes the controller notices of two kinds the daemon no longer writes, and 20261126110259
-// rewrites outbox_kind_check over the rows main's daemon left, and dispatch://INFRA-3931's state
-// events (20261126163320), which main has not recorded either, rewrite it last. The upgrade
-// applies all four whatever main's newest version is: Store.apply asks each migration whether its
-// own version is recorded.
+// 20261120055717 among them, is one main's run applied. Two rewrite claims_suspended_by_check
+// (20261115060739 with the controller's source, and the project release's 20261115073241 after it
+// with that source and its own), one deletes the controller notices of two kinds the daemon no
+// longer writes, 20261126110259 rewrites outbox_kind_check over the rows main's daemon left, and
+// dispatch://INFRA-3931's state events (20261126163320), which main has not recorded either,
+// rewrite it last. The upgrade applies all five whatever main's newest version is: Store.apply
+// asks each migration whether its own version is recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
-	20261115060739: true, 20261115121838: true, 20261126110259: true, stateEventsVersion: true,
+	20261115060739: true, 20261115073241: true, 20261115121838: true, 20261126110259: true, stateEventsVersion: true,
 }
 
 // A daemon of this release is also deployed over a database main migrated once main recorded each
@@ -364,7 +365,7 @@ func upgradeFrom(t *testing.T, release releaseDatabase) {
 // recorded version stands above its own new migration.
 const todaysMainsNewestMigration = 20261120055717
 
-// thisBranchsClaimSessions is this branch's one daemon migration main has not recorded.
+// thisBranchsClaimSessions is claim_sessions (#4220), which main had not recorded at f27003af63.
 const thisBranchsClaimSessions = 20261116144907
 
 // A database main migrated to the pinned baseline, 20261120055717, has recorded every migration

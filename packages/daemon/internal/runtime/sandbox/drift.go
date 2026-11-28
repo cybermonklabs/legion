@@ -641,7 +641,8 @@ func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.Recorde
 	return decide(ctx, state)
 }
 
-// actState is what the API server holds now of act on the Sandbox named name (ReadAct).
+// actState is what the API server holds now of act on the Sandbox named name, read under the pod's
+// launch turn its caller holds: ReadAct's, and endIssuePod's for the hooks it runs (runtime.ActRead).
 func (r *Runtime) actState(ctx context.Context, name string, act runtime.RecordedAct) (runtime.ActState, error) {
 	s, err := r.readSandbox(ctx, name)
 	if err != nil {
@@ -725,6 +726,13 @@ func (r *Runtime) replaceRoundPod(ctx context.Context, name, podUID string, due 
 	v := r.viewOf(name, s)
 	if podTaken(s, v.pod, podUID) {
 		return nil
+	}
+	// A pod the project release holds is not ended for its round: the release reads it and
+	// deletes it itself, and the resumes a replacement leads to would make the pod the release
+	// holds against. The refusal comes last, beside due, so a mark set while this waited for the
+	// pod's launch turn still holds.
+	if err := r.releaseHolds("replace " + of + "'s pod"); err != nil {
+		return err
 	}
 	if err := due(ctx); err != nil {
 		return err

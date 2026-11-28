@@ -262,7 +262,10 @@ type operatorDaemon struct {
 	tokenFile       string
 }
 
-func newOperatorDaemon(t *testing.T) *operatorDaemon {
+// newOperatorDaemon is the daemon's operator surface over memory claims; each of options changes
+// the routes' options before the server is built, which is how a test gives the routes a
+// collaborator of its own (api.Options.ProjectRelease).
+func newOperatorDaemon(t *testing.T, options ...func(*api.Options)) *operatorDaemon {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -279,10 +282,14 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}
-	handler := api.NewServer("127.0.0.1", 0, api.Options{
+	opts := api.Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: claims, Trees: claims, Releaser: rt, BootTokens: tokens, Project: claimsProject, OperatorToken: claimsOperatorToken, Log: quiet,
-	}).Handler
+	}
+	for _, option := range options {
+		option(&opts)
+	}
+	handler := api.NewServer("127.0.0.1", 0, opts).Handler
 
 	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
 	d.recordingDaemon = serveRecorded(t, handler)
@@ -1188,16 +1195,16 @@ func TestClaimsForgetSessionRequiresTheRecordedSession(t *testing.T) {
 }
 
 // INFRA-945 R6: the one line a claim prints as says when the claim's idle pod was released, so an
-// operator reading `legion claims list` does not read it as a suspension someone must lift. A
-// claim of an agent the project's controller suspended says so too (#4065), so the operator
-// tells that suspension from its own: the controller's resume_agent lifts the controller's
-// suspension, where the operator's own is the operator's alone to lift. Every other claim prints
-// the state it is in, suspended by an operator among them. None of the four is in an update
-// round, in a tool call or refused by the leak check, so each line ends in the round, head, call
-// and leak-check cause columns' `-`, and none carries a failure record — the failed one is a
-// claim served by a
-// daemon older than that record — so each prints `-` for the cause beside its state as well
-// (TestTheClaimsListPrintsTheCause reads a line that carries one).
+// operator reading `legion claims list` does not read it as a suspension someone must lift, and
+// dispatch://INFRA-3583 says the same of a claim the project release stopped, which the daemon's
+// next boot starts. A claim of an agent the project's controller suspended says so too (#4065), so
+// the operator tells that suspension from its own: the controller's resume_agent lifts the
+// controller's suspension, where the operator's own is the operator's alone to lift. Every other
+// claim prints the state it is in, suspended by an operator among them. None of them is in an
+// update round, in a tool call or refused by the leak check, so each line ends in the round,
+// head, call and leak-check cause columns' `-`, and none carries a failure record — the failed
+// one is a claim served by a daemon older than that record — so each prints `-` for the cause
+// beside its state as well (TestTheClaimsListPrintsTheCause reads a line that carries one).
 func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1210,6 +1217,12 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 			claim: api.OperatorClaim{Token: "legion-legion-legion-208-implementer", Role: "implementer", Issue: "LEGION-208",
 				State: "suspended", SuspendedBy: "released", Generation: 3, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-208-implementer implementer LEGION-208 suspended:released - 3 " + thisBinarysContract + " - - - -\n",
+		},
+		{
+			name: "stopped by the project release",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-211-architect", Role: "architect", Issue: "LEGION-211",
+				State: "suspended", SuspendedBy: "project_release", Generation: 4, PluginContract: api.DaemonAPIVersion()},
+			want: "legion-legion-legion-211-architect architect LEGION-211 suspended:project_release - 4 " + thisBinarysContract + " - - - -\n",
 		},
 		{
 			name: "suspended by the operator",

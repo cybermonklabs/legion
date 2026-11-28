@@ -19,12 +19,7 @@ import (
 // tag, so a private project's pod request of an untagged secret reached the model.
 func TestTheJudgeLeavesAPrivateProjectsPodRequestToAPerson(t *testing.T) {
 	m, enr, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, nil, "")
-	if err != nil {
-		t.Fatalf("exchange.NewSet: %v", err)
-	}
-	m.Exchange = set
-	pod, _ := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-priv-"+t.Name())
+	pod, _ := privatePod(t, m, "pod-priv-"+t.Name())
 
 	if private, err := m.JudgeProject(t.Context(), pod, "SHARED_KEY", ""); err != nil || !private {
 		t.Fatalf("JudgeProject(PRIV's pod, SHARED_KEY) = %v, %v; want true: the pod's operator entry maps it to PRIV, a private project", private, err)
@@ -45,7 +40,7 @@ func TestTheJudgeLeavesAPrivateProjectsPodRequestToAPerson(t *testing.T) {
 // names a public project is judged as before too: only a private named project refers it.
 func TestTheJudgeOfAPodWithAProjectAndNoProjectAccessDecidesAsBefore(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider, Issuers: []string{""}}}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

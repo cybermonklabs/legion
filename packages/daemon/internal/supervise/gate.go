@@ -40,14 +40,16 @@ package supervise
 //     own, parked in the pacing, held by the project pause's gate or parked at its issue pod's
 //     start gate, or a retry of that launch on TimerRelaunch, armed where the store did not take
 //     its write of StateLaunching or did not answer its hold of the session or its lifecycle
-//     check (relaunchLater). The decision that runs a turn of that launch holds the credit to its
+//     check, or where the launch check refused it while a project release holds every start
+//     (relaunchLater). The decision that runs a turn of that launch holds the credit to its
 //     end, and every decision that ends with no such launch owed gives the credit back as it ends
 //     (Machine.unlock, endRefreshLane). Every path that starts, drops or never raises such a
 //     launch is covered by that one check without naming the lane at all — the branches of
 //     refreshPlugin that raise no relaunch, a refused launch that arms no retry, the park of
 //     another kind over this lane's wake, a launch that starts its process or fails for good, a
-//     start that waits for the session store or for its pod's update round, whose retry is an
-//     ordinary launch's (startWaitsForStore, startWaitsForPodRound), and the process let go with
+//     start that waits for the session store, for its pod's update round or for a project release
+//     the runtime met, whose retry is an ordinary launch's (startWaitsForStore,
+//     startWaitsForPodRound, startWaitsForRelease), and the process let go with
 //     the wake or the retry over it, by a suspension, the pause's stop or any other end (letGo).
 //
 // A credit that outlived its launch would cost the lane more than the credit: the machine goes on
@@ -102,10 +104,13 @@ package supervise
 // the same kind (relaunchAtProbe, and the refusal of launchAfter or runWake), so the credit is
 // held for the whole run of consecutive failed retries, one probe interval each, and every
 // correction in that run keeps it (reclaimCredit): through an outage of the store, which answers
-// no write, session hold or lifecycle check, that is the whole outage. The lane pays that rather
-// than make the retry wait: a retry that gave its credit back would have to wait for a free one
-// before it entered the pacing, and a launch of a claim that records no process waits for no
-// credit (dispatch://INFRA-4110 R2). A wake the pause's gate holds keeps it until the pause's stop
+// no write, session hold or lifecycle check, that is the whole outage, and through a project
+// release, whose launch check refuses every retry while the release holds, until its stop lets the
+// claim go (letGo), it is up to the release's bound. The lane pays that rather than make the retry
+// wait: a retry that gave its credit back would have to wait for a free one before it entered the
+// pacing, and a launch of a claim that records no process waits for no credit
+// (dispatch://INFRA-4110 R2). The release's share costs the lane nothing, since the release holds
+// the lane's pass too (relaunchLater). A wake the pause's gate holds keeps it until the pause's stop
 // drops the wake or the resume lets it out; and a try parked at its issue pod's start gate keeps
 // it until the grant. In two refresh waves of the INFRA daemon on 2026-11-25, 3 of 30 and 4 of 31
 // lane wakes parked at the pod's start gate, for 20 to 101 s, so about one credit in ten was held

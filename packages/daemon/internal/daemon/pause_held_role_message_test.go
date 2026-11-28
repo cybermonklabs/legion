@@ -440,10 +440,11 @@ func TestAHeldRoleMessageIsOwedUntilAnEndEventOfItsDebt(t *testing.T) {
 		}
 		cases = append(cases, owedCase{string(state), second, view(stopped, state, ""), want})
 	}
-	// Every source of a suspension supervise declares, which exports no list of them: owed for a
-	// release alone, whose issue here can be woken.
-	for _, by := range []supervise.SuspendSource{supervise.SuspendedByUnknown, supervise.SuspendedByOperator,
-		supervise.SuspendedByDaemon, supervise.SuspendedByExit, supervise.SuspendedByReleased} {
+	// Every source of a suspension supervise declares (supervise.SuspendSources, which supervise's
+	// own test holds to its constants): owed for an idle release alone, whose issue here can be
+	// woken. Every other source, the project release's among them, takes the claim over and ends
+	// the debt.
+	for _, by := range supervise.SuspendSources() {
 		want := int64(0)
 		if by == supervise.SuspendedByReleased {
 			want = first

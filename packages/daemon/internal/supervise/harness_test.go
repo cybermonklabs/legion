@@ -750,6 +750,25 @@ func (l *logRecords) of(message string) []loggedRecord {
 	return matched
 }
 
+// since is every record from the from'th on, in the order they were written, as a copy taken
+// under the lock: what one stretch of a run logged, whatever its message, which a test reads
+// without holding the recorder while the machine writes on.
+func (l *logRecords) since(from int) []loggedRecord {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.kept[from:])
+}
+
+// levels is the level of every record whose message is exactly message (of), in the order they
+// were written: what a test of the level a line is logged at compares whole.
+func (l *logRecords) levels(message string) []slog.Level {
+	var got []slog.Level
+	for _, r := range l.of(message) {
+		got = append(got, r.level)
+	}
+	return got
+}
+
 func (l *logRecords) add(r loggedRecord) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

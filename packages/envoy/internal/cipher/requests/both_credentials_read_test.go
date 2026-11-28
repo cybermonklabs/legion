@@ -7,7 +7,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
@@ -78,11 +77,7 @@ func TestEveryReaderReadsTheProjectsOfBothCredentials(t *testing.T) {
 		}
 		// The asking pod's account is mapped to PRIV here directly, standing in for any way the
 		// projects of the two credentials come to differ.
-		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, nil, "")
-		if err != nil {
-			t.Fatalf("exchange.NewSet: %v", err)
-		}
-		m.Exchange = set
+		mapFixtureSubjectToPriv(t, m)
 
 		if listed := approverGrants(t, m, outsider); slices.Contains(listed, grantID) {
 			t.Errorf("GrantsForApprover(%s) = %v; want the grant hidden: the credential that asked names PRIV", outsider, listed)

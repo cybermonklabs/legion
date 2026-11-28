@@ -9,7 +9,6 @@ package requests
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"slices"
@@ -19,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -556,22 +554,9 @@ func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
 		})
 	}
 
-	// privatePod is a pod of a service whose account an operator's entry maps to PRIV for insider
-	// (BROKER_EXCHANGE_ACCOUNTS), as TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople
-	// makes it: its requests and grants are PRIV's.
-	privatePod := func(t *testing.T, m *Machine) (string, *ecdsa.PrivateKey) {
-		t.Helper()
-		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, nil, "")
-		if err != nil {
-			t.Fatalf("exchange.NewSet: %v", err)
-		}
-		m.Exchange = set
-		return newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-priv-panic")
-	}
-
 	t.Run("a row's own read on the pending list", func(t *testing.T) {
 		m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-		pod, key := privatePod(t, m)
+		pod, key := privatePod(t, m, "pod-priv-panic")
 		plain, err := m.Create(t.Context(), pod, signRequest(t, m, key, "rotate the vendor key", "SHARED_KEY"), "")
 		if err != nil || plain.RecordID == nil {
 			t.Fatalf("PRIV's pod: Create(SHARED_KEY) = %+v, %v; want pending", plain, err)
@@ -602,7 +587,7 @@ func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
 
 	t.Run("a row's own read on the grant list", func(t *testing.T) {
 		m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-		pod, key := privatePod(t, m)
+		pod, key := privatePod(t, m, "pod-priv-panic")
 		plain, err := m.Create(t.Context(), pod, signRequest(t, m, key, "rotate the service key", "SERVICE_KEY"), "")
 		if err != nil || plain.GrantID == nil {
 			t.Fatalf("PRIV's pod: Create(SERVICE_KEY) = %+v, %v; want it granted at once", plain, err)

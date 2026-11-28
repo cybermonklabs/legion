@@ -424,6 +424,42 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 	return fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeAdoptWorkingCopy, answer.FrameType())
 }
 
+// ReadUnpushed asks the shim whether the workspace it runs in holds the issue's unpushed work: how
+// many commits of the issue's work no remote branch or tag holds, and whether its working copy
+// holds a change. The frame carries read whole, the issue, whether its pull request merged and
+// the session names its claims hold, which the shim tells the issue's own commits by, and a read
+// the frame's rules refuse is never sent (shimwire.ReadUnpushed.Validate). The shim runs its jj
+// reads within timeout; the answer is awaited for that plus the RPC timeout, the round trip. A
+// shim built before the read forwards the frame to Oh My Pi, which refuses a command it does not
+// know, and that refusal is a RefusedError like the shim's own, so the caller reads such a pod as
+// one whose workspace could not be read, never as one with nothing unpushed.
+func (c *Conn) ReadUnpushed(ctx context.Context, read runtime.UnpushedRead, timeout time.Duration) (runtime.UnpushedWork, error) {
+	id := rand.Text()
+	frame := shimwire.ReadUnpushed{ID: id, Issue: read.Issue, Merged: read.Merged, Sessions: read.Sessions, TimeoutMs: int(timeout.Milliseconds())}
+	if err := frame.Validate(); err != nil {
+		return runtime.UnpushedWork{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+	}
+	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
+	if err != nil {
+		return runtime.UnpushedWork{}, err
+	}
+	switch answer := answer.(type) {
+	case shimwire.ReadUnpushedResult:
+		if err := answer.Validate(); err != nil {
+			return runtime.UnpushedWork{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+		}
+		if !answer.OK {
+			return runtime.UnpushedWork{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeReadUnpushed, Reason: answer.Error}
+		}
+		return runtime.UnpushedWork{Commits: answer.Commits, WorkingCopyChanged: answer.WorkingCopyChanged}, nil
+	case shimwire.Response:
+		if !answer.Success {
+			return runtime.UnpushedWork{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeReadUnpushed, Reason: answer.Error}
+		}
+	}
+	return runtime.UnpushedWork{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeReadUnpushed, answer.FrameType())
+}
+
 // WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag on
 // origin holds. The shim runs its two jj reads within timeout; the answer is awaited for that plus
 // the RPC timeout, the round trip. A shim built before the read forwards it to OMP, whose
@@ -712,6 +748,8 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 	case shimwire.AgentSecretsEnrollmentResult:
 		c.answerShim(frame.ID, frame)
 	case shimwire.AgentSecretsTokenResult:
+		c.answerShim(frame.ID, frame)
+	case shimwire.ReadUnpushedResult:
 		c.answerShim(frame.ID, frame)
 	case shimwire.WorkspaceWorkResult:
 		c.answerShim(frame.ID, frame)

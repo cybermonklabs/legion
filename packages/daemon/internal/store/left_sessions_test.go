@@ -104,6 +104,13 @@ func releasedByPause(c supervise.Claim) supervise.Claim {
 	return c
 }
 
+// stoppedByProjectRelease is c as the project release's stop leaves it: suspended by that release,
+// its session kept for the start the daemon's next boot gives it (dispatch://INFRA-3583).
+func stoppedByProjectRelease(c supervise.Claim) supervise.Claim {
+	c.SuspendedBy = supervise.SuspendedByProjectRelease
+	return c
+}
+
 // A claim write that moves a claim off a session it recorded leaves that session behind: no claims
 // row names it after the write, and while the claim's issue runs, no move's row and no boot row
 // (the outbox's releaseClaim) releases the Dispatch claim it holds. So the write queues, in its
@@ -114,7 +121,8 @@ func releasedByPause(c supervise.Claim) supervise.Claim {
 // PutClaimAndDeliveryTx queues it for a write that moves the session — a fresh session that clears
 // it, as forgetSession does, and a new session registered over it — and none for a write that does
 // not: a first registration that fills an empty session, the same session written again, a pause's
-// stop and a retirement that keep it, and an operator's release that marks the abandoned session
+// stop, a project release's stop and a retirement that keep it, the boot's launch over the session
+// a project release's stop kept, and an operator's release that marks the abandoned session
 // released.
 //
 // A store the daemon has not turned the switch on for queues nothing: only a daemon with a workflow
@@ -200,6 +208,11 @@ func TestEveryClaimWriteThatLeavesASessionBehindQueuesItsRelease(t *testing.T) {
 				deliveredTx(releasedByPause(holderClaim(supervise.StateSuspended, "ses-8")), task("delivery-3")), ""},
 			{"PutClaimAndDeliveryTx of a fresh session written with its task",
 				deliveredTx(forgotten(holderClaim(supervise.StateSuspended, "ses-8")), task("delivery-3")), "ses-8"},
+			{"PutClaim of the registration before the project release's stop", put(holderClaim(supervise.StateRegistered, "ses-9")), ""},
+			// A claim the project release stopped keeps its session for the next boot, which starts
+			// it again over that session: no session is left behind.
+			{"PutClaim of a project release's stop, which keeps the session", put(stoppedByProjectRelease(holderClaim(supervise.StateSuspended, "ses-9"))), ""},
+			{"AdmitClaim of the boot's launch over the session the project release kept", admit(holderClaim(supervise.StateLaunching, "ses-9")), ""},
 		} {
 			*told = nil
 			if err := w.write(); err != nil {

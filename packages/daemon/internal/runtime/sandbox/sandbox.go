@@ -59,7 +59,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -124,8 +123,11 @@ type Runtime struct {
 	conns                   runtime.Conns
 	launchers               *launchers
 	launcherAuth            launcherCredentials
-	now                     func() time.Time
-	log                     *slog.Logger
+	// projectReleaseHolds is Options.ProjectReleaseHolds: whether the daemon's project release
+	// holds every pod now (releaseHolds). Nil holds nothing.
+	projectReleaseHolds func() bool
+	now                 func() time.Time
+	log                 *slog.Logger
 	// controllerWatchedWorkflows is Options.ControllerWatchedWorkflows as the controller's address
 	// record holds it (watchedWorkflowsValue), computed once; no variable carries it.
 	controllerWatchedWorkflows string
@@ -501,7 +503,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
-		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
+		store:      opts.Store, conns: opts.Conns, projectReleaseHolds: opts.ProjectReleaseHolds, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
 		taken: map[string]sandboxTaken{}, sessions: map[claim.Token]launchedSession{}, dispatchTokenClaims: map[claim.Token]string{},
 		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
@@ -1073,6 +1075,19 @@ func (r *Runtime) setMode(ctx context.Context, s *sandbox, mode string) error {
 	return err
 }
 
+// releaseHolds is the refusal of act, an act that would make a pod of the project — a Sandbox
+// created, one patched to Running, a repository cache or an image probe made, a pod replaced —
+// while the daemon's project release holds every pod (Options.ProjectReleaseHolds), and nil while
+// it holds none. Each such act asks it immediately before its first write, so a release whose mark
+// is set while a launch is on its way (provisioning, waiting out a previous pod) still stops that
+// launch short of the pod.
+func (r *Runtime) releaseHolds(act string) error {
+	if r.projectReleaseHolds == nil || !r.projectReleaseHolds() {
+		return nil
+	}
+	return fmt.Errorf("sandbox runtime: %s: %w", act, runtime.ErrProjectReleased)
+}
+
 // Release is a claim-scoped operation: it ends at most the recorded role process and forgets the
 // claim from this runtime. It never suspends or deletes an issue Sandbox, even when this runtime
 // sees no sibling role: the issue's Sandbox and its Secrets — and with the Sandbox the pod and the
@@ -1092,19 +1107,32 @@ func (r *Runtime) Release(ctx context.Context, k runtime.Known) error {
 		}
 	}
 	r.forget(k.Claim)
-	return r.releaseControllerSandbox(ctx, k.Claim)
+	return r.releaseControllerSandbox(ctx, k.Claim, r.deleteFenced)
 }
 
-// releaseControllerSandbox deletes token's Sandbox when the store holds it as this project's
-// controller pod (podKindOf), which only the controller's claim names; its Secrets and volume go
-// with it through their owner references. Any other Sandbox, an issue's above all, is left as it
-// is, and the decision costs no API read and takes no turn. One the store does not hold is the
-// orphan sweep's once the claim has retired. The delete runs under the pod's launch turn and is
-// fenced to the Sandbox the store showed (deleteFenced): a relaunch of the controller that holds the
-// turn meanwhile writes the Sandbox (recordAddresses), so the delete conflicts and leaves the
+// ReleaseProjectController is Release of the controller's claim token for a project release,
+// which records the controller's Sandbox deleted once this answers nil: the controller's process
+// is already stopped, its claim stored suspended, so there is no locator to suspend, and the delete
+// refuses a Sandbox written since it was decided (deleteFencedOrRefuse) where Release keeps it for
+// the orphan sweep, which the release holds until the daemon's next boot.
+func (r *Runtime) ReleaseProjectController(ctx context.Context, token claim.Token) error {
+	if err := r.guardControllerVolumeReap(ctx, token); err != nil {
+		return err
+	}
+	r.forget(token)
+	return r.releaseControllerSandbox(ctx, token, r.deleteFencedOrRefuse)
+}
+
+// releaseControllerSandbox deletes token's Sandbox with del when the store holds it as this
+// project's controller pod (podKindOf), which only the controller's claim names; its Secrets and
+// volume go with it through their owner references. Any other Sandbox, an issue's above all, is
+// left as it is, and the decision costs no API read and takes no turn. One the store does not hold
+// is the orphan sweep's once the claim has retired. The delete runs under the pod's launch turn and
+// is fenced to the Sandbox the store showed (deleteFenced): a relaunch of the controller that holds
+// the turn meanwhile writes the Sandbox (recordAddresses), so the delete conflicts and leaves the
 // Sandbox to the orphan sweep, which judges it again on the claims known then, and a relaunch that
 // begins after waits for the delete and creates the Sandbox afresh.
-func (r *Runtime) releaseControllerSandbox(ctx context.Context, token claim.Token) error {
+func (r *Runtime) releaseControllerSandbox(ctx context.Context, token claim.Token, del func(context.Context, *sandbox, string, ...any) error) error {
 	s, err := r.controllerSandbox(ctx, token)
 	if err != nil {
 		return err
@@ -1117,7 +1145,7 @@ func (r *Runtime) releaseControllerSandbox(ctx context.Context, token claim.Toke
 		return fmt.Errorf("release %s: %w", token, err)
 	}
 	defer release()
-	if err := r.deleteFenced(ctx, s, "sandbox runtime: deleted a released claim's sandbox", "claim", token); err != nil {
+	if err := del(ctx, s, "sandbox runtime: deleted a released claim's sandbox", "claim", token); err != nil {
 		return fmt.Errorf("release %s: %w", token, err)
 	}
 	return nil
@@ -1170,6 +1198,24 @@ func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id 
 	return nil
 }
 
+// ReadUnpushed has role's shim read whether the issue workspace every role of read.Issue shares
+// holds the issue's unpushed work, over that claim's connection, for a project release about to
+// delete the pod and its disk. It makes WorkspaceWork's checks (runningRoleConn): its shim reads
+// the workspace it already works in, so a claim with no locator, one whose pod is not the recorded
+// one, and one with no connection are each a refusal rather than a workspace with nothing
+// unpushed. The budget is runtime.UnpushedReadTimeout.
+func (r *Runtime) ReadUnpushed(ctx context.Context, read runtime.UnpushedRead, role claim.Role) (runtime.UnpushedWork, error) {
+	conn, token, err := r.runningRoleConn(ctx, read.Issue, role)
+	if err != nil {
+		return runtime.UnpushedWork{}, err
+	}
+	work, err := conn.ReadUnpushed(ctx, read, runtime.UnpushedReadTimeout)
+	if err != nil {
+		return runtime.UnpushedWork{}, fmt.Errorf("read %s's workspace for unpushed work over %s: %w", read.Issue, token, err)
+	}
+	return work, nil
+}
+
 var _ runtime.WorkspaceWorkReader = (*Runtime)(nil)
 
 // WorkspaceWork has role's shim read whether the issue workspace every role of the issue shares
@@ -1189,25 +1235,25 @@ func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, role claim.Ro
 	return work, nil
 }
 
-// runningRoleConn finds role's process for the workspace read its shim answers in the issue's
-// workspace (WorkspaceWork), and makes the one rule for such a request (runningProcessConn) of it.
-// It answers the connection to that role's shim and the role's claim, read from the store. A claim
-// with no locator is a refusal, and so is each refusal of the rule. Every refusal opens with
-// "read <issue>'s workspace: ", and a claim with no locator holds "no role process to read it".
+// runningRoleConn finds role's process for a read its shim answers in the issue's workspace
+// (ReadUnpushed, WorkspaceWork), and makes the one rule for such a request (runningProcessConn)
+// of it. It answers the connection to that role's shim and the role's claim, read from the store
+// with that one claim read alone (Store.ClaimByToken). A claim with no locator is a refusal, and
+// so is each refusal of the rule. Every refusal opens with "read <issue>'s workspace: ", and a
+// claim with no locator holds "no role process to read it".
 func (r *Runtime) runningRoleConn(ctx context.Context, issue string, role claim.Role) (runtime.Conn, claim.Token, error) {
 	token, err := claim.NewToken(r.project, issue, role)
 	if err != nil {
 		return nil, "", fmt.Errorf("read %s's workspace: %w", issue, err)
 	}
-	claims, err := r.store.Claims(ctx)
+	c, found, err := r.store.ClaimByToken(ctx, token)
 	if err != nil {
 		return nil, "", fmt.Errorf("read %s's workspace: %w", issue, err)
 	}
-	index := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == token })
-	if index < 0 || claims[index].Locator == nil {
+	if !found || c.Locator == nil {
 		return nil, "", fmt.Errorf("read %s's workspace: %s holds no role process to read it", issue, token)
 	}
-	conn, err := r.runningProcessConn(*claims[index].Locator)
+	conn, err := r.runningProcessConn(*c.Locator)
 	if err != nil {
 		return nil, "", fmt.Errorf("read %s's workspace: %w", issue, err)
 	}
@@ -1215,8 +1261,8 @@ func (r *Runtime) runningRoleConn(ctx context.Context, issue string, role claim.
 }
 
 // runningProcessConn is the one rule for a request a role's shim answers in the issue's workspace
-// (AdoptWorkingCopy, and WorkspaceWork through runningRoleConn): the process
-// loc records must run in the issue's own running pod, since the shim of loc's claim works in that
+// (AdoptWorkingCopy, and ReadUnpushed and WorkspaceWork through runningRoleConn): the process loc
+// records must run in the issue's own running pod, since the shim of loc's claim works in that
 // workspace. It answers the connection to that claim's shim. A locator this runtime did not mint,
 // a pod that is not the recorded one or not running, and a claim with no connection are each a
 // refusal, which names what failed and, for the last two, loc's claim. Each caller opens the
@@ -1466,6 +1512,23 @@ func (r *Runtime) controllerOwned(ctx context.Context, name string) (bool, error
 // guard runs immediately before the same fence prevents a newer Sandbox from
 // being reaped.
 func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attrs ...any) error {
+	err := r.deleteFencedOrRefuse(ctx, s, msg, attrs...)
+	if !errors.Is(err, errWrittenSinceRead) {
+		return err
+	}
+	r.log.Info("sandbox runtime: kept a sandbox written since its delete was decided; the orphan sweep decides it again",
+		append([]any{"sandbox", s.Name, "uid", s.UID, "error", err}, attrs...)...)
+	return nil
+}
+
+// errWrittenSinceRead is deleteFencedOrRefuse's refusal of a Sandbox written since the read its
+// delete was fenced to (the API's conflict), which keeps the Sandbox.
+var errWrittenSinceRead = errors.New("it was written since its delete was decided, so it was kept")
+
+// deleteFencedOrRefuse is deleteFenced, except that a Sandbox written since the read is answered
+// as errWrittenSinceRead, wrapping the API's conflict, rather than kept in silence: the project
+// release's deletes, which no orphan sweep follows while the release holds the daemon, report it.
+func (r *Runtime) deleteFencedOrRefuse(ctx context.Context, s *sandbox, msg string, attrs ...any) error {
 	if err := r.guardSessionVolumeReap(ctx, s); err != nil {
 		return err
 	}
@@ -1482,8 +1545,7 @@ func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attr
 		r.forgetLauncherCredentials(name)
 		r.noteTaken(name, sandboxTaken{uid: uid})
 	case apierrors.IsConflict(err):
-		r.log.Info("sandbox runtime: kept a sandbox written since its delete was decided; the orphan sweep decides it again",
-			append([]any{"sandbox", name, "uid", uid, "error", err}, attrs...)...)
+		return fmt.Errorf("delete sandbox %s: %w: %w", name, errWrittenSinceRead, err)
 	default:
 		return fmt.Errorf("delete sandbox %s: %w", name, err)
 	}

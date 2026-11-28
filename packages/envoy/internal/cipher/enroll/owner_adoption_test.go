@@ -525,7 +525,7 @@ func TestTheSameClaimUnderAnotherServiceTakesNothing(t *testing.T) {
 	ctx := context.Background()
 	const otherService, otherPodAccount = "other-service", "system:serviceaccount:other:other-worker"
 	r := newPodRig(t)
-	r.svc.ServiceLogins[otherLauncherAccount] = otherService
+	r.svc.ServiceLogins[otherLauncherAccount] = ServiceLogin{Service: otherService, Issuers: []string{""}}
 	r.svc.ServicesByAccount[otherPodAccount] = otherService
 	launcher := r.login(t, launcherAccount, "pod-uid-daemon")
 	theirs := r.login(t, otherLauncherAccount, "pod-uid-other-daemon")
@@ -573,7 +573,7 @@ func TestAnotherDaemonOfTheServiceStatingTheClaimTakesNothing(t *testing.T) {
 	rig := func(t *testing.T) (podRig, Credential, Credential) {
 		t.Helper()
 		r := newPodRig(t)
-		r.svc.ServiceLogins[otherDaemonAccount] = podLoginService
+		r.svc.ServiceLogins[otherDaemonAccount] = ServiceLogin{Service: podLoginService, Issuers: []string{""}}
 		launcher := r.login(t, launcherAccount, "pod-uid-daemon")
 		theirs := r.login(t, otherDaemonAccount, "pod-uid-other-daemon")
 		if launcher.Service == nil || theirs.Service == nil || *launcher.Service != *theirs.Service {

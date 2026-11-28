@@ -139,10 +139,10 @@ var (
 // reads the wakes, whose tool-call line reads the step records and whose merge-wait line reads the
 // waits — are served all of them, the basis and every root's `treeRuns` with the rest.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
-	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
+	full := stateFrom(t, withGoldenProjectRelease(populatedState(t)), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
 	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine", "leakCheckCause", TreeMovedAtField, QuietHoursField,
-		"assignments", "apps", "treeRuns", "basis", string(GatedStepOpenOnBasis), string(GatedStepPendingOnBasis), "dispatchCredential"}
+		"assignments", "apps", "treeRuns", "basis", string(GatedStepOpenOnBasis), string(GatedStepPendingOnBasis), "dispatchCredential", "projectRelease"}
 	for _, field := range append(fields, recordFieldKeys...) {
 		field := `"` + field + `"`
 		if !strings.Contains(string(full), field) {
@@ -251,6 +251,13 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// the contract that added it, so a pod at it is served the key and every pod below it is
 		// not.
 		plans bool
+		// release is whether the caller is served the project's newest project release, which the
+		// project release entry added (entryNumber(projectReleaseContract)), so a caller served
+		// this daemon's own body is served the release, and a pod the reading places below that
+		// entry's number (its claims record a contract below shapedAnswersContract) is not. It
+		// stands above repositoriesLiveContract, and no pod's claims place a caller at either, so
+		// the rows served one are the rows served the other.
+		release bool
 		// correction is whether the caller is served what a correction of an issue's repository
 		// left on its record (repositoryCorrectionContract), the contract that added the four keys:
 		// a caller at it is served them, and a caller below it that its header places, or a pod
@@ -382,12 +389,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// (contract_shapes_test.go).
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: pauseContract},
 		{name: "a pod just below shapedAnswersContract", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: shapedAnswersContract - 1},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, release: true, contract: DaemonAPIVersion(), basis: true, credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, release: true, contract: DaemonAPIVersion(), basis: true, credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, release: true, contract: DaemonAPIVersion(), basis: true, credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
+			body := stateFrom(t, withGoldenProjectRelease(populatedState(t)), tc.remote, tc.claims)
 
 			// Only LEGION-208's tree was drawn: its root and its children LEGION-209 and LEGION-220
 			// carry the draw when the caller is served it, and no other issue carries one whoever
@@ -503,6 +510,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if tc.refresh && count != fullCount {
 				t.Errorf("the state %s says the lane has %d claims left, want the fixture's %d", body, count, fullCount)
 			}
+			if carries := strings.Contains(string(body), `"projectRelease"`); carries != tc.release {
+				t.Errorf("the state %s carries the project's release = %v, want %v", body, carries, tc.release)
+			}
 			if _, carried := stateSeqServed(t, body); carried != tc.seq {
 				t.Errorf("the state %s carries daemon.stateSeq = %v, want %v; the reader before entryNumber(stateSeqContract) refuses it", body, carried, tc.seq)
 			}
@@ -554,6 +564,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 						delete(issue.(map[string]any), "priorityFrom")
 					}
 				}
+			}
+			// A pod below the project release entry's number (entryNumber(projectReleaseContract))
+			// is served no `projectRelease`, the one key that entry added to the state
+			// (withoutProjectRelease).
+			if !tc.release {
+				delete(want, "projectRelease")
 			}
 			// A pod below cachesSourceContract is served the repository caches' capability row
 			// without its `source` (api's withoutUnadmittedCapabilitySources), which is every pod

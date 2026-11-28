@@ -10,10 +10,12 @@ import (
 
 // EdgeListener is one edge listener's entry of BROKER_NATS_SERVICES as the broker's API reads it
 // (config.NATSCallout.EdgeListeners): the platform account its token names, whether that is a Google
-// account, and the projects the entry lists, sorted.
+// account, the issuers of BROKER_K8S_OIDC_ISSUER a Kubernetes account's token is taken from, by
+// their names there (none for a Google account), and the projects the entry lists, sorted.
 type EdgeListener struct {
 	Account  string
 	Google   bool
+	Issuers  []string
 	Projects []string
 }
 

@@ -37,8 +37,8 @@ const (
 // message and a Parse message send their SQL, and so does a Bind message, through the SQL the
 // connection's Parse gave the prepared statement it names, because pgx runs a statement it has
 // cached with a Bind alone. The channel a fault answers closes once the fault has met its COMMIT,
-// and a test waits on it only through Met. Arming a fault while another is still pending fails the
-// test.
+// and a test waits on it only through Met or PassAgainAfter. Arming a fault while another is
+// still pending fails the test.
 //
 // The URL comes from listenProxy, as Delayed's does, and its refusals print no value of the DSN.
 // Every connection through the proxy closes when the test's context ends, before any cleanup
@@ -136,6 +136,21 @@ func (f *CommitFault) Refuse(refused bool) {
 		}
 		clear(f.links)
 	}
+}
+
+// PassAgainAfter passes new connections again, as Refuse(false) does, two seconds after fired
+// closes, or thirty seconds after the call if fired never closes. Fired is the channel of a fault
+// that refuses (CutAfterCommitRefusing): for two seconds the caller it refused fails to read its
+// commit's outcome, and it still waits inside its bound when the store answers again.
+func (f *CommitFault) PassAgainAfter(fired <-chan struct{}) {
+	go func() {
+		select {
+		case <-fired:
+			time.Sleep(2 * time.Second)
+		case <-time.After(30 * time.Second):
+		}
+		f.Refuse(false)
+	}()
 }
 
 // Met waits for fired, the channel of an armed fault, for at most testwait.Bounded(t,

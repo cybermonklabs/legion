@@ -2,27 +2,27 @@ package natscallout
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
-	"time"
+	"slices"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // PlatformTokens verifies a service's platform identity token for the NATS audiences, as
 // Deps.ServiceToken: a projected Kubernetes ServiceAccount token (K8s, for
-// BROKER_NATS_K8S_AUDIENCE, from K8sIssuer) or a Google identity token (Google, for
-// BROKER_NATS_GOOGLE_AUDIENCE, from GoogleIssuer). The token's own issuer, read before it is
-// verified, picks which verifier verifies it, so a token is verified once; a verifier left nil is
-// an audience this broker sets none for, whose tokens are refused.
+// BROKER_NATS_K8S_AUDIENCE, from one of K8sIssuers, the issuers BROKER_K8S_OIDC_ISSUER names) or
+// a Google identity token (Google, for BROKER_NATS_GOOGLE_AUDIENCE, from GoogleIssuer). The
+// token's own issuer, read before it is verified, picks which verifier verifies it, so a token is
+// verified once; a verifier left nil is an audience this broker sets none for, whose tokens are
+// refused. K8s checks a token against the issuer of K8sIssuers its iss names and answers that
+// issuer, whose name Verify answers.
 type PlatformTokens struct {
-	K8sIssuer string
-	K8s       interface {
+	K8sIssuers []oidc.NamedIssuer
+	K8s        interface {
 		VerifyAccount(ctx context.Context, raw string) (enroll.AccountClaims, error)
 	}
 	GoogleIssuer string
@@ -31,51 +31,33 @@ type PlatformTokens struct {
 	}
 }
 
-// Verify answers the account raw names, whether it is a Google account, and when raw was issued
-// and expires, once the verifier of its issuer has verified it. A Google token must carry a
-// verified email: the account is looked up by it.
-func (p PlatformTokens) Verify(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error) {
-	issuer, err := unverifiedIssuer(raw)
+// Verify answers what raw says of its service (ServiceIdentity) once the verifier of its issuer
+// has verified it. The issuer is read before that, with every space removed, as the verifiers read
+// raw (oidc.UnverifiedIssuer). A Google token must carry a verified email: the account is looked up
+// by it.
+func (p PlatformTokens) Verify(ctx context.Context, raw string) (ServiceIdentity, error) {
+	issuer, err := oidc.UnverifiedIssuer(raw)
 	if err != nil {
-		return "", false, time.Time{}, time.Time{}, err
+		return ServiceIdentity{}, fmt.Errorf("natscallout: the service token's claims do not decode: %w", err)
 	}
 	switch {
-	case issuer == p.K8sIssuer && p.K8s != nil:
+	case p.K8s != nil && slices.ContainsFunc(p.K8sIssuers, func(k8s oidc.NamedIssuer) bool { return k8s.URL == issuer }):
 		claims, err := p.K8s.VerifyAccount(ctx, raw)
 		if err != nil {
-			return "", false, time.Time{}, time.Time{}, err
+			return ServiceIdentity{}, err
 		}
-		return claims.Subject, false, claims.IssuedAt, claims.Expiry, nil
+		return ServiceIdentity{Account: claims.Subject, Issuer: claims.Issuer.Name, Issued: claims.IssuedAt, Expiry: claims.Expiry}, nil
 	case issuer == p.GoogleIssuer && p.Google != nil:
 		token, err := p.Google.VerifyGoogle(ctx, raw)
 		if err != nil {
-			return "", false, time.Time{}, time.Time{}, err
+			return ServiceIdentity{}, err
 		}
 		if token.Identity.Account == "" || !token.Identity.EmailVerified {
-			return "", false, time.Time{}, time.Time{}, errors.New("natscallout: the Google identity token carries no verified email")
+			return ServiceIdentity{}, errors.New("natscallout: the Google identity token carries no verified email")
 		}
-		return token.Identity.Account, true, token.IssuedAt, token.Expiry, nil
+		return ServiceIdentity{Account: token.Identity.Account, Google: true, Issued: token.IssuedAt, Expiry: token.Expiry}, nil
 	}
-	return "", false, time.Time{}, time.Time{}, fmt.Errorf("natscallout: no NATS audience of this broker takes tokens of the issuer %q", issuer)
-}
-
-// unverifiedIssuer is the 'iss' raw names, read without verifying it: it only picks the verifier.
-func unverifiedIssuer(raw string) (string, error) {
-	parts := strings.Split(raw, ".")
-	if len(parts) != 3 {
-		return "", errors.New("natscallout: the service token is no JWT")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return "", errors.New("natscallout: the service token's claims do not decode")
-	}
-	var claims struct {
-		Issuer string `json:"iss"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", errors.New("natscallout: the service token's claims do not decode")
-	}
-	return claims.Issuer, nil
+	return ServiceIdentity{}, fmt.Errorf("natscallout: no NATS audience of this broker takes tokens of the issuer %q", issuer)
 }
 
 // RequireAudiences refuses a list naming a service whose kind of platform token has no NATS

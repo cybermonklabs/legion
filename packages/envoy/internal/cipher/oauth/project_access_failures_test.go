@@ -67,7 +67,7 @@ func TestANamedTradeMintsUncheckedOnlyForAnEmptyList(t *testing.T) {
 			refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch could not be asked")
 
 			public := newExchangeFixture(t, func(cfg *oauth.Config) {
-				cfg.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil)
+				cfg.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person, Issuers: []string{clusterName}}}, nil)
 				cfg.Exchange.Projects = c.dispatch(t)
 			})
 			public.registers(t, account, "pod-uid-1", "public-session-1")
@@ -121,7 +121,7 @@ func TestAnUnreadableAccessTokenFileRefusesTheTrade(t *testing.T) {
 			refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
 
 			public := newExchangeFixture(t, func(cfg *oauth.Config) {
-				cfg.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil)
+				cfg.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person, Issuers: []string{clusterName}}}, nil)
 				cfg.Exchange.Projects = client
 			})
 			public.registers(t, account, "pod-uid-1", "public-session-1")
@@ -145,7 +145,7 @@ func TestAnUnknownMemberKindRefusesTheTrade(t *testing.T) {
 		t.Helper()
 		const says = "a member kind this broker does not know"
 		public := newExchangeFixture(t, func(cfg *oauth.Config) {
-			cfg.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil)
+			cfg.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person, Issuers: []string{clusterName}}}, nil)
 			cfg.Exchange.Projects = access
 		})
 		key := newKey(t)

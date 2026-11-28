@@ -49,7 +49,9 @@ type StreamTurnEnd struct{ Claim claim.Token }
 // an issue work one jj workspace, so a phase task this claim is holding rather than adopt that
 // working copy under an open turn (sendPending) may go now. It carries no fact of its own — the
 // send asks again which claims are in a turn — so one posted for a turn another role began
-// meanwhile simply holds again.
+// meanwhile simply holds again. That is why the daemon also posts it, to every claim and with no
+// turn ended, once the project release's mark is cleared because the release's record did not
+// commit (internal/daemon's sendHeldTasks): its one act is the send the mark held back.
 type IssueTurnEnded struct{ Claim claim.Token }
 
 // StreamToolStep is one tool call of the agent's turn beginning or ending, as the stream read
@@ -365,8 +367,8 @@ type PodUpdateOpen struct {
 // work, so a role that follows the steps answers with nothing of its own running. A role whose
 // work finishes after its answer pushes what that work made and answers again with the same
 // round, which podUpdateSignalled records in place of the first answer. The text goes to role, and
-// the reviewer creates no commit and pushes nothing (its role part), so its text says so in step 1
-// and asks no commit or push of what its work made (createsNoCommit).
+// commitSteps gives its step 1 and what its step 2 asks of the work the role started; a role that
+// creates no commit is asked only to answer again for work that finishes after its answer.
 //
 // The step to answer is the one step a role can be unable to do: the op list its `legion` tool
 // holds is a closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
@@ -399,12 +401,9 @@ type PodUpdateOpen struct {
 // and no word that has a second reading.
 func UpdateTask(role claim.Role, round, reasons string, endsAt time.Time) string {
 	ends := endsAt.UTC().Format(time.RFC3339)
-	push := "1. Push every commit that you want to keep to this issue's branch."
-	made := " Then commit and push what it made."
+	push, made := commitSteps(role, "1. Push every commit that you want to keep to this issue's branch.")
 	after := "If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again"
 	if createsNoCommit(role) {
-		push = "1. You create no commit, so you push nothing."
-		made = ""
 		after = "If a subagent or a background job finishes after you answer, call `ready_for_update` again"
 	}
 	read := "When the round ends, the daemon reads the workspace on the pod's disk before it replaces the pod. " +
@@ -453,12 +452,27 @@ The daemon starts your process again on the new pod, in this same session. %[4]s
 }
 
 // createsNoCommit says whether role creates no commit and pushes nothing: the reviewer, whose
-// handoff is a record on the Dispatch issue (roles/reviewer.md). The update task asks no commit or
-// push of it. The merger is not one: it makes and pushes the merge of the base forward in merging
-// (roles/merger.md, workflow's mergeForward), and a merge commit it has not pushed when the pod is
-// replaced is lost with the pod.
+// handoff is a record on the Dispatch issue (roles/reviewer.md). commitSteps gives the steps the
+// update task and the project release's ask (ReleaseTask) ask of it. The merger is not one: it
+// makes and pushes the merge of the base forward in merging (roles/merger.md, workflow's
+// mergeForward), and a merge commit it has not pushed when the pod is replaced or deleted is lost
+// with the pod.
 func createsNoCommit(role claim.Role) bool {
 	return role == claim.RoleReviewer
+}
+
+// commitSteps is step 1 of the update task (UpdateTask) and of the project release's ask
+// (ReleaseTask), and the sentence that ends their step 2, what that step asks of each subagent's
+// and each background job's work, for role. Both texts take them from here, so the two texts hold
+// one rule. A role that creates no commit and pushes nothing (createsNoCommit, its role part) is
+// told so in step 1, and its step 2 asks no commit or push of what its work made. Every other role
+// is given push, the caller's own step 1, which names where its commits go, and its step 2 asks it
+// to commit and push what that work made.
+func commitSteps(role claim.Role, push string) (step1, made string) {
+	if createsNoCommit(role) {
+		return "1. You create no commit, so you push nothing.", ""
+	}
+	return push, " Then commit and push what it made."
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
@@ -618,12 +632,12 @@ type ResumePause struct {
 
 // RequestRuleResume is the daemon's own resume, by rule: it relaunches a suspended claim's session
 // unless an operator or the controller suspended its agent (Claim.RuleMayResume): that suspension
-// holds until a resume lifts it. The daemon asks it of
-// a claim that owns its issue's current phase (the outbox's start of that phase, the boot's
-// included) and of its own controller. It resumes nothing that is not suspended — a failed claim's
-// launch budget is spent, and only the workflow's retry relaunches it — so it is asked again as
-// often as the rule meets the claim without ever relaunching one that is running. Reason is the
-// rule, for the line it logs.
+// holds until a resume lifts it. The daemon asks it of a claim that owns its issue's current phase
+// (the outbox's start of that phase, the boot's included), of every claim the project release
+// stopped (the outbox's start the next boot writes for each, workflow's booted) and of its own
+// controller. It resumes nothing that is not suspended — a failed claim's launch budget is spent,
+// and only the workflow's retry relaunches it — so it is asked again as often as the rule meets
+// the claim without ever relaunching one that is running. Reason is the rule, for the line it logs.
 type RequestRuleResume struct {
 	Claim  claim.Token
 	Reason string
@@ -1279,7 +1293,7 @@ func fillTable(t *builder) {
 	t.ignore(onTurnEnd, "the agent is not ready, so no turn of a delivery is in flight", unready...)
 	t.ignore(onTurnEnd, noProcess, gone...)
 
-	t.row(onIssueTurnEnd, "a turn ended elsewhere on the issue: send the task that was waiting for the working copy they share",
+	t.row(onIssueTurnEnd, "a turn ended elsewhere on the issue, or the project release's mark was cleared: send the task the claim holds",
 		issueTurnEnded, []ClaimState{StateWorking}, prompted...)
 	t.ignore(onIssueTurnEnd, "the claim is in a turn of its own; what it holds goes when that turn ends", StateWorking)
 	t.ignore(onIssueTurnEnd, noSend, unready...)
@@ -2641,11 +2655,12 @@ func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 	return m.sendPending(ctx)
 }
 
-// issueTurnEnded is a turn ending on another claim of this claim's issue. It carries nothing the
-// claim records: the send it may unblock asks for itself which claims of the issue are in a turn
-// (sendPending), so a wake that arrives while another role has started one holds the task again,
-// and a wake that never arrives — a turn whose process died instead of ending it — costs nothing,
-// because the sweep's next observation asks the same question.
+// issueTurnEnded is a turn ending on another claim of this claim's issue, or the project release's
+// mark cleared in this process (IssueTurnEnded). It carries nothing the claim records: the send it
+// may unblock asks for itself which claims of the issue are in a turn (sendPending), so a wake that
+// arrives while another role has started one holds the task again, and a wake that never arrives
+// — a turn whose process died instead of ending it — costs nothing, because the sweep's next
+// observation asks the same question.
 func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.sendPending(ctx) }
 
 // promptResulted is Oh My Pi's answer to the one question the turn frames cannot settle: which
@@ -3033,7 +3048,7 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 // spawn launches a queued claim, in the place its caller took for it when it carries one
 // (RequestSpawn.Place), and otherwise in the place the gate joins for it.
 func spawn(m *Machine, ctx context.Context, ev Event) error {
-	return m.revive(ctx, exemptWake(ev), ev.(RequestSpawn).Place, nil)
+	return m.revive(ctx, exemptWake(ev), true, ev.(RequestSpawn).Place, nil)
 }
 
 // register records the session the agent became, once every name of it is held to this claim
@@ -3192,7 +3207,7 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), nil, nil)
+	return m.revive(ctx, exemptWake(ev), true, nil, nil)
 }
 
 // resumeRefusal is a RefusedError when a suspended claim's recorded session is one it does not
@@ -3236,6 +3251,12 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // resumes that keeps failing fails once the budget is spent, and a failed claim is never resumed
 // by rule. A claim recording a session it does not hold is not resumed by rule either
 // (resumeRefusal): it stays suspended, and the line says why.
+//
+// The rule resumes a claim the project release stopped at the daemon's next boot (workflow's
+// startReleaseStopped), which starts every role of the pods the release deleted at once, as a
+// roles container's restart does. So no request raised that start, and the pod's start gate puts
+// the role working the issue's phase first among the starts that wait behind a load (revive's
+// requested, podQueue.next). An operator's resume of such a claim (resume) stays a request.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	rule := ev.(RequestRuleResume).Reason
 	if !m.claim.RuleMayResume() {
@@ -3247,7 +3268,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx, exemptWake(ev), nil, nil)
+	return m.revive(ctx, exemptWake(ev), !m.claim.ProjectReleased(), nil, nil)
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
@@ -3313,7 +3334,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 	if r, ok := ev.(RequestRetry); ok {
 		oneAttemptLeft = r.OneAttemptLeft
 	}
-	return m.revive(ctx, exemptWake(ev), nil, func() {
+	return m.revive(ctx, exemptWake(ev), true, nil, func() {
 		if fresh {
 			// lastRefusal is the provider's words for the newest refused turn, which the claim
 			// stores for the reason LastRefusal gives.
@@ -3624,7 +3645,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.queue(ctx, d); err != nil {
 		return err
 	}
-	return m.revive(ctx, d.ID == "", nil, nil)
+	return m.revive(ctx, d.ID == "", true, nil, nil)
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is
@@ -3914,11 +3935,12 @@ func (m *Machine) endCurrentPluginRound(ctx context.Context) error {
 
 // clearUpdate drops every field an update round writes, which is what a round leaving this claim
 // means: the round the sweep ends (endPodUpdate), the round a new one replaces, whose fields are
-// each the earlier round's (openPodUpdate), and the round a claim retires in (retire).
+// each the earlier round's (openPodUpdate), the round a claim retires in (retire), and the round
+// of a claim the project release stops (leaveRoundForRelease), whose pod the release deletes.
 //
 // It is the one place the round a claim left goes too (UpdateLeftRound): the end of the round is
-// the only thing that may forget any part of it, and a relaunch, a suspension, a letGo and a
-// restart each leave it exactly as it is.
+// the only thing that may forget any part of it, and a relaunch, every other suspension, a letGo
+// and a restart each leave it exactly as it is.
 func (m *Machine) clearUpdate() {
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateHead = "", "", ""
 	m.claim.UpdateRepository = ghrepo.Repository{}

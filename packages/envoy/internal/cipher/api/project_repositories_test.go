@@ -51,10 +51,11 @@ func repositoriesDispatch(t *testing.T) *projectaccesstest.Server {
 }
 
 // edgeListeners is the edge listeners of services, a BROKER_NATS_SERVICES value, read as the
-// broker's start reads them (config.ParseNATSServices, config.NATSCallout.EdgeListeners).
-func edgeListeners(t *testing.T, services string) []api.EdgeListener {
+// broker's start reads them (config.ParseNATSServices, config.NATSCallout.EdgeListeners) against
+// issuers, the server's BROKER_K8S_OIDC_ISSUER (Deps.Enroll.Issuers).
+func edgeListeners(t *testing.T, services string, issuers []oidc.NamedIssuer) []api.EdgeListener {
 	t.Helper()
-	parsed, err := config.ParseNATSServices(services)
+	parsed, err := config.ParseNATSServices(services, issuers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,10 +67,9 @@ func edgeListeners(t *testing.T, services string) []api.EdgeListener {
 // Envoy listener in BROKER_API_ACCOUNTS too, as a deployment does.
 func newRepositoriesServer(t *testing.T, dispatch *projectaccesstest.Server) *testServer {
 	t.Helper()
-	edges := edgeListeners(t, edgeServices)
 	return newTestServerWith(t, func(d *api.Deps) {
 		d.APIAccounts[listenerAccount] = ciphertest.Caller(t, listenerCaller)
-		d.EdgeListeners = edges
+		d.EdgeListeners = edgeListeners(t, edgeServices, d.Enroll.Issuers)
 		if dispatch != nil {
 			d.ProjectRepositories = projectrepos.New(dispatch.URL, dispatch.Account, nil)
 		}
@@ -295,10 +295,9 @@ func (h *heldReader) Repositories(ctx context.Context, project string) ([]string
 // to Dispatch; its 17th is 503 REPOSITORIES_BUSY at once and never reaches Dispatch, while another
 // edge listener is answered; once the 16 are answered, the next call is answered too.
 func TestTheSeventeenthRepositoryCallInFlightIsBusy(t *testing.T) {
-	edges := edgeListeners(t, edgeServices)
 	dispatch := newHeldReader("PRIV")
 	ts := newTestServerWith(t, func(d *api.Deps) {
-		d.EdgeListeners = edges
+		d.EdgeListeners = edgeListeners(t, edgeServices, d.Enroll.Issuers)
 		d.ProjectRepositories = dispatch
 	})
 	// Registered after the server's own cleanup, so it runs first: a row that fails with calls
@@ -379,6 +378,69 @@ func TestAGoogleEdgeListenerIsAnsweredItsProjectsRepositories(t *testing.T) {
 	}
 }
 
+// TestAnEdgeListenerIsTakenOnlyFromTheIssuersItsEntryNames: on a broker that trusts two named
+// clusters, an edge listener whose entry names both issuers is answered for its token of the
+// second cluster as for its token of the first; the same edge listener under an entry naming the
+// first issuer alone, as an entry naming none is read at load, is refused its token of the second
+// 403 NOT_AN_EDGE_LISTENER, as an account no edge-listener entry names is, the refusal saying its
+// entry does not name that issuer. No refusal reaches Dispatch.
+func TestAnEdgeListenerIsTakenOnlyFromTheIssuersItsEntryNames(t *testing.T) {
+	const unnamedIssuer = "this account's edge-listener entry of BROKER_NATS_SERVICES does not name the issuer that signed its token"
+	for _, c := range []struct {
+		name     string
+		entry    string
+		takesTwo bool
+	}{
+		{"an entry naming both issuers", "edge-listener/edge-a/PRIV=" + edgeAccount + "=first,second", true},
+		{"an entry naming the first issuer alone", "edge-listener/edge-a/PRIV=" + edgeAccount + "=first", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			second := oidctest.New(t)
+			secondKey := second.PublishKey(t, "second-key")
+			dispatch := repositoriesDispatch(t)
+			ts := newTestServerWith(t, func(d *api.Deps) {
+				withNamedIssuers(second, []string{"first", "second"})(d)
+				d.EdgeListeners = edgeListeners(t, c.entry, d.Enroll.Issuers)
+				d.ProjectRepositories = projectrepos.New(dispatch.URL, dispatch.Account, nil)
+			})
+			ask := func(t *testing.T, bearer string) (int, []byte) {
+				t.Helper()
+				status, body, err := askRepositories(ts.URL, bearer, "PRIV")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return status, body
+			}
+			t.Run("its token of the first issuer", func(t *testing.T) {
+				status, body := ask(t, ts.accountToken(t, edgeAccount, "", time.Hour))
+				requireRepositories(t, status, body, "PRIV", []string{"acme/pub", "acme/two"})
+			})
+			t.Run("its token of the second issuer", func(t *testing.T) {
+				status, body := ask(t, issuedToken(t, second, secondKey, edgeAccount, ""))
+				if c.takesTwo {
+					requireRepositories(t, status, body, "PRIV", []string{"acme/pub", "acme/two"})
+					return
+				}
+				requireRefused(t, status, body, http.StatusForbidden, "NOT_AN_EDGE_LISTENER")
+				if refusal := decode[wireError](t, body); refusal.Error != unnamedIssuer {
+					t.Fatalf("the refusal says %q, want %q", refusal.Error, unnamedIssuer)
+				}
+			})
+			t.Run("an account no edge-listener entry names, with a token of the second issuer", func(t *testing.T) {
+				status, body := ask(t, issuedToken(t, second, secondKey, otherEdgeAccount, ""))
+				requireRefused(t, status, body, http.StatusForbidden, "NOT_AN_EDGE_LISTENER")
+			})
+			want := 1
+			if c.takesTwo {
+				want = 2
+			}
+			if calls := dispatch.Calls(); calls != want {
+				t.Fatalf("the edge listener's answered calls asked Dispatch %d times, want %d: no refusal reaches it", calls, want)
+			}
+		})
+	}
+}
+
 // edgeGoogleAccount is the Google service account the Google edge listener's entry names.
 const edgeGoogleAccount = "example-edge@example-project.iam.gserviceaccount.com"
 
@@ -394,11 +456,10 @@ func googleEdgeServer(t *testing.T, services string) (ts *testServer, dispatch *
 	if err != nil {
 		t.Fatal(err)
 	}
-	edges := edgeListeners(t, services)
 	dispatch = repositoriesDispatch(t)
 	ts = newTestServerWith(t, func(d *api.Deps) {
 		d.GoogleAccountTokens = api.GoogleTokens{Verifier: verifier}
-		d.EdgeListeners = edges
+		d.EdgeListeners = edgeListeners(t, services, d.Enroll.Issuers)
 		d.ProjectRepositories = projectrepos.New(dispatch.URL, dispatch.Account, nil)
 	})
 	googleToken = func(account string) string {

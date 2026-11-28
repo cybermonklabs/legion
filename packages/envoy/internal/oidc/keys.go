@@ -54,10 +54,10 @@ const (
 	DefaultKeysFetchTimeout = 10 * time.Second
 	// DefaultKeysFailureSpacing is how long after a failed read no other read starts, until a
 	// read succeeds: the failure answers instead, from the cached set where it holds the key, as
-	// discovery's does (discoveryRetrySpacing). Without it a key set that is down is read as fast
-	// as tokens arrive, one read per request. It is also how soon a key id a failed read could not
-	// find may be looked for again, rather than waiting out MinRefresh.
-	DefaultKeysFailureSpacing = 5 * time.Second
+	// discovery's does (discoveryRetrySpacing, which it is). Without it a key set that is down is
+	// read as fast as tokens arrive, one read per request. It is also how soon a key id a failed
+	// read could not find may be looked for again, rather than waiting out MinRefresh.
+	DefaultKeysFailureSpacing = discoveryRetrySpacing
 )
 
 // maxKeySetBytes is the most of an issuer's key-set response that is read. A real set is a few
@@ -90,7 +90,8 @@ type Keys struct {
 	FetchTimeout time.Duration
 	// FailureSpacing is how long a failed read answers for, with no new read, until a read
 	// succeeds; and how soon after it a key id the failed read was looking for may prompt another
-	// read (DefaultKeysFailureSpacing).
+	// read (DefaultKeysFailureSpacing). Zero spaces nothing: every Key that needs the set reads it,
+	// so no failed read answers a later Key.
 	FailureSpacing time.Duration
 	// HTTPClient reads the key set. A caller replaces it to route the read through a proxy or an
 	// instrumented transport; it is never nil.
@@ -185,9 +186,9 @@ func NewKeysAt(jwksURI string) *Keys {
 // that fails leaves the last good set serving a caller still waiting, with no new read for
 // FailureSpacing, and is returned only when that set does not hold the key asked for — an issuer
 // that is down stops no verification it does not have to. A kid the set does not hold while the
-// read that would settle it has not (one is under way, or the last
-// one failed within MinRefresh) is ErrKeySet, not ErrNoKey: no verdict on that key has been
-// reached yet.
+// read that would settle it has not (one is under way, or the last one failed within MinRefresh)
+// is ErrKeySet, not ErrNoKey: no verdict on that key has been reached yet, and the key may be one
+// the issuer rotated in, which is the outage's to answer and not a key nobody published.
 //
 // Every error wraps ErrNoKey, ErrAmbiguousKey or ErrKeySet. The text names the key id asked for,
 // which is a public identifier, shortened so an oversized one cannot flood a log, and no other

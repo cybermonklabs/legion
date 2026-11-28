@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -33,10 +34,13 @@ import (
 // it was (retry, whose failure record and budgets go there).
 //
 // The claims it starts — spawned, resumed, retried, a suspended claim given a task — record no
-// process, so its launch lets none go and records nothing of one (noEnd). Each was raised by a
-// request, which the pod's start gate puts first among the starts waiting in the claim's pod
-// (launchAfter's requested, podQueue.next).
-func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place, admitted func()) error {
+// process, so its launch lets none go and records nothing of one (noEnd). requested is whether a
+// request raised the start, which the pod's start gate puts first among the starts waiting in the
+// claim's pod (launchAfter's requested, podQueue.next). Every caller passes true but the rule's
+// resume of a claim the project release stopped (resumeByRule): that is the daemon's next boot
+// starting every role of the pods the release deleted at once, which the gate orders as the
+// starts no request raised.
+func (m *Machine) revive(ctx context.Context, exempt, requested bool, place *wakepace.Place, admitted func()) error {
 	// The admission writes the claim row alone, so a take-back the claim must carry goes first
 	// (carryPending, writeCarried).
 	if err := m.writeCarried(ctx); err != nil {
@@ -50,7 +54,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place
 	if admitted != nil {
 		admitted()
 	}
-	return m.launchAfter(ctx, false, exempt, true, place, noEnd)
+	return m.launchAfter(ctx, false, exempt, requested, place, noEnd)
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
@@ -132,8 +136,30 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // they stop, so the check failed while the stop waited out its grace), or a launch whose write
 // failed, waiting (relaunchLater). A claim left there would have nothing watching or relaunching
 // it. A reserved cleanup suspends it for the daemon, its session kept, for the tree's close to
-// retire. Any other failure is not the tree's — a store that did not answer — and ends nothing:
-// the relaunch waits (relaunchLater), as a stop that fails does.
+// retire. Any other refusal is not the tree's — a store that did not answer, or the project
+// release's hold of every start until the daemon's next boot (internal/daemon's
+// errProjectReleased) — and ends nothing: the relaunch waits (relaunchLater), as a stop that
+// fails does. The release's refusal is a routine wait (wait.IsRoutine, the test of an error that
+// is this one refusal alone), which lasts as long as the release holds, up to its bound, and which
+// nobody has to act on: the operator who released the project asked for it. So a refusal that is
+// a routine wait is logged at Info where the wait begins and at Debug at each retry it refuses
+// after that (relaunchWaitLine, launchCheckWaiting), and every other refusal, a wait that is not
+// routine included, at Warn at each retry (relaunchRefusedLine).
+//
+// A routine wait is answered to no caller: once its retry is armed, the decision answers only the
+// claim's write. A routine wait that does reach a decision's caller, with no fault joined to it,
+// is kept below Error, at Debug, where a decision's error is logged: by the machine's own
+// goroutines (fire, startSend, DecisionErrorLevel) and by the daemon's feeder of a worker's events
+// (internal/daemon's supervisor.decisionFailed). So no Warn or Error line is written there for the
+// wait this answers over a claim it leaves as it was (one that records its process, the first
+// return here), nor for the wait a decision meets in its own launch check (registrationDeadline,
+// chargePrompt, relaunchStale). The routes of a turn's outcome and of an operator's retry still
+// answer every error as a failure (api's claimFailure, operationFailure), so this refusal answers
+// them nothing. The retry is the one such answer a person reads, and it meets the wait only where
+// the release marked after the route's own check had let it through (api's releaseRefused,
+// runDroppedLaunchForRetry): it is answered as a start that wrote no launch, the claim waiting
+// launching with its retry armed, which the release's stop then lets go as it lets go every start
+// it holds. A refusal that is no routine wait is still answered with its error.
 func (m *Machine) relaunchRefused(ctx context.Context, kind WakeKind, relaunch func(context.Context) error, err error) error {
 	if m.claim.Locator != nil || !slices.Contains(live, m.claim.State) {
 		return err
@@ -142,10 +168,30 @@ func (m *Machine) relaunchRefused(ctx context.Context, kind WakeKind, relaunch f
 		m.log.Warn("supervise: the tree's cleanup is reserved and the retired process is stopped; suspending the claim for the tree's close", "error", err)
 		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil))
 	}
-	m.log.Warn("supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval", "error", err)
 	m.relaunchLater(m.deps.Timeouts.Probe, kind, m.retryHolding(m.pluginRelaunch, relaunch))
+	if wait.IsRoutine(err) {
+		level := slog.LevelDebug
+		if !m.launchCheckWaiting {
+			level = slog.LevelInfo
+		}
+		m.launchCheckWaiting = true
+		m.log.Log(ctx, level, relaunchWaitLine, "error", err)
+		return m.persist(ctx)
+	}
+	m.launchCheckWaiting = false
+	m.log.Warn(relaunchRefusedLine, "error", err)
 	return errors.Join(err, m.persist(ctx))
 }
+
+// relaunchWaitLine is the line of a relaunch the launch check refused with a routine wait
+// (wait.IsRoutine, relaunchRefused): at Info at the refusal that begins the wait, and at Debug at
+// each retry it refuses after that (launchCheckWaiting).
+const relaunchWaitLine = "supervise: the relaunch waits: the launch check holds it; trying it again at the probe interval"
+
+// relaunchRefusedLine is the line of a relaunch the launch check refused with anything but a
+// routine wait (relaunchRefused), a wait of another kind included, at Warn at each retry it
+// refuses.
+const relaunchRefusedLine = "supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval"
 
 // watchAgain arms again what watches the process the claim records, where that is not armed: the
 // timers the claim's state calls for, which are the ones a restart reading this claim back from
@@ -212,11 +258,13 @@ type waitingRelaunch struct {
 
 // relaunchLater leaves a claim whose process is already let go waiting launching with no process,
 // its task kept, and tries relaunch again after wait (TimerRelaunch, relaunchAgain): a relaunch
-// whose lifecycle check the store did not answer (relaunchRefused), or a launch whose write failed
-// or whose hold of the session the store did not answer (relaunchAtProbe), each at the probe
-// interval, and a start the session store could not answer or that waits for its pod's update
-// round, each at its own minute (startWaitsForStore, startWaitsForPodRound). Nothing else would
-// relaunch such a claim before a restart, which takes it up from what the store last holds.
+// whose lifecycle check the store did not answer, or that the launch check refused while a project
+// release holds every start, which takes the same retry (relaunchRefused), a launch whose write
+// failed or whose hold of the session the store did not answer (relaunchAtProbe), and a start the
+// runtime refused because a project release holds the claim's pod (startWaitsForRelease), each at
+// the probe interval, and a start the session store could not answer or that waits for its pod's
+// update round, each at its own minute (startWaitsForStore, startWaitsForPodRound). Nothing else
+// would relaunch such a claim before a restart, which takes it up from what the store last holds.
 //
 // kind is the wake kind of the launch relaunch retries, recorded with it. A retry of a launch of
 // the stale-plugin lane is that lane's launch still owed, so the machine keeps the credit of the
@@ -234,9 +282,19 @@ type waitingRelaunch struct {
 //     the wake's retry restores (reserveWake, heldTryWake, retryHolding).
 //   - relaunchAtProbe reads it off the intent of the try's launch, the one its retry restores
 //     (launchFromTop).
-//   - startWaitsForStore and startWaitsForPodRound pass WakeLaunch whatever launch they retry,
-//     and their retries restore no intent: each waits on a fault outside the daemon or on a pod's
-//     round, which can take hours, and a credit held that long would stop the lane.
+//   - startWaitsForStore, startWaitsForPodRound and startWaitsForRelease pass WakeLaunch whatever
+//     launch they retry, and their retries restore no intent. The first two wait on a fault
+//     outside the daemon or on a pod's round, which can take hours, and a credit held that long
+//     would stop the lane. startWaitsForRelease passes WakeLaunch as they do, though a credit held
+//     through the release would cost the lane nothing (below).
+//
+// A launch of the lane that the launch check refuses while a project release holds every start is
+// relaunchRefused's, not startWaitsForRelease's, so its retry records the lane's kind, and the
+// machine keeps that launch's credit, retry after retry, until the release's stop lets the claim
+// go (letGo), or until a retry passes the check once a release whose start failed has cleared its
+// mark (internal/daemon's projectRelease.unmark). That costs the lane nothing: the release also
+// holds the lane's pass, which posts no refresh while the mark holds (internal/daemon's
+// sweepOnce), and the launch check refuses every launch a machine makes meanwhile.
 func (m *Machine) relaunchLater(wait time.Duration, kind WakeKind, relaunch func(context.Context) error) {
 	m.claim.State = StateLaunching
 	m.relaunch = &waitingRelaunch{retry: relaunch, kind: kind}

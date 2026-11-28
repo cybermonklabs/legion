@@ -13,10 +13,11 @@ import (
 // A reader in a transaction judges whether an architect holds its role by the claim the store
 // records (ArchitectRuns), since it has no machine to ask: a claim that failed or retired, and an
 // issue with no claim at all, hold no role; an idle release's suspension keeps the role, since the
-// next wake resumes the same session with its phase and its task, while an operator's or the
-// workflow's suspension does not; a claim that is coming up or at work holds it. The read covers
-// the issues of the tree it is given and no other, so the architect of an issue outside it holds
-// no role for this walk, whatever its claim says.
+// next wake resumes the same session with its phase and its task, and so does the project
+// release's, since the daemon's next boot starts the claim as the release left it, while an
+// operator's or the workflow's suspension does not; a claim that is coming up or at work holds it.
+// The read covers the issues of the tree it is given and no other, so the architect of an issue
+// outside it holds no role for this walk, whatever its claim says.
 func TestAnArchitectHoldsItsRoleInATransactionByTheClaimTheStoreRecords(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -33,6 +34,7 @@ func TestAnArchitectHoldsItsRoleInATransactionByTheClaimTheStoreRecords(t *testi
 		{name: "a retired claim", issue: "LEGION-3", state: supervise.StateRetired},
 		{name: "no claim", issue: "LEGION-4"},
 		{name: "a claim the idle release suspended", issue: "LEGION-5", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, holds: true},
+		{name: "a claim the project release stopped", issue: "LEGION-11", state: supervise.StateSuspended, by: supervise.SuspendedByProjectRelease, holds: true},
 		{name: "a claim an operator suspended", issue: "LEGION-6", state: supervise.StateSuspended, by: supervise.SuspendedByOperator},
 		{name: "a claim the workflow suspended", issue: "LEGION-7", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
 		{name: "a working claim", issue: "LEGION-8", state: supervise.StateWorking, holds: true},

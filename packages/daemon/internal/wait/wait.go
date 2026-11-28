@@ -56,3 +56,66 @@ type until struct {
 	waiting
 	at time.Time
 }
+
+// Routine marks err routine: a wait nobody has to act on, because what it waits for comes on its
+// own or was asked for already — a holder that has not stopped yet, a launch the wake pacing
+// parked, the hold of every start that an operator's project release asked for. An outbox row's
+// attempts at a routine wait stay at Debug after its first, however long it lasts, where those at
+// any other wait turn into a warning once it has lasted; and the supervise machine's logs of a
+// decision's error made only of routine waits keep it below Error. The mark changes nothing else:
+// it wraps err and unwraps to it, so it is a wait exactly where err is one (errors.Is(err,
+// ErrWaiting)), names err's moment (UntilAt), and matches every sentinel err matches. A refusal a
+// caller already retries as a wait of its own without being one, such as the runtime's refusal of
+// a start the project release holds, may be marked as well, and stays no wait for every other
+// reader. IsRoutine finds the mark anywhere in a chain, and OnlyRoutine whether every error in it
+// carries one.
+func Routine(err error) error {
+	return &routine{err: err}
+}
+
+// IsRoutine is whether err's chain holds an error marked routine (Routine), a wait or a refusal
+// its caller retries as one, through every %w and errors.Join. It is true of a routine wait
+// joined to a fault as well, so it is the test of a reader whose error is that one wait or
+// refusal and nothing beside it; OnlyRoutine is the test of an error joined from several.
+func IsRoutine(err error) bool {
+	var r *routine
+	return errors.As(err, &r)
+}
+
+// OnlyRoutine is whether every error in err's chain is marked routine (Routine): each branch,
+// through every %w and errors.Join, reaches a mark before it ends, and nil holds none. It differs
+// from IsRoutine where a routine wait is joined to anything unmarked — a fault, or a wait nobody
+// marked — which IsRoutine is true of and this is not. So each reader takes the test that fits
+// what its error can hold. A decision's error joins its answer with whatever else the decision
+// met (supervise's Machine.handle joins the row's answer with the delivery's settle and the
+// row-move check), and the level it is logged at takes this one (supervise's
+// DecisionErrorLevel), so a fault beside a routine wait is still logged as a fault. A reader whose
+// error is one wait or refusal alone takes IsRoutine: the outbox's warning of a row that waits
+// (internal/daemon's waitWarnAttempts), which reads only an error that is a wait already, and the
+// launch check's refusal (supervise's relaunchRefused), which is the refusal and nothing else.
+func OnlyRoutine(err error) bool {
+	switch e := err.(type) {
+	case nil:
+		return false
+	case *routine:
+		return true
+	case interface{ Unwrap() []error }:
+		children := e.Unwrap()
+		for _, child := range children {
+			if !OnlyRoutine(child) {
+				return false
+			}
+		}
+		return len(children) > 0
+	case interface{ Unwrap() error }:
+		return OnlyRoutine(e.Unwrap())
+	default:
+		return false
+	}
+}
+
+type routine struct{ err error }
+
+func (r *routine) Error() string { return r.err.Error() }
+
+func (r *routine) Unwrap() error { return r.err }

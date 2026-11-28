@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -635,7 +636,7 @@ func TestAWakeWhoseTakeOutcomeIsUnknownIsResumedByItsRetry(t *testing.T) {
 	before := len(rig.rt.CallsOf("Resume"))
 
 	fired := fault.Cut("insert into pod_resumes", testdb.CutAfterCommitRefusing)
-	_, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
+	err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
 	testdb.Met(t, fired)
 	if !errors.Is(err, store.ErrCommitOutcomeUnknown) {
 		t.Fatalf("the wake whose take's outcome is unknown = %v, want store.ErrCommitOutcomeUnknown", err)
@@ -649,9 +650,8 @@ func TestAWakeWhoseTakeOutcomeIsUnknownIsResumedByItsRetry(t *testing.T) {
 			return count(logs, "wake: a released pod is coming back for a delivery") == 1
 		})
 
-	woken, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
-	if err != nil || !woken {
-		t.Fatalf("the row's retry = %t, %v; want the claim woken", woken, err)
+	if err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0); !errors.Is(err, wait.ErrWaiting) {
+		t.Fatalf("the row's retry = %v; want the claim woken and the delivery waiting for its released pod", err)
 	}
 	if got := count(logs, "a released pod's resume stands open with no process behind it"); got != 1 {
 		t.Errorf("open-resume lines = %d, want 1: the retry's take is refused by the resume the first take recorded", got)

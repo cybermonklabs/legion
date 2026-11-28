@@ -140,6 +140,24 @@ func (s *supervisor) wakeIssue(token claim.Token) {
 	}
 }
 
+// sendHeldTasks asks every machine to send the task it holds, once the project release's mark is
+// cleared because the release's record did not commit (projectRelease.unmark): the machines held
+// every task while the mark stood (supervise.Deps.ProjectReleaseHolds), and nothing of a claim
+// that is ready or idle would ask again until some unrelated event reached it. It posts the event
+// whose one act is that send (supervise's IssueTurnEnded, which carries no fact of its own): a
+// claim in a state that sends nothing ignores it, and a task another hold still keeps — a turn of
+// another role of the issue — is held again by the send's own questions.
+func (s *supervisor) sendHeldTasks() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.stopped {
+		return
+	}
+	for token, m := range s.machines {
+		m.inbox.put(supervise.IssueTurnEnded{Claim: token})
+	}
+}
+
 // OnDurableState applies one durable-state callback to every current and future machine.
 func (s *supervisor) OnDurableState(callback func(supervise.Claim, supervise.ClaimState)) {
 	s.mu.Lock()
@@ -296,16 +314,23 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 }
 
 // decisionFailed logs err, a decision on token's claim failing (what names it: the event its
-// machine handled, or the release of an uncertain launch), as failed says: at Error, unless the
-// daemon's stop ended it, which is no fault, since the next boot takes the claim up. It reports
-// whether the failure is a fault.
+// machine handled, or the release of an uncertain launch), as failed says: at Info where the
+// daemon's stop ended it, which is no fault, since the next boot takes the claim up, and otherwise
+// at the level the machine's own goroutines log a decision's error at
+// (supervise.DecisionErrorLevel): Debug where err is made of nothing but routine waits, which
+// nobody has to act on — the project release's hold of every start until the daemon's next boot
+// (errProjectReleased), which a decision met in its launch check, or met at the runtime
+// (supervise's startWaitsForRelease), and answered — and Error for every other, a routine wait
+// joined to a fault included. It reports whether the decision failed, rather than being ended by
+// the daemon's stop: a routine wait is a failure of the decision all the same, which its caller
+// retries as it retries any other (releaseUnfinishedClaim).
 func (s *supervisor) decisionFailed(token claim.Token, what string, err error, failed string) bool {
 	if s.ctx.Err() != nil {
 		s.log.Info("supervise: the daemon's stop ended a decision; the next boot takes the claim up",
 			"claim", token, "event", what, "error", err)
 		return false
 	}
-	s.log.Error(failed, "claim", token, "event", what, "error", err)
+	s.log.Log(s.ctx, supervise.DecisionErrorLevel(err), failed, "claim", token, "event", what, "error", err)
 	return true
 }
 

@@ -122,7 +122,7 @@ func TestTheBrokerBinaryAnswersEdgeListenersBesideAPodAudienceList(t *testing.T)
 		"BROKER_GOOGLE_OIDC_ISSUER=" + google.URL(), "BROKER_GOOGLE_OIDC_AUDIENCE=" + machineAudience,
 	})}).Addr)
 	status, answer := live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV",
-		clusterToken(t, rig.cluster, rig.key, edgeListenerAccount, podAudienceOld, "", false), "", "")
+		audienceToken(t, rig.cluster, rig.key, edgeListenerAccount, podAudienceOld, "", false), "", "")
 	requirePRIVsRepositories(t, "the Kubernetes edge listener of PRIV, with its token of the second listed audience", status, answer)
 	status, answer = live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV",
 		edgeIdentityToken(t, google, googleKey, edgeGoogleAccount), "", "")

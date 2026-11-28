@@ -193,11 +193,17 @@ func (h *harness) podRole(role claim.Role, state ClaimState) *podRole {
 // as a stopping daemon ends every machine's (shutdown).
 func (h *harness) podRoleUnder(ctx context.Context, role claim.Role, state ClaimState) *podRole {
 	h.t.Helper()
+	return h.podRoleOf(ctx, role, state, SuspendedByDaemon)
+}
+
+// podRoleOf is podRoleUnder with by the source a suspended claim's suspension records.
+func (h *harness) podRoleOf(ctx context.Context, role claim.Role, state ClaimState, by SuspendSource) *podRole {
+	h.t.Helper()
 	c := queuedClaim()
 	c.Token, c.Role, c.State = claim.Token("legion-"+podIssue+"-"+string(role)), role, state
 	r := &podRole{token: c.Token, session: "ses_" + string(role), sessionFile: "/state/sessions/" + string(role) + ".jsonl"}
 	if state == StateSuspended {
-		c.Generation, c.SuspendedBy = 1, SuspendedByDaemon
+		c.Generation, c.SuspendedBy = 1, by
 		c.Session, c.SessionFile = r.session, r.sessionFile
 	}
 	r.m = h.machineUnder(ctx, c)

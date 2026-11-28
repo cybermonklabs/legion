@@ -103,7 +103,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, r, "spawn") {
+	if s.stopped(w, r, "spawn") || s.releaseRefused(w, r, "spawn") {
 		return
 	}
 	c := supervise.Claim{
@@ -348,9 +348,13 @@ func (s *server) logStartEnded(token claim.Token, request string, err error) {
 	s.log.Info("api: a start answered while it ran ended", "request", request, "claim", token)
 }
 
-// deliverEvent is the operator's task for a claim, which starts a turn the pause holds for every
-// claim but the controller's (refusedWhilePaused).
+// deliverEvent is the operator's task for a claim, which a project release refuses as it refuses
+// every request that would prompt a role (releaseRefused), and which starts a turn the pause holds
+// for every claim but the controller's (refusedWhilePaused). The release's refusal is asked first.
 func (s *server) deliverEvent(w http.ResponseWriter, r *http.Request, c supervise.Claim) (supervise.Event, bool) {
+	if s.releaseRefused(w, r, "deliver") {
+		return nil, false
+	}
 	var req DeliverRequest
 	if !s.readBody(w, r, &req, nil) || !s.requireFields(w, r, field{"task", req.Task}) {
 		return nil, false
@@ -365,9 +369,13 @@ func suspendEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (su
 	return supervise.RequestSuspend{Claim: c.Token, Reason: "the operator suspended it", By: supervise.SuspendedByOperator}, true
 }
 
-// resumeEvent is the operator's resume of a suspended claim, a launch the pause holds for every
-// claim but the controller's (refusedWhilePaused).
+// resumeEvent is the operator's resume of a suspended claim, which a project release refuses as
+// it refuses every request that would start a role (releaseRefused), and a launch the pause holds
+// for every claim but the controller's (refusedWhilePaused). The release's refusal is asked first.
 func (s *server) resumeEvent(w http.ResponseWriter, r *http.Request, c supervise.Claim) (supervise.Event, bool) {
+	if s.releaseRefused(w, r, "resume") {
+		return nil, false
+	}
 	if s.refusedWhilePaused(w, r, "resume", c) {
 		return nil, false
 	}
@@ -465,7 +473,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req RetryRequest
-	if !s.readOptionalBody(w, r, &req) {
+	if !s.readOptionalBody(w, r, &req) || s.releaseRefused(w, r, "retry") {
 		return
 	}
 	var (

@@ -1794,6 +1794,25 @@ expect_no_line "probe/system:serviceaccount:envoy-operator:envoy-hold-probe may 
 expect_line "UNKNOWN: (a3) the publishers: edge-listener/edge-a may publish a notification subject, and no --publisher maps it to a listener pin"
 done_case
 
+# An entry may name the issuers its account's token is taken from, =<issuer name>[,<issuer name>…]
+# after its account, and its user's name is still config.NATSService Name's: a listener's
+# <kind>/<machine id>, and a daemon's, of no machine id, <kind>/<account>, the account alone.
+new_case "(a3) an auth service's entry that names its issuers is read by its machine id, or with none by its account alone"
+got=$(jq -nc -L "$here/lib" --arg s "listener/host-a/*=system:serviceaccount:envoy:host-a=cluster-a,cluster-b daemon/-/-=system:serviceaccount:legion:daemon=cluster-a" \
+  'include "legacy-subjects-gate-publishers"; $s | nats_services')
+[ "$got" = '{"entries":[{"kind":"listener","identity":"listener/host-a"},{"kind":"daemon","identity":"daemon/system:serviceaccount:legion:daemon"}]}' ] ||
+  fail "nats_services read the entries as $got"
+done_case
+
+# A Google account's entry writes its account google:<address>, and config.NATSService Name of one
+# of no machine id is <kind>/<address>, the tag removed, as ParseAccount reads the account.
+new_case "(a3) an auth service's Google entry of no machine id is read by its address without its google: tag"
+got=$(jq -nc -L "$here/lib" --arg s "measure/-/*=google:measure@example-project.iam.gserviceaccount.com" \
+  'include "legacy-subjects-gate-publishers"; $s | nats_services')
+[ "$got" = '{"entries":[{"kind":"measure","identity":"measure/measure@example-project.iam.gserviceaccount.com"}]}' ] ||
+  fail "nats_services read the entry as $got"
+done_case
+
 new_case "(a3) behind an auth callout with no --broker named is UNKNOWN"
 hub_configmap "$FAKE" --callout "${clean_users[@]}"
 facts=(--deployment example/deploy --new-form-commit "$new_form" --hub-statefulset envoy-nats

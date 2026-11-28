@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
@@ -39,9 +40,9 @@ type Deps struct {
 	// introspection, in the broker's process.
 	Introspect func(ctx context.Context, token string) (oauthwire.Introspection, error)
 	// ServiceToken verifies a service's platform identity token for the NATS audiences
-	// (BROKER_NATS_K8S_AUDIENCE, BROKER_NATS_GOOGLE_AUDIENCE) and answers the account it names,
-	// whether that is a Google account, and when the token was issued and expires.
-	ServiceToken func(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error)
+	// (BROKER_NATS_K8S_AUDIENCE, BROKER_NATS_GOOGLE_AUDIENCE) and answers what it says of the
+	// service (PlatformTokens.Verify).
+	ServiceToken func(ctx context.Context, raw string) (ServiceIdentity, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
 	// Log is where the service's reporter writes the refusals, failed answers and drops it
@@ -66,6 +67,13 @@ func (d Deps) now() time.Time {
 	}
 	return d.Now()
 }
+
+// ServiceIdentity is what a service's verified platform identity token says of it
+// (Deps.ServiceToken). It is the api package's PlatformIdentity, which the hold routes read of the
+// operator's token, rather than a struct of its own, because the api package cannot import this
+// one: the auth service and the routes read one struct, so cmd/cipherd hands both the same
+// verifier (PlatformTokens.Verify) and a field added to the answer reaches both.
+type ServiceIdentity = api.PlatformIdentity
 
 // Request is what the server asks about one connection, read from its authorization request.
 type Request struct {
@@ -238,11 +246,13 @@ func decideOperator(ctx context.Context, deps Deps, entry config.NATSService, ex
 // over req's nonce and while Dispatch does not hold the person its token names (decideSession); a
 // service with its kind's grant, held to its projects (scopeGrant), once its platform token
 // verifies and lives no longer than a token login may (an hour, beside the proof clock skew) and
-// its account is listed in services. The operator entry's grant is the writer hold's phase's
-// (decideOperator), and every other client it would admit is refused while the hold row cannot be
-// read (outsideTheHold); either reads the row once, after the credential verified, so a client
-// refused for its credential costs the broker's Postgres nothing. The grant it answers is not yet
-// checked: every answer passes the guard in admit (callout.go), whatever decided it.
+// its account is listed in services, a Kubernetes account's from an issuer its entry names, an
+// edge listener's and the operator's as every other's. The operator entry's grant is the writer
+// hold's phase's (decideOperator), and every other client it would admit is refused while the
+// hold row cannot be read (outsideTheHold); either reads the row once, after the credential
+// verified, so a client refused for its credential costs the broker's Postgres nothing. The grant
+// it answers is not yet checked: every answer passes the guard in admit (callout.go), whatever
+// decided it.
 func Decide(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 	switch credentialKind(req) {
 	case credentialSession:
@@ -358,7 +368,7 @@ func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error
 const longestServiceToken = machine.MaxTokenLoginLifetime + ciphertoken.ProofClockSkew
 
 func decideService(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
-	account, google, issued, expiry, err := deps.ServiceToken(ctx, req.Password)
+	identity, err := deps.ServiceToken(ctx, req.Password)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Decision{}, budgetRefusal("the service token's verification")
@@ -368,28 +378,30 @@ func decideService(ctx context.Context, deps Deps, services []config.NATSService
 		// (internal/oidc), so the cause is safe to log; it is never answered.
 		return Decision{}, refuse(labelServiceToken, "service token not verified").because(err)
 	}
-	if expiry.Sub(issued) > longestServiceToken {
+	if identity.Expiry.Sub(identity.Issued) > longestServiceToken {
 		return Decision{}, refuse(labelTokenTooLong, "token lives longer than an hour")
 	}
-	if !expiry.After(deps.now()) {
+	if !identity.Expiry.After(deps.now()) {
 		return Decision{}, refuse(labelTokenNotLive, "token not live")
 	}
 	var entry *config.NATSService
 	for index := range services {
-		if services[index].Account == account && services[index].Google == google {
+		if services[index].Account == identity.Account && services[index].Google == identity.Google {
 			entry = &services[index]
 			break
 		}
 	}
-	if entry == nil {
-		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
+	// A listed Kubernetes account's token, an edge listener's and the operator's included, is taken
+	// only from an issuer its entry names (api.PlatformIdentity.TakenFrom).
+	if entry == nil || !identity.TakenFrom(entry.Issuers) {
+		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+identity.Account)
 	}
 	if entry.Kind == config.NATSOperator {
-		return decideOperator(ctx, deps, *entry, expiry)
+		return decideOperator(ctx, deps, *entry, identity.Expiry)
 	}
 	grant, err := scopeGrant(*entry, serviceGrant(*entry))
 	if err != nil {
 		return Decision{}, err
 	}
-	return outsideTheHold(ctx, deps, Decision{Name: entry.Name(), Grant: grant, Expires: expiry})
+	return outsideTheHold(ctx, deps, Decision{Name: entry.Name(), Grant: grant, Expires: identity.Expiry})
 }

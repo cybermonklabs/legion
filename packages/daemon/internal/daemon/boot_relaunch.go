@@ -368,6 +368,12 @@ func (s *supervision) relaunchUnfinished(tokens, deaths []claim.Token, reconcile
 				return
 			case <-ticker.C:
 			}
+			// The project release holds every start, so a tick while it holds relaunches nothing
+			// and reconciles nothing; the claims wait for a tick after its mark is cleared, and the
+			// next boot takes up whatever is still unfinished.
+			if s.plan.release.held() {
+				continue
+			}
 			if !reconciled {
 				if reconciled = s.reconcileBootOrphans(relaunching); !reconciled {
 					continue

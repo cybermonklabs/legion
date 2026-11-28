@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  An Envoy listener that takes both Google identity tokens and Kubernetes ServiceAccount tokens
+  checks a Google identity token with white space inside its payload against Google, as it checks
+  the same token without it. It chose which of the two checks a token by the token's `iss`, read
+  with that white space left in, so such a token went to the Kubernetes check and was answered
+  `401 unauthorized`.
+time: 2026-11-18T00:44:01Z
+custom:
+    Issue: pr4049

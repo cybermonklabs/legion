@@ -713,10 +713,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// every answer that is not a success, so the fixture holds each and the record is the keys
 		// of the four read as one set. The pause refusals are the three the goldens hold
 		// (TestPauseRouteGoldens): the setting that turns the pause off, the pause that stands,
-		// and the last pause, ended, which between them carry every key of a PauseFailure. Their
-		// pause is the controller's, richer than the goldens' operator's (controllerPause). The
-		// plan refusal names a cause of the whole plan and a cause of one task, the two kinds a
-		// reason takes.
+		// and the last pause, ended, which between them carry every key the numbered entries gave
+		// a PauseFailure. Their pause is the controller's, richer than the goldens' operator's
+		// (controllerPause). The plan refusal names a cause of the whole plan and a cause of one
+		// task, the two kinds a reason takes.
 		AnswerRefusal: {
 			roots: typesOf(claim.Refusal{}, Failure{}, PauseFailure{}, PlanRefusal{}),
 			bodies: []any{
@@ -2311,6 +2311,9 @@ type answerField struct {
 // answer is the pause the route began (pauseProject, pauseViewOf), which no resume has ended, so
 // no body of it carries `endedAt` or `endedBy`. Both are realised by the resume's answer, whose
 // pause is ended, and by the refusal's `lastPause`.
+//
+// An exclusion a contract entry needs is a row of that entry's own test file
+// (entryTestRows.exclusions), which the case below reads after these, in the build's order.
 var excludedDeclaredFields = map[answerField]string{
 	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "repo"}}:      deploysNeverFilled,
 	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "workflow"}}:  deploysNeverFilled,
@@ -2375,18 +2378,22 @@ func TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture(t *testing.T) {
 		t.Fatal("the walk declared no field at all; this proves nothing")
 	}
 
+	exclusions := maps.Clone(excludedDeclaredFields)
+	for _, rows := range entriesTestRows() {
+		maps.Copy(exclusions, rows.exclusions)
+	}
 	for _, key := range sortedAnswerFields(declared) {
 		if realised[key] {
 			continue
 		}
-		if reason, excluded := excludedDeclaredFields[key]; excluded {
+		if reason, excluded := exclusions[key]; excluded {
 			t.Logf("the %s answer declares %s (`%s`) and no fixture realises it: %s", key.answer, key.field, paths[key], reason)
 			continue
 		}
 		t.Errorf("the %s answer declares %s and no fixture body realises it (`%s`): give the fixture a value for it, so the bodies every record is taken from carry every field the daemon can write, and a key a later reader types is one they already carry, rather than leaving the field out of the walk",
 			key.answer, key.field, paths[key])
 	}
-	for _, key := range sortedAnswerFields(excludedDeclaredFields) {
+	for _, key := range sortedAnswerFields(exclusions) {
 		if !declared[key] {
 			t.Errorf("an exclusion names %s of the %s answer and the walk declares no such field: the field is gone or renamed, so the exclusion goes with it",
 				key.field, key.answer)

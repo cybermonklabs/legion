@@ -22,9 +22,9 @@ const wakeClaimSelect = `select token, project, tree, issue, role, session, serv
 
 // releasedClaimSelect reads the released claims among them: suspended with the source `released`
 // (supervise.Claim.Released), which is the one state a wake acts on. Every other suspended claim
-// is somebody else's to resume — an operator's, a close's — and a path that takes a released
-// claim over (an operator's suspend, a linger) re-stamps its source, which takes it out of every
-// read of it.
+// is somebody else's to resume — an operator's, a close's, the next boot's for a claim the
+// project release stopped — and a path that takes a released claim over (an operator's suspend,
+// a linger, the project release) re-stamps its source, which takes it out of every read of it.
 const releasedClaimSelect = wakeClaimSelect + ` and state = $2 and suspended_by = $3`
 
 func scanWakeClaims(rows pgx.Rows) ([]supervise.Claim, error) {

@@ -82,7 +82,7 @@ func rowFactsColumns(key rowKey) string {
 	}
 	return `coalesce(cr.kind, ''), ` + key.approver + `, coalesce(` + key.held + `::text, ''), coalesce(` + key.request + `.reason, ''),
 		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where ` + names + `), '{}'),
-		` + credentialColumns + `, ` + currentCredentialColumns + `, c.service`
+		` + credentialColumnsOf("enr") + `, ` + credentialColumnsOf("cur") + `, c.service`
 }
 
 // rowFactsJoins are the joins rowFactsColumns reads past key's own tables: the enrollment that
@@ -103,8 +103,8 @@ type rowFactsRead struct {
 
 func (r *rowFactsRead) dest() []any {
 	f := &r.facts
-	return []any{&f.kind, &f.approver, &f.holder.ID, &f.reason, &f.names, &r.asked.Kind, &r.asked.Operator, &r.asked.Subject, &r.asked.Projects,
-		&f.holder.Kind, &f.holder.Operator, &f.holder.Subject, &f.holder.Projects, &f.holder.Service}
+	return slices.Concat([]any{&f.kind, &f.approver, &f.holder.ID, &f.reason, &f.names},
+		r.asked.credentialDest(), f.holder.credentialDest(), []any{&f.holder.Service})
 }
 
 func (r *rowFactsRead) done(m *Machine) rowFacts {
@@ -214,7 +214,8 @@ func (m *Machine) hideUnseenRow(ctx context.Context, login string, facts rowFact
 // secret, and goes ahead while Dispatch does not answer (revokeApproves). A person's pod that
 // BROKER_POD_OPERATORS no longer maps acts
 // for no person (unmappedPersonPod), and names its exchange entry's project, not its operator's,
-// so its operator column names whom it once acted for, not a person the grant names: operatorOf
+// while that entry names the issuer the pod enrolled under (credentialProjects), so its
+// operator column names whom it once acted for, not a person the grant names: operatorOf
 // gives none for it. Anyone else is asked the rule (hideUnseenRow): pgx.ErrNoRows for an id no
 // grant has and for a grant they may not see, ErrProjectAccessUnavailable when Dispatch could not
 // say, and nil for a grant they may see, which mayRevoke then lets them end only where its
@@ -304,8 +305,8 @@ func (m *Machine) hideGrantFromSession(ctx context.Context, grantID, enrollmentI
 // atDecision's bound together.
 func (m *Machine) hideFromSession(ctx context.Context, enrollmentID string, facts rowFacts) error {
 	var caller enrollmentRow
-	if err := m.Store.Pool.QueryRow(ctx, `select kind, operator, subject, coalesce(projects, '{}') from enrollments where id=$1`, enrollmentID).
-		Scan(&caller.Kind, &caller.Operator, &caller.Subject, &caller.Projects); err != nil {
+	if err := m.Store.Pool.QueryRow(ctx, `select `+credentialColumnsOf("enr")+` from enrollments enr where enr.id=$1`, enrollmentID).
+		Scan(caller.credentialDest()...); err != nil {
 		return err
 	}
 	person, named := m.credentialProjects(caller)

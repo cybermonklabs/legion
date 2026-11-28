@@ -260,8 +260,9 @@ type shim struct {
 
 	// children is the guard every child the shim starts and waits for itself starts through: Oh
 	// My Pi (spawnOnce), the secrets keygen and renewer (identity, startRenewer), every command the
-	// daemon asked for (openWorkspace) and the warm-up's codegraph (warmCodegraph). Under
-	// Config.ReapOrphans its reaper passes each of them over until its own wait has read its exit.
+	// daemon asked for (openWorkspace, readUnpushed) and the warm-up's codegraph (warmCodegraph).
+	// Under Config.ReapOrphans its reaper passes each of them over until its own wait has read its
+	// exit.
 	children *subreaper.Guard
 
 	// loop ends with the shim: every dial, connection, and backoff is bound to it.
@@ -429,7 +430,8 @@ func (s *shim) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
 		switch typ := frameType(line); typ {
-		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeWorkspaceWork, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
+		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeReadUnpushed, shimwire.TypeWorkspaceWork,
+			shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
 			// The daemon is its only sender, and it is never OMP's to read.
 			s.log.Printf("[worker-shim] refusing a malformed %s frame: %v", typ, err)
 			return
@@ -443,6 +445,9 @@ func (s *shim) fromDaemon(line []byte) {
 		return
 	case shimwire.AdoptWorkingCopy:
 		s.answer(func() { s.adopt(f) })
+		return
+	case shimwire.ReadUnpushed:
+		s.answer(func() { s.readUnpushed(f) })
 		return
 	case shimwire.WorkspaceWork:
 		s.answer(func() { s.workspaceWork(f) })

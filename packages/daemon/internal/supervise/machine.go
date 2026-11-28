@@ -80,7 +80,8 @@ var allStates = []ClaimState{
 }
 
 // States is every state a claim can be in, in the order they are declared: the one list a test
-// outside this package walks to cover each state. It is a copy, so no caller changes the
+// outside this package walks to cover each state, and the list a project release's words for how
+// a claim ended are built from (api.ReleasedClaimEnds). It is a copy, so no caller changes the
 // package's own list.
 func States() []ClaimState {
 	return slices.Clone(allStates)
@@ -92,7 +93,8 @@ func States() []ClaimState {
 // suspension holds until a resume lifts it (SuspendSource.Holds).
 // The boot's resume by rule, which main did not have, acts only on a source ByRule names, so it
 // never overrides a drain recorded before the source existed, and it leaves a released claim to
-// the wake that brings its pod back.
+// the wake that brings its pod back. A claim the project release stopped has a boot step of its
+// own (workflow's booted).
 type SuspendSource string
 
 const (
@@ -126,6 +128,14 @@ const (
 	// its pod back, the stranded report once a wake has run out with no turn, and that cutover
 	// repair.
 	SuspendedByReleased SuspendSource = "released"
+	// SuspendedByProjectRelease: the project release stopped the claim and deleted its pod, so the
+	// project's pods can move to another cluster. The claim keeps its phase, its session and its
+	// pending task, as a released claim does, and the daemon's next boot starts it again, whatever
+	// its role (workflow's booted, its step for these claims; the controller keeper for the
+	// controller's). The release holds every start of the project until that boot, so nothing
+	// before it resumes such a claim. It is no source ByRule names: the boot's resume by rule
+	// starts only the owner of a phase, and these claims are every role's.
+	SuspendedByProjectRelease SuspendSource = "project_release"
 )
 
 // allSuspendSources is every SuspendSource, in the order the constants above declare them.
@@ -133,14 +143,16 @@ const (
 // package, so a source added above and left out here fails that test.
 var allSuspendSources = []SuspendSource{
 	SuspendedByUnknown, SuspendedByOperator, SuspendedByController,
-	SuspendedByDaemon, SuspendedByExit, SuspendedByReleased,
+	SuspendedByDaemon, SuspendedByExit, SuspendedByReleased, SuspendedByProjectRelease,
 }
 
 // SuspendSources is every source a suspended claim can record, in the order they are declared:
-// the one list a test outside this package walks to cover each source. They are the values the
-// store's check constraint allows beside the empty source of a claim that is not suspended
-// (internal/store/migrations/20261115060739_claim_suspended_by_controller.up.sql). It is a copy,
-// so no caller changes the package's own list.
+// the one list a test outside this package walks to cover each source, and the list a project
+// release's words for how a claim ended are built from (api.ReleasedClaimEnds). They are the
+// values the store's check constraint allows beside the empty source of a claim that is not
+// suspended (internal/store/migrations/20261115073241_project_release.up.sql, which wrote the
+// check last, with 20261115060739_claim_suspended_by_controller.up.sql's controller in it). It is
+// a copy, so no caller changes the package's own list.
 func SuspendSources() []SuspendSource {
 	return slices.Clone(allSuspendSources)
 }
@@ -150,7 +162,8 @@ func SuspendSources() []SuspendSource {
 // suspended phase workers the stranded report leaves out. A release is not one of them. It is a
 // stop the daemon recorded too, but no rule here acts on it: the boot's resume by rule leaves it to
 // its role's wake (workflow's booted), and the stranded report holds it to R6's one fact
-// (workflow's stranded).
+// (workflow's stranded). Nor is the project release's, which the next boot starts by a step of
+// its own for every role rather than by this one, which starts phase owners alone.
 func (s SuspendSource) ByRule() bool {
 	return s == SuspendedByDaemon || s == SuspendedByExit
 }
@@ -168,11 +181,13 @@ func (s SuspendSource) Holds() bool {
 // for that phase goes with it (settle): a suspension of the daemon's own does — the workflow's (a
 // park, a linger, a close), a root's exit, and one recorded before sources existed (unknown, or
 // none). Every other source does not — the two that hold (Holds), an operator's and the
-// controller's, and a release. Each of those has this same agent resumed in the same phase — the
-// first two by their holder's resume, a released agent at its role's next wake — so the pending
-// task waits through the suspension and is sent on that resume.
+// controller's, an idle release's and a project release's. Each of those has this same agent
+// resumed in the same phase — the first two by their holder's resume, a released agent at its
+// role's next wake, a project release's at the daemon's next boot — so the pending task waits
+// through the suspension and is sent on that resume: the task of a turn the project release cut
+// is sent again that way.
 func (s SuspendSource) RetiresPhaseTask() bool {
-	return !s.Holds() && s != SuspendedByReleased
+	return !s.Holds() && s != SuspendedByReleased && s != SuspendedByProjectRelease
 }
 
 // SessionLoss is why a launch forgot the session its claim recorded and started a fresh agent
@@ -890,7 +905,8 @@ func (c Claim) MessageMarked() bool {
 
 // RuleMayResume says whether the rule may resume this suspended claim: every suspension but one
 // that holds (SuspendSource.Holds), which holds until a resume lifts it — the operator's, or for
-// the controller's suspension the controller's (HeldAgainst).
+// the controller's suspension the controller's (HeldAgainst). A claim the project release stopped
+// is among them, so the boot's start of it and the controller keeper both resume it.
 func (c Claim) RuleMayResume() bool {
 	return c.State == StateSuspended && !c.SuspendedBy.Holds()
 }
@@ -898,11 +914,14 @@ func (c Claim) RuleMayResume() bool {
 // PassedOverByRound is whether a pod update round passes over this claim by R1's rule, read of
 // the claim alone. The round does not ask such a claim, does not wait for it, and does not wake or
 // resume it (dispatch://INFRA-4109 R1). It is every suspension the rule may resume
-// (RuleMayResume): a suspension by the daemon, by a root's exit, by an idle release, or by an
-// unknown source. Such a claim runs no process and no turn in the pod, so an ask reaches no
-// session. A wake or a resume for the ask would override the reason the daemon stopped the claim.
-// For a released claim that reason is the approved decision of dispatch://INFRA-2981: an
-// idle-released pod is not woken to be asked, because it holds no turn to interrupt.
+// (RuleMayResume): a suspension by the daemon, by a root's exit, by an idle release, by the
+// project release, or by an unknown source. Such a claim runs no process and no turn in the pod,
+// so an ask reaches no session. A wake or a resume for the ask would override the reason the
+// daemon stopped the claim. For a released claim that reason is the approved decision of
+// dispatch://INFRA-2981: an idle-released pod is not woken to be asked, because it holds no turn
+// to interrupt. A claim the project release stopped comes back only at the daemon's next boot
+// (SuspendedByProjectRelease), so a round that waited for its answer would wait for that boot; its
+// stop also takes it out of the round it was in (leaveRoundForRelease).
 //
 // The round makes one exception that the claim does not carry: a claim a project's pause stopped
 // is suspended released too, and the round asks it once its agent is ready and waits for it while
@@ -929,9 +948,20 @@ func (c Claim) PassedOverByRound() bool {
 // wake for its role resumes it (SuspendedByReleased). Every rule that acts on a released claim —
 // the wakes, the notice routing, a reader in a transaction and the role-holder publication (each
 // through HoldsRole), the stranded report, a release the store cancelled — reads it here rather
-// than spelling the pair out again.
+// than spelling the pair out again. A claim the project release stopped is not one: no wake
+// brings it back, since the daemon's next boot starts it (ProjectReleased), though it holds its
+// role as a released claim does (HoldsRole).
 func (c Claim) Released() bool {
 	return c.State == StateSuspended && c.SuspendedBy == SuspendedByReleased
+}
+
+// ProjectReleased is whether the project release stopped the claim and the claim waits, as it
+// left it, for the daemon's next boot to start it (SuspendedByProjectRelease). The rules that
+// read it treat it as they treat a released claim where the claim's role is concerned — the notice
+// routing, a reader in a transaction and the role-holder publication keep its role (HoldsRole) —
+// and never wake it, since the boot is what brings it back.
+func (c Claim) ProjectReleased() bool {
+	return c.State == StateSuspended && c.SuspendedBy == SuspendedByProjectRelease
 }
 
 // RuleHolds is whether a suspension that holds blocks a daemon rule: the claim is suspended by the
@@ -1332,6 +1362,15 @@ type Deps struct {
 	// topic (internal/daemon's openPodUpdate), and the replacement brings it up on a new image
 	// (internal/daemon's refreshStalePlugins).
 	NoPluginInstall func(c Claim) bool
+	// ProjectReleaseHolds is whether the daemon's project release holds every start of the
+	// project now (internal/daemon's projectRelease, dispatch://INFRA-3583 R7). While it answers
+	// true no claim is handed a task (sendPending): a role whose turn ends while the release waits
+	// on its pod — the turn that answered the release's ask among them — keeps its pending task,
+	// which is sent once the daemon's next boot has started the claim again, rather than starting
+	// work it would hold its pod open for. A release whose record did not commit clears the mark
+	// in this process, and the daemon then has each machine send the task it held
+	// (IssueTurnEnded, internal/daemon's sendHeldTasks). Nil holds nothing.
+	ProjectReleaseHolds func() bool
 	// TaskConfirmed is told of each claim whose pending delivery a turn has just confirmed: the
 	// agent took the work the daemon gave it. The workflow decides what a root still owes its
 	// architect from that (admission's ReconcileAwaiting), so without it a root whose wait was
@@ -1991,6 +2030,16 @@ type Machine struct {
 	// while it waits (laneLaunchOwed). It is memory only, as the timer is: a restart launches that
 	// claim again as an unfinished launch.
 	relaunch *waitingRelaunch
+	// launchCheckWaiting is whether the relaunch relaunchRefused last left waiting was refused
+	// with a routine wait (wait.IsRoutine), as the launch check refuses every relaunch while a
+	// project release holds every start: the wait is logged at Info at the refusal that begins it,
+	// and at Debug at each retry it refuses after that (relaunchWaitLine). A refusal that is no
+	// routine wait clears it, and so does a launch check that passes (launchAfter): the launch may
+	// then wait its turn in the pacing or at the pause's gate, and a release that marks before
+	// that turn begins a wait of its own. letGo clears it too, which a relaunch that runs
+	// (launchNow), a suspension, a retirement and a failure all pass. So the next wait logs at Info
+	// again. Memory only, as relaunch is: a restarted daemon's first refusal logs at Info.
+	launchCheckWaiting bool
 	// cancelStart cancels the start in flight, and is nil between starts; startStopped is whether
 	// a suspension cancelled one, read once by that suspension's own row (stoppedAStart). startMu
 	// is their own lock, held only to set, clear or call them, so a suspension can reach them
@@ -3508,11 +3557,12 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // when a process the park left running is let go and what it ended is read (launchNow, letGo).
 //
 // requested is whether a request raised this launch — a task, a message, an operator's spawn,
-// resume or retry, every launch revive makes — which the pod's start gate puts first among the
-// starts waiting in the pod (podQueue.next). It travels with the launch as cause does, captured
-// in the work the wake gate may run at its turn, never on the machine, where another launch
-// could read it. A retry raised anew from the top — the lifecycle check's (again) and every one
-// relaunchLater arms — is a request's no longer, and passes false.
+// resume or retry, every launch revive makes but the boot's start of a claim the project release
+// stopped (resumeByRule) — which the pod's start gate puts first among the starts waiting in the
+// pod (podQueue.next). It travels with the launch as cause does, captured in the work the wake
+// gate may run at its turn, never on the machine, where another launch could read it. A retry
+// raised anew from the top — the lifecycle check's (again) and every one relaunchLater arms — is a
+// request's no longer, and passes false.
 //
 // place is the place the caller already took for this launch in the wake pacing, nil for every
 // launch that took none, which the gate decides by the rule RequestSpawn.Place states. Only the
@@ -3523,6 +3573,9 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bo
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, m.pluginRelaunch.waitsUnder(), again, err)
 	}
+	// The check passed, so a wait it answered before has ended, though the launch may wait its turn
+	// in the pacing or at the pause's gate before letGo runs (launchCheckWaiting).
+	m.launchCheckWaiting = false
 	return m.reserveWake(ctx, exempt, place, func(ctx context.Context) error {
 		return m.launchNow(ctx, charged, exempt, requested, cause)
 	}, again)
@@ -3555,8 +3608,8 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bo
 // ended is recorded before the first try's write moves the generation and clears the process's
 // activity report (letGo, recordEnd, the store's putClaim). The retries this launch arms — a
 // failed write's here, a session store's that could not answer (startWaitsForStore), a pod
-// round's (startWaitsForPodRound) — launch a claim that records no process any more, so they
-// pass noEnd.
+// round's (startWaitsForPodRound), a project release's that the runtime met
+// (startWaitsForRelease) — launch a claim that records no process any more, so they pass noEnd.
 //
 // Each try of a claim of an issue pod asks the pod's start gate right before it asks the runtime
 // for its process, so no role's process starts while another role of the pod starts or loads its
@@ -3714,6 +3767,9 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 		m.claim.LastStartFailure, m.claim.LastStartFailureAt = storetext.FarSideError(err.Error()), m.deps.Clock.Now()
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, l.charged, l.exempt)
+		}
+		if errors.Is(err, runtime.ErrProjectReleased) {
+			return m.startWaitsForRelease(starting, err, l.charged, l.exempt)
 		}
 		if errors.Is(err, runtime.ErrAwaitingPodRound) {
 			return m.startWaitsForPodRound(starting, err, l.charged, l.exempt, l.waiting)
@@ -3940,6 +3996,37 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 		return m.launchAfter(ctx, charged, exempt, false, nil, noEnd)
 	})
 	return errors.Join(err, m.persist(ctx))
+}
+
+// startWaitsForRelease is a start the runtime refused because the daemon's project release holds
+// every pod of the project (runtime.ErrProjectReleased): a launch that passed the launch check
+// before the release's mark was set — just before it, before a charged try's backoff (writeTry), or
+// before it waited at its issue pod's gate (askPod), whose grant starts it with no second check
+// (podStartDue) — and met the mark at the runtime instead. It is no fault of the claim's, so
+// nothing is charged, as for a store that could not answer. The process this launch let go is
+// stopped, as after every refused start, and the launch is tried again at the probe interval
+// (relaunchLater), where the launch check refuses it, uncharged again, for as long as the release
+// holds (relaunchRefused). The release stops the claim, or the daemon's next boot starts it.
+//
+// The refusal is the release's hold the launch check answers as a routine wait (internal/daemon's
+// errProjectReleased), met one step later, and nobody has to act on it either: this line is at
+// Info, and the decision answers the refusal marked routine (wait.Routine), which the machine's
+// own goroutines and the daemon's feeder of a worker's events log at Debug (DecisionErrorLevel,
+// internal/daemon's supervisor.decisionFailed). The mark changes nothing else: it unwraps to the
+// refusal, which stays no wait (wait.ErrWaiting) for every other reader, the outbox and the API
+// among them. A stop of the process or a write of the claim that failed as well is answered
+// beside the refusal unmarked, and so logged at Error.
+func (m *Machine) startWaitsForRelease(ctx context.Context, cause error, charged, exempt bool) error {
+	stopped := m.stopPrevious(ctx)
+	m.log.Info("supervise: the project release holds every pod of the project; this start charges nothing and waits",
+		"generation", m.claim.Generation, "retry", m.deps.Timeouts.Probe, "error", errors.Join(cause, stopped))
+	m.relaunchLater(m.deps.Timeouts.Probe, WakeLaunch, func(ctx context.Context) error {
+		return m.launchAfter(ctx, charged, exempt, false, nil, noEnd)
+	})
+	if failed := errors.Join(stopped, m.persist(ctx)); failed != nil {
+		return errors.Join(cause, failed)
+	}
+	return wait.Routine(cause)
 }
 
 // podRoundRetry is how long a start refused for want of its pod's update round waits before
@@ -4963,15 +5050,10 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 		m.log.Info("supervise: the claim retires holding its round's ask, which nothing of it will answer; the ask goes with the round",
 			"round", m.claim.UpdateRound, "delivery", m.claim.Pending.ID)
 	}
-	m.clearUpdate()
 	// A retired claim holds no message mark (the store's PutClaim clears it with this write):
 	// nothing waits for it, and its token's next run is another run's.
 	m.claim.MessageMarkAt = time.Time{}
-	if drops {
-		if err := m.retirePending(ctx); err != nil {
-			return err
-		}
-	} else if err := m.persist(ctx); err != nil {
+	if err := m.writeLeavingRound(ctx, drops); err != nil {
 		return err
 	}
 	// Every drop of a delivery answers the question a restart armed for it; a retired claim is
@@ -4979,9 +5061,22 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 	return m.answerAskFirstAfterDrop(ctx)
 }
 
+// writeLeavingRound takes the claim out of its update round and writes it, with the round's ask
+// in that same write when drops says the ask goes with the round (dropsUpdateTask): the tail of a
+// retirement (retire) and of the project release's stop (leaveRoundForRelease), each of which
+// says on its own line why the claim leaves the round.
+func (m *Machine) writeLeavingRound(ctx context.Context, drops bool) error {
+	m.clearUpdate()
+	if drops {
+		return m.retirePending(ctx)
+	}
+	return m.persist(ctx)
+}
+
 // letGo ends what the machine had with the claim's process: no timer watches it — the ladder's
 // wait after a provider error among them (providererror.go) — no relaunch waits on one
-// (relaunchLater), no wait for a pod's update round stands, nor the pod it was for
+// (relaunchLater), nor is a wait the launch check answered such a relaunch remembered
+// (launchCheckWaiting), no wait for a pod's update round stands, nor the pod it was for
 // (podRoundWaiting, awaitsPod: a suspension, a retirement or a failure of the waiting claim ends
 // that wait, and every launch, whatever raised it, keeps the pod through its own try, launchNow),
 // no wake of the pacing waits its turn (reserveWake), no launch waits at its issue pod's gate,
@@ -5043,7 +5138,7 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
-	m.relaunch, m.podRoundWaiting, m.awaitsPod = nil, false, nil
+	m.relaunch, m.launchCheckWaiting, m.podRoundWaiting, m.awaitsPod = nil, false, false, nil
 	m.wake = nil
 	if m.sendUnproven() {
 		m.takeBackConfirmation(m.claim.Pending)
@@ -5274,11 +5369,38 @@ func (m *Machine) nextTimer(kind TimerKind, deliveryID string) Timer {
 // fire hands the machine ev, a timer of its own firing, on the goroutine it fires on: the
 // clock's, for a timer the clock holds (arm), and the one the pod gate posts the grant of a launch
 // parked at its gate on (askPod, PodStarts.post). That goroutine holds no lock, so its decision
-// runs on a fresh context.
+// runs on a fresh context. The decision's error is logged at the level DecisionErrorLevel gives.
 func (m *Machine) fire(ev Timer) {
-	if err := m.Handle(m.worker(), ev); err != nil {
-		m.log.Error("supervise: timer", "timer", string(ev.Kind), "error", err)
+	ctx := m.worker()
+	if err := m.Handle(ctx, ev); err != nil {
+		m.log.Log(ctx, DecisionErrorLevel(err), timerLine, "timer", string(ev.Kind), "error", err)
 	}
+}
+
+// timerLine is the line fire writes for the error a timer's decision answered.
+const timerLine = "supervise: timer"
+
+// DecisionErrorLevel is the level a decision's error is logged at where it goes back to no caller:
+// by a goroutine the machine starts (fire, startSend) and by the daemon's feeder of a worker's
+// events (internal/daemon's supervisor.decisionFailed), held in one place because two packages
+// log by it. It is Debug for an error made of nothing but routine waits (wait.OnlyRoutine), which
+// nobody has to act on, and Error for every other. A decision's error joins the row's answer with
+// what settle and the row-move check met (handle), so a routine wait joined to a fault — a store
+// that did not answer, a row that moved outside its states — is logged at Error, as the fault
+// alone would be, where wait.IsRoutine, true wherever the mark is in the chain, would keep it at
+// Debug. The routine wait such a decision answers is the project release's hold of every start
+// until the daemon's next boot, met in the launch check (internal/daemon's errProjectReleased) by
+// a decision that holds the claim's process rather than let it go — the registration deadline
+// (registrationDeadline), which meets it again at each probe interval for as long as the release
+// holds, a prompt retirement (chargePrompt), the stale-plugin lane's relaunch (refreshPlugin,
+// relaunchStale), a parked launch's turn over a claim that records its process (runWake,
+// relaunchRefused) — or met at the runtime by a start that passed the check
+// (startWaitsForRelease).
+func DecisionErrorLevel(err error) slog.Level {
+	if wait.OnlyRoutine(err) {
+		return slog.LevelDebug
+	}
+	return slog.LevelError
 }
 
 // worker is the context a goroutine the machine starts runs its decision on: the machine's own,
@@ -5683,29 +5805,36 @@ func HoldsCapability(state ClaimState) bool {
 // HoldsRole is whether a claim the store records in state, suspended by by, holds its role: this
 // daemon supervises it (state is not ""), it has not failed or retired, and it is not suspended,
 // unless the suspension is the idle release's (Claim's Released), which a project pause's stop
-// makes too. A claim the outbox has not created yet has no state and holds none: a new child's
-// architect is such a claim until the outbox runs the start its child's first phase start queued,
-// and holds its role from that run on, queued or launching. A released claim keeps its session,
-// its phase and its task, and the next wake for its role resumes the same session, so what it
-// owns is still its own; any other suspension stops the agent until a rule or a resume starts it
-// again, and one the operator or the controller holds (SuspendSource.Holds) until that holder's
-// resume, or one that outranks it, lifts it. A claim launched again over the session it kept, a
-// released one's resume among them, holds its role through the launch, so the resume of a release
-// moves no holder.
+// makes too, or the project release's (Claim's ProjectReleased). A claim the outbox has not
+// created yet has no state and holds none: a new child's architect is such a claim until the
+// outbox runs the start its child's first phase start queued, and holds its role from that run
+// on, queued or launching. A released claim keeps its session, its phase and its task, and the
+// next wake for its role resumes the same session, so what it owns is still its own. A claim the
+// project release stopped keeps them too, as the release left them, and the daemon's next boot
+// starts it on that session (workflow's startReleaseStopped) rather than a wake: a delivery for it
+// waits for that start (internal/daemon's bootStartComing). The controller is the one claim that
+// boot may start on a fresh session (the controller keeper's rule, dispatch://INFRA-2045), and it
+// holds no issue's role in the set Dispatch reads (internal/store's holdsIssueRole). Any other
+// suspension stops the agent until a rule or a resume starts it again, and one the operator or the
+// controller holds (SuspendSource.Holds) until that holder's resume, or one that outranks it,
+// lifts it. A claim launched again over the session it kept, a released or a stopped one's start
+// among them, holds its role through the launch, so neither that start nor the stop before it
+// moves a holder.
 //
 // It is the one rule for whether a claim holds its role, which HoldsCapability (a running process)
 // is not: the owner walk reads it (record.ArchitectRuns, and the daemon's holdsRole over the
 // machine's live view), and so does the role-holder publication, both the claim write that queues
 // it (internal/store's roleHolder) and the set it sends (record.Postgres.RoleHolders). Were a
-// released architect to lose its role here, a notice for it would walk up to the architect above
-// it, which owns neither the issue nor the answer, and Dispatch would name no architect of its
-// issue until the next wake.
+// released or stopped architect to lose its role here, a notice for it would walk up to the
+// architect above it, which owns neither the issue nor the answer, and Dispatch would name no
+// architect of its issue until the next wake or boot.
 func HoldsRole(state ClaimState, by SuspendSource) bool {
 	switch state {
 	case "", StateFailed, StateRetired:
 		return false
 	case StateSuspended:
-		return Claim{State: state, SuspendedBy: by}.Released()
+		held := Claim{State: state, SuspendedBy: by}
+		return held.Released() || held.ProjectReleased()
 	}
 	return true
 }
@@ -5727,6 +5856,17 @@ func HoldsRole(state ClaimState, by SuspendSource) bool {
 // default) for a session that is given no task at all.
 func SaidReady(state ClaimState) bool {
 	return state == StateReady || state == StateWorking || state == StateIdle
+}
+
+// StartedWithoutTurn is whether a claim in state has been started and its session may not hold
+// its role yet: the claim is coming up (unready: queued, launch_uncertain, launching,
+// shim_connected or registered), or it stands ready or idle (prompted), which its agent reports
+// before its session takes the role at its first turn or at the first-turn bound (SaidReady). A
+// working claim's session holds its role, and a suspended, failed or retired claim is not started.
+// The daemon reads it of a claim the project release stopped, whose deliveries wait until its
+// session holds its role again (internal/daemon's releaseStoppedClaims).
+func StartedWithoutTurn(state ClaimState) bool {
+	return slices.Contains(unready, state) || slices.Contains(prompted, state)
 }
 
 func claimOf(ev Event) claim.Token {

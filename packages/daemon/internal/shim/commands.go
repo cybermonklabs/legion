@@ -16,16 +16,18 @@ import (
 // The commands the daemon asks this shim for: the working copy's adoption, answered in a
 // goroutine of its own (answer), the context every such command runs on, which the shim ends at
 // its own end and waits out before Run returns (endCommands, drainCommands), and the start of
-// every command that runs in the role's workspace (openWorkspace). The workspace read is a
-// command of this kind too and lives in workspace_work.go.
+// every command that runs in a workspace: openWorkspaceAt, and above it openWorkspace for the
+// requests that read their workspace from LEGION_WORKSPACE. The update round's workspace read and
+// the project release's read of unpushed work are commands of this kind too, each in a file of
+// its own (workspace_work.go, unpushed.go).
 
-// answer runs one frame's answer — the adoption, the workspace read — in a goroutine of its own,
-// so the connection's reader never waits on the git and jj it starts, and counts it so that Run
-// waits for it before it returns (drainCommands). Every one of them is dispatched from
-// fromDaemon, which the reader calls one frame at a time, so a command is counted before the
-// frame after it is read. Two counts are kept: commandRuns, which the drain waits on, and
-// commandsInFlight, which says whether there is anything to wait for at all. The second is
-// lowered first, so a count of 0 means every command has returned and nothing but the
+// answer runs one frame's answer — the adoption, the update round's workspace read, the project
+// release's read — in a goroutine of its own, so the connection's reader never waits on the git and
+// jj it starts, and counts it so that Run waits for it before it returns (drainCommands). Every one
+// of them is dispatched from fromDaemon, which the reader calls one frame at a time, so a command
+// is counted before the frame after it is read. Two counts are kept: commandRuns, which the drain
+// waits on, and commandsInFlight, which says whether there is anything to wait for at all. The
+// second is lowered first, so a count of 0 means every command has returned and nothing but the
 // goroutines' own last line is left.
 func (s *shim) answer(command func()) {
 	s.commandsInFlight.Add(1)
@@ -113,40 +115,52 @@ func (s *shim) drainCommands() {
 	}
 }
 
-// openedWorkspace is what one request of the daemon's runs its commands with in the workspace
-// its role works in (openWorkspace): the workspace, the jj of PATH, and run, which runs one
-// command there with the request's environment and within its budget, with stdin fed to it, and
-// answers its trimmed standard output (workspace.RunCommand).
+// openedWorkspace is what one request of the daemon's runs its commands with in a workspace
+// (openWorkspaceAt): the workspace, the jj of PATH, and run, which runs one command there with the
+// request's environment and within its budget, with stdin fed to it, and answers its trimmed
+// standard output (workspace.RunCommand).
 type openedWorkspace struct {
 	dir string
 	jj  string
 	run func(stdin []byte, args ...string) (string, error)
 }
 
-// openWorkspace is the one start of every request a shim answers in its role's workspace: the
-// read (readWorkspaceWork) and the adoption (runAdoption). The workspace is the one the shim's
-// environment names in LEGION_WORKSPACE, which the runtime sets on every role, and the jj is the
-// one of PATH, which the pane's or pod's own shell runs, since no runtime pins it on a pane or a
-// pod. env is the environment the request's commands run with: the shim's own (s.cfg.Env) for the
-// read, and for the adoption that environment with the requested identity added (JJ_USER,
-// JJ_EMAIL). The budget is a bound on the shim's command context (s.commands) rather than a
-// context of its own, so the shim's own end ends the request's commands at once and a command that
-// outlives the budget is still reported as a timeout. The caller calls done once its commands have
-// run. verb is what the caller does to the workspace ("read", "adopt"), which both refusals name:
-// "no workspace to <verb>" for a shim with no LEGION_WORKSPACE, and "no jj to <verb> the
-// workspace with" for a PATH with no jj.
+// openWorkspace is the start of the requests a shim answers in the workspace its role works in, the
+// one the shim's environment names in LEGION_WORKSPACE, which the runtime sets on every role: the
+// update round's workspace read (readWorkspaceWork) and the adoption (runAdoption). It refuses a
+// shim with no LEGION_WORKSPACE with "no workspace to <verb>", and opens the workspace on the
+// shim's command context (s.commands) with openWorkspaceAt, so the shim's own end ends the
+// request's commands at once. env is the environment the request's commands run with: the shim's
+// own (s.cfg.Env) for the read, and for the adoption that environment with the requested identity
+// added (JJ_USER, JJ_EMAIL). verb is what the caller does to the workspace ("read", "adopt"). The
+// commands start through the shim's guard (s.children.Starter), so the shim's reaper leaves their
+// exits to them. The project release's read of unpushed work (readUnpushed) does not go through
+// it: it refuses a shim with no LEGION_WORKSPACE in words of its own, and opens the workspace with
+// openWorkspaceAt through ReadUnpushed, which a test's stand-in agent runs on a workspace of its
+// own.
 func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (opened openedWorkspace, done context.CancelFunc, err error) {
 	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
 	if dir == "" {
 		return openedWorkspace{}, nil, fmt.Errorf("worker-shim: LEGION_WORKSPACE is not set; no workspace to %s", verb)
 	}
+	start := s.children.Starter()
+	return openWorkspaceAt(s.commands, start, dir, verb, env, budget)
+}
+
+// openWorkspaceAt opens the workspace at dir for one request's commands: with the jj of PATH,
+// which the pane's or pod's own shell runs, since no runtime pins it on a pane or a pod, the
+// environment env, each command started by start (a shim's guard, procgroup.NoReaper outside a
+// shim), and the budget as a bound on ctx rather than a context of its own, so the end of ctx ends
+// the request's commands at once and a command that outlives the budget is still reported as a
+// timeout. The caller calls done once its commands have run. A PATH with no jj is refused with "no
+// jj to <verb> the workspace with", verb being what the caller does to the workspace.
+func openWorkspaceAt(ctx context.Context, start procgroup.Starter, dir, verb string, env []string, budget time.Duration) (opened openedWorkspace, done context.CancelFunc, err error) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
 		return openedWorkspace{}, nil, fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to %s the workspace with", os.Getenv("PATH"), verb)
 	}
-	ctx, cancel := context.WithTimeout(s.commands, budget)
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	started := time.Now()
-	start := s.children.Starter()
 	run := func(stdin []byte, args ...string) (string, error) {
 		return workspace.RunCommand(ctx, start, budget, started, env, dir, stdin, args)
 	}

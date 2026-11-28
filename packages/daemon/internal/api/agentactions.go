@@ -158,13 +158,14 @@ func (s *server) suspendAgent(w http.ResponseWriter, r *http.Request) {
 // resumeAgent is the agent door's `legion claims resume` (resumeEvent): the suspended agent starts
 // again in the session its claim records. The controller's resume_agent lifts every suspension
 // but the operator's own, which only the operator lifts (agentDoor, supervise.RequestResume.By,
-// supervise.Claim.HeldAgainst). While the project is paused its event builder refuses it
-// PROJECT_PAUSED, before the event is posted, and nothing of the claim changes
+// supervise.Claim.HeldAgainst). While a project release holds every start its event builder
+// refuses it PROJECT_RELEASED (releaseRefused), and while the project is paused PROJECT_PAUSED,
+// the release's refusal asked first, before the event is posted, and nothing of the claim changes
 // (refusedWhilePaused), as the operator's resume is (resumeEvent): an agent the pause stopped is
 // the pause's to bring back at the project's resume, and no agent action undoes the pause.
 func (s *server) resumeAgent(w http.ResponseWriter, r *http.Request) {
 	s.agentEventAction(w, r, resumeOp, func(w http.ResponseWriter, r *http.Request, target claimTarget) (supervise.Event, bool) {
-		if s.refusedWhilePaused(w, r, "resume", target.machine.View().Claim) {
+		if s.releaseRefused(w, r, "resume") || s.refusedWhilePaused(w, r, "resume", target.machine.View().Claim) {
 			return nil, false
 		}
 		return supervise.RequestResume{Claim: target.token, By: target.by}, true
@@ -180,15 +181,16 @@ func (s *server) resumeAgent(w http.ResponseWriter, r *http.Request) {
 // or held for its turn, is refused by the door before anything is asked, as every action of the
 // door but the compaction is (agentDoor). A claim stored working is refused as a claim in a turn
 // (refuseClaimInATurn); every other refusal is the effect's own, in the words the operator's door
-// gives it. While the project is paused it is refused PROJECT_PAUSED before the read of the
-// claim's state, and nothing of the claim changes (refusedWhilePaused), as the operator's retry
-// is.
+// gives it. While a project release holds every start it is refused PROJECT_RELEASED
+// (releaseRefused), and while the project is paused PROJECT_PAUSED, the release's refusal asked
+// first, both before the read of the claim's state, and nothing of the claim changes
+// (refusedWhilePaused), as the operator's retry is.
 func (s *server) retryAgent(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.agentDoor(w, r, retryOp)
 	if !ok {
 		return
 	}
-	if s.refusedWhilePaused(w, r, "retry", target.machine.View().Claim) {
+	if s.releaseRefused(w, r, "retry") || s.refusedWhilePaused(w, r, "retry", target.machine.View().Claim) {
 		return
 	}
 	if target.machine.View().State == supervise.StateWorking {

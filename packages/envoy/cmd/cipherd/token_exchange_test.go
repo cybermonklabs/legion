@@ -808,17 +808,21 @@ func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
 
 // TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount is the live proof of a job entry, on
 // the real binary and a fresh schema: a pod of the account BROKER_EXCHANGE_JOB_ACCOUNTS lists for
-// public,PRIVA with a session of its own presents its projected token with a DPoP proof of its own
-// key and no client credential, naming no session and no project, and is answered a token the
-// listed API account reads back as exactly the job's: its account as the service, the project
-// scope public, the one private project its entry lists, the session the entry fixes, this
-// test's own key, and no person and no OAuth scope. Nothing was registered for the pod, since the
-// entry fixes the session.
+// public,PRIVA with a session of its own, the entry naming the cluster's issuer in its issuer
+// field after that session, presents its projected token with a DPoP proof of its own key and no
+// client credential, naming no session and no project, and is answered a token the listed API
+// account reads back as exactly the job's: its account as the service, the project scope public,
+// the one private project its entry lists, the session the entry fixes, this test's own key, and
+// no person and no OAuth scope. Nothing was registered for the pod, since the entry fixes the
+// session.
 func TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount(t *testing.T) {
 	const (
 		jobAccount = "system:serviceaccount:example-ns:example-sweeper"
 		jobSession = "example-sweeper"
 		jobPodUID  = "pod-uid-sweeper"
+		// jobIssuer is the cluster's issuer's name in BROKER_K8S_OIDC_ISSUER, which the job
+		// entry names.
+		jobIssuer = "cluster"
 	)
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
@@ -831,7 +835,8 @@ func TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount(t *testing.T) {
 	}
 	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
 	broker := startBroker(t, brokerOptions{Env: append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
-		"BROKER_EXCHANGE_JOB_ACCOUNTS="+jobAccount+"=public,PRIVA="+jobSession)})
+		"BROKER_K8S_OIDC_ISSUER="+jobIssuer+"="+cluster.URL(),
+		"BROKER_EXCHANGE_JOB_ACCOUNTS="+jobAccount+"=public,PRIVA="+jobSession+"="+jobIssuer)})
 	broker.Await(t, "token exchange")
 	live := newLiveBroker(broker.Addr, key)
 	var token string

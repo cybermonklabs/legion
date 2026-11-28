@@ -68,8 +68,9 @@ func TestTheStartRefusesTheHoldReadWithoutItsOperator(t *testing.T) {
 		operator = "operator/-/*=system:serviceaccount:envoy-operator:envoy-operator"
 	)
 	key := []ed25519.PublicKey{make(ed25519.PublicKey, ed25519.PublicKeySize)}
+	// No BROKER_K8S_OIDC_ISSUER: an entry that names no issuer is read as no issuer's.
 	parse := func(raw string) []config.NATSService {
-		services, err := config.ParseNATSServices(raw)
+		services, err := config.ParseNATSServices(raw, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

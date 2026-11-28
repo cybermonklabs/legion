@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"crypto"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,16 @@ import (
 // without a verifiable ID token). A caller answers it as a service that is down, and ends nothing
 // on it.
 var ErrIssuerUnavailable = errors.New("oidc: the issuer cannot be reached")
+
+// IssuerUnavailableCode and IssuerUnavailableMessage are the error code and the sentence of the
+// answer, 503, to a service-account token whose issuer could not be asked (ErrIssuerUnavailable).
+// The broker's routes, its token exchange and Dispatch's API all answer that token with this
+// pair, and a client compares the code. A sign-in whose issuer could not be asked is answered in
+// the sign-in's own words, not these.
+const (
+	IssuerUnavailableCode    = "OIDC_ISSUER_UNAVAILABLE"
+	IssuerUnavailableMessage = "the service-account token issuer cannot be reached; try again in a minute"
+)
 
 // ErrGrantRefused means the issuer's token endpoint refused a refresh token (RFC 6749 section
 // 5.2, invalid_grant): it has expired, been revoked, or is not the client's. The sign-in it renews
@@ -162,27 +173,64 @@ func (d *discovery[T]) logFailure(err error) {
 
 // LazyVerifier is a Verifier whose issuer is discovered when first needed (see CodeFlow's
 // discovery), for a server that must start and serve its other callers while that issuer is
-// down. Until the discovery document has been read, Verify fails with ErrIssuerUnavailable.
+// down. Until the discovery document has been read, Verify and Key fail with
+// ErrIssuerUnavailable.
 type LazyVerifier struct {
 	discovery *discovery[*Verifier]
 }
 
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
-// discovery document is read by Discover, by Run, or by the first Verify.
+// discovery document is read by Discover, by Run, or by the first Verify or Key.
 func NewLazyVerifier(issuer, audience string) *LazyVerifier {
+	return newLazyVerifier(issuer, []string{audience}, DefaultKeysFailureSpacing)
+}
+
+// newLazyVerifier is NewLazyVerifier for tokens issuer issues to any of audiences, which holds
+// one or more (newWithKeys), with failureSpacing as its key set's FailureSpacing, for an
+// IssuerSet whose caller chooses the spacing and the audiences (NewIssuerSet, NewIssuerSetFor).
+func newLazyVerifier(issuer string, audiences []string, failureSpacing time.Duration) *LazyVerifier {
 	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
-		return New(ctx, issuer, audience)
+		keys, err := NewKeys(ctx, issuer)
+		if err != nil {
+			return nil, err
+		}
+		keys.FailureSpacing = failureSpacing
+		return newWithKeys(issuer, audiences, keys), nil
 	})}
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not
 // and an attempt is due; before that every error matches ErrIssuerUnavailable.
 func (v *LazyVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
+	return v.VerifyClaims(ctx, raw)
+}
+
+// VerifyClaims is Verifier.VerifyClaims once the issuer is discovered, as Verify is Verifier.Verify:
+// it also unmarshals the payload the signature covers into each of into.
+func (v *LazyVerifier) VerifyClaims(ctx context.Context, raw string, into ...any) (Claims, error) {
 	verifier, err := v.discovery.discover(ctx)
 	if err != nil {
 		return Claims{}, err
 	}
-	return verifier.Verify(ctx, raw)
+	return verifier.VerifyClaims(ctx, raw, into...)
+}
+
+// Key is Keys.Key on the key set Verify reads, once the issuer is discovered, discovering it
+// first when it is not and an attempt is due: the key a token naming kid and signed with alg is
+// checked against, for a caller that needs the key itself, as the RFC 8693 token exchange does.
+// Its error matches ErrIssuerUnavailable while the discovery document has not been read, and
+// where Keys.Key answers ErrKeySet, since a key set that cannot be read decides nothing about the
+// token, as Verify classifies the same error. Every other error is Keys.Key's.
+func (v *LazyVerifier) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error) {
+	verifier, err := v.discovery.discover(ctx)
+	if err != nil {
+		return nil, err
+	}
+	key, err := verifier.keys.Key(ctx, kid, alg)
+	if errors.Is(err, ErrKeySet) {
+		return nil, fmt.Errorf("%w: %w", ErrIssuerUnavailable, err)
+	}
+	return key, err
 }
 
 // VerifyGoogleIdentity is Verifier.VerifyGoogleIdentity once the issuer is discovered, discovering
@@ -203,10 +251,12 @@ func (v *LazyVerifier) VerifyGoogleIdentity(ctx context.Context, raw string) (Cl
 // caller: no claim anyone is admitted on comes from it. It reads nothing the discovery document
 // holds, so it answers the same before the issuer is discovered as after: a caller picks the
 // verifier a token is for while that issuer is down, and the token is then answered as one that
-// verifier could not check.
+// verifier could not check. raw is read with every space removed (UnverifiedIssuer), as Verify
+// reads it, so a token with a trailing line feed or a space inside a segment picks the verifier
+// its compact form picks.
 func (v *LazyVerifier) Issues(raw string) bool {
-	claims, err := decodeUnverifiedClaims(raw)
-	return err == nil && issuerNamed(v.discovery.issuer, claims.Issuer)
+	iss, err := UnverifiedIssuer(raw)
+	return err == nil && issuerNamed(v.discovery.issuer, iss)
 }
 
 // DiscoveredVerifier is a LazyVerifier whose issuer is discovered already, verifying with v: for a

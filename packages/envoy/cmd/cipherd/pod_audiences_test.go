@@ -48,11 +48,11 @@ const (
 // listedPodAudiences is what podAudienceList lists, in its order.
 var listedPodAudiences = []string{podAudienceNew, podAudienceOld}
 
-// clusterToken is account's projected token of audience, signed by cluster with key and bound to
+// audienceToken is account's projected token of audience, signed by cluster with key and bound to
 // the pod uid, or to no pod where uid is empty, as mintPodToken's is. It is issued five seconds
 // ago, as accountToken's is, so the routes that refuse a token living longer than an hour from
 // its issue take it; an expired one was issued twenty minutes ago and expired ten minutes ago.
-func clusterToken(t *testing.T, cluster *oidctest.Issuer, key *oidctest.Key, account, audience, uid string, expired bool) string {
+func audienceToken(t *testing.T, cluster *oidctest.Issuer, key *oidctest.Key, account, audience, uid string, expired bool) string {
 	t.Helper()
 	claims := cluster.Claims(account, audience)
 	claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
@@ -222,13 +222,13 @@ func TestEveryPodTokenReaderTakesEachListedAudience(t *testing.T) {
 	}
 	tokenOf := func(t *testing.T, account string, kind podTokenKind, uid string) string {
 		t.Helper()
-		return clusterToken(t, rig.cluster, rig.key, account, kind.audience, uid, kind.expired)
+		return audienceToken(t, rig.cluster, rig.key, account, kind.audience, uid, kind.expired)
 	}
 	// The registrar's own sound token of the first listed audience, which M4 holds the
 	// registration route to take, so an M5 row is about the pod's token alone.
 	registrarToken := func(t *testing.T) string {
 		t.Helper()
-		return clusterToken(t, rig.cluster, rig.key, registrarAccount, podAudienceNew, "", false)
+		return audienceToken(t, rig.cluster, rig.key, registrarAccount, podAudienceNew, "", false)
 	}
 
 	// launcher is the daemon's launcher credential as M1's latest token login left it: a login
@@ -308,7 +308,7 @@ func TestEveryPodTokenReaderTakesEachListedAudience(t *testing.T) {
 		name: "M4 the registrar's own token",
 		take: func(t *testing.T, kind podTokenKind) {
 			bearer, session := tokenOf(t, registrarAccount, kind, ""), next("example-session-")
-			podToken := clusterToken(t, rig.cluster, rig.key, podAccount, listRegistrationAudience, next("example-pod-uid-"), false)
+			podToken := audienceToken(t, rig.cluster, rig.key, podAccount, listRegistrationAudience, next("example-pod-uid-"), false)
 			if status, body := live.registerPodSession(t, podToken, session, bearer); status != http.StatusOK || body["session"] != session {
 				t.Fatalf("the registration by the registrar's token of %s = %d %v, want 200 naming %s", kind.audience, status, body, session)
 			}
@@ -318,7 +318,7 @@ func TestEveryPodTokenReaderTakesEachListedAudience(t *testing.T) {
 		},
 		refuse: func(t *testing.T, kind podTokenKind) readerRefusal {
 			bearer, session := tokenOf(t, registrarAccount, kind, ""), next("example-session-")
-			podToken := clusterToken(t, rig.cluster, rig.key, podAccount, listRegistrationAudience, next("example-pod-uid-"), false)
+			podToken := audienceToken(t, rig.cluster, rig.key, podAccount, listRegistrationAudience, next("example-pod-uid-"), false)
 			registered := refusalFromJSON(live.registerPodSession(t, podToken, session, bearer))
 			released := refusalFromJSON(live.postJSON(t, releasePath, map[string]any{"sessions": []string{session}}, bearer))
 			if released.status != registered.status || released.code != registered.code {
@@ -435,13 +435,13 @@ func TestEveryPodTokenReaderTakesEachListedAudience(t *testing.T) {
 	// The pod UID is checked as before.
 	row(m1, "a token of the second listed audience bound to no pod", func(t *testing.T) {
 		got := enrolRefused(t, func(account, _ string) string {
-			return clusterToken(t, rig.cluster, rig.key, account, podAudienceOld, "", false)
+			return audienceToken(t, rig.cluster, rig.key, account, podAudienceOld, "", false)
 		})
 		requireRefusal(t, "an enrolment with a pod token bound to no pod answered", got, podMismatch)
 	})
 	row(m2, "the token of the second listed audience of another pod of the same account", func(t *testing.T) {
 		p := enrolledWith(t, podAudienceOld)
-		got := refusalFromBody(renew(t, p, clusterToken(t, rig.cluster, rig.key, podAccount, podAudienceOld, next("example-pod-uid-"), false)))
+		got := refusalFromBody(renew(t, p, audienceToken(t, rig.cluster, rig.key, podAccount, podAudienceOld, next("example-pod-uid-"), false)))
 		requireRefusal(t, "a renewal with another pod's token answered", got, podMismatch)
 	})
 	for _, member := range members {
@@ -459,10 +459,10 @@ func TestEveryPodTokenReaderTakesEachListedAudience(t *testing.T) {
 			"BROKER_MEMORY_SECRETS_FILE=" + emptyMemoryFile(t),
 		}})
 		requireRefusal(t, "a broker with neither setting answered the daemon's token login",
-			refusalFromBody(tokenLoginAt(t, off.Addr, clusterToken(t, rig.cluster, rig.key, registrarAccount, podAudienceNew, "", false))),
+			refusalFromBody(tokenLoginAt(t, off.Addr, audienceToken(t, rig.cluster, rig.key, registrarAccount, podAudienceNew, "", false))),
 			readerWant{status: http.StatusNotFound, code: "TOKEN_LOGIN_OFF"})
 		requireRefusal(t, "a broker with neither setting answered Dispatch's GET /v1/pending",
-			refusalFromJSON(newPlainBroker(off.Addr).callAs(t, http.MethodGet, pendingPath, clusterToken(t, rig.cluster, rig.key, apiAccount, podAudienceNew, "", false), "", "")),
+			refusalFromJSON(newPlainBroker(off.Addr).callAs(t, http.MethodGet, pendingPath, audienceToken(t, rig.cluster, rig.key, apiAccount, podAudienceNew, "", false), "", "")),
 			readerWant{status: http.StatusUnauthorized, code: "ACCOUNT_TOKENS_OFF"})
 	})
 }
@@ -520,12 +520,12 @@ func TestTheBrokerBinaryRefusesAPodAudienceListAtStart(t *testing.T) {
 
 // TestTheBrokerBuildsOnePodVerifierForTheListAndKeepsTheNATSAudienceApart: with
 // BROKER_K8S_OIDC_AUDIENCE listing two audiences and the NATS auth service on, the boot reads the
-// cluster issuer's key set once, through the broker's own issuerKeys, and builds every verifier of
-// the cluster's tokens on that one set (found.K8sKeys), which the issuer then serves once for all
-// of them: the pod verifier takes a token of each listed audience and refuses one of the NATS
-// audience, and the NATS auth service's verifier (natsCalloutBoot's PlatformTokens), which
-// holdRoutes hands the NATS writer hold as its operator's token check, refuses a token of each
-// listed audience and takes one of its own. With neither BROKER_K8S_OIDC_ISSUER nor
+// cluster issuer once, through the clusters' issuer set (found.Clusters) and not through keysFor,
+// and builds every verifier of the cluster's tokens on that one set, which the issuer then serves
+// once for all of them: the pod verifier takes a token of each listed audience and refuses one of
+// the NATS audience, and the NATS auth service's verifier (natsCalloutBoot's PlatformTokens),
+// which holdRoutes hands the NATS writer hold as its operator's token check, refuses a token of
+// each listed audience and takes one of its own. With neither BROKER_K8S_OIDC_ISSUER nor
 // BROKER_K8S_OIDC_AUDIENCE the boot reads no key set and builds no pod verifier.
 func TestTheBrokerBuildsOnePodVerifierForTheListAndKeepsTheNATSAudienceApart(t *testing.T) {
 	const operatorAccount = "system:serviceaccount:envoy-operator:envoy-operator"
@@ -549,18 +549,15 @@ func TestTheBrokerBuildsOnePodVerifierForTheListAndKeepsTheNATSAudienceApart(t *
 		return cfg
 	}
 	// readKeys is issuerKeys, the broker's own read of an issuer's key set, recording each issuer
-	// it is asked for and the set it answered.
+	// it is asked for.
 	var asked []string
-	var read *oidc.Keys
 	readKeys := func(ctx context.Context, issuer string) (*oidc.Keys, error) {
 		asked = append(asked, issuer)
-		keys, err := issuerKeys(ctx, issuer)
-		read = keys
-		return keys, err
+		return issuerKeys(ctx, issuer)
 	}
 
 	t.Run("two listed audiences beside the NATS auth service", func(t *testing.T) {
-		asked, read = nil, nil
+		asked = nil
 		cfg := load(t, []string{"BROKER_K8S_OIDC_ISSUER=" + cluster.URL(), "BROKER_K8S_OIDC_AUDIENCE=" + podAudienceList}, nats)
 		found, err := discoverVerifiers(t.Context(), cfg, readKeys)
 		if err != nil {
@@ -570,8 +567,8 @@ func TestTheBrokerBuildsOnePodVerifierForTheListAndKeepsTheNATSAudienceApart(t *
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Equal(asked, []string{cluster.URL()}) || found.K8sKeys == nil || found.K8sKeys != read {
-			t.Fatalf("the boot read the key sets of %v and holds %p as the cluster's, want the cluster's issuer read once and the set it answered, %p", asked, found.K8sKeys, read)
+		if len(asked) != 0 || found.Clusters.set == nil {
+			t.Fatalf("the boot read the key sets of %v through keysFor and holds the clusters' issuer set %p, want no key set read there and that one set, which every verifier of the cluster's tokens reads", asked, found.Clusters.set)
 		}
 		if found.Pod == nil || tokens.K8s == nil {
 			t.Fatalf("the boot built pod verifier %#v and NATS verifier %#v, want both", found.Pod, tokens.K8s)
@@ -581,41 +578,41 @@ func TestTheBrokerBuildsOnePodVerifierForTheListAndKeepsTheNATSAudienceApart(t *
 			t.Fatalf("the NATS writer hold was handed the operator %q and a token check %v, want %s with the NATS auth service's", hold.OperatorAccount, hold.OperatorToken != nil, operatorAccount)
 		}
 		mint := func(audience string) string {
-			return clusterToken(t, cluster, key, operatorAccount, audience, "", false)
+			return audienceToken(t, cluster, key, operatorAccount, audience, "", false)
 		}
 		for _, audience := range listedPodAudiences {
 			if claims, err := found.Pod.VerifyAccount(t.Context(), mint(audience)); err != nil || claims.Subject != operatorAccount {
 				t.Errorf("the pod verifier answered a token of the listed audience %s %+v, %v; want %s's claims", audience, claims, err, operatorAccount)
 			}
-			if _, _, _, _, err := tokens.Verify(t.Context(), mint(audience)); !errors.Is(err, oidc.ErrAudience) {
+			if _, err := tokens.Verify(t.Context(), mint(audience)); !errors.Is(err, oidc.ErrAudience) {
 				t.Errorf("the NATS auth service's verifier answered a token of the listed audience %s %v, want oidc.ErrAudience", audience, err)
 			}
-			if _, _, _, _, err := hold.OperatorToken(t.Context(), mint(audience)); !errors.Is(err, oidc.ErrAudience) {
+			if _, err := hold.OperatorToken(t.Context(), mint(audience)); !errors.Is(err, oidc.ErrAudience) {
 				t.Errorf("the NATS writer hold's token check answered a token of the listed audience %s %v, want oidc.ErrAudience", audience, err)
 			}
 		}
 		if _, err := found.Pod.VerifyAccount(t.Context(), mint(natsAudience)); !errors.Is(err, oidc.ErrAudience) {
 			t.Errorf("the pod verifier answered a token of the NATS audience %s %v, want oidc.ErrAudience", natsAudience, err)
 		}
-		if account, _, _, _, err := tokens.Verify(t.Context(), mint(natsAudience)); err != nil || account != operatorAccount {
-			t.Errorf("the NATS auth service's verifier answered a token of its own audience %q, %v; want %s", account, err, operatorAccount)
+		if identity, err := tokens.Verify(t.Context(), mint(natsAudience)); err != nil || identity.Account != operatorAccount {
+			t.Errorf("the NATS auth service's verifier answered a token of its own audience %q, %v; want %s", identity.Account, err, operatorAccount)
 		}
-		if account, _, _, _, err := hold.OperatorToken(t.Context(), mint(natsAudience)); err != nil || account != operatorAccount {
-			t.Errorf("the NATS writer hold's token check answered a token of the NATS audience %q, %v; want %s", account, err, operatorAccount)
+		if identity, err := hold.OperatorToken(t.Context(), mint(natsAudience)); err != nil || identity.Account != operatorAccount {
+			t.Errorf("the NATS writer hold's token check answered a token of the NATS audience %q, %v; want %s", identity.Account, err, operatorAccount)
 		}
 		if discovery, sets := cluster.DiscoveryRequests(), cluster.JWKSFetches(); discovery != 1 || sets != 1 {
-			t.Errorf("the issuer served %d discovery documents and %d key sets, want one of each: every verifier reads the one key set the boot read", discovery, sets)
+			t.Errorf("the issuer served %d discovery documents and %d key sets, want one of each: every verifier reads the one issuer set the boot read", discovery, sets)
 		}
 	})
 
 	t.Run("neither setting", func(t *testing.T) {
-		asked, read = nil, nil
+		asked = nil
 		found, err := discoverVerifiers(t.Context(), load(t), readKeys)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if found.Pod != nil || found.K8sKeys != nil || len(asked) != 0 {
-			t.Fatalf("with neither setting the boot read the key sets of %v and built pod verifier %#v on %p, want none", asked, found.Pod, found.K8sKeys)
+		if found.Pod != nil || found.Clusters.set != nil || len(asked) != 0 {
+			t.Fatalf("with neither setting the boot read the key sets of %v and built pod verifier %#v on the issuer set %p, want none", asked, found.Pod, found.Clusters.set)
 		}
 	})
 }

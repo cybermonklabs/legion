@@ -85,8 +85,9 @@ type PodResume struct {
 // which would otherwise be 1,440 rows a day saying the same thing.
 //
 // A streak ends when the pod is released (RecordPodRelease), when the rule reads another reason
-// for that pod, and when a pass of the rule holds it for no reason worth a row
-// (EndPodHoldStreaks): the next pass of that reason then opens a streak of its own, with its own
+// for that pod, when a pass of the rule holds it for no reason worth a row (EndPodHoldStreaks), and
+// when a project release deletes the pod (internal/daemon's stopAndDelete, through
+// EndPodHoldStreaks): the next pass of that reason then opens a streak of its own, with its own
 // FirstAt and Passes. That is what makes the rows of a window the holds of that window, rather
 // than one row per pod and reason carrying every hold there has ever been.
 type PodHold struct {
@@ -669,7 +670,8 @@ func RecordPodHoldTx(ctx context.Context, tx pgx.Tx, hold PodHold) error {
 // idle rule that held the pod for no reason worth a row — it was released, it is not idle yet,
 // or it has no pod at all — after which the next pass that does read a reason opens a streak of
 // its own. A pass that reads a reason records it instead (RecordPodHold), which ends the
-// streaks of every other reason in the same transaction.
+// streaks of every other reason in the same transaction. The project release calls it too, for each
+// pod it deletes (internal/daemon's stopAndDelete).
 func (s *Store) EndPodHoldStreaks(ctx context.Context, project, issue string) error {
 	if project == "" || issue == "" {
 		return errors.New("ending a pod's hold streaks needs its project and issue")

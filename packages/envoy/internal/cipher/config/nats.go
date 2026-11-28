@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/natsurl"
 )
 
@@ -68,17 +69,18 @@ func ParseNATSAccount(raw string) (string, error) {
 }
 
 // loadNATSCallout reads the NATS auth service's settings (Config.NATS). BROKER_NATS_SERVICES is
-// parsed first (ParseNATSServices), so an entry of no form is refused for its form before any rule
+// parsed first (ParseNATSServices, its entries' issuer names read against k8sIssuers, the issuers
+// BROKER_K8S_OIDC_ISSUER names), so an entry of no form is refused for its form before any rule
 // here reads its kind or its account, and BROKER_NATS_ACCOUNT next (ParseNATSAccount). None set is
 // no service; BROKER_NATS_SERVICES alone is no service either, when every entry of it is an edge
 // listener's, which the broker reads for GET /v1/project-repositories whether or not it answers a
 // hub; any other set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its
-// own kind; BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying
-// user info, an "@" after its host, a query or a fragment, or one that is no URL, is refused by its
-// place in the list (hubURLRefusal). A refusal carries no seed, no hub URL and no value of
-// BROKER_NATS_ACCOUNT; one of BROKER_NATS_SERVICES quotes its entry (ParseNATSServices).
-func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout, error) {
-	services, err := ParseNATSServices(getenv(NATSServicesVariable))
+// own kind; BROKER_NATS_K8S_AUDIENCE needs k8sIssuers. A hub URL carrying user info, an "@" after
+// its host, a query or a fragment, or one that is no URL, is refused by its place in the list
+// (hubURLRefusal). A refusal carries no seed, no hub URL and no value of BROKER_NATS_ACCOUNT; one of
+// BROKER_NATS_SERVICES quotes its entry (ParseNATSServices).
+func loadNATSCallout(getenv func(string) string, k8sIssuers []oidc.NamedIssuer) (NATSCallout, error) {
+	services, err := ParseNATSServices(getenv(NATSServicesVariable), k8sIssuers)
 	if err != nil {
 		return NATSCallout{}, err
 	}
@@ -133,7 +135,7 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 			return NATSCallout{}, err
 		}
 	}
-	if settings.K8sAudience != "" && k8sIssuer == "" {
+	if settings.K8sAudience != "" && len(k8sIssuers) == 0 {
 		return NATSCallout{}, errors.New("BROKER_NATS_K8S_AUDIENCE needs BROKER_K8S_OIDC_ISSUER, whose projected tokens a service presents to the NATS auth service")
 	}
 	return settings, nil
@@ -166,7 +168,8 @@ func loadNATSHold(getenv func(string) string, settings *NATSCallout) error {
 
 // edgeListenerEntries is the first edge-listener entry of Services that names a Kubernetes
 // account and the first that names a Google one, each "" when there is none: the callers of the
-// broker's API whose identity tokens need the cluster's issuer and Google's audience.
+// broker's API whose identity tokens need an issuer of BROKER_K8S_OIDC_ISSUER and Google's
+// audience.
 func (n NATSCallout) edgeListenerEntries() (kubernetes, google string) {
 	for _, entry := range n.Services {
 		switch {

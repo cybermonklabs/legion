@@ -38,14 +38,14 @@ func TestTheServiceAnswersInsideTheGoClientsConnectDeadline(t *testing.T) {
 	// blockingFor is a ServiceToken that takes wait, as a verifier waiting on a key set would,
 	// and answers a live token of the listed account after it.
 	blockingFor := func(wait time.Duration) Deps {
-		return Deps{ServiceToken: func(ctx context.Context, _ string) (string, bool, time.Time, time.Time, error) {
+		return Deps{ServiceToken: func(ctx context.Context, _ string) (ServiceIdentity, error) {
 			select {
 			case <-ctx.Done():
-				return "", false, time.Time{}, time.Time{}, ctx.Err()
+				return ServiceIdentity{}, ctx.Err()
 			case <-time.After(wait):
 			}
 			now := time.Now()
-			return account, false, now, now.Add(time.Hour), nil
+			return ServiceIdentity{Account: account, Issued: now, Expiry: now.Add(time.Hour)}, nil
 		}}
 	}
 	// connectService connects as that daemon, as a service with a platform token does, and

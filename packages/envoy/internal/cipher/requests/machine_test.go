@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/secretstoretest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -45,6 +46,11 @@ const (
 	// service account its pods run as.
 	fixtureService = "example-service"
 	fixtureSubject = "system:serviceaccount:example:example-sa"
+	// fixtureIssuer is the URL of the fixture's one cluster issuer, BROKER_K8S_OIDC_ISSUER written
+	// as a bare URL, so the issuer has the empty name and every exchange entry of these tests names
+	// it by that name, as config.Load fills an entry that names none. Every pod enrollment
+	// insertEnrollment writes records no issuer, which reads as this first one.
+	fixtureIssuer = "https://kubernetes.example/issuer"
 )
 
 // fixtureSecrets are the fixture's namespace secrets: DEEL_API_KEY, the operator's and human-tier,
@@ -139,9 +145,10 @@ func insertEnrollment(t testing.TB, st *store.Store, kind, runtimeID string, ope
 }
 
 // newFixture opens a store on a fresh schema, loads the policy of fixtureSecrets with
-// fixtureService registered, its pods running as fixtureSubject, and enrolls one live box session
-// the operator runs. Returns the Machine, that enrollment's id, its own signing key (for
-// record.Sign), and the login DEEL_API_KEY's records name as approver (its owner, the operator).
+// fixtureService registered, its pods running as fixtureSubject, trusts one cluster issuer
+// (fixtureIssuer), and enrolls one live box session the operator runs. Returns the Machine, that
+// enrollment's id, its own signing key (for record.Sign), and the login DEEL_API_KEY's records
+// name as approver (its owner, the operator).
 func newFixture(t testing.TB) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
 	t.Helper()
 	return newAppFixture(t)
@@ -166,6 +173,7 @@ func newAppFixture(t testing.TB, apps ...string) (m *Machine, enrollmentID strin
 		Skew:              time.Minute,
 		Replay:            replayer(st),
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
+		Issuers:           []oidc.NamedIssuer{{URL: fixtureIssuer}},
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
 	return m, enrollmentID, requesterKey, fixtureOperator

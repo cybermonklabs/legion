@@ -209,12 +209,14 @@ func newLauncherAPI(t *testing.T, pool *pgxpool.Pool) *launcherAPI {
 	t.Cleanup(srv.Close)
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "launcher-api-key")
-	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
-	if err != nil {
-		t.Fatalf("oidc.NewKeys: %v", err)
+	podIssuers := []oidc.NamedIssuer{{URL: issuer.URL()}}
+	accounts := enroll.K8sPodVerifier{Issuers: oidc.NewIssuerSet(podIssuers, launcherAPIAudience, 0)}
+	enr := &enroll.Service{
+		Store: st, Lease: time.Hour, Pod: accounts, Issuers: podIssuers,
+		ServiceLogins: map[string]enroll.ServiceLogin{
+			ciphertest.DaemonAccount: {Service: "legion-daemon", Issuers: []string{""}},
+		},
 	}
-	accounts := enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(issuer.URL(), launcherAPIAudience, keys)}
-	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: accounts, ServiceLogins: map[string]string{ciphertest.DaemonAccount: "legion-daemon"}}
 	rules := policytest.Current(t, memory.New())
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	logins := &machine.Service{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // epochStore is the in-memory store over one tree lifecycle: AdmitClaim binds the open epoch or
@@ -460,6 +462,227 @@ func TestADaemonSuspensionOfARelaunchWaitingForTheStoreRetiresThePhasesTask(t *t
 	}
 	h.wantCalls("Suspend", 1)
 	h.wantCalls("Resume", 0)
+}
+
+// heldCheckStore is the in-memory store whose launch check lets the next passes checks through
+// and answers refusal to every one after them, nil for none: a routine wait, as the daemon's
+// launch check answers while the project release holds every start (errReleaseHolds), a wait that
+// is not routine, or a store that did not answer (errUnanswered).
+type heldCheckStore struct {
+	*memStore
+	passes  int
+	refusal error
+}
+
+func (s *heldCheckStore) CheckLaunch(context.Context, Claim) error {
+	if s.passes > 0 {
+		s.passes--
+		return nil
+	}
+	return s.refusal
+}
+
+// errReleaseHolds is the launch check's refusal while the project release holds every start, as
+// the daemon's launch check answers it (internal/daemon's launchGatedStore, errProjectReleased):
+// a routine wait (wait.Routine), wrapped with the launch it refused.
+var errReleaseHolds = fmt.Errorf("launch %s: %w", testToken, wait.Routine(wait.New("the project release holds every start until the daemon's next boot")))
+
+// A relaunch the launch check refuses with a routine wait, as it refuses every relaunch while the
+// project release holds every start, is logged at Info at the refusal that begins the wait and at
+// Debug at each probe interval's retry it refuses after that, and nothing of the wait is logged at
+// Warn or above: the release holds for up to its bound, and the operator who released the project
+// asked for that. That holds for the timer that retries it too (timerLine, fire): the wait is
+// answered to no caller, so the timer writes no line for it. A refusal that is no routine
+// wait, a store that did not answer, is still logged at Warn at each retry, its timer's line at
+// Error, and it ends the wait, so the next wait logs at Info again; so do a launch check that
+// passes (launchAfter) and a let-go of the claim's process (letGo), here the check of the retry
+// that starts the process again and the retirement of that process.
+//
+// The negative controls are relaunchRefused logging every refusal at Warn, a wait's included, as
+// it did before: the refusal that begins the wait then writes no line at Info; and relaunchRefused
+// answering the wait with its error, as it did before: the timer then writes its line at the
+// refusal that begins the wait and at each retry the release refuses.
+func TestARelaunchTheLaunchCheckRefusesWithAWaitLogsTheWaitOnceAtInfo(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateRegistered)
+	store := &heldCheckStore{memStore: h.store}
+	h.m.deps.Store = store
+	want := func(when string, waits, refusals []slog.Level) {
+		t.Helper()
+		if got := h.records.levels(relaunchWaitLine); !slices.Equal(got, waits) {
+			t.Fatalf("%s, the wait's lines are at %v; want %v", when, got, waits)
+		}
+		if got := h.records.levels(relaunchRefusedLine); !slices.Equal(got, refusals) {
+			t.Fatalf("%s, the refusal's lines are at %v; want %v", when, got, refusals)
+		}
+	}
+	// quiet fails where a record from the from'th on is at Warn or above, or is the timer's line
+	// (timerLine), which fire writes only for a decision that answered an error, at Debug where
+	// that error holds nothing but routine waits (DecisionErrorLevel).
+	quiet := func(when string, from int) {
+		t.Helper()
+		for _, r := range h.records.since(from) {
+			if r.level >= slog.LevelWarn || r.message == timerLine {
+				t.Fatalf("%s, the log holds %q at %s; want nothing at Warn or above, and no timer's line, while the release holds the relaunch",
+					when, r.message, r.level)
+			}
+		}
+	}
+	// written is how many records the log holds, and began the index of the newest wait's line.
+	written := func() int {
+		return len(h.records.since(0))
+	}
+	began := func() int {
+		t.Helper()
+		kept := h.records.since(0)
+		for i := len(kept) - 1; i >= 0; i-- {
+			if kept[i].message == relaunchWaitLine {
+				return i
+			}
+		}
+		t.Fatal("the log holds no line of the wait")
+		return 0
+	}
+	info, debug, warn := slog.LevelInfo, slog.LevelDebug, slog.LevelWarn
+
+	// The registration deadline's own check passes, and the release holds every start by the time
+	// its stop has landed, so the relaunch's check is refused.
+	store.passes, store.refusal = 1, errReleaseHolds
+	h.advance(deadline)
+	if c := h.claim(); c.State != StateLaunching || c.Locator != nil {
+		t.Fatalf("the relaunch the release refused left the claim %s with locator %+v, want launching with no process", c.State, c.Locator)
+	}
+	want("at the refusal that begins the wait", []slog.Level{info}, nil)
+	quiet("from the refusal that begins the wait", began())
+
+	from := written()
+	h.advance(testProbe)
+	h.advance(testProbe)
+	h.wantCalls("Resume", 0)
+	want("after two retries the release refused", []slog.Level{info, debug, debug}, nil)
+	quiet("at two retries the release refused", from)
+
+	store.refusal = errUnanswered
+	h.advance(testProbe)
+	want("after a retry the store did not answer", []slog.Level{info, debug, debug}, []slog.Level{warn})
+
+	store.refusal = errReleaseHolds
+	from = written()
+	h.advance(testProbe)
+	h.advance(testProbe)
+	want("after two retries the release refused again", []slog.Level{info, debug, debug, info, debug}, []slog.Level{warn})
+	quiet("at two retries the release refused again", from)
+
+	store.refusal = nil
+	h.advance(testProbe)
+	h.wantCalls("Resume", 1)
+	h.wantState(StateLaunching)
+	h.connect()
+	h.register()
+
+	store.passes, store.refusal = 1, errReleaseHolds
+	h.advance(deadline)
+	h.wantCalls("Resume", 1)
+	want("at the refusal of the relaunched process's own relaunch", []slog.Level{info, debug, debug, info, debug, info}, []slog.Level{warn})
+	quiet("from the refusal of the relaunched process's own relaunch", began())
+}
+
+// A registration deadline whose own launch check the project release refuses keeps the process,
+// retires nothing, and tries the deadline again at each probe interval for as long as the release
+// holds (registrationDeadline), answering the release's routine wait to the timer that fired it
+// every time. The timer logs that wait at Debug (fire, DecisionErrorLevel), so nothing of the wait
+// is logged at Warn or above, at the deadline or at any of its retries: the operator who released
+// the project asked for it, and a line at Error every probe interval for each such claim would
+// send whoever reads the log to look at nothing.
+//
+// The negative control is fire logging every decision's error at Error, as it did before: the
+// deadline and each of its retries then write the timer's line at Error.
+func TestARegistrationDeadlineTheReleaseHoldsLogsNothingAtWarnAtAnyRetry(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateRegistered)
+	h.m.deps.Store = &heldCheckStore{memStore: h.store, refusal: errReleaseHolds}
+	from := len(h.records.since(0))
+
+	h.advance(deadline)
+	for range 3 {
+		h.advance(testProbe)
+	}
+
+	h.wantCalls("Suspend", 0)
+	h.wantState(StateRegistered)
+	debug := slog.LevelDebug
+	if got := h.records.levels(timerLine); !slices.Equal(got, []slog.Level{debug, debug, debug, debug}) {
+		t.Fatalf("the timer wrote its lines at %v, want 4 at Debug: one at the deadline and one at each of its three retries at the probe interval, the release's wait being routine", got)
+	}
+	for _, r := range h.records.of(timerLine) {
+		if kind, _ := r.attr("timer"); kind.String() != string(TimerRegistration) {
+			t.Fatalf("the timer wrote its line for the %q timer, want the registration deadline", kind)
+		}
+	}
+	for _, r := range h.records.since(from) {
+		if r.level >= slog.LevelWarn {
+			t.Fatalf("the log holds %q at %s; want nothing at Warn or above while the release holds the deadline's retirement", r.message, r.level)
+		}
+	}
+}
+
+// A registration deadline whose launch check answers the release's routine wait joined to a fault,
+// a store that did not answer beside it, is logged as the fault: the timer writes its line at
+// Error at the deadline and at its retry (fire, DecisionErrorLevel). A decision's error joins
+// whatever the decision met (handle joins the row's answer with settle's and the row-move
+// check's), so the mark of a routine wait somewhere in it says nothing of the rest; only an error
+// made of nothing but routine waits is kept at Debug (wait.OnlyRoutine). A store outage during a
+// release would otherwise write no line at Error at all, the deadline meeting the release's wait
+// at every probe interval.
+//
+// The negative control is DecisionErrorLevel reading wait.IsRoutine, as it did before: the timer
+// then writes its lines at Debug.
+func TestARegistrationDeadlineWhoseCheckJoinsTheReleasesWaitToAFaultLogsTheTimerAtError(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateRegistered)
+	h.m.deps.Store = &heldCheckStore{memStore: h.store, refusal: errors.Join(errReleaseHolds, errUnanswered)}
+
+	h.advance(deadline)
+	h.advance(testProbe)
+
+	h.wantCalls("Suspend", 0)
+	h.wantState(StateRegistered)
+	if got := h.records.levels(timerLine); !slices.Equal(got, []slog.Level{slog.LevelError, slog.LevelError}) {
+		t.Fatalf("the timer wrote its lines at %v, want 2 at Error: one at the deadline and one at its retry, the store's fault beside the release's wait", got)
+	}
+}
+
+// A relaunch the launch check refuses with a wait that is not routine (wait.IsRoutine), one the
+// daemon never marked as nothing to act on, is logged as every refusal that is no routine wait
+// is: at Warn at each retry (relaunchRefusedLine), never on the release's quiet line, and
+// answered with its error, which the timer that retries it logs at Error.
+//
+// The negative control is relaunchRefused telling the quiet wait from the rest by
+// errors.Is(err, wait.ErrWaiting), as it did before: this refusal then writes the wait's line at
+// Info and Debug, and nothing at Warn.
+func TestARelaunchTheLaunchCheckRefusesWithAWaitThatIsNotRoutineIsLoggedAtWarn(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateRegistered)
+	refusal := fmt.Errorf("launch %s: %w", testToken, wait.New("the launch waits for something nobody marked routine"))
+	h.m.deps.Store = &heldCheckStore{memStore: h.store, passes: 1, refusal: refusal}
+
+	// The registration deadline's own check passes, and its relaunch's check is refused, as is
+	// the retry at the probe interval.
+	h.advance(deadline)
+	h.advance(testProbe)
+
+	if c := h.claim(); c.State != StateLaunching || c.Locator != nil {
+		t.Fatalf("the refused relaunch left the claim %s with locator %+v, want launching with no process", c.State, c.Locator)
+	}
+	h.wantCalls("Resume", 0)
+	if waits := h.records.of(relaunchWaitLine); len(waits) != 0 {
+		t.Fatalf("the refusal wrote the routine wait's line %d times, want none: the wait is not routine", len(waits))
+	}
+	for line, want := range map[string]slog.Level{relaunchRefusedLine: slog.LevelWarn, timerLine: slog.LevelError} {
+		if got := h.records.levels(line); !slices.Equal(got, []slog.Level{want, want}) {
+			t.Fatalf("the log holds %q at %v, want it twice at %s: at the refusal and at its retry", line, got, want)
+		}
+	}
 }
 
 // A retirement whose relaunch is checked once the stop has landed, but whose launch the store does

@@ -87,6 +87,15 @@ func RefusalReason(err error) string {
 // an unknown command. Asking the same shim again changes neither.
 var ErrTokenRefused = errors.New("runtime: the shim did not read its projected token")
 
+// UnpushedReadTimeout is how long the agent's side is given to read the issue's unpushed work
+// for a project release (Conn.ReadUnpushed): jj reads, one of which snapshots the working copy;
+// nothing is packed or pushed. It is the runtimes' budget for the request, not a setting. It is
+// five minutes, the budget the idle release gave its workspace save before main's #4869 took it
+// out, whose first read made the same snapshot: the release's read runs in no sweep but inside the
+// release's own bound, and a read that runs out of time is a read the shim refused, for which
+// the release asks the pod's roles rather than taking the pod as one with nothing unpushed.
+const UnpushedReadTimeout = 5 * time.Minute
+
 // WorkspaceWorkTimeout is how long the agent's side is given to read whether its workspace holds
 // work origin does not hold (WorkspaceWorkReader): two jj reads, one of which snapshots the
 // working copy; nothing is packed or pushed. It is the runtimes' budget for the request, not a
@@ -152,6 +161,12 @@ type Conn interface {
 	// My Pi as an unknown command; both are refusals that carry their words (RefusalReason), and
 	// neither is an answer of no work.
 	WorkspaceWork(ctx context.Context, issue string, timeout time.Duration) (WorkspaceWork, error)
+	// ReadUnpushed has the agent's side read whether the workspace every role of read.Issue shares
+	// holds the issue's unpushed work, for a project release about to delete the pod with its
+	// disk. It runs no git and sends no commit. A shim that could not read the workspace, and
+	// one too old to know the read, are each a refusal carrying its words (RefusalReason), never
+	// an answer that nothing is unpushed; every other error is transport.
+	ReadUnpushed(ctx context.Context, read UnpushedRead, timeout time.Duration) (UnpushedWork, error)
 	// AgentSecretsEnrollment hands the agent's shim the secrets broker's enrollment id for its
 	// process, which the shim keeps beside the key it generated.
 	AgentSecretsEnrollment(ctx context.Context, enrollmentID string) error
@@ -174,4 +189,23 @@ type Conns interface {
 // ConnState is the agent's answer to `get_state`, reduced to the one field the daemon acts on.
 type ConnState struct {
 	IsStreaming bool
+}
+
+// UnpushedRead is what a read of the unpushed work of the workspace every role of an issue shares
+// tells the agent's side (Conn.ReadUnpushed), and from which the shim tells the issue's own work
+// from another's: the issue, whether the record holds its pull request merged, and the session
+// names its claims hold that a commit's `Omp-Session` trailer can carry, sorted, each once.
+type UnpushedRead struct {
+	Issue    string
+	Merged   bool
+	Sessions []string
+}
+
+// UnpushedWork is the agent's side's read of the issue's unpushed work in the workspace every
+// role of the issue shares (Conn.ReadUnpushed). Commits is how many commits of the issue's work no
+// remote branch or tag holds (the shim's unpushedRevset); WorkingCopyChanged is whether the working
+// copy of the role that read it holds a change. Nothing of the work itself is in it.
+type UnpushedWork struct {
+	Commits            int
+	WorkingCopyChanged bool
 }

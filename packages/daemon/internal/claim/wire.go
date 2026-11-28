@@ -3,6 +3,7 @@ package claim
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"time"
 )
 
@@ -345,6 +346,14 @@ func SessionHeldRefusal(session string) Refusal {
 // it), so a name without a bound could stop the migration or the boot that holds it. 255 is the
 // longest file name Linux allows (NAME_MAX), and a real name is a uuid or such a file name.
 const MaxSessionNameBytes = 255
+
+// SessionIDRule is the rule a session id must meet to reach a commit's `Omp-Session` trailer:
+// `legion git` adds the line only for an id that meets it (cmd/legion's gitTrailers), and it is the
+// jj overlay writer's rule, SESSION_ID_PATH_SEGMENT
+// (packages/envoy-client/src/dispatch-session-directory.ts), so an id that holds a line break gives
+// no line. The project release's read of unpushed work holds the session names it carries to the
+// same rule (shimwire.ReadUnpushed), since a name it refuses is never a trailer's value.
+var SessionIDRule = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // SessionNameTooLong refuses a registration whose session id, or whose session file's base name,
 // is longer than MaxSessionNameBytes. It is a 400: the request is malformed, whoever sends it.

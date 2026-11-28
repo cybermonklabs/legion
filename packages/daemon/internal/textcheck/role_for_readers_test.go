@@ -115,6 +115,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:                   {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:                    {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}:          {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},
+	{file: "internal/workflow/resume.go", fn: "Engine.startStoppedClaim"}:             {calls: 1, test: "TestTheBootStartsAnArchitectTheProjectReleaseStoppedAtAdmittedWithNoTask"},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}:                  {calls: 1, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
 	{file: "internal/workflow/retro_hold.go", fn: "Engine.StartHeldRetro"}:            {calls: 2, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
 	{file: "internal/workflow/standing.go", fn: "reportsBefore"}:                      {calls: 1, test: "TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"},

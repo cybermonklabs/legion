@@ -18,9 +18,8 @@ body: |-
   or one failed less than 5 seconds ago): the listener
   answers `503` with `Retry-After: 1` once its 4-second wait ends; Dispatch waits on the read under
   way and answers `503 OIDC_ISSUER_UNAVAILABLE` when it fails, and IAP sign-in
-  `503 SIGNIN_UNAVAILABLE`; the secrets broker still refuses the token as unverified
-  (`401 ACCOUNT_TOKEN_INVALID`, `401 POD_TOKEN_INVALID`, and `invalid_request` on the token
-  exchange).
+  `503 SIGNIN_UNAVAILABLE`; the secrets broker answers `503 OIDC_ISSUER_UNAVAILABLE`, as the
+  change that names its clusters says (dispatch://INFRA-3583).
 time: 2026-11-21T13:16:08Z
 custom:
     Issue: pr4838

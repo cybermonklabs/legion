@@ -58,7 +58,6 @@ var settingRoles = map[string]settingRole{
 	"BROKER_EDGE_LISTEN_ADDR":              givesNone("a listen address"),
 	"BROKER_EDGE_URL":                      givesNone("the broker's own URL at its edge"),
 	"BROKER_EDGE_MACHINE_LOGIN_URL":        givesNone("a page's URL"),
-	"BROKER_SIGNIN_WORKSPACE_DOMAINS":      givesNone("the Workspace's domains"),
 	"BROKER_SECRETS_STORE":                 givesNone("a secret store"),
 	"BROKER_SECRETS_PREFIX":                givesNone("a secret-name prefix"),
 	"BROKER_SECRETS_SECOND_PREFIX":         givesNone("a secret-name prefix"),
@@ -87,8 +86,6 @@ var settingRoles = map[string]settingRole{
 	"BROKER_HOLD_REQUIRES_DEADLINE":        givesNone("an on/off switch: it decides which of Dispatch's answers the hold gate serves, and names no account"),
 	"BROKER_AZURE_TOKEN_FILE":              givesNone("a file path"),
 	"BROKER_AZURE_LOGIN_SECRET":            givesNone("a secret's name"),
-	"BROKER_K8S_OIDC_ISSUER":               givesNone("an issuer"),
-	"BROKER_K8S_OIDC_AUDIENCE":             givesNone("audiences"),
 	"BROKER_GOOGLE_OIDC_ISSUER":            givesNone("an issuer"),
 	"BROKER_GOOGLE_OIDC_AUDIENCE":          givesNone("an audience"),
 	"BROKER_ENVOY_URL":                     givesNone("an Envoy listener's URL"),
@@ -105,17 +102,17 @@ var settingRoles = map[string]settingRole{
 	"BROKER_JUDGE_TEST_SKIP_CHECKS":       givesNone("a test-only switch"),
 	"BROKER_RESULT_GRANT_TEST_SECONDS":    givesNone("a test-only lifetime"),
 
-	"BROKER_SECRETS_KMS_KEY_ARN":    givesNone("a KMS key"),
-	"BROKER_SECRETS_KMS_KEY_NAME":   givesNone("a KMS key"),
-	"BROKER_MEMORY_SECRETS_FILE":    givesNone("a file path"),
-	"BROKER_AIRLOCK_CLUSTER_RANGES": givesNone("address ranges"),
-	"BROKER_PROXY_PRIVATE_UPSTREAM": givesNone("a host and a URL"),
+	"BROKER_SECRETS_KMS_KEY_NAME":     givesNone("a KMS key"),
+	"BROKER_MEMORY_SECRETS_FILE":      givesNone("a file path"),
+	"BROKER_SIGNIN_WORKSPACE_DOMAINS": givesNone("the Workspace's domains"),
+	"BROKER_AIRLOCK_CLUSTER_RANGES":   givesNone("address ranges"),
+	"BROKER_PROXY_PRIVATE_UPSTREAM":   givesNone("a host and a URL"),
+	"BROKER_SECRETS_KMS_KEY_ARN":      givesNone("a KMS key"),
 
 	"BROKER_SERVICES": givesARole(
 		"a BROKER_SERVICES entry names its login service",
 		"a BROKER_SERVICES entry binds it",
 	),
-	"BROKER_SERVICE_LOGINS": givesARole("BROKER_SERVICE_LOGINS does not name it"),
 	"BROKER_SESSION_ACCOUNT_PAIRS": givesARole(
 		"a BROKER_SESSION_ACCOUNT_PAIRS pair names it as the first account",
 		"a BROKER_SESSION_ACCOUNT_PAIRS pair names it as the second account",
@@ -129,11 +126,15 @@ var settingRoles = map[string]settingRole{
 	"BROKER_VM_INSTANCES":             givesNone("a Google account's instance names"),
 	"BROKER_VM_EXCHANGE_ACCOUNTS":     givesNone("a Google account's person and project"),
 	"BROKER_VM_EXCHANGE_JOB_ACCOUNTS": givesNone("a Google account's projects"),
+	"BROKER_K8S_OIDC_ISSUER":          givesNone("an issuer"),
+	"BROKER_K8S_OIDC_AUDIENCE":        givesNone("audiences"),
+	"BROKER_SERVICE_LOGINS":           givesARole("BROKER_SERVICE_LOGINS does not name it"),
 
 	"BROKER_API_ACCOUNTS":              givesARole("a BROKER_API_ACCOUNTS entry names it"),
 	"BROKER_EXCHANGE_GITHUB_ISSUER":    givesNone("an issuer"),
 	"BROKER_EXCHANGE_GITHUB_AUDIENCE":  givesNone("an audience"),
 	"BROKER_EXCHANGE_K8S_AUDIENCE":     givesNone("an audience"),
+	"BROKER_EXCHANGE_K8S_ISSUER":       givesNone("issuer names"),
 	"BROKER_EXCHANGE_ACCOUNTS":         givesARole("a BROKER_EXCHANGE_ACCOUNTS entry maps it to another person"),
 	"BROKER_EXCHANGE_READ_ACCOUNTS":    givesARole("a BROKER_EXCHANGE_READ_ACCOUNTS entry names it"),
 	"BROKER_EXCHANGE_JOB_ACCOUNTS":     givesARole("a BROKER_EXCHANGE_JOB_ACCOUNTS entry names it"),
@@ -144,10 +145,14 @@ var settingRoles = map[string]settingRole{
 	"BROKER_ENVOY_ACCOUNT_TOKEN_FILE":  givesNone("a file path"),
 
 	// loadNATSCallout's.
+	"BROKER_NATS_SERVICES": givesARole(
+		"a BROKER_NATS_SERVICES entry names it",
+		"a BROKER_NATS_SERVICES entry that names its issuers names it",
+	),
+	"BROKER_NATS_ACCOUNT":          givesNone("the hub account admitted clients are placed in"),
 	"BROKER_NATS_SEED_FILE":        givesNone("a file path"),
 	"BROKER_NATS_ISSUER_SEED_FILE": givesNone("a file path"),
 	"BROKER_NATS_XKEY_SEED_FILE":   givesNone("a file path"),
-	"BROKER_NATS_SERVICES":         givesARole("a BROKER_NATS_SERVICES entry names it"),
 	"BROKER_NATS_K8S_AUDIENCE":     givesNone("an audience"),
 	"BROKER_NATS_GOOGLE_AUDIENCE":  givesNone("an audience"),
 	"BROKER_NATS_URLS":             givesNone("the NATS hub's URLs"),
@@ -157,7 +162,6 @@ var settingRoles = map[string]settingRole{
 	"BROKER_NATS_HOLD_SIGNING_KEYS": givesNone("public keys"),
 	// Load's int.
 	"BROKER_NATS_HOLD_POOL_SIZE": givesNone("a number of connections"),
-	"BROKER_NATS_ACCOUNT":        givesNone("the hub account admitted clients are placed in"),
 
 	"BROKER_POD_REGISTRARS":            givesARole("a BROKER_POD_REGISTRARS entry names it as its registrar"),
 	"BROKER_POD_REGISTRATION_AUDIENCE": givesNone("an audience"),

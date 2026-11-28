@@ -8,11 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // TestProxyGrantsOfEnrollmentAnswersEveryLiveGrantOfTheEnrollment: the proxy reads the live grants
@@ -251,6 +253,66 @@ func TestAGrantTheProjectRuleEndsIsLeftOutBesideAHealthyGrant(t *testing.T) {
 		t.Fatalf("grant %s of %s, which the project rule refused, revoked by %q; want it ended for good by %q", ended, nameOf[ended], by, GrantEndedActor)
 	}
 	requireGrantLive(t, m, healthy)
+}
+
+// TestAPodsOtherGrantIsJudgedUnderTheIssuerItEnrolledUnder: the read of a session's other grants
+// judges each grant's project rule under the issuer the pod's enrollment recorded, as
+// AirlockConnection judges a connection's own grant (credentialProjects). The broker trusts two
+// issuers, dispatch and us-central1, and the pod account's BROKER_EXCHANGE_ACCOUNTS entry maps it
+// to PRIV, private, under one of them alone. A pod enrolled under that issuer holds two grants of
+// PRIV-tagged names, PRIV_KEY and PRIV_SECOND: a connection opened with PRIV_KEY's grant reads
+// PRIV_SECOND's grant to swap its placeholder on the same connection, and the read answers it as
+// a connection opened with its own placeholder answers it, and leaves it live. Read as an
+// enrollment that records no issuer, which is the first issuer's, the second issuer's pod names no
+// project, and its PRIV grant would be ended for good. The first issuer's pod is the control.
+func TestAPodsOtherGrantIsJudgedUnderTheIssuerItEnrolledUnder(t *testing.T) {
+	both := []string{"PRIV_KEY", "PRIV_SECOND"}
+	for _, c := range []struct {
+		name   string
+		issuer oidc.NamedIssuer
+	}{
+		{"the first issuer's pod", firstIssuer},
+		{"the second issuer's pod", secondIssuer},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, _, _, _ := newProjectFixture(t, bound(rule("PRIV_KEY", "example"), rule("PRIV_SECOND", "example")), publicTeam)
+			retag(t, m, taggedSecret("PRIV_SECOND", policy.OwnerShared, policy.TierAgent, privProject, "priv-second-v1"))
+			m.Issuers = []oidc.NamedIssuer{firstIssuer, secondIssuer}
+			set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: []string{c.issuer.Name}}}, nil, nil, nil, nil, "")
+			if err != nil {
+				t.Fatalf("exchange.NewSet: %v", err)
+			}
+			m.Exchange = set
+			pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-issuer-"+c.issuer.Name)
+			recordIssuer(t, m, pod, &c.issuer.URL)
+			_, own := grantOf(t, m, pod, podKey, "deploy", "PRIV_KEY")
+			_, other := grantOf(t, m, pod, podKey, "deploy the second", "PRIV_SECOND")
+			passwords := map[string]string{}
+			for _, grantID := range []string{own, other} {
+				release, err := m.Values(t.Context(), grantID, pod, ReleaseCall{})
+				if err != nil {
+					t.Fatalf("Values(%s): %v", grantID, err)
+				}
+				passwords[grantID] = release.Airlock.ProxyPassword
+			}
+
+			if _, err := m.AirlockConnection(t.Context(), passwords[own]); err != nil {
+				t.Fatalf("AirlockConnection(%s's placeholder): %v", own, err)
+			}
+			got, err := m.ProxyGrantsOfEnrollment(t.Context(), pod, own, both)
+			if err != nil || !reflect.DeepEqual(grantIDs(got), []string{other}) {
+				t.Fatalf("the pod's grants but %s = %v, %v; want %s, its PRIV grant judged under %s, the issuer it enrolled under", own, grantIDs(got), err, other, c.issuer.Name)
+			}
+			requireGrantLive(t, m, other)
+			opened, err := m.AirlockConnection(t.Context(), passwords[other])
+			if err != nil {
+				t.Fatalf("AirlockConnection(%s's placeholder): %v", other, err)
+			}
+			if !reflect.DeepEqual(got[0], opened) {
+				t.Errorf("grant %s = %+v; want what a connection opened with its placeholder answers, %+v", other, got[0], opened)
+			}
+		})
+	}
 }
 
 // TestProxyPlaceholderGrantNamesTheGrantOfAPlaceholderLiveOrEnded: the proxy names, in the refusal

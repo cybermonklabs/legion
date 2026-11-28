@@ -415,8 +415,16 @@ func (s stubPauses) Paused() (int64, bool) { return s.paused, s.paused != 0 }
 // does not name fails here before it reaches a fixture.
 func pauseRouteAnswer(t *testing.T, svc PauseService, target string, body any, want int, into any) {
 	t.Helper()
+	operatorRouteAnswer(t, Options{Pause: svc}, target, body, want, into)
+}
+
+// operatorRouteAnswer is pauseRouteAnswer over the services opts names: the pause service, and the
+// project release for a route of the release's.
+func operatorRouteAnswer(t *testing.T, opts Options, target string, body any, want int, into any) {
+	t.Helper()
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := NewServer("127.0.0.1", 8437, Options{Project: testProject, OperatorToken: testOperatorToken, Pause: svc, Log: quiet}).Handler
+	opts.Project, opts.OperatorToken, opts.Log = testProject, testOperatorToken, quiet
+	handler := NewServer("127.0.0.1", 8437, opts).Handler
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -440,7 +448,11 @@ func pauseRouteAnswer(t *testing.T, svc PauseService, target string, body any, w
 // held rows it let out; a blank reason; a daemon whose configuration cannot hold a pause, naming
 // the setting; a daemon with no workflow, which names no setting; a second pause, naming the pause
 // that stands; a resume of a running project, naming the last pause; and a turn refused while the
-// project is paused (PROJECT_PAUSED, here the operator's spawn), naming the pause that stands.
+// project is paused (PROJECT_PAUSED, here the operator's spawn), naming the pause that stands. The
+// two refusals between the pause and the project release (dispatch://INFRA-3583 R13) have one
+// each too: a pause while a release runs (PROJECT_RELEASING), which names the release in its
+// sentence alone, and a release while a pause holds the project (PROJECT_PAUSED, through the
+// release's own route), naming the pause that stands and each pod a pause holds.
 func TestPauseRouteGoldens(t *testing.T) {
 	const pauseRoute, resumeRoute = "/legion/v1/operator/project/pause", "/legion/v1/operator/project/resume"
 	reason := OperatorPauseRequest{Reason: apifixture.Pause(false).Reason}
@@ -457,22 +469,34 @@ func TestPauseRouteGoldens(t *testing.T) {
 	pauseRouteAnswer(t, stubPauses{pauseErr: pause.ErrReasonRequired}, pauseRoute, OperatorPauseRequest{}, http.StatusBadRequest, &blank)
 	golden(t, "project-pause-reason-required.json", blank)
 
+	since := apifixture.Pause(false).Since
+	running := store.ProjectRelease{ID: 3, Project: "legion", StartedAt: since.Add(-10 * time.Minute),
+		BoundAt: since.Add(20 * time.Minute)}
+	held := &store.ProjectPausedError{Project: "legion", Pause: apifixture.Pause(false), Paused: true, Held: []store.HeldPausePod{
+		{Issue: "LEGION-208", Pause: 7, HeldAt: since.Add(4 * time.Second), Claims: []claim.Token{"legion-legion-legion-208-implementer"}},
+		{Issue: "LEGION-209", Pause: 7, HeldAt: since.Add(6 * time.Second)},
+	}}
 	for name, tc := range map[string]struct {
-		svc    PauseService
-		target string
-		body   any
+		svc     PauseService
+		release ProjectRelease
+		target  string
+		body    any
 	}{
-		"project-pause-unavailable.json": {stubPauses{pauseErr: &pause.UnavailableError{Setting: pause.SettingTmux}}, pauseRoute, reason},
-		"project-pause-no-workflow.json": {nil, pauseRoute, reason},
-		"project-pause-refused.json": {stubPauses{pauseErr: fmt.Errorf("pause LEGION: %w",
-			&store.AlreadyPausedError{Standing: apifixture.Pause(false)})}, pauseRoute, reason},
-		"project-resume-refused.json": {stubPauses{resumeErr: &store.NotPausedError{Project: "LEGION"},
-			last: apifixture.Pause(true), lastFound: true}, resumeRoute, nil},
-		"project-paused.json": {stubPauses{paused: 7, open: apifixture.Pause(false), openFound: true}, "/legion/v1/operator/claims",
-			SpawnRequest{Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleImplementer}},
+		"project-pause-unavailable.json": {svc: stubPauses{pauseErr: &pause.UnavailableError{Setting: pause.SettingTmux}}, target: pauseRoute, body: reason},
+		"project-pause-no-workflow.json": {target: pauseRoute, body: reason},
+		"project-pause-refused.json": {svc: stubPauses{pauseErr: fmt.Errorf("pause LEGION: %w",
+			&store.AlreadyPausedError{Standing: apifixture.Pause(false)})}, target: pauseRoute, body: reason},
+		"project-resume-refused.json": {svc: stubPauses{resumeErr: &store.NotPausedError{Project: "LEGION"},
+			last: apifixture.Pause(true), lastFound: true}, target: resumeRoute},
+		"project-paused.json": {svc: stubPauses{paused: 7, open: apifixture.Pause(false), openFound: true}, target: "/legion/v1/operator/claims",
+			body: SpawnRequest{Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleImplementer}},
+		"project-pause-releasing.json": {svc: stubPauses{pauseErr: fmt.Errorf("pause LEGION: %w",
+			&store.ProjectReleasingError{Release: running})}, target: pauseRoute, body: reason},
+		"project-release-paused.json": {release: &fakeProjectRelease{paused: fmt.Errorf("start the project release of legion: %w", held)},
+			target: ProjectReleaseRoute, body: ProjectReleaseRequest{}},
 	} {
 		var refused PauseFailure
-		pauseRouteAnswer(t, tc.svc, tc.target, tc.body, http.StatusConflict, &refused)
+		operatorRouteAnswer(t, Options{Pause: tc.svc, ProjectRelease: tc.release}, tc.target, tc.body, http.StatusConflict, &refused)
 		golden(t, name, refused)
 	}
 }

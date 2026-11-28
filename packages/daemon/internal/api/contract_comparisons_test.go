@@ -74,6 +74,7 @@ var contractComparisonRows = []contractComparisonRow{
 	// caller below the entry, as the two refusals' rows take their bodies' newer parts off.
 	{row: "The pause and plan refusals", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < pauseContract"),
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(projectReleaseContract)"),
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < OwnerPlanContract"),
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(runningStepContract)"),
 	}},

@@ -242,11 +242,14 @@ func recordedContractAtOrBelow(n int) int {
 // Two more rows take keys off, below pauseContract, which added keys to two answers beside the
 // state and the record: the release records' row serves every resume without its `pause`
 // (withoutResumePauses), and the refusal's row serves a PauseFailure as its Failure alone, with
-// no `setting`, `pause` or `lastPause`. The refusal's row does the same below OwnerPlanContract
-// for a PlanRefusal, which loses its `reasons`. These follow strip, as every band of
-// stateNarrowings does, and placedByPod places the caller of each by its pod, so a band here
-// reaches the caller of a pod as the state's do. A plain refusal, a claim.Refusal or a Failure,
-// carries no key of either contract and is the identity at every contract.
+// no `setting`, `pause` or `lastPause`. The refusal's row takes one key more, below the project
+// release entry's number (entryNumber(projectReleaseContract)), the entry that added `heldPods` to
+// a PauseFailure: a caller from pauseContract to below that number is served the PauseFailure
+// without that list (withoutHeldPods). It does the same below OwnerPlanContract for a PlanRefusal,
+// which loses its `reasons`. Each follows strip, as every band of stateNarrowings does, and
+// placedByPod places the caller of each answer by its pod, so a band here reaches the caller of a
+// pod as the state's do. A plain refusal, a claim.Refusal or a Failure, carries no key of any of
+// these contracts and is the identity at every contract.
 //
 // The two registration rows take off `replaces`, the one key the replaces entry
 // (contract_20261125170509_replaces.go) added to a role's registration answer and to the
@@ -309,6 +312,9 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		case PauseFailure:
 			if strip < pauseContract {
 				return refusal.Failure, took
+			}
+			if strip < entryNumber(projectReleaseContract) {
+				return withoutHeldPods(refusal), took
 			}
 			return refusal, took
 		case PlanRefusal:
@@ -1038,9 +1044,10 @@ const shapedAnswersContract = 193
 // below it. Every caller from 193 up states its contract, so callers from 256 through 274 are
 // served the keys of 256 without this object.
 //
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract the key arrived at stays where it is. It is LastNumberedContract,
-// the last number of answers.go's frozenContracts (contracts.go), and it never moves.
+// It is a literal of its own and never DaemonAPIVersion(): the number a later contract takes moves
+// that constant, and the contract the key arrived at stays where it is. It is LastNumberedContract
+// (contracts.go), the last number of answers.go's frozenContracts, which names the constant rather
+// than its number, and it never moves.
 const dispatchCredentialContract = 275
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1176,10 +1183,10 @@ const repositoriesLiveContract = 202
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the word arrived at stays where it is. It moves only with
-// dispatch://INFRA-4036's own number, which is why answers.go's SupportedContracts names it
-// rather than its number: TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that
-// list to version.go's entry headers, so a renumber that moves dispatch://INFRA-4036's entry and
-// leaves this constant behind names a contract no entry declares and fails there.
+// dispatch://INFRA-4036's own number, which is why answers.go's frozenContracts names it rather
+// than its number: TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that list to
+// version.go's entry headers, so a renumber that moves dispatch://INFRA-4036's entry and leaves
+// this constant behind names a contract no entry declares and fails there.
 const cachesSourceContract = 213
 
 // assignmentPlanContract is the daemon contract that added each assignment's `plan`, the group an
@@ -1268,7 +1275,7 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // with no row of stateNarrowings between the two, so a caller from that contract to 255 is served
 // 250's keys.
 //
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// It is a literal of its own and never DaemonAPIVersion(): the number a later contract takes moves
 // that constant, and the contract the keys arrived at stays where it is. It is a number of
 // answers.go's frozenContracts.
 const causeTimesContract = 256
@@ -2153,6 +2160,25 @@ func withoutIntakeGiveUps(state State) (State, bool) {
 	return state, true
 }
 
+// withoutProjectRelease is state with no `projectRelease`, the one key the project release entry
+// added to the state; the routes and the shim frame that entry added are not on this route. The key
+// is a pointer with `omitempty`, absent while the project has recorded no release, so the band
+// reports a move only for a state that carries one. The field is the state's own value, so the
+// state the source answered is left as it was, as withoutPause leaves it.
+func withoutProjectRelease(state State) (State, bool) {
+	moved := state.ProjectRelease != nil
+	state.ProjectRelease = nil
+	return state, moved
+}
+
+// withoutHeldPods is refusal with no `heldPods`, the one key the project release entry added to a
+// PauseFailure, which only the project release's refusal while a pause holds the project carries.
+// The refusal is a value of its own, so the body the route built is left as it was.
+func withoutHeldPods(refusal PauseFailure) PauseFailure {
+	refusal.HeldPods = nil
+	return refusal
+}
+
 // withoutP0Start is state with no `admission.p0Holders` or `admission.p0Bound`, the two keys
 // p0BoundContract added to the state; its routes are no keys of this one. `cap` stays, and says to
 // every reader what it always said: the cap of the slots, which now counts no P0 holder. Both are
@@ -2388,15 +2414,21 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 // PauseFailure or a PlanRefusal, for a registration, a role's or the controller's, that carries
 // `replaces`, for the controller's registration that carries `watchedWorkflows`, and for an agent
 // action's answer that carries `phaseNotRestarted`, and false for every other answer. Those
-// answers' shapes moved at pauseContract, at OwnerPlanContract, at the replaces entry, at the
-// claim start entry and at the watched-workflows entry, and their writers answer from no
-// snapshot of their own, so writeAnswer reads the claims for them (placingClaims). A registration
-// that carries no such key is the same body at every contract, so it reads none. Every other
-// answer writeAnswer writes is the identity at every contract, and so is a plain refusal (a
-// claim.Refusal or a Failure), so a read of the claims for one of them would decide nothing. A
-// serving-down added to one of them reaches the caller of a pod only once this answers true for
-// it. The state and the record are no question for it: their routes hand in their own snapshot's
-// claims (writeAnswerFrom).
+// answers' shapes moved at pauseContract, at OwnerPlanContract, at the replaces entry's number
+// (entryNumber(replacesContract)), at the claim start entry's number
+// (entryNumber(claimStartContract)) and at the watched-workflows entry's number
+// (entryNumber(watchedWorkflowsContract)), and the PauseFailure's moved again at the project
+// release entry's number (entryNumber(projectReleaseContract)), when that entry added `heldPods`
+// (withoutHeldPods); their writers answer from no snapshot of their own, so writeAnswer reads the
+// claims for them (placingClaims). A registration that carries neither `replaces` nor
+// `watchedWorkflows` is the same body at every contract, so it reads none. Every other answer
+// writeAnswer writes is the identity at every contract but register_plan's (AnswerPlanRegister),
+// whose row takes `running` off below the running-step entry's number; this answers false for it,
+// so a caller of that route that states no contract reads `running`. A plain refusal (a
+// claim.Refusal or a Failure) is the identity at every contract too, so a read of the claims for
+// one of them would decide nothing. A serving-down added to one of them reaches the caller of a pod
+// only once this answers true for it. The state and the record are no question for it: their
+// routes hand in their own snapshot's claims (writeAnswerFrom).
 func placedByPod(id AnswerID, body any) bool {
 	switch id {
 	case AnswerReleaseRecords:

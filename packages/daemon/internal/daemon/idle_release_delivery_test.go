@@ -55,9 +55,9 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	logs := &testlog.Buffer{}
 	rig.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
 
-	woken, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
-	if err != nil || !woken {
-		t.Fatalf("the wake meeting the open resume = %t, %v; want the claim woken", woken, err)
+	if err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0); !errors.Is(err, wait.ErrWaiting) ||
+		!strings.Contains(err.Error(), "a notice of "+rig.issue.Key+" waits for the released pod of") {
+		t.Fatalf("the wake meeting the open resume = %v; want the claim woken and the delivery waiting for its released pod", err)
 	}
 	stuck := loggedLines(t, logs.String(), `"msg":"wake: a released pod's resume stands open with no process behind it; this wake resumes it"`)
 	if len(stuck) != 1 || stuck[0]["level"] != "WARN" {
@@ -79,9 +79,8 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	// And a wake that meets the open resume of a role whose process is running resumes nothing:
 	// that pod is back, which is what the refusal means when the claim is no longer released.
 	before := len(rig.rt.CallsOf("Resume"))
-	woken, _, err = rig.runner.wakeForDelivery(ctx, rig.token, "a second notice of "+rig.issue.Key, 0)
-	if err != nil || woken {
-		t.Fatalf("the wake of a running claim = %t, %v; want it to wake nothing", woken, err)
+	if err := rig.runner.wakeForDelivery(ctx, rig.token, "a second notice of "+rig.issue.Key, 0); err != nil {
+		t.Fatalf("the wake of a running claim = %v; want it to wake nothing", err)
 	}
 	if after := len(rig.rt.CallsOf("Resume")); after != before {
 		t.Fatalf("resumes after the wake of a running claim = %d, want the %d it already had", after, before)
@@ -114,9 +113,9 @@ func TestADeliveryWakeMeetingAWakeWhoseStartIsQueuedLogsAtDebug(t *testing.T) {
 	logs := &testlog.Buffer{}
 	rig.runner.log = slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	woken, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
-	if err != nil || !woken {
-		t.Fatalf("the wake meeting the open resume = %t, %v; want the claim woken", woken, err)
+	if err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0); !errors.Is(err, wait.ErrWaiting) ||
+		!strings.Contains(err.Error(), "a notice of "+rig.issue.Key+" waits for the released pod of") {
+		t.Fatalf("the wake meeting the open resume = %v; want the claim woken and the delivery waiting for its released pod", err)
 	}
 	queued := loggedLines(t, logs.String(), `"msg":"wake: a released role's open resume is a wake whose start is still queued; this wake resumes the role"`)
 	if len(queued) != 1 || queued[0]["level"] != "DEBUG" {
@@ -152,13 +151,12 @@ func TestADeliveryWakeWaitsForTheTeardownOfAReleaseThatRecordedItsRole(t *testin
 
 	resumes := len(rig.rt.CallsOf("Resume"))
 	earliest := rig.runner.now().Add(30 * time.Second)
-	woken, turn, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
+	err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
 	latest := rig.runner.now().Add(30 * time.Second)
 	at, until := wait.UntilAt(err)
-	var routine interface{ Routine() bool }
-	if woken || !turn.IsZero() || !until || at.Before(earliest) || at.After(latest) || !errors.As(err, &routine) || !routine.Routine() {
-		t.Fatalf("the wake while the release runs = %t, %s, %v; want no wake and a routine wait until 30 seconds on: the release recorded the role",
-			woken, turn, err)
+	if !until || at.Before(earliest) || at.After(latest) || !wait.IsRoutine(err) ||
+		!strings.Contains(err.Error(), "waits for the release of "+rig.issue.Key+"'s pod to finish") {
+		t.Fatalf("the wake while the release runs = %v; want no wake and a routine wait until 30 seconds on: the release recorded the role", err)
 	}
 	if _, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || open {
 		t.Fatalf("an open resume after the wake that waited = %t, %v; want none: the wake took nothing", open, err)
@@ -179,9 +177,9 @@ func TestADeliveryWakeWaitsForTheTeardownOfAReleaseThatRecordedItsRole(t *testin
 		t.Fatalf("the mark stands = %t and the releases = %+v, want the release finished and recorded once", rig.marked(t), records.Releases)
 	}
 
-	woken, turn, err = rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
-	if err != nil || !woken || !turn.IsZero() {
-		t.Fatalf("the wake once the teardown finished = %t, %s, %v; want the claim woken", woken, turn, err)
+	if err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0); !errors.Is(err, wait.ErrWaiting) ||
+		!strings.Contains(err.Error(), "a notice of "+rig.issue.Key+" waits for the released pod of") {
+		t.Fatalf("the wake once the teardown finished = %v; want the claim woken and the delivery waiting for its released pod", err)
 	}
 	records = rig.records(t)
 	if len(records.Resumes) != 1 || records.Resumes[0].Release != records.Releases[0].ID || records.Resumes[0].Kind != pods.WakeDelivery {
@@ -234,14 +232,12 @@ func TestADeliveryWakeAfterACancelWaitsForTheCancelsStartAndRecordsNoResume(t *t
 
 	resumes := len(rig.rt.CallsOf("Resume"))
 	earliest := rig.runner.now().Add(30 * time.Second)
-	woken, turn, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
+	err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
 	latest := rig.runner.now().Add(30 * time.Second)
 	at, until := wait.UntilAt(err)
-	var routine interface{ Routine() bool }
-	if woken || !turn.IsZero() || !until || at.Before(earliest) || at.After(latest) || !errors.As(err, &routine) || !routine.Routine() ||
+	if !until || at.Before(earliest) || at.After(latest) || !wait.IsRoutine(err) ||
 		!strings.Contains(err.Error(), "waits for the start queued for "+rig.issue.Key+"'s implementer") {
-		t.Fatalf("the wake while the cancel's start is queued = %t, %s, %v; want no wake and a routine wait of 30 seconds for that start",
-			woken, turn, err)
+		t.Fatalf("the wake while the cancel's start is queued = %v; want no wake and a routine wait of 30 seconds for that start", err)
 	}
 	if records := rig.records(t); len(records.Resumes) != 0 {
 		t.Fatalf("resumes after the wake that waited = %+v, want none: the release took no pod", records.Resumes)
@@ -257,9 +253,8 @@ func TestADeliveryWakeAfterACancelWaitsForTheCancelsStartAndRecordsNoResume(t *t
 	if got := rig.machine.Claim(); got.Released() {
 		t.Fatalf("the claim after the cancel's start = %s by %s with the rows %v queued, want it resumed", got.State, got.SuspendedBy, rig.rows(t))
 	}
-	woken, turn, err = rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
-	if err != nil || woken || !turn.IsZero() {
-		t.Fatalf("the wake once the cancel's start ran = %t, %s, %v; want no wait: the claim is live, and the delivery goes to it", woken, turn, err)
+	if err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0); err != nil {
+		t.Fatalf("the wake once the cancel's start ran = %v; want no wait: the claim is live, and the delivery goes to it", err)
 	}
 	if records := rig.records(t); len(records.Resumes) != 0 {
 		t.Fatalf("resumes after the cancel's start = %+v, want none: the release took no pod", records.Resumes)

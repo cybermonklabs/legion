@@ -140,12 +140,14 @@ func TestParseJobProjectsReadsOneKeyOrPublicAndItsList(t *testing.T) {
 // one project under named, the private projects under public. An entry that fixes no session
 // answers the pod uid of the token as Instance, so a job pod registers as a person's pod does,
 // and refuses a request that names no session; one that fixes a session answers it and no
-// Instance.
+// Instance. The job accounts' entries name the first issuer alone, so a token of the second is
+// refused as any account entry's is (ErrIssuerNotNamed).
 func TestPodAnswersAJobAccountAsItsOwnService(t *testing.T) {
 	set := listed(t)
 	for _, c := range []struct {
 		name    string
 		token   map[string]any
+		issuer  string
 		session string
 		want    exchange.Claims
 		refused error
@@ -159,9 +161,14 @@ func TestPodAnswersAJobAccountAsItsOwnService(t *testing.T) {
 		{name: "a free session carries the pod uid as Instance", token: podToken(publicJobAccount, "another-pod-uid"), session: "example-job-3",
 			want: exchange.Claims{Session: "example-job-3", Service: publicJobAccount, Scope: exchange.ProjectScopePublic, Projects: []string{privA, privB}, Job: true, Principal: publicJobPrincipal, Instance: "another-pod-uid"}},
 		{name: "no session named", token: podToken(jobAccount, podUID), session: "", refused: exchange.ErrSessionRequired},
+		{name: "a token of an issuer the job entry does not name", token: podToken(jobAccount, podUID), issuer: secondIssuer, session: "example-job-1", refused: exchange.ErrIssuerNotNamed},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Pod(c.token, c.session, nil)
+			issuer := firstIssuer
+			if c.issuer != "" {
+				issuer = c.issuer
+			}
+			claims, err := set.Pod(c.token, issuer, c.session, nil)
 			if c.refused != nil {
 				if !errors.Is(err, c.refused) {
 					t.Fatalf("Pod(%s) = %+v, %v; want %v", c.name, claims, err, c.refused)

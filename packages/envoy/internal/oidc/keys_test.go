@@ -256,8 +256,9 @@ func TestKeyReadsTheSetOnceForConcurrentCallers(t *testing.T) {
 
 // A key set that fails at once, read while no set has ever been read, is read once per
 // FailureSpacing however many tokens arrive: every other caller in that time is answered the
-// failure with no read. Once the spacing has passed, the next caller reads again, and a set that
-// answers is kept. A key source starts with DefaultKeysFailureSpacing.
+// failure with no read, even once the key set answers again. Once the spacing has passed, the next
+// caller reads again, and a set that answers is kept. A key source starts with
+// DefaultKeysFailureSpacing.
 func TestAKeySetThatFailsAtOnceIsReadOncePerSpacing(t *testing.T) {
 	if got := NewKeysAt("http://127.0.0.1:1/keys").FailureSpacing; got != DefaultKeysFailureSpacing {
 		t.Fatalf("NewKeysAt's FailureSpacing = %s, want DefaultKeysFailureSpacing (%s)", got, DefaultKeysFailureSpacing)
@@ -278,6 +279,9 @@ func TestAKeySetThatFailsAtOnceIsReadOncePerSpacing(t *testing.T) {
 	}
 
 	issuer.FailKeys(0)
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("Key within FailureSpacing, the key set answering again = %v, want the failed read's ErrKeySet, naming its 500", err)
+	}
 	time.Sleep(keys.FailureSpacing + 100*time.Millisecond)
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
 		t.Fatalf("Key once the spacing has passed and the key set answers: %v", err)

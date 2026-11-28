@@ -151,12 +151,12 @@ func newNarrowingFixture(t *testing.T, adjust func(*oauth.Config)) *signInFixtur
 	return newSignInFixtureWith(t, func(c *oauth.Config) {
 		c.Exchange.Policy = newPolicyListing(t,
 			[]exchange.AccountEntry{
-				{Account: account, Project: project, Person: person},
-				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
-				{Account: otherAccount, Project: otherProject, Person: otherPerson},
-				{Account: personlessAccount, Session: personlessSession},
+				{Account: account, Project: project, Person: person, Issuers: []string{clusterName}},
+				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession, Issuers: []string{clusterName}},
+				{Account: otherAccount, Project: otherProject, Person: otherPerson, Issuers: []string{clusterName}},
+				{Account: personlessAccount, Session: personlessSession, Issuers: []string{clusterName}},
 			},
-			[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
+			[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession, Issuers: []string{clusterName}}},
 			[]exchange.WorkflowEntry{
 				{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 				{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
@@ -499,7 +499,7 @@ func TestANarrowedTradeIsCheckedAsItsBaseWord(t *testing.T) {
 		down.kinds[person] = projectaccess.MemberRestricted
 		down.down = true
 		f := newNarrowingFixture(t, func(c *oauth.Config) {
-			c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet})
+			c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person, Issuers: []string{clusterName}}}, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet})
 			c.Exchange.Projects = down
 		})
 		f.registers(t, account, "pod-uid-public", "public-session-1")

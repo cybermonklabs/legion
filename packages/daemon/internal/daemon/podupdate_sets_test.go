@@ -40,10 +40,10 @@ type roundShape struct {
 // (waitingClaims), so a claim is in both sets or in neither (dispatch://INFRA-4109 R2). A claim
 // in the wait set and not in the ask set holds the pod until the round's bound for an answer
 // nobody asked for: that is how a claim the daemon suspended held BET-1182's, OSSV-300's and
-// OSSV-313's pods to their bounds. A claim the daemon suspended (daemon, exit, released, unknown)
-// is in neither set, because it runs no process and no turn in the pod (R1). A suspension that
-// holds (the operator's or the controller's) is in both, as dispatch://INFRA-2981 R5 made the
-// operator's.
+// OSSV-313's pods to their bounds. A claim the daemon suspended (daemon, exit, released, unknown,
+// project_release) is in neither set, because it runs no process and no turn in the pod (R1). A
+// suspension that holds (the operator's or the controller's) is in both, as dispatch://INFRA-2981
+// R5 made the operator's.
 //
 // A claim a project's pause stopped is suspended released, and it is the pause's, not R1's,
 // while the pause still owes its role a launch: the pause kept the pod for the work on its disk
@@ -132,6 +132,9 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 		{name: "suspended by exit", claim: suspendedBy(supervise.SuspendedByExit), want: inNeither},
 		{name: "suspended by released", claim: suspendedBy(supervise.SuspendedByReleased), want: inNeither},
 		{name: "suspended by unknown", claim: suspendedBy(supervise.SuspendedByUnknown), want: inNeither},
+		// The project release's stop is the daemon's own, and the daemon's next boot is what starts
+		// the claim again: the round neither asks it nor waits for it.
+		{name: "suspended by project_release", claim: suspendedBy(supervise.SuspendedByProjectRelease), want: inNeither},
 		// The pause's stop takes a held wake of each role it stops (store.PodRecords.TakePodWake,
 		// pods.WakePause), so while its hold stands the stopped role has an open resume of that
 		// pause, whose clock is the moment of the stop.
@@ -152,6 +155,11 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 				hold.EndedAt, hold.End, hold.LetOut = opened.Add(-time.Minute), store.PausePodHoldDeleted, opened.Add(-time.Minute)
 			}, owingTheClaim), want: inNeither},
 		{name: "suspended by daemon under a pause hold that stands", claim: suspendedBy(supervise.SuspendedByDaemon),
+			holds: pauseHold(owingTheClaim), want: inNeither},
+		// A pause's hold keeps a claim the pause stopped, which is suspended released. The project
+		// release takes over such a suspension (supervise's suspensionRank), and the claim is then
+		// the release's: in neither set, as the daemon's own is under a hold.
+		{name: "suspended by project_release under a pause hold that stands", claim: suspendedBy(supervise.SuspendedByProjectRelease),
 			holds: pauseHold(owingTheClaim), want: inNeither},
 		{name: "an operator suspension held over a running turn", claim: member(supervise.StateWorking, func(c *supervise.Claim) {
 			c.SuspensionHeld, c.SuspensionHeldBy = true, supervise.SuspendedByOperator
@@ -320,6 +328,10 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 		{state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
 		{state: supervise.StateSuspended, by: supervise.SuspendedByExit},
 		{state: supervise.StateSuspended, by: supervise.SuspendedByUnknown},
+		// The project release's stop keeps nothing for the pause: the claim is not released, and a
+		// suspended claim is gone (supervise.Claim.Gone), so the round passes over it as R1 passes
+		// over the daemon's own.
+		{state: supervise.StateSuspended, by: supervise.SuspendedByProjectRelease},
 		// A suspension that holds (the operator's or the controller's) holds the pod for its
 		// holder, never for the pause.
 		{state: supervise.StateSuspended, by: supervise.SuspendedByOperator, sets: true, answeredAsked: true},

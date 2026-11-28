@@ -365,11 +365,11 @@ func heldUntil(hold store.PausePodHold, now time.Time) time.Time {
 // else. The decision that parks a launch writes the claim launching in that same decision
 // (waitOnMachine). So no reading waits for a write that comes later, such as the let-out that the
 // daemon writes on a goroutine of its own after the park (pause.go). A role that came up in the pod
-// is owed nothing. A claim suspended by any other source than a release (the daemon's own rule, a
-// root's exit, an unknown source, the operator or the controller) is gone and not released, and
-// so is a failed or a retired claim. None of them is the pause's, whatever another role of the
-// pod still waits for. A hold that stands needs no case here: a round waits over a
-// pod a hold stands on, and no round opens over it (held).
+// is owed nothing. A claim suspended by any other source than an idle release's (the daemon's own
+// rule, a root's exit, the project release, an unknown source, the operator or the controller) is
+// gone and not released, and so is a failed or a retired claim. None of them is the pause's,
+// whatever another role of the pod still waits for. A hold that stands needs no case here: a round
+// waits over a pod a hold stands on, and no round opens over it (held).
 func (h podHolds) owes(c supervise.Claim, round string) bool {
 	return h.owedLaunch(c.Role) && !answered(c, round) && (c.Released() || c.Locator == nil && !c.Gone())
 }
@@ -961,8 +961,11 @@ func (c roundClock) pastBound(group []supervise.Claim, round string) bool {
 // (dispatch://INFRA-4109 R1). It is the one statement of that rule: roundAsks leaves such a claim
 // out of both of the round's sets, and notWaitedFor names it. It is every
 // claim supervise's Claim.PassedOverByRound names, a suspension by the daemon's own rule, by a
-// root's exit, by an idle release or by an unknown source, but the one exception: a claim that a
-// project's pause still keeps (podHolds.owes, which reads the round for the claim's answer).
+// root's exit, by an idle release, by the project release or by an unknown source, but the one
+// exception: a claim that a project's pause still keeps (podHolds.owes, which reads the round for
+// the claim's answer). A claim the project release stopped is never that exception: it is not
+// released, and the release takes over the suspension of a claim the pause stopped
+// (supervise's suspensionRank).
 //
 // A pause's stop suspends each role it stops as released (supervise.SuspendedByReleased) and
 // keeps the pod for the work on its disk (decision 12 of dispatch://INFRA-3759). So such a claim
@@ -1196,8 +1199,10 @@ type podReplacement struct {
 // failed ReplacePod is logged and its record left for the next sweep, which finishes the
 // replacement where the runtime shows the suspension landed, and forgets the record and decides
 // the round afresh where it did not (finishReplacements): until then nothing is ended, so the round
-// still holds every answered worker's next task. A ReplacePod that keeps failing holds the round
-// past its bound, which only a person can end, so it is told to the controller once the
+// still holds every answered worker's next task. Where the project release holds the pod
+// (runtime.ErrProjectReleased), the runtime refuses before any suspension, so the record is
+// forgotten, no late round is told, and the round stays open. A ReplacePod that keeps failing holds
+// the round past its bound, which only a person can end, so it is told to the controller once the
 // bound has come (tellLateRound, failedReplacementReason) and names what holds the round. One
 // round is told once.
 //
@@ -1363,9 +1368,13 @@ type roundCall struct {
 // (recordRoundReplacement), so the last word is the last decision before the suspension, and a last
 // word that refuses takes it away again (recordedDue), which also says whether the runtime asked
 // the last word (asked). The call is bounded to one sweep interval. A last word that refuses is the
-// daemon's own and is logged only, and the round stays open. A call that fails otherwise is logged
-// and its record left for the next sweep (finishReplacements), and past the bound it holds the
-// round, so it is told to the controller once (tellLateRound, failedReplacementReason).
+// daemon's own and is logged only, and the round stays open. The project release's refusal
+// (runtime.ErrProjectReleased) comes before any suspension, so the call's record is forgotten, one
+// line is logged, no late round is told, and the round stays open. A call that fails otherwise is
+// logged and its record left for the next sweep (finishReplacements), and past the bound it holds
+// the round, so it is told to the controller once (tellLateRound, failedReplacementReason). While
+// the project release holds the project no sweep reads that record, and the release settles it
+// under the pod's launch turn before it deletes the pod (projectReleaser.settleReplacements).
 //
 // A call that answers nil made the replacement, or found the round's pod already taken and asked
 // no last word. Such a call took nothing, and the round ends as the act that did take the pod: as
@@ -1405,6 +1414,12 @@ func (s *supervision) replaceForRound(ctx context.Context, replace podReplacemen
 	if err := rc.call(limited, s.recordedDue(recorded, &asked, rc.due(issue, round, read.at, &ended))); err != nil {
 		if errors.Is(err, errReplacementNotDue) {
 			s.log.Info(rc.notDue, "issue", issue, "round", round, "pod", pod, "reason", err)
+			return
+		}
+		if errors.Is(err, runtime.ErrProjectReleased) {
+			s.forgetReplacement(ctx, recorded)
+			s.log.Info("supervise: the project release holds this update round's pod; the round's replacement took nothing and the round stays open",
+				"issue", issue, "round", round, "pod", pod, "reason", err)
 			return
 		}
 		if ctx.Err() == nil {
@@ -2113,9 +2128,10 @@ func (s *supervision) issuePodKept(group []supervise.Claim, round string, clock 
 // a claim that records a process in the pod, or what holds the pod. Nothing then ends, and the
 // next sweep decides the round afresh. The runtime asks the same last word again under the pod's
 // launch turn (issueReplacementDue), and a refusal there is the daemon's own and is logged only. A
-// replacement the runtime refused for any other reason is retried at the next sweep. Past the
-// bound it holds the round, so it is told to the controller once, as a failed ReplacePod is
-// (tellLateRound, failedReplacementReason).
+// refusal for the project release (runtime.ErrProjectReleased) forgets its record and tells nothing
+// (replaceForRound). A replacement the runtime refused for any other reason is retried at the next
+// sweep. Past the bound it holds the round, so it is told to the controller once, as a failed
+// ReplacePod is (tellLateRound, failedReplacementReason).
 //
 // A replacement made ends the round as a replacement the round made (endPodUpdates). The runtime's
 // nil for a pod it found no longer there took nothing, and ends the round as the act that took the
@@ -2298,9 +2314,16 @@ func (s *supervision) issueReplacementDue(issue, round string, readAt time.Time,
 // pod's roles can keep working under, keeps the pod, ends the round with no replacement
 // (keepPodForRound), and answers no, so the launch starts its role in the kept pod. A read that
 // finds nothing, or a round over a drift that breaks the pod, answers yes, and the read is kept
-// with the replacement for the sweep's end of the round (endRoundALaunchReplaced). No turn voids
-// this read: the launch holds the pod's launch turn, so no role can start in the pod before the
-// launch replaces it.
+// with the replacement for the sweep's end of the round (endRoundALaunchReplaced). Where the
+// project release sets its mark while that read runs, the replacement's record is forgotten before
+// anything is marked for the sweep, and the hook refuses with runtime.ErrProjectReleased. A mark
+// set after the hook read it clear leaves the record and the replacement kept in memory standing,
+// and the runtime then refuses the launch before it suspends anything (the Sandbox runtime's
+// releaseHolds): the release settles that record under the pod's launch turn before it deletes the
+// pod, forgetting it where the read of its act finds the pod still running as the issue's own
+// (projectReleaser.settleReplacements), and the replacement kept in memory then finds no record and
+// queues nothing (roundReplaced, whose finish answers it not found). No turn voids this read: the
+// launch holds the pod's launch turn, so no role can start in the pod before the launch replaces it.
 //
 // Each answer is kept for the round (podUpdateLaunchReplaced), under a mutex that no runtime call
 // is made under: a keep for token, which the next launch into the pod reads, and a replacement,
@@ -2364,6 +2387,10 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 	recorded, ok := s.recordRoundReplacement(ctx, issue, round, podUID, reasons, read)
 	if !ok {
 		return s.keepAtLaunch(issue, round, token, "the record of the replacement cannot be written")
+	}
+	if s.plan.release.held() {
+		s.forgetReplacement(ctx, recorded)
+		return false, fmt.Errorf("launch into the pod of round %s: %w", round, runtime.ErrProjectReleased)
 	}
 	s.replacedAtLaunch(issue, round, replacedLaunch{ended: readRoundEnd(group, round, clock), read: read, record: recorded})
 	s.log.Info("supervise: no role process runs in the pod of this update round, and nothing holds the pod; the launch replaces the pod and starts its role in a new pod",
@@ -3315,8 +3342,9 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 //
 // The text is the round's own terms, as its claims recorded them: the reasons the round opened
 // with (roundReasons), never the drift this tick read, and the moment the round ends at the
-// latest, its recorded opening plus pod_update_grace_minutes (supervise.UpdateTask). So every
-// role of one round reads one text, and the record an operator reads names the same reasons
+// latest, its recorded opening plus pod_update_grace_minutes (supervise.UpdateTask, which also
+// takes the role, since the reviewer creates no commit). So every role of one round reads the
+// same reasons and the same moment, and the record an operator reads names the same reasons
 // (dispatch://INFRA-2981 R9).
 //
 // It marks nothing. A claim is asked once an ask reached a session, and the outbox's row is what
@@ -4439,10 +4467,12 @@ func workingClaims(group []supervise.Claim) []string {
 }
 
 // backgroundHold is the background hold over a round's pod replacement
-// (dispatch://INFRA-4203 R1) as backgroundClaims reads it: running is each role whose activity
-// report names background work that runs, with the kinds that report names, and unreported is
-// each role that has sent no report since its last turn started, in the group's order. It holds
-// the replacement when it names a role; the zero value names none.
+// (dispatch://INFRA-4203 R1) as backgroundClaims reads it, and over a project release's delete of
+// an issue pod (dispatch://INFRA-3583 R6) as projectReleaser.background reads it, each claim by
+// one rule (weigh): running is each role whose activity report names background work that runs,
+// with the kinds that report names, and unreported is each role that has sent no report since
+// its last turn started, in the group's order. It holds the replacement, or the delete, when it
+// names a role; the zero value names none.
 type backgroundHold struct {
 	running    map[string][]string
 	unreported []string
@@ -4484,40 +4514,45 @@ func (h backgroundHold) refusal() string {
 
 // backgroundClaims is the background hold as group reads it (dispatch://INFRA-4203 R1): every
 // claim that can still run work in the round's own pod whose activity report does not say that
-// nothing of its own runs. Such a claim is not gone (supervise.Claim.Gone): it is in no failed,
-// retired or suspended state, none of which runs a process. Its locator records a process in the
-// round's pod (inRoundPod), as podProcess reads it: a claim whose process is in another pod runs
-// nothing this round's replacement ends. A claim the round does not ask is weighed too, since a
-// role launched into the round's pod after the round opened, or still launching there with no
-// session, runs in the pod the replacement deletes all the same.
-//
-// The report is read by claim.ReadSessionWork against the claim's last turn start
-// (supervise.Claim.LastTurnStart), which every turn moves. A report that names running background
-// work holds the round with the kinds it names. No report, or one read before that turn started,
-// holds the round as unreported, because such a turn can have started work the report does not
-// name. The report is the store row's, at the view's own launch (roundGroup).
+// nothing of its own runs (weigh). Its locator records a process in the round's pod (inRoundPod),
+// as podProcess reads it: a claim whose process is in another pod runs nothing this round's
+// replacement ends. A claim the round does not ask is weighed too, since a role launched into the
+// round's pod after the round opened, or still launching there with no session, runs in the pod
+// the replacement deletes all the same. The report is the store row's, at the view's own launch
+// (roundGroup).
 func backgroundClaims(group []supervise.Claim, round string) backgroundHold {
 	var hold backgroundHold
 	for _, c := range group {
-		if c.Gone() {
-			continue
-		}
-		if !inRoundPod(c, round) {
-			continue
-		}
-		switch claim.ReadSessionWork(c.ActivityAt, c.LastTurnStart, c.ActivityBackground) {
-		case claim.WorkRunning:
-			if hold.running == nil {
-				hold.running = map[string][]string{}
-			}
-			hold.running[string(c.Role)] = c.ActivityKinds
-		case claim.WorkUnreported:
-			hold.unreported = append(hold.unreported, string(c.Role))
-		case claim.WorkSettled:
-			// A report read since the last turn started that names nothing running holds nothing.
+		if inRoundPod(c, round) {
+			hold.weigh(c)
 		}
 	}
 	return hold
+}
+
+// weigh adds c to the hold by its activity report, the one rule an update round's replacement
+// (backgroundClaims) and a project release's ask and wait (projectReleaser.background) read a
+// claim by. A claim that is gone (supervise.Claim.Gone) holds nothing: it is in a failed, retired
+// or suspended state, none of which runs a process. The report of any other claim is read by
+// claim.ReadSessionWork against the claim's last turn start (supervise.Claim.LastTurnStart),
+// which every turn moves. A report that names running background work holds with the kinds it
+// names. No report, or one read before that turn started, holds as unreported, because such a
+// turn can have started work the report does not name.
+func (h *backgroundHold) weigh(c supervise.Claim) {
+	if c.Gone() {
+		return
+	}
+	switch claim.ReadSessionWork(c.ActivityAt, c.LastTurnStart, c.ActivityBackground) {
+	case claim.WorkRunning:
+		if h.running == nil {
+			h.running = map[string][]string{}
+		}
+		h.running[string(c.Role)] = c.ActivityKinds
+	case claim.WorkUnreported:
+		h.unreported = append(h.unreported, string(c.Role))
+	case claim.WorkSettled:
+		// A report read since the last turn started that names nothing running holds nothing.
+	}
 }
 
 // podProcess is the claim the round's pod is ended through: the first claim of the group that

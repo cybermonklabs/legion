@@ -1,0 +1,63 @@
+kind: Added
+body: |-
+  `legion project release --operator-token-file <file> [--bound <duration>] [--wait <duration>]
+  [--dry-run] [--json]` releases every pod of the daemon's project, the first step of moving the
+  project's pods to another Kubernetes cluster. The daemon reads each issue pod's workspace for
+  the issue's commits no remote holds: those under a working copy or a local bookmark, those with a
+  change and no description, and, until the issue's pull request merges, those whose
+  `Omp-Session` trailer names a session the issue's claims hold or whose `Dispatch` trailer names
+  the issue. It asks each running role of a pod with such commits, a refused read or
+  a turn in progress to push to `legion/<KEY>`, to let its subagents and background jobs finish
+  and push what they made, and to answer; it tells the reviewer, which creates no commit, that it
+  pushes nothing. It waits for the answers or the bound,
+  `pod_update_grace_minutes` by default. Then it stops every role process and deletes every
+  Sandbox of the project. It saves no workspace.
+  A pod in which no role process runs is read through its launcher before its delete, by the read
+  the idle release makes, which counts only the commits under a working copy or a local bookmark,
+  and the pod's line says so as its reason; the line is `deleted_unread`, with the reason, only
+  where that launcher does not answer the read or refuses it.
+  A role whose activity report names a running subagent or background job, or that has sent no
+  report since its last turn, is asked and waited for as a role in a turn is, as an update round
+  reads that report, and the ask tells each role so.
+  From the release's start the daemon starts nothing of the project. The daemon's next boot ends
+  the release and starts each claim the release stopped, once, on the session it had (the
+  controller's in a fresh session where the controller keeper replaces its session, as for one
+  older than `controller_session_max_age_hours`), in the cluster the daemon's configuration then
+  names, and charges it no launch failure and no death.
+  Those starts reach each new issue pod's start gate as starts no request raised: the first starts
+  at once, and of those that wait behind its load the role working the issue's phase loads its
+  session first.
+  A pod that holds a claim an operator or the project's controller suspended, or whose ask to its
+  roles could not be written before the bound or reached no session of them by it, is left with
+  its disk, and the claims that ran there stay held for an operator.
+  Before it deletes an issue pod, under the pod's launch turn, the release settles each standing
+  record of a replacement of that pod that an update round or a launch wrote before acting: it
+  forgets a record whose act the cluster shows was not made, so the next boot does not tell the
+  issue's architect of a replacement that never took the pod, and keeps one whose act was made. It
+  leaves the pod where the daemon cannot say whether a record's act was made or cannot read that
+  act or forget the record, with a reason naming the record's operation, and where it cannot read
+  the records at all, with a reason saying so; a record forgotten before a forget that failed
+  stays forgotten. A pod update sweep that began before the release is waited for before the
+  release records itself, so none of its rounds writes such a record after the settle.
+  A notice, role message, phase-ended message, hook prompt, merge-queue removal message, merge
+  holds change message or merge-forward message held through the release reaches its claim once
+  the next boot's start of it holds its role again. The hour a phase-ended message or a hook prompt
+  waits for its role's session runs from that session's ready after the boot's start, and none of
+  it runs while the release holds the row. A claim the release stopped keeps its role in the role
+  holders Dispatch reads, since the next boot starts it on the same session, so neither its stop
+  nor that start changes Dispatch's set. The controller's `retry`, `resume_agent` and
+  `replace_pod` are refused `409 PROJECT_RELEASED` until that boot, as the operator's starts are;
+  its `stop` and `suspend` still run.
+  While the project is paused, or while a pod that a pause stopped is still held after the resume,
+  a daemon process that has run no release answers the release `409 PROJECT_PAUSED`, its dry run
+  included, names each held pod with the claims to resume (`legion claims resume --claim
+  <token>`), and records, stops and deletes nothing; one that has run a release answers that
+  release, as it does with no pause. While a release runs, `legion project pause` and the
+  controller's `pause` answer `409 PROJECT_RELEASING` and pause nothing; once the release has
+  finished, a pause is taken.
+  The command prints one line for each Sandbox and each stopped claim, and exits 0 once the
+  release finished and left no Sandbox of the project. `--dry-run` shows what a release would do
+  from the reads now, without the settle of replacement records, and changes nothing. `POST` and
+  `GET /legion/v1/operator/project/release` start and read the release, and `legion state --json`
+  shows it as `projectRelease`. docs/kubernetes.md, "Releasing a project's pods" and "Moving a
+  project's pods to another cluster", give the steps of a move.

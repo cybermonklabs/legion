@@ -37,11 +37,6 @@ func (l gitTrailer) sameAs(held string) bool {
 	return ok && strings.EqualFold(key, l.key) && value == l.value
 }
 
-// sessionIDRule is the rule a session id must meet to reach a trailer. It is the jj overlay
-// writer's rule, SESSION_ID_PATH_SEGMENT (packages/envoy-client/src/dispatch-session-directory.ts),
-// so an id that holds a line break gives no line.
-var sessionIDRule = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
-
 // gitTrailers is the lines a commit gets, in order, each only where its value is valid.
 //
 // Omp-Session holds the session id that the dispatch command acts as (runDispatchCli,
@@ -67,7 +62,7 @@ func gitTrailers(env map[string]string) []gitTrailer {
 			id = env["CLAUDE_CODE_SESSION_ID"]
 		}
 	}
-	if sessionIDRule.MatchString(id) {
+	if legionclaim.SessionIDRule.MatchString(id) {
 		lines = append(lines, gitTrailer{"Omp-Session", id})
 	}
 	if role := legionclaim.Role(env["LEGION_ROLE"]); legionclaim.IsRole(role) || role == legionclaim.RoleController {

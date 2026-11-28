@@ -237,11 +237,13 @@ func TestStatesIsEveryDeclaredStateOnce(t *testing.T) {
 
 // SuspendSources is the one list of every suspension source that a test outside this package
 // walks, such as internal/daemon's test that every claim shape is in both sets of an update round
-// or in neither. That test cannot read this package's source, so this test holds the list to the
-// SuspendSource constants the compiler sees here (sealedSource), as
-// TestStatesIsEveryDeclaredStateOnce holds States: a source added to the const block and left out
-// of the list fails here, rather than passing every walk of the list. Each source is in the list
-// once.
+// or in neither, and the list a project release's words for how a claim ended are built from
+// (api.ReleasedClaimEnds), which every plugin reads through a strict enum. Neither can read this
+// package's source, so this test holds the list to the SuspendSource constants the compiler sees
+// here (sealedSource), as TestStatesIsEveryDeclaredStateOnce holds States: a source added to the
+// const block and left out of the list fails here, rather than passing every walk of the list or
+// writing a word that neither the golden file nor the contracts suite holds. Each source is in the
+// list once.
 func TestSuspendSourcesIsEveryDeclaredSourceOnce(t *testing.T) {
 	declared := sealedSource(t).sources
 	if len(declared) == 0 {

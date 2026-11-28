@@ -15,7 +15,8 @@ import (
 // The publication of an issue's role sessions to Dispatch is an outbox row the daemon's board lane
 // runs (record.RoleHoldersPublish, PUT /api/v1/issues/{key}/role-holders), and it reads from the
 // claims when it runs the set of sessions whose claims hold their roles (supervise.HoldsRole): a
-// claim the idle release suspended is in it. Once the daemon has turned the publication on
+// claim the idle release suspended is in it, and so is one the project release stopped. Once the
+// daemon has turned the publication on
 // (PublishRoleHolders), the claim write that changes the session holding a role queues it in that
 // write's own transaction (putClaim), where every write of a claim's state and session converges,
 // so the change and the obligation to publish it commit together or not at all: no change of a

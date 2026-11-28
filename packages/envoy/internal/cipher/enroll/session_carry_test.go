@@ -32,12 +32,12 @@ const (
 func daemonLogin(t *testing.T, svc *Service) Credential {
 	t.Helper()
 	if svc.ServiceLogins == nil {
-		svc.ServiceLogins = map[string]string{}
+		svc.ServiceLogins = map[string]ServiceLogin{}
 	}
 	if svc.ServicesByAccount == nil {
 		svc.ServicesByAccount = map[string]string{}
 	}
-	svc.ServiceLogins[carryDaemonAccount] = "legion-daemon"
+	svc.ServiceLogins[carryDaemonAccount] = ServiceLogin{Service: "legion-daemon", Issuers: []string{""}}
 	svc.ServicesByAccount[carryPodAccount] = "legion-daemon"
 	return podRig{svc: svc}.login(t, carryDaemonAccount, "")
 }

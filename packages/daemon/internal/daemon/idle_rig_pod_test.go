@@ -53,7 +53,9 @@ type idleRigPods struct {
 	dial    func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)
 
 	mu sync.Mutex
-	// running is each live pod's launchers, by pod name.
+	// running is each live pod's launchers, by the pod's cluster and name (idleRigPodKey): two
+	// clusters may each hold a pod of one name, since a pod is named for its claim and not for
+	// where it runs.
 	running map[string]*idleRigPodProcesses
 	// logs is every launcher's own log, for a failure to name what the pod did.
 	logs *syncBuffer
@@ -109,8 +111,8 @@ func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect strin
 	// the root it made against that path and takes a shorter base where the machine's own
 	// temporary directory leaves too little room. The root is made here, on the test's own
 	// goroutine, because testtmp.Dir ends in t.Fatalf when neither base takes a directory, and
-	// privateDir runs on the fake Kubernetes server's goroutine, where a t.Fatalf would stop
-	// that goroutine alone and leave the test to run to its deadline.
+	// privateDir runs on the pod's own goroutine (idleRigPodProcesses.run), where a t.Fatalf
+	// would stop that goroutine alone and leave the test to run to its deadline.
 	root := testtmp.Dir(t, filepath.Join("999", shimwire.GenerationDir(999), ompsessions.SocketName))
 	located, err := workspace.Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "legion-208")
 	if err != nil {
@@ -131,44 +133,66 @@ func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect strin
 	return p
 }
 
+// idleRigPodKey is a pod's place among the rig's running pods: the cluster that holds it, by the
+// prefix of that cluster's Kubernetes stand-in (issueSandboxAPI.prefix), and its name.
+func idleRigPodKey(cluster, pod string) string { return cluster + "/" + pod }
+
 // podReady starts a launcher for each role of the pod, with that role's own launcher token and
-// the stream and MicroVM launch answers for the pod; a pod launch refuses gets no launcher and
-// counts no start. Before each launcher starts, record is handed its role, its private directory
-// and the pod's processes, beside which record may run its own (idleRigPodProcesses.run).
-func (p *idleRigPods) podReady(pod, podUID string, roles map[string]string, record func(role, dir string, processes *idleRigPodProcesses)) {
+// the stream and MicroVM launch answers for the pod, once prepare has readied the pod's disk, as
+// the pod's init containers ready it before its main container starts; a nil prepare readies
+// nothing. A pod launch refuses gets no launcher and counts no start. The preparation runs on a
+// goroutine of the pod's own (idleRigPodProcesses.run), which then starts the launchers, so one
+// pod's preparation holds back no other pod, and a pod gone before its preparation ended starts
+// no launcher. Before each launcher starts, record is handed its role, its private directory and
+// the pod's processes, beside which record may run its own (idleRigPodProcesses.run).
+func (p *idleRigPods) podReady(cluster, pod, podUID string, roles map[string]string, prepare func(context.Context) error,
+	record func(role, dir string, processes *idleRigPodProcesses),
+) {
 	connect, microVM, ok := p.launch(pod, podUID)
 	if !ok {
 		return
 	}
+	key := idleRigPodKey(cluster, pod)
 	p.mu.Lock()
-	if _, live := p.running[pod]; live {
-		p.mu.Unlock()
+	defer p.mu.Unlock()
+	if _, live := p.running[key]; live {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	processes := &idleRigPodProcesses{connect: connect, ctx: ctx, cancel: cancel}
-	p.running[pod] = processes
+	p.running[key] = processes
 	p.started[pod]++
-	p.mu.Unlock()
-	for role, token := range roles {
-		dir, err := p.privateDir()
-		if err != nil {
-			p.t.Errorf("make the private directory of %s/%s: %v", pod, role, err)
-			continue
-		}
-		processes.dirs = append(processes.dirs, dir)
-		record(role, dir, processes)
-		cfg := launcher.Config{
-			Connect: connect, MicroVM: microVM, Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
-			Stdout: p.logs, Stderr: p.logs, StopGrace: 10 * time.Second,
-			SessionDatabase: p.session, SessionDialer: p.dial, Workspace: p.workspace,
-		}
-		processes.run(func(ctx context.Context) {
-			if err := launcher.Run(ctx, cfg); err != nil && ctx.Err() == nil {
-				fmt.Fprintf(p.logs, "launcher %s/%s: %v\n", pod, role, err)
+	// The pod's goroutine is counted while p.mu is held, so a podGone that finds the pod waits
+	// for it too.
+	processes.run(func(ctx context.Context) {
+		if prepare != nil {
+			if err := prepare(ctx); err != nil {
+				if ctx.Err() == nil {
+					fmt.Fprintf(p.logs, "pod %s: its init containers failed, so no launcher of it starts: %v\n", key, err)
+				}
+				return
 			}
-		})
-	}
+		}
+		for role, token := range roles {
+			dir, err := p.privateDir()
+			if err != nil {
+				p.t.Errorf("make the private directory of %s/%s: %v", pod, role, err)
+				continue
+			}
+			processes.dirs = append(processes.dirs, dir)
+			record(role, dir, processes)
+			cfg := launcher.Config{
+				Connect: connect, MicroVM: microVM, Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
+				Stdout: p.logs, Stderr: p.logs, StopGrace: 10 * time.Second,
+				SessionDatabase: p.session, SessionDialer: p.dial, Workspace: p.workspace,
+			}
+			processes.run(func(ctx context.Context) {
+				if err := launcher.Run(ctx, cfg); err != nil && ctx.Err() == nil {
+					fmt.Fprintf(p.logs, "launcher %s/%s: %v\n", pod, role, err)
+				}
+			})
+		}
+	})
 }
 
 // privateDir is one launcher's private directory, where its generations' credentials and the unix
@@ -193,12 +217,17 @@ func (p *idleRigPods) privateDir() (string, error) {
 	return dir, nil
 }
 
-// podGone stops every launcher of the pod and waits for them, as the kubelet's stop of the
-// container does: the pod is gone, so nothing of it may still answer the daemon.
-func (p *idleRigPods) podGone(pod string) {
+// podGone stops every launcher of the cluster's pod and waits for them, as the kubelet's stop of
+// the container does: the pod is gone, so nothing of it may still answer the daemon.
+func (p *idleRigPods) podGone(cluster, pod string) {
+	p.stop(idleRigPodKey(cluster, pod))
+}
+
+// stop stops the launchers of the pod at key and waits for them.
+func (p *idleRigPods) stop(key string) {
 	p.mu.Lock()
-	processes, live := p.running[pod]
-	delete(p.running, pod)
+	processes, live := p.running[key]
+	delete(p.running, key)
 	p.mu.Unlock()
 	if !live {
 		return
@@ -212,13 +241,13 @@ func (p *idleRigPods) podGone(pod string) {
 
 func (p *idleRigPods) stopAll() {
 	p.mu.Lock()
-	pods := make([]string, 0, len(p.running))
-	for pod := range p.running {
-		pods = append(pods, pod)
+	keys := make([]string, 0, len(p.running))
+	for key := range p.running {
+		keys = append(keys, key)
 	}
 	p.mu.Unlock()
-	for _, pod := range pods {
-		p.podGone(pod)
+	for _, key := range keys {
+		p.stop(key)
 	}
 }
 
@@ -254,10 +283,11 @@ func idleRigSessionTable() string {
 	)`
 }
 
-// idleRigSessionFile is the session file the rig's stand-in agent of role reports to the daemon,
-// the path a resume names. It is the shape a pod's Oh My Pi writes under its own state directory.
-func idleRigSessionFile(issue, role string) string {
-	return "/legion/sessions/" + issue + "-" + role + ".jsonl"
+// idleRigSessionFile is the session file of a session the rig's stand-in agent starts, which it
+// reports to the daemon and which a resume names. It is the shape a pod's Oh My Pi writes under its
+// own state directory, and its base name is the session's id, which a resumed process reads back.
+func idleRigSessionFile(session string) string {
+	return "/legion/sessions/" + session + ".jsonl"
 }
 
 // idleRigLegionTool writes, under dir, the `legion` the pod's launcher runs as the role process:

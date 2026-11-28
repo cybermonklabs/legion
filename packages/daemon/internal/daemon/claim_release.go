@@ -301,12 +301,12 @@ func (f *claimReleaseFailure) Unwrap() error { return f.err }
 // its holder's name: settle computes permanentRefusal before it tests wait.ErrWaiting, so a wait
 // errors.As could reach the *dispatch.Error through would be finished rather than retried.
 //
-// It is routine (routineWaiting), so the hour's attempts stay at debug: the backoff caps at 64
+// It is routine (wait.Routine), so the hour's attempts stay at debug: the backoff caps at 64
 // seconds, so an hour costs about 57 of them, and every attempt from the seventh would otherwise
 // be logged as a warning (waitWarnAttempts). A holder that has not stopped yet is not something an
 // operator should be woken for; the hour running out is, and that line is its own.
 func claimHeldWait(holder string) error {
-	return routineWaiting{err: wait.Errorf("the Dispatch claim is still held by %s", holder)}
+	return wait.Routine(wait.Errorf("the Dispatch claim is still held by %s", holder))
 }
 
 // claimContendedWait is the wait a claim release answers a contended refusal with
@@ -317,10 +317,10 @@ func claimHeldWait(holder string) error {
 // refused release at is wall-clock time from row.CreatedAt, so the time these retries take
 // counts toward it like any other, and a refusal naming the holder (dispatch.Claimed) after them
 // can end the row at once. It wraps nothing of Dispatch's refusal, for the reason claimHeldWait
-// gives, and it is routine (routineWaiting), as claimHeldWait's wait is and for the same reason:
+// gives, and it is routine (wait.Routine), as claimHeldWait's wait is and for the same reason:
 // Dispatch applied nothing, so the row has only to ask again.
 func claimContendedWait(issue string) error {
-	return routineWaiting{err: wait.Errorf("the Dispatch claim of %s was contended while it was released", issue)}
+	return wait.Routine(wait.Errorf("the Dispatch claim of %s was contended while it was released", issue))
 }
 
 // releaseParkedClaims queues one Dispatch claim release (record.ClaimRelease) for each issue of

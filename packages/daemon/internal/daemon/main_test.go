@@ -69,11 +69,13 @@ var processDSN string
 // would return from its test, print PASS and exit 0, and the daemon would read every one of its
 // roles as a process that died at once. So the child's run is told apart by that variable and
 // skips the guard, keeping what its launcher handed it, which is what Guard's own doc asks for a
-// helper child ("that child keeps the variables its test hands it"); it runs no git or jj of its
-// own, and goes on into m.Run as any other run of this binary does, where the one test it names
-// serves the rig. That child serves one rig and clones no database and builds nothing, so it
-// takes neither template nor build directory, and it is told of no database either: the rig's
-// launchers run without TestPostgres, so testPGEnv takes LEGION_TEST_PG_DSN out of the child.
+// helper child ("that child keeps the variables its test hands it"); the git and jj it runs on a
+// rig's workspace run under the environment the rig hands it with that workspace
+// (idleRigWorkspaces.env), never under its own, and it goes on into m.Run as any other run of
+// this binary does, where the one test it names serves the rig. That child serves one rig and
+// clones no database and builds nothing, so it takes neither template nor build directory, and
+// it is told of no database either: the rig's launchers run without TestPostgres, so testPGEnv
+// takes LEGION_TEST_PG_DSN out of the child.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(daemonTestParallelism)); err != nil {
 		fmt.Fprintf(os.Stderr, "TestMain: set this package's default -parallel: %v\n", err)

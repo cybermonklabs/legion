@@ -8,8 +8,8 @@ name: CI job daemon-go
 # and let the jobs daemon-go and daemon-go-race report a failed leg (`!cancelled()`).
 #
 # What runs here is the Go daemon's own tests — the plain step over every package of
-# packages/daemon but the five concurrent ones and the text checks, less the two pure table
-# pins of internal/supervise, which the text-check job runs by name and this step skips by name,
+# packages/daemon but the five concurrent ones and the text checks, less the four pure pins of
+# internal/supervise, which the text-check job runs by name and this step skips by name,
 # internal/ompsessions' left-setting test, which a step of its own runs by name with -v,
 # the shape gate of internal/api a second time, stamped with HEAD's merge order, the race step
 # over those five packages, the forced-order step over the daemon's TestForcedOrder
@@ -222,7 +222,7 @@ jobs:
       # place, so a package the file does not name fails every leg rather than run in none, and
       # `set -o pipefail` is what fails the step then rather than test what xargs got.
       #
-      # The -skip is the text-check job's two tests of internal/supervise, the pure table pins
+      # The -skip is the text-check job's four tests of internal/supervise, the pure pins
       # ci_job_reads.py's SUPERVISE_TABLE_TESTS names: they read that package's own source and
       # no database, so they run in .github/workflows/ci-job-text-checks.yaml beside the other
       # tests whose subject is text, where they wait behind no fixture, and a test run twice is
@@ -234,12 +234,12 @@ jobs:
       #
       # It skips internal/ompsessions' TestTheClientHoldsUnderEveryLeftSetting too, which the step
       # "Test the session client under left settings" below runs by name with -v: ci_job_reads.py's
-      # SESSION_CLIENT_LEFT_TESTS builds both steps' texts and joins its name and the two pins into
+      # SESSION_CLIENT_LEFT_TESTS builds both steps' texts and joins its name and the four pins into
       # this one -skip, sorted.
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheClientHoldsUnderEveryLeftSetting|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestStatesIsEveryDeclaredStateOnce|TestSuspendSourcesIsEveryDeclaredSourceOnce|TestTheClientHoldsUnderEveryLeftSetting|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
       # internal/ompsessions' TestTheClientHoldsUnderEveryLeftSetting, which the next step runs,
@@ -561,9 +561,12 @@ jobs:
       # The step carries a package deadline of its own, as the envoy race lanes do: under go
       # test's ten-minute default, internal/daemon, by far the slowest of the five packages, took
       # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
-      # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
-      # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
-      # slowest run.
+      # main at job 125691048644 (run 41562777668). No single test dominated it before the project
+      # release's tests: a local run then timed 648 tests one after another, the slowest at 44 s.
+      # The project release's tests took the whole package to more than 1,980 s, past 30 minutes
+      # (docs/testing.md), and TestAProjectMovesToAnotherClusterAndBack took 243 s without -race in
+      # an issue pod on 2026-11-15; each of the three legs that run the package runs a group of its
+      # tests, about a third, under these 30 minutes.
       #
       # The -skip is the plugin-pack job's three tests, the ones of internal/daemon that
       # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin

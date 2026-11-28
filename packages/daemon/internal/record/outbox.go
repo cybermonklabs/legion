@@ -206,6 +206,85 @@ func OutboxLanes() []OutboxLane {
 	return slices.Sorted(maps.Keys(laneKinds))
 }
 
+// HeldByProjectRelease is whether a project release holds an outbox row of payload until the
+// daemon's next boot (dispatch://INFRA-3583 R7): the outbox answers such a row a wait, and it runs
+// once the boot has ended the release and started again the claims the release stopped. A held
+// row is one that would start or prompt a role, which a released daemon does for nobody:
+//
+//   - a supervise row that starts a role (op `start`: a start, a resume, a retry, a phase's task,
+//     a start queued for news of the approved design alone (SuperviseRequest.News), and the launch
+//     a project pause owed a role it stopped, WakeKind pods.WakePause) or stops one for an idle
+//     release (op `release`, whose release the project release took over);
+//   - the rows that publish to a role or its architect, each of which prompts a turn or waits for
+//     a released pod to come back: notice (the architect's notices of a root's design-gate basis
+//     and of a parent's wait on its children, resting-root, basis-ended, basis-changes-requested,
+//     awaiting-children and retro-held, among them), controller_notice (a project pause's
+//     project-paused and project-resumed notices among them), role_message, phase_ended (the end
+//     of a parent's worker's phase, which wakes a released role as a hook prompt does),
+//     hook_prompt, merge_queue_removal, merge_holds_changed (the merger's message that the
+//     project's merge holds changed, which wakes a released merger as the merge-queue message
+//     does) and merge_forward, and the two reads of GitHub whose answers write such a message:
+//     merge_queue_read, which writes that removal's message, and conflict_confirm, whose
+//     confirmation writes a merge forward's messages;
+//   - the production check's rows, which start and end the checking role's looks: check_wake,
+//     check_look and check_bound;
+//   - the idle release's own workspace check and teardown (issue_bundle, issue_release), and the
+//     workspace check of a left pod's close, of the same kind, which the project release took over;
+//   - an update round's ask (update_ask), but for the asks of the daemon's own release
+//     (releaseRound, the round its asks ride, while it runs and once it finished; "" before its
+//     record committed, which holds every ask).
+//
+// A held row spends no attempt, and nothing of its executor runs, so nothing ends it while the
+// release holds it, a hook prompt's or a phase-ended message's hour (internal/daemon's
+// keptRoleMessageEnded) included. At the next boot it runs as any row of its kind. One for a role
+// the release stopped waits for the start the boot gives that role until its session holds the
+// role again, and the hour cannot end it while that start is coming (the daemon's wakeComing and
+// bootStartComing); its hour then runs from that session's ready. For any other role the
+// release's time counts toward the hour.
+//
+// Every other row runs: the Dispatch writes and publishes (dispatch_status, dispatch_message,
+// gated_steps_publish, design_gates_publish and role_holders_publish; a claim the release stops
+// holds its role (supervise.HoldsRole), so its stop queues no publication and Dispatch's set names
+// its session through the release and the boot's start of it), the project's state events
+// (state_change, state_admission and state_boot on the state lane, which publish what Dispatch
+// observes, the claims the release stops among it, and which a held row would hold every later
+// event of the project behind), the writes of an issue's step records and of the plan its run
+// carries out (step_record, plan_record), the release of a Dispatch claim (claim_release: the
+// move's, the boot pass's, and the one a claim write queues for a session it left behind, which
+// starts no role either; a claim the release stops keeps its session, so its stop leaves no
+// session behind, and a left session's row that finds a stopped claim naming that session as its
+// current one leaves the Dispatch claim to it, works-now), the reconcile of a tree's news of its
+// approved design (design_changes), which reads Dispatch and writes the news record, a supervise
+// row that stops a role (op `suspend`, `issue_close`, `tree_close`, a stopped task's `step_stop`,
+// and a project pause's `pause_stop`, which stops a live role and keeps its session, phase and
+// task, and stops nothing once its pause has ended), the retirement of the task of a phase the
+// workflow stopped (op `retire_task`), which writes the claim's record alone while the release
+// holds, since the machine hands no claim anything then (supervise.Deps.ProjectReleaseHolds), an
+// issue's pod deleted after its close (issue_suspend), a linger's close and its workspace's
+// removal (linger_close, workspace_remove), a gate's seed (gate_seed), the two reads of Dispatch
+// for a root's design-gate basis and for a re-parented root (pending_basis_seed, reparent_seed),
+// each of which applies what it read as a fact, and an issue's branch (issue_branch). None of them
+// makes a pod or prompts a role, and a start or a notice one of them queues is a row this holds. A
+// `pause_stop` that runs while the release holds suspends a role the release has not stopped yet
+// with the idle release's source, which the release's own suspension then takes over (supervise's
+// suspensionRank), and leaves a role the release stopped as it stands, ending its stop as taken
+// over (internal/daemon's pauseStopAnswered).
+func HeldByProjectRelease(payload OutboxPayload, releaseRound string) bool {
+	switch value := payload.(type) {
+	case SuperviseRequest:
+		return value.Op == "start" || value.Op == "release"
+	case UpdateAsk:
+		return releaseRound == "" || value.Round != releaseRound
+	}
+	switch payload.OutboxKind() {
+	case OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt,
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward,
+		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindIssueBundle, OutboxKindIssueRelease:
+		return true
+	}
+	return false
+}
+
 // LaneKey names one lane of one issue.
 type LaneKey struct {
 	Issue string
@@ -1350,11 +1429,14 @@ type SuperviseRequest struct {
 	// worker of the issue's new tree is until that tree's start re-points it (stopInLeftTree).
 	Generation uint64 `json:"generation"`
 	// Phase is the phase a phase worker's start serves; a start for a phase the issue has left
-	// finishes without acting. It is empty for a root's architect, which serves every phase, for a
+	// finishes without acting, unless its claim is one the project release stopped, which it then
+	// starts with no task (ReleaseStoppedStart). A start queued for news alone (News below)
+	// finishes without acting even then, since it is never the claim's start
+	// (workflow.StartsWork). It is empty for a root's architect, which serves every phase, for a
 	// child's own architect's plain start (workflow's childArchitectStart), and for a suspend or a
 	// tree's close, which must still act after the issue moves on. The start a re-admission writes
 	// to bring back a mid-phase child's own architect names the phase the child stands in (admit's
-	// startMidPhaseMembers), and finishes without acting once the child has left it.
+	// startMidPhaseMembers), and is held to that phase as a phase worker's start is.
 	Phase phase.Phase `json:"phase,omitempty"`
 	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
 	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
@@ -1379,11 +1461,15 @@ type SuperviseRequest struct {
 	// each phase start of a child runs), the roles admission brings back beside a re-admitted
 	// member's phase worker (admit's startMidPhaseMembers), the boot's resume by rule
 	// (workflow's booted), the boot's one-time start of a merger the `awaiting_merge` cutover left
-	// released (workflow's cutoverMergerRepair), the phase's resume task a ready worker level with
+	// released (workflow's cutoverMergerRepair), the boot's start of a claim the project release
+	// stopped other than a phase owner behind its entry, with no task or a phase owner's resume
+	// task (workflow's startReleaseStopped), the phase's resume task a ready worker level with
 	// the entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
 	// resume task to a silent worker level with that entry (workflow's workerSilent), a production
-	// check's look (workflow's startLook), the pod wake (workflow's wakeRow), the resume of a
-	// cancelled idle release (the daemon's outbox) and a start queued for news of the approved
+	// check's look (workflow's startLook, and the boot's start of the open look again), the pod
+	// wake (workflow's wakeRow), the resume of a cancelled idle release (the daemon's outbox), the
+	// start of a claim the project release stopped put in place of a start of its role that would
+	// otherwise end unrun (ReleaseStoppedStart), and a start queued for news of the approved
 	// design alone (News below, the daemon's design_changes reconcile). Each hands its role work
 	// it was already on, or work no phase entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
@@ -1446,10 +1532,13 @@ type SuperviseRequest struct {
 	// the way back of 20261116234034_phase_reviewed_head deletes the key from each row before that
 	// release boots.
 	RoundNamed bool `json:"roundNamed,omitempty"`
-	// RuleResume marks the boot's resume-by-rule start, and the boot's one-time start of a merger
-	// the `awaiting_merge` cutover left released (workflow's cutoverMergerRepair). If its resumed
-	// claim spends its launch budget, the runner finishes this row rather than retrying it as
-	// RequestRetry with fresh budgets: the failed claim stays failed for the boot report to name.
+	// RuleResume marks the boot's resume-by-rule start, the boot's one-time start of a merger the
+	// `awaiting_merge` cutover left released (workflow's cutoverMergerRepair), and the boot's start
+	// of each claim the project release stopped (workflow's startReleaseStopped). It marks too the
+	// start of such a claim put in place of a start of its role that would otherwise end unrun
+	// (ReleaseStoppedStart). If its resumed claim spends its launch budget, the runner finishes
+	// this row rather than retrying it as RequestRetry with fresh budgets: the failed claim stays
+	// failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
 	// NeedsSlot marks a start whose phase holds one of the cap's slots (PhaseKeepsSlot) as one
 	// that waits for its issue's admission slot. The cap counts the issues the daemon has
@@ -1566,6 +1655,24 @@ type SuperviseRequest struct {
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
+
+// ReleaseStoppedStart is the start of a claim the project release stopped (stored suspended by
+// `project_release`): resumed by rule (RuleResume), with no phase, task, entry or slot mark, so
+// no phase or entry fence holds it and it waits for no slot. The boot starts with it each such
+// claim but a phase owner behind its entry and the role of an open production check look, and
+// adds a phase owner's phase and resume task to it where that owner stands level with its entry
+// (workflow's startStoppedClaim). The boot writes no start for a phase owner a queued start
+// already covers (workflow's startReleaseStopped), so a queued start may be that claim's one
+// start, and ended unrun it would leave the claim suspended with every delivery for it waiting
+// (the daemon's bootStartComing). So each place that would end a start of such a claim unrun puts
+// this start in its place: the outbox's phase and entry fences, for a start they would finish
+// other than one queued for news alone (SuperviseRequest.News), which is never the claim's start
+// (the daemon's releaseStoppedStart, workflow.StartsWork); Store.EnqueueStart, for a start of
+// another role that it takes out; and admission's repair, for a held start whose phase alone the
+// issue has left (admit's finishFencedStarts).
+func ReleaseStoppedStart(tree string, role claim.Role, generation uint64) SuperviseRequest {
+	return SuperviseRequest{Op: "start", Tree: tree, Role: role, Generation: generation, RuleResume: true}
+}
 
 // GateSeed records the design document version that starts a gate, and the step whose row it
 // starts: the seed reads that document from Dispatch and applies what it finds there.
@@ -1796,7 +1903,9 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // to do - a settled head's check results, which move nothing (workflow's tellChecks,
 // dispatch://INFRA-714/spec R1). A role with no live holder is told nothing: the row finishes,
 // since the message is of a moment that has passed by the time anyone claims the role, and every
-// recipient can read the pull request's checks on GitHub for itself.
+// recipient can read the pull request's checks on GitHub for itself. The exception is a role the
+// daemon's boot starts after a project release: the row waits until that role's session holds the
+// role again and is published then (the daemon's roleMessage, dispatch://INFRA-3583 R8).
 //
 // A role whose claim is released is told nothing either, and is not woken for the message: the
 // row finishes without a publish. The message's three senders in the workflow - tellChecks (a CI
@@ -1806,10 +1915,12 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // each would start a pod for every CI settlement and every gate move, once per released role.
 // Published, the message would meet a released role as one nobody holds: the listener answers
 // holder_lapsed, or unclaimed once the reaper has freed the claim, and raises the role's wake
-// beside either, so the pod would come back for a message the row had already dropped. The one
-// exception is a row a project's pause held for a role a pause stopped: without the pause the role
-// would have had the message, so the row is published to the role after the resume, and that
-// publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759).
+// beside either, so the pod would come back for a message the row had already dropped. A claim
+// the project release stopped is not released (supervise.Claim.Released): its row waits as the
+// exception above says. The one exception among released roles is a row a project's pause held
+// for a role a pause stopped: without the pause the role would have had the message, so the row
+// is published to the role after the resume, and that publish wakes it (internal/daemon's
+// outbox.roleMessage, R4 of dispatch://INFRA-3759).
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
@@ -2302,12 +2413,16 @@ func (p UndeliveredHookPrompts) Message(issue string) MessagePost {
 	return MessagePost{Body: body, HookPrompts: &p}
 }
 
-// UpdateAsk is an update round's ask to one role of the issue, on that role's own Envoy topic:
-// the daemon opened Round over Pod and will replace that pod, and Text is the whole ask, as the
-// sweep built it with supervise.UpdateTask from the round's recorded reasons and its recorded
-// opening. Role is the recipient: a phase worker or the issue's architect, since every role whose
-// process runs in the pod loses that process at the replacement. Pod is the pod the round was
-// opened over: the sweep asks only a round whose claims record one.
+// UpdateAsk is an ask to one role of the issue, on that role's own Envoy topic: an update round's,
+// or the project release's. Text is the whole ask. Role is the recipient: a phase worker or the
+// issue's architect, since every role whose process runs in the pod loses that process when the
+// pod goes. Pod is the pod the ask is about: the pod an update round was opened over (the sweep
+// asks only a round whose claims record one), or the pod the release deletes at its bound.
+//
+// An update round's ask: the daemon opened Round over Pod and will replace that pod, and Text is
+// what the sweep built with supervise.UpdateTask from the round's recorded reasons and its
+// recorded opening. The project release's ask (supervise.ReleaseTask): Round is the running
+// release's own round, "release:<id>", which no claim's round columns record.
 //
 // The row carries the finished text rather than the facts to build it from, for two reasons.
 // record does not import supervise, which owns the words. And the round's terms are fixed when
@@ -2315,11 +2430,13 @@ func (p UndeliveredHookPrompts) Message(issue string) MessagePost {
 // opened for.
 //
 // The ask is best effort: the round ends at its bound whether or not the role reads it. So a
-// row whose role no live session holds finishes undelivered, and a row whose round the claim no
-// longer records, or whose claim the daemon suspended after the row was queued, finishes without
-// a publish (the daemon's updateAsk). The daemon marks a claim asked only once its row's publish
-// reached a session, so an ask that finished undelivered is lost, not given, and the daemon's
-// sweep writes the claim a new row of this kind at a later tick.
+// row whose role no live session holds finishes undelivered, and a row of an update round the
+// claim no longer records, or whose claim the daemon suspended after the row was queued, finishes
+// without a publish (the daemon's updateAsk). The daemon marks a claim asked only once its row's
+// publish reached a session, so an ask that finished undelivered is lost, not given, and the
+// daemon's sweep writes the claim a new row of this kind at a later tick. A release's ask is
+// checked against the running release's round instead of the claim's, and marks no claim, and one
+// of a release that no longer runs finishes without a publish.
 type UpdateAsk struct {
 	Role  claim.Role `json:"role"`
 	Round string     `json:"round"`
