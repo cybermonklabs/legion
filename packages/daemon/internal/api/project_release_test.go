@@ -110,6 +110,7 @@ func TestProjectReleaseRefusesEveryStartAndPromptOfARole(t *testing.T) {
 		if recorder := h.operator(http.MethodPost, route, nil); recorder.Code != http.StatusAccepted {
 			t.Fatalf("resume with the mark clear = %d, want 202; body %s", recorder.Code, recorder.Body)
 		}
+		startEnded(h, token)
 		if got := len(h.runtime.CallsOf("Resume")) - resumes; got != 1 {
 			t.Fatalf("resumes with the mark clear = %d, want 1", got)
 		}
@@ -281,6 +282,8 @@ func TestProjectReleaseRefusesTheControllersResumeRetryAndPodUpdate(t *testing.T
 		http.StatusAccepted, AgentActionResponse{State: "launching"})
 	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/retry", "LEGION-209", claim.RoleTester),
 		http.StatusAccepted, AgentActionResponse{State: "launching"})
+	startEnded(h, implementer)
+	startEnded(h, tester)
 	if got := len(h.runtime.CallsOf("Resume")) - resumes; got != 2 {
 		t.Fatalf("the resume and the retry with the mark clear made %d resumes of a session, want 2: the implementer's and the tester's", got)
 	}

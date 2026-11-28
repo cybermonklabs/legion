@@ -197,6 +197,7 @@ type idleRigOptions struct {
 	configure func(*config.Config)
 	// controllerPlan is the plan the project controller's role process follows, set before the
 	// first boot, which launches it where configure names `controller: daemon`; nil leaves the
+	// rig's own.
 	controllerPlan *idleRigPlan
 	// ListenerEnv is each NAME=VALUE the Envoy listener is started with beside the rig's own, at
 	// its first start and at every start after (awaitListenerReady), such as the session windows a

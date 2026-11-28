@@ -2398,16 +2398,16 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 // PauseFailure or a PlanRefusal, for a registration, a role's or the controller's, that
 // carries `replaces`, and for an agent action's answer that carries `phaseNotRestarted`, and false
 // for every other answer. Those answers' shapes moved at pauseContract, at OwnerPlanContract, at
-// the replaces entry's number (entryNumber(replacesContract)) and at the claim start entry, and
-// the PauseFailure's moved again at the project release entry's number
-// (entryNumber(projectReleaseContract)), when that entry added `heldPods` (withoutHeldPods); their
-// writers answer from no snapshot of their own, so writeAnswer reads the claims for them
-// (placingClaims). A registration that replaces no session is the same body at every contract, so
-// it reads none. Every other answer writeAnswer writes is the identity at every contract, and so
-// is a plain refusal (a claim.Refusal or a Failure), so a read of the claims for one of them would
-// decide nothing. A serving-down added to one of them reaches the caller of a pod only once this
-// answers true for it. The state and the record are no question for it: their routes hand in their
-// own snapshot's claims (writeAnswerFrom).
+// the replaces entry's number (entryNumber(replacesContract)) and at the claim start entry's
+// number (entryNumber(claimStartContract)), and the PauseFailure's moved again at the project
+// release entry's number (entryNumber(projectReleaseContract)), when that entry added `heldPods`
+// (withoutHeldPods); their writers answer from no snapshot of their own, so writeAnswer reads the
+// claims for them (placingClaims). A registration that replaces no session is the same body at
+// every contract, so it reads none. Every other answer writeAnswer writes is the identity at every
+// contract, and so is a plain refusal (a claim.Refusal or a Failure), so a read of the claims for
+// one of them would decide nothing. A serving-down added to one of them reaches the caller of a pod
+// only once this answers true for it. The state and the record are no question for it: their
+// routes hand in their own snapshot's claims (writeAnswerFrom).
 func placedByPod(id AnswerID, body any) bool {
 	switch id {
 	case AnswerReleaseRecords:
