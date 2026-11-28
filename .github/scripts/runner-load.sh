@@ -18,23 +18,30 @@
 #   - where the kernel keeps pressure stall information, each line of /proc/pressure/cpu, io and
 #     memory, led by its kind: `some` and `full`, each with its `total`, the microseconds since
 #     boot in which some task, or every task, stalled for that resource.
-# Every file is read with the shell's own builtins, and the one program it starts is a `sleep` a
-# second, so the sampler adds next to nothing to the load it reads.
+# Each file is read whole, once a sample, in one pass to its end ($(<file)), and its lines are then
+# taken from that text. A `read` loop on the file itself seeks back after each line, the kernel
+# generates a /proc file again at each seek, and a line before the offset that changed length then
+# starts the next read in the middle of a line: 3 of the 410 lines of run 46166312098 lost
+# procs_blocked so. The shell's builtins do the sampling, in a subshell for each file it reads,
+# and the one program it starts is a `sleep` a second, so it adds next to nothing to the load it
+# reads.
 set -euo pipefail
 
 file=${1:?usage: runner-load.sh <file>}
 while :; do
   line=$EPOCHREALTIME
+  text=$(</proc/stat)
   while IFS= read -r stat; do
     case $stat in
       'cpu '* | 'ctxt '* | 'processes '* | procs_*) line+=$'\t'$stat ;;
     esac
-  done </proc/stat
+  done <<<"$text"
   for kind in cpu io memory; do
     [[ -r /proc/pressure/$kind ]] || continue
+    text=$(<"/proc/pressure/$kind")
     while IFS= read -r stat; do
       line+=$'\t'"$kind $stat"
-    done <"/proc/pressure/$kind"
+    done <<<"$text"
   done
   printf '%s\n' "$line" >>"$file"
   sleep 1
