@@ -750,13 +750,6 @@ internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
 list, which packages/contracts holds goBlankPattern to: an edit of the list
 alone must start both jobs, or the side it disagrees with stays green.
 
-## envoy_go: The shard job's file-store steps and the script its wait step runs, which internal/tests3 holds to their bounds
-
-internal/tests3/storesteps_test.go holds the shard job's file-store steps in
-.github/workflows/dispatch-browser.yaml, and the script its wait step runs, to their bounds
-(the `//ci:reads` lines at the head of that test file), so an edit of either file alone must
-start this job.
-
 ## envoy_go: The three jobs whose tag steps lean on this job's untagged
 
 The three jobs whose tag steps lean on this job's untagged run of ./cmd/dispatch

@@ -49,11 +49,10 @@ var noGrow = [2]string{"\n  grow\n  configure\n", "\n  configure\n"}
 var noPrepare = [2]string{"  prepare) prepare ;;", "  prepare) : ;;"}
 
 // storeCases holds a case for each check and each wait of one-collection.sh, and for runScript's
-// deadline: each wants the message that check or the end of that wait prints, and
-// TestEveryWaitAndCheckOfTheScriptHasACase fails when a message of the script is the want of no
-// case here. A case of a wait cuts that wait's bound, the text the script reads, to a few
-// seconds, so it shows that bound ends the wait without waiting out the real one, and runs under
-// a deadline the wait would meet were its bound removed.
+// deadline: each wants the message that check or the end of that wait prints. A case of a wait
+// cuts that wait's bound, the text the script reads, to a few seconds, so it shows that bound ends
+// the wait without waiting out the real one, and runs under a deadline the wait would meet were
+// its bound removed.
 var storeCases = []storeCase{{
 	// Then the first write would be the one that grows the collection, waiting on it.
 	name: "grow aimed elsewhere: prepare fails before any write",
@@ -201,7 +200,7 @@ func cutScript(t *testing.T, c storeCase) string {
 // replaceOnce answers text, which is file's, with old replaced by replacement, and fails t unless
 // old occurs in it exactly once: a case's cut or a planted fault whose text the file no longer
 // holds, or holds twice, would test something other than what it names. It is the one place that
-// rule is kept, for the cases here and the planted faults of waits_test.go.
+// rule is kept, for the cases here and the planted faults of storesteps_test.go.
 func replaceOnce(t *testing.T, file, text, old, replacement string) string {
 	t.Helper()
 	if n := strings.Count(text, old); n != 1 {

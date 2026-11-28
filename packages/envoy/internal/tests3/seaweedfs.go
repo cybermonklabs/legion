@@ -70,7 +70,7 @@ const requestDeadline = time.Minute
 // portDeadline bounds a start of this store until its S3 port answers, in both places that start
 // it: startServer's wait strategy here, and the S3 port's wait of
 // .github/scripts/dispatch-browser-wait-for-store.sh in the shard job, whose seconds
-// TestEveryWaitAndCheckOfTheScriptHasACase holds to this (portWaitFinding). The wait ends when the
+// TestTheStoreStepsRunTheRuleWholeUnderTheirBounds holds to this. The wait ends when the
 // port answers; its 2 minutes decide only a store that never does, and come from the shard job's
 // budget rule over the slowest store start read in CI, 66.2 s
 // (.github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object).
