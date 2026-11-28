@@ -20,7 +20,11 @@ body: |-
   hand-off meets an earlier attempt under the same MsgId still in process on the stream is
   answered `duplicate: true` once the stream names that attempt's copy, or `503` with
   `code: maybe_stored` when its time runs out first, and a bus message's hand-off gets 10 s,
-  after which the message is NAKed and tried again. Otherwise
+  after which the message is NAKed and tried again. While the deployed stream does not capture
+  the hand-off subject, as during a hub move's quiesce, the hand-off sends nothing: a send or
+  role publish gets the `503` that says the message was not sent and may be sent again later,
+  recorded `subject_not_deployed`, which costs its sender nothing, and a bus message is NAKed
+  and handed off on a later delivery. Otherwise
   every path answers exactly as before. The answering record is the project's last stated flag
   and never expires: a project that stated `answering: true` has its agents' messages handed off
   whether its daemon runs now or not, and the stream keeps them; a project that stated

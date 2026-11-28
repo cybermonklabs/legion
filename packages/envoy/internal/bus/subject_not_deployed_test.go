@@ -52,10 +52,13 @@ func awaitDeployedCapture(t *testing.T, client *Client, topic string, captures b
 }
 
 // A topic this build stores, which the deployed stream does not capture, is sent nowhere: each of
-// the five publish functions returns ErrSubjectNotDeployed, which names the stream and the topic,
-// and neither a core subscriber of the topic nor the stream receives anything. Before the refusal
-// the publish went out over core NATS, the subscriber was handed it, nothing stored it, and the
-// publish answered nil: the send route's 200 for a message nobody received.
+// the five envelope publish functions and PublishRetained, which the listener hands a stopped
+// Legion agent's message to its daemon with, returns ErrSubjectNotDeployed, which names the stream
+// and the topic, and neither a core subscriber of the topic nor the stream receives anything.
+// Before the refusal the publish went out over core NATS, the subscriber was handed it, nothing
+// stored it, and the publish answered nil: the send route's 200 for a message nobody received.
+// PublishRetained judged a topic by the subjects this build compiles, so it sent its publish over
+// JetStream, where no stream answered it.
 //
 // The subscriber holds notifications.>, so it receives a core publish of any of these topics and
 // the request of a JetStream publish too: its silence in step 2 is no blindness, which step 3 shows
@@ -70,6 +73,7 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 	js := rawJetStream(t, uri)
 	const session = "ses_a"
 	agentTopic := contracts.AgentTopicPrefix + session
+	handoffTopic := "notifications.legion.infra.agents." + session
 
 	original := narrowStreamAsTheQuiesce(t, js)
 	awaitDeployedCapture(t, client, agentTopic, false)
@@ -115,10 +119,14 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 			_, err := client.PublishAckWithin(context.Background(), item)
 			return err
 		}},
+		{"PublishRetained", func(item contracts.Envelope) error {
+			_, err := client.PublishRetained(context.Background(), item.Topic, []byte(`{}`), item.DedupeKey)
+			return err
+		}},
 	}
 	// Step 1: every publish function refuses every topic this build stores.
 	for _, publish := range publishes {
-		for _, topic := range []string{agentTopic, "notifications.team.t", ExceptionTopicPrefix + agentTopic} {
+		for _, topic := range []string{agentTopic, "notifications.team.t", ExceptionTopicPrefix + agentTopic, handoffTopic} {
 			err := publish.publish(envelope(topic, publish.name+"-"+topic))
 			if !errors.Is(err, ErrSubjectNotDeployed) {
 				t.Errorf("%s of %s: %v, want ErrSubjectNotDeployed", publish.name, topic, err)
@@ -165,12 +173,13 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 	}
 
 	// Step 4: once the stream captures the topic again and the client has read that, the same
-	// publish is stored, once.
+	// publish is stored, once, and so is a hand-off's.
 	original.Metadata = deployedStream(t, js).Config.Metadata
 	if _, err := js.UpdateStream(&original); err != nil {
 		t.Fatalf("restore the stream's subjects: %v", err)
 	}
 	awaitDeployedCapture(t, client, agentTopic, true)
+	awaitDeployedCapture(t, client, handoffTopic, true)
 	restored := envelope(agentTopic, "restored")
 	if _, err := client.PublishAckWithin(context.Background(), restored); err != nil {
 		t.Fatalf("publish of %s after the restore: %v", agentTopic, err)
@@ -181,5 +190,15 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 	}
 	if got := info.State.Subjects[agentTopic]; got != 1 {
 		t.Fatalf("the stream holds %d messages on %s after the restore, want 1", got, agentTopic)
+	}
+	if _, err := client.PublishRetained(context.Background(), handoffTopic, []byte(`{}`), "handoff.restored"); err != nil {
+		t.Fatalf("PublishRetained of %s after the restore: %v", handoffTopic, err)
+	}
+	info, err = js.StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: handoffTopic})
+	if err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	if got := info.State.Subjects[handoffTopic]; got != 1 {
+		t.Fatalf("the stream holds %d messages on %s after the restore, want 1", got, handoffTopic)
 	}
 }

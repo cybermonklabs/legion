@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -12,7 +13,9 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // notDeployedRig is a listener's /v1 routes over a stream a hub move's quiesce can narrow, with
@@ -215,6 +218,67 @@ func TestASendToAStoppedSessionWhileTheDeployedStreamLacksItsSubjectCostsNothing
 		if wakeNamed(wakeReportIn(t, msg), wakeKindAgent, target) {
 			break
 		}
+	}
+}
+
+// A send to a stopped Legion agent whose project last said it answers, while a hub move's quiesce
+// has narrowed the stream so that it no longer captures the hand-off subject
+// (notifications.legion.<project>.agents.<session>, under notifications.legion.>), is refused as
+// a send whose own subject the stream does not capture is: the 503 with Retry-After: 1 that says
+// the message was not sent and may be sent again later, recorded subject_not_deployed. The
+// hand-off's publish asks the deployed stream, as each publish of the route does
+// (bus.Client.PublishRetained), so nothing goes out: no core subscriber is handed the hand-off,
+// and the stream stores nothing, on the hand-off subject or anywhere else. The refused send costs
+// its sender nothing, so its line names no sender. The narrowing keeps every subject that does not
+// capture the hand-off subject, the agent's own subject among them, so the refusal is the
+// hand-off's alone.
+//
+// The control is the same send once the stream captures the hand-off subject again and the
+// listener has read that: it is handed off, 200 with the agent as recipient and recipient_state
+// gone, and the stream holds one hand-off for the agent. That send costs the sender one, and the
+// limit of one message a minute with a burst of one would have refused it with a 429 had the
+// refused send cost one too. Before, the hand-off's publish judged its subject by the subjects
+// this build compiles and sent it over JetStream, where no stream answered it.
+func TestASendToAStoppedLegionAgentWhileTheDeployedStreamLacksTheHandoffSubjectAnswers503AndStoresNothing(t *testing.T) {
+	// Not parallel: it holds a 500 ms quiet window in which the refused hand-off must reach no core
+	// subscriber (requireNothingSent).
+	const (
+		agent  = "ses_not_deployed_handoff"
+		sender = "ses_not_deployed_handoff_sender"
+		what   = "a send to a stopped Legion agent while the stream lacks the hand-off subject"
+	)
+	handoff := listenerwire.LegionHandoffSubject("infra", agent)
+	rig := newNotDeployedRig(t)
+	withLegionAgent(t, rig.deps, legionAgentEntry(agent, "INFRA-204", "implementer"))
+	original := bustest.NarrowStream(t, rig.js, func(subject string) bool { return !bus.SubjectContains(subject, handoff) })
+	bustest.AwaitDeployedCapture(t, rig.harness.client, handoff, false, 15*time.Second)
+	if own := contracts.LegacyAgentSubject(agent); !rig.harness.client.DeployedStreamCaptures(own) {
+		t.Fatalf("the narrowed stream does not capture %s, so the refusal below could be the send's own subject's and not the hand-off's", own)
+	}
+	baseline := rig.subscribe(t)
+
+	// Step 1: the refusal's answer and its one line, which names no sender, and nothing sent.
+	refused := rig.sendFrom(t, sender, agent, nil)
+	requireNotDeployedAnswer(t, what, refused, handoff)
+	refused.requireUnnamed(t, what)
+	rig.requireNothingSent(t, baseline)
+	if count, data := handoffs(t, rig.harness.client, agent); count != 0 {
+		t.Fatalf("%s: the stream holds %d hand-offs for %s, want none; the last: %s", what, count, agent, data)
+	}
+
+	// Step 2, the control: the same send, once the stream captures the hand-off subject again, is
+	// handed off once, and costs the sender the one message the refused send left it.
+	rig.restore(t, original, handoff)
+	const again = "the same send after the restore"
+	handed := rig.sendFrom(t, sender, agent, nil)
+	handed.requireStatus(t, again, http.StatusOK)
+	var answer listenerwire.SendResponse
+	if err := json.Unmarshal([]byte(handed.raw), &answer); err != nil || answer.Recipient != agent || answer.RecipientState != session.Gone {
+		t.Fatalf("%s: body %s (%v), want it handed off to %s with recipient_state %s", again, handed.raw, err, agent, session.Gone)
+	}
+	handed.requireNamed(t, again, sender)
+	if count, data := handoffs(t, rig.harness.client, agent); count != 1 {
+		t.Fatalf("%s: the stream holds %d hand-offs for %s, want 1; the last: %s", again, count, agent, data)
 	}
 }
 

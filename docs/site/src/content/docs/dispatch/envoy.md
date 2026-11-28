@@ -272,7 +272,11 @@ message off on `notifications.legion.<project>.agents.<session>`. It does so in 
 place of the `403` for the message's delivery mode and of the `503` for an agent subject that the
 stream does not capture. The caller reads a `200` with
 `recipient` set to the session. A send's `200` also carries `recipient_state: "gone"` and an empty
-`state`, and a role publish's `200` carries no `holder`. No Legion daemon writes an answering
+`state`, and a role publish's `200` carries no `holder`. While the stream does not capture the
+hand-off subject itself, as during a hub move's quiesce, the listener sends nothing and answers
+the `503` with `Retry-After: 1` that says the message was not sent and may be sent again later,
+which costs the sender nothing; the same message is handed off once the stream captures the
+subject again. No Legion daemon writes an answering
 record yet, so until one does the listener hands nothing off. A role is handed off to its newest
 session whether its issue has left the workflow or not. A message handed off raises no wake
 report, and costs its sender
