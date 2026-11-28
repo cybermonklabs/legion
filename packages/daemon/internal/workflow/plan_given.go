@@ -273,11 +273,12 @@ func giverOf(fact intake.PlanGiven, issue *record.Issue, stored *record.StoredPl
 // the owner's), gives over stored, the plan in force, is refused for where that task stands, and
 // nil where it is taken. A sub-owner gives a version while its task waits at no act, stands at its
 // parts, running or held, or is stopped: a part it adds starts once its task runs at its parts with
-// no wait (mayStart), which a start, a release and the end of a join each reach. At its report, its
-// retro or its merge, running or held, the task moves forward only, so a part given then would never
-// start: the version is refused, naming the task and where it stands (intake.PartsOfReportedTask,
-// intake.PartsOfTaskAtAct). A done or left task is giverOf's to refuse. The owner's version meets
-// no such rule.
+// no wait (mayStart), which a start, a release and a preparation that ends each reach. At its
+// report, its retro or its merge, running or held, the task moves forward only, so a part given
+// then would never start: the version is refused, naming the task and where it stands
+// (intake.PartsOfTaskAtAct). No act of this release writes the report; the rule holds wherever the
+// task stands there. A done or left task is giverOf's to refuse. The owner's version meets no such
+// rule.
 func partsPlaceRefusal(issue string, stored *record.StoredPlan, giver plan.Giver) *plan.Refusal {
 	if giver == "" {
 		return nil
@@ -286,16 +287,15 @@ func partsPlaceRefusal(issue string, stored *record.StoredPlan, giver plan.Giver
 	if !ok || task.State != record.TaskRunning && task.State != record.TaskHeld {
 		return nil
 	}
-	var refusal plan.Refusal
 	switch task.Place.Kind {
 	case record.PlaceReported:
-		refusal = intake.PartsOfReportedTask(issue, task.Task)
+		refusal := intake.PartsOfTaskAtAct(issue, task.Task, "report")
+		return &refusal
 	case record.PlaceRetro, record.PlaceMerge:
-		refusal = intake.PartsOfTaskAtAct(issue, task.Task, task.Place.Kind)
-	default:
-		return nil
+		refusal := intake.PartsOfTaskAtAct(issue, task.Task, task.Place.Kind)
+		return &refusal
 	}
-	return &refusal
+	return nil
 }
 
 // writtenVersion is what writeVersion read of the version in force before it wrote fact's over

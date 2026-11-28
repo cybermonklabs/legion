@@ -1875,8 +1875,8 @@ type Refusal struct {
 // PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner or a sub-owner gave, with one
 // reason for each cause: register_plan answers it for a plan that plan.Supported or plan.Validate
 // refuses, and the workflow for a version of a sub-owner of no task (NoSubOwnedTask), a version of
-// a sub-owner whose task stands at its report, its retro or its merge (PartsOfReportedTask,
-// PartsOfTaskAtAct), one that changes a task its giver does not write (plan.OwnershipRefusals), one
+// a sub-owner whose task stands at its report, its retro or its merge (PartsOfTaskAtAct), one that
+// changes a task its giver does not write (plan.OwnershipRefusals), one
 // of a sub-owner that changes whether a task it does not write merges (MergeOfOwnersTask), one that
 // changes or removes a running or held task (RunningTaskChanged, HeldTaskChanged), one that changes
 // whether the work of a task merges once its retro or its merge has started or is held
@@ -1951,24 +1951,14 @@ func MergeOfOwnersTask(issue, task, subOwner string, merges bool) plan.Refusal {
 		"not for the sub-owner of task %s: ask the owner of %s for that change.", change, task, issue, subOwner, issue)}
 }
 
-// PartsOfReportedTask is the reason a version that the sub-owner of task gives of issue's plan is
-// refused while task stands at its report (record.PlaceReported), running or held: complete_task
-// was the sub-owner's own word that the parts are whole, and after it the task moves forward only,
-// so a part given then would never start. It names the ways back to the parts.
-func PartsOfReportedTask(issue, task string) plan.Refusal {
-	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s of %s stands at its report: you reported that its parts are done, and Legion joins them, "+
-		"so the task takes no part now and this version changed nothing. It takes parts again if the join conflicts (report-refused), "+
-		"if the merger returns its merge to you (merge-returned), or if the owner of %s stops it and starts it again. "+
-		"Ask the owner of %s for other missing work as a task of its own.", task, issue, issue, issue)}
-}
-
 // PartsOfTaskAtAct is the reason a version that the sub-owner of task gives of issue's plan is
-// refused while task stands at act, its retro or its merge, running or held: the task moves
-// forward only, and a part added then never starts. It names the ways back to the parts: the
-// merger's return, and the owner's stop and start again of the task.
+// refused while task stands at act, its report, its retro or its merge (record.PlaceReported,
+// PlaceRetro, PlaceMerge), running or held: from there the task moves forward only, and a part
+// added then would never start. It names the one way back to the parts this release has: the
+// owner's stop of the task and its start again, which starts the task at its parts.
 func PartsOfTaskAtAct(issue, task, act string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s of %s stands at its %s, so the task takes no part now and this version changed nothing. "+
-		"It takes parts again if the merger returns its merge to you (merge-returned), or if the owner of %s stops it and starts it again. "+
+		"It takes parts again if the owner of %s stops it and starts it again. "+
 		"Ask the owner of %s for other missing work as a task of its own.", task, issue, act, issue, issue)}
 }
 
