@@ -397,7 +397,8 @@ type ProjectSettings struct {
 	// DefaultSteps is `default_steps` as the file writes it, each step one word (`planner`, or
 	// `acceptance:owner`): the steps a task runs when its plan block names neither steps nor a
 	// sub-owner, and the steps of the one task of an issue whose owner gives no plan or whose
-	// experiment's group takes none. It is what the project runs by default
+	// experiment's group is `default`; an issue of the group `owner-alone` runs
+	// plan.OwnerAloneSteps instead. It is what the project runs by default
 	// (config.Project.RunsByDefault), so a project that names none shows today's line up to the
 	// owner's acceptance rather than no step.
 	DefaultSteps []string `json:"default_steps"`

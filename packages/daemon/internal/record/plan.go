@@ -29,12 +29,13 @@ const (
 	// PlanSourceOwner is a version the issue's owner gave (register_plan), at the version of its
 	// document.
 	PlanSourceOwner = "owner"
-	// PlanSourceDefault is the project's default steps as one task, written at the start of the
-	// work of a generation no owner's plan reached, or whose experiment's group takes no plan from
-	// its owner: version 0, no document and no giver. A later version an owner gives an issue of
-	// that group, which changes nothing but the text of its running task default (the workflow's
-	// versionRefusal), keeps this source, since the issue still runs the default steps, and names
-	// its document, its version and its giver.
+	// PlanSourceDefault is the steps Legion chose as one task, written at the start of the work of
+	// a generation no owner's plan reached, or whose experiment's group takes no plan from its
+	// owner: the project's default steps, or the steps of that group (plan.OwnerAloneSteps),
+	// version 0, no document and no giver. A later version an owner gives an issue of such a
+	// group, which changes nothing but the text of its running task default (the workflow's
+	// versionRefusal), keeps this source, since the issue still runs the steps Legion chose, and
+	// names its document, its version and its giver.
 	PlanSourceDefault = "default"
 )
 
@@ -186,8 +187,9 @@ type PlanTask struct {
 	OwnerRole string
 	Merges    bool
 	// StepsByDefault says that the block names no step, so the task's steps (PlanStep) are the
-	// default steps it runs (plan.StepsOf), not steps its block names: a later version is compared
-	// with the block as it was given, which names none (plan.ChangedTasks).
+	// ones Legion chose, not steps its block names: the project's default steps (plan.StepsOf),
+	// or the steps of the issue's experiment group (plan.OwnerAloneSteps). A later version is
+	// compared with the block as it was given, which names none (plan.ChangedTasks).
 	StepsByDefault bool
 	State          TaskState
 	StoppedReason  string

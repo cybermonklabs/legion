@@ -75,7 +75,7 @@ func readCapabilities(value *yaml.Node, key string) (*Capabilities, error) {
 }
 
 // orList is names as prose: "a, b or c".
-func orList(names []capabilities.Name) string {
+func orList[Name ~string](names []Name) string {
 	words := make([]string, len(names))
 	for i, name := range names {
 		words[i] = string(name)

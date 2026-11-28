@@ -214,11 +214,8 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 			overlay + "], instructions: " + missing + "}, {name: control}]}}\n"}.refuse(t)
 	},
 	// An experiment that sets how each issue is done: each arm's `plan`.
-	`projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner or default (got "…")`: func(t *testing.T) string {
+	`projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner, default or owner-alone (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: alone}, {name: b, plan: default}]}}\n"}.refuse(t)
-	},
-	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet.": func(t *testing.T) string {
-		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: owner-alone}]}}\n"}.refuse(t)
 	},
 	"projects.<KEY>.experiments.<NAME>.variants.<ARM> names no plan: each variant of an experiment that sets plan names how its issues are done": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b}]}}\n"}.refuse(t)

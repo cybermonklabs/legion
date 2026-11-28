@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -1480,7 +1481,7 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // check refuses never reaches the workflow. Generation is the issue's generation the route read,
 // and 0 for an issue the daemon has not recorded, whose plan waits at generation 0 until the
 // issue's first step takes the newest plan its owner gave, or, where the issue's experiment's
-// group runs the project's default steps, passes it over. GivenBy is the claim of the architect
+// group takes no plan from its owner, passes it over. GivenBy is the claim of the architect
 // whose grant gave it, which is how the first step tells its owner's plan from an earlier owner's.
 //
 // The workflow judges the giver and the generation again in the fact's own transaction, since
@@ -1494,7 +1495,7 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // (plan.RunningChange, or StartedBeforePlans for an issue that ran before Legion took plans),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE, PLAN_NOT_TAKEN (a plan of an issue whose experiment's
-// group runs the project's default steps, but a version that changes nothing but the text of its
+// group takes no plan from its owner, but a version that changes nothing but the text of its
 // running task default) and TREE_LINGERING, and it leaves each of those refusals unspent
 // (Result.Unspent) and writes nothing. The route names one registration by the issue, the
 // generation, the document and the version, and no id decides whether a give is one already taken
@@ -1516,8 +1517,8 @@ func (f PlanGiven) namedIssue() (string, bool) { return f.Issue, true }
 // read. The workflow judges the stop again in the fact's own transaction: an architect that owns
 // the issue no longer is refused ISSUE_OUTSIDE_TREE (IssueOutsideTree), and a stop of a run the
 // issue has left TASK_STALE_GENERATION (TaskStaleGeneration), each left unspent. It then answers
-// TaskNotStopped for every task of an issue whose experiment's group runs the project's default
-// steps, whatever state the task stands in, and for any other issue stops the task or answers
+// TaskNotStopped for every task of an issue whose experiment's group takes no plan from its owner,
+// whatever state the task stands in, and for any other issue stops the task or answers
 // TaskNotFound or TaskDone; a stop of a task already stopped changes nothing and is no refusal.
 // Each request is its own fact, so a task the owner stops, starts again with a later
 // version and stops once more is stopped twice.
@@ -2131,25 +2132,31 @@ func PlanDocumentChanged(issue, artifact string) *Refusal {
 }
 
 // GroupClause is the one text of a group: the sentence that names the variant of the experiment
-// issue was drawn into (group, the issue's row of the experiment that sets how it is done),
-// whose issues run the project's default steps, the one group of this release that sets how an
-// issue is done (workflow's takesNoPlan). The refusals of register_plan and stop_task
-// (PlanNotTaken, TaskNotStopped) and the plan-not-taken notice of the issue's first step each
-// call it, and no other text states a group.
+// issue was drawn into (group, the issue's row of the experiment that sets how it is done) and how
+// that variant's issues are done, one sentence for each group that sets how an issue is done
+// (workflow's takesNoPlan): default, whose issues run the project's default steps, and
+// owner-alone, whose owner does the whole issue itself in one step. The refusals of register_plan
+// and stop_task (PlanNotTaken, TaskNotStopped) and the plan-not-taken notice of the issue's first
+// step each call it, and no other text states a group.
 func GroupClause(issue string, group record.Assignment) string {
-	return fmt.Sprintf("%s is in the variant %s of the experiment %s, whose issues run the project's default steps.", issue, group.Variant, group.Experiment)
+	done := "whose issues run the project's default steps"
+	if config.PlanGroup(group.Plan) == config.PlanGroupOwnerAlone {
+		done = "whose owner does the whole issue itself in one step"
+	}
+	return fmt.Sprintf("%s is in the variant %s of the experiment %s, %s.", issue, group.Variant, group.Experiment, done)
 }
 
 // PlanNotTaken is the 409 PLAN_NOT_TAKEN answer to a plan given for issue, whose group (its row
-// of the experiment that sets how it is done) names the arm's `plan` `default`: the experiment
-// decides how the issue is done, so Legion takes no plan from its owner, and a plan it stored and
-// did not carry out would be dropped in silence. The one version it takes is one that changes
-// nothing but the text of the issue's running task default (workflow's versionRefusal), which
-// keeps the task on the default steps where it stands, and the sentence names it. It is no
-// refusal of a plan's content, so it carries no reasons and its code is not PLAN_REFUSED. The same
-// registration sent again gets this same answer: the workflow judges every PlanGiven whatever its
-// id's mark (factApplies), and the group never changes. The refusal is left unspent
-// (Result.Unspent), which only a release before reads.
+// of the experiment that sets how it is done) names an arm's `plan` that takes no plan from its
+// owner, `default` or `owner-alone`: the experiment decides how the issue is done, so Legion
+// takes no plan from its owner, and a plan it stored and did not carry out would be dropped in
+// silence. The one version it takes is one that changes nothing but the text of the issue's
+// running task default (workflow's versionRefusal), which keeps the task on the steps of its
+// group where it stands, and the sentence names it. It is no refusal of a plan's content, so it
+// carries no reasons and its code is not PLAN_REFUSED. The same registration sent again gets this
+// same answer: the workflow judges every PlanGiven whatever its id's mark (factApplies), and the
+// group never changes. The refusal is left unspent (Result.Unspent), which only a release before
+// reads.
 func PlanNotTaken(issue string, group record.Assignment) *Refusal {
 	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
 		" Legion takes no plan from its owner for this issue, only a version that changes nothing but the text of its running task default." +
@@ -2157,9 +2164,9 @@ func PlanNotTaken(issue string, group record.Assignment) *Refusal {
 }
 
 // TaskNotStopped is the 409 PLAN_NOT_TAKEN refusal of stop_task for a task of issue, whose group
-// names the arm's `plan` `default`: the experiment decides how the issue is done, so Legion takes
-// no stop of one of its tasks from its owner, and the code is the one register_plan answers for
-// the same issue.
+// names an arm's `plan` that takes no plan from its owner, `default` or `owner-alone`: the
+// experiment decides how the issue is done, so Legion takes no stop of one of its tasks from its
+// owner, and the code is the one register_plan answers for the same issue.
 func TaskNotStopped(issue string, group record.Assignment) *Refusal {
 	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
 		" Legion takes no stop of its tasks from its owner. This stop changed nothing."}

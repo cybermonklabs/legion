@@ -16,9 +16,9 @@ import (
 )
 
 // defaultTask is the id of the one task of an issue whose owner gives no plan, or whose
-// experiment's group takes none (plan.DefaultTask): the task of the project's default steps, and
-// of today's steps of a run with no plan rows (todaysSteps), under which the steps of each are
-// recorded.
+// experiment's group takes none (plan.DefaultTask): the task of the project's default steps, of
+// plan.OwnerAloneSteps for an issue of the group `owner-alone` (defaultRows), and of today's steps
+// of a run with no plan rows (todaysSteps), under which the steps of each are recorded.
 const defaultTask = plan.DefaultTask
 
 // StepAgent is what the daemon reads of a step's agent where it writes the step's end, the one

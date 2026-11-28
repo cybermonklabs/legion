@@ -531,11 +531,10 @@ type Assignment struct {
 	// tree it left, whether that answer was an arm or no arm at all (Store.CarryAssignments).
 	Carried bool
 	// Plan is how the issue drawn is done, a config.PlanGroup word taken as a string for the
-	// reason Unit is: `owner` or `default`, the `plan` of the arm drawn, and "" where the arm
-	// names none, the draw was made under mode off, a hand-over wrote the row, or the row was
-	// drawn before the column existed. The loader refuses `owner-alone`, so no draw writes it. An
-	// issue keeps it for its whole life, whatever the project's file says later
-	// (internal/experiment's GroupOf reads it).
+	// reason Unit is: `owner`, `default` or `owner-alone`, the `plan` of the arm drawn, and ""
+	// where the arm names none, the draw was made under mode off, a hand-over wrote the row, or
+	// the row was drawn before the column existed. An issue keeps it for its whole life, whatever
+	// the project's file says later (internal/experiment's GroupOf reads it).
 	Plan string
 }
 

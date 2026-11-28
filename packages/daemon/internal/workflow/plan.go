@@ -29,14 +29,14 @@ func PlanID(issue string, generation uint64) string {
 
 // planNode is the plan node of issue's run: the plan w walks, as Dispatch records it under
 // the run's one id (PlanID). Its source is the version in force's (record.PlanVersion.Source):
-// owner, with the document and the version of it Legion took, or default, the project's default
-// steps, with neither. Its task is the run's one task, with its steps in order, each a role or
-// `role:key` (plan.Step.String), and the tasks it needs, each by the id register_plan resolved
-// (record.PlanTask.Needs), [] where it needs none: the one record of the needs that Dispatch
-// serves. The node is written at the start of the work and again, whole, at each later version
-// Legion takes (planGiven): Dispatch replaces all four fields for a version above the one it
-// holds. Both read w with its plan rows: the start's first step writes them (planFirstStep), and a
-// version taken is one. A run with no plan rows walks today's line, so its node is the task
+// owner, with the document and the version of it Legion took, or default, the steps Legion chose
+// (defaultRows), with neither. Its task is the run's one task, with its steps in order, each a
+// role or `role:key` (plan.Step.String), and the tasks it needs, each by the id register_plan
+// resolved (record.PlanTask.Needs), [] where it needs none: the one record of the needs that
+// Dispatch serves. The node is written at the start of the work and again, whole, at each later
+// version Legion takes (planGiven): Dispatch replaces all four fields for a version above the one
+// it holds. Both read w with its plan rows: the start's first step writes them (planFirstStep),
+// and a version taken is one. A run with no plan rows walks today's line, so its node is the task
 // default of todaysSteps, which needs none: a hand-over's carry of an orphan that ran before plans
 // (WritePlan).
 func planNode(issue record.Issue, w Walk) record.PlanRecord {
@@ -82,14 +82,14 @@ func (e *Engine) groupOf(ctx context.Context, tx pgx.Tx, issue string) (record.A
 }
 
 // takesNoPlan says whether group, an issue's row of groupOf, sets how the issue is done: the arm
-// runs the project's default steps, and the issue takes from its owner no plan but a version that
+// is default, which runs the project's default steps, or owner-alone, which runs the one step of
+// plan.OwnerAloneSteps (defaultRows), and the issue takes from its owner no plan but a version that
 // changes nothing but the text of its running task default (versionRefusal). It is the one answer
-// the three readers of the group read — the first step (planFirstStep), register_plan (planGiven)
-// and stop_task (taskStopped) —
-// and it holds only the word this release carries out: the loader refuses `owner-alone`
-// (config's readVariants), so no draw of this release writes it.
+// the three readers of the group read: the first step (planFirstStep), register_plan (planGiven)
+// and stop_task (taskStopped).
 func takesNoPlan(group record.Assignment) bool {
-	return config.PlanGroup(group.Plan) == config.PlanGroupDefault
+	word := config.PlanGroup(group.Plan)
+	return word == config.PlanGroupDefault || word == config.PlanGroupOwnerAlone
 }
 
 // planFirstStep settles the plan the first step of issue's run walks, in the transaction that
@@ -104,9 +104,9 @@ func takesNoPlan(group record.Assignment) bool {
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
 // telling names (tellPassedOver).
 //
-// An issue whose group runs the project's default steps (groupOf, takesNoPlan) takes the default
-// steps: the owner's plans are passed over too (passOverOwners), and the one notice that tells
-// what it passed over names the group (tellNotTaken).
+// An issue whose group takes no plan (groupOf, takesNoPlan) takes the steps of its group
+// (defaultRows): the owner's plans are passed over too (passOverOwners), and the one notice that
+// tells what it passed over names the group (tellNotTaken).
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	group, err := e.groupOf(ctx, tx, issue.Key)
 	if err != nil {
@@ -127,7 +127,7 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 		}
 		// The group's one notice tells the earlier owners' versions with its owner's, so the plans of
 		// earlier owners go to tellNotTaken and none to tellPassedOver, whose text offers register_plan.
-		if err := e.takeFirstPlan(ctx, tx, issue, stored, nil); err != nil {
+		if err := e.takeFirstPlan(ctx, tx, issue, group, stored, nil); err != nil {
 			return err
 		}
 		return e.tellNotTaken(ctx, tx, issue, group, append(earlier, owners...))
@@ -137,18 +137,18 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return err
 		}
 	}
-	return e.takeFirstPlan(ctx, tx, issue, stored, earlier)
+	return e.takeFirstPlan(ctx, tx, issue, group, stored, earlier)
 }
 
 // takeFirstPlan writes stored, the plan the first step of issue's run walks, at the run's
-// generation, and tells what passed over earlier (tellPassedOver): the project's default steps for
-// none (defaultRows), a plan of another generation carried from its start (CarryPlan without
-// carried), and the generation's own rows kept as they are. planFirstStep and the stop of a task
-// before that step (taskStopped) take the first plan through it.
-func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan, earlier []record.PlanVersion) error {
+// generation, and tells what passed over earlier (tellPassedOver): for none, the steps Legion
+// chose for the issue's group (defaultRows), a plan of another generation carried from its start
+// (CarryPlan without carried), and the generation's own rows kept as they are. planFirstStep and
+// the stop of a task before that step (taskStopped) take the first plan through it.
+func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issue, group record.Assignment, stored *record.StoredPlan, earlier []record.PlanVersion) error {
 	switch {
 	case stored == nil:
-		version, tasks, steps := e.defaultRows(issue)
+		version, tasks, steps := e.defaultRows(issue, group)
 		if err := e.store.PutPlan(ctx, tx, version, tasks, steps); err != nil {
 			return err
 		}
@@ -162,7 +162,7 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 }
 
 // passOverOwners deletes every plan of issue's owner that its first step could take, for an issue
-// whose group runs the project's default steps, and answers the versions it passed over, in the
+// whose group takes no plan (takesNoPlan), and answers the versions it passed over, in the
 // order they were given, and the plan of the run's generation that stands after it (stored, as the
 // caller read it): the owner's plan in force at each generation (record.PlansOfOwners), the
 // run's own, generation 0, which holds a plan given before the daemon recorded and drew the issue,
@@ -188,13 +188,19 @@ func (e *Engine) passOverOwners(ctx context.Context, tx pgx.Tx, issue record.Iss
 
 // defaultRows is the plan of issue's run whose owner gave none, or whose experiment's group takes
 // no plan from its owner (passOverOwners): version 0 of the source default, given now, with no
-// document and no giver, and one task, default, whose block names no steps and so runs the
-// project's default steps (Config.DefaultSteps), waiting at no act.
-func (e *Engine) defaultRows(issue record.Issue) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
+// document and no giver, and one task, default, waiting at no act, whose block names no steps and
+// so runs the steps Legion chose for it: for an issue of the group owner-alone, the one step of
+// plan.OwnerAloneSteps, which its owner does, and for any other issue the project's default steps
+// (Config.DefaultSteps). The text of the task says which.
+func (e *Engine) defaultRows(issue record.Issue, group record.Assignment) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
+	steps, text := e.cfg.DefaultSteps, "The project's default steps."
+	if config.PlanGroup(group.Plan) == config.PlanGroupOwnerAlone {
+		steps, text = plan.OwnerAloneSteps, "The owner does the whole issue itself, in one step."
+	}
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
-	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",
+	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: text,
 		StepsByDefault: true, State: record.TaskWaiting}
-	return version, []record.PlanTask{task}, planSteps(issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps)
+	return version, []record.PlanTask{task}, planSteps(issue.Key, issue.Generation, defaultTask, steps)
 }
 
 // planSteps is steps as the rows of the steps of task of issue's plan at generation: each at its
@@ -231,19 +237,19 @@ func (e *Engine) tellPassedOver(ctx context.Context, tx pgx.Tx, issue record.Iss
 		issue.Key, namedOnce(earlier), told)})
 }
 
-// tellNotTaken says what the first step of issue, whose group runs the project's default steps
-// (group), passed over: every plan of an earlier owner (passOverEarlierOwners) and of its owner
-// (passOverOwners), in that order. One log line for each copy it deleted, with its generation, and
-// one plan-not-taken notice to the issue's architect, which names each version once (namedOnce)
-// and the group, so the owner learns why no plan of its own is taken. Unlike the notice of an
-// earlier owner's plan alone (tellPassedOver), it offers no register_plan: no plan given for this
-// issue is taken. Nothing passed over tells nothing.
+// tellNotTaken says what the first step of issue, whose group takes no plan from its owner
+// (group, takesNoPlan), passed over: every plan of an earlier owner (passOverEarlierOwners) and of
+// its owner (passOverOwners), in that order. One log line for each copy it deleted, with its
+// generation, and one plan-not-taken notice to the issue's architect, which names each version
+// once (namedOnce) and the group, so the owner learns why no plan of its own is taken. Unlike the
+// notice of an earlier owner's plan alone (tellPassedOver), it offers no register_plan: no plan
+// given for this issue is taken. Nothing passed over tells nothing.
 func (e *Engine) tellNotTaken(ctx context.Context, tx pgx.Tx, issue record.Issue, group record.Assignment, passed []record.PlanVersion) error {
 	if len(passed) == 0 {
 		return nil
 	}
 	for _, version := range passed {
-		e.logOnCommit(ctx, "workflow: a plan is not taken: the issue's group runs the project's default steps", "issue", issue.Key,
+		e.logOnCommit(ctx, "workflow: a plan is not taken: the issue's group sets how it is done", "issue", issue.Key,
 			"generation", version.Generation, "version", version.Version, "document", version.ArtifactID, "giver", giversOf(version),
 			"experiment", group.Experiment, "variant", group.Variant)
 	}

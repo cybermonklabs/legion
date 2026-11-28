@@ -75,8 +75,9 @@ type Config struct {
 	// already open, whose role its own row holds.
 	ProductionCheckRole claim.Role
 	// DefaultSteps are the project's default steps (config.Project.RunsByDefault): the steps of
-	// the one task default of an issue whose owner gives no plan or whose experiment's group takes
-	// none, and of a task whose block names neither steps nor a sub-owner. Nil takes the steps of
+	// the one task default of an issue whose owner gives no plan or whose experiment's group is
+	// `default`, and of a task whose block names neither steps nor a sub-owner. An issue of the
+	// group `owner-alone` runs plan.OwnerAloneSteps instead (defaultRows). Nil takes the steps of
 	// a project that names none.
 	DefaultSteps []plan.Step
 	Clock        func() time.Time

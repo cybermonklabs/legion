@@ -142,10 +142,11 @@ var unsetDefaultSteps = func() []plan.Step {
 
 // RunsByDefault is the project's default steps: the steps a task whose plan block names neither
 // steps nor a sub-owner runs, and the steps of the one task `default` of an issue whose owner
-// gives no plan or whose experiment's group takes none. They are `default_steps`, or today's line
-// up to the owner's acceptance for a project that names none, and for a Project the loader never
-// read, so a configuration built without the field runs today's line rather than no step. The
-// answer is the caller's own.
+// gives no plan or whose experiment's group is `default`. An issue of the group `owner-alone`
+// runs plan.OwnerAloneSteps instead. They are `default_steps`, or today's line up to the owner's
+// acceptance for a project that names none, and for a Project the loader never read, so a
+// configuration built without the field runs today's line rather than no step. The answer is the
+// caller's own.
 func (p Project) RunsByDefault() []plan.Step {
 	if p.DefaultSteps != nil {
 		return slices.Clone(p.DefaultSteps)

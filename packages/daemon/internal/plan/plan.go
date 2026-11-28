@@ -48,8 +48,14 @@ func (s Step) String() string {
 }
 
 // DefaultTask is the id of the one task of an issue whose owner gives no plan, or whose
-// experiment's group takes none, which runs the project's default steps.
+// experiment's group takes none: it runs the project's default steps, or the steps of that group
+// (OwnerAloneSteps).
 const DefaultTask = "default"
+
+// OwnerAloneSteps are the steps of the task default of an issue whose experiment's group is
+// owner-alone: one step, implementer:owner, in which the owner of the task does the whole issue
+// itself, and then its retro, which no plan names (Line).
+var OwnerAloneSteps = []Step{{Role: "implementer", Key: "owner"}}
 
 // Task is one `plan_task` block of a plan that Legion carries out, a task at the top or a part of a
 // task (Places), as FromBlocks reads it.
