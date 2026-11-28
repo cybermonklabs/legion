@@ -265,7 +265,7 @@ func agentCallerOf(actor model.Actor) AgentCaller {
 // Authorization header (optionalActor would read the person a browser credential names, which is
 // not this function's to answer) and one whose credential does not resolve. It answers false for
 // a read-only token too, which GET /api/v1/whoami answers but which can save nothing the
-// dashboard draws, since every route the read list does not name refuses it (refuseReadOnlyToken).
+// dashboard draws, since every route the read list does not name refuses it (refuseLimitedToken).
 // It writes no refusal: the caller answers a request it refuses as one that presented no bearer.
 func (s *server) dashboardAgent(r *http.Request) (AgentCaller, bool) {
 	if _, presented := auth.BearerToken(r); !presented {
