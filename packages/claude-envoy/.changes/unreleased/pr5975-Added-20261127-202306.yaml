@@ -3,4 +3,4 @@ body: |-
   The `legion` tool's answers carry the daemon's word on a request for new work on a merged issue: each issue's `closeWait` names a request as a request, with who asked, never as a defect, and a withdrawal of a request a person made is refused `DEFECT_REQUEST_OF_A_PERSON`.
 time: 2026-11-27T20:23:06Z
 custom:
-    Issue: pr5558
+    Issue: pr5975

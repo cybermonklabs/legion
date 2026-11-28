@@ -3,4 +3,4 @@ body: |-
   `packages/envoy/clitest` no longer fails a run whose output is still being copied a second after the binary exits. Each run now writes its standard output and standard error to files, read once every process of the run's group has ended. Before, a pipe's copy that a loaded machine left unscheduled past one second failed the run, though every process had ended. Its report was `exec: WaitDelay expired before I/O complete`. A process the binary starts that holds the output past the binary's exit now delays the read and fails nothing. One that holds it past the run's bound still fails the run as a process still running.
 time: 2026-11-27T23:51:34Z
 custom:
-    Issue: pr5558
+    Issue: pr5975

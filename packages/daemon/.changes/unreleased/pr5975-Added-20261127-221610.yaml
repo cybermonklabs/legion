@@ -6,4 +6,4 @@ body: |-
   `GET /legion/v1/state` and the issue record name the refusal as `branchRefused`, under the branch-refused contract entry. Its keys are `row`, `write`, `kind`, `reason` and `at`. `legion state` prints it in a `refused issue branches` block. Store migration `20261128022327_branch_refusals` adds the table `branch_refusals`. Its header carries the way back, which a rollback runs first with every daemon of the database stopped. docs/kubernetes.md gives it under "Rolling back the release that ends a branch row GitHub refuses for good".
 time: 2026-11-27T22:16:10Z
 custom:
-    Issue: pr5558
+    Issue: pr5975

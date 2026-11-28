@@ -6,4 +6,4 @@ body: |-
     failed run keeps its backoff, as before.
 time: 2026-11-27T21:29:49Z
 custom:
-    Issue: pr5558
+    Issue: pr5975
