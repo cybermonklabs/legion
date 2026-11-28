@@ -1,0 +1,29 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 45906624721,
+    "name": "Dispatch browser nightly",
+    "path": ".github/workflows/dispatch-browser-nightly.yaml",
+    "event": "workflow_dispatch",
+    "head_branch": "acme-1-browser-shards",
+    "head_sha": "d03572cc3f9e5e8a4c5236bf89307f129904bb74",
+    "status": "completed",
+    "conclusion": "cancelled",
+    "run_attempt": 1,
+    "run_started_at": "2026-11-26T22:43:53Z",
+    "updated_at": "2026-11-26T22:44:21Z",
+    "html_url": "https://github.com/example-org/example-repo/actions/runs/45906624721",
+    "pull_requests": [],
+    "head_repository": {
+      "full_name": "example-org/example-repo"
+    }
+  },
+  "repository": {
+    "name": "example-repo",
+    "full_name": "example-org/example-repo",
+    "default_branch": "main",
+    "owner": {
+      "login": "example-org"
+    }
+  }
+}

@@ -51,6 +51,7 @@ notifications.github.<owner>.<repo>.pr.<n>.mention    comments that mention the 
 notifications.github.<owner>.<repo>.pr.<n>.checks     a commit's checks have all finished
 notifications.github.<owner>.<repo>.push.branch.<ref> a branch push
 notifications.github.<owner>.<repo>.workflow.<file>.<action>  a workflow run with no pull request
+notifications.github.<owner>.<repo>.default_branch.workflow.<file>.<action>.<event>  the same run, when it ran on the default branch
 notifications.github.<owner>.<repo>.job.<run_id>.completed    a finished Actions job on the default branch, of a run with no pull request
 ```
 
@@ -58,6 +59,18 @@ A dot in an owner, repository, or ref name is written `_` in the subject, so `ac
 `notifications.github.acme.site_io`. A redelivered webhook is recognised and stored once: an event
 is keyed by its `X-GitHub-Delivery` GUID, which GitHub gives one event in every webhook that
 receives it, so the copies two Apps installed on one repository deliver are stored once too.
+
+A workflow run's payload names the run's trigger event as `event` (`schedule`, `push`,
+`workflow_dispatch` and GitHub's others), beside its `run_id`, `head_branch`, `status` and
+`conclusion`. A run whose `head_branch` is the repository's `default_branch`, and whose head
+repository is the repository itself rather than a fork, is published a second time on its
+`default_branch.workflow` topic, which ends in that event: a subscriber to
+`notifications.github.acme.widgets.default_branch.workflow.nightly_yaml.completed.schedule` hears
+each finished scheduled run of `nightly.yaml` on `acme/widgets`' default branch and no other run.
+The copy is published before the `workflow` envelope, with the same payload and dedupe key, so a
+session that follows both topics is handed the run once, on the copy's topic. A copy whose topic
+would be longer than the bus takes is not published, the listener logs the run, and the `workflow`
+envelope still goes out.
 
 The listener logs one `github published` line for each topic of each delivery it publishes, with
 the delivery's GUID, its event and action, the topic, the key, the hook target's id
@@ -248,7 +261,20 @@ keep itself fails. A publish that names no `source_session` is refused the same 
 dead letter of an expired copy goes to that session and there is none: its `error` names the role
 and says that nothing was kept and why. Whether a live session holds the role is then read from
 the role bucket's and the session bucket's stream leaders, so a copy of either bucket that is
-behind refuses no message a live holder can take. If the holder does not take the message's delivery mode, the refusal is
+behind refuses no message a live holder can take. The one publish that names no `source_session`
+and is kept is a role publish that names the Dispatch post it delivers (`dispatch_post`). The
+listener takes that field from Dispatch's own verified principal alone (`ENVOY_DISPATCH_PRINCIPAL`)
+and refuses it `403` from every other caller. That copy gets no dead letter, since the listener
+stores an expiry notice for Dispatch instead (below). The one failed keep that is not a `404` is a
+keep while the stream, as the listener last read its subjects, does not capture the role's kept
+lane `notifications.envoy.kept.role.<role>`, as during a hub move's quiesce: the listener sends
+nothing and answers the `503` with `Retry-After: 1` that says the message was not sent and may be
+sent again later, which costs the sender nothing. It asks before it raises the role's wake report,
+so a refusal it finds then raises none. A send that Dispatch marks with a role, which the listener
+would keep, is answered the same way. The same message sent again is kept once the stream captures
+the kept lane again and the listener has read that. A dead letter refused so is sent
+again by a later walk, and a repeated wake report by the next sweep. If the holder does not take
+the message's delivery mode, the refusal is
 `403`; and if the stream has not stored the forward to a live holder within four seconds, it is
 `504` naming the holder, with the reason `delivery_failed`, and that message is not kept: send it
 again, and the listener reads the holder again. A forward stored so long after the listener read
@@ -271,12 +297,42 @@ Either way the forward to the live holder is stored on
 the holder's inbox, and it counts as delivered once the stream has stored it, so a holder that
 restarts or loses its connection gets the forward once when it is back. No session answers a
 receipt for one.
+A send or a role publish that no live session takes can go to a stopped Legion agent's daemon
+instead. Where the Legion agent registry names the target session (for a role, the role's newest
+session) and the answering record of its project last said it answers, the listener hands the
+message off on `notifications.legion.<project>.agents.<session>`. It does so in place of the
+`404`, the stored `stopped` answer, the `202` keep or the exception. For a send, it also takes the
+place of the `403` for the message's delivery mode and of the `503` for an agent subject that the
+stream does not capture. The caller reads a `200` with
+`recipient` set to the session. A send's `200` also carries `recipient_state: "gone"` and an empty
+`state`, and a role publish's `200` carries no `holder`. While the stream, as the listener last
+read its subjects, does not capture the hand-off subject itself, as during a hub move's quiesce,
+the listener sends nothing and answers the `503` with `Retry-After: 1` that says the message was
+not sent and may be sent again later, and the refused hand-off costs the sender nothing. Nothing
+is stored, so nothing is handed off later by itself: the same message sent again is handed off
+once the stream captures the subject again and the listener has read that, at its next read of
+the stream's subjects, which it makes every minute. No Legion daemon writes an answering
+record yet, so until one does the listener hands nothing off. A role is handed off to its newest
+session whether its issue has left the workflow or not. A message handed off raises no wake
+report, and costs its sender
+what its publish stored, as a send's own publish does. For a role the registry holds no entry
+for, the listener keeps the message for the role's first holder and wakes the role. A kept copy
+of a publish that names a Dispatch post can end with no session taking it: its hour ends, or the
+role's live holder does not take its delivery mode. The listener then stores an expiry notice for
+Dispatch. When the listener had begun to forward the copy and never confirmed that forward, the
+notice says so (`forward_unconfirmed`), because the holder may already have the message. An edge
+listener hands nothing off: its grant
+(`natsgrant.Edge`) publishes the agent topics and its own projects' role topics
+(`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject
+`notifications.legion.<project>.agents.<session>` nor the kept lane `notifications.envoy.kept.>`, so
+a role publish through an edge listener to a role nobody holds is answered as it was before the
+hand-off: `404`, with nothing kept.
 A role send the API refuses `404` also raises one exception on
 `notifications.envoy.exceptions.notifications.role.<role>`, naming the reason it refused:
 `unclaimed` when nothing claims the role and nothing was kept, or `holder_lapsed` when the claim's
-holder is no longer live and nothing was kept. That exception is only a bus signal: nothing
-re-sends a refused publish except the Legion daemon's own outbox notice, whose row retries by
-itself.
+holder is no longer live and nothing was kept. A publish the listener hands off is not refused, so
+it raises none. That exception is only a bus signal: nothing re-sends a refused publish except the
+Legion daemon's own outbox notice, whose row retries by itself.
 
 An event Dispatch routes to a role that no live session holds is kept on the role for one hour,
 as a role message is. When that hour ends with no session taking it, Dispatch keeps the event
@@ -307,7 +363,10 @@ it, not kept. Past the live window the holder reads `unresponsive`, and a messag
 kept as `holder_lapsed`. The record reads `gone` at the gone horizon, or at its 5-minute age in a
 session bucket an older listener created, about when the live window ends. The role claim reaper
 releases the claim at its first pass after that, and a message to the role is kept as
-`unclaimed` from then. Each kept message wakes the role. When the role comes
+`unclaimed` from then. Each kept message wakes the role. While the answering record of the role's
+project says it answers, the listener can hand a message to a role whose newest Legion session is
+gone to that session's daemon (above). A message it hands off is not kept or refused `404`, and it
+raises no wake report. When the role comes
 back, its session registers again or claims the role, and either one hands it each message kept
 for the role whose hour has not ended, as an Envoy card that carries `kept_at`, the time Envoy
 kept it. The card can arrive before the task the daemon gives the woken role. `envoy_inbox` lists

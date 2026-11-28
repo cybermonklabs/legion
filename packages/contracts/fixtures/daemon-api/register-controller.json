@@ -2,5 +2,16 @@
   "claimToken": "legion-legion-controller",
   "role": "controller",
   "generation": 2,
-  "secret": "Q29udHJvbGxlZEJ5TGVnaW9u"
+  "secret": "Q29udHJvbGxlZEJ5TGVnaW9u",
+  "watchedWorkflows": [
+    {
+      "owner": "acme",
+      "repo": "widgets",
+      "workflow": "nightly.yaml",
+      "events": [
+        "schedule",
+        "workflow_dispatch"
+      ]
+    }
+  ]
 }

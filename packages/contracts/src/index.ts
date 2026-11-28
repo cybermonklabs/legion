@@ -17,6 +17,7 @@ export * from "./dispatch-writing-boxes";
 export * from "./envelope";
 export * from "./envoy-session";
 export * from "./going";
+export * from "./legion-handoff";
 export * from "./legion-roles";
 export * from "./reference-spans";
 export * from "./related-forms";

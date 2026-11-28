@@ -27,6 +27,7 @@ import (
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
+	"github.com/sjawhar/envoy/testexec"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
@@ -521,7 +522,7 @@ func TestGcloudsStandardErrorIsNotPrinted(t *testing.T) {
 				"",
 			}, "\n")
 			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
+			if err := testexec.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", dir)

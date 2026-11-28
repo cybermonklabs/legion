@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // The listed identities every exchange test is written against: pods of three accounts of one
@@ -906,7 +907,7 @@ func waitForBlocked(t *testing.T, pool *pgxpool.Pool, blocker uint32, like strin
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity
-			where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid)) and query like $2`, int32(blocker), like).Scan(&waiting); err != nil {
+			where $1 = any(pg_blocking_pids(pid)) and query like $2`, int32(blocker), like).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
 		if waiting > 0 {
@@ -929,7 +930,7 @@ func waitForWaiting(t *testing.T, pool *pgxpool.Pool, pid uint32, like string, r
 		}
 		var waiting int
 		if err := pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity
-			where pid = $1 and wait_event_type = 'Lock' and query like $2`, int32(pid), like).Scan(&waiting); err != nil {
+			where pid = $1 and `+lockwaittest.Waiting+` and query like $2`, int32(pid), like).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
 		return waiting > 0
