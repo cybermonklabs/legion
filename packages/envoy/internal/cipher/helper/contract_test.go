@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // syncBuffer is a buffer plus a mutex: slog's own handler serializes its Write calls, but a
@@ -75,6 +76,9 @@ func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile strin
 		PeerOf:   PeerOf,
 		Log:      log,
 		MinRenew: 50 * time.Millisecond,
+		// The test binary's deadline: a call the rig's client makes is not dropped because the
+		// machine held it between its connect and its write.
+		ExchangeBound: testwait.Remaining(t, 0),
 	}
 	cr.sock = filepath.Join(shortTempDir(t), "helper.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: cr.sock, Net: "unix"})

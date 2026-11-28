@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    A command's call to `agent-secrets-helper` no longer fails with `i/o timeout` when the command itself was held up for more than 2 seconds inside its dial of the helper's socket while its call still had time: the dial is bounded by the call's own timeout alone, not also by a fixed 2 s. No dial takes longer than before. A dial of that socket is decided only once the command is past its connect, which a unix socket answers at once (a missing socket, one no one listens on and a helper whose backlog is full are refused at once, as before), so the old 2 s only turned a late connect into a failure, and now that connect goes on with its call.
+time: 2026-11-27T12:56:54Z
+custom:
+    Issue: helper-dial-bounded-by-call

@@ -83,6 +83,9 @@ func serveBroker(t *testing.T, broker *Broker, statePath string, log *slog.Logge
 		Hostname: "testhost",
 		Log:      log,
 		MinRenew: 50 * time.Millisecond,
+		// The test binary's deadline, as sendCall's own: a call this rig's client makes is not
+		// dropped because the machine held it between its connect and its write.
+		ExchangeBound: testwait.Remaining(t, 0),
 	}
 	r.srv.Registry.parent = func(pid int) (int, error) {
 		if parent := r.parentOf.Load(); parent != nil {
