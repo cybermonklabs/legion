@@ -1,3 +1,5 @@
+import { nodeRouteFromHref, referenceRouteFromHref } from "../refs/routes";
+
 /** The elements a mark of the display schema draws as, around a run of a text's words: bold,
  *  emphasis, a code span, a deletion and the like. */
 const MARKS: Readonly<Record<string, true>> = {
@@ -24,34 +26,56 @@ function marksOnly(node: Node | null, child: Node): node is HTMLElement {
   );
 }
 
-/** Whether `anchor` is a link this joins: one whose address opens another site, or a scheme of no
- *  site such as `mailto:`, which the painter draws whole and no later pass rewrites or draws into.
- *  An address of this dashboard never joins: a `dispatch://` reference (Proof draws it `href=""`
- *  with its address in `data-dispatch-href`, which `RefLink`'s `addressOf` reads first), and a
- *  path or a URL of this origin. The reference pass rewrites each such address, and a portal draws
- *  into its anchor (`collectReferenceAnchors`, `collectPictureAnchors`, `linkRowReferences`); a
- *  text painted in slices is joined after each slice, before that pass, so joining one would take
- *  an anchor that pass needs off the page, and its target or its words with it. An address that
- *  does not parse is no link this joins. */
+/** The marks of an anchor a pass has made its own: a reference's anchor, which the reference pass
+ *  has emptied for the portal that draws into it (`collectReferenceAnchors`), a picture's, which
+ *  the picture's portal draws into (`collectPictureAnchors`), and the row's own reference, whose
+ *  words the row's pass renames (`linkRowReferences`). */
+const OWNED = "[data-dispatch-ref], [data-dispatch-picture], [data-row-reference]";
+
+/**
+ * Whether `anchor` is a link this joins: every anchor with an `href` but the ones the reference
+ * pass reads and the ones a pass has made its own (`OWNED`). The reference pass
+ * (`collectReferenceAnchors`) reads an anchor's address as its author wrote it,
+ * `data-dispatch-href` first (Proof draws a `dispatch://` reference `href=""` with its address
+ * there), else `href` (`RefLink`'s `addressOf`), and reads exactly the anchors whose address is a
+ * `dispatch://` one or one that `referenceRouteFromHref` or `nodeRouteFromHref` resolves against
+ * this origin; which of the two it asks rests on the anchor's words, which a join changes, so
+ * this asks both. It rewrites each such address, or makes the anchor its words where it names
+ * nothing, and empties the anchor for a portal that draws into it. `DrawnText` runs the join both
+ * after that pass (`onRendered`) and from a layout effect that can run before it, so a joined
+ * anchor of that kind would take an anchor the pass needs, or has filled, off the page. Every
+ * other anchor - another site's, a scheme of no site such as `mailto:`, a page of this dashboard
+ * that names no node such as `/settings`, an in-page `#x` - the painter draws whole and no pass
+ * rewrites, so it joins.
+ */
 function joinable(anchor: HTMLAnchorElement): boolean {
   const href = anchor.getAttribute("href");
-  if (href === null) return false;
-  let url: URL;
-  try {
-    url = new URL(anchor.getAttribute("data-dispatch-href") ?? href, window.location.href);
-  } catch {
-    return false;
-  }
-  return url.protocol !== "dispatch:" && url.origin !== window.location.origin;
+  if (href === null || anchor.matches(OWNED)) return false;
+  const address = anchor.getAttribute("data-dispatch-href") ?? href;
+  return (
+    !address.startsWith("dispatch://") &&
+    referenceRouteFromHref(address, window.location.origin) === undefined &&
+    nodeRouteFromHref(address, window.location.origin) === undefined
+  );
 }
 
-/** Whether `a` and `b` carry the same attributes, each with the same value. ProseMirror draws two
- *  link marks side by side as one anchor only where their attributes are equal, so two anchors
- *  whose attributes differ, a title say, are two links. */
+/** The attribute `useOutOfTabOrder` (`RowText.tsx`) writes on a row's links as each slice of a
+ *  long text lands, so the pieces of one link that two slices drew can differ in it alone. */
+const TAB_INDEX = "tabindex";
+
+/** Whether `a` and `b` carry the same attributes, each with the same value, `tabindex` aside
+ *  (`TAB_INDEX`), which says nothing of the link a piece is part of. ProseMirror draws two link
+ *  marks side by side as one anchor only where their attributes are equal, so two anchors whose
+ *  attributes differ, a title say, are two links. */
 function sameAttributes(a: Element, b: Element): boolean {
-  if (a.attributes.length !== b.attributes.length) return false;
+  if (
+    a.attributes.length - Number(a.hasAttribute(TAB_INDEX)) !==
+    b.attributes.length - Number(b.hasAttribute(TAB_INDEX))
+  ) {
+    return false;
+  }
   for (const { name, value } of a.attributes) {
-    if (b.getAttribute(name) !== value) return false;
+    if (name !== TAB_INDEX && b.getAttribute(name) !== value) return false;
   }
   return true;
 }
@@ -76,9 +100,9 @@ function linkOf(node: Node | null): HTMLAnchorElement | null {
  * stay two, and so do two whose attributes differ (`sameAttributes`). A join can leave a mark
  * around one anchor only, which a pass that has gone by it never joins to its neighbours, so this
  * passes over the anchors until a pass joins nothing. Each paint draws the anchors anew, so the
- * row's pass calls this after each paint, before it links what the words cite (`RowText.tsx`).
- * Only a link to another site joins (`joinable`): an address of this dashboard is left as it is,
- * however far the reference pass has got.
+ * row's pass calls this after each paint and from a layout effect, each time before it links what
+ * the words cite (`RowText.tsx`). An anchor the reference pass reads never joins (`joinable`),
+ * however far that pass has got.
  */
 export function joinSplitLinks(element: Element): void {
   while (joinPass(element)) {

@@ -130,9 +130,10 @@ function joined(html: string): HTMLElement {
   return body;
 }
 
-// A long text is painted in slices, and the row's pass joins after each, so it can meet a body the
-// reference pass has not reached: each `dispatch://` link is still Proof's `href=""`, its address
-// in `data-dispatch-href`. Two references side by side are two links all the same.
+// The row also joins from a layout effect, which runs when the row mounts and when its pass
+// changes, so it can meet a body the reference pass has not read yet: each `dispatch://` link is
+// still Proof's `href=""`, its address in `data-dispatch-href`. Two references side by side are
+// two links all the same.
 test("two references to different targets side by side stay two links", () => {
   const body = joined(
     '<p><a href="" data-dispatch-href="dispatch://CORE-1/spec">one</a>' +
@@ -172,9 +173,9 @@ test("two pieces of a link with different titles stay two anchors", async () => 
   }
 });
 
-// A dashboard address of this origin is one the reference pass rewrites later, and the portal it
-// hands each anchor draws that anchor's words: a join before that pass would take two of them off
-// the page.
+// An address of this origin that names a node, such as an issue's spec, is one the reference pass
+// rewrites later, and the portal it hands each anchor draws that anchor's words: a join before
+// that pass would take two of them off the page.
 test("a dashboard link painted before the reference pass stays three anchors", () => {
   const address = `${window.location.origin}/issues/CORE-1/spec`;
   const body = joined(
@@ -185,4 +186,43 @@ test("a dashboard link painted before the reference pass stays three anchors", (
     [...body.querySelectorAll("a")].map((anchor) => anchor.textContent),
     `the dashboard link was drawn as ${body.innerHTML}`
   ).toEqual(["the ", "spec", " rule"]);
+});
+
+// A page of this dashboard that names no node is an address the reference pass finds no route for,
+// so it leaves the anchor as the painter drew it: that link is one anchor, as another site's is.
+test("a link to a page of this dashboard that names no node is one anchor", async () => {
+  const { body, unmount } = await painted("[the **settings** page](/settings)");
+  try {
+    const anchors = [...body.querySelectorAll("a")];
+    expect(
+      anchors.map((anchor) => anchor.outerHTML),
+      "the link to the settings page was drawn as more than one anchor"
+    ).toHaveLength(1);
+    const [anchor] = anchors;
+    expect(anchor).toHaveAttribute("href", "/settings");
+    expect(anchor?.textContent).toBe("the settings page");
+    expect(anchor?.querySelector("strong")?.textContent, "the anchor lost its mark").toBe(
+      "settings"
+    );
+  } finally {
+    unmount();
+  }
+});
+
+// A row takes its links out of the tab order as each slice of a long text lands
+// (`useOutOfTabOrder`), so a piece of a link an earlier slice drew carries a `tabindex` the pieces
+// the last slice drew do not carry yet. The pieces are one link all the same.
+test("a link whose pieces differ only in their tabindex is one anchor", () => {
+  const body = joined(
+    '<p><a href="https://example.com/x" tabindex="-1">the </a>' +
+      '<strong><a href="https://example.com/x">HTTP</a></strong>' +
+      '<a href="https://example.com/x"> rule</a></p>'
+  );
+  const anchors = [...body.querySelectorAll("a")];
+  expect(
+    anchors.map((anchor) => anchor.outerHTML),
+    "the link whose pieces differ in their tabindex was drawn as more than one anchor"
+  ).toHaveLength(1);
+  expect(anchors[0]?.textContent).toBe("the HTTP rule");
+  expect(anchors[0]?.querySelector("strong")?.textContent, "the anchor lost its mark").toBe("HTTP");
 });
