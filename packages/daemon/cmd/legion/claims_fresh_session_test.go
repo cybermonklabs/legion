@@ -9,7 +9,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A worker whose agent registered a session and was then stopped still records that session, and
@@ -51,16 +50,13 @@ func TestClaimsRetryFreshSessionStartsAStoppedClaimInANewSession(t *testing.T) {
 	if !strings.Contains(out, " launching ") {
 		t.Fatalf("retry --fresh-session stdout = %q, want the claim launching again", out)
 	}
-	// The route answers once the retry has written the claim launching (api's startUnderWay), and
-	// the runtime is asked to spawn after that write, in the same decision, so the spawn is waited
-	// for before the runtime's calls are read.
-	testwait.Eventually(t, "the retry's fresh start to reach the runtime", func() bool {
-		return len(d.runtime.CallsOf("Spawn")) > spawns
-	})
+	// The retry answers once its start is under way, before the start reaches the runtime, so
+	// the row reads the runtime once the start's call has come: the spawn, after which this start
+	// asks for no resume.
+	started := runtimeCallsOf(t, d.runtime, "Spawn", spawns+1)
 	if got := len(d.runtime.CallsOf("Resume")); got != resumes {
 		t.Fatalf("the runtime saw %d resumes, want the stopped session left alone", got-resumes)
 	}
-	started := d.runtime.CallsOf("Spawn")
 	if len(started) != spawns+1 {
 		t.Fatalf("the runtime saw %d spawns, want the retry's fresh start", len(started)-spawns)
 	}
