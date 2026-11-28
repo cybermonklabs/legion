@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -68,6 +69,14 @@ var tunings = struct {
 // beside tests that do not, and every intake one test builds shares it, as they shared the package
 // variables it replaces. Set its durations, createDurable and log before the intakes start; its
 // atomics at any time.
+//
+// It holds one value production's does not: callWait is no bound (math.MaxInt64), so every call
+// to NATS a test's intake makes is waited for whatever its time (callNATS), and no row depends on a
+// timer of callNATS: on the real clock a loaded machine could have the wait fire before the call
+// answered, and on an intake's own fake a move made for another timer once did
+// (intakeTuning.callClock). A row that asserts the give-up sets production's callWait and a fake
+// call clock of its own (fakeCallClock), as INFRA-3149 ruled
+// (dispatch://INFRA-3149/comment/f4f5a56b-7336-4b86-8475-fee649287192).
 func tuningFor(t testing.TB) *intakeTuning {
 	tunings.Lock()
 	defer tunings.Unlock()
@@ -76,6 +85,7 @@ func tuningFor(t testing.TB) *intakeTuning {
 		return tuning
 	}
 	tuning := newIntakeTuning()
+	tuning.callWait.Store(math.MaxInt64)
 	for ancestor := name; strings.Contains(ancestor, "/"); {
 		ancestor = ancestor[:strings.LastIndex(ancestor, "/")]
 		if parent, ok := tunings.byTest[ancestor]; ok {
@@ -101,6 +111,7 @@ func copyTuning(from *intakeTuning) *intakeTuning {
 		ackLanding:              from.ackLanding,
 		stopBudget:              from.stopBudget,
 		clock:                   from.clock,
+		callClock:               from.callClock,
 		headWriteMaxDeliveries:  from.headWriteMaxDeliveries,
 		headWriteRedeliverAfter: from.headWriteRedeliverAfter,
 		createDurable:           from.createDurable,

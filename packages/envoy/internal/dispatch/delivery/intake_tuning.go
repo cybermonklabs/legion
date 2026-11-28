@@ -42,6 +42,18 @@ type intakeTuning struct {
 	// (heldDurable.clock, which newHeldDurable sets to it): clock.Real, unless a test sets a
 	// clocktest.Fake it moves before it builds its intakes.
 	clock intakeClock
+	// callClock is the time callNATS waits for a call's answer on (callWait): clock.Real, unless a
+	// test that asserts the give-up -- a stop that goes on without a call NATS cannot answer -- sets
+	// a clocktest.Fake before it builds its intakes, and moves it past callWait once a call has armed
+	// its wait there. It is not the intake's own clock (clock): a row moves that one for the timer it
+	// asserts, a burst's read or a stop's deadline, and while the wait was armed there such a move
+	// gave up whatever call to NATS was still in flight. The job row (race leg 4 at 7341d0f1) read the
+	// job acknowledgement's wait as the burst's read it waited to be armed, and its move to the read
+	// fired that wait and passed the read, armed only after it, so the run's jobs were never read.
+	// Every other test runs with callWait at no bound, so it depends on no timer of callNATS, on the
+	// real clock or a fake (INFRA-3149's ruling,
+	// dispatch://INFRA-3149/comment/f4f5a56b-7336-4b86-8475-fee649287192).
+	callClock intakeClock
 	// headWriteMaxDeliveries is how many deliveries an envelope whose head row could not be stored
 	// gets before deliver acknowledges it (headWriteDeliveriesSpent): headWriteMaxDeliveries.
 	headWriteMaxDeliveries uint64
@@ -54,10 +66,11 @@ type intakeTuning struct {
 	// createDurable creates the durable a take-over configured on the notification stream
 	// (heldDurable.finishTakeOver): addDurable, unless a test fails the create after its delete.
 	createDurable func(js natsgo.JetStreamContext, config *natsgo.ConsumerConfig, opts ...natsgo.JSOpt) (*natsgo.ConsumerInfo, error)
-	// callWait is how long callNATS waits for a call's answer, in nanoseconds, on the intake's clock
-	// (intakeDelivery.clock): bus.ConnLockWait. A test sets it to 0, so the timer is ready at once and
-	// a call may outlive the wait, to show the bookkeeping inside each call completes either way, or
-	// to no bound (math.MaxInt64), so each call is waited for whatever its time.
+	// callWait is how long callNATS waits for a call's answer, in nanoseconds, on the tuning's
+	// callClock: bus.ConnLockWait. The tests' tuning holds it at no bound (math.MaxInt64), so each
+	// call is waited for whatever its time, and a test that asserts the give-up sets production's
+	// back; one sets it to 0, so the timer is ready at once and a call may outlive the wait, to show
+	// the bookkeeping inside each call completes either way.
 	callWait atomic.Int64
 	// drainWait is how long the stop waits for its subscription's drain once the last handler
 	// returned, in nanoseconds (intakeDelivery.stop), read on the intake's clock
@@ -108,6 +121,7 @@ func newIntakeTuning() *intakeTuning {
 		ackLanding:              intakeAckLanding,
 		stopBudget:              intakeStopBudget,
 		clock:                   clock.Real(),
+		callClock:               clock.Real(),
 		headWriteMaxDeliveries:  headWriteMaxDeliveries,
 		headWriteRedeliverAfter: headWriteRedeliverAfter,
 		createDurable:           addDurable,

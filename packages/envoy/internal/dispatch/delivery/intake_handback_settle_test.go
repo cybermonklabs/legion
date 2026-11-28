@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -50,9 +49,10 @@ import (
 // the server after the standby created the durable and that its consumer delivered the message once
 // (requireNoHandBackAfterCreation). No step waits on a time: each waits for an event, through the
 // shared wait (testwait), whose bound guards against one that never comes. The stop's calls wait
-// for NATS with no bound of the row's (callWait), so a loaded machine cannot have the stop withhold
-// the hand-back, and the standby tries for the hold only where the row moves its hold clock
-// (holdTries). The holder's hold runs on a fake only the row moves, as the other hand-back rows'
+// for NATS with no bound (callWait, which the tests' tuning holds at no bound: tuningFor), so a
+// loaded machine cannot have the stop withhold the hand-back, and the standby tries for the hold only
+// where the row moves its hold clock (holdTries). The holder's hold runs on a fake only the row
+// moves, as the other hand-back rows'
 // holders' do (startHolderAndStandby): it renews nothing, so the row keeps the hold's row live on the
 // database's clock as the renewals would (keepHoldRowLive), and a release that waits for a flush to
 // confirm the hand-back flushes again only where the row moves that clock a tick on (moveTicks,
@@ -154,8 +154,8 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 	delivery.afterHandBackAdmitted.Store(&afterAdmitted)
 
 	// The stop's hand-backs go out only once its drain has answered, and the callback's only while
-	// its connected read answers: each of the stop's calls waits for NATS with no bound of the row's.
-	tuning.callWait.Store(math.MaxInt64)
+	// its connected read answers: each of the stop's calls waits for NATS with no bound, the tests'
+	// tuning's callWait (tuningFor).
 	stopping, endStop := context.WithCancel(context.Background())
 	defer endStop()
 	stopped := make(chan struct{})
@@ -356,9 +356,10 @@ func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *test
 // stop that takes the queue after arming the give-up: two handlers start and the server is sent no
 // hand-back.
 //
-// The stop's drain and its connected read wait for NATS with no bound of the row's (callWait): the
-// second message's hand-back needs the drain answered, which a loaded machine could otherwise delay
-// past the 100 ms production gives it and have the stop withhold it.
+// The stop's drain and its connected read wait for NATS with no bound (callWait, which the tests'
+// tuning holds at no bound: tuningFor): the second message's hand-back needs the drain answered,
+// which a loaded machine could otherwise delay past the 100 ms production gives it and have the stop
+// withhold it.
 func TestAStopUnderAnEndedContextHoldsTheMessageWaitingBehindItsKey(t *testing.T) {
 	t.Parallel()
 	var started atomic.Int32
@@ -404,10 +405,9 @@ func TestAStopUnderAnEndedContextHoldsTheMessageWaitingBehindItsKey(t *testing.T
 		})
 	}
 	delivery.tuning.stopArmed.Store(&armed)
-	delivery.tuning.callWait.Store(math.MaxInt64)
 	stopped := row.stopUnder(cancelled())
 	testwait.Receive(t, "the given-up handler's key to have no handler goroutine left once the give-up was armed (control)", idle)
-	testnats.Answers(t, "StopDelivering", stopped)
+	requireAnswered(t, "StopDelivering", testnats.Answers(t, "StopDelivering", stopped))
 	delivery.tuning.stopArmed.Store(nil)
 	if n := started.Load(); n != 1 {
 		t.Fatalf("%d handlers started: the message waiting behind its key started its handler under the stop's ended context, rather than being held by the stop", n)

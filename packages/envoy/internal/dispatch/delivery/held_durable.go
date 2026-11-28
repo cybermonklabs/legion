@@ -301,9 +301,9 @@ func newHeldDurable(tuning *intakeTuning, natsClient *bus.Client, leases Durable
 // narrowing of clock.Clock: clock.Real in production and a test's clocktest.Fake. The job intake
 // arms a read for a moment as the wait from the clock's present at the arm (JobIntake.schedule),
 // a handler's deadline and a read's are the clock's (Intake.deliver, JobIntake.fire), and so are
-// the waits between a page read's tries (pageClock), a call's wait for NATS (callNATS) and the
-// stop's wait for its drain (intakeDelivery.awaitDrain), so a test moves time past each rather than
-// waiting it out.
+// the waits between a page read's tries (pageClock) and the stop's wait for its drain
+// (intakeDelivery.awaitDrain), so a test moves time past each rather than waiting it out. A call's
+// wait for NATS runs on a clock of the same kind, the tuning's own (intakeTuning.callClock).
 type intakeClock interface {
 	pageClock
 	Now() time.Time

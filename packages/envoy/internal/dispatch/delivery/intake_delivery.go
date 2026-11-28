@@ -43,8 +43,7 @@ type intakeDelivery struct {
 	// gives up the handlers still running when its context ends.
 	handling context.Context
 	abandon  context.CancelFunc
-	// clock is the intake's own (heldDurable.clock), which the stop's wait for its drain and every
-	// call's wait for NATS (callNATS) read.
+	// clock is the intake's own (heldDurable.clock), which the stop's wait for its drain reads.
 	clock    intakeClock
 	stopping atomic.Bool
 	stopped  sync.Once
@@ -241,7 +240,7 @@ func stopContext(ctx context.Context, c intakeClock, budget time.Duration) (stop
 // up the subscription's registration on the client (bus.Client.DrainSubscription), so that no
 // reconnect binds it again and a later subscribe on the same client starts afresh. Every call to
 // NATS the stop waits for -- its own, and the answers of the handlers it waits for, hand-backs
-// included -- waits for NATS at most the intake's callWait on the intake's clock (callNATS;
+// included -- waits for NATS at most the intake's callWait on its tuning's callClock (callNATS;
 // bus.ConnLockWait on the real clock outside tests): nats.go holds its connection
 // lock, which every call to NATS waits for, through a reconnect's dial and handshake. A hand-back
 // NATS has not taken by then is published later, and the hold is released only once every
@@ -352,9 +351,9 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 // out no reconnect attempt, and no stalled write, for a drain nats.go cannot end during it. It reads
 // that as the wait begins, at each connection event of the client (bus.Client.ConnectionChanged: a
 // disconnect, a reconnect in place, a close, a replacement), and drainCheckEvery after each read,
-// since nothing reports a lock a write holds. The deadline, the spacing of the reads and each read's
-// own wait run on the intake's clock (clock), so a test moves a fake past each rather than waiting
-// it out.
+// since nothing reports a lock a write holds. The deadline and the spacing of the reads run on the
+// intake's clock (clock), and each read's own wait on the tuning's callClock (callNATS), so a test
+// moves a fake past each rather than waiting it out.
 func (d *intakeDelivery) awaitDrain(draining *natsgo.Subscription) {
 	waitedFrom := d.clock.Now()
 	drained := draining.StatusChanged(natsgo.SubscriptionClosed)
@@ -400,8 +399,10 @@ const drainCheckEvery = 10 * time.Millisecond
 // callNATS makes call, one call to NATS named by what, where the stop of delivery d waits for it --
 // a call of the stop's own, or a handler's answer, which the stop waits for (keyedRunner.wait) -- and
 // waits for it at most the intake's callWait (tuning; bus.ConnLockWait, 100 ms, outside tests) on the
-// intake's clock (clock), the clock of the stop's other waits: the real one outside tests, and a
-// test's fake, which the test moves past the wait once callNATS has armed it. The call always
+// tuning's callClock: the real one outside tests and in every row that does not assert the give-up,
+// and in a row that does, a fake the row moves past the wait once callNATS has armed it. The wait
+// has a clock of its own, apart from the intake's (clock), so that a row moving the intake's clock
+// for another timer gives up no call in flight (intakeTuning.callClock). The call always
 // starts, on a goroutine of its own, so a caller that keeps a count across the call
 // (publishHandBack) sees the decrement when the call finishes, even when the goroutine is
 // descheduled past the wait. A call NATS has not answered by then goes on, with a WARN line
@@ -429,7 +430,7 @@ func callNATS[T any](d *intakeDelivery, what string, call func() (T, error), att
 		answers <- v
 	}()
 	wait := time.Duration(tuning.callWait.Load())
-	timer := d.clock.NewTimer(wait)
+	timer := tuning.callClock.NewTimer(wait)
 	defer timer.Stop()
 	select {
 	case value = <-answers:

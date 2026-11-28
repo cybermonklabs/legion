@@ -472,14 +472,33 @@ func moveTicks(t *testing.T, c *clocktest.Fake, every time.Duration, done func()
 	}, failure)
 }
 
-// passNextWait moves c, an intake's own clock (heldDurable.clock) that a fake only the row moves, to
-// the earliest moment armed on it, when that moment is no further than callWait past the fake's
-// present, and does nothing otherwise: once a call to NATS that has not answered has armed its wait
-// there (callNATS, callWait past the moment the call began), or the stop's wait for its drain its
-// next read of the connection (awaitDrain, drainCheckEvery), the move fires it, and it never passes a
-// moment the code has not armed (clocktest.Fake.SetWhen). A row calls it only while NATS cannot answer
-// the intake's calls (a held handshake, a held write), so the move never comes ahead of an answer. A
-// callWait of no bound (math.MaxInt64), set by a row whose calls are each waited for, moves nothing.
+// fakeCallClock readies the intakes t builds to give up a call to NATS, for a row that asserts the
+// give-up: it sets their callWait to production's (bus.ConnLockWait), where the tests' tuning holds
+// it at no bound (tuningFor), and their calls' waits for NATS on a fake of the row's own
+// (intakeTuning.callClock), which it returns. The row moves the fake past callWait once a call NATS
+// cannot answer has armed its wait there (passCallWait, passNextWait), and nothing else moves it, so
+// no move a row makes of an intake's own clock for another timer gives up a call in flight
+// (dispatch://INFRA-3149/comment/f4f5a56b-7336-4b86-8475-fee649287192). A row calls it before it
+// builds its intakes, which read the tuning as they run.
+func fakeCallClock(t *testing.T) *clocktest.Fake {
+	t.Helper()
+	tuning := tuningFor(t)
+	c := fakeIntakeClock()
+	tuning.callClock = c
+	tuning.callWait.Store(int64(bus.ConnLockWait))
+	return c
+}
+
+// passNextWait moves c, a fake only the row moves, to the earliest moment armed on it, when that
+// moment is no further than callWait past the fake's present, and does nothing otherwise: on the
+// clock of the intake's calls (fakeCallClock), once a call to NATS that has not answered has armed
+// its wait there (callNATS, callWait past the moment the call began), and on the intake's own clock
+// (heldDurable.clock), once the stop's wait for its drain has armed its next read of the connection
+// (awaitDrain, drainCheckEvery), the move fires it, and it never passes a moment the code has not
+// armed (clocktest.Fake.SetWhen). A row calls it only while NATS cannot answer the intake's calls (a
+// held handshake, a held write), so the move never comes ahead of an answer. A callWait of no bound
+// (math.MaxInt64), the tests' tuning's own (tuningFor) and what a row swaps in while its calls must
+// each be waited for, moves nothing.
 func passNextWait(c *clocktest.Fake, callWait time.Duration) {
 	if callWait == math.MaxInt64 {
 		return
@@ -492,13 +511,13 @@ func passNextWait(c *clocktest.Fake, callWait time.Duration) {
 	})
 }
 
-// passCallWait waits until a call of the intake whose own clock is c, a fake only the row moves, has
-// armed its wait for NATS on it, callWait past the fake's present (callNATS), and moves the fake
+// passCallWait waits until a call of the intake whose calls wait on c, the row's fake (fakeCallClock),
+// has armed its wait for NATS there, callWait past the fake's present (callNATS), and moves the fake
 // there, so the call goes on without NATS's answer. what names the call for the wait's give-up.
 func passCallWait(t *testing.T, c *clocktest.Fake, callWait time.Duration, what string) {
 	t.Helper()
 	at := c.Now().Add(callWait)
-	c.AwaitArmedAt(t, what+" to arm its wait for NATS on the intake's clock (callNATS)", at)
+	c.AwaitArmedAt(t, what+" to arm its wait for NATS on the clock of the intake's calls (callNATS)", at)
 	c.Set(at)
 }
 
@@ -926,9 +945,8 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 	// the server is held at the relay, so its stop drains for as long as the row holds the link. The
 	// stop's drain is a call to NATS it waits for at most the intakes' callWait, and one it went on
 	// without would end its drain at once and release the hold: the stop's calls wait for NATS with
-	// no bound of the row's.
+	// no bound, the tests' tuning's callWait (tuningFor).
 	holder.leases.cut.Store(true)
-	tuningFor(t).callWait.Store(math.MaxInt64)
 	relay.Hold()
 	stopped := make(chan struct{})
 	go func() {

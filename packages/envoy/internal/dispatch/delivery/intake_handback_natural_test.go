@@ -211,7 +211,7 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 	holder.release()
 	testwait.Receive(t, "the stop's hand-back to reach its publish (control)", frozen)
 	testwait.Receive(t, "the hand-back's publish to land in the frozen link's socket (control)", delivery.handBacksLanded())
-	passStopOn(t, stopClock, holdClock, stopped)
+	passStopOn(t, stopClock, holdClock, started.callClock, stopped)
 	if !loggedMessage(logs(), intakeHoldFinalizing) || !holdLive(t, pool, holder.intake.holder) {
 		t.Fatalf("control: the stop released its hold although no flush could confirm its hand-back; logged %q", loggedMessages(logs()))
 	}

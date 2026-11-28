@@ -105,13 +105,15 @@ func (r *durableEvents) barrier(t *testing.T) {
 	})
 }
 
-// holderAndStandby is a holder process whose two clocks are fakes only the row moves -- its own
-// deadlines' (stopClock, heldDurable.clock) and its hold's (holdClock, heldDurable.holdClock) --
+// holderAndStandby is a holder process whose clocks are fakes only the row moves -- its own
+// deadlines' (stopClock, heldDurable.clock), its hold's (holdClock, heldDurable.holdClock) and its
+// calls' waits for NATS (callClock, intakeTuning.callClock, which the standby beside it shares) --
 // and the tries for the hold of a standby process beside it (standby, holdTries).
 type holderAndStandby struct {
 	holder    *intakeProcess
 	stopClock *clocktest.Fake
 	holdClock *clocktest.Fake
+	callClock *clocktest.Fake
 	standby   *holdTries
 }
 
@@ -121,10 +123,14 @@ type holderAndStandby struct {
 // the hold has ended (firstTryEnded: a standby's hook set before then would count that try as the
 // standby's); keeps the hold's row live on the database's clock as the renewals a hold clock the row
 // does not move never make would (keepHoldRowLive), past anything the row waits for; and starts a
-// standby on natsURL, whose try as it starts must leave it standing by (holdTries.standBy).
+// standby on natsURL, whose try as it starts must leave it standing by (holdTries.standBy). Every
+// row on it asserts the holder's stop going on without a call NATS cannot answer under the link the
+// row holds, so both processes wait for each call production's callWait, on a fake of the row's
+// (fakeCallClock), which the row moves past each such call's wait (passStop, passCallWait); the
+// standby's calls, on a link that moves, answer.
 func startHolderAndStandby(t *testing.T, pool *store.Pool, publisher *bus.Client, holderURL, natsURL string, inFlight int, options ...bus.ConnectOption) holderAndStandby {
 	t.Helper()
-	started := holderAndStandby{stopClock: fakeIntakeClock(), holdClock: fakeIntakeClock(), standby: newHoldTries()}
+	started := holderAndStandby{stopClock: fakeIntakeClock(), holdClock: fakeIntakeClock(), callClock: fakeCallClock(t), standby: newHoldTries()}
 	var holderTried <-chan struct{}
 	started.holder = startIntakeProcessWith(t, pool, holderURL, func(number int) bool { return number == inFlight }, func(intake *Intake) {
 		intake.clock, intake.holdClock = started.stopClock, started.holdClock
@@ -282,17 +288,19 @@ func (r heldHandBack) handBackPending() bool {
 // (passStopOn).
 func (r heldHandBack) passStop(t *testing.T) {
 	t.Helper()
-	passStopOn(t, r.stopClock, r.holdClock, r.stopped)
+	passStopOn(t, r.stopClock, r.holdClock, r.callClock, r.stopped)
 }
 
-// passStopOn moves a holder's stop through what it waits for on its two clocks, fakes only the row
-// moves, until its Run returns (stopped): the stop's deadline, the intakes' stopBudget on stopClock
-// from the moment its Run's context ended, which that clock has not moved from (stopContext), once
-// the stop has armed it; then, until Run has returned, stopClock to each wait for NATS a call of the
-// stop arms there that NATS cannot answer under the write the row holds (callNATS, passNextWait),
-// and holdClock to each moment the stop and its loss watcher arm a flush's bound or wait at, one
-// intakeFlushWait on (flushHandBacks, watchLoss).
-func passStopOn(t *testing.T, stopClock, holdClock *clocktest.Fake, stopped <-chan struct{}) {
+// passStopOn moves a holder's stop through what it waits for on its three clocks, fakes only the
+// row moves, until its Run returns (stopped): the stop's deadline, the intakes' stopBudget on
+// stopClock from the moment its Run's context ended, which that clock has not moved from
+// (stopContext), once the stop has armed it; then, until Run has returned, callClock, the clock of
+// the intake's calls (fakeCallClock), to each wait for NATS a call of the stop arms there that NATS
+// cannot answer under the link the row holds (callNATS, passNextWait), and holdClock to each moment
+// the stop and its loss watcher arm a flush's bound or wait at, one intakeFlushWait on
+// (flushHandBacks, watchLoss). The stop's wait for its drain ends at the stop's deadline, which
+// gives its handlers up (awaitDrain), so nothing more of stopClock's is moved.
+func passStopOn(t *testing.T, stopClock, holdClock, callClock *clocktest.Fake, stopped <-chan struct{}) {
 	t.Helper()
 	budget := tuningFor(t).stopBudget
 	stopClock.AwaitArmedAt(t, "the holder's stop deadline, armed as its Run's context ended", stopClock.Now().Add(budget))
@@ -301,11 +309,11 @@ func passStopOn(t *testing.T, stopClock, holdClock *clocktest.Fake, stopped <-ch
 		if closedChannel(stopped) {
 			return true
 		}
-		passNextWait(stopClock, time.Duration(tuningFor(t).callWait.Load()))
+		passNextWait(callClock, time.Duration(tuningFor(t).callWait.Load()))
 		return false
 	}, func() string {
-		return fmt.Sprintf("the holder's Run has not returned past its stop's deadline; its hold clock stands at %s, with %v armed, and its stop clock at %s, with %v armed",
-			holdClock.Now(), holdClock.Armed(), stopClock.Now(), stopClock.Armed())
+		return fmt.Sprintf("the holder's Run has not returned past its stop's deadline; its hold clock stands at %s, with %v armed, and the clock of its calls at %s, with %v armed",
+			holdClock.Now(), holdClock.Armed(), callClock.Now(), callClock.Armed())
 	})
 }
 
@@ -527,13 +535,14 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 //     nats.go's lock first; either way it does not reach the server after the standby creates the
 //     durable.
 //
-// No step waits on a time. The stop's own deadline (the intakes' stopBudget) and each of its calls'
-// waits for NATS (callNATS, callWait) are on the holder's stop clock, which the first subtest moves
-// only past the held publish's wait, once the publish has armed it (passCallWait), and the second and
-// third move to that deadline and past each call's wait once the write is held (passStop); the hold's
-// renewals and the bounds of the flushes that confirm its hand-backs are on its hold clock, which the
-// row moves where it needs one (renewHoldOnItsClock, standbyTakesOverOnceReleased); and the standby
-// tries for the hold only where the row moves its
+// No step waits on a time. The stop's own deadline (the intakes' stopBudget) is on the holder's stop
+// clock, which the first subtest never moves and the second and third move to that deadline once
+// the write is held (passStop); each of the stop's calls' waits for NATS (callNATS, callWait) is on
+// the clock of the intake's calls (fakeCallClock), which the first subtest moves only past the held
+// publish's wait, once the publish has armed it (passCallWait), and the second and third past each
+// call's wait (passStop); the hold's renewals and the bounds of the flushes that confirm its
+// hand-backs are on its hold clock, which the row moves where it needs one (renewHoldOnItsClock,
+// standbyTakesOverOnceReleased); and the standby tries for the hold only where the row moves its
 // own clock. Every wait is testwait's, which only guards against an event that never comes. The first
 // subtest's stop deadline never passes, so a run whose stop still said its hand-back had not reached
 // NATS by that deadline (intakeHoldFinalizing) fails as a control. stopWithAHeldHandBack begins the
@@ -556,9 +565,10 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		t.Parallel()
 		logs := captureIntakeLogs(t)
 		row := stopWithAHeldHandBack(t)
-		// The publish waits for NATS at most callWait on the holder's stop clock (callNATS), which the
-		// row moves there once the publish has armed it: no further, so the stop's deadline stays ahead.
-		passCallWait(t, row.stopClock, time.Duration(tuningFor(t).callWait.Load()), "the held hand-back's publish")
+		// The publish waits for NATS at most callWait on the clock of the holder's calls (callNATS),
+		// which the row moves there once the publish has armed it; the stop clock, and so the stop's
+		// deadline, stays where it is.
+		passCallWait(t, row.callClock, time.Duration(tuningFor(t).callWait.Load()), "the held hand-back's publish")
 		waitFor(t, func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
 			return "control: the stop never went on without the held hand-back's publish: " + consumerState(row.publisher)
 		})

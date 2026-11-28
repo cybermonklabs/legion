@@ -18,9 +18,10 @@ import (
 // reads and every deployment runs by. The row pins each, that no hook is set, that the intakes log
 // to the default logger their lines went to before they had a logger of their own, and that each
 // call makes a tuning of its own. It also pins the clocks: the tuning's, which startIntakes gives
-// both intakes for their own deadlines, and those an intake is built with (newHeldDurable), each
-// the real one, for its own deadlines (heldDurable.clock) and for its hold (heldDurable.holdClock),
-// which a test replaces with a fake.
+// both intakes for their own deadlines, the one a call's wait for NATS runs on (callClock, which a
+// test that asserts the give-up replaces with a fake of its own), and those an intake is built with
+// (newHeldDurable), each the real one, for its own deadlines (heldDurable.clock) and for its hold
+// (heldDurable.holdClock), which a test replaces with a fake.
 func TestProductionsIntakeTuningIsTheShippedTimersAndNoHook(t *testing.T) {
 	t.Parallel()
 	tuning := newIntakeTuning()
@@ -34,6 +35,7 @@ func TestProductionsIntakeTuningIsTheShippedTimersAndNoHook(t *testing.T) {
 		{"ackLanding", tuning.ackLanding, time.Minute},
 		{"stopBudget", tuning.stopBudget, 15 * time.Second},
 		{"clock", any(tuning.clock), any(clock.Real())},
+		{"callClock", any(tuning.callClock), any(clock.Real())},
 		{"headWriteMaxDeliveries", tuning.headWriteMaxDeliveries, uint64(30)},
 		{"headWriteRedeliverAfter", tuning.headWriteRedeliverAfter, 10 * time.Second},
 		{"callWait", time.Duration(tuning.callWait.Load()), bus.ConnLockWait},
@@ -83,12 +85,13 @@ func TestACopiedTuningHoldsEveryFieldOfItsParent(t *testing.T) {
 	}
 	stopArmed, beforeRelease, attempted, checked, awaitingSettings := func() {}, func() {}, func() {}, func() {}, func() {}
 	settingsWaiting := func(bool) {}
-	fake := fakeIntakeClock()
+	fake, callClock := fakeIntakeClock(), fakeIntakeClock()
 	parent.messageTimeout = 7 * time.Second
 	parent.maxAckPending = 9
 	parent.ackLanding = 23 * time.Second
 	parent.stopBudget = 11 * time.Second
 	parent.clock = fake
+	parent.callClock = callClock
 	parent.headWriteMaxDeliveries = 13
 	parent.headWriteRedeliverAfter = 29 * time.Second
 	parent.createDurable = createDurable
@@ -113,6 +116,7 @@ func TestACopiedTuningHoldsEveryFieldOfItsParent(t *testing.T) {
 			{"ackLanding", got.ackLanding, 23 * time.Second},
 			{"stopBudget", got.stopBudget, 11 * time.Second},
 			{"clock", any(got.clock), any(fake)},
+			{"callClock", any(got.callClock), any(callClock)},
 			{"headWriteMaxDeliveries", got.headWriteMaxDeliveries, uint64(13)},
 			{"headWriteRedeliverAfter", got.headWriteRedeliverAfter, 29 * time.Second},
 			{"createDurable", reflect.ValueOf(got.createDurable).Pointer(), reflect.ValueOf(createDurable).Pointer()},

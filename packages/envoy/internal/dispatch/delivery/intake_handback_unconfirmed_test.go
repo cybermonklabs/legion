@@ -213,7 +213,7 @@ func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) u
 // (passStopOn).
 func (row unconfirmedHandBack) passStop(t *testing.T) {
 	t.Helper()
-	passStopOn(t, row.stopClock, row.holdClock, row.stopped)
+	passStopOn(t, row.stopClock, row.holdClock, row.callClock, row.stopped)
 }
 
 // finalize moves the holder's holdClock to each tick its hand-back's finalizer waits for, one
@@ -540,12 +540,12 @@ func delivering(durable *heldDurable) *intakeDelivery {
 // (requireHandBackBeforeCreation). The negative control is the mark made after the admission, with
 // this hook between the two: the stop releases the hold, and the row fails at the hold's check.
 //
-// The stop's drain and its connected read wait for NATS with no bound of the row's (callWait), so a
-// loaded machine cannot have the stop withhold the hand-back. The holder's finalizer flushes once
-// each intakeFlushWait tick of its hold clock, a fake the row moves (finalizeHandBacks), which
-// renews nothing, so the row keeps the hold's row live on the database's clock as the renewals would
-// (keepHoldRowLive), until the holder releases it; and the standby tries for the released hold
-// only where the row moves its own (holdTries).
+// The stop's drain and its connected read wait for NATS with no bound (callWait, which the tests'
+// tuning holds at no bound: tuningFor), so a loaded machine cannot have the stop withhold the
+// hand-back. The holder's finalizer flushes once each intakeFlushWait tick of its hold clock, a fake
+// the row moves (finalizeHandBacks), which renews nothing, so the row keeps the hold's row live on
+// the database's clock as the renewals would (keepHoldRowLive), until the holder releases it; and the
+// standby tries for the released hold only where the row moves its own (holdTries).
 func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
@@ -620,8 +620,8 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 	earlier.afterHandBackAdmitted.Store(&hook)
 
 	// The stop's hand-back goes out only once its drain has answered, and only while its connected
-	// read answers: each of the stop's calls waits for NATS with no bound of the row's.
-	tuning.callWait.Store(math.MaxInt64)
+	// read answers: each of the stop's calls waits for NATS with no bound, the tests' tuning's
+	// callWait (tuningFor).
 	stopping, endStop := context.WithCancel(context.Background())
 	defer endStop()
 	firstStopped := make(chan struct{})
