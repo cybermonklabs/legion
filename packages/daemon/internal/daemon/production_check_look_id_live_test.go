@@ -897,6 +897,12 @@ func (f *lookIDFixture) toTesting() *lookIDAgent {
 	t := f.t
 	t.Helper()
 	imp := f.claimant(claim.RoleImplementer, "ses_implementer")
+	// The tester's pin of the race this fixture lost in 3 of 10 runs at 977d8a90 (INFRA-3518): once
+	// the implementer is ready, the daemon sends it its implementing task, and this pause lets that
+	// send start before the turn below, as it can in any run. The fixture must still bring the
+	// tester its testing task. The daemon holds the tester's phase task while the implementer's send
+	// is in flight (supervise's issueInTurn), and the fake runtime runs no sweep to send it later.
+	time.Sleep(time.Second)
 	imp.startTurn("")
 	status, body := f.d.request(http.MethodPost, "/legion/v1/handoff/complete", api.HandoffCompleteRequest{
 		GrantID: f.grant(imp.liveSession), Summary: "implemented it", Commit: lookIDHead,
