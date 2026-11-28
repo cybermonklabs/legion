@@ -913,24 +913,25 @@ func TestOnlyAPersonCanConfirmNeverMergedWork(t *testing.T) {
 }
 
 // Without positive evidence of its merge, no repository fact decides that a closed issue's work
-// never merged: an issue on the old name of a renamed repository, whose record keeps the old name
-// beside GitHub's new one, one whose record names another repository than Dispatch resolves it to,
-// and one whose names match with no rename configured each wait for the merge read. So do a
-// retained pull request that never merged (PARTIAL), and an issue whose one cleared clock a rename
-// gave to another issue (NONE). Each read that ends with no answering candidate names the issue to
-// the controller (merge-unread).
+// never merged: an issue whose GitHub spelling differs from the repository its record and its merge
+// history name, one whose record names another repository than Dispatch resolves it to, and one
+// whose names match with no rename configured each wait for the merge read. So do a retained pull
+// request that never merged (PARTIAL), and an issue whose one cleared clock a rename gave to another
+// issue (NONE). Each read that ends with no answering candidate names the issue to the controller
+// (merge-unread).
 func TestAMergeDecisionRejectsPossibleRenameLoss(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		recorded string
-		// github is GitHub's spelling of the record's repository where it differs from recorded:
-		// a renamed repository's record keeps the old name, which its merge history is read under.
+		// github is GitHub's spelling of the record's repository where it differs from recorded. The
+		// record allows only a difference of case (PutIssue), and the merge history is read under the
+		// record's spelling, so GitHub's spelling is not the repository the history names.
 		github   string
 		resolved string
 		seed     func(t *testing.T, pool *pgxpool.Pool)
 		class    record.MergeHistoryClass
 	}{
-		{name: "the old name of a renamed repository", recorded: "sjawhar/legion", github: "acme/widgets", resolved: "acme/widgets", class: record.MergeHistoryNone},
+		{name: "GitHub's spelling differs from the history's repository", recorded: "acme/widgets", github: "Acme/Widgets", resolved: "acme/widgets", class: record.MergeHistoryNone},
 		{name: "a repository other than Dispatch resolves it to", recorded: "acme/tools", resolved: "acme/widgets", class: record.MergeHistoryNone},
 		{name: "matching names with no rename configured", recorded: "acme/widgets", resolved: "acme/widgets", class: record.MergeHistoryNone},
 		{name: "a retained pull request that never merged", recorded: "acme/widgets", resolved: "acme/widgets", class: record.MergeHistoryPartial,
