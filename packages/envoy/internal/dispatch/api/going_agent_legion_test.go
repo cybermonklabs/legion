@@ -16,12 +16,14 @@ import (
 
 // The words the bar's agent tells its model after a read of an issue's Legion state that holds
 // none (going/agent's legionNote), by the issue (%[1]s) and its project (%[2]s): the project names
-// no Legion daemon, or it names one and Dispatch holds no phase of the issue from it.
+// no Legion daemon, or it names one and Dispatch holds no phase of the issue from it; and that the
+// answer says nothing of the sessions that hold a claim on the issue, which another read answers.
 const (
 	goingLegionNoState = "\n[Legion runs no phase of %[1]s and holds no place in any line for it: %[1]s has no slot and no place in a waiting line. " +
 		"This answer holds no Legion state (state is null) because "
-	goingLegionNoDaemon = goingLegionNoState + "the project %[2]s names no Legion daemon (configured is false).]"
-	goingLegionNoPhase  = goingLegionNoState + "Dispatch holds no phase of %[1]s from the Legion daemon the project %[2]s names (configured is true).]"
+	goingLegionNoClaim  = " It says nothing of which sessions hold a claim on %[1]s: dispatch_read_role_holders answers that.]"
+	goingLegionNoDaemon = goingLegionNoState + "the project %[2]s names no Legion daemon (configured is false)." + goingLegionNoClaim
+	goingLegionNoPhase  = goingLegionNoState + "Dispatch holds no phase of %[1]s from the Legion daemon the project %[2]s names (configured is true)." + goingLegionNoClaim
 )
 
 // goingShownMember is a member the bar's agent writes into a tool result's body after a value the

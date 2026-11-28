@@ -456,9 +456,11 @@ func TestALegionReadThatHoldsNoStateSaysLegionRunsNothingOfTheIssue(t *testing.T
 		`"at":"2026-11-28T10:00:00Z"`, `"at":"2026-11-28T10:00:00Z","at_shown":"2 hours ago"`)
 	for _, row := range []struct{ issue, words string }{
 		{"DEMO-7", "\n[Legion runs no phase of DEMO-7 and holds no place in any line for it: DEMO-7 has no slot and no place in a waiting line. " +
-			"This answer holds no Legion state (state is null) because the project DEMO names no Legion daemon (configured is false).]"},
+			"This answer holds no Legion state (state is null) because the project DEMO names no Legion daemon (configured is false). " +
+			"It says nothing of which sessions hold a claim on DEMO-7: dispatch_read_role_holders answers that.]"},
 		{"LGN-4", "\n[Legion runs no phase of LGN-4 and holds no place in any line for it: LGN-4 has no slot and no place in a waiting line. " +
-			"This answer holds no Legion state (state is null) because Dispatch holds no phase of LGN-4 from the Legion daemon the project LGN names (configured is true).]"},
+			"This answer holds no Legion state (state is null) because Dispatch holds no phase of LGN-4 from the Legion daemon the project LGN names (configured is true). " +
+			"It says nothing of which sessions hold a claim on LGN-4: dispatch_read_role_holders answers that.]"},
 		{"LGN-1", ""},
 		{"NONE-1", ""},
 	} {

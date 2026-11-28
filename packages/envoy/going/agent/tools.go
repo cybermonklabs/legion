@@ -751,16 +751,20 @@ func mendNote(call agentwire.CallRequest, answer agentwire.CallAnswer) string {
 }
 
 // What legionNote tells the model: the words that start it, which readResult finds it by, its
-// head, and why the answer holds no state - the issue's project names no Legion daemon, or it
-// names one and Dispatch holds no phase of the issue from it, which is so whether that daemon was
-// never read, its reads failed, or its newest read records nothing of the issue. Each names the
-// issue (%[1]s) and its project (%[2]s).
+// head, why the answer holds no state - the issue's project names no Legion daemon, or it names
+// one and Dispatch holds no phase of the issue from it, which is so whether that daemon was never
+// read, its reads failed, or its newest read records nothing of the issue - and its tail: what the
+// answer does not say, which sessions hold a claim on the issue, and the read that does
+// (dispatch_read_role_holders). A model told only what Legion does not run of an issue answered
+// that no Legion role held a claim on it, from no read (run 853a5617). Each names the issue (%[1]s)
+// and its project (%[2]s).
 const (
 	legionNotePrefix = "\n[Legion runs no phase of "
 	legionNoteHead   = legionNotePrefix + "%[1]s and holds no place in any line for it: %[1]s has no slot and no place in a waiting line. " +
 		"This answer holds no Legion state (state is null) because "
-	legionNoDaemon = "the project %[2]s names no Legion daemon (configured is false).]"
-	legionNoPhase  = "Dispatch holds no phase of %[1]s from the Legion daemon the project %[2]s names (configured is true).]"
+	legionNoDaemon = "the project %[2]s names no Legion daemon (configured is false)."
+	legionNoPhase  = "Dispatch holds no phase of %[1]s from the Legion daemon the project %[2]s names (configured is true)."
+	legionNoteTail = " It says nothing of which sessions hold a claim on %[1]s: dispatch_read_role_holders answers that.]"
 )
 
 // legionNote is what the model is told after call's answer where it is a read of an issue's Legion
@@ -783,9 +787,9 @@ func legionNote(call agentwire.CallRequest, answer agentwire.CallAnswer) string 
 		return ""
 	}
 	if *read.Configured {
-		return fmt.Sprintf(legionNoteHead+legionNoPhase, read.Issue, read.Project)
+		return fmt.Sprintf(legionNoteHead+legionNoPhase+legionNoteTail, read.Issue, read.Project)
 	}
-	return fmt.Sprintf(legionNoteHead+legionNoDaemon, read.Issue, read.Project)
+	return fmt.Sprintf(legionNoteHead+legionNoDaemon+legionNoteTail, read.Issue, read.Project)
 }
 
 // cutLegionNote is rest, a saved result after its head, without the legionNote that ends it: the
