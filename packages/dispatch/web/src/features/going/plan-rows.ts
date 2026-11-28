@@ -10,7 +10,7 @@ import type {
   IssueDetails,
 } from "../../api/types";
 import { changedWords, type WordPart } from "../doc/change-set";
-import { issuePriority } from "../issue/issue-priority";
+import { inheritedPriorityWords, issuePriority, type PriorityView } from "../issue/issue-priority";
 import { PROPERTY_LABELS } from "../issue-page/page-structure";
 import { CONTROL_LABELS, issueStatusWord } from "../issue-page/page-words";
 import { laneLabel } from "../project/board-model";
@@ -290,6 +290,12 @@ export interface RowChange {
   readonly edit: FieldEdit;
   readonly edited: boolean;
   readonly namesNewIssue: boolean;
+  /** Of a change of an issue's priority, the priority the issue works at now and the issue that
+   *  comes from, as its read answered them beside its own (`resolved_priority`, `priority_from`;
+   *  going_observe.go `goingPriorityNow`), read as `issuePriority` reads all three: what the value
+   *  now draws, "P1 · from ACME-1" where the issue inherits it. `now` is the own priority alone,
+   *  the one the change replaces and its Undo writes back. */
+  readonly priorityNow?: PriorityView;
 }
 
 /** The tools whose row writes the fields its read names, each with a value now: an issue's
@@ -313,12 +319,13 @@ function editOf(field: string, value: unknown): FieldEdit {
 /** What a row changes, field by field: the fields its item's read names, each with its value now
  *  and the new value, an update's rank the move its before and after make (`moveText`, which
  *  shows a new issue of the plan by its title in `newIssues`), an update's labels where it adds
- *  labels (`labels_add`) the labels now with those it adds (`withLabelsAdded`), a claim's holder
- *  now and after; a new issue's title, project, parent, priority and labels, none of which has a
- *  value now; an edit of a comment or an issue message its body, whose value now is the body the
- *  plan read (`postRead`), and a delete of one nothing; a project's proven-sessions setting its
- *  value now and, as the call asks it, on or off as a yes or no. A row that names no field shows
- *  its item alone. The person's edit of the labels a row adds is the whole set they chose,
+ *  labels (`labels_add`) the labels now with those it adds (`withLabelsAdded`), an update's
+ *  priority beside its own value now the priority the issue works at (`priorityNow`), a claim's
+ *  holder now and after; a new issue's title, project, parent, priority and labels, none of which
+ *  has a value now; an edit of a comment or an issue message its body, whose value now is the body
+ *  the plan read (`postRead`), and a delete of one nothing; a project's proven-sessions setting
+ *  its value now and, as the call asks it, on or off as a yes or no. A row that names no field
+ *  shows its item alone. The person's edit of the labels a row adds is the whole set they chose,
  *  which the approval writes as labels in place of labels_add (going_plan.go
  *  `goingEditReplaces`). */
 export function rowChanges(
@@ -357,6 +364,10 @@ export function rowChanges(
   }
   const fields = row.fields ?? [];
   const now = objectOf(row.now);
+  // Beside an issue's priority, its read answers the priority the issue works at and the issue
+  // that comes from; a read that says neither, a plan's from a Dispatch before they were answered,
+  // works at its own alone.
+  const { priority_from: priorityFrom, resolved_priority: resolvedPriority } = now;
   return fields
     .filter((field) => VALUE_TOOLS[row.tool] === true || args[field] !== undefined)
     .map((field) => {
@@ -393,6 +404,15 @@ export function rowChanges(
         namesNewIssue: namesNewIssue(field),
         next,
         now: valueNow,
+        ...(field === "priority"
+          ? {
+              priorityNow: issuePriority({
+                priority: typeof valueNow === "number" ? valueNow : null,
+                priority_from: typeof priorityFrom === "string" ? priorityFrom : null,
+                resolved_priority: typeof resolvedPriority === "number" ? resolvedPriority : null,
+              }),
+            }
+          : {}),
       };
     });
 }
@@ -1274,14 +1294,21 @@ export function reviewWords(plan: GoingPlanAnswer, row: GoingPlanRow): string | 
 }
 
 /** What a row whose item changed after the plan showed says of the value now: the one field's
- *  value, or each field by its name. */
+ *  value, or each field by its name; a priority the one the issue works at, "P1, from ACME-1"
+ *  where it inherits it (`inheritedPriorityWords`). */
 export function valuesNowWords(changes: readonly RowChange[]): string {
-  const shown = changes.filter((change) => change.now !== undefined);
+  const shown = changes
+    .filter((change) => change.now !== undefined)
+    .map(({ field, now, priorityNow }) => {
+      if (priorityNow === undefined) return { field, words: valueWords(field, now) };
+      const { from, level } = priorityNow;
+      const words =
+        level === null || from === null ? laneLabel(level) : inheritedPriorityWords(level, from);
+      return { field, words };
+    });
   const [only] = shown;
-  if (shown.length === 1 && only !== undefined) return valueWords(only.field, only.now);
-  return shown
-    .map((change) => `${fieldWords(change.field)} ${valueWords(change.field, change.now)}`)
-    .join("; ");
+  if (shown.length === 1 && only !== undefined) return only.words;
+  return shown.map(({ field, words }) => `${fieldWords(field)} ${words}`).join("; ");
 }
 
 /** The longest the sentences shown above a new issue's whole spec run, in characters. */
@@ -1708,15 +1735,43 @@ interface CardDraft extends PlanDraft {
   readonly changesSeen?: ReadonlySet<string>;
 }
 
+/** The members of a row's value now that the row writes none of: beside an issue's priority, the
+ *  priority the issue works at and the issue that comes from (going_observe.go
+ *  `goingPriorityNow`). */
+const PRIORITY_NOW: Readonly<Record<string, true>> = {
+  priority_from: true,
+  resolved_priority: true,
+};
+
+/** A row's value now of the fields it writes: its value now less the priority an issue works at
+ *  and the issue that comes from (`PRIORITY_NOW`), so a change of those alone - the issue above
+ *  it moved its priority - is no change of the row's item, as the server holds it (going_plan.go
+ *  `goingRowShown.same`). */
+function writtenNow(row: GoingPlanRow): unknown {
+  const { now } = row;
+  if (
+    !(row.fields ?? []).includes("priority") ||
+    typeof now !== "object" ||
+    now === null ||
+    Array.isArray(now)
+  ) {
+    return now;
+  }
+  return Object.fromEntries(
+    Object.entries(now).filter(([member]) => PRIORITY_NOW[member] !== true)
+  );
+}
+
 /** The draft with each waiting row whose item changed after the plan showed (R4) unticked, with
- *  each row that needs it, once for each value its item changed to: such a row waits to be
- *  ticked again. The same draft where no row changed since it was last read. */
+ *  each row that needs it, once for each value the fields it writes changed to (`writtenNow`):
+ *  such a row waits to be ticked again. The same draft where no row changed since it was last
+ *  read. */
 export function withChangesUnticked(draft: PlanDraft, plan: GoingPlanAnswer): PlanDraft {
   const seen = (draft as CardDraft).changesSeen ?? new Set<string>();
   const rows = plan.rows ?? [];
   const fresh = rows
     .filter((row) => rowWaits(row) && row.changed)
-    .map((row) => ({ key: `${row.row}:${JSON.stringify(row.now)}`, row: row.row }))
+    .map((row) => ({ key: `${row.row}:${JSON.stringify(writtenNow(row))}`, row: row.row }))
     .filter((change) => !seen.has(change.key));
   if (fresh.length === 0) return draft;
   const unticked = new Set(draft.unticked);

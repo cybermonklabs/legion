@@ -2377,3 +2377,124 @@ func TestThePlanCallGivesTheRunNoWordOfAPostItsRowsRead(t *testing.T) {
 		}
 	}
 }
+
+// TestAPriorityRowShowsThePriorityItsIssueWorksAt: since main's #5854 an issue with no priority of
+// its own works at the priority of the nearest issue above it that has one, and every read of an
+// issue answers that priority and the issue it comes from (resolved_priority, priority_from). A
+// plan row that changes the priority of a sub-issue with none of its own shows them beside its own,
+// none, from the one read of the issue the row makes, and the plan call gives the run the same
+// value now. The parent's priority moving after the plan read it shows on the row once the plan is
+// read again, and makes the row wait again neither at its approval nor before its write
+// (goingRowShown.same): the row writes the sub-issue's own priority, and its Undo writes back that
+// own priority alone, so the sub-issue works at its parent's again.
+func TestAPriorityRowShowsThePriorityItsIssueWorksAt(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	parent := rig.issue(t, "Build the observatory")
+	rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+parent, map[string]any{"priority": 1})
+	child := decodeBody[model.Issue](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "DEMO", "title": "Raise the dome", "parent": parent, "force": true,
+	})).Key
+	// worksAt fails t unless now, the value now what names, is the sub-issue's priority: none of its
+	// own, working at the parent's, resolved.
+	worksAt := func(t *testing.T, what string, now json.RawMessage, resolved int) {
+		t.Helper()
+		var read struct {
+			Priority *int    `json:"priority"`
+			Resolved *int    `json:"resolved_priority"`
+			From     *string `json:"priority_from"`
+		}
+		if err := json.Unmarshal(now, &read); err != nil || read.Priority != nil || read.Resolved == nil || *read.Resolved != resolved ||
+			read.From == nil || *read.From != parent {
+			t.Fatalf("%s reads the value now %s, want no priority of its own and P%d from %s", what, now, resolved, parent)
+		}
+	}
+	const words = "set the priority of Raise the dome to P2"
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(goingChange("dispatch_issue_update", map[string]any{"issue": child, "priority": 2}))
+		}
+		return answered("Done.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	row := rig.waiting(t, run).Rows[0]
+	if row.Item != child || !slices.Equal(row.Fields, []string{"priority"}) {
+		t.Fatalf("the row changes %s's %v, want %s's priority", row.Item, row.Fields, child)
+	}
+	worksAt(t, "the plan's row", row.Now, 1)
+	stored, err := readGoingPlan(t.Context(), rig.database.Pool, run, 0)
+	if err != nil || stored == nil {
+		t.Fatalf("read the run's plan off the store: %v", err)
+	}
+	called := stored.callAnswer()
+	var plan agentwire.PlanAnswer
+	if err := json.Unmarshal(called.Body, &plan); err != nil || len(plan.Rows) != 1 {
+		t.Fatalf("the plan call answers %s (%v), want its one row", called.Body, err)
+	}
+	worksAt(t, "the plan call's row", plan.Rows[0].Now, 1)
+
+	// The parent's priority moves after the plan read it: the plan read again shows the new one,
+	// and the row waits as it did.
+	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+parent, map[string]any{"priority": 3})
+	if row = rig.plan(t, run).Rows[0]; row.State != "waiting" || row.Changed {
+		t.Fatalf("after the parent's priority moved the row is %s (changed %v), want it waiting as it was", row.State, row.Changed)
+	}
+	worksAt(t, "the plan read again", row.Now, 3)
+
+	// It moves again before the approval, which approves the row over it, and once more between the
+	// approval and the write, which runs.
+	rig.loop.stop()
+	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+parent, map[string]any{"priority": 2})
+	if row = rig.answer(t, run, "approve", map[string]any{"plan": 1}).Rows[0]; row.State != "approved" || row.Changed {
+		t.Fatalf("the approval left the row %s (changed %v), want it approved", row.State, row.Changed)
+	}
+	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+parent, map[string]any{"priority": 1})
+	rig.loop.start(rig.goingAgentRig)
+	if record := rig.ended(t, run, time.Minute); record.state != "done" {
+		t.Fatalf("the run ended %s with %q, want done; its calls were told %q", record.state, record.reason, rig.toolResults(t, run))
+	}
+	if read := rig.issueRead(t, child); read.Priority == nil || *read.Priority != 2 {
+		t.Fatalf("after the row ran %s's own priority is %v, want 2", child, read.Priority)
+	}
+	if line := rig.undone(t, run, "dispatch_issue_update")[0]; !line.Outcome.OK {
+		t.Fatalf("Undo of the row answered %+v, want it written back", line)
+	}
+	if read := rig.issueRead(t, child); read.Priority != nil || read.ResolvedPriority == nil || *read.ResolvedPriority != 1 ||
+		read.PriorityFrom == nil || *read.PriorityFrom != parent {
+		t.Fatalf("after Undo %s's priority is %v, working at %v from %v; want none of its own, working at P1 from %s",
+			child, read.Priority, read.ResolvedPriority, read.PriorityFrom, parent)
+	}
+}
+
+// TestALaterRowKeepsNoInheritedPriorityAnEarlierRowsWriteMadeUntrue: where an earlier row of a
+// plan writes the priority of the issue a later row changes the priority of, the later row's read
+// (goingCarryWrite) takes the priority the issue works at and the issue that comes from off that
+// write's answer, and holds neither where the answer says neither, never the ones the write made
+// untrue. A write that says neither and writes neither the priority nor the parent, an edit of an
+// ask on the issue, leaves them as the row read them.
+func TestALaterRowKeepsNoInheritedPriorityAnEarlierRowsWriteMadeUntrue(t *testing.T) {
+	t.Parallel()
+	seen := goingRowShown{Item: "DEMO-2", Issue: "DEMO-2", Fields: []string{"priority"},
+		Now: json.RawMessage(`{"priority":null,"resolved_priority":1,"priority_from":"DEMO-1"}`)}
+	for _, c := range []struct {
+		name  string
+		after goingObservation
+		moved bool
+		want  string
+	}{
+		{"an answer that says the priority the issue works at", goingObservation{fields: []string{"priority"},
+			value: map[string]any{"priority": float64(2)}, priorityNow: map[string]any{"resolved_priority": float64(2), "priority_from": nil}},
+			true, `{"priority":2,"resolved_priority":2,"priority_from":null}`},
+		{"an answer that says neither", goingObservation{fields: []string{"priority"}, value: map[string]any{"priority": float64(2)}},
+			true, `{"priority":2}`},
+		{"an edit of an ask on the issue", goingObservation{fields: []string{"question"}, value: map[string]any{"question": "Which dome?"}},
+			false, string(seen.Now)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			carried, moved := goingCarryWrite(seen, c.after)
+			if moved != c.moved || !goingJSONEqual(carried.Now, json.RawMessage(c.want)) {
+				t.Fatalf("the later row's read is %s (moved %v), want %s (moved %v)", carried.Now, moved, c.want, c.moved)
+			}
+		})
+	}
+}

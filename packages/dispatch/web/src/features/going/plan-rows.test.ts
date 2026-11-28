@@ -32,6 +32,7 @@ import {
   undoneTitle,
   undoRecord,
   undoWords,
+  valuesNowWords,
   valueWords,
   wasReverted,
   withChangesUnticked,
@@ -241,7 +242,15 @@ test("a row's fields hold the value now and the new value; a claim's new holder 
       next: ["board", "accessibility"],
       now: ["board"],
     },
-    { edit: "priority", edited: true, field: "priority", namesNewIssue: false, next: 1, now: null },
+    {
+      edit: "priority",
+      edited: true,
+      field: "priority",
+      namesNewIssue: false,
+      next: 1,
+      now: null,
+      priorityNow: { from: null, level: null, own: null },
+    },
   ]);
   const claim = (release: boolean) =>
     rowChanges(
@@ -272,6 +281,57 @@ test("a row's fields hold the value now and the new value; a claim's new holder 
       new Map()
     )
   ).toEqual([]);
+});
+
+// Since main's #5854 the plan's read of an issue answers, beside its own priority, the priority
+// the issue works at and the issue that comes from (going_observe.go `goingPriorityNow`). A change
+// of the priority keeps the own one as its value now - the one it replaces, and its Undo writes
+// back - with the one the issue works at beside it, which the row draws and says; and a change of
+// that alone, the issue above it moving its priority, unticks no row again, as the server waits no
+// row again for it (going_plan.go `goingRowShown.same`).
+test("a change of a priority holds the priority its issue works at beside its own, says it, and is held to its own", () => {
+  const priority = (now: Record<string, unknown>, changed = false): GoingPlanRow =>
+    row(0, {
+      arguments: { issue: "ACME-2", priority: 2 },
+      changed,
+      fields: ["priority"],
+      issue: "ACME-2",
+      item: "ACME-2",
+      now,
+    });
+  const inherited = { priority: null, priority_from: "ACME-1", resolved_priority: 1 };
+  expect(rowChanges(priority(inherited), undefined, new Map())).toEqual([
+    {
+      edit: "priority",
+      edited: false,
+      field: "priority",
+      namesNewIssue: false,
+      next: 2,
+      now: null,
+      priorityNow: { from: "ACME-1", level: 1, own: null },
+    },
+  ]);
+  const nowWords = (now: Record<string, unknown>) =>
+    valuesNowWords(rowChanges(priority(now), undefined, new Map()));
+  expect(nowWords(inherited)).toBe("P1, from ACME-1");
+  expect(nowWords({ priority: 3, priority_from: null, resolved_priority: 3 })).toBe("P3");
+  expect(nowWords({ priority: null, priority_from: null, resolved_priority: null })).toBe(
+    "No priority"
+  );
+  // A read of a Dispatch that answered neither works at its own priority alone.
+  expect(nowWords({ priority: null })).toBe("No priority");
+
+  // Another writer cleared the issue's own priority after the plan showed it, so it works at its
+  // parent's: the row unticks once. The parent's priority moving then unticks it no more.
+  const cleared = (resolved: number): GoingPlanAnswer => ({
+    ...plan,
+    rows: [priority({ ...inherited, resolved_priority: resolved }, true)],
+  });
+  const empty: PlanDraft = { edits: new Map(), plan: 1, run: "run-1", unticked: new Set() };
+  const once = withChangesUnticked(empty, cleared(1));
+  expect([...once.unticked]).toEqual([0]);
+  const ticked = { ...once, unticked: new Set<number>() };
+  expect(withChangesUnticked(ticked, cleared(3))).toBe(ticked);
 });
 
 test("a row that closes, deletes or removes something is told apart from one that adds", () => {

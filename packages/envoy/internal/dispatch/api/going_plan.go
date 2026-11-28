@@ -69,12 +69,14 @@ const goingFramePlan = "plan"
 // goingRowShown is what a plan shows the person of one row's item (going_plan_rows.shown), as the
 // server last read it as the person: the item, the issue it is or belongs to, the fields the
 // change writes and their value now, the holder of the issue's claim, and why the row waits for
-// the person in every mode (goingRowWaits). Changed is a row that waits again because its item
-// changed after the person saw it. Token is a document's token as that read answered it
-// (goingObservation.token), which the undo of the row's edit holds to the token the edit's route
-// answered it found, to know the content read is the content the edit replaced. Deleted is a row
-// whose comment or issue message its author deleted (goingObservation.deleted): its value now is
-// the delete's mark with no body, and nobody approves it.
+// the person in every mode (goingRowWaits). The value now of a row that writes an issue's priority
+// holds, beside the issue's own priority, the priority the issue works at and the issue that comes
+// from (goingPriorityNow), which the change does not write. Changed is a row that waits again
+// because its item changed after the person saw it. Token is a document's token as that read
+// answered it (goingObservation.token), which the undo of the row's edit holds to the token the
+// edit's route answered it found, to know the content read is the content the edit replaced.
+// Deleted is a row whose comment or issue message its author deleted (goingObservation.deleted):
+// its value now is the delete's mark with no body, and nobody approves it.
 type goingRowShown struct {
 	Item    string          `json:"item,omitempty"`
 	Issue   string          `json:"issue,omitempty"`
@@ -87,17 +89,48 @@ type goingRowShown struct {
 	Deleted bool            `json:"deleted,omitempty"`
 }
 
-// same reports whether other reads the item as shown does: the same value now and the same holder
-// of its claim.
+// same reports whether other reads the item as shown does, as far as a row's approval is held to
+// it: the same value now of the fields the row writes (written) and the same holder of its claim.
+// A change of only the priority an issue works at and of the issue that comes from, which a row of
+// its priority shows beside its own (goingPriorityNow) - the issue above it moved its priority -
+// is no change of the row's item: it makes the row wait again neither at an approval nor before
+// its write. The row writes the issue's own priority whatever the issue inherits, and its undo
+// writes back the own priority alone, so the change the person approved is the same change; and
+// the inherited priority is another issue's, which an earlier row of the same plan may write,
+// while an earlier row's write moves only the later rows of its own item (carryRowWrite), so
+// counting it would make the plan's own write wait a later row again. The plan still shows the
+// new inherited priority once it reads the row again (unchanged).
 func (shown goingRowShown) same(other goingRowShown) bool {
-	return goingJSONEqual(shown.Now, other.Now) && reflect.DeepEqual(shown.Claim, other.Claim)
+	return goingJSONEqual(shown.written(), other.written()) && reflect.DeepEqual(shown.Claim, other.Claim)
 }
 
-// unchanged reports whether other shows all that shown does: the same item, issue, fields, value,
-// claim, reasons to wait and mark of a row that waits again.
+// written is the value now of the fields the row writes: Now, less the priority an issue works at
+// and the issue that comes from (goingPriorityNow), which a row of the issue's priority shows
+// beside its own and does not write.
+func (shown goingRowShown) written() json.RawMessage {
+	if !slices.Contains(shown.Fields, goingPriority) {
+		return shown.Now
+	}
+	var now map[string]json.RawMessage
+	if json.Unmarshal(shown.Now, &now) != nil || now == nil {
+		return shown.Now
+	}
+	for _, member := range goingPriorityNow {
+		delete(now, member)
+	}
+	written, err := json.Marshal(now)
+	if err != nil {
+		return shown.Now
+	}
+	return written
+}
+
+// unchanged reports whether other shows all that shown does: the same item, issue, fields, whole
+// value now - the priority an issue works at among it, which same leaves out - claim, reasons to
+// wait and mark of a row that waits again.
 func (shown goingRowShown) unchanged(other goingRowShown) bool {
-	return shown.same(other) && shown.Item == other.Item && shown.Issue == other.Issue && shown.Changed == other.Changed &&
-		slices.Equal(shown.Fields, other.Fields) && slices.Equal(shown.Waits, other.Waits)
+	return shown.same(other) && goingJSONEqual(shown.Now, other.Now) && shown.Item == other.Item && shown.Issue == other.Issue &&
+		shown.Changed == other.Changed && slices.Equal(shown.Fields, other.Fields) && slices.Equal(shown.Waits, other.Waits)
 }
 
 // goingRowApproval is what let a row run (going_plan_rows.approval): the person, with any values
@@ -195,11 +228,12 @@ type goingPlanAnswer struct {
 
 // goingPlanRow is one row of a plan as its person reads it: the change (the tool and the arguments
 // it runs with, the person's edits included), the rows it needs, its state, its class, the item
-// it changes with the fields it writes and their value now, the holder of the item's issue's
-// claim, why it waits in every mode, whether it waits again because its item changed after the
-// person saw it, and what its write answered. Deleted, only on a row of a comment or an issue
-// message its author deleted, says so: its value now is the delete's mark, {author, deleted_at,
-// deleted_by}, with no body (goingPostNow), and nobody approves it.
+// it changes with the fields it writes and their value now (for an issue's priority, the
+// priority the issue works at and the issue that comes from beside its own, goingRowShown), the
+// holder of the item's issue's claim, why it waits in every mode, whether it waits again because
+// its item changed after the person saw it, and what its write answered. Deleted, only on a row of
+// a comment or an issue message its author deleted, says so: its value now is the delete's mark,
+// {author, deleted_at, deleted_by}, with no body (goingPostNow), and nobody approves it.
 type goingPlanRow struct {
 	Row       int             `json:"row"`
 	Tool      string          `json:"tool"`
@@ -525,12 +559,13 @@ func goingJSONEqual(a, b json.RawMessage) bool {
 
 // goingReadRow reads what a row of tool with arguments changes, as the person doer acts for
 // (login): the call prepared as its write will be, and what the plan shows of its item - the
-// item, the issue it is or belongs to, the fields the change writes and their value now, the
-// holder of that issue's claim, why the row waits in every mode (a row that sets its issue's
-// route by the route it sets, goingRouteSet), and, for a comment or an issue message, whether its
-// author deleted it. sendIssue is the issue a send to an agent session is posted on
-// (going_messages.go), "" for none. A call the tool's schema or translation refuses, and a read
-// the person may not make, answers its error.
+// item, the issue it is or belongs to, the fields the change writes and their value now (an
+// issue's priority with the priority the issue works at and the issue that comes from beside it,
+// from the same read, goingObservation.shownValue), the holder of that issue's claim, why the row
+// waits in every mode (a row that sets its issue's route by the route it sets, goingRouteSet),
+// and, for a comment or an issue message, whether its author deleted it. sendIssue is the issue a
+// send to an agent session is posted on (going_messages.go), "" for none. A call the tool's schema
+// or translation refuses, and a read the person may not make, answers its error.
 func (s *server) goingReadRow(ctx context.Context, doer GoingDoer, login, tool string, arguments map[string]any, sendIssue string) (goingRowShown, error) {
 	caller := GoingCaller{Catalogue: s.going, Doer: doer, knownSession: s.goingKnownSession, sendIssue: sendIssue}
 	prepared, err := caller.prepare(ctx, tool, arguments)
@@ -547,7 +582,7 @@ func (s *server) goingReadRow(ctx context.Context, doer GoingDoer, login, tool s
 		shown.Issue = prepared.call.path["key"]
 	}
 	if before.value != nil {
-		if shown.Now, err = json.Marshal(before.value); err != nil {
+		if shown.Now, err = json.Marshal(before.shownValue()); err != nil {
 			return goingRowShown{}, fmt.Errorf("encode the value of %s: %w", shown.Item, err)
 		}
 	}
@@ -1157,11 +1192,12 @@ func appendGoingPlanFrame(ctx context.Context, tx pgx.Tx, run string, plan int, 
 
 // callAnswer is the plan as a plan call answers it (agentwire.PlanAnswer): its rows, and each row
 // approved and not yet run as a row to run now, as a claim of the run would answer it
-// (goingPendingRows), with the step of a call that already began it. A row of a comment or an
-// issue message carries no value now: the plan's read of the post is its person's to see, and the
-// run is given a post's words only by its own reads, each of which records the post as the run's
-// (recordGoingRunPosts), so the plan never puts in the run's steps the words of a post whose later
-// delete would not withdraw it.
+// (goingPendingRows), with the step of a call that already began it. A row carries the value now
+// the plan shows its person - a row of an issue's priority the priority the issue works at and the
+// issue that comes from beside its own - but a row of a comment or an issue message, which carries
+// none: the plan's read of the post is its person's to see, and the run is given a post's words
+// only by its own reads, each of which records the post as the run's (recordGoingRunPosts), so the
+// plan never puts in the run's steps the words of a post whose later delete would not withdraw it.
 func (p *goingPlanStored) callAnswer() agentwire.CallAnswer {
 	if p == nil {
 		return agentwire.CallAnswer{}

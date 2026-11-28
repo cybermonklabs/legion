@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -260,6 +261,71 @@ test("a change row names its item and each field in the page's words, the values
     // No raw field name and no JSON.
     expect(drawn.textContent ?? "").not.toMatch(/[[\]{}"]|priority none|labels \[/u);
     expect(drawn).not.toHaveAttribute("data-removes");
+  } finally {
+    restore();
+  }
+});
+
+// Since main's #5854 an issue with no priority of its own works at the priority of the nearest
+// issue above it that has one, and the plan's read of the issue answers that priority and the
+// issue it comes from beside its own (`resolved_priority`, `priority_from`). A change of the
+// priority draws its value now as the issue page draws the issue's priority (`issuePriority`): an
+// inherited one as its badge and the issue it comes from, a link to that issue - "P1 · from
+// ACME-1" - an own one as its badge alone, and none in the page's words. Its new value is the own
+// priority the change writes.
+test("a priority's value now is the one the issue works at, with the issue it comes from, as the issue page draws it", async () => {
+  const priority = (number: number, key: string, now: Record<string, unknown>): GoingPlanRow =>
+    row(number, {
+      arguments: { issue: key, priority: 2 },
+      fields: ["priority"],
+      issue: key,
+      item: key,
+      now,
+    });
+  const inherited = { priority: null, priority_from: "ACME-1", resolved_priority: 1 };
+  const restore = await openPlan(
+    planOf([
+      priority(0, "ACME-2", inherited),
+      priority(1, "ACME-3", { priority: 3, priority_from: null, resolved_priority: 3 }),
+      priority(2, "ACME-4", { priority: null, priority_from: null, resolved_priority: null }),
+    ])
+  );
+  try {
+    renderWithQueries(
+      <MemoryRouter>
+        <Card />
+      </MemoryRouter>
+    );
+    await screen.findByTestId("going-plan-card-rows");
+    const line = (number: number) => fieldOf(drawnRow(number), "priority");
+    const now = (number: number) => within(line(number)).getByTestId("going-plan-now");
+    expect(line(0)).toHaveTextContent(/^Priority: P1 · from ACME-1 → P2/u);
+    expect(within(now(0)).getByRole("link", { name: "ACME-1" })).toHaveAttribute(
+      "href",
+      "/issues/ACME-1"
+    );
+    expect(line(1)).toHaveTextContent(/^Priority: P3 → P2/u);
+    expect(within(now(1)).queryByRole("link")).toBeNull();
+    expect(line(2)).toHaveTextContent(/^Priority: No priority → P2/u);
+    // The inherited priority's badge is the one the issue page's priority menu draws it in.
+    const issuePage = renderWithQueries(
+      <MemoryRouter>
+        <PriorityEditor
+          issueKey="ACME-2"
+          write={{
+            failed: false,
+            pending: false,
+            retry: undefined,
+            shown: issuePriority(inherited),
+            stopped: undefined,
+            submit: () => {},
+          }}
+        />
+      </MemoryRouter>
+    );
+    const pageBadge = within(issuePage.container).getByText("P1", { selector: "span" });
+    expect(within(now(0)).getByText("P1").className).toBe(pageBadge.className);
+    issuePage.unmount();
   } finally {
     restore();
   }

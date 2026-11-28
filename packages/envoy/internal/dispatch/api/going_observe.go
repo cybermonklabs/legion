@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -145,6 +146,27 @@ type goingObservation struct {
 	// deleted is a read before of a comment or an issue message its author deleted, whose value
 	// is the delete's mark and no part of its body (goingPostNow).
 	deleted bool
+	// priorityNow is what an issue's read, or an update's answer, says of the priority the issue
+	// works at and of the issue that comes from (goingPriorityNow), each as it said it. A plan row
+	// of the issue's priority shows them beside its own (shownValue), and a later row of the same
+	// plan takes them from an earlier row's write (goingCarryWrite); value alone is what a write
+	// back writes, so nothing writes them back.
+	priorityNow map[string]any
+}
+
+// shownValue is what a plan row shows of the value the read saw (goingRowShown.Now): the value,
+// with, beside an issue's priority it names, the priority the issue works at and the issue that
+// comes from (priorityNow), so the row draws the priority as every surface draws it: "P1 · from
+// DEMO-1" for an issue with no priority of its own.
+func (o goingObservation) shownValue() any {
+	fields, named := o.value.(map[string]any)
+	if !named || len(o.priorityNow) == 0 || !slices.Contains(o.fields, goingPriority) {
+		return o.value
+	}
+	shown := make(map[string]any, len(fields)+len(o.priorityNow))
+	maps.Copy(shown, fields)
+	maps.Copy(shown, o.priorityNow)
+	return shown
 }
 
 // goingFields is the one field a write changes as an observation lists it, none for "".
@@ -225,6 +247,35 @@ const goingAdvances = "advances"
 type goingAdvancesValue struct {
 	IDs      []string `json:"ids"`
 	Revision int64    `json:"revision"`
+}
+
+// goingPriority is the field an issue's own priority is recorded under: the one an update writes
+// and its undo writes back. goingPriorityNow are the members of an issue's read that say the
+// priority the issue works at - its own, else that of the nearest issue above it that has one -
+// and the key of the issue that comes from (resolved_priority, priority_from; main's #5854). Every
+// surface draws a priority with them, and a plan row of an issue's priority shows them beside it
+// (goingObservation.shownValue); no write sets them, so neither is a field a write changes or its
+// undo writes back.
+const goingPriority = "priority"
+
+var goingPriorityNow = []string{"resolved_priority", "priority_from"}
+
+// goingPriorityNowOf is each member of goingPriorityNow that issue, an issue's read or an
+// update's answer, says, as it says it; nil where it says neither.
+func goingPriorityNowOf(issue map[string]json.RawMessage) map[string]any {
+	var said map[string]any
+	for _, member := range goingPriorityNow {
+		raw, held := issue[member]
+		var value any
+		if !held || json.Unmarshal(raw, &value) != nil {
+			continue
+		}
+		if said == nil {
+			said = make(map[string]any, len(goingPriorityNow))
+		}
+		said[member] = value
+	}
+	return said
 }
 
 // goingAskFields are the parts of an ask an edit writes.
@@ -831,6 +882,8 @@ func goingAskFieldsOf(arguments map[string]any) []string {
 
 // issueFields is the issue's fields named, as the issue's own read answers them: each one the
 // value a write back sends, an issue's components as the mode, ids and reason an update takes.
+// Beside them, from the same read, it holds the priority the issue works at and the issue that
+// comes from (priorityNow), which a plan row of its priority shows and no write back sends.
 func (o goingObserver) issueFields(ctx context.Context, key string, fields []string) (goingObservation, error) {
 	var issue map[string]json.RawMessage
 	if err := o.read.get(ctx, goingIssuePath(key), &issue); err != nil {
@@ -855,15 +908,17 @@ func (o goingObserver) issueFields(ctx context.Context, key string, fields []str
 		}
 		values[field] = value
 	}
-	return goingObservation{target: key, fields: fields, issue: key, value: values}, nil
+	return goingObservation{target: key, fields: fields, issue: key, value: values, priorityNow: goingPriorityNowOf(issue)}, nil
 }
 
 // goingIssueUpdated is what an update of the issue's fields found and left, read off its route's
 // answer (issueUpdated): each field before.fields names as the update left it (value), and as the
-// update found it under the issue's lock (stood), the rank as the places the update answers. An
-// answer that does not say what the update found of a field it writes, or says what it found or
-// left in a value that does not decode (goingIssueFieldValue), is the value after unread, so the
-// undo puts nothing back.
+// update found it under the issue's lock (stood), the rank as the places the update answers, and
+// the priority the issue works at and the issue that comes from as the update left them
+// (priorityNow), which a later row of the same plan takes (goingCarryWrite). An answer that does
+// not say what the update found of a field it writes, or says what it found or left in a value
+// that does not decode (goingIssueFieldValue), is the value after unread, so the undo puts nothing
+// back.
 func goingIssueUpdated(answer []byte, before goingObservation) (goingObservation, error) {
 	observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue}
 	var issue map[string]json.RawMessage
@@ -878,6 +933,7 @@ func goingIssueUpdated(answer []byte, before goingObservation) (goingObservation
 	if json.Unmarshal(issue["key"], &key) == nil && key != "" {
 		observed.target, observed.issue = key, key
 	}
+	observed.priorityNow = goingPriorityNowOf(issue)
 	left, found := make(map[string]any, len(before.fields)), make(map[string]any, len(before.fields))
 	for _, field := range before.fields {
 		if _, answered := previous[field]; !answered {

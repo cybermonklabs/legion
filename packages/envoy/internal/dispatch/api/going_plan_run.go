@@ -405,8 +405,9 @@ func goingWithNewIssues(tool string, arguments map[string]any, keys map[int]stri
 
 // rowItemChanged reads the item of row, an approved row, again as the person (login, through doer)
 // before a write of it, and makes the row wait again, showing the new read, where its item no
-// longer reads as it did at its approval - another value, or another holder of its issue's claim -
-// or where Auto-review approved it and would not let it through over the new read
+// longer reads as it did at its approval - another value of a field it writes, or another holder
+// of its issue's claim (goingRowShown.same: the priority an issue inherits is no field a row
+// writes) - or where Auto-review approved it and would not let it through over the new read
 // (autoReviewLapsed). A read refused as the person (goingReadRefused) is passed over, since the
 // write's own preparation or route refuses it the same, and that refusal is kept on the row; any
 // other failure of the read ends the call failed, since a read that failed is no reason to write
@@ -923,7 +924,9 @@ func (s *server) goingRowAfter(ctx context.Context, done goingPlanRowStored, ans
 
 // goingCarryWrite is seen, a later row's read of the item an earlier row wrote, with what that
 // write left (after) in place of the values it read: each of its fields the write's answer says,
-// and the claim a claim's or a release's answer says. moved reports whether anything was put in.
+// beside an issue's priority the priority the issue works at and the issue that comes from
+// (goingCarryPriorityNow), and the claim a claim's or a release's answer says. moved reports
+// whether anything was put in.
 func goingCarryWrite(seen goingRowShown, after goingObservation) (goingRowShown, bool) {
 	moved := false
 	if left, fields := after.value.(map[string]any); fields {
@@ -933,6 +936,9 @@ func goingCarryWrite(seen goingRowShown, after goingObservation) (goingRowShown,
 				if value, said := left[field]; said {
 					now[field], moved = value, true
 				}
+			}
+			if goingCarryPriorityNow(now, seen.Fields, after) {
+				moved = true
 			}
 			if moved {
 				if encoded, err := json.Marshal(now); err == nil {
@@ -954,6 +960,33 @@ func goingCarryWrite(seen goingRowShown, after goingObservation) (goingRowShown,
 		}
 	}
 	return seen, moved
+}
+
+// goingCarryPriorityNow puts in now, the value now of a later row of a plan whose fields hold its
+// issue's priority, what after - what an earlier row's write left of the same issue - says of the
+// priority the issue works at and of the issue that comes from (goingPriorityNow), and reports
+// whether that changed now. A write of the issue's priority or of its parent moves both, so where
+// its answer does not say one of them, now holds none of it rather than the one the write made
+// untrue; any other write whose answer says neither, such as an edit of an ask on the issue,
+// leaves them as the row read them.
+func goingCarryPriorityNow(now map[string]any, fields []string, after goingObservation) bool {
+	moves := slices.Contains(after.fields, goingPriority) || slices.Contains(after.fields, "parent")
+	if !slices.Contains(fields, goingPriority) || (after.priorityNow == nil && !moves) {
+		return false
+	}
+	changed := false
+	for _, member := range goingPriorityNow {
+		value, said := after.priorityNow[member]
+		held, holds := now[member]
+		switch {
+		case said && (!holds || !goingJSONEqual(goingJSONOrNull(held), goingJSONOrNull(value))):
+			now[member], changed = value, true
+		case !said && holds:
+			delete(now, member)
+			changed = true
+		}
+	}
+	return changed
 }
 
 // reviewCall is a review call (agentwire.KindReview) of a run in Auto-review: Auto-review's

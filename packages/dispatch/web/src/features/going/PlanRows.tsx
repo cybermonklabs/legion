@@ -49,7 +49,7 @@ import {
 import { changedWords, type WordPart } from "../doc/change-set";
 import { AssigneeEditor } from "../issue/AssigneeControl";
 import { IssueLabels } from "../issue/IssueLabels";
-import { issuePriority } from "../issue/issue-priority";
+import { issuePriority, type PriorityView } from "../issue/issue-priority";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { StatusMenu } from "../issue-page/StatusMenu";
 import { issueStatuses } from "../project/board-model";
@@ -420,25 +420,28 @@ function LabelChips({ marks }: { readonly marks: readonly LabelMark[] }): ReactN
 }
 
 /** A value as the issue page shows it: labels as its chips, marked against the labels `against`
- *  where given; a priority as its badge (`PriorityValue`); a session holding a claim by its name;
- *  anything else in words (`valueWords`). */
+ *  where given; a priority as its badge (`PriorityValue`), the one the issue works at where
+ *  `priority` gives it (`RowChange.priorityNow`), else `value` itself; a session holding a claim by
+ *  its name; anything else in words (`valueWords`). */
 function FieldValue({
   against,
   field,
   newIssues,
+  priority,
   value,
 }: {
   readonly against?: unknown;
   readonly field: string;
   readonly newIssues: ReadonlyMap<number, string> | undefined;
+  readonly priority?: PriorityView;
   readonly value: unknown;
 }): ReactNode {
   if (field === "labels" && Array.isArray(value)) {
     return <LabelChips marks={labelMarks(against ?? value, value)} />;
   }
   if (field === "priority") {
-    const priority = typeof value === "number" ? value : null;
-    return <PriorityValue priority={issuePriority({ priority })} />;
+    const own = typeof value === "number" ? value : null;
+    return <PriorityValue priority={priority ?? issuePriority({ priority: own })} />;
   }
   const holder = objectOf(value);
   if (field === "claim" && holder.kind === "session") {
@@ -483,21 +486,25 @@ const VALUE_BUTTON = `rounded text-left underline decoration-dotted underline-of
  * One field a row writes, in the issue page's words (design v3, rule 6): as a line, its name, the
  * value now in the bar's grey, which no reader takes for a link, and the new value ("Priority: No
  * priority → P2"), each value in one look - a priority as its badge, a status by its word, labels
- * as chips - whatever the field; as a new issue's title, the value alone; as a part of a new
- * issue's line, the value with the word that says what it is ("under CORE-1"); as a post's body
- * (`diff`), the body once with the words the edit changes marked (`BodyDiff`) and no field name,
- * since the row already says it is a comment (review a3). While the row waits, each line the
- * person may edit has one Edit, whatever its field, which swaps the new value for the field's own
- * control from the issue page and opens it: the priority menu, the label picker, the status menu,
- * the assignee picker, or a box of text; a pick puts the value back in its words. A title or a
- * part of a new issue's line is pressed to edit it instead, and a title also says Edit. A value of
- * a field that may name a new issue of the plan (`RowChange.namesNewIssue`) naming one shows that
- * issue's title and "(new)" (`newIssues`), and its edit box holds the value itself, which the
- * person may replace with an issue's key. The edit box starts from the new value of the plan it
- * is drawn for, and its caller keys it to that plan, so a revised plan or a new run's never opens
- * with an earlier plan's value or the person's unsaved typing. An edited value says "Edited".
- * Once Undo took the change back, a line reads as the plan card drew it, "Priority: No priority →
- * P2", with no strike: the row's own status says it was reverted (review N3).
+ * as chips - whatever the field, a priority's value now the one the issue works at, with the
+ * issue it comes from where it inherits it ("Priority: P1 · from DEMO-1 → P2"), as the issue page
+ * draws it, that issue a link to it as there, and its new value the own priority the change
+ * writes; as a new issue's title, the value alone; as a part of a new issue's line, the value
+ * with the word that says what it is ("under CORE-1"); as a post's body (`diff`), the body once
+ * with the words the edit changes marked (`BodyDiff`) and no field name, since the row already
+ * says it is a comment (review a3).
+ * While the row waits, each line the person may edit has one Edit, whatever its field, which
+ * swaps the new value for the field's own control from the issue page and opens it: the priority
+ * menu, the label picker, the status menu, the assignee picker, or a box of text; a pick puts the
+ * value back in its words. A title or a part of a new issue's line is pressed to edit it instead,
+ * and a title also says Edit. A value of a field that may name a new issue of the plan
+ * (`RowChange.namesNewIssue`) naming one shows that issue's title and "(new)" (`newIssues`), and
+ * its edit box holds the value itself, which the person may replace with an issue's key. The edit
+ * box starts from the new value of the plan it is drawn for, and its caller keys it to that plan,
+ * so a revised plan or a new run's never opens with an earlier plan's value or the person's
+ * unsaved typing. An edited value says "Edited". Once Undo took the change back, a line reads as
+ * the plan card drew it, "Priority: No priority → P2", with no strike: the row's own status says
+ * it was reverted (review N3).
  */
 function FieldChange({
   change,
@@ -712,7 +719,12 @@ function FieldChange({
         <>
           <span className={`font-medium ${textSecondaryOnSurface}`}>{fieldWords(field)}:</span>{" "}
           <span className={textMutedOnSurface} data-testid="going-plan-now">
-            <FieldValue field={field} newIssues={undefined} value={now} />
+            <FieldValue
+              field={field}
+              newIssues={undefined}
+              priority={change.priorityNow}
+              value={now}
+            />
           </span>{" "}
           <span aria-hidden="true">→</span>{" "}
         </>
