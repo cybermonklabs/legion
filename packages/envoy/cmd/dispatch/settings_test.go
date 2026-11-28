@@ -2306,6 +2306,22 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				`DISPATCH_TEST_HTTP_DRAIN="11.001s" (expected at most 11s`)
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HTTP_DRAIN": "2s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_RATE_READING_BEFORE_RESET": func(t *testing.T) {
+			const name = "DISPATCH_TEST_RATE_READING_BEFORE_RESET"
+			if boot := resolveWith(t, nil); boot.RateReadingBeforeReset != 0 {
+				t.Errorf("%s unset: RateReadingBeforeReset = %v, want 0 (the default lead)", name, boot.RateReadingBeforeReset)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "60s"}); boot.RateReadingBeforeReset != time.Minute {
+				t.Errorf("%s=60s: RateReadingBeforeReset = %v, want 60s", name, boot.RateReadingBeforeReset)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+					fmt.Sprintf("%s=%q (expected a positive Go duration)", name, invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "61s"},
+				name+`="61s" (expected at most 1m0s`)
+			refusedWith(t, map[string]string{name: "60s"}, "DISPATCH_TEST_HOOKS=1 required with "+name)
+		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ROSTER_UNCACHED": "1"}); !boot.ListenerRosterUncached {
 				t.Error("DISPATCH_TEST_ROSTER_UNCACHED=1: ListenerRosterUncached false")

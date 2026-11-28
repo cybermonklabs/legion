@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -234,6 +235,9 @@ type bootConfig struct {
 	// whose request holds the drain waits all of it out; resolveBootConfig refuses one longer than
 	// httpDrainBeforeDocuments (outboxStopBudget).
 	HTTPDrain time.Duration
+	// RateReadingBeforeReset sets how early the GitHub rate reading aims before a reset.
+	// Zero keeps githubrate.BeforeReset. Only the test hooks can set it.
+	RateReadingBeforeReset time.Duration
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
 	// the test hooks, sets it.
@@ -1285,7 +1289,8 @@ func main() {
 	// App's private key.
 	if gitHub := appCtx.GitHub(); gitHub != nil {
 		slog.Info("dispatch: reading the GitHub rate counters of each installation of the App", "client_id", appCfg.ClientID, "interval", githubrate.Interval)
-		go runRateReading(ctx, gitHub, slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+		go runRateReading(ctx, gitHub, slog.New(slog.NewJSONHandler(os.Stderr, nil)),
+			cmp.Or(boot.RateReadingBeforeReset, githubrate.BeforeReset))
 	} else {
 		slog.Info("dispatch: GitHub rate reading off: it needs the GitHub App private key")
 	}
@@ -1867,6 +1872,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT", &boot.SearchFillLockTimeout},
 		{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT", &boot.SearchFillReadTimeout},
 		{"DISPATCH_TEST_HTTP_DRAIN", &boot.HTTPDrain},
+		{"DISPATCH_TEST_RATE_READING_BEFORE_RESET", &boot.RateReadingBeforeReset},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1886,6 +1892,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.HTTPDrain > httpDrainBeforeDocuments {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_HTTP_DRAIN=%q (expected at most %s, a deployment's drain: what the %s stop grace leaves after the document service's %s budget and a 5s reserve)",
 			strings.TrimSpace(env.get("DISPATCH_TEST_HTTP_DRAIN")), httpDrainBeforeDocuments, stopGrace, documentShutdownTimeout)
+	}
+	if boot.RateReadingBeforeReset > githubrate.LastMinute {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_RATE_READING_BEFORE_RESET=%q (expected at most %s, the last-minute reading window)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_RATE_READING_BEFORE_RESET")), githubrate.LastMinute)
 	}
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err

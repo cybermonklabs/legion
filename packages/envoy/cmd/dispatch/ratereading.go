@@ -46,17 +46,17 @@ const rateReadingCaller = "rate_reading"
 // is every holder's, and each process's lines name it by its host name. A pass costs each
 // installation one core call, the workflows read; one more where the installation's repository
 // is listed again, at its first pass and after GitHub answered the remembered one 404.
-func runRateReading(ctx context.Context, client *githubapp.Client, log *slog.Logger) {
-	readRates(ctx, client, log, nil)
+func runRateReading(ctx context.Context, client *githubapp.Client, log *slog.Logger, beforeReset time.Duration) {
+	readRates(ctx, client, log, nil, beforeReset)
 }
 
 // readRates is runRateReading on clock, which says what time it is and waits for the next pass.
-func readRates(ctx context.Context, client *githubapp.Client, log *slog.Logger, clk clock.Clock) {
+func readRates(ctx context.Context, client *githubapp.Client, log *slog.Logger, clk clock.Clock, beforeReset time.Duration) {
 	process, err := os.Hostname()
 	if err != nil {
 		slog.Warn("dispatch: the GitHub rate reading names no process: the host name could not be read", "error", err)
 	}
-	newRateReading(client, log, process, clk).run(ctx)
+	newRateReading(client, log, process, clk, beforeReset).run(ctx)
 }
 
 // rateReading is what one process's reading keeps from pass to pass: the App's numeric id and
@@ -68,6 +68,7 @@ type rateReading struct {
 	log           *slog.Logger
 	process       string
 	clock         clock.Clock
+	beforeReset   time.Duration
 	appID         string
 	appSlug       string
 	repositories  map[int64]repositoryName
@@ -117,20 +118,21 @@ func (k knownReset) untried(now time.Time) (time.Time, bool) {
 
 // newRateReading is a reading through client and log, named process, on clock, that knows nothing
 // of any installation yet.
-func newRateReading(client *githubapp.Client, log *slog.Logger, process string, clk clock.Clock) *rateReading {
+func newRateReading(client *githubapp.Client, log *slog.Logger, process string, clk clock.Clock, beforeReset time.Duration) *rateReading {
 	return &rateReading{
 		client: client, log: log, process: process, clock: cmp.Or[clock.Clock](clk, clock.Real()),
+		beforeReset:  beforeReset,
 		repositories: map[int64]repositoryName{}, installations: map[int64]readingHeld{},
 	}
 }
 
-// run reads a pass at once and each next one when githubrate.Next says it is due, until ctx ends.
+// run reads a pass at once and each next one when githubrate.NextWithin says it is due, until ctx ends.
 func (r *rateReading) run(ctx context.Context) {
 	ctx = githubrate.WithCaller(ctx, rateReadingCaller)
 	for {
 		resets := r.pass(ctx)
 		now := r.clock.Now()
-		at, _ := githubrate.Next(now, resets)
+		at, _ := githubrate.NextWithin(now, resets, r.beforeReset)
 		timer := r.clock.NewTimer(at.Sub(now))
 		select {
 		case <-ctx.Done():

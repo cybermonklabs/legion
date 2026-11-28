@@ -24,6 +24,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -310,7 +312,7 @@ func readPasses(t *testing.T, client *githubapp.Client, written *logtest.Buffer,
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		readRates(ctx, client, slog.New(slog.NewJSONHandler(written, nil)), fake)
+		readRates(ctx, client, slog.New(slog.NewJSONHandler(written, nil)), fake, githubrate.BeforeReset)
 	}()
 
 	for handled := 0; handled < c.passes; {
@@ -898,7 +900,7 @@ func TestARateReadingKeepsTheResetOfACounterReadBeforeAnotherReadFails(t *testin
 			_, base := newRateReadingGitHub(t, reset, time.Time{},
 				rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreLimit: 5000, failure: rateLimitRefused})
 			var written logtest.Buffer
-			reading := newRateReading(rateReadingClient(t, base), slog.New(slog.NewJSONHandler(&written, nil)), "", (&steppedClock{at: start}).clock())
+			reading := newRateReading(rateReadingClient(t, base), slog.New(slog.NewJSONHandler(&written, nil)), "", (&steppedClock{at: start}).clock(), githubrate.BeforeReset)
 			resets := reading.pass(t.Context())
 			if want := []time.Time{reset}; until == 50*time.Second {
 				if len(resets) != 0 {
@@ -929,7 +931,7 @@ func TestARateReadingRefusesACounterWhoseResetPassedBeforeTheOwnSnapshot(t *test
 		rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreLimit: 5000, graphQLLimit: 5000})
 	var written logtest.Buffer
 	reading := newRateReading(rateReadingClient(t, base, githubapp.WithRateCounter(githubrate.NewCounter())),
-		slog.New(slog.NewJSONHandler(&written, nil)), "", (&steppedClock{at: start}).clock())
+		slog.New(slog.NewJSONHandler(&written, nil)), "", (&steppedClock{at: start}).clock(), githubrate.BeforeReset)
 	reading.pass(t.Context())
 	lines := logtest.JSONLines(t, written.String())
 	if len(lines) != 1 {
@@ -957,7 +959,7 @@ func TestARateReadingUsesTheListedAppsCurrentSlug(t *testing.T) {
 		github.serve(w, r)
 	}})
 	var written logtest.Buffer
-	reading := newRateReading(rateReadingClient(t, base), slog.New(slog.NewJSONHandler(&written, nil)), "", (&steppedClock{at: start}).clock())
+	reading := newRateReading(rateReadingClient(t, base), slog.New(slog.NewJSONHandler(&written, nil)), "", (&steppedClock{at: start}).clock(), githubrate.BeforeReset)
 	reading.appID, reading.appSlug = "4242", "example-app"
 	reading.pass(t.Context())
 	lines := logtest.JSONLines(t, written.String())
@@ -1296,18 +1298,19 @@ func (h heldInstallation) Strike(context.Context, string, time.Duration) (rateli
 // writes its lines to stderr as JSON among the process's text lines, and every GitHub client of
 // the process that calls with an installation token counts on the one Counter under the caller
 // kind of the code path that called. A loopback GitHub with one installation answers every call
-// an installation token makes with its counters, and its core reset is 70 s after the first token
-// it mints, so the reading before that reset comes about 25 seconds in. By then the architecture
-// import, the delivery reconcile and the CI reconcile have each read GitHub with a token, at start
-// or on a one-second interval, and the test has made two calls through the API, a delivery
-// settings save, whose access check reads the deploy repository, and a read through the GitHub
-// proxy, and driven both delivery intakes: a merged pull request, which the GitHub intake fetches,
-// and a job event of a deploy run Dispatch tracks, whose jobs the job intake lists. The reading at
+// an installation token makes with its counters. Its core reset is 62 s after the reading's
+// first core read. With a 60 s lead, the next pass is due soon and its core read waits until
+// the architecture import, the delivery reconcile, the CI reconcile, the API and both delivery
+// intakes have read GitHub with a token. The test saves delivery settings through the API,
+// which checks access to the deploy repository, and reads through the GitHub proxy. It also
+// publishes a merged pull request for the GitHub intake to fetch and a job event for a tracked
+// deploy run for the job intake to list jobs. The reading at
 // start counts no call of the intakes, and the reading before the reset counts every one of their
 // reads as webhook_intake, the API's as two calls, the reading's own among the rest, and no call as
 // other. The webhook redelivery sweep reads with the App's JWT alone, which no installation pays
 // for, so it is in no count.
 func TestTheServersRateReadingCountsEachCallerUnderItsKind(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedCIReconcileDefault(t, database)
 	seedDeliverySettings(t, database)
@@ -1327,13 +1330,19 @@ func TestTheServersRateReadingCountsEachCallerUnderItsKind(t *testing.T) {
 	}
 	_, natsURL := testnats.Start(t)
 	makeCIStateBucket(t, natsURL)
-	fake := &serverRateGitHub{t: t, graphQLReset: time.Now().Add(time.Hour).Unix()}
+	releaseCoreRead := make(chan struct{})
+	fake := &serverRateGitHub{
+		graphQLReset:    time.Now().Add(time.Hour).Unix(),
+		coreResetReady:  make(chan struct{}),
+		releaseCoreRead: releaseCoreRead,
+	}
 	github := githubtest.Serve(t, githubtest.Spec{Handle: fake.serve})
 
 	env := githubAppEnv(t, github.URL)
 	env["DISPATCH_TEST_CI_RECONCILE_INTERVAL"] = "1s"
 	env["DISPATCH_TEST_RECONCILE_AT_START"] = "1"
 	env["DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START"] = "1"
+	env["DISPATCH_TEST_RATE_READING_BEFORE_RESET"] = "60s"
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{NATSURL: natsURL, Env: env})
 	process.waitHealthy(t)
 	process.call(t, http.MethodPut, "/api/v1/settings/delivery", `{"deploy_repo":"acme/deploy",
@@ -1350,13 +1359,18 @@ func TestTheServersRateReadingCountsEachCallerUnderItsKind(t *testing.T) {
 		t.Fatalf("connect the publisher: %v", err)
 	}
 	t.Cleanup(publisher.Close)
-	testwait.Eventually(t, "both intakes' durables bound", func() bool {
-		for _, durable := range []string{bus.DispatchDeliveryDurable, bus.DispatchJobDurable} {
-			if info, err := publisher.JS().ConsumerInfo(bus.Stream, durable); err != nil || !info.PushBound {
-				return false
+	durables := []string{bus.DispatchDeliveryDurable, bus.DispatchJobDurable}
+	testwait.Until(t, "both intakes' durables bound", func() (string, bool) {
+		for _, durable := range durables {
+			info, err := publisher.JS().ConsumerInfo(bus.Stream, durable)
+			if err != nil {
+				return fmt.Sprintf("%s: %v", durable, err), false
+			}
+			if !info.PushBound {
+				return durable + " is not bound", false
 			}
 		}
-		return true
+		return "", true
 	})
 	fake.mu.Lock()
 	fake.intakePaths = map[string]int{}
@@ -1368,13 +1382,39 @@ func TestTheServersRateReadingCountsEachCallerUnderItsKind(t *testing.T) {
 	publishGitHubEvent(t, publisher, "notifications.github.acme.deploy.job.9001.completed", map[string]string{
 		"kind": "job", "repo": "acme/deploy", "run_id": "9001", "job_id": "1", "name": "production", "status": "completed", "conclusion": "success",
 	})
-	var intakeReads int
-	testwait.Eventually(t, "the GitHub intake's read of the pull request and the job intake's of the run's jobs", func() bool {
+	intakeReads := testwait.Until(t, "the GitHub intake's read of the pull request and the job intake's of the run's jobs", func() (int, bool) {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
-		intakeReads = fake.intakePaths[intakePullRequest] + fake.intakePaths[intakeJobs]
-		return fake.intakePaths[intakePullRequest] > 0 && fake.intakePaths[intakeJobs] > 0
+		pulls, jobs := fake.intakePaths[intakePullRequest], fake.intakePaths[intakeJobs]
+		return pulls + jobs, pulls > 0 && jobs > 0
 	})
+	// The counter sees responses, not requests. The delivery intake acknowledges after
+	// handling the PR. The job intake acknowledges before it reads, so wait for its log
+	// after it receives the stand-in's 404 instead.
+	testwait.Until(t, "the delivery intake to acknowledge the PR event", func() (string, bool) {
+		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		if err != nil {
+			return err.Error(), false
+		}
+		return "", info.AckFloor.Consumer > 0
+	})
+	process.WaitForOutput(t, `msg="dispatch delivery: read the jobs of a running deploy run; its end reads them again" repo=acme/deploy run_id=9001`)
+	// The two API calls have already returned. The three startup callers record their
+	// attempts after their passes finish, whether GitHub answered them successfully or not.
+	attempts := store.NewGitHubReadAttempts(database.Pool)
+	testwait.Until(t, "the three startup callers to finish their GitHub reads", func() ([]githubreads.Recorded, bool) {
+		rows, err := attempts.All(t.Context())
+		if err != nil {
+			t.Fatalf("read the startup callers' GitHub attempts: %v", err)
+		}
+		for _, read := range []githubreads.Read{githubreads.ArchitectureImport, githubreads.DeliveryReconcile, githubreads.CIReconcile} {
+			if !slices.ContainsFunc(rows, func(row githubreads.Recorded) bool { return row.Read == read }) {
+				return rows, false
+			}
+		}
+		return rows, true
+	})
+	close(releaseCoreRead)
 
 	reading := serverReading(t, process, "the reading before the reset", func(line map[string]any) bool { return line["before_reset"] == true })
 	t.Logf("the reading before the reset: %v", reading)
@@ -1424,19 +1464,26 @@ const (
 // what naming what it waits for, and answers it decoded.
 func serverReading(t *testing.T, process *dispatchProcess, what string, holds func(map[string]any) bool) map[string]any {
 	t.Helper()
-	var reading map[string]any
-	testwait.WithinPolling(t, testwait.Bounded(t, 2*time.Minute, 5*time.Second), testwait.Poll, what, func() bool {
-		for line := range strings.Lines(process.Output.String()) {
+	return testwait.Until(t, what, func() (map[string]any, bool) {
+		exited := false
+		select {
+		case <-process.Exited:
+			exited = true
+		default:
+		}
+		output := process.Output.String()
+		for line := range strings.Lines(output) {
 			if strings.HasPrefix(line, "{") && strings.Contains(line, `"msg":"`+githubrate.Msg+`"`) {
 				if decoded := logtest.JSONLines(t, line)[0]; holds(decoded) {
-					reading = decoded
-					return true
+					return decoded, true
 				}
 			}
 		}
-		return false
+		if exited {
+			t.Fatalf("Dispatch exited (%v) before it logged %s:\n%s", process.Cmd.ProcessState, what, output)
+		}
+		return nil, false
 	})
-	return reading
 }
 
 // ownCounts is a reading line's own counts of both counters, added up by caller kind.
@@ -1471,17 +1518,24 @@ func publishGitHubEvent(t *testing.T, publisher *bus.Client, subject string, pay
 // serverRateGitHub is the loopback GitHub of the binary's rate reading test: one installation,
 // 1, of the account acme, covering every repository the process reads; the App's own reads under
 // its JWT; and an answer to every call an installation token makes that carries the
-// installation's counter, GET /rate_limit and every 404 included. The core reset is 70 s after
-// the first token it mints, and the GraphQL reset graphQLReset. Once intakePaths is set, it counts
-// the calls under each intake path, prefix and all, that an installation token makes.
+// installation's counter, GET /rate_limit and every 404 included. The first reading of the
+// workflows sets coreReset. The second waits for releaseCoreRead without holding mu, so the
+// other callers can finish. Once intakePaths is set, it counts calls under each intake path.
 type serverRateGitHub struct {
-	t            *testing.T
-	graphQLReset int64
-	mu           sync.Mutex
-	minted       int
-	coreReset    int64
-	intakePaths  map[string]int
+	graphQLReset    int64
+	coreResetReady  chan struct{}
+	releaseCoreRead <-chan struct{}
+	mu              sync.Mutex
+	minted          int
+	coreReset       int64
+	coreReads       int
+	intakePaths     map[string]int
 }
+
+// serverCoreReadPath is the core call only the rate reading makes, its read of the workflows
+// (ratereading.go, read), whose first answer sets serverRateGitHub's core reset and whose second the
+// stand-in holds until the test releases it.
+const serverCoreReadPath = "/repos/acme/widgets/actions/workflows"
 
 func (g *serverRateGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
@@ -1503,9 +1557,6 @@ func (g *serverRateGitHub) serve(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(installation)
 		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/1/access_tokens":
 			g.minted++
-			if g.coreReset == 0 {
-				g.coreReset = time.Now().Add(70 * time.Second).Unix()
-			}
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"token": fmt.Sprintf("ghs_server_%d", g.minted), "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
 		case r.Method == http.MethodGet && r.URL.Path == "/app/hook/deliveries":
@@ -1515,6 +1566,32 @@ func (g *serverRateGitHub) serve(w http.ResponseWriter, r *http.Request) {
 			_, _ = fmt.Fprint(w, `{"message":"Not Found"}`)
 		}
 		return
+	}
+	var wait <-chan struct{}
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == serverCoreReadPath:
+		g.coreReads++
+		switch g.coreReads {
+		case 1:
+			g.coreReset = time.Now().Add(62 * time.Second).Unix()
+			close(g.coreResetReady)
+		case 2:
+			wait = g.releaseCoreRead
+		}
+	case g.coreReset == 0 && r.URL.Path != "/installation/repositories" && r.URL.Path != "/graphql":
+		// Give early core callers the same reset as the reading, so their counts
+		// stay in its window. The reading's repository listing must go first.
+		wait = g.coreResetReady
+	}
+	if wait != nil {
+		g.mu.Unlock()
+		select {
+		case <-wait:
+		case <-r.Context().Done():
+			g.mu.Lock()
+			return
+		}
+		g.mu.Lock()
 	}
 	for _, path := range []string{intakePullRequest, intakeJobs} {
 		if g.intakePaths != nil && strings.HasPrefix(r.URL.Path, path) {
@@ -1536,7 +1613,7 @@ func (g *serverRateGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/installation/repositories":
 		_, _ = fmt.Fprint(w, `{"total_count":1,"repositories":[{"full_name":"acme/widgets"}]}`)
-	case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/actions/workflows":
+	case r.Method == http.MethodGet && r.URL.Path == serverCoreReadPath:
 		_, _ = fmt.Fprint(w, `{"total_count":0,"workflows":[]}`)
 	case r.Method == http.MethodGet && r.URL.Path == "/rate_limit":
 		_ = json.NewEncoder(w).Encode(map[string]any{"resources": map[string]any{
