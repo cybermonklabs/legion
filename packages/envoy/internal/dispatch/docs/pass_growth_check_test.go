@@ -3,10 +3,12 @@
 package docs
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,8 +45,8 @@ const (
 	passGrowthChainBlocks = 1 + 3*passGrowthLevels
 )
 
-// passGrowthRuns is how many rooms of each size a measurement writes and times, each in a
-// database of its own, its time the median of theirs.
+// passGrowthRuns is how many runs a measurement makes (passGrowthRun), each over a room of each
+// size, each room in a database of its own; each size's time is the median of theirs.
 const passGrowthRuns = 3
 
 // passGrowthBound is the most the median time the reconciliation's pass over a version that
@@ -72,7 +74,29 @@ const passGrowthRuns = 3
 // than twice the bound: planRoomBlocks' join 16 with the tables analyzed after the rooms are
 // indexed, and blockAuthors' read with MovedRoomBlockSQL over 20 with graph_tuples analyzed near
 // empty.
+//
+// Those runs timed a run's pass over 4,682 blocks and its pass over 20,000 some 20 s apart, the
+// writing and first pass of the larger room between them, and a slow spell of the machine that
+// spanned the larger room's run slowed its pass alone: a Job run beside four others on 2026-11-28
+// read 1.718 s, 2.651 s and 2.480 s over 20,000 blocks against 364 ms, 364 ms and 354 ms over
+// 4,682, a ratio of 6.82 on the same code that reads 4.6 to 4.7 in CI. A run now writes and
+// indexes both rooms first and times the two passes one right after the other (passGrowthRun), so
+// a spell that slows one slows the other, and the ratio of the medians reads the room's growth
+// and not the spell.
 const passGrowthBound = 7.4
+
+// passGrowthStop is how many times the bound a run lets the pass over 20,000 blocks hold the owner
+// lock over the pass over 4,682 blocks it has just timed, before it stops that pass
+// (passGrowthReconcile): a pass stopped there has read a ratio of 8.14, past the bound, whatever
+// it would have gone on to hold, where the six runs of a Job of this test on the build farm on
+// 2026-11-28 read 3.7 to 5.5, each over its own two passes. Each of the two reads R15 names holds
+// the lock far longer, one of them past go test's 10 minutes. Measured there the same day with
+// this test as it stood before the stop, planRoomBlocks' join held it a median 55.6 s over 20,000
+// blocks against 3.39 s over 4,682 with the tables analyzed after the rooms are indexed (16.39),
+// and blockAuthors' read with MovedRoomBlockSQL 6 min 59 s against 21.5 s with graph_tuples
+// analyzed near empty (19.52), the test 24 minutes in all: under the check's run, which sets go
+// test no timeout, the test panicked at 10 minutes and named no ratio.
+const passGrowthStop = 1.1
 
 // passGrowthTicks is how many reconciliation ticks a run makes at most for the pass it waits for.
 const passGrowthTicks = 10
@@ -351,40 +375,89 @@ func passGrowthNamedVersion(t *testing.T, service *Service, room issueRoom, docu
 	}
 }
 
-// passGrowthLockHeld is how long the transaction of the reconciliation's pass has held the owner
-// lock, read from the pass's own hook (afterBlockIndexWrite), while that transaction waits between
-// its last write and its commit: the time since it began, read off the database's clock. Its
-// first statement after its begin plans its statements at the tables' sizes
-// (graphstore.PlanAtCurrentSizes) and its second takes the owner lock (lockArtifactOwner); the
-// time is read from xact_start, which Postgres takes at the begin, so the reading is the same. The
-// pass's backend is the one of this test's database that sits idle in a transaction holding an
-// advisory lock, which the owner lock is.
-func passGrowthLockHeld(ctx context.Context, database *store.Store) (time.Duration, error) {
+// passGrowthHolders is how many transactions of database, other than the reader's, hold an
+// advisory lock, which the owner lock is, and how long the oldest of them has run, read off the
+// database's clock from xact_start, which Postgres takes at the transaction's begin. Where idle,
+// it counts only those that sit idle in a transaction.
+func passGrowthHolders(ctx context.Context, database *store.Store, idle bool) (int, time.Duration, error) {
 	var holders int
 	var seconds float64
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*), coalesce(max(extract(epoch from clock_timestamp() - a.xact_start)), 0)::float8
 		from pg_stat_activity a
 		where a.datname = current_database() and a.pid <> pg_backend_pid()
-		  and a.state = 'idle in transaction'
+		  and (not $1::boolean or a.state = 'idle in transaction')
 		  and exists (select 1 from pg_locks l
 		              where l.pid = a.pid and l.locktype = 'advisory' and l.granted
 		                and l.database = (select oid from pg_database where datname = current_database()))
-	`).Scan(&holders, &seconds); err != nil {
+	`, idle).Scan(&holders, &seconds); err != nil {
+		return 0, 0, err
+	}
+	return holders, time.Duration(seconds * float64(time.Second)), nil
+}
+
+// passGrowthLockHeld is how long the transaction of the reconciliation's pass has held the owner
+// lock, read from the pass's own hook (afterBlockIndexWrite), while that transaction waits between
+// its last write and its commit: the time since it began (passGrowthHolders). Its first statement
+// after its begin plans its statements at the tables' sizes (graphstore.PlanAtCurrentSizes) and
+// its second takes the owner lock (lockArtifactOwner), so the time since the begin reads as the
+// time the lock is held. The pass's backend is the one of this test's database that sits idle in
+// a transaction holding an advisory lock.
+func passGrowthLockHeld(ctx context.Context, database *store.Store) (time.Duration, error) {
+	holders, held, err := passGrowthHolders(ctx, database, true)
+	if err != nil {
 		return 0, err
 	}
 	if holders != 1 {
 		return 0, fmt.Errorf("%d transactions of the test's database sit idle holding an advisory lock, want the pass's one", holders)
 	}
-	return time.Duration(seconds * float64(time.Second)), nil
+	return held, nil
+}
+
+// passGrowthWatch reads, every 100 ms until end is called, how long the oldest transaction of
+// database that holds an advisory lock has run (passGrowthHolders): while a pass runs, how long it
+// has held the owner lock. It calls cancel once that time is longer than stop, and end answers the
+// time it read then and whether it did. Where stop is zero it reads nothing.
+func passGrowthWatch(database *store.Store, stop time.Duration, cancel context.CancelFunc) (end func() (time.Duration, bool)) {
+	if stop <= 0 {
+		return func() (time.Duration, bool) { return 0, false }
+	}
+	done, watched := make(chan struct{}), make(chan struct{})
+	var stopped time.Duration
+	go func() {
+		defer close(watched)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+			}
+			if _, held, err := passGrowthHolders(context.Background(), database, false); err == nil && held > stop {
+				stopped = held
+				cancel()
+				return
+			}
+		}
+	}()
+	return sync.OnceValues(func() (time.Duration, bool) {
+		close(done)
+		<-watched
+		return stopped, stopped > 0
+	})
 }
 
 // passGrowthReconcile runs the reconciliation's real tick until a pass has indexed room, and
 // answers the time that pass, the first over the room, held the owner lock (passGrowthLockHeld).
-// It fails where no pass indexes the room or the room holds other than its blocks once indexed.
-func passGrowthReconcile(t *testing.T, database *store.Store, service *Service, room passGrowthRoom) time.Duration {
+// Where stop is above zero, a pass that holds the lock longer than stop is stopped
+// (passGrowthWatch): its tick is cancelled, so its transaction rolls back, and the answer is how
+// long the pass had held the lock then, less than it would have held, and true. It fails where no
+// pass indexes the room, or a pass it did not stop leaves the room holding other than its blocks.
+func passGrowthReconcile(t *testing.T, database *store.Store, service *Service, room passGrowthRoom, stop time.Duration) (time.Duration, bool) {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	artifacts := []string{room.tree, room.spec, room.verification, room.plan}
 	var held time.Duration
 	var failure error
@@ -394,14 +467,17 @@ func passGrowthReconcile(t *testing.T, database *store.Store, service *Service, 
 			return nil
 		}
 		timed = true
-		held, failure = passGrowthLockHeld(ctx, database)
+		held, failure = passGrowthLockHeld(context.Background(), database)
 		return nil
 	}
 	defer func() { service.afterBlockIndexWrite = nil }()
+	end := passGrowthWatch(database, stop, cancel)
+	defer end()
+	var reconciled error
 	for range passGrowthTicks {
-		tick, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, nil)
-		if err != nil {
-			t.Fatalf("reconcile the block index: %v", err)
+		var tick BlockIndexTick
+		if tick, reconciled = service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, nil); reconciled != nil {
+			break
 		}
 		if tick.LiveAhead != 0 || tick.Unreadable != 0 {
 			t.Fatalf("the tick found %d rooms live ahead and %d unreadable, want the room indexed", tick.LiveAhead, tick.Unreadable)
@@ -409,6 +485,12 @@ func passGrowthReconcile(t *testing.T, database *store.Store, service *Service, 
 		if timed {
 			break
 		}
+	}
+	if stopped, ok := end(); ok {
+		return stopped, true
+	}
+	if reconciled != nil {
+		t.Fatalf("reconcile the block index: %v", reconciled)
 	}
 	if !timed {
 		t.Fatalf("no pass of the reconciliation indexed the room of %s, of %d blocks, in %d ticks", room.issue, room.blocks, passGrowthTicks)
@@ -419,110 +501,216 @@ func passGrowthReconcile(t *testing.T, database *store.Store, service *Service, 
 	if indexed := countRows(t, database, "document_blocks", room.tree); indexed != room.blocks {
 		t.Fatalf("the room of %s holds %d blocks after its pass, want %d", room.issue, indexed, room.blocks)
 	}
-	return held
+	return held, false
 }
 
-// passGrowthRun is one run of a measurement over a room of text's blocks, on a database of its
-// own: the room written through the real write (passGrowthWrite) and indexed by the real tick
-// (passGrowthReconcile), whose first pass over it writes every block; then a version that changes
-// one block of it (passGrowthReword), and the real tick again, whose pass over that version the
-// run times: it answers how long that pass held the owner lock. The tables' statistics are taken
-// once (passGrowthStatistics): before the room is written where nearEmpty, so both passes are
-// planned on the statistics of a store that holds no block, and else once the room is indexed, so
-// the timed pass is planned on the statistics of the room it reads. Before the version is written
-// the pages the first pass wrote are left as a server holds them long after it
-// (passGrowthSettlePages), so the timed pass pays nothing of the first.
+// passGrowthTimes is what one run of a measurement read (passGrowthRun): how long the pass over
+// the version that changes one block held the owner lock over the room of passGrowthSmall blocks
+// and over the room of passGrowthLarge, and whether the run stopped the second (passGrowthStop),
+// whose time is then how long it had held the lock when it was stopped.
+type passGrowthTimes struct {
+	small, large time.Duration
+	stopped      bool
+}
+
+// largeHeld is the time over the larger room as the test's messages state it.
+func (times passGrowthTimes) largeHeld() string {
+	if times.stopped {
+		return fmt.Sprintf("more than %v (stopped)", times.large)
+	}
+	return times.large.String()
+}
+
+// passGrowthSide is one room of a run, on a database and a service of its own, with the time its
+// first pass held the owner lock and the texts its blocks recorded before the version the run
+// times the pass over (passGrowthReword).
+type passGrowthSide struct {
+	database *store.Store
+	service  *Service
+	room     passGrowthRoom
+	text     passGrowthText
+	first    time.Duration
+	texts    int
+}
+
+// passGrowthRun is one run of a measurement over a room of each of texts' sizes, the smaller
+// first, each on a database of its own: each room written through the real write
+// (passGrowthWrite) and indexed by the real tick (passGrowthReconcile), whose first pass over it
+// writes every block; then a version of each that changes one block (passGrowthReword), and the
+// real tick again over each, the smaller room's first, whose passes over those versions the run
+// times one right after the other. It answers how long each held the owner lock; the pass over the
+// larger room it stops once that pass has held the lock passGrowthStop times the bound over the
+// smaller room's (passGrowthTimes). The tables' statistics of each database are taken once
+// (passGrowthStatistics): before its room is written where nearEmpty, so both passes are planned on
+// the statistics of a store that holds no block, and else once its room is indexed, so the timed
+// pass is planned on the statistics of the room it reads. Before the versions are written, the
+// pages the first passes wrote are left as a server holds them long after them
+// (passGrowthSettlePages), the larger room's first, so the smaller room's pages, whose pass is
+// timed first, are the ones the buffer cache read last; so the timed passes pay nothing of the
+// first ones.
 //
-// The database holds the run's one room, so its tables grow with the room: a read of the pass
-// that walks a table once for each block, whatever it holds of other rooms, costs the square of
-// the room here, as one that walks the room's own rows once for each block does. The run ends
-// before the next begins, its service shut down and its database dropped.
-func passGrowthRun(t *testing.T, name string, text passGrowthText, nearEmpty bool) time.Duration {
+// Each database holds one room, so its tables grow with the room: a read of the pass that walks a
+// table once for each block, whatever it holds of other rooms, costs the square of the room here,
+// as one that walks the room's own rows once for each block does. Both rooms are written and
+// indexed before either timed pass, so the two passes run seconds apart and a slow spell of the
+// machine slows both. The run ends before the next begins, its services shut down and its
+// databases dropped.
+func passGrowthRun(t *testing.T, name string, texts [2]passGrowthText, nearEmpty bool) passGrowthTimes {
 	t.Helper()
-	var held time.Duration
+	var times passGrowthTimes
 	if !t.Run(name, func(t *testing.T) {
-		database := storetest.Open(t)
-		service, _ := newTestServiceInstance(t, database)
-		if nearEmpty {
-			passGrowthStatistics(t, database)
+		var sides [2]passGrowthSide
+		for i, text := range texts {
+			side := passGrowthSide{database: storetest.Open(t), text: text}
+			side.service, _ = newTestServiceInstance(t, side.database)
+			if nearEmpty {
+				passGrowthStatistics(t, side.database)
+			}
+			side.room = passGrowthWrite(t, side.database, side.service, text)
+			side.first, _ = passGrowthReconcile(t, side.database, side.service, side.room, 0)
+			if !nearEmpty {
+				passGrowthStatistics(t, side.database)
+			}
+			sides[i] = side
 		}
-		room := passGrowthWrite(t, database, service, text)
-		first := passGrowthReconcile(t, database, service, room)
-		if !nearEmpty {
-			passGrowthStatistics(t, database)
+		small, large := &sides[0], &sides[1]
+		passGrowthSettlePages(t, large.database)
+		passGrowthSettlePages(t, small.database)
+		for _, side := range []*passGrowthSide{small, large} {
+			side.texts = passGrowthReword(t, side.database, side.service, side.room, side.text)
 		}
-		passGrowthSettlePages(t, database)
-		texts := passGrowthReword(t, database, service, room, text)
-		held = passGrowthReconcile(t, database, service, room)
-		if recorded := passGrowthWords(t, database, room) - texts; recorded != 1 {
-			t.Fatalf("the pass over the version that rewords one paragraph of %s's spec.md recorded the texts of %d blocks, want the one paragraph's", room.issue, recorded)
+		times.small, _ = passGrowthReconcile(t, small.database, small.service, small.room, 0)
+		times.large, times.stopped = passGrowthReconcile(t, large.database, large.service, large.room,
+			time.Duration(passGrowthStop*passGrowthBound*float64(times.small)))
+		timed := []*passGrowthSide{small, large}
+		if times.stopped {
+			timed = timed[:1]
 		}
-		t.Logf("the room of %d blocks: its first pass, which writes every block, held the owner lock %v, and the pass over a version that changes one block %v",
-			room.blocks, first, held)
+		for _, side := range timed {
+			if recorded := passGrowthWords(t, side.database, side.room) - side.texts; recorded != 1 {
+				t.Fatalf("the pass over the version that rewords one paragraph of %s's spec.md recorded the texts of %d blocks, want the one paragraph's", side.room.issue, recorded)
+			}
+		}
+		t.Logf("the rooms of %d and %d blocks: their first passes, which write every block, held the owner lock %v and %v, and the passes over a version that changes one block %v and %s",
+			small.room.blocks, large.room.blocks, small.first, large.first, times.small, times.largeHeld())
 	}) {
 		t.FailNow()
 	}
-	return held
+	return times
 }
 
-// passGrowthMedian is the median of times, of which there is an odd number.
-func passGrowthMedian(times []time.Duration) time.Duration {
-	sorted := slices.Sorted(slices.Values(times))
-	return sorted[len(sorted)/2]
+// passGrowthMedians is the median of runs, of which there is an odd number, over each room. A
+// pass the run stopped sorts after every pass that held the lock to its end: it held the lock
+// passGrowthStop times the bound over its run's pass over the smaller room, which no pass that ran
+// to its end did. Fewer than half the runs have stopped one (passGrowthDecided), so the median
+// over the larger room is a pass that ran to its end.
+func passGrowthMedians(runs []passGrowthTimes) (small, large time.Duration) {
+	smalls := make([]time.Duration, 0, len(runs))
+	for _, run := range runs {
+		smalls = append(smalls, run.small)
+	}
+	slices.Sort(smalls)
+	larges := slices.SortedFunc(slices.Values(runs), func(a, b passGrowthTimes) int {
+		if a.stopped != b.stopped {
+			if a.stopped {
+				return 1
+			}
+			return -1
+		}
+		return cmp.Compare(a.large, b.large)
+	})
+	return smalls[len(smalls)/2], larges[len(larges)/2].large
+}
+
+// passGrowthHeld is the times of runs over each room as the test's messages state them.
+func passGrowthHeld(runs []passGrowthTimes) (small, large string) {
+	smalls, larges := make([]string, 0, len(runs)), make([]string, 0, len(runs))
+	for _, run := range runs {
+		smalls, larges = append(smalls, run.small.String()), append(larges, run.largeHeld())
+	}
+	return "[" + strings.Join(smalls, " ") + "]", "[" + strings.Join(larges, " ") + "]"
+}
+
+// passGrowthDecided fails the measurement once a majority of its passGrowthRuns runs has stopped
+// the pass over the larger room: a stopped pass sorts after every pass that held the lock to its
+// end (passGrowthMedians), so whatever the runs not yet made read, the median over the larger room
+// is a stopped pass, one that read a ratio of passGrowthStop times the bound over its own run's
+// pass over the smaller room.
+func passGrowthDecided(t *testing.T, measurement string, runs []passGrowthTimes) {
+	t.Helper()
+	stopped := 0
+	for _, run := range runs {
+		if run.stopped {
+			stopped++
+		}
+	}
+	if stopped <= passGrowthRuns/2 {
+		return
+	}
+	small, large := passGrowthHeld(runs)
+	t.Fatalf("%s: %d of the %d runs stopped the pass over %d blocks once it had held the owner lock %.2f times the bound over its run's pass over %d blocks, %s over %d blocks against %s over %d: the median over %d blocks is a pass that read a ratio above %.2f whatever the other runs read, above the bound %.2f",
+		measurement, stopped, passGrowthRuns, passGrowthLarge, passGrowthStop, passGrowthSmall, large, passGrowthLarge, small, passGrowthSmall,
+		passGrowthLarge, passGrowthStop*passGrowthBound, passGrowthBound)
 }
 
 // The reconciliation's pass stays one transaction, and the time the pass over a version that
 // changes one block holds the owner lock grows in proportion to the room (c-pass-growth; R15 of
 // the issue-tree spec).
 //
-// Each measurement makes passGrowthRuns runs over a room of 4,682 blocks and as many over a room
-// of 20,000, a run of one size after a run of the other, each on a database of its own
-// (passGrowthRun): the room's blocks in the deep spec's shape and in two documents of the room,
-// half in each (passGrowthRoomText), written through the real write and indexed by the real tick
-// (ReconcileBlockIndex), then a version that changes one block, and the real tick again, timing
-// the transaction of its pass that holds the owner lock (passGrowthLockHeld). The ratio of the
+// Each measurement makes passGrowthRuns runs (passGrowthRun), each over a room of 4,682 blocks and
+// a room of 20,000, each room on a database of its own: the room's blocks in the deep spec's shape
+// and in two documents of the room, half in each (passGrowthRoomText), written through the real
+// write and indexed by the real tick (ReconcileBlockIndex), then a version of each that changes
+// one block, and the real tick again, timing the transaction of each room's pass that holds the
+// owner lock (passGrowthLockHeld), the two passes one right after the other. The ratio of the
 // median time over 20,000 blocks to the median over 4,682 stays at or under passGrowthBound. It
-// measures twice: once with the tables analyzed after the room is indexed, and once with the
-// statistics of a near-empty graph_tuples, analyzed before the room is written, so the planner's
-// estimate cannot rescue a read whose cost grows with the square of the room. No run's statistics
+// measures twice: once with the statistics of a near-empty graph_tuples, analyzed before the rooms
+// are written, so the planner's estimate cannot rescue a read whose cost grows with the square of
+// the room, and once with the tables analyzed after the rooms are indexed. No run's statistics
 // move after they are taken (passGrowthStatistics).
 //
 // It fails, naming the measurement, the ratio and the bound, where a read of the pass costs more
 // than one probe a block: planRoomBlocks reading the room's blocks by a join of issue_room_blocks
-// on block_id_key, whose plan under the first measurement's statistics compares each block's row
-// with every block the version holds, or refs.blockAuthors reading with MovedRoomBlockSQL, whose
-// plan under the second's reads the in_document tuple of every block in the store for each block.
+// on block_id_key, whose plan under the analyzed measurement's statistics compares each block's
+// row with every block the version holds, or refs.blockAuthors reading with MovedRoomBlockSQL,
+// whose plan under the near-empty measurement's reads the in_document tuple of every block in the
+// store for each block. Such a read holds the lock for minutes over 20,000 blocks, and the test
+// reaches its verdict as soon as it is decided: a run stops that pass once it has read a ratio of
+// passGrowthStop times the bound, a measurement fails once a majority of its runs has stopped it
+// (passGrowthDecided), and a measurement that fails ends the test, the near-empty one, which
+// catches blockAuthors' read, first. Under either read the test so fails naming the ratio within
+// the 10 minutes go test gives the check's run.
 func TestThePassLockTimeGrowsLinearlyWithTheRoom(t *testing.T) {
-	// Serial: it times the owner lock's hold by the wall clock, and a run holds a room of up to
-	// 20,000 blocks, far more memory than any other test of the package.
-	small := passGrowthRoomText(t, passGrowthSmall)
-	large := passGrowthRoomText(t, passGrowthLarge)
+	// Serial: it times the owner lock's hold by the wall clock, and a run holds a room of 4,682
+	// blocks and one of 20,000 at once, far more memory than any other test of the package.
+	texts := [2]passGrowthText{passGrowthRoomText(t, passGrowthSmall), passGrowthRoomText(t, passGrowthLarge)}
 	for _, measurement := range []struct {
 		name      string
 		nearEmpty bool
 	}{
-		{name: "tables analyzed after the rooms are indexed"},
 		{name: "graph_tuples analyzed near empty before the rooms are written", nearEmpty: true},
+		{name: "tables analyzed after the rooms are indexed"},
 	} {
-		t.Run(measurement.name, func(t *testing.T) {
-			var smallTimes, largeTimes []time.Duration
+		if !t.Run(measurement.name, func(t *testing.T) {
+			var runs []passGrowthTimes
 			for run := range passGrowthRuns {
-				smallTimes = append(smallTimes,
-					passGrowthRun(t, fmt.Sprintf("run %d over %d blocks", run+1, passGrowthSmall), small, measurement.nearEmpty))
-				largeTimes = append(largeTimes,
-					passGrowthRun(t, fmt.Sprintf("run %d over %d blocks", run+1, passGrowthLarge), large, measurement.nearEmpty))
+				runs = append(runs, passGrowthRun(t, fmt.Sprintf("run %d", run+1), texts, measurement.nearEmpty))
+				passGrowthDecided(t, measurement.name, runs)
 			}
-			smallMedian, largeMedian := passGrowthMedian(smallTimes), passGrowthMedian(largeTimes)
+			smallMedian, largeMedian := passGrowthMedians(runs)
 			if smallMedian <= 0 {
-				t.Fatalf("%s: the pass over %d blocks held the owner lock %v, which no ratio can be taken over", measurement.name, passGrowthSmall, smallTimes)
+				t.Fatalf("%s: the pass over %d blocks held the owner lock a median %v, which no ratio can be taken over", measurement.name, passGrowthSmall, smallMedian)
 			}
+			small, large := passGrowthHeld(runs)
 			ratio := float64(largeMedian) / float64(smallMedian)
-			t.Logf("%s: the pass held the owner lock %v over %d blocks and %v over %d blocks, medians %v and %v, a ratio of %.2f against the bound %.2f",
-				measurement.name, smallTimes, passGrowthSmall, largeTimes, passGrowthLarge, smallMedian, largeMedian, ratio, passGrowthBound)
+			t.Logf("%s: the pass held the owner lock %s over %d blocks and %s over %d blocks, medians %v and %v, a ratio of %.2f against the bound %.2f",
+				measurement.name, small, passGrowthSmall, large, passGrowthLarge, smallMedian, largeMedian, ratio, passGrowthBound)
 			if ratio > passGrowthBound {
 				t.Errorf("%s: the pass held the owner lock a median %v over %d blocks and %v over %d blocks, a ratio of %.2f, above the bound %.2f",
 					measurement.name, largeMedian, passGrowthLarge, smallMedian, passGrowthSmall, ratio, passGrowthBound)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
