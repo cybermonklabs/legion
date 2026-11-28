@@ -332,19 +332,6 @@ exact entry instead of `step_run`s: `pinned_step(job, step, workdir, script, run
 `exact=[...]`, with `script` the step's whole `run:` text, and one `runs` item per go command the
 script runs. A step off its pin is refused, naming the line that differs.
 
-A `script_run`'s why cites, with `at()`, each step that starts its script, and the check holds
-that list both ways: a cited step that is gone fails, and so does a step a filter gates that names
-the script, unless, for every filter that gates it, a `script_run` of the script in a gate of that
-filter on the same job cites it. The step's text is read with the workspace (`$GITHUB_WORKSPACE`
-in any spelling), its `env:`, its matrix values, its caller's inputs and a composite action's own
-steps put in, so `"$GITHUB_WORKSPACE/packages/envoy/scripts/forced-order.sh" -server <version>` is
-read like the plain path. A new step that runs a declared script fails the check until a
-`script_run` of the script in each of its gates cites it; cite a step by its `id:` when another
-step of the job shares its name. What the check cannot evaluate to literal text - a matrix or an
-`env:` written as one expression, a value a `${{ }}` pastes that holds quotes, braces or `$` - fails
-the step too, with one refusal that names it: write the value as literal text. The check's header
-says which forms of a step it reads.
-
 It fails too when a pinned text or an exact entry's step is gone, when a job or step is gated on a
 filter no gate declares, when a read a gate or a `//ci:` line declares matches no file, and when a
 `//ci:` line cannot be read. It runs the go list behind each closure with `GOPROXY=off` over an

@@ -83,88 +83,17 @@
 #      the called file, which runs them inside the caller's own run, so the steps of every one of
 #      those files are read here and each refusal names the file the step is in.
 #
-#      Rule 4's script half (ci_filter_coverage.check_script_steps, reading with
-#      script_words.py): a step that names a script a Run's go command is in (its `source`:
-#      forced-order.sh, pg-connection-ceiling.sh, ...), that a filter gates, for each filter that
-#      gates it with no Run of that script in a gate of that filter on the job that cites the
-#      step, with at() in its why, as one that starts it. That citation is the table's word for
-#      which steps start the script, and rule 5 holds each to a step that is there; this holds
-#      every such step to one, so a step added beside the declared ones (a forced-order run on
-#      another nats-server) fails until a Run cites it, naming the file, the job, the step, the
-#      script and the filter. Which filters gate the step is read off the workflow, never off the
-#      table, under each caller that runs it: the caller's if:, the called job's and the step's
-#      own, an input resolved through that caller's with:, an output tested as `== 'true'` or
-#      read out of the changes job's list of matched filters (`contains(...matched_filters,
-#      '"x"')`). Every filter they name counts, since each can skip the step, so a gated step no
-#      gate covers fails too, and so does one two filters gate that a Run of one gate alone
-#      cites. A citation counts only as at() wrote it (`ci.yaml app "Build"` is not read inside a
-#      citation of `long+ci.yaml app "Build"`), and only for a step no other step of its job
-#      answers to by the same name, id, uses: or run: text. A step no filter gates, or only
-#      EXCLUDED ones (lint's NATS-floor test, which runs on every change), is held to no filter
-#      here and needs no Run.
-#
-#      What is read. A step's text is what it runs: its run: script; the shell: it runs that
-#      script with (its own, or the job's or the workflow's defaults.run.shell) and the file
-#      BASH_ENV names, which bash runs first; each value its with: hands an action; and the
-#      run: scripts of a composite action of this repository it uses, through the actions that one
-#      uses in turn, each with the environment of the step that uses it. Comment lines run nothing
-#      and are not read. Each word, its quotes dropped as the shell drops them, is read as every
-#      string it may be: each reference stands for each value it may hold, the product of them
-#      where one word joins several (`${{ matrix.dir }}/${{ matrix.script }}`). A reference may hold
-#      the workspace (`$GITHUB_WORKSPACE`, `${GITHUB_WORKSPACE}`, `${{ github.workspace }}`), the
-#      root; an env: of the workflow, the job, the step or the action's step; a called workflow's
-#      input (the caller's with: over its default, read in the caller's env: and matrix) or an
-#      action's (the with: of the step that uses it, read where it is passed, over its default);
-#      the action's own directory (`$GITHUB_ACTION_PATH`, `${{ github.action_path }}`); each value
-#      a matrix name takes, include rows among them; each of those in turn where it holds
-#      another; a value read by a literal index (`${{ env['X'] }}` as `env.X`), and a context or a
-#      matrix, inputs or github name in any case, as GitHub reads them (`${{ MATRIX.S }}`; env's
-#      names keep their case, as on a Linux runner); a quoted literal of an expression or a shell
-#      default (`${{ env.X || 'x.sh' }}`, `${X:-x.sh}`); ANSI-C quoted text as bash decodes it
-#      (`$'buil\x64.sh'`), and a locale string (`$"build.sh"`) as a double-quoted one. A working-
-#      directory is resolved the same way. A word then names a script when it is the script's
-#      path from the step's directory or the root; when one of the two paths ends in the other at
-#      a `/`, its `..`s and leading `/` aside (after a cd a relative path can lead from any
-#      directory, an absolute one from any checkout); and after the workspace, when it is the
-#      script's root path; a path a bracket no bracket expression holds is glued to is read as the
-#      path (`[".github/x.sh"]` in a `python3 -c` list). A glob is read as bash reads it with its
-#      default options, from the step's directory or the root, its bracket expressions whole
-#      (`[!x]`, `[[:alpha:]]`), and a file name with a literal before its first dot (`buil?.sh`)
-#      also as the end of any path. The text is not parsed, so a step that names the script only
-#      to chmod or lint it is held too: that errs wide.
-#
-#      Everything else is refused, by one refusal that names what this check cannot evaluate to
-#      literal text and says to write it as literal text. Every value the repository gives that a
-#      step reads must evaluate to literal text, through each value it reads in turn: a step is
-#      refused when it reads an env:, a matrix or an include: written as one expression, a matrix
-#      name written as one, or a matrix value that is a list or a mapping; when a value or a
-#      literal a ${{ }} pastes into its script holds shell syntax bash reads after the paste (a
-#      quote, a backslash, `$`, a backtick, a brace), however it reaches the step - an env:, a
-#      matrix value, a called workflow's or an action's input, or an expression function that
-#      reads it (`format('{0}', env.S)`); when a chain of values runs past 8 (an env: value that
-#      reads its own name is one, since this check reads one env: for the step, not the layer
-#      each name comes from); when a word takes more than 4096 forms; when ANSI-C quoted text
-#      decodes to one of those characters; and when its text holds an expansion that holds another
-#      (`${X:-${Y}}`, `${X:-${{ env.S }}}`), or one with an operator (`${S%.sh}`, `${S/a/b}`) of a
-#      value the repository gives, runs `shopt`, which changes how bash expands words, or ends a
-#      line with a backslash a continuation joins to the next line's first word.
-#
-#      What no file of the repository holds cannot be known to a check that reads files: a step's
-#      or a job's output, a secret, a variable the runner sets, what an expression function
-#      (`join`, `fromJSON`, ...) or a computed index yields, what a command substitution or a
-#      brace expansion yields, a name a script or a command builds as it runs, and the code of an
-#      action of another repository. Each stands for any text, and the same refusal holds
-#      wherever its literal parts could make a declared script's name: a file name of such a value
-#      and a literal ending (`"${{ steps.x.outputs.stem }}.sh"`), a glob with no literal before
-#      its first dot (`*.sh`) where a cd or an unknown working-directory leaves its directory in
-#      doubt, an expression function whose literals or read values could build the name - a
-#      format() call read whole, its template with each argument put in
-#      (`format('{0}{1}', 'bui', 'ld.sh')`) - and a word holding a backslash escape that would name
-#      a declared script read with its backslashes dropped (`buil\d.sh`). A name the shell
-#      assembles at run time from several words or variables (`a=bui; b=ld.sh; sh "$a$b"`) is not
-#      read, and passes. A word made only of such values (`"$x"`, a step's output) names no
-#      declared script here: refusing it would refuse every step that writes to a path it is
-#      handed (`>> "$GITHUB_OUTPUT"`),
+#      Rule 4's script half (ci_filter_coverage.check_script_steps): a step that a filter gates
+#      and whose text names a script a Run's go command is in (its `source`) fails unless, for
+#      each filter that gates it, a Run of that script in a gate of that filter on the step's job
+#      cites the step with at(), and no other step of the job answers to that citation. The
+#      failure names the file, the job, the step, the script and the filter. A step's text is its
+#      run:, the values of its with:, and the run: of each step of a composite action of this
+#      repository that it uses, through the actions that one uses. A word is a run of that text
+#      between blanks, quotes, = and ;&|()<>, less one leading ./, and it names a script when the
+#      shorter of the word and the script's path is the end of the longer, whole or after a /. No
+#      shell or expression syntax is evaluated: a name spelled another way is the review's to
+#      catch, as rules 10 and 15 say for their own cases.
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
 #      job no longer has, a step its exact entry pins whose run: script or directory is not the
 #      entry's, or whose env, shell, container or job could move what it compiles (below), or a

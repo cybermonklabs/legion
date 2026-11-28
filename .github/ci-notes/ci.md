@@ -3301,17 +3301,8 @@ no cache. It also holds every workflow file to 64,000 bytes and to what GitHub's
 (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a second
 time, in a file small enough to start when this one is too large to.
 
-It also holds every step a filter gates that names a script a gate's Run lists go commands of
-(forced-order.sh, pg-connection-ceiling.sh, ...) to a Run of that script, in a gate of each filter
-that gates the step, that cites the step. The reader refuses by default: every value the
-repository gives that the step reads (an env:, a matrix value, a called workflow's or an
-action's input) must evaluate to literal text, and the step's own text may hold only the shell
-syntax the reader models; anything else fails the step with one refusal that names what the
-check cannot evaluate. What no file of the repository holds (a step's output, a secret, a runner
-variable, an expression function's result) is read as any text, refused where its literal parts
-could make a declared script's name. Rule 4's script-half paragraph of check-ci-filters.sh's
-header lists what is read. Where a step fails, write the value as literal text, in the step or
-in a literal env:, matrix or with: value it reads.
+It also holds every step a filter gates that names a declared script to a Run that cites it: rule
+4's script half in .github/scripts/check-ci-filters.sh's header says how a step names a script.
 
 ## What the proof editor's offline proof shows
 

@@ -70,8 +70,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/bin" "$root/pkg/app/src" "$root/pkg/lib" \
     "$root/other"
-  for linked in check-ts-filters.sh ci_ts_listing.py ci_filter_coverage.py audited_scripts.py script_words.py \
-    shell_commands.py workflow_paths.py go_build_tags.py; do
+  for linked in check-ts-filters.sh ci_ts_listing.py ci_filter_coverage.py audited_scripts.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   ln -s "$python" "$root/bin/python3"

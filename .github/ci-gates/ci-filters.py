@@ -29,8 +29,6 @@ GATE = gate("ci_filters", "ci-filters", runs=[
                            "local action a step's `uses:` names, for the inputs it checks"),
     (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
     (".github/scripts/audited_scripts.py", "the readings of the scripts a step runs, which check-ci-filters.sh's engine reads a step through"),
-    (".github/scripts/script_words.py", "the engine reads the steps that run a declared script through it"),
-    (".github/scripts/shell_commands.py", "script_words.py imports its ${{ }} expression pattern"),
     (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
     (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and the "
                                              "cache fill workflows, which ci_filter_coverage.main() runs"),
