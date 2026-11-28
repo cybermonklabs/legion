@@ -72,6 +72,28 @@ test("every legion-worker reference is linked from a skill or a prompt", () => {
 // file it is in.
 const collapsed = (file: string) => readFileSync(file, "utf8").replace(/\s+/g, " ");
 
+// R3's first clause, which no reading of prose can keep true: nothing in Legion holds the merge
+// for an open review thread. The daemon reads no thread state at all, so a Go file of it that
+// names GitHub's thread API is the clause going quietly false.
+test("no Go file of the daemon reads a review thread's state", () => {
+  // grep exits 1 when it matches nothing, which is this test's passing case, so the status is
+  // read rather than thrown: 0 names files, 1 names none, anything else is grep itself failing.
+  const search = (pattern: string) => {
+    const grep = Bun.spawnSync({
+      cmd: ["grep", "-rlE", pattern, "--include=*.go", "."],
+      cwd: path.join(REPO_ROOT, "packages/daemon"),
+    });
+    expect(grep.exitCode, grep.stderr.toString()).toBeLessThan(2);
+    return grep.stdout.toString().split("\n").filter(Boolean);
+  };
+  expect(search("reviewThreads|isResolved|resolveReviewThread")).toEqual([]);
+  // An absence a broken search also satisfies is no evidence: a wrong path, a renamed directory
+  // or a pattern that cannot compile prints nothing and reads as a pass. The same search over
+  // the same paths must find what the daemon does read of a review — its decision — so the
+  // empty list above is an absence and not a search that reached nothing.
+  expect(search("ReviewDecision").length).toBeGreaterThan(0);
+});
+
 // Only a review that requests changes counts a review round (the daemon's recordRound): a tester's
 // fail and a move back, the architect's from `accepting` among them, count none, as the architect's
 // prompt parts say (`go/architect-common.md`). The two guides that say what the cap counts say so

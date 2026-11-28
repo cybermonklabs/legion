@@ -1,12 +1,17 @@
 // pod-standin.ts as a run's shims start it (`<tool> <args…>`), and its classifier, which the scorer
 // reuses: each call of the part's list of "A call that starts a pod" is a start, and no other call
 // is one.
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { podCallStarts } from "./pod-standin";
 import { POD_TOOLS, PodCallLine } from "./scored-runs-contracts";
+
+// The rows run processes, so each gets the guard this package's --parallel runner gives every row
+// (test-timeout-preload.ts's GUARD_MS), in a plain `bun test` too, never Bun's 5 s default, which a
+// loaded host overruns (class-search.ts's hand search 11).
+setDefaultTimeout(300_000);
 
 const POD_STANDIN = path.join(import.meta.dir, "pod-standin.ts");
 const freshDir = temporaryDirectories("pod-standin");

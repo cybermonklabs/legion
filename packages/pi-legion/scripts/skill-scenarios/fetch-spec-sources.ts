@@ -8,7 +8,7 @@
  *
  * A reference is an issue key (ACME-1) or a project document (dispatch://ACME/artifact/<slug>).
  * An issue goes to <dir>/<key in lower case>/, a project document to
- * <dir>/<project in lower case>-<slug>/. The directory is written again from nothing:
+ * <dir>/<project in lower case>-<slug>/. The directory is made new, and holds:
  *   title.txt    the issue's title, or the document's name
  *   messages.md  each message and comment by a person, oldest first. Each entry starts with the
  *                line `<!-- message <created_at> -->` or `<!-- comment <created_at> -->`, or, for a
@@ -41,9 +41,10 @@
  * Stdout gives file names and counts only, with how many deleted posts each run left out, and how
  * many posts, asks or texts whose words Dispatch left out where there are any. Exit 1 is a failed
  * read. Exit 2 is a refusal before any read: a bad argument, an --out inside a git or jj checkout,
- * or no Dispatch.
+ * no Dispatch, or a source directory or agent-texts.json an earlier run left under --out, which is
+ * named and never removed or replaced.
  */
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Actor, Ask, Comment, Message } from "@legion/contracts";
 import { editedMark, withEditedMark } from "@legion/envoy-client/actor-text";
@@ -247,16 +248,25 @@ async function issueMessages(dispatch: ProductionDispatch, key: string): Promise
   ]);
 }
 
-/** The directory `name` under `out`, written again from nothing with `files`. */
-function writeSource(out: string, name: string, files: Record<string, string>): string {
-  const target = path.join(out, name);
-  rmSync(target, { recursive: true, force: true });
-  mkdirSync(target, { recursive: true });
-  for (const [file, text] of Object.entries(files)) writeFileSync(path.join(target, file), text);
-  return target;
+/** The directory under --out that `reference`'s source is written to. */
+function sourceName(reference: Reference): string {
+  return reference.kind === "issue"
+    ? reference.key.toLowerCase()
+    : `${reference.project.toLowerCase()}-${reference.slug}`;
 }
 
-async function fetchIssue(dispatch: ProductionDispatch, out: string, key: string): Promise<string> {
+/** Makes `target`, which main found absent, and writes `files` into it. The `mkdir` fails on a
+ * directory that appeared since main looked, so nothing in one is written over. */
+function writeSource(target: string, files: Record<string, string>): void {
+  mkdirSync(target);
+  for (const [file, text] of Object.entries(files)) writeFileSync(path.join(target, file), text);
+}
+
+async function fetchIssue(
+  dispatch: ProductionDispatch,
+  target: string,
+  key: string
+): Promise<string> {
   const [issue, messages, comments, asks] = await Promise.all([
     dispatch.issue(key),
     issueMessages(dispatch, key),
@@ -286,7 +296,7 @@ async function fetchIssue(dispatch: ProductionDispatch, out: string, key: string
   );
   const deleted = byPeople.messages.length + byPeople.comments.length - standingPosts.length;
   const sourceAsks = asks.toSorted(byCreatedAt).flatMap((ask) => sourceAsk(ask) ?? []);
-  const target = writeSource(out, key.toLowerCase(), {
+  writeSource(target, {
     "title.txt": `${issue.title}\n`,
     "messages.md": messagesMarkdown(key, entries),
     "asks.json": `${JSON.stringify(sourceAsks, null, 2)}\n`,
@@ -299,7 +309,7 @@ async function fetchIssue(dispatch: ProductionDispatch, out: string, key: string
 
 async function fetchDocument(
   dispatch: ProductionDispatch,
-  out: string,
+  target: string,
   project: string,
   slug: string
 ): Promise<string> {
@@ -310,7 +320,7 @@ async function fetchDocument(
   const latest = (artifact.versions ?? []).toSorted((a, b) => b.number - a.number)[0];
   const at = latest?.created_at ?? artifact.created_at;
   const source = `dispatch://${project}/artifact/${slug}`;
-  const target = writeSource(out, `${project.toLowerCase()}-${slug}`, {
+  writeSource(target, {
     "title.txt": `${artifact.name}\n`,
     "messages.md": messagesMarkdown(source, [
       { kind: "message", created_at: at, text: text.markdown.trimEnd() },
@@ -476,12 +486,23 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     return refuse(messageFor(error));
   }
   const out = path.resolve(args.out);
+  // What this run writes under --out. One that an earlier run wrote is refused before any read,
+  // naming it, and nothing of it is removed or replaced: a batch's runs already read that source.
+  const writes =
+    args.mode === "agent-texts"
+      ? [path.join(out, "agent-texts.json")]
+      : args.references.map((reference) => path.join(out, sourceName(reference)));
+  const taken = writes.filter((one) => lstatSync(one, { throwIfNoEntry: false }) !== undefined);
+  if (taken.length > 0)
+    return refuse(
+      `${taken.join(", ")} from an earlier fetch; this one removes and replaces none of it: move it aside to fetch again`
+    );
   try {
     if (args.mode === "agent-texts") {
       const { texts, deleted, leftOut, issues } = await agentTexts(dispatch, args.window);
       mkdirSync(out, { recursive: true });
       const file = path.join(out, "agent-texts.json");
-      writeFileSync(file, `${JSON.stringify(texts, null, 2)}\n`);
+      writeFileSync(file, `${JSON.stringify(texts, null, 2)}\n`, { flag: "wx" });
       const count = (kind: AgentText["kind"]) => texts.filter((text) => text.kind === kind).length;
       io.out(
         `${file}: ${texts.length} texts by sessions (${count("message")} messages, ${count("comment")} comments, ${count("ask")} asks) read from ${issues} issues, ${deleted} deleted posts left out${leftOutByDispatch(leftOut, "texts")}`
@@ -489,11 +510,12 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       return 0;
     }
     mkdirSync(out, { recursive: true });
-    for (const reference of args.references) {
+    for (const [index, reference] of args.references.entries()) {
+      const target = writes[index] ?? "";
       io.out(
         reference.kind === "issue"
-          ? await fetchIssue(dispatch, out, reference.key)
-          : await fetchDocument(dispatch, out, reference.project, reference.slug)
+          ? await fetchIssue(dispatch, target, reference.key)
+          : await fetchDocument(dispatch, target, reference.project, reference.slug)
       );
     }
     return 0;

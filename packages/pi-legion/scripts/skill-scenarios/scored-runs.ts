@@ -32,7 +32,6 @@ import path from "node:path";
 import type { z } from "zod";
 import {
   caseName,
-  filledGuidance,
   type OwnerWalkCase,
   type OwnerWalkClause,
   type OwnerWalkEvidence,
@@ -278,14 +277,15 @@ function judgeInput(input: {
   judged: OwnerWalkClause[];
   captured: Captured;
   fixture: OwnerWalkFixture;
-  world: OwnerWalkWorld;
   plan: { version: number; markdown: string } | undefined;
   versions: number;
   reads: { call: string; printed: string }[];
   questions: string[];
   answer: string | undefined;
+  /** The guidance the owner got, as the run recorded it; undefined where it got none. */
+  guidance: string | undefined;
 }): string {
-  const { captured, fixture, world } = input;
+  const { captured, fixture } = input;
   const needs = new Set(input.judged.flatMap((clause) => clause.needs ?? []));
   const issue = (key: string) => captured.issues.find((each) => each.key === key);
   const parts = [
@@ -349,9 +349,9 @@ function judgeInput(input: {
       "",
       "## The guidance the owner got",
       "",
-      world.guidance === null
+      input.guidance === undefined
         ? "The owner got no guidance."
-        : fenced(filledGuidance(world), "markdown")
+        : fenced(input.guidance, "markdown")
     );
   if (needs.has("answer"))
     parts.push(
@@ -389,6 +389,11 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
   if (named.label !== label)
     throw new Error(`the directory ${run} names the label ${named.label}, not ${label}`);
   const world = OwnerWalkWorld.parse(readJson(dir, "world.json"));
+  // The guidance the owner got, as the run recorded it (rig.sh's scored_session writes guidance.md
+  // with `owner-walk.ts guidance`), never filled again from the scorer's own checkout, whose worlds
+  // may have changed since the run.
+  const guidance =
+    world.guidance === null ? undefined : readFileSync(path.join(dir, "guidance.md"), "utf8");
   if (caseName(world) !== caseName(named.case))
     throw new Error(
       `world.json is of the case ${caseName(world)}, and the directory names ${caseName(named.case)}`
@@ -522,8 +527,8 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
             : `the plan names no key of ${world.plansKeys.join(", ")}, and holds no eight words in a row of a recorded reason`,
     },
   ];
-  if (world.guidance !== null) {
-    const quoted = sharedWords(answer ?? "", filledGuidance(world), 8);
+  if (guidance !== undefined) {
+    const quoted = sharedWords(answer ?? "", guidance, 8);
     reported.push({
       name: "quotes-eight",
       value: quoted !== undefined,
@@ -558,12 +563,12 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
         judged,
         captured,
         fixture,
-        world,
         plan: evidence.plan,
         versions: versions.length,
         reads: judged.some((clause) => clause.needs?.includes("read")) ? plansReads(dir) : [],
         questions: world.questions,
         answer,
+        guidance,
       })
     );
   return score;

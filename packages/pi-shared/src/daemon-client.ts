@@ -117,6 +117,12 @@ export type ActivityInput = z.input<typeof LegionActivityRequest>;
 export type OwedInput = z.input<typeof LegionOwedRequest>;
 
 export interface LegionDaemonClient {
+  /** The address every call of this client dials, as `createLegionDaemonClient` was given it and
+   * without its trailing slashes. A failure says which daemon it was talking to: a refusal of a
+   * route names the route and a transport failure names neither, and a report with no address in
+   * it leaves a reader of the log to guess which port a session could not reach (the claim
+   * boot's `stopAfterRegistration` in `src/legion-claim-core.ts`). */
+  readonly endpoint: string;
   /** The daemon's whole state. */
   readonly state: () => Promise<LegionState>;
   /** One issue's record, the value the whole state holds under `issues.<key>`, or `undefined`
@@ -809,6 +815,7 @@ export function createLegionDaemonClient(
   };
 
   return {
+    endpoint,
     state: () => read("GET", "/legion/v1/state", LegionStateResponse),
     record: async (issue, reading) => {
       try {

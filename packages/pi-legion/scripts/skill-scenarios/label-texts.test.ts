@@ -1,9 +1,14 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
+
+// The rows run processes, so each gets the guard this package's --parallel runner gives every row
+// (test-timeout-preload.ts's GUARD_MS), in a plain `bun test` too, never Bun's 5 s default, which a
+// loaded host overruns (class-search.ts's hand search 11).
+setDefaultTimeout(300_000);
 
 // label-texts.sh is the one entry the rig calls in a label's checkout. Each row copies it into a
 // label of its own, a directory laid out as a checkout, so the row decides what that label holds.

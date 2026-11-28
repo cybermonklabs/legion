@@ -1,4 +1,4 @@
-// What daemon-standin.test.ts and daemon-standin-plan.test.ts share: starting daemon-standin.ts as
+// What owner-standin.test.ts and owner-standin-plan.test.ts share: starting owner-standin.ts as
 // the rig runs it, on a port of its own, and reading what it answered and logged; its claim and
 // grant; and a planted label checkout. It holds no state: each test file keeps its own directories.
 import { expect } from "bun:test";
@@ -15,7 +15,7 @@ import type { Subprocess } from "bun";
 import pkg from "../../package.json";
 import { StandinLogLine } from "./scored-runs-contracts";
 
-const STANDIN = path.join(import.meta.dir, "daemon-standin.ts");
+const STANDIN = path.join(import.meta.dir, "owner-standin.ts");
 /** The contract this checkout's plugin speaks, as the stand-in computes it without `--label`. */
 export const OWN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
@@ -56,7 +56,7 @@ async function listening(child: Subprocess<"ignore", "pipe", "pipe">): Promise<s
   }
 }
 
-/** Starts daemon-standin.ts on a port the kernel picks, with a boot token file of its own, and
+/** Starts owner-standin.ts on a port the kernel picks, with a boot token file of its own, and
  *  runs `body` with it; the process is stopped when `body` ends. */
 export async function withStandin(
   dir: string,

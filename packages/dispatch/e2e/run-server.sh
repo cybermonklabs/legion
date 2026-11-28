@@ -383,6 +383,26 @@ if [ "$stacks" -gt 1 ]; then
   gomaxprocs_env=(GOMAXPROCS="$gomaxprocs")
 fi
 
+# The agent bearer the server accepts (DISPATCH_AGENT_TOKEN), read before the sweep below: the
+# contents of the file DISPATCH_E2E_AGENT_TOKEN_FILE names, where a caller names one, and
+# otherwise `e2e-token`, the bearer every row, acceptance script and e2e/api.ts default to. A
+# caller whose agents read the bearer names a file of its own (the skill-scenario rig, whose
+# agents `cat` their DISPATCH_TOKEN_FILE), so the harness's name does not reach them; e2e/api.ts
+# reads the same file, and the file, not a variable, carries the value, as DISPATCH_TOKEN_FILE
+# does. `$(<file)` drops the line feed a file ends with.
+agent_token=e2e-token
+if [ -n "${DISPATCH_E2E_AGENT_TOKEN_FILE:-}" ]; then
+  if [ ! -r "$DISPATCH_E2E_AGENT_TOKEN_FILE" ]; then
+    echo "run-server.sh: DISPATCH_E2E_AGENT_TOKEN_FILE=$DISPATCH_E2E_AGENT_TOKEN_FILE cannot be read" >&2
+    exit 2
+  fi
+  agent_token="$(<"$DISPATCH_E2E_AGENT_TOKEN_FILE")"
+  if [ -z "$agent_token" ]; then
+    echo "run-server.sh: DISPATCH_E2E_AGENT_TOKEN_FILE=$DISPATCH_E2E_AGENT_TOKEN_FILE holds no token" >&2
+    exit 2
+  fi
+fi
+
 # The events outbox publishes through NATS, and this rig has none, so the server runs with
 # DISPATCH_NATS_DISABLED=1 by default: no spec here wants a bus, and a server that kept trying to
 # reach one would log a reconnect loop for every run. The publisher is the only writer of what a
@@ -446,17 +466,17 @@ if [ -z "$server_bin" ]; then
   server_bin=./dispatch-e2e
 fi
 # The settings that hold a secret, the caller's DATABASE_URL (password and all), the App key made
-# above and the sign-in keys (signin_secret_env), are exported and so reach the server through the
-# environment held-port.py and env hand on, never through their arguments, which every user of
-# the machine reads for as long as each runs. Every other setting is env's, as before.
-export DATABASE_URL="$database_url" DISPATCH_APP_PEM_B64="$app_pem"
+# above, the agent bearer (agent_token, which a caller's file can carry) and the sign-in keys
+# (signin_secret_env), are exported and so reach the server through the environment held-port.py
+# and env hand on, never through their arguments, which every user of the machine reads for as
+# long as each runs. Every other setting is env's, as before.
+export DATABASE_URL="$database_url" DISPATCH_APP_PEM_B64="$app_pem" DISPATCH_AGENT_TOKEN="$agent_token"
 [ "${#signin_secret_env[@]}" -eq 0 ] || export "${signin_secret_env[@]}"
 exec "${listen[@]}" env \
   "${broker_env[@]}" \
   "${file_store_env[@]}" \
   "${fake_embedder_env[@]}" \
   "${signin_env[@]}" \
-  DISPATCH_AGENT_TOKEN=e2e-token \
   DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
   DISPATCH_GITHUB_API_BASE="http://127.0.0.1:$fake_github_port" \
   DISPATCH_IDENTITY=cookie \

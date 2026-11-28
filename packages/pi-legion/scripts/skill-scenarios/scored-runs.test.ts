@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { OWNER_WALK_STAGES, ownerWalkWorld, questionsOf } from "./owner-walk";
+import { filledGuidance, OWNER_WALK_STAGES, ownerWalkWorld, questionsOf } from "./owner-walk";
 import { BOUND_CLAUSE, cells, ownerWalk, reachOf } from "./scored-runs";
 import {
   type OwnerWalkWorld,
@@ -12,6 +12,11 @@ import {
   runPass,
   type ScoreClause,
 } from "./scored-runs-contracts";
+
+// The rows run processes, so each gets the guard this package's --parallel runner gives every row
+// (test-timeout-preload.ts's GUARD_MS), in a plain `bun test` too, never Bun's 5 s default, which a
+// loaded host overruns (class-search.ts's hand search 11).
+setDefaultTimeout(300_000);
 
 // Each row plants a run directory as rig.sh, seed.ts, dispatch-proxy.ts and Oh My Pi leave one,
 // and scores it. No row reads a world text's words: a row plants a marker and finds it.
@@ -126,6 +131,8 @@ function plant(runs: string, planted: Planted): { dir: string; name: string } {
     );
   const world = worldOf(planted);
   write("world.json", world);
+  // The guidance the owner got, as rig.sh's scored_session records it for a guided form.
+  if (world.guidance !== null) write("guidance.md", filledGuidance(world));
   const answerText = `${JSON.stringify(planted.recorded ?? recorded)}\n`;
   write("plans-answer.json", answerText);
   write("plans-answer.source", {

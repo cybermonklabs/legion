@@ -1091,9 +1091,9 @@ its first turns come from the task its start carries and the daemon's `catch-up`
 It also proves three changes-requested rounds, each posted by the reviewer pane, which then completes its phase
 — a request for changes ends the round whether or not the reviewer has completed, so once the issue is back in implementing the proof reads the reviewer's handoff record on the Dispatch issue under the reviewer's claim session, and each review, like the final approval, names the issue branch's head at that round's reviewer completion, the implementer's last pushed head (the order the Go reviewer prompt gives;
 the proof names only the decision); in round one the proof human, a GitHub App and so a bot account like a CI bot and none of Legion's role Apps, also opens a file-level review thread (the run reads the thread's author back and stops, naming it, when the devbox `gh` posted as anything else, such as the user after its App routing failed).
-The implementer answers that thread in round one's correction and resolves it with its own `gh` (the pull request author's `resolveReviewThread`), as it does every thread it answers;
-the round-two reviewer adjudicates it, replying in its own words and naming its node id to the implementer as accepted (the review App cannot resolve a thread, so the reviewer names the threads it accepts and the implementer resolves them with plain `gh`;
-this one it already had), so the thread then carries the reviewer's reply and stays resolved.
+The implementer answers that thread in round one's correction and leaves it open, since it resolves no thread it answers;
+the round-two reviewer adjudicates it, replying in its own words and resolving the thread itself (the reviewer resolves the threads it has judged, with its own `gh`), so the thread then carries the reviewer's reply and reads resolved,
+and the run reads it open after round one and resolved after round two.
 No word of a reply resolves anything.
 Each round names one concrete correction the spec permits (a distinct line appended to the smoke file, the one product file the implementer's pull request changed, which the run records and requires to be exactly one;
 the correction counts only in that file's patch on the pull request) and reaches testing only on that round's own implementer handoff (the daemon's phase record must hold the implementer's handoff for that round when the issue reaches testing; each planner, implementer, tester and reviewer completion names a Dispatch handoff record written by that role's claim session, never a commit, and the pushed tip the implementer's completion reports is authored and committed by the implement App, read from the issue's workspace).
@@ -2884,14 +2884,14 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   A message in the reviewer's session must carry the architect's `reply_role` and arrive after completion; earlier round reports cannot count.
   These messages are kept as `architect-ask.jsonl`; an ask before the driver's steer is noted as the stronger pass.
   Once asked, the reviewer requests changes with exactly one inline thread and a review naming its handoff head.
-  The implementer appends the requested line, answers the thread and resolves it with its own `gh`; the tester verifies it.
-  Before the re-review the proof bot (the proof human, a GitHub App that is none of Legion's role Apps) opens a second thread, and the reviewer is told to reply on it and name its node id to the implementer as accepted over Envoy, which resolves it with its own `gh`.
+  The implementer appends the requested line and answers the thread, resolving nothing; the tester verifies it.
+  Before the re-review the proof bot (the proof human, a GitHub App that is none of Legion's role Apps) opens a second thread, and the reviewer is told to reply on it and resolve it itself, as it resolves the thread its own round 1 review opened.
   The re-review's decision is the reviewer's own; a second request for changes fails the proof.
-  Both threads are recorded at approval (the reviewer's also after the correction;
-  the bot's may still be open there, since the approval does not wait for the implementer's resolution).
+  Both threads are recorded at approval (the reviewer's also after the correction, where it reads open;
+  either may still be open at that read, since the reviewer resolves each in its round).
   The approval moves the issue to `accepting`, read directly:
   no worker starts (the implementer's claim holds no retro task, `claim_pending_phase`;
-  its state alone says nothing, since it may still be resolving the bot's thread), the daemon queues no status write and Dispatch keeps `needs_review`, the root holds no admission slot there, since `accepting` keeps none, while `admission.trees` still names its tree, and the architect holds the reviewer's `phase-finished` notice, its acceptance cue
+  its state alone says nothing, since the implementer may still be in the turn its own completion ended), the daemon queues no status write and Dispatch keeps `needs_review`, the root holds no admission slot there, since `accepting` keeps none, while `admission.trees` still names its tree, and the architect holds the reviewer's `phase-finished` notice, its acceptance cue
 
 - `children-first-acceptance`
 
@@ -2912,13 +2912,13 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 - `review-thread`
 
-  threads are resolved by id, by the pull request's author, on no magic word (LEGION-631):
-  after the correction round the reviewer's thread read `isResolved: true` with the implementer's reply as its newest submitted comment (the pull request author's `resolveReviewThread`, run by the implementer's own `gh` before it completed);
-  at the approval it still read resolved with the reviewer's own reply newest;
-  the bot's thread, which the reviewer answered and named by node id to the implementer over Envoy (the review App cannot resolve one), reads resolved with the reviewer's reply (`bot-thread-resolved.json`;
-  the implementer, live after its phase, resolved it with its own `gh`, so the approval need not have waited for it), and the implementer's session holds the reviewer's delivery naming the id (`bot-thread-named-to-implementer.jsonl`);
+  threads are resolved by id, by the reviewer that judged them, on no magic word (LEGION-631):
+  after the correction round the reviewer's thread read `isResolved: false` with the implementer's reply as its newest submitted comment, since the implementer answers and resolves none;
+  at the approval it read resolved with the reviewer's own reply newest, the reviewer having read the fix and closed its own thread;
+  the bot's thread, which the reviewer adjudicated, answered and resolved with its own `gh`, reads resolved with the reviewer's reply (`bot-thread-resolved.json`;
+  GitHub does not refuse the review App that resolution, probed on this pull request at 2026-11-08T03:13:33Z, which answered `isResolved: true`);
   `POST /legion/v1/threads/resolve` on the daemon answers 404 (`threads-resolve-404.json`): no daemon route resolves a thread (acceptance 4).
-  Controls: the implementer's record left unresolved, and the reviewer's record with a later implementer reply appended, both fail;
+  Controls: the implementer's record read resolved, and the reviewer's record with a later implementer reply appended, both fail;
   the bot's record left unresolved, or stripped of the reviewer's reply, fails
 
 - `completion-closed`
@@ -3152,7 +3152,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   tree 1's events carry its architect's `issue.claimed`, and done leaves its root issue unclaimed.
 
   - Before the merge, `reviewThreads` shows every thread resolved, the reviewer's and the bot's included (`review-threads-at-merge.json`):
-    the end state the implementer's `gh` left, its own threads and the bot's the reviewer named to it, since the merger resolves nothing and reads no thread state.
+    the end state the reviewer's `gh` left, the thread its own review opened and the bot's it adjudicated, since the merger resolves nothing and reads no thread state.
     Control: the same record with the reviewer's thread unresolved fails
 
 - `production-check-bound`
@@ -6670,7 +6670,7 @@ require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the d
 The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each proof that makes that run, which is every entry script that sources it, with `require_loopback_env`.
 The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
 The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds or extracts anything, through that same copy.
-The twelfth is the skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, which reads a batch's `SKILL_SCENARIOS_POSTGRES_URL` with `require_loopback_env` in `services_up`, checks there with `run_database_url_env` that a run's connection string can carry it, and gives each run's Dispatch the string `run_database_url` rebuilds, in `own_dispatch`, through the copy [`lib/rig.sh`](#librigsh) sources.
+The twelfth is the skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, which reads a batch's `SKILL_SCENARIOS_POSTGRES_URL` with `require_loopback_env` in `services_up`, checks there with `run_database_url_env` that a run's connection string can carry it, and gives each run's Dispatch the string `run_database_url` rebuilds, in `own_dispatch`, through the copy [`lib/rig.sh`](#librigsh) sources; the run's two readers of Bun.SQL (`seed.ts pull-request` and its head watcher) get that string as a `postgres://` URL, each value percent-encoded (`rig.sh`'s `conninfo_url`), never the given URL's own text, whose host Bun reads as a WHATWG URL does.
 The thirteenth is `hook-prompt-two-builds.sh`'s `prerequisites` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it takes the base commit's tree, sourcing [`lib/loopback-dsn.sh`](#libloopback-dsnsh) itself.
 The fourteenth is [`left-session-claims.sh`](#left-session-claimssh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it takes the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources, as [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s does.
 `require_loopback_env` takes the variable's name rather than its value and hands the value to `require_loopback_dsn` with the shell's xtrace off, so a run under `bash -x` traces no DSN, where a caller's own line that passed the DSN would trace it.
@@ -7589,6 +7589,7 @@ A port the kernel gives the other address can already be listening on `127.0.0.1
 Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none.
 Where the kernel does not hold an exec to ARG_MAX, as gVisor does not, those two rows are skipped by that name (`argMaxForceHolds`, [`lib/arg-max-force.sh`](#libarg-max-forcesh)).
 A `find` or a `grep` that a signal ends after part of its output makes `listening_holders` and `run_processes` exit 2, a run that has not marked itself has no processes to read, and an empty run directory names none (`marked_processes`, `procs_naming` and `names_dir` exit 2).
+From an `EXIT` trap that runs after `exit 3`, with the `find` of a busy machine, which exits 1 for an entry of another user's process, `listening_holders` names the socket's holder as outside one, and reports a `find` a signal ends with that `find`'s 137.
 A marked process whose name holds a newline and a `) ` is still named and ended.
 `stop_marked_processes` ends the marked processes, an escaped one too, and leaves a shell and a `tail -f` under the run's directory running, not stopped;
 with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;
@@ -7662,6 +7663,9 @@ It needs nothing of its caller's.
 Its walks of every process (`procs_naming`) read `${proc_root:-/proc}` ([`lib/proc-root.ts`](#libproc-rootts)) and hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` and [`lib/leftovers.sh`](#libleftoverssh)'s `refuse_leftovers` hand them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) both always exit 2.
 Both read their `find`'s stderr with `proc_walk_complaint ERRFILE PROC`, which prints its first line that is neither an entry of PROC this user may not read nor one whose process ended during the walk, and fails when there is none.
 A walk or a read that cannot see the processes it reads says why and fails with 2, never reads as none: a proc root that lists no process, an `xargs` or a `find` a signal ended, an unreadable `/proc/net/tcp`, and a Linux `/proc` with no `self` (an empty tmpfs mounted there, `proc_unreadable`), where `proc_children`, `proc_descendants`, `stop_tree`, `kill_frozen`, `kill_held` and the sweep fail with 2.
+Each walk ends its process substitution with `exit "$?"`, its reader's own status, and never with a bare `exit`:
+in a substitution forked while an `EXIT` trap runs, bash (5.2.37) takes a bare `exit` for the status the shell is exiting with.
+From a failed run's exit handler a walk read the run's `exit 1` as its reader's status: `procs_naming` failed with 2, and the handler's sweep stopped nothing.
 
 ```sh
 . "$root/scripts/e2e/lib/process-tree.sh"     # sourced, never run
@@ -7798,6 +7802,8 @@ and the processes of the rows that start a line or a helper are gone when they e
 and `first_native` takes the first program itself on PATH, in a directory whose name holds a space, past a script and a mise shim.
 Its process-scan rows put a `ps`, `pgrep` and `pkill` on `PATH` that log each call and run nothing: `signalable` refuses the calling shell and, asked from a child shell that does not lead its group, that group's leader, `stop_tree` leaves a process whose parent is not the one it is given and then ends a parent and its two children, the cleanup wait's failure names each survivor that runs with its command line and none that has ended, and none of them starts any of the three.
 Where `strace` is on the host, a traced row holds that they open no other process's `/proc` entry, list no directory but the asked processes' `task` directories, and read no other `/proc` file than `/proc/stat` and bash's own `/proc/self/maps`; against the helpers before them each row fails.
+Its `procs_naming` rows walk a proc root of a process they start and an `environ` that `grep` cannot read, so `xargs` exits 123, outside a trap and from the `EXIT` trap of a shell that runs `exit 1`:
+from the trap it names the process with its start time as it does outside one, and where a signal ends the `grep` it fails with 2 and names `xargs`'s 125 in both; against the bare `exit` before, both rows fail.
 `lib/claude-backend-guards.test.ts` finds a pane's Claude Code under its bridge when its path holds a space and when it runs under another name, which the lookup by `argv[0]` before it did not;
 answers nothing while the bridge's child is still the bridge's own fork, the first wrapper of a chain of two (bash) or the second (sh), and then names the program the chain ends in;
 and takes a pane's Claude Code for its agent where that Claude Code, under another name, runs an Oh My Pi below itself, an Oh My Pi the lookup before it took for the agent
@@ -7935,6 +7941,7 @@ Only processes in the caller's own pid namespace are read, since a pid means not
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
 It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment in the shell itself and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process.
 A proc root that lists no process, and a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
+From an `EXIT` trap that runs after `exit 3`, with the `find` of a busy machine, which exits 1 for an entry of another user's process, it names a leftover by its working directory as it does outside one, and reports a `find` a signal ends with that `find`'s 137.
 `lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run
 
 ## lib/operator-dispatch.sh
@@ -8068,7 +8075,7 @@ Read right after the transition a completion caused, a role's handoff is that ph
 in the default steps, implementing moves to testing only on it), `assert_handoff_record ISSUE ROLE PHASE ROUND` (Dispatch's `GET /api/v1/handoffs/<id>` holds the record as the issue's handoff of the role's word
 — `plan`, `implement`, `test`, `review` — at the version named, written by the session the role's claim registered;
 for the implementer, its commit is authored and committed by its own App, read with `workspace_jj`), `assert_review_of_head ISSUE ROUND STATE` (the reviewer's newest review of that state names the pull request's head the daemon records:
-the reviewer pushes nothing), `pull_request_legion_only_commits` (each commit of the proof's pull request that changes only `.legion/`, of which a run makes none) and `retro_reported` (the implementer's completion while the issue is merging or awaiting merge).
+the reviewer pushes nothing above the head it decides on, since a change request comes with no push of its own and its one text commit, pushed when every finding that stands is text, is the head its approval names), `pull_request_legion_only_commits` (each commit of the proof's pull request that changes only `.legion/`, of which a run makes none) and `retro_reported` (the implementer's completion while the issue is merging or awaiting merge).
 
 The production check after the close is no phase, and it is opened only where the project's `production_check` names the role that works it (`off` opens none; `tester` is the key's other word and its default):
 a look's report is that role's `handoff_complete` with a verdict and no commit, moves no phase and writes no handoff, so it is read from `legion state
@@ -8246,7 +8253,7 @@ a token reaches one only where the daemon can run neither `agent-secrets` nor a 
 A run refuses before its first write anywhere:
 Stage 3, 4b.13b, the Claude Code backend and Stage 4b check both Apps (`read_app_logins`), Stage 4a, which acts as the implement App alone, checks that one.
 `TestRealGitHubCredentialSurface` sources this lib and runs its `require_app_inputs implement`, `app_token_command` and `check_github_apps implement` (through `liveProofImplementApp` and `proveLiveProofApps` in `packages/daemon/internal/api/real_github_test.go`;
-`proveLiveProofApps` checks the very block the proofs act with), so it holds no copy of the App, its checks or its token command, and it proves the implement App as the stage proofs do before it acts: it takes the implement inputs and no others, so no review input, the key command included, is read for it.
+`proveLiveProofApps` checks the very block the proof acts with), so it holds no copy of the App, its checks or its token command, and it proves the implement App as the stage proofs do before it acts: it takes the implement inputs and no others, so no review input, the key command included, is read for it.
 Stage 4a hands its Go harness the implement App's id, its secret and that App's `app_token_command`, which the harness's token manager runs with `sh -c`, so it holds no copy of the token command either.
 The checks run in the C locale whatever the caller's, so a UTF-8 locale does not admit fullwidth digits or accented letters.
 `require_app_inputs` also fills `app_key_unsets`, the `env` argument list (`-u NAME` …) every proof passes to a process it starts, so no such process inherits an App credential, the proof human's included.

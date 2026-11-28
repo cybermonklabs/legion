@@ -44,15 +44,17 @@
 # that same copy. The twelfth is packages/pi-legion/scripts/skill-scenarios/rig.sh, which reads a
 # batch's SKILL_SCENARIOS_POSTGRES_URL with this guard in services_up, through
 # require_loopback_env and run_database_url_env, and gives each run's Dispatch the string
-# run_database_url rebuilds, in own_dispatch. The thirteenth is hook-prompt-two-builds.sh, which
-# sources this file itself and reads LEGION_TEST_PG_DSN with this guard, through
-# require_loopback_env, before it takes the base commit's tree. The fourteenth is
-# left-session-claims.sh's negative control, which reads LEGION_TEST_PG_DSN with this guard before
-# it takes the base commit's tree, through the copy lib/live-daemon-proof.sh sources, as the
-# tenth does. Twelve of the fourteen call sites call this function. envoy-session-delivery.sh and
-# dispatch-session-settings.sh read their DSN with run_database_url alone, through
-# run_database_url_env, which begins with this guard's own check. Every proof that writes a server
-# its caller's DSN names reads that DSN with this guard before it starts anything.
+# run_database_url rebuilds, in own_dispatch, and the run's two readers of Bun.SQL that string as
+# a postgres:// URL (rig.sh's conninfo_url), never the given URL's text, whose host Bun reads as a
+# WHATWG URL does (below). The thirteenth is hook-prompt-two-builds.sh, which sources this file
+# itself and reads LEGION_TEST_PG_DSN with this guard, through require_loopback_env, before it
+# takes the base commit's tree. The fourteenth is left-session-claims.sh's negative control, which
+# reads LEGION_TEST_PG_DSN with this guard before it takes the base commit's tree, through the
+# copy lib/live-daemon-proof.sh sources, as the tenth does. Twelve of the fourteen call sites call
+# this function. envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
+# run_database_url alone, through run_database_url_env, which begins with this guard's own check.
+# Every proof that writes a server its caller's DSN names reads that DSN with this guard before it
+# starts anything.
 #
 # libpq's own parser answers which host the DSN names, because libpq and a URL parser read
 # different text as the host. libpq ends the user name at the first `@` and starts no query

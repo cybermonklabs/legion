@@ -1,0 +1,482 @@
+{
+  "made_by": "the implementer of INFRA-764 on 2026-11-21, from an INFRA issue pod: gh 2.98.0 with its role App's installation token, `gh api -i` against cybermonklabs/legion; each read's status line and its headers in the order gh printed them, each header's value as production sent it but for the values that describe one answer (its ETag, its Last-Modified, its request id, its length and its rate limit's count and reset, each `<the answer's own>`), its Date, and what gh printed after them",
+  "reads": {
+    "repository": {
+      "command": ["gh", "api", "-i", "repos/<owner>/<repo>"],
+      "status": "HTTP/2.0 200 OK",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning",
+        "Cache-Control": "private, max-age=60, s-maxage=60",
+        "Content-Security-Policy": "default-src 'none'",
+        "Content-Type": "application/json; charset=utf-8",
+        "Date": "Sat, 21 Nov 2026 10:20:07 GMT",
+        "Etag": "<the answer's own>",
+        "Last-Modified": "<the answer's own>",
+        "Referrer-Policy": "origin-when-cross-origin, strict-origin-when-cross-origin",
+        "Server": "github.com",
+        "Strict-Transport-Security": "max-age=31536000; includeSubdomains; preload",
+        "Vary": "Accept, Authorization, Cookie, X-GitHub-OTP,Accept-Encoding, Accept, X-Requested-With",
+        "X-Accepted-Github-Permissions": "metadata=read",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "deny",
+        "X-Github-Api-Version-Selected": "2022-11-28",
+        "X-Github-Edge-Region": "westus2",
+        "X-Github-Media-Type": "github.v3; format=json",
+        "X-Github-Request-Id": "<the answer's own>",
+        "X-Ratelimit-Limit": "15000",
+        "X-Ratelimit-Remaining": "<the answer's own>",
+        "X-Ratelimit-Reset": "<the answer's own>",
+        "X-Ratelimit-Resource": "core",
+        "X-Ratelimit-Used": "<the answer's own>",
+        "X-Xss-Protection": "0"
+      },
+      "after_headers": "the repository's JSON body, 6814 bytes, ending in its `}` with no line end"
+    },
+    "repository --jq .visibility": {
+      "command": ["gh", "api", "-i", "repos/<owner>/<repo>", "--jq", ".visibility"],
+      "status": "HTTP/2.0 200 OK",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning",
+        "Cache-Control": "private, max-age=60, s-maxage=60",
+        "Content-Security-Policy": "default-src 'none'",
+        "Content-Type": "application/json; charset=utf-8",
+        "Date": "Sat, 21 Nov 2026 10:20:08 GMT",
+        "Etag": "<the answer's own>",
+        "Last-Modified": "<the answer's own>",
+        "Referrer-Policy": "origin-when-cross-origin, strict-origin-when-cross-origin",
+        "Server": "github.com",
+        "Strict-Transport-Security": "max-age=31536000; includeSubdomains; preload",
+        "Vary": "Accept, Authorization, Cookie, X-GitHub-OTP,Accept-Encoding, Accept, X-Requested-With",
+        "X-Accepted-Github-Permissions": "metadata=read",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "deny",
+        "X-Github-Api-Version-Selected": "2022-11-28",
+        "X-Github-Edge-Region": "westus2",
+        "X-Github-Media-Type": "github.v3; format=json",
+        "X-Github-Request-Id": "<the answer's own>",
+        "X-Ratelimit-Limit": "15000",
+        "X-Ratelimit-Remaining": "<the answer's own>",
+        "X-Ratelimit-Reset": "<the answer's own>",
+        "X-Ratelimit-Resource": "core",
+        "X-Ratelimit-Used": "<the answer's own>",
+        "X-Xss-Protection": "0"
+      },
+      "after_headers": "public\n"
+    },
+    "not found": {
+      "command": ["gh", "api", "-i", "repos/<owner>/<repo>/pulls/999999"],
+      "status": "HTTP/2.0 404 Not Found",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning",
+        "Content-Length": "<the answer's own>",
+        "Content-Security-Policy": "default-src 'none'",
+        "Content-Type": "application/json; charset=utf-8",
+        "Date": "Sat, 21 Nov 2026 10:21:04 GMT",
+        "Referrer-Policy": "origin-when-cross-origin, strict-origin-when-cross-origin",
+        "Server": "github.com",
+        "Strict-Transport-Security": "max-age=31536000; includeSubdomains; preload",
+        "Vary": "Accept-Encoding, Accept, X-Requested-With",
+        "X-Accepted-Github-Permissions": "pull_requests=read; contents=read",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "deny",
+        "X-Github-Api-Version-Selected": "2022-11-28",
+        "X-Github-Edge-Region": "westus2",
+        "X-Github-Media-Type": "github.v3; format=json",
+        "X-Github-Request-Id": "<the answer's own>",
+        "X-Ratelimit-Limit": "15000",
+        "X-Ratelimit-Remaining": "<the answer's own>",
+        "X-Ratelimit-Reset": "<the answer's own>",
+        "X-Ratelimit-Resource": "core",
+        "X-Ratelimit-Used": "<the answer's own>",
+        "X-Xss-Protection": "0"
+      },
+      "after_headers": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/pulls/pulls#get-a-pull-request\",\"status\":\"404\"}"
+    },
+    "unrouted": {
+      "command": ["gh", "api", "-i", "repos/<owner>/<repo>/no-such-endpoint"],
+      "status": "HTTP/2.0 404 Not Found",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, X-GitHub-Edge-Region, Deprecation, Sunset",
+        "Content-Security-Policy": "default-src 'none'",
+        "Content-Type": "application/json; charset=utf-8",
+        "Date": "Sat, 21 Nov 2026 10:35:20 GMT",
+        "Referrer-Policy": "origin-when-cross-origin, strict-origin-when-cross-origin",
+        "Server": "github.com",
+        "Strict-Transport-Security": "max-age=31536000; includeSubdomains; preload",
+        "Vary": "Accept-Encoding, Accept, X-Requested-With",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "deny",
+        "X-Github-Edge-Region": "westus2",
+        "X-Github-Media-Type": "github.v3; format=json",
+        "X-Github-Request-Id": "<the answer's own>",
+        "X-Xss-Protection": "0"
+      },
+      "after_headers": "GitHub's 404 body of an endpoint it does not serve, indented with `\\r\\n` line ends"
+    },
+    "graphql": {
+      "command": ["gh", "api", "-i", "graphql", "-f", "query={viewer{login}}"],
+      "status": "HTTP/2.0 200 OK",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning",
+        "Content-Security-Policy": "default-src 'none'",
+        "Content-Type": "application/json; charset=utf-8",
+        "Date": "Sat, 21 Nov 2026 10:21:11 GMT",
+        "Referrer-Policy": "origin-when-cross-origin, strict-origin-when-cross-origin",
+        "Server": "github.com",
+        "Strict-Transport-Security": "max-age=31536000; includeSubdomains; preload",
+        "Vary": "Accept-Encoding, Accept, X-Requested-With",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "deny",
+        "X-Github-Edge-Region": "westus2",
+        "X-Github-Media-Type": "github.v4; format=json",
+        "X-Github-Request-Id": "<the answer's own>",
+        "X-Ratelimit-Limit": "10000",
+        "X-Ratelimit-Remaining": "<the answer's own>",
+        "X-Ratelimit-Reset": "<the answer's own>",
+        "X-Ratelimit-Resource": "graphql",
+        "X-Ratelimit-Used": "<the answer's own>",
+        "X-Xss-Protection": "0"
+      },
+      "after_headers": "the viewer's login, as JSON"
+    },
+    "list": {
+      "command": ["gh", "api", "-i", "repos/<owner>/<repo>/pulls/<number>/comments?per_page=1"],
+      "status": "HTTP/2.0 200 OK",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning",
+        "Cache-Control": "private, max-age=60, s-maxage=60",
+        "Content-Security-Policy": "default-src 'none'",
+        "Content-Type": "application/json; charset=utf-8",
+        "Date": "Sat, 21 Nov 2026 10:21:02 GMT",
+        "Etag": "<the answer's own>",
+        "Link": "<https://api.github.com/repositories/<id>/pulls/<number>/comments?per_page=1&page=2>; rel=\"next\", <https://api.github.com/repositories/<id>/pulls/<number>/comments?per_page=1&page=<last>>; rel=\"last\"",
+        "Referrer-Policy": "origin-when-cross-origin, strict-origin-when-cross-origin",
+        "Server": "github.com",
+        "Strict-Transport-Security": "max-age=31536000; includeSubdomains; preload",
+        "Vary": "Accept, Authorization, Cookie, X-GitHub-OTP,Accept-Encoding, Accept, X-Requested-With",
+        "X-Accepted-Github-Permissions": "pull_requests=read",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "deny",
+        "X-Github-Api-Version-Selected": "2022-11-28",
+        "X-Github-Edge-Region": "westus2",
+        "X-Github-Media-Type": "github.v3; format=json",
+        "X-Github-Request-Id": "<the answer's own>",
+        "X-Ratelimit-Limit": "15000",
+        "X-Ratelimit-Remaining": "<the answer's own>",
+        "X-Ratelimit-Reset": "<the answer's own>",
+        "X-Ratelimit-Resource": "core",
+        "X-Ratelimit-Used": "<the answer's own>",
+        "X-Xss-Protection": "0"
+      },
+      "after_headers": "a list of one review comment"
+    },
+    "diff": {
+      "command": [
+        "gh",
+        "api",
+        "-i",
+        "-H",
+        "Accept: application/vnd.github.diff",
+        "repos/<owner>/<repo>/commits/<sha>"
+      ],
+      "status": "HTTP/2.0 200 OK",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning",
+        "Cache-Control": "private, max-age=60, s-maxage=60",
+        "Content-Length": "<the answer's own>",
+        "Content-Security-Policy": "default-src 'none'",
+        "Content-Type": "application/vnd.github.diff; charset=utf-8",
+        "Date": "Sat, 21 Nov 2026 10:25:45 GMT",
+        "Etag": "<the answer's own>",
+        "Last-Modified": "<the answer's own>",
+        "Referrer-Policy": "origin-when-cross-origin, strict-origin-when-cross-origin",
+        "Server": "github.com",
+        "Strict-Transport-Security": "max-age=31536000; includeSubdomains; preload",
+        "Vary": "Accept, Authorization, Cookie, X-GitHub-OTP,Accept-Encoding, Accept, X-Requested-With",
+        "X-Accepted-Github-Permissions": "contents=read",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "deny",
+        "X-Github-Api-Version-Selected": "2022-11-28",
+        "X-Github-Edge-Region": "westus2",
+        "X-Github-Media-Type": "github.v3; param=diff",
+        "X-Github-Request-Id": "<the answer's own>",
+        "X-Ratelimit-Limit": "15000",
+        "X-Ratelimit-Remaining": "<the answer's own>",
+        "X-Ratelimit-Reset": "<the answer's own>",
+        "X-Ratelimit-Resource": "core",
+        "X-Ratelimit-Used": "<the answer's own>",
+        "X-Xss-Protection": "0"
+      },
+      "after_headers": "the commit's diff"
+    },
+    "sha": {
+      "command": [
+        "gh",
+        "api",
+        "-i",
+        "-H",
+        "Accept: application/vnd.github.sha",
+        "repos/<owner>/<repo>/commits/<sha>"
+      ],
+      "status": "HTTP/2.0 200 OK",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning",
+        "Cache-Control": "private, max-age=60, s-maxage=60",
+        "Content-Length": "<the answer's own>",
+        "Content-Security-Policy": "default-src 'none'",
+        "Content-Type": "application/vnd.github.sha; charset=utf-8",
+        "Date": "Sat, 21 Nov 2026 10:25:46 GMT",
+        "Etag": "<the answer's own>",
+        "Last-Modified": "<the answer's own>",
+        "Referrer-Policy": "origin-when-cross-origin, strict-origin-when-cross-origin",
+        "Server": "github.com",
+        "Strict-Transport-Security": "max-age=31536000; includeSubdomains; preload",
+        "Vary": "Accept, Authorization, Cookie, X-GitHub-OTP,Accept-Encoding, Accept, X-Requested-With",
+        "X-Accepted-Github-Permissions": "contents=read",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "deny",
+        "X-Github-Api-Version-Selected": "2022-11-28",
+        "X-Github-Edge-Region": "westus2",
+        "X-Github-Media-Type": "github.v3; param=sha",
+        "X-Github-Request-Id": "<the answer's own>",
+        "X-Ratelimit-Limit": "15000",
+        "X-Ratelimit-Remaining": "<the answer's own>",
+        "X-Ratelimit-Reset": "<the answer's own>",
+        "X-Ratelimit-Resource": "core",
+        "X-Ratelimit-Used": "<the answer's own>",
+        "X-Xss-Protection": "0"
+      },
+      "after_headers": "the commit's forty-digit SHA"
+    },
+    "raw": {
+      "command": [
+        "gh",
+        "api",
+        "-i",
+        "-H",
+        "Accept: application/vnd.github.raw",
+        "repos/<owner>/<repo>/contents/<path>"
+      ],
+      "status": "HTTP/2.0 200 OK",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning",
+        "Cache-Control": "private, max-age=60, s-maxage=60",
+        "Content-Length": "<the answer's own>",
+        "Content-Security-Policy": "default-src 'none'",
+        "Content-Type": "application/vnd.github.raw; charset=utf-8",
+        "Date": "Sat, 21 Nov 2026 10:25:47 GMT",
+        "Etag": "<the answer's own>",
+        "Last-Modified": "<the answer's own>",
+        "Referrer-Policy": "origin-when-cross-origin, strict-origin-when-cross-origin",
+        "Server": "github.com",
+        "Strict-Transport-Security": "max-age=31536000; includeSubdomains; preload",
+        "Vary": "Accept, Authorization, Cookie, X-GitHub-OTP, Accept-Encoding, Accept, X-Requested-With",
+        "X-Accepted-Github-Permissions": "contents=read",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "deny",
+        "X-Github-Api-Version-Selected": "2022-11-28",
+        "X-Github-Edge-Region": "westus2",
+        "X-Github-Media-Type": "github.v3; param=raw",
+        "X-Github-Request-Id": "<the answer's own>",
+        "X-Ratelimit-Limit": "15000",
+        "X-Ratelimit-Remaining": "<the answer's own>",
+        "X-Ratelimit-Reset": "<the answer's own>",
+        "X-Ratelimit-Resource": "core",
+        "X-Ratelimit-Used": "<the answer's own>",
+        "X-Xss-Protection": "0"
+      },
+      "after_headers": "the file's bytes"
+    }
+  },
+  "permissions": {
+    "GET repos/{owner}/{repo}": {
+      "read": "gh api -i repos/<owner>/<repo>",
+      "date": "Sat, 21 Nov 2026 10:20:07 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "metadata=read"
+    },
+    "GET repos/{owner}/{repo}/pulls/{number}": {
+      "read": "gh api -i repos/<owner>/<repo>/pulls/<number>",
+      "date": "Sat, 21 Nov 2026 10:21:01 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "pull_requests=read; contents=read"
+    },
+    "GET repos/{owner}/{repo}/pulls/{number}/commits": {
+      "read": "gh api -i repos/<owner>/<repo>/pulls/<number>/commits?per_page=2",
+      "date": "Sat, 21 Nov 2026 10:21:06 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "pull_requests=read"
+    },
+    "GET repos/{owner}/{repo}/pulls/{number}/files": {
+      "read": "gh api -i repos/<owner>/<repo>/pulls/<number>/files?per_page=2",
+      "date": "Sat, 21 Nov 2026 10:21:07 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "pull_requests=read"
+    },
+    "GET repos/{owner}/{repo}/pulls/{number}/reviews": {
+      "read": "gh api -i repos/<owner>/<repo>/pulls/<number>/reviews?per_page=1",
+      "date": "Sat, 21 Nov 2026 10:24:40 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "pull_requests=read"
+    },
+    "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}": {
+      "read": "gh api -i repos/<owner>/<repo>/pulls/<number>/reviews/<review>",
+      "date": "Sat, 21 Nov 2026 10:24:41 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "pull_requests=read"
+    },
+    "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}/comments": {
+      "read": "gh api -i repos/<owner>/<repo>/pulls/<number>/reviews/<review>/comments?per_page=1",
+      "date": "Sat, 21 Nov 2026 10:24:42 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "pull_requests=read"
+    },
+    "GET repos/{owner}/{repo}/pulls/{number}/comments": {
+      "read": "gh api -i repos/<owner>/<repo>/pulls/<number>/comments?per_page=1",
+      "date": "Sat, 21 Nov 2026 10:21:02 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "pull_requests=read"
+    },
+    "GET repos/{owner}/{repo}/issues/{number}/comments": {
+      "read": "gh api -i repos/<owner>/<repo>/issues/<number>/comments?per_page=1",
+      "date": "Sat, 21 Nov 2026 10:24:43 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "issues=read; pull_requests=read"
+    },
+    "GET repos/{owner}/{repo}/commits/{ref}/check-runs": {
+      "read": "gh api -i repos/<owner>/<repo>/commits/main/check-runs?per_page=1",
+      "date": "Sat, 21 Nov 2026 10:24:44 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "checks=read"
+    },
+    "GET repos/{owner}/{repo}/commits/{ref}/status": {
+      "read": "gh api -i repos/<owner>/<repo>/commits/main/status",
+      "date": "Sat, 21 Nov 2026 10:24:45 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "statuses=read"
+    },
+    "GET repos/{owner}/{repo}/commits/{ref+}": {
+      "read": "gh api -i repos/<owner>/<repo>/commits/main",
+      "date": "Sat, 21 Nov 2026 10:24:46 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "contents=read"
+    },
+    "GET repos/{owner}/{repo}/commits": {
+      "read": "gh api -i repos/<owner>/<repo>/commits?per_page=1",
+      "date": "Sat, 21 Nov 2026 10:24:47 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "contents=read"
+    },
+    "GET repos/{owner}/{repo}/actions/runs": {
+      "read": "gh api -i repos/<owner>/<repo>/actions/runs?per_page=1",
+      "date": "Sat, 21 Nov 2026 10:24:48 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "actions=read"
+    },
+    "GET repos/{owner}/{repo}/actions/runs/{run_id}/jobs": {
+      "read": "gh api -i repos/<owner>/<repo>/actions/runs/1/jobs",
+      "date": "Sat, 21 Nov 2026 10:24:49 GMT",
+      "status": "HTTP/2.0 404 Not Found",
+      "value": "actions=read"
+    },
+    "GET repos/{owner}/{repo}/rules/branches/{branch+}": {
+      "read": "gh api -i repos/<owner>/<repo>/rules/branches/main",
+      "date": "Sat, 21 Nov 2026 10:24:50 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "metadata=read"
+    },
+    "GET repos/{owner}/{repo}/rulesets": {
+      "read": "gh api -i repos/<owner>/<repo>/rulesets",
+      "date": "Sat, 21 Nov 2026 10:24:51 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "metadata=read"
+    },
+    "GET repos/{owner}/{repo}/rulesets/{id}": {
+      "read": "gh api -i repos/<owner>/<repo>/rulesets/<id>",
+      "date": "Sat, 21 Nov 2026 10:24:52 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "metadata=read"
+    },
+    "GET repos/{owner}/{repo}/branches/{branch}/protection": {
+      "read": "gh api -i repos/<owner>/<repo>/branches/main/protection",
+      "date": "Sat, 21 Nov 2026 10:24:53 GMT",
+      "status": "HTTP/2.0 403 Forbidden",
+      "value": "administration=read"
+    },
+    "GET repos/{owner}/{repo}/branches/{branch+}": {
+      "read": "gh api -i repos/<owner>/<repo>/branches/main",
+      "date": "Sat, 21 Nov 2026 10:24:54 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "contents=read"
+    },
+    "GET repos/{owner}/{repo}/branches": {
+      "read": "gh api -i repos/<owner>/<repo>/branches?per_page=1",
+      "date": "Sat, 21 Nov 2026 10:24:55 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "contents=read"
+    },
+    "GET repos/{owner}/{repo}/tags": {
+      "read": "gh api -i repos/<owner>/<repo>/tags?per_page=1",
+      "date": "Sat, 21 Nov 2026 10:24:56 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "metadata=read"
+    },
+    "GET repos/{owner}/{repo}/compare/{basehead+}": {
+      "read": "gh api -i repos/<owner>/<repo>/compare/446a02fb...<sha>",
+      "date": "Sat, 21 Nov 2026 10:24:57 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "contents=read"
+    },
+    "GET repos/{owner}/{repo}/git/ref/{ref+}": {
+      "read": "gh api -i repos/<owner>/<repo>/git/ref/heads/main",
+      "date": "Sat, 21 Nov 2026 10:24:58 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "contents=read"
+    },
+    "GET repos/{owner}/{repo}/git/refs": {
+      "read": "gh api -i repos/<owner>/<repo>/git/refs?per_page=1",
+      "date": "Sat, 21 Nov 2026 10:24:59 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": null
+    },
+    "GET repos/{owner}/{repo}/git/refs/{ref+}": {
+      "read": "gh api -i repos/<owner>/<repo>/git/refs/heads/main",
+      "date": "Sat, 21 Nov 2026 10:25:00 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "contents=read"
+    },
+    "GET repos/{owner}/{repo}/git/commits/{sha}": {
+      "read": "gh api -i repos/<owner>/<repo>/git/commits/<sha>",
+      "date": "Sat, 21 Nov 2026 10:25:01 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "contents=read"
+    },
+    "GET repos/{owner}/{repo}/git/trees/{sha+}": {
+      "read": "gh api -i repos/<owner>/<repo>/git/trees/<sha>",
+      "date": "Sat, 21 Nov 2026 10:25:02 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "contents=read"
+    },
+    "GET repos/{owner}/{repo}/contents/{path+}": {
+      "read": "gh api -i repos/<owner>/<repo>/contents/<path>",
+      "date": "Sat, 21 Nov 2026 10:25:03 GMT",
+      "status": "HTTP/2.0 200 OK",
+      "value": "contents=read"
+    },
+    "GET user": {
+      "read": "gh api -i user",
+      "date": "Sat, 21 Nov 2026 10:25:04 GMT",
+      "status": "HTTP/2.0 403 Forbidden",
+      "value": "allows_permissionless_access=true"
+    }
+  }
+}

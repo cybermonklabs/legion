@@ -2,8 +2,8 @@
 # (pi-legion-build.py) is the half a pull request runs, the typecheck and the pack.
 GATE = gate("pi_legion", "pi-legion", runs=[
     script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
-               'const result = Bun.spawnSync(["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {',
-               f"daemon-pane.test.ts and daemon-standin.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
+               '["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args],',
+               f"daemon-pane.test.ts, daemon-standin.test.ts and owner-standin.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
                overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
     script_run("packages/pi-legion/scripts/skill-scenarios/label-texts.sh",
                'go test -c -o "$bin/" ./internal/workflow ./internal/daemon ./internal/api',
@@ -72,6 +72,8 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                                              "`packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#pgUrl` copies it into its scratch checkout beside rig.sh"),
     (".omp-pin", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout` copies .omp-pin"),
     ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts#runDaemonPane` writes the overlay and runs go run"),
+    ("scripts/e2e/plan-pointer-drive.ts", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#plan-pointer-drive.ts typechecks, claim and all` typechecks it with tsc, a spawn no derivation sees"),
+    ("packages/envoy/internal/testnats/nats.go", "`scripts/e2e/lib/nats-image.sh#HubImage` reads its HubImage, and `packages/pi-legion/scripts/skill-scenarios/rig.sh#read_nats_image` sources that file for services_up's NATS container and services_from, which the services_up rows run"),
     ("packages/pi-legion/scripts/skill-scenarios/label-texts.sh", "`packages/pi-legion/scripts/skill-scenarios/label-texts.sh#compile` runs go test -c of three daemon packages"),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")

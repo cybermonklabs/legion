@@ -1,0 +1,232 @@
+[
+  {
+    "batch": "round17-forty",
+    "run": "reviewer-text-findings-defect-base-2",
+    "line": 29,
+    "by": "reviewer",
+    "argv": [
+      "api",
+      "repos/example/widgets/issues/1007/comments",
+      "--jq",
+      ".[] | {user: .user.login, body}"
+    ],
+    "route": null,
+    "exit": 1
+  },
+  {
+    "batch": "round17-forty",
+    "run": "reviewer-text-findings-defect-base-2",
+    "line": 31,
+    "by": "reviewer",
+    "argv": ["api", "repos/example/widgets", "--jq", ".default_branch | @json"],
+    "route": null,
+    "exit": 1
+  },
+  {
+    "batch": "round17-forty",
+    "run": "reviewer-text-findings-defect-base-3",
+    "line": 25,
+    "by": "reviewer",
+    "argv": ["api", "repos/example/widgets", "--jq", ".default_branch | @json"],
+    "route": null,
+    "exit": 1
+  },
+  {
+    "batch": "round17-forty",
+    "run": "reviewer-text-findings-defect-head-4",
+    "line": 29,
+    "by": "reviewer",
+    "argv": [
+      "api",
+      "--method",
+      "POST",
+      "repos/example/widgets/pulls/1004/reviews",
+      "--input",
+      "/tmp/LWEVAL-1-body.json",
+      "--jq",
+      "{state, commit_id, body_head: (.body|capture(\"\\\"head\\\":\\\"(?<h>[0-9a-f]{40})\\\"\").h)}"
+    ],
+    "route": "^gh api .*pulls/1004/reviews([ ?]|$)",
+    "exit": 1,
+    "input_file": "/tmp/LWEVAL-1-body.json",
+    "input_body": {
+      "commit_id": "6cc961a72a7d4f1d98108c413c56d82d9fa65280",
+      "event": "REQUEST_CHANGES",
+      "body": "Requesting changes: one behavioural defect against spec R2, plus a behavioural test gap that let it through a green CI. Text findings (docs and workflow comment) and one supply-chain hardening note are inline. CI at this head is green (test, lint; base `main` requires no checks). The one bot thread (style-bot on greet.test.ts:4) is adjudicated not-a-defect and resolved.\n\nBehavioural (must fix this round):\n1. greet.ts:7 — R2 requires a blank name (empty or whitespace-only) to exit 2 with the usage line. The guard checks only `name === undefined`, so `bun greet.ts \"\"` and `bun greet.ts \"   \"` print `Hello, !` and exit 0 (confirmed by smoke run). Fix: reject when `name === undefined || name.trim() === \"\"`.\n2. greet.test.ts — no test drives the CLI itself, so R1/R2 exit codes, stderr, and the blank-name case are unchecked; add a case that spawns greet.ts and asserts exit 2 + usage on stderr for no-arg and blank-arg, and exit 0 + stdout for a valid name.\n\nNote for the architect: check k1's words cover only \"no name given\" and miss the blank-name half of R2, which is why the tester's pass did not catch this defect. (Sent separately to the architect topic.)\n\nThermo (ran at this head; diff touches runtime code): thermonuclear-deep-review CHANGES at 6cc961a7 (High: R2 blank-name defect; Medium: missing CLI test, docs contradiction, workflow trigger/comment; Minor: supply-chain hardening). thermonuclear-code-quality CHANGES at 6cc961a7 (docs contradiction, workflow comment); no structural findings.\n\nSecurity: supply-chain — actions actions/checkout@v4, oven-sh/setup-bun@v2 tag-pinned (not digest) and no permissions: block at .github/workflows/greet.yml:9-10 (hardening, Minor, no exploit path); untrusted-input — argv name at greet.ts:6 flows only to a stdout template at greet.ts:2, no command/path/query sink. No authz, secret, prompt, sandbox, agent-def, or transport surface touched.\n\nFast-follow: none\n\n<!-- legion: {\"session\":\"01a1d876-2a79-7307-a98a-c9f73d80d58f\",\"phase\":\"review\",\"head\":\"6cc961a72a7d4f1d98108c413c56d82d9fa65280\"} -->",
+      "comments": [
+        {
+          "path": "greet.ts",
+          "line": 7,
+          "side": "RIGHT",
+          "body": "Behavioural — R2 unmet. The guard checks only `name === undefined`, so a blank name slips through: `bun greet.ts \"\"` and `bun greet.ts \"   \"` both print `Hello, !` and exit 0 (confirmed by smoke run), but R2 requires a blank name to exit 2 and print `usage: greet.ts <name>` to stderr. Reject when `name === undefined || name.trim() === \"\"` before calling greet()."
+        },
+        {
+          "path": "greet.test.ts",
+          "line": 10,
+          "side": "RIGHT",
+          "body": "Behavioural (missing test). Both tests call the pure greet() function; none drives the CLI, so R1's exit-0, R2's exit-2 + usage-on-stderr, and the blank-name defect above all pass a green gate. Add a case that spawns greet.ts (e.g. Bun.spawn) asserting exit 2 + stderr for no-arg and for a blank arg, and exit 0 + stdout for a valid name."
+        },
+        {
+          "path": "docs/cli.md",
+          "line": 5,
+          "side": "RIGHT",
+          "body": "Text — this contradicts the code and the spec. The name is not printed `exactly as it was given, spaces and all`: greet() does `name.trim()` (greet.ts:2), spec R3 requires trimming, and the trim test confirms it. State that surrounding whitespace is trimmed (and, once greet.ts is fixed, that a blank name is rejected)."
+        },
+        {
+          "path": ".github/workflows/greet.yml",
+          "line": 1,
+          "side": "RIGHT",
+          "body": "Text — comment does not match the config. It claims the job runs on every pull request and on every push to main, but `on:` lists only `pull_request:` (no push trigger). Either add `push: { branches: [main] }` or drop the \"and on every push to main\" clause so the comment matches."
+        },
+        {
+          "path": ".github/workflows/greet.yml",
+          "line": 9,
+          "side": "RIGHT",
+          "body": "Security[supply-chain] (hardening, Minor). actions/checkout@v4 and oven-sh/setup-bun@v2 are floating tag pins (mutable), and the workflow sets no `permissions:`. While you are in this file: pin both to a commit SHA and add `permissions: contents: read` for least privilege. No stated exploit path (ASVS v5.0.0 CI integrity)."
+        }
+      ]
+    }
+  },
+  {
+    "batch": "round17-forty",
+    "run": "reviewer-text-findings-text-only-base-1",
+    "line": 21,
+    "by": "reviewer",
+    "argv": ["api", "repos/example/widgets", "--jq", ".default_branch | @json"],
+    "route": null,
+    "exit": 1
+  },
+  {
+    "batch": "round17-forty",
+    "run": "reviewer-text-findings-text-only-base-4",
+    "line": 32,
+    "by": "reviewer",
+    "argv": [
+      "api",
+      "repos/example/widgets/actions/runs?head_sha=848b946d9cdca7f3db38efc0be79a5a91a2ad18e&per_page=100",
+      "--jq",
+      ".workflow_runs[] | [.id, .name, .event, .status, .conclusion] | @tsv"
+    ],
+    "route": "^gh api .*(check-runs|status)",
+    "exit": 1
+  },
+  {
+    "batch": "round17-forty",
+    "run": "reviewer-text-findings-text-only-base-5",
+    "line": 24,
+    "by": "reviewer",
+    "argv": [
+      "api",
+      "repos/example/widgets/actions/runs?head_sha=bea0c5a0673f6760fa6201491818640706df022a&per_page=100",
+      "--jq",
+      ".workflow_runs[] | [.id,.name,.event,.status,.conclusion] | @tsv"
+    ],
+    "route": "^gh api .*(check-runs|status)",
+    "exit": 1
+  },
+  {
+    "batch": "round17-forty",
+    "run": "reviewer-text-findings-text-only-base-5",
+    "line": 40,
+    "by": "reviewer",
+    "argv": ["api", "repos/example/widgets", "--jq", ".default_branch | @json"],
+    "route": null,
+    "exit": 1
+  },
+  {
+    "batch": "round17-forty",
+    "run": "reviewer-text-findings-text-only-head-2",
+    "line": 23,
+    "by": "reviewer",
+    "argv": [
+      "api",
+      "graphql",
+      "--paginate",
+      "-f",
+      "query=query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved path line comments(last:1){nodes{author{login} body}}}}}}}",
+      "-F",
+      "o=example",
+      "-F",
+      "r=widgets",
+      "-F",
+      "n=1002",
+      "--slurp",
+      "--jq",
+      ".[].data.repository.pullRequest.reviewThreads.nodes[] | [.id, .path, (.line|tostring), .isResolved, .comments.nodes[0].author.login] | @tsv"
+    ],
+    "route": "^gh api .*graphql",
+    "exit": 1
+  },
+  {
+    "batch": "round17-forty",
+    "run": "threads-closed-code-defect-base-5",
+    "line": 26,
+    "by": "implementer",
+    "argv": ["api", "repos/example/widgets", "--jq", ".default_branch | @json"],
+    "route": null,
+    "exit": 1
+  },
+  {
+    "batch": "round17-forty",
+    "run": "threads-closed-text-fixes-base-1",
+    "line": 30,
+    "by": "reviewer",
+    "argv": [
+      "api",
+      "graphql",
+      "--paginate",
+      "--slurp",
+      "-f",
+      "query=query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{author{login} body}}}}}}}",
+      "-F",
+      "o=example",
+      "-F",
+      "r=widgets",
+      "-F",
+      "n=1006",
+      "--jq",
+      ".[].data.repository.pullRequest.reviewThreads.nodes[] | [.id, .isResolved, .comments.nodes[0].author.login, (.comments.nodes[0].body | gsub(\"\\n\";\" \"))] | @tsv"
+    ],
+    "route": "^gh api .*graphql",
+    "exit": 1
+  },
+  {
+    "batch": "round21-world-health",
+    "run": "reviewer-text-findings-text-only-base-1",
+    "line": 24,
+    "by": "reviewer",
+    "argv": ["api", "repos/example/widgets/issues/1002/comments"],
+    "route": null,
+    "exit": 1
+  },
+  {
+    "batch": "round21-world-health",
+    "run": "reviewer-text-findings-text-only-head-1",
+    "line": 13,
+    "by": "reviewer",
+    "argv": [
+      "api",
+      "--paginate",
+      "repos/example/widgets/commits/229b798be2dbc1e58f4c8eb0bc8497680b93267d/status?per_page=100",
+      "--jq",
+      ".statuses[] | [.context, .state] | @tsv"
+    ],
+    "route": "^gh api .*(check-runs|status)",
+    "exit": 1
+  },
+  {
+    "batch": "round21-world-health",
+    "run": "threads-closed-text-fixes-head-1",
+    "line": 20,
+    "by": "reviewer",
+    "argv": [
+      "api",
+      "--paginate",
+      "repos/example/widgets/commits/ed700585e973ceafb1577feb1a091ab357c3ec8b/status?per_page=100",
+      "--jq",
+      ".statuses[] | [.context, .state] | @tsv"
+    ],
+    "route": "^gh api .*(check-runs|status)",
+    "exit": 1
+  }
+]

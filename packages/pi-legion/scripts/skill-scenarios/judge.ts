@@ -1,27 +1,41 @@
 #!/usr/bin/env bun
-// Runs the judges of the spec-writing and spec-rewrite scenarios (judge-prompts.ts). Each judge is a
-// fresh `omp -p` that rig.sh judge-omp starts in a directory of its own,
-// <work>/judging/<run>/<prompt>[-<n>]/, which holds only that prompt's inputs and prompt.txt. The
-// judge writes its answer as JSON into that directory. judge.ts validates it and copies it into the
-// run directory. A judge that writes no answer, or one that does not parse, fails the command,
-// naming the file.
+// Runs the judges of the spec-writing and spec-rewrite scenarios, and of the worker scenarios
+// reviewer-text-findings and threads-closed (judge-prompts.ts). Each judge is a fresh `omp -p` that
+// rig.sh judge-omp starts in a directory of its own, <work>/judging/<run>/<prompt>[-<n>]/, which
+// holds only that prompt's inputs and prompt.txt. The judge writes its answer as JSON into that
+// directory. judge.ts validates it and copies it into the run directory. A judge that writes no
+// answer, or one that does not parse, fails the command, naming the file.
 //
 //   judge.ts answer <run dir> <turn>
 //     The person stand-in: one `answer` judge for each open ask in state-<turn>.json, given the
 //     source's messages.md and asks.json. Writes answers-<turn>.jsonl, one line per ask
 //     ({"ask","selected","text"}), and an empty file when no ask is open.
 //   judge.ts run <run dir>...
-//     The nine judges of each run (faults, decisions, findings, checkable, questions, numbers,
-//     preamble, proposal, and shared-runs once for each shared run that score.ts's sharedRuns
-//     lists). Writes faults.json, decisions.json, findings.json, checkable.json, questions.json,
-//     numbers.json, preamble.json, proposal.json and shared-runs.json into each run directory.
+//     For a spec run, the nine judges of each run (faults, decisions, findings, checkable,
+//     questions, numbers, preamble, proposal, and shared-runs once for each shared run that
+//     score.ts's sharedRuns lists). Writes faults.json, decisions.json, findings.json,
+//     checkable.json, questions.json, numbers.json, preamble.json, proposal.json and
+//     shared-runs.json into each run directory. For a run of a worker scenario (score.ts's
+//     JUDGED_SCENARIOS), the three judges of `judgeWorker`, accepts and names (Verification v47's
+//     rule 8) and testing (k3's `crossing` (b)), each only where the run's case reads its answer
+//     (score.ts's `caseJudges`). Writes accepts.json, names.json and testing.json into each run
+//     directory.
 //
-// <work> is the directory that holds the run's `runs/` directory, as score.ts reads it. Seeded asks
+// <work> is the directory that holds the run's `runs/` directory, or the `archive/runs/` rig.sh
+// moves a run to once it has ended, as score.ts reads it (`workOfRuns`). Seeded asks
 // (seeded.json) never reach a judge's inputs.
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+//
+// judge.ts removes and replaces nothing an earlier judging left. Before any judge starts, it
+// refuses, naming each, a judge directory under <work>/judging/<run>/ or an answer file in the run
+// directory (answers-<turn>.jsonl; the nine files of `run` for a spec run; accepts.json,
+// names.json and testing.json for a worker run) that is already there: a run is judged again once
+// those are moved aside.
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { scenarioOf } from "./completion-answers";
 import {
+  acceptsPrompt,
   answerPrompt,
   CheckableFile,
   checkablePrompt,
@@ -32,6 +46,7 @@ import {
   findingsPrompt,
   type JudgeProfile,
   type JudgePrompt,
+  namesPrompt,
   numbersPrompt,
   preamblePrompt,
   proposalPrompt,
@@ -39,18 +54,29 @@ import {
   SHARED_RUNS_RULE,
   SharedRunsFile,
   sharedRunPrompt,
+  testingPrompt,
 } from "./judge-prompts";
+import { runIdentity } from "./run-names";
+import { Refused } from "./run-records";
 import {
   approval,
+  caseJudges,
   checkouts,
   coverage,
+  JUDGED_SCENARIOS,
   judgeInputs,
+  runsOf,
   SpecFixture,
   State,
   seededIds,
   sessionVersions,
   sharedRuns,
   specWork,
+  workerCommit,
+  workerCoverage,
+  workerGivens,
+  workerTexts,
+  workOfRuns,
 } from "./score";
 import { session, sessionId } from "./transcript";
 
@@ -74,12 +100,12 @@ const rigRunner: JudgeRunner = async (profile, dir, output) => {
   return await child.exited;
 };
 
-/** The work directory of a run under <work>/runs/<run>. */
+/** The work directory of a run under <work>/runs/<run> or <work>/archive/runs/<run>. */
 function workOf(runDir: string): string {
   const runs = path.dirname(path.resolve(runDir));
   if (path.basename(runs) !== "runs")
     throw new Error(`${runDir} is not under a runs/ directory of the rig's work directory`);
-  return path.dirname(runs);
+  return workOfRuns(runs);
 }
 function read<T>(file: string, schema: z.ZodType<T>): T {
   return schema.parse(JSON.parse(readFileSync(file, "utf8")));
@@ -94,12 +120,22 @@ interface Job<T> {
   inputs: Record<string, string>;
   covers?: (answer: T) => string[];
 }
-/** Builds the job's directory afresh with only its inputs and prompt.txt, runs the judge in it, and
- * returns its validated answer. An answer that does not parse, or does not cover what the judge was
- * given, fails the run, naming the answer's file. */
+/** Refuses, naming each, the paths of `paths` that are there: what an earlier judging left, which
+ * judge.ts never removes or replaces. Called with every path a judging makes before any judge
+ * starts, so a refused judging leaves nothing behind. */
+function refuseTaken(paths: readonly string[]): void {
+  const taken = paths.filter((one) => lstatSync(one, { throwIfNoEntry: false }) !== undefined);
+  if (taken.length > 0)
+    throw new Error(
+      `judge.ts: ${taken.join(", ")} from an earlier judging; judge.ts removes and replaces none of it: move it aside to judge again`
+    );
+}
+/** Makes the job's directory, which refuseTaken found absent, with only its inputs and
+ * prompt.txt, runs the judge in it, and returns its validated answer. An answer that does not
+ * parse, or does not cover what the judge was given, fails the run, naming the answer's file. */
 async function runJob<T>(job: Job<T>, runner: JudgeRunner): Promise<T> {
-  rmSync(job.dir, { recursive: true, force: true });
-  mkdirSync(job.dir, { recursive: true });
+  mkdirSync(path.dirname(job.dir), { recursive: true });
+  mkdirSync(job.dir);
   for (const [file, text] of Object.entries(job.inputs)) {
     mkdirSync(path.dirname(path.join(job.dir, file)), { recursive: true });
     writeFileSync(path.join(job.dir, file), text);
@@ -183,15 +219,18 @@ export async function answerTurn(runDir: string, turn: number, options: JudgeOpt
       },
     };
   });
+  const out = path.join(runDir, `answers-${turn}.jsonl`);
+  refuseTaken([out, ...jobs.map((job) => job.dir)]);
   const answers = await runAll(jobs, runner, options.parallel ?? 5);
   writeFileSync(
-    path.join(runDir, `answers-${turn}.jsonl`),
+    out,
     answers
       .map((answer, index) =>
         JSON.stringify({ ask: open[index]?.id, selected: answer.selected, text: answer.text })
       )
       .map((line) => `${line}\n`)
-      .join("")
+      .join(""),
+    { flag: "wx" }
   );
 }
 
@@ -207,8 +246,13 @@ function specAfter(runDir: string, writeAt: string, own: string): string {
   return readFileSync(path.join(runDir, "spec-versions", `${version.version}.md`), "utf8");
 }
 
-/** `judge.ts run`: the nine judges of one run. */
+/** `judge.ts run`: the nine judges of one spec run, or, for a run of a worker scenario (score.ts's
+ * JUDGED_SCENARIOS, by the scenario its record or its directory names), the three of
+ * `judgeWorker`, those its case reads. */
 export async function judgeRun(runDir: string, options: JudgeOptions = {}) {
+  const scenario = scenarioOf(runDir);
+  if (scenario !== undefined && JUDGED_SCENARIOS.includes(scenario))
+    return await judgeWorker(runDir, scenario, options);
   const runner = options.runner ?? rigRunner;
   const parallel = options.parallel ?? 5;
   const work = workOf(runDir);
@@ -220,7 +264,10 @@ export async function judgeRun(runDir: string, options: JudgeOptions = {}) {
   const own = sessionId(entries);
   if (own === undefined) throw new Error(`${runDir}: the transcript has no session header`);
   const fixture = read(path.join(runDir, "fixture.json"), SpecFixture);
-  const specWorkDone = specWork(runDir, checkouts(work), fixture);
+  // Every checkout a spec run's agent can reach, as the runs beside it recorded them (score.ts's
+  // `checkouts`), never the work directory's profiles as they stand now.
+  const reach = checkouts([...runsOf(path.dirname(path.resolve(runDir))).values()]);
+  const specWorkDone = specWork(runDir, reach, fixture);
   const given = judgeInputs(runDir, specWorkDone);
   const documentFiles = Object.fromEntries(given.documents.map((name) => [name, file(name)]));
   const { checks, writes } = specWorkDone;
@@ -285,29 +332,33 @@ export async function judgeRun(runDir: string, options: JudgeOptions = {}) {
       "rule.md": SHARED_RUNS_RULE,
     },
   }));
+  // Every answer file this judging writes into the run directory, and every judge directory.
+  const outputs = [
+    ...new Set([
+      ...single.map((job) => job.prompt.file),
+      findingsPrompt.file,
+      checkablePrompt.file,
+      "shared-runs.json",
+    ]),
+  ].map((name) => path.join(runDir, name));
+  refuseTaken([...outputs, ...single.map((job) => job.dir), ...shared.map((job) => job.dir)]);
   const [singleAnswers, sharedAnswers] = await Promise.all([
     runAll(single, runner, parallel),
     runAll(shared, runner, parallel),
   ]);
+  const write = (name: string, text: string) =>
+    writeFileSync(path.join(runDir, name), text, { flag: "wx" });
   for (const [index, job] of single.entries()) {
     const answer = singleAnswers[index];
-    const out = path.join(runDir, job.prompt.file);
     if (job.prompt === checkablePrompt)
-      writeFileSync(out, pretty(CheckableFile.parse({ ...(answer as object), version })));
-    else cpSync(path.join(job.dir, job.prompt.file), out);
+      write(job.prompt.file, pretty(CheckableFile.parse({ ...(answer as object), version })));
+    else write(job.prompt.file, readFileSync(path.join(job.dir, job.prompt.file), "utf8"));
   }
-  if (checks.length === 0)
-    writeFileSync(
-      path.join(runDir, findingsPrompt.file),
-      pretty(FindingsOutput.parse({ rows: [] }))
-    );
+  if (checks.length === 0) write(findingsPrompt.file, pretty(FindingsOutput.parse({ rows: [] })));
   if (approvedSpec === undefined)
-    writeFileSync(
-      path.join(runDir, checkablePrompt.file),
-      pretty(CheckableFile.parse({ rows: [], version: null }))
-    );
-  writeFileSync(
-    path.join(runDir, "shared-runs.json"),
+    write(checkablePrompt.file, pretty(CheckableFile.parse({ rows: [], version: null })));
+  write(
+    "shared-runs.json",
     pretty(
       SharedRunsFile.parse({
         rows: runs.map((found, index) => ({
@@ -321,6 +372,58 @@ export async function judgeRun(runDir: string, options: JudgeOptions = {}) {
   );
 }
 
+/** `judge.ts run` for a run of a worker scenario (`scenario`, one of JUDGED_SCENARIOS): the
+ * judges that decide from the text what the agents of the run wrote (score.ts's `workerTexts`):
+ * the accepts judge, whether each text accepts the commit `workerCommit` names, and the names
+ * judge, whether each text names each thing `workerGivens` lists (Verification v47's rule 8); and
+ * the testing judge, whether each text says that the issue goes back to testing, which k3's
+ * `crossing` (b) asks of a message where an earlier pass does not hold at that commit. A commit
+ * named by a SHA prefix of seven characters or more is the scorer's to decide, never a judge's.
+ * Writes accepts.json, names.json and testing.json into the run directory, the answer of each
+ * judge as it wrote it, and a file with no row for a judge that runs no session: one whose answer
+ * no term of the run's case reads (score.ts's `caseJudges`, by the case its record or its
+ * directory names), or one that had nothing to read, in a run whose agents wrote no text or
+ * (accepts, testing) a scenario with no commit the run's agents decide at. */
+export async function judgeWorker(runDir: string, scenario: string, options: JudgeOptions = {}) {
+  const runner = options.runner ?? rigRunner;
+  const judging = path.join(workOf(runDir), "judging", path.basename(path.resolve(runDir)));
+  const texts = workerTexts(runDir);
+  const givens = workerGivens(runDir);
+  const commit = workerCommit(runDir, scenario);
+  const identity = runIdentity(runDir);
+  const reads = caseJudges(scenario, typeof identity === "string" ? undefined : identity.case);
+  const job = <T>(prompt: JudgePrompt<T>, inputs: Record<string, string>) =>
+    ({
+      dir: path.join(judging, prompt.name),
+      prompt,
+      inputs,
+      covers: (answer: unknown) =>
+        workerCoverage(prompt.file, answer, texts, givens, commit, reads),
+    }) as Job<unknown>;
+  const jobs = [
+    ...(texts.length === 0 || commit === undefined || !reads.includes(acceptsPrompt.file)
+      ? []
+      : [job(acceptsPrompt, { "texts.json": pretty(texts), "commit.txt": `${commit}\n` })]),
+    ...(texts.length === 0 || !reads.includes(namesPrompt.file)
+      ? []
+      : [job(namesPrompt, { "texts.json": pretty(texts), "given.json": pretty(givens) })]),
+    ...(texts.length === 0 || commit === undefined || !reads.includes(testingPrompt.file)
+      ? []
+      : [job(testingPrompt, { "texts.json": pretty(texts) })]),
+  ];
+  const files = [acceptsPrompt.file, namesPrompt.file, testingPrompt.file];
+  refuseTaken([...files.map((name) => path.join(runDir, name)), ...jobs.map((one) => one.dir)]);
+  await runAll(jobs, runner, options.parallel ?? 5);
+  for (const name of files) {
+    const started = jobs.find((one) => one.prompt.file === name);
+    const text =
+      started === undefined
+        ? pretty({ rows: [] })
+        : readFileSync(path.join(started.dir, name), "utf8");
+    writeFileSync(path.join(runDir, name), text, { flag: "wx" });
+  }
+}
+
 if (import.meta.main) {
   const [command, ...rest] = Bun.argv.slice(2);
   const parallel = Number(process.env.SKILL_SCENARIOS_PARALLEL ?? 5) || 5;
@@ -328,7 +431,15 @@ if (import.meta.main) {
     await answerTurn(rest[0] ?? "", Number(rest[1]), { parallel });
   } else if (command === "run" && rest.length >= 1) {
     for (const runDir of rest) {
-      await judgeRun(runDir, { parallel });
+      try {
+        await judgeRun(runDir, { parallel });
+      } catch (error) {
+        // A refusal (an entry beside the run that is no run, an input the run did not record) is
+        // no judgment: it names the cause and exits 2, as `rig.sh health` and `rig.sh score` do.
+        if (!(error instanceof Refused)) throw error;
+        console.error(`judge: ${error.message}`);
+        process.exit(2);
+      }
       console.log(`${path.basename(path.resolve(runDir))}: judged`);
     }
   } else {

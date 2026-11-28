@@ -1,25 +1,40 @@
-import { beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { answerTurn, judgeRun } from "./judge";
 import { FAULT_ROWS } from "./judge-prompts";
-import { sharedRuns } from "./score";
+import { sharedRuns, workerReadings } from "./score";
+
+// The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
+// default, so each gets a minute, as rig.test.ts's do.
+setDefaultTimeout(60_000);
 
 // judge.ts gives each prompt a fresh directory under <work>/judging/<run>/ that holds only that
 // prompt's inputs and prompt.txt, starts the judge there through an injected runner (rig.sh
 // judge-omp in production), and copies the judge's validated answer into the run directory. The
 // fake runner below records what each judge saw and writes a fixed answer. Every text is invented.
 
+// Every run here is built from /checkouts/head, as its built-from records (rig.sh's cmd_profile),
+// which is where judge.ts reads the checkouts a run's agent can reach (score.ts's `checkouts`).
 // On the memory root (memoryRoot): one row calls judgeRun six times on one run here, remaking each
 // judge's directory each time, and the removal takes 695 entries. On the dev box's shared disk that
 // row took 286 ms to 5,602 ms against Bun's 5 s, and 78 ms to 296 ms on tmpfs (dispatch://INFRA-4311).
 const work = temporaryDirectory("skill-scenarios-judge", { root: memoryRoot() });
-beforeAll(() => {
-  mkdirSync(path.join(work, "profiles", "head"), { recursive: true });
-  writeFileSync(path.join(work, "profiles", "head", "checkout"), "/checkouts/head\n");
-});
+/** A work directory of its own for the row whose runs directory holds an entry that is no run, so
+ * no other row's runs sit beside it. */
+const strayWork = temporaryDirectory("skill-scenarios-judge-stray");
 
 const sessionId = "01a16640-8259-71ed-bb68-1e4927b77a01";
 const spec = (problem: string) =>
@@ -194,6 +209,7 @@ function runDir(name: string, extra: Record<string, string> = {}, entries = tran
   for (const sub of ["sessions", "source", "documents", "spec-versions"])
     mkdirSync(path.join(dir, sub), { recursive: true });
   const files: Record<string, string> = {
+    "built-from": "checkout /checkouts/head\n",
     "out.txt": "exit=0\n",
     "source.txt": "acme-1\n",
     "fixture.json": JSON.stringify({ issue: "LWEVAL-7", spec_artifact: "art-spec" }),
@@ -420,6 +436,21 @@ test("the runner is told the one file the judge may write", async () => {
   expect(asked.map((judge) => judge.output)).toEqual(["answer.json", "answer.json"]);
 });
 
+// Catches: an archived run judged as if its archive were the work directory. rig.sh moves every
+// run that has ended to <work>/archive/runs (its archive_run), and the judges' directories are
+// the work directory's own (score.ts's `workOfRuns`).
+test("a run in the archive is judged in the work directory's own judging directory", async () => {
+  const ran = runDir("spec-writing-head-30");
+  const archived = path.join(work, "archive", "runs", "spec-writing-head-30");
+  mkdirSync(path.dirname(archived), { recursive: true });
+  renameSync(ran, archived);
+  const asked: Seen[] = [];
+  await answerTurn(archived, 1, { runner: fakeRunner(asked) });
+  expect(asked.length).toBeGreaterThan(0);
+  for (const judge of asked)
+    expect(path.dirname(judge.dir)).toBe(path.join(work, "judging", "spec-writing-head-30"));
+});
+
 // Dispatch writes `created_at` as Go does, with no trailing zeros: `…:00.5Z` is earlier than
 // `…:00.51Z`, though it sorts after it as text.
 test("questions gets the asks in time order at full precision", async () => {
@@ -530,27 +561,28 @@ test("every judge output reaches the run directory", () => {
 });
 
 test("a judge that writes no answer, or one that does not parse, fails the run naming the file", async () => {
-  const dir = runDir("spec-writing-head-2");
   const silent = fakeRunner([], (judge) =>
     path.basename(judge) === "decisions" ? ["other.json", {}] : answerFor(judge)
   );
-  await expect(judgeRun(dir, { runner: silent })).rejects.toThrow(
+  await expect(judgeRun(runDir("spec-writing-head-2"), { runner: silent })).rejects.toThrow(
     path.join(work, "judging", "spec-writing-head-2", "decisions", "decisions.json")
   );
+  // A run of its own: the judging above left its judge directories, which a judging refuses.
   const wrong = fakeRunner([], (judge) =>
     path.basename(judge) === "numbers"
       ? ["numbers.json", { rows: [{ id: "msg-1" }] }]
       : answerFor(judge)
   );
-  await expect(judgeRun(dir, { runner: wrong })).rejects.toThrow(
-    `${path.join(work, "judging", "spec-writing-head-2", "numbers", "numbers.json")} does not parse`
+  await expect(judgeRun(runDir("spec-writing-head-20"), { runner: wrong })).rejects.toThrow(
+    `${path.join(work, "judging", "spec-writing-head-20", "numbers", "numbers.json")} does not parse`
   );
 });
 
 // Each judge's answer must cover exactly what judge.ts gave it: a judge that leaves out, repeats or
 // invents an id fails the run, naming its file, as a judge that writes no answer does.
 test("a judge whose answer does not cover its input fails the run naming the file", async () => {
-  const dir = runDir("spec-writing-head-8");
+  // Each faulty judge is given a run of its own, since a judging refuses the judge directories an
+  // earlier one left.
   const faulty: Record<string, [string, unknown]> = {
     // The approved spec, v3, holds R1 and R2.
     checkable: [
@@ -585,12 +617,13 @@ test("a judge whose answer does not cover its input fails the run naming the fil
     preamble: ["rows for source it was not given: documents/other.md"],
     findings: ["rows for check it was not given: 3"],
   };
-  for (const [name, answer] of Object.entries(faulty)) {
+  for (const [index, [name, answer]] of Object.entries(faulty).entries()) {
+    const run = `spec-writing-head-8${index}`;
     const runner = fakeRunner([], (judge) =>
       path.basename(judge) === name ? answer : answerFor(judge)
     );
-    const file = path.join(work, "judging", "spec-writing-head-8", name, answer[0]);
-    const failed = await judgeRun(dir, { runner }).then(
+    const file = path.join(work, "judging", run, name, answer[0]);
+    const failed = await judgeRun(runDir(run), { runner }).then(
       () => "",
       (error: Error) => error.message
     );
@@ -731,4 +764,325 @@ test("each prompt that reads messages.md names the file and its three entry head
     });
     expect([...new Set(headers)].sort()).toEqual(["comment", "comment anchored", "message"]);
   }
+});
+
+// judge.ts removes and replaces nothing an earlier judging left: a second judging of a run, or of
+// a turn, is refused before any judge starts, naming what is there, and each of it is kept as it
+// was. `rig.sh judge` run twice on one run had its first judging's directories removed and its
+// answers written over.
+test("a second judging of a run is refused before any judge starts, and the first judging is kept", async () => {
+  const dir = runDir("spec-writing-head-41");
+  await judgeRun(dir, { runner: fakeRunner([]) });
+  const faults = path.join(dir, "faults.json");
+  const judge = path.join(work, "judging", "spec-writing-head-41", "faults");
+  const [kept, keptJudge] = [readFileSync(faults, "utf8"), readdirSync(judge).sort()];
+  writeFileSync(path.join(judge, "notes.md"), "read before judging again\n");
+  const again: Seen[] = [];
+  const refused = await judgeRun(dir, { runner: fakeRunner(again) }).then(
+    () => "",
+    (error: Error) => error.message
+  );
+  expect(refused).toStartWith(`judge.ts: ${faults}, `);
+  expect(refused).toContain(`, ${judge}, `);
+  expect(refused).toEndWith(
+    " from an earlier judging; judge.ts removes and replaces none of it: move it aside to judge again"
+  );
+  expect(again).toEqual([]);
+  expect(readFileSync(faults, "utf8")).toBe(kept);
+  expect(readdirSync(judge).sort()).toEqual([...keptJudge, "notes.md"].sort());
+});
+
+test("a second answer of a turn is refused before any judge starts, and the first answers are kept", async () => {
+  const dir = runDir("spec-writing-head-42");
+  await answerTurn(dir, 1, { runner: fakeRunner([]) });
+  const answers = path.join(dir, "answers-1.jsonl");
+  const kept = readFileSync(answers, "utf8");
+  const again: Seen[] = [];
+  await expect(answerTurn(dir, 1, { runner: fakeRunner(again) })).rejects.toThrow(
+    `judge.ts: ${answers}, ${path.join(work, "judging", "spec-writing-head-42", "answer-1-1")}, `
+  );
+  expect(again).toEqual([]);
+  expect(readFileSync(answers, "utf8")).toBe(kept);
+});
+
+// An entry beside a run that is neither a run nor its record (score.ts's `runsOf`) is no state the
+// rig writes, and judging past it would read the reach of a smaller archive than the one given:
+// `judge.ts run` names it on stderr and exits 2 before any judge starts, as `rig.sh score` does.
+// Catches: judge.ts letting the refusal through as an uncaught error (exit 1, a stack trace).
+test("a run beside an entry that is no run is not judged, and judge.ts exits 2 naming the entry", () => {
+  const other = path.join(strayWork, "runs");
+  const run = path.join(other, "spec-writing-head-46");
+  cpSync(runDir("spec-writing-head-46"), run, { recursive: true });
+  const stray = path.join(other, "stray");
+  symlinkSync(run, stray);
+  const judged = Bun.spawnSync(["bun", path.join(import.meta.dir, "judge.ts"), "run", run], {
+    env: { ...process.env, SKILL_SCENARIOS_WORK: path.dirname(other) },
+  });
+  expect({
+    code: judged.exitCode,
+    stdout: judged.stdout.toString(),
+    stderr: judged.stderr.toString(),
+  }).toEqual({
+    code: 2,
+    stdout: "",
+    stderr: `judge: ${stray} is a symlink, neither a run directory nor a run's record (<id>.json)\n`,
+  });
+  expect(existsSync(path.join(path.dirname(other), "judging"))).toBe(false);
+});
+
+// A judge directory that appears after the check, while an earlier judge of the judging runs, is
+// neither entered nor replaced: the judging fails on it, and it keeps what it held.
+test("a judge directory that appears while the judging runs is kept, and the judging fails", async () => {
+  const dir = runDir("spec-writing-head-43");
+  const later = path.join(work, "judging", "spec-writing-head-43", "answer-1-2");
+  const runner = fakeRunner([], (judge) => {
+    if (path.basename(judge) === "answer-1-1") {
+      mkdirSync(later);
+      writeFileSync(path.join(later, "notes.md"), "not this judging's\n");
+    }
+    return answerFor(judge);
+  });
+  await expect(answerTurn(dir, 1, { runner, parallel: 1 })).rejects.toThrow(later);
+  expect(readdirSync(later)).toEqual(["notes.md"]);
+  expect(existsSync(path.join(dir, "answers-1.jsonl"))).toBe(false);
+});
+
+// An answer file that appears in the run directory while the judges run is not written over.
+test("an answer file that appears while the judges run is kept, and the judging fails naming it", async () => {
+  const turn = runDir("spec-writing-head-44");
+  const answers = path.join(turn, "answers-1.jsonl");
+  const planting = (file: string) =>
+    fakeRunner([], (judge) => {
+      if (!existsSync(file)) writeFileSync(file, "not this judging's\n");
+      return answerFor(judge);
+    });
+  await expect(answerTurn(turn, 1, { runner: planting(answers) })).rejects.toThrow(answers);
+  expect(readFileSync(answers, "utf8")).toBe("not this judging's\n");
+  const run = runDir("spec-writing-head-45");
+  const shared = path.join(run, "shared-runs.json");
+  await expect(judgeRun(run, { runner: planting(shared) })).rejects.toThrow(shared);
+  expect(readFileSync(shared, "utf8")).toBe("not this judging's\n");
+});
+
+/** The commit a worker run's world stands at: the reviewer's own commit, which threads-closed's
+ * implementer reads as its last chance. */
+const reviewerCommit = "099b05dc19f7f7e5058e791d16ae05f0b123a2cc";
+/** A run of a worker scenario, as rig.sh's worker runs leave one once its results are captured:
+ * its world, its threads and their routes, the gh stand-in's calls, the messages Envoy accepted on
+ * its role topics, the results of its check, and its agent's transcript, by the session
+ * `sessionId`. `files` is written over these. */
+function workerRun(name: string, files: Record<string, string> = {}): string {
+  const dir = path.join(work, "runs", name);
+  mkdirSync(path.join(dir, "sessions"), { recursive: true });
+  const published = (...lines: object[]) =>
+    [
+      { at: "2026-09-30T17:20:00.000Z", recording: "legion-skills1-lweval-1-" },
+      ...lines,
+      { at: "2026-09-30T17:50:00.000Z", closed: "stopped" },
+    ]
+      .map((line) => `${JSON.stringify(line)}\n`)
+      .join("");
+  const written: Record<string, string> = {
+    "world.json": JSON.stringify({
+      key: "LWEVAL-1",
+      repo: "fernbrook/widgets",
+      pr: 1001,
+      branch: "legion/LWEVAL-1",
+      base: "main",
+      head: reviewerCommit,
+    }),
+    "fixtures.json": JSON.stringify({ routes: [] }),
+    "threads.json": "[]",
+    "calls.jsonl": `${JSON.stringify({
+      at: "2026-09-30T17:31:00.000Z",
+      as: "gh",
+      by: "implementer",
+      argv: ["pr", "comment", "1001", "--body", `Read ${reviewerCommit.slice(0, 12)}.`],
+      exit: 0,
+    })}\n`,
+    "published.jsonl": published({
+      at: "2026-09-30T17:32:00.000Z",
+      topic: "notifications.role.legion-skills1-lweval-1-architect",
+      message: `I accept ${reviewerCommit.slice(0, 12)}: check k1 still holds.`,
+      sender: sessionId,
+    }),
+    "results.json": JSON.stringify([
+      {
+        check: "k1",
+        commit: "1".repeat(40),
+        session: "01a1b402-1f7d-7c55-8a3e-2b6d9f04c812",
+        role: "tester",
+        verdict: "pass",
+        observed: "prints Hello, Ada! and exits 0",
+        at: "2026-09-30T17:10:00.000001Z",
+      },
+    ]),
+    [`sessions/2026-09-30T14-51-17-651Z_${sessionId}.jsonl`]: `${JSON.stringify({
+      type: "session",
+      id: sessionId,
+      cwd: "/rig/cwd",
+    })}\n`,
+    ...files,
+  };
+  for (const [file, text] of Object.entries(written)) writeFileSync(path.join(dir, file), text);
+  return dir;
+}
+/** The answer of a worker judge that reads its own inputs: a row for each text, and for each
+ * thing where it was given things; the architect message accepts the commit, and the testing judge
+ * reads it as sending the issue back to testing. */
+function workerAnswer(dir: string): [string, unknown] {
+  const texts = JSON.parse(readFileSync(path.join(dir, "texts.json"), "utf8")) as { id: string }[];
+  if (path.basename(dir) === "accepts")
+    return [
+      "accepts.json",
+      { rows: texts.map(({ id }) => ({ id, accepts: id === "message-1", quote: null })) },
+    ];
+  if (path.basename(dir) === "testing")
+    return [
+      "testing.json",
+      {
+        rows: texts.map(({ id }) => ({
+          id,
+          testing: id === "message-1",
+          quote: id === "message-1" ? "check k1 still holds" : null,
+        })),
+      },
+    ];
+  const givens = JSON.parse(readFileSync(path.join(dir, "given.json"), "utf8")) as { id: string }[];
+  return [
+    "names.json",
+    {
+      rows: texts.flatMap(({ id }) =>
+        givens.map((given) => ({ id, given: given.id, names: false, quote: null }))
+      ),
+    },
+  ];
+}
+
+// Catches: a worker run judged as a spec run, or not at all; a judge given a text another session
+// wrote, given no comment of the run's, or given more than its prompt's inputs; an earlier result
+// read as the run's own text rather than as a thing a text may name; the testing reading k3's
+// crossing (b) asks never asked, or asked of no text of the run's; and an answer that is not the
+// judge's own copied into the run directory, where the scorer reads it by the text's id.
+test("a threads-closed crossing run's three judges read its agents' texts, against the reviewer's commit and the things they may name", async () => {
+  const dir = workerRun("threads-closed-crossing-head-1");
+  const ran: Seen[] = [];
+  await judgeRun(dir, { runner: fakeRunner(ran, workerAnswer) });
+  const judge = (name: string) => ran.find((one) => path.basename(one.dir) === name);
+  expect(
+    ran.map(({ profile, dir: at, output, files }) => [profile, path.basename(at), output, files])
+  ).toEqual([
+    ["bare", "accepts", "accepts.json", ["commit.txt", "prompt.txt", "texts.json"]],
+    ["bare", "names", "names.json", ["given.json", "prompt.txt", "texts.json"]],
+    ["bare", "testing", "testing.json", ["prompt.txt", "texts.json"]],
+  ]);
+  expect(judge("testing")?.text).toContain(
+    "whether the text says that the issue goes back to testing"
+  );
+  expect(readFileSync(path.join(judge("testing")?.dir ?? "", "texts.json"), "utf8")).toBe(
+    readFileSync(path.join(judge("names")?.dir ?? "", "texts.json"), "utf8")
+  );
+  const texts = JSON.parse(
+    readFileSync(path.join(judge("names")?.dir ?? "", "texts.json"), "utf8")
+  );
+  expect(texts).toEqual([
+    {
+      id: "message-1",
+      kind: "message",
+      body: `I accept ${reviewerCommit.slice(0, 12)}: check k1 still holds.`,
+    },
+    { id: "comment-1", kind: "comment", body: `Read ${reviewerCommit.slice(0, 12)}.` },
+  ]);
+  expect(readFileSync(path.join(judge("accepts")?.dir ?? "", "commit.txt"), "utf8")).toBe(
+    `${reviewerCommit}\n`
+  );
+  const givens = JSON.parse(
+    readFileSync(path.join(judge("names")?.dir ?? "", "given.json"), "utf8")
+  );
+  expect(givens.map((given: { id: string; kind: string }) => `${given.kind} ${given.id}`)).toEqual([
+    "check check",
+    "file file:docs/cli.md",
+    "file file:.github/workflows/greet.yml",
+    "result earlier-1",
+  ]);
+  for (const name of ["accepts", "names", "testing"])
+    expect(readFileSync(path.join(dir, `${name}.json`), "utf8")).toBe(
+      readFileSync(path.join(judge(name)?.dir ?? "", `${name}.json`), "utf8")
+    );
+  // The scorer reads the testing judge's answer by the text's id, as it reads the accepts judge's.
+  const readings = workerReadings(dir, "threads-closed", "crossing");
+  expect({
+    testing: readings.testing.get("message-1"),
+    comment: readings.testing.get("comment-1")?.testing,
+  }).toEqual({
+    testing: { id: "message-1", testing: true, quote: "check k1 still holds" },
+    comment: false,
+  });
+});
+
+// Catches: a judge started where it has nothing to read, which spends a model session on it, and
+// an answer file left unwritten for it, which the score reads as a rig error.
+test("a reviewer-text-findings run runs no accepts or testing judge, and a run whose agents wrote nothing runs none", async () => {
+  const reviewer = workerRun("reviewer-text-findings-text-only-head-1");
+  const ran: Seen[] = [];
+  await judgeRun(reviewer, { runner: fakeRunner(ran, workerAnswer) });
+  expect(ran.map((one) => path.basename(one.dir))).toEqual(["names"]);
+  for (const name of ["accepts", "testing"])
+    expect(JSON.parse(readFileSync(path.join(reviewer, `${name}.json`), "utf8"))).toEqual({
+      rows: [],
+    });
+  const quiet = workerRun("threads-closed-accept-head-2", {
+    "calls.jsonl": "",
+    "published.jsonl": "",
+  });
+  const none: Seen[] = [];
+  await judgeRun(quiet, { runner: fakeRunner(none, workerAnswer) });
+  expect({
+    ran: none.length,
+    accepts: JSON.parse(readFileSync(path.join(quiet, "accepts.json"), "utf8")),
+    names: JSON.parse(readFileSync(path.join(quiet, "names.json"), "utf8")),
+    testing: JSON.parse(readFileSync(path.join(quiet, "testing.json"), "utf8")),
+  }).toEqual({ ran: 0, accepts: { rows: [] }, names: { rows: [] }, testing: { rows: [] } });
+});
+
+// Catches: a judge started where the score of the run's case reads none of its answer, which
+// spends a model session (an `omp -p`) on nothing, and one left unstarted where the score reads it
+// (score.ts's `caseJudges`): threads-closed's correct reads no judge, code-defect the names judge
+// alone, accept the accepts and names judges, crossing all three, and reviewer-text-findings'
+// defect none. Each judge not started gets its answer file with no row, which the score takes as
+// covering only for a judge the case does not read.
+test("a worker run starts only the judges its case reads: none for correct, three for crossing", async () => {
+  const started: Record<string, string[]> = {};
+  const empty: Record<string, string[]> = {};
+  for (const name of [
+    "threads-closed-correct-head-3",
+    "threads-closed-code-defect-head-3",
+    "threads-closed-accept-head-3",
+    "threads-closed-crossing-head-3",
+    "reviewer-text-findings-defect-head-3",
+  ]) {
+    const dir = workerRun(name);
+    const ran: Seen[] = [];
+    await judgeRun(dir, { runner: fakeRunner(ran, workerAnswer) });
+    started[name] = ran.map((one) => path.basename(one.dir));
+    empty[name] = ["accepts", "names", "testing"].filter(
+      (judge) => JSON.parse(readFileSync(path.join(dir, `${judge}.json`), "utf8")).rows.length === 0
+    );
+  }
+  expect({ started, empty }).toEqual({
+    started: {
+      "threads-closed-correct-head-3": [],
+      "threads-closed-code-defect-head-3": ["names"],
+      "threads-closed-accept-head-3": ["accepts", "names"],
+      "threads-closed-crossing-head-3": ["accepts", "names", "testing"],
+      "reviewer-text-findings-defect-head-3": [],
+    },
+    empty: {
+      "threads-closed-correct-head-3": ["accepts", "names", "testing"],
+      "threads-closed-code-defect-head-3": ["accepts", "testing"],
+      "threads-closed-accept-head-3": ["testing"],
+      "threads-closed-crossing-head-3": [],
+      "reviewer-text-findings-defect-head-3": ["accepts", "names", "testing"],
+    },
+  });
 });

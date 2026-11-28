@@ -1,4 +1,4 @@
-// register_plan of daemon-standin.ts as the rig runs it: a real process on a port of its own, with a
+// register_plan of owner-standin.ts as the rig runs it: a real process on a port of its own, with a
 // stub Dispatch and a planted label checkout whose `label-texts.sh` is a stub of the entry. Each row
 // starts its own stand-in and reads what it answered and what it wrote to its log.
 import { expect, setDefaultTimeout, test } from "bun:test";
@@ -22,12 +22,12 @@ import {
   register,
   type Standin,
   withStandin,
-} from "./daemon-standin-harness";
+} from "./owner-standin-harness";
 import { PlanRequest } from "./scored-runs-contracts";
 
 setDefaultTimeout(60_000);
 
-const freshDir = temporaryDirectories("daemon-standin-plan");
+const freshDir = temporaryDirectories("owner-standin-plan");
 
 interface SeenRequest {
   readonly method: string;
