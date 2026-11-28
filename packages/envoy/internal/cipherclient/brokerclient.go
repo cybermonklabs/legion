@@ -23,6 +23,14 @@
 // and RenewalAt answers that moment for it. The TypeScript client holds a token to the same rule,
 // and testdata/renewal.json holds both clients to it (TestRenewalCorpus).
 //
+// When it waits: the broker answers 503 with Retry-After when it could not check the identity's
+// token because the key set of that token's issuer could not be read (UnavailableError), and the
+// token may well be sound once that wait has passed. The client keeps the moment the wait ends,
+// read as at most a minute on (maxRetryAfter), and sends no trade before it: Token and
+// AirlockPlaceholder wait for it inside their context for as long as its deadline, or two minutes
+// where it has none (callBound), leaves room, and Run waits the larger of its own step and that
+// wait. The TypeScript client keeps the same rule.
+//
 // What it refuses to do: hand out a token it could not renew. Token answers the held token while
 // that token is live and the broker is merely unreachable, and answers the error once the broker
 // has refused the identity, the issuer has ended the person's sign-in it trades, or the held
@@ -52,6 +60,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redirects"
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 const (
@@ -88,9 +97,9 @@ const (
 	// answer leaves requests presenting the token in hand for nearly all of that window.
 	liveMargin = 10 * time.Second
 	// defaultRetryWait is the wait after a trade the broker did not answer or answered 5xx,
-	// doubling to maxRetryWait. The grant has no rotation window to miss, so an outage longer
-	// than one token's life is the same event as a short one: the loop keeps trading until the
-	// broker answers again.
+	// doubling to maxRetryWait, or what is left of the wait a 503 asked for where that is longer
+	// (Run). The grant has no rotation window to miss, so an outage longer than one token's life
+	// is the same event as a short one: the loop keeps trading until the broker answers again.
 	defaultRetryWait = 15 * time.Second
 	maxRetryWait     = 5 * time.Minute
 	// unregisteredLogEvery is how often the renewal loop says again that the broker has no
@@ -98,6 +107,20 @@ const (
 	unregisteredLogEvery = 30 * time.Minute
 	// tradeTimeout bounds one trade, the token endpoint being one request.
 	tradeTimeout = 30 * time.Second
+	// maxRetryAfter caps the wait a 503's Retry-After asks for (UnavailableError.RetryAfter), as
+	// agent-secrets-helper caps a 429's (internal/cipher/helper, maxRetryAfter), so no answer's
+	// large value, the broker's or a proxy's before it, holds a trade back for longer than a
+	// minute. The broker asks for the spacing of its reads of a key set that failed, 5 s by default.
+	maxRetryAfter = time.Minute
+	// callBound is how long one call (Token, AirlockPlaceholder) whose context has no deadline
+	// waits out the broker's outages before it answers the outage (waitOut), so a caller that set
+	// no deadline of its own still learns of an outage within it.
+	callBound = 2 * time.Minute
+	// issuerUnavailable is the code the broker's token endpoint names beside OAuth's
+	// temporarily_unavailable for a trade whose subject or actor token it could not check because
+	// the key set of that token's issuer could not be read (internal/cipher/oauth,
+	// keySetUnreadable), with Retry-After.
+	issuerUnavailable = "ISSUER_UNAVAILABLE"
 )
 
 // Token is one of the broker's access tokens as this client holds it.
@@ -263,6 +286,45 @@ func finalRefusal(err error) bool {
 	return (errors.As(err, &refused) && refused.Permanent()) || errors.Is(err, ErrSignInEnded)
 }
 
+// UnavailableError is a trade the broker did not take because it could not then: an answer of
+// 5xx. It is never a refusal (RefusedError, which is read only from a 4xx) and never final
+// (finalRefusal), so every caller that reads each failure but a permanent RefusedError as one a
+// later trade may cure reads it so. The outage the broker names is its answer when it could not
+// check the identity's token because the key set of that token's issuer could not be read: 503
+// temporarily_unavailable with the code ISSUER_UNAVAILABLE (IssuerUnavailable) and a Retry-After
+// of the spacing of its reads of that set. A 503 that asks for a wait keeps this client from
+// sending a trade before that wait has passed (outageLeft).
+type UnavailableError struct {
+	// Status is the answer's HTTP status.
+	Status int
+	// OAuthError and Code are the answer's `error` and `code` members as the broker wrote them,
+	// empty where it named none: temporarily_unavailable and ISSUER_UNAVAILABLE through a key set
+	// that could not be read.
+	OAuthError, Code string
+	// RetryAfter is the wait the answer's Retry-After names (serverwait.Read), read as at most
+	// maxRetryAfter, and zero where it names none.
+	RetryAfter time.Duration
+	// text is Error's: the token endpoint as a message may print it, the status, and the
+	// answer's error as the address lets it print (cipheraddr.Address.Words), after the outage
+	// where the answer names it.
+	text string
+}
+
+// Error names the endpoint and the status, and the outage where the answer names it
+// (IssuerUnavailable).
+func (e *UnavailableError) Error() string { return e.text }
+
+// IssuerUnavailable reports whether this is the broker's answer that it could not check the
+// identity's token, because the key set of that token's issuer could not be read.
+func (e *UnavailableError) IssuerUnavailable() bool { return e.Code == issuerUnavailable }
+
+// outageGate is the wait a 503 asked for: no trade goes to the broker before until, and a call
+// that would send one is answered outage instead.
+type outageGate struct {
+	until  time.Time
+	outage *UnavailableError
+}
+
 // Config is one client: the broker it trades at, the identity it trades, and the key it proves.
 type Config struct {
 	// BrokerURL is the broker's base URL, with or without the slashes it ends in: New drops
@@ -353,6 +415,10 @@ type Client struct {
 	// failed trade with nothing live left. Only a holder of mu writes it, and live reads it
 	// without mu, so a request that finds a token still good here never queues behind a trade.
 	held atomic.Pointer[Token]
+	// gate is the wait the broker's last 503 with a Retry-After asked for (outageLeft), nil
+	// before any. send writes it, and every reader reads it without mu, so a call that finds a
+	// wait running answers at once, whatever trade holds mu.
+	gate atomic.Pointer[outageGate]
 }
 
 // WithoutTrailingSlashes is raw without the slashes it ends in: the one rule both halves of this
@@ -425,14 +491,40 @@ func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 // not stop for a broker that is merely down or busy; a refusal no retry can cure (finalRefusal: the
 // broker's RefusedError.Permanent, or a sign-in the issuer has ended, ErrSignInEnded), and a
 // failure with nothing live left, answer the error and drop the token in hand, so no caller writes
-// with no identity. Token trades once; a caller that waits for a registration to land runs Run,
-// which trades again.
+// with no identity.
+//
+// A 503 that asks for a wait (an UnavailableError with a RetryAfter, the broker's answer when it
+// could not read the key set of the identity's issuer among them) is waited out where no live
+// token is in hand: Token sends no trade before the wait has passed and then trades again, for as
+// long as ctx's deadline, or callBound where it has none, leaves room for the next wait, and then
+// answers the outage, saying how long it tried (waitOut). A call whose deadline leaves no room for
+// the wait answers the outage at once and sends nothing. The wait holds no lock, so neither Run,
+// Drop nor another Token waits behind it, and a held token still live is answered at once through
+// it, with no trade and no wait. Every other failure is answered after one trade; a caller that
+// waits for a registration to land runs Run, which trades again.
 func (c *Client) Token(ctx context.Context) (*Token, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	return waitOut(ctx, c, func() (*Token, error) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.token(ctx)
+	})
+}
+
+// token is one pass of Token, under c.mu: the held token until its renewal moment; while a wait
+// the broker asked for is running (outageLeft), the held token where it is still live and that
+// outage otherwise, with no trade; and otherwise a trade, answered by the rule Token states.
+func (c *Client) token(ctx context.Context) (*Token, error) {
 	held := c.held.Load()
-	if held != nil && c.now().Before(held.renewsAt) {
+	now := c.now()
+	if held != nil && now.Before(held.renewsAt) {
 		return held, nil
+	}
+	if _, outage := c.outageLeft(now); outage != nil {
+		if held != nil && now.Before(held.Expiry) {
+			return held, nil
+		}
+		c.held.Store(nil)
+		return nil, outage
 	}
 	token, err := c.tradeHeld(ctx)
 	if err == nil {
@@ -444,6 +536,75 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 	}
 	c.held.Store(nil)
 	return nil, err
+}
+
+// waitOut is attempt's answer once each wait a 503 asked for is waited out. While attempt answers
+// an UnavailableError and a wait the broker asked for is still running (outageLeft: the one that
+// answer asked for, or one another call's answer asked for since), it waits for that wait to pass,
+// holding no lock, and calls attempt again, for as long as the call's bound leaves room for the
+// wait: ctx's deadline, or callBound after the call began where ctx has none. A wait that would
+// end at or past that bound is not begun: the outage is answered at once, naming how long the call
+// tried, as it is when ctx ends during a wait. Every other answer is attempt's own. The bound is
+// read on the client's clock (c.now) as what was left of ctx's deadline when the call began,
+// which on the wall clock is the deadline itself.
+func waitOut[T any](ctx context.Context, c *Client, attempt func() (T, error)) (T, error) {
+	started := c.now()
+	end, deadlined := started.Add(callBound), false
+	if deadline, ok := ctx.Deadline(); ok {
+		end, deadlined = started.Add(time.Until(deadline)), true
+	}
+	var none T
+	for {
+		answer, err := attempt()
+		var outage *UnavailableError
+		if !errors.As(err, &outage) {
+			return answer, err
+		}
+		now := c.now()
+		left, waiting := c.outageLeft(now)
+		switch {
+		case waiting == nil:
+			return answer, err
+		case !now.Add(left).Before(end):
+			bound := "this call's deadline"
+			if !deadlined {
+				bound = fmt.Sprintf("the %s a call with no deadline tries for", callBound)
+			}
+			return none, fmt.Errorf("%w; tried for %s, and the wait of %s the broker asked for runs past %s", err, now.Sub(started), left, bound)
+		}
+		select {
+		case <-ctx.Done():
+			return none, fmt.Errorf("%w; tried for %s, until the call's context ended", err, c.now().Sub(started))
+		case <-c.after(left):
+		}
+	}
+}
+
+// outageLeft is what is left at now of the wait the broker's last 503 with a Retry-After asked
+// for, and that answer; zero and nil once the wait has passed, or where none asked for one.
+func (c *Client) outageLeft(now time.Time) (time.Duration, *UnavailableError) {
+	if gate := c.gate.Load(); gate != nil && now.Before(gate.until) {
+		return gate.until.Sub(now), gate.outage
+	}
+	return 0, nil
+}
+
+// waitOutage waits out what is left of the wait a 503 asked for (outageLeft), holding no lock, and
+// reports false when ctx ended first. No trade goes to the broker before that wait has passed, so
+// a Wake does not cut it short: the trade that follows the wait is the one the Wake asks for.
+func (c *Client) waitOutage(ctx context.Context) bool {
+	for {
+		left, outage := c.outageLeft(c.now())
+		if outage == nil {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-c.wake:
+		case <-c.after(left):
+		}
+	}
 }
 
 // live is the held token while it is good for at least liveMargin more, and nil otherwise. It
@@ -495,12 +656,20 @@ func (c *Client) Drop(token *Token) {
 // Dispatch sign-in, or the next refresh that confirms them, with nothing restarted. A missing
 // registration is logged once, naming the session, and again every unregisteredLogEvery while it
 // lasts, rather than at every trade. A cancelled ctx is no error.
+//
+// A 503 that asks for a wait (an UnavailableError with a RetryAfter) is retried so too, after the
+// larger of the loop's own step and what is left of that wait, and the loop sends no trade before
+// a wait the broker asked for has passed, whichever call's answer asked for it (waitOutage). Such a
+// wait holds no lock, and the loop keeps the token in hand through it, as through any outage.
 func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) error) error {
 	wait := defaultRetryWait
 	// since is when the broker first refused this pod's session as unregistered, and logged when
 	// the loop last said so; both are zero until such a refusal, and again once a trade lands.
 	var since, logged time.Time
 	for {
+		if !c.waitOutage(ctx) {
+			return nil
+		}
 		c.mu.Lock()
 		token, err := c.tradeHeld(ctx)
 		held := c.held.Load()
@@ -529,6 +698,9 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		}
 		var refused *RefusedError
 		isRefusal := errors.As(err, &refused)
+		// The loop's own step, or what is left of the wait a 503 asked for where that is longer.
+		left, _ := c.outageLeft(c.now())
+		step := max(wait, left)
 		switch {
 		case finalRefusal(err):
 			return err
@@ -539,13 +711,13 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 			}
 			if logged.IsZero() || now.Sub(logged) >= unregisteredLogEvery {
 				c.logf(ctx, "the secrets broker has no registration for this pod's session yet; trading again until it lands",
-					"session", c.session, "waited", now.Sub(since), "error", err.Error(), "in", wait.String())
+					"session", c.session, "waited", now.Sub(since), "error", err.Error(), "in", step.String())
 				logged = now
 			}
 		default:
-			c.logRetried(ctx, err, held, "asking again", "in", wait.String())
+			c.logRetried(ctx, err, held, "asking again", "in", step.String())
 		}
-		if !c.sleep(ctx, wait) {
+		if !c.sleep(ctx, step) {
 			return nil
 		}
 		if wait *= 2; wait > maxRetryWait {
@@ -763,7 +935,8 @@ func (c *Client) trade(ctx context.Context) (*Token, error) {
 }
 
 // tokenAnswer is the broker's token answer as this client reads it. Every member the contract
-// names is here and nothing else is read: the corpus holds the client to exactly this set.
+// names is here, with the code the broker names beside a 5xx's error (UnavailableError.Code), and
+// nothing else is read: the corpus holds the client to exactly the contract's set.
 type tokenAnswer struct {
 	AccessToken         string      `json:"access_token"`
 	TokenType           string      `json:"token_type"`
@@ -774,11 +947,12 @@ type tokenAnswer struct {
 	CredentialExpiresAt string      `json:"credential_expires_at"`
 	Error               string      `json:"error"`
 	ErrorDescription    string      `json:"error_description"`
+	Code                string      `json:"code"`
 }
 
 // post sends one trade and reads the answer. A refusal the broker answered with an OAuth error
-// is a RefusedError; everything else — a broker that did not answer, a 5xx, an answer that is
-// not this grant's — is an error a renewal may ask about again.
+// is a RefusedError, a 5xx an UnavailableError; everything else — a broker that did not answer, an
+// answer that is not this grant's — is an error a renewal may ask about again, as a 5xx is.
 //
 // The endpoint is built from the address's Raw, since the request must reach the broker as
 // configured; every error names it as shown, cipheraddr's Call of it, and wraps a failure of the
@@ -798,12 +972,17 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 
 // send posts one trade and answers the body of a 2xx answer that is JSON, and the token endpoint
 // as a message may print it; every other answer is post's error, a refusal the broker answered
-// with an OAuth error a RefusedError.
+// with an OAuth error a RefusedError and a 5xx an UnavailableError. While a wait a 503 asked for is
+// still running (outageLeft), it sends nothing and answers that 503's UnavailableError: every
+// trade of this client goes through here, so none reaches the broker before the wait has passed.
 func (c *Client) send(ctx context.Context, form url.Values) ([]byte, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, tradeTimeout)
-	defer cancel()
 	endpoint := c.brokerURL.Raw() + TokenPath
 	shown := c.brokerURL.Call(endpoint)
+	if _, outage := c.outageLeft(c.now()); outage != nil {
+		return nil, shown, outage
+	}
+	ctx, cancel := context.WithTimeout(ctx, tradeTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, shown, c.brokerURL.Error(err)
@@ -846,9 +1025,36 @@ func (c *Client) send(ctx context.Context, form url.Values) ([]byte, string, err
 		if resp.StatusCode/100 == 4 && answer.Error != "" {
 			return nil, shown, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, answer.Error, answer.ErrorDescription))
 		}
+		if resp.StatusCode/100 == 5 {
+			return nil, shown, c.unavailable(shown, resp.StatusCode, resp.Header, answer)
+		}
 		return nil, shown, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, c.brokerURL.Words(answer.Error))
 	}
 	return body, shown, nil
+}
+
+// unavailable is the broker's 5xx answer to a trade as an UnavailableError, with the wait its
+// Retry-After names read as at most maxRetryAfter. A 503 that names a wait closes the gate for
+// that long (outageLeft), so no trade goes to the broker before it has passed; a wait of zero, a
+// date already past or an unreadable value names none, and closes nothing. The text names the
+// outage where the answer names it (IssuerUnavailable), and the status alone for every other 5xx,
+// as for every answer that is no refusal; the answer's error prints in it as the address lets it
+// (cipheraddr.Address.Words), as every answer's words do.
+func (c *Client) unavailable(shown string, status int, header http.Header, answer tokenAnswer) *UnavailableError {
+	now := c.now()
+	wait, _ := serverwait.Read(header, now)
+	outage := &UnavailableError{Status: status, OAuthError: answer.Error, Code: answer.Code, RetryAfter: min(wait, maxRetryAfter)}
+	words := c.brokerURL.Words(answer.Error)
+	if outage.IssuerUnavailable() {
+		outage.text = fmt.Sprintf("the secrets broker at %s could not check the token of %s, because its issuer's key set could not be read: HTTP %d %s",
+			shown, refusedIdentity(c.subject), status, words)
+	} else {
+		outage.text = fmt.Sprintf("the broker at %s answered HTTP %d %s", shown, status, words)
+	}
+	if status == http.StatusServiceUnavailable && outage.RetryAfter > 0 {
+		c.gate.Store(&outageGate{until: now.Add(outage.RetryAfter), outage: outage})
+	}
+	return outage
 }
 
 // AirlockGrant is a CI run's result grant as the token endpoint answers it: the proxy placeholder
@@ -876,8 +1082,20 @@ type placeholderAnswer struct {
 // an access token: the broker keeps the grant and its proxy holds the run's results token. It
 // declines the launcher credential when Config.NoLauncherCredential says to. A refusal the
 // broker answered with an OAuth error is a RefusedError; an answer that is no placeholder of a
-// live grant - an access token among them - is refused, so a command is never run on one.
+// live grant - an access token among them - is refused, so a command is never run on one. A 503
+// that asks for a wait is waited out inside ctx as Token waits it out (waitOut): no trade before
+// the wait has passed, then the trade again, for as long as ctx's deadline, or callBound where it
+// has none, leaves room, and then the outage, an UnavailableError naming how long it tried.
 func (c *Client) AirlockPlaceholder(ctx context.Context) (*AirlockGrant, error) {
+	return waitOut(ctx, c, func() (*AirlockGrant, error) { return c.placeholder(ctx) })
+}
+
+// placeholder is one trade of AirlockPlaceholder. While a wait a 503 asked for is running it reads
+// no token of the run's and answers that outage (outageLeft), as send would.
+func (c *Client) placeholder(ctx context.Context) (*AirlockGrant, error) {
+	if _, outage := c.outageLeft(c.now()); outage != nil {
+		return nil, outage
+	}
 	subject, subjectType, err := c.subject.Token(ctx)
 	if err != nil {
 		return nil, err

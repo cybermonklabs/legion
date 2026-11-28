@@ -116,7 +116,8 @@ env:
     packages/envoy/internal/dispatch/text/ packages/envoy/internal/dpopproof/ packages/envoy/internal/fold/
     packages/envoy/internal/googleidentity/ packages/envoy/internal/id/
     packages/envoy/internal/oauthrefusal/ packages/envoy/internal/oidc/ packages/envoy/internal/redact/
-    packages/envoy/internal/redirects/ packages/envoy/internal/tlsalert/ packages/envoy/listenerwire/
+    packages/envoy/internal/redirects/ packages/envoy/internal/serverwait/ packages/envoy/internal/tlsalert/
+    packages/envoy/listenerwire/
     packages/envoy/listenfd/
     packages/envoy/migrationid/ packages/envoy/natsconn/ packages/envoy/natsurl/ packages/envoy/natsversion/ packages/envoy/pgdsn/
     packages/envoy/roleholder/

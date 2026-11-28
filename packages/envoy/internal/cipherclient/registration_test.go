@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/url"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,24 +43,47 @@ func unregisteredAnswer(session string) (int, map[string]any) {
 // waitingClock is the client's clock and its waits in one: every wait the loop asks for passes at
 // once and moves the clock by its length, and is recorded, so a loop that waits for hours runs at
 // the test's speed. Once stop has ended a wait never passes, so the loop ends on its context
-// rather than trading again.
+// rather than trading again. Its methods hold mu, so a stand-in's handler reads the clock from a
+// goroutine of its own.
 type waitingClock struct {
+	mu    sync.Mutex
 	now   time.Time
 	waits []time.Duration
 	stop  context.Context
 }
 
-func (c *waitingClock) Now() time.Time { return c.now }
+func (c *waitingClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
 
 func (c *waitingClock) After(d time.Duration) <-chan time.Time {
 	if c.stop.Err() != nil {
 		return nil
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.waits = append(c.waits, d)
 	c.now = c.now.Add(d)
 	passed := make(chan time.Time, 1)
 	passed <- c.now
 	return passed
+}
+
+// Advance moves the clock by d with no wait asked for: the time that passes between a test's
+// calls.
+func (c *waitingClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// Waits is every wait asked for so far, in order.
+func (c *waitingClock) Waits() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.waits)
 }
 
 // waitForRegistration runs a pod's renewal loop against a broker that refuses its session
