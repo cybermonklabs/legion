@@ -2063,9 +2063,13 @@ requests a day cross one of them.
 Two workflows make it:
 
 - .github/workflows/large-pr-label.yaml runs `.github/scripts/large-pr-lanes.sh label` at every
-  push of a pull request that may be large: its job's `if:` admits 100 changed files or more,
-  5,000 additions or 5,000 deletions or more (a sum of 10,000 has one of the two at 5,000), or the
-  label already on, and skips every other push before a runner starts. The script reads the size
+  push of a pull request that may be large, and also when GitHub retargets one to another base
+  (an `edited` event whose base changed), which can change its size with no push: its job's `if:`
+  admits 100 changed files or more, 5,000 additions or 5,000 deletions or more (a sum of 10,000
+  has one of the two at 5,000), or the label already on, and skips every other push before a
+  runner starts. The job of any other edit (its title or body) skips too, and cancels nothing,
+  since the concurrency group is on the job, not the run: a group on the run would let such an
+  edit cancel a push's label run and then write no label. The script reads the size
   from the event's payload and puts the label `large-pr` on a large pull request, or takes it off
   one that shrank. Its `GITHUB_TOKEN` holds `pull-requests: write`, which a pull request's labels
   need (`issues: write` alone is refused: HTTP 403 "Resource not accessible by integration" at

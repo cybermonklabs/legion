@@ -1,7 +1,9 @@
 name: Large PR label
 
 # Puts the label large-pr on a pull request of 100 changed files or more, or of 10,000 changed
-# lines or more, and takes it off one that shrank, at every push
+# lines or more, and takes it off one that shrank, at every push and at every retarget to another
+# base (an `edited` event whose base changed): the size is counted against the base, so a retarget
+# can make a pull request large, or small, with no push
 # (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
 # .github/workflows/large-pr-lanes.yaml reads the label on an approval, whose event carries no
 # size, to decide whether the approval runs the pull request's slow suites.
@@ -12,12 +14,7 @@ name: Large PR label
 # runs dependency code) or reads a tree that has no script in it (`changes`).
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-
-# A newer push's run replaces an older one's, which would write the label from an older size.
-concurrency:
-  group: large-pr-label-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions: {}
 
@@ -25,8 +22,19 @@ jobs:
   label:
     # Only a pull request that may be large, or that carries the label: 100 changed files, or
     # 5,000 additions or deletions (a sum of 10,000 has one of the two at 5,000 or more). The
-    # script decides by the exact lines; every other push is skipped before a runner starts.
-    if: ${{ github.event.pull_request.changed_files >= 100 || github.event.pull_request.additions >= 5000 || github.event.pull_request.deletions >= 5000 || contains(github.event.pull_request.labels.*.name, 'large-pr') }}
+    # script decides by the exact lines; every other push is skipped before a runner starts. Of
+    # the `edited` events, only a retarget runs it (its `changes` holds `base`); a title or body
+    # edit is skipped too.
+    if: >-
+      ${{ (github.event.action != 'edited' || github.event.changes.base) &&
+      (github.event.pull_request.changed_files >= 100 || github.event.pull_request.additions >= 5000 || github.event.pull_request.deletions >= 5000 || contains(github.event.pull_request.labels.*.name, 'large-pr')) }}
+    # A newer push's or retarget's run replaces an older one's, which would write the label from an
+    # older size. The group is on this job, not on the run: a run-level group takes in every
+    # edit's run, so a title or body edit would cancel a push's label run and then skip its own
+    # job, leaving the label unwritten; on the job, an edit whose job skips enters no group.
+    concurrency:
+      group: large-pr-label-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env:
