@@ -734,16 +734,20 @@ export async function pickPreset(page: Page, name: string): Promise<void> {
 
 /** Fails unless the page is on the view `name`, whichever shape the row has at this width: the
  *  row of toggles presses the one it is on (`aria-pressed`), and the one control below 1280 px
- *  draws its name and its signal as its own name (`IssuePresets.tsx`). */
+ *  draws its name and its signal as its own name (`IssuePresets.tsx`), or its name alone where
+ *  the view draws no signal, as Threads draws none at 0 (dispatch://INFRA-5704/spec#b-r-control).
+ */
 export async function expectActivePreset(page: Page, name: string): Promise<void> {
   const row = presetRow(page);
   await row.waitFor();
   const toggle = row.getByRole("button", { exact: true, name });
   // The wait above drew the row, which draws one shape or the other with it by one media query
-  // and its negation, so one count says which shape this width draws.
-  if ((await toggle.count()) > 0) {
+  // and its negation, so one count says which shape this width draws. The one control is read
+  // by its own shape, since a view with no signal names it by the view's name alone, as a
+  // toggle is named.
+  if ((await presetChooser(page).count()) === 0) {
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
     return;
   }
-  await expect(presetChooser(page)).toHaveAccessibleName(new RegExp(`^${name} \\d+\\b`));
+  await expect(presetChooser(page)).toHaveAccessibleName(new RegExp(`^${name}(?: \\d+\\b|$)`));
 }

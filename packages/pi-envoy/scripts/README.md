@@ -138,6 +138,13 @@ Every client reaches the listener through a recording proxy of its own
 a log rather than inferred. Each proxy, like natsd and the listener, binds a port the kernel
 chooses and reports it, and the smoke reads the port from that report.
 
+`extensions/role-topics.test.ts` drives `omp-client.ts` the same way, as a Bun test against the
+stack `envoy-stack.ts` starts with the listener's Slack webhook on: it posts signed, mention-free
+Slack events and reads which sessions were shown them (`ENVOY_ROLE_TOPICS`, in the package
+README). `{"op":"entries"}` answers the session's branch, the `envoy-role-claim` records among
+them, so that test compares the client instance id a claim recorded with the one the listener's
+role lookup names. It runs only with `LEGION_E2E_ENVOY_STACK=1`, in the envoy-session-stall job.
+
 [`scripts/e2e/nats-callout-sessions.sh`](../../../scripts/e2e/README.md#nats-callout-sessionssh)
 drives the same two clients as the sessions of its stack behind the NATS auth service, with no
 proxy, since a broker token's proof names the listener's own origin: `omp-client.ts` answers

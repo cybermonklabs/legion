@@ -578,7 +578,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
 		plan.phaseRole = workflow.phaseRole
 		plan.cacheRepositories = workflow.cacheRepositories
-		plan.rootTask, plan.designNews, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.workingCopy
+		plan.rootTask, plan.designNews, plan.taskText, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.taskText, workflow.workingCopy
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		// The run's boot event, and from it on the state event of every write the run makes. The
@@ -1292,6 +1292,7 @@ type plan struct {
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
 	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
+	taskText     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	workingCopy  func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
 	// phaseRole is the workflow's answer to which role works an issue's current phase, which the
@@ -2266,6 +2267,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
 		DesignNews:              p.designNews,
+		TaskText:                p.taskText,
 		WorkingCopy:             p.workingCopy,
 		NewsTask:                newsTask,
 		TreeClosable:            p.treeClosable,
@@ -2792,11 +2794,12 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // return). The pass gives back the credit of a post the supervisor drops, because no machine ever
 // decides that post (supervisor.post). Before any of this the gate is corrected: it takes back
 // each credit, granted before its previous correction, that the machine holding it no longer
-// holds for a refresh wake of its own, which is the backstop for a credit lost to a path
-// that gives none back, and then sets its count from the refresh wakes the machines really hold
-// — the lane's own kind, the one kind only this lane parks (supervise.WakePluginRefresh,
-// parkedWakes) — which raises the count when the lane holds wakes no admission is behind, and
-// otherwise leaves it at the credits out. The boot pass corrects an empty gate, which is what a
+// holds for a launch of the lane still owed on it, which is the backstop for a credit lost to a
+// path that gives none back, and then sets its count from the refresh wakes the machines' views
+// show waiting — the lane's own kind, the one kind only this lane parks
+// (supervise.WakePluginRefresh, parkedWakes) — or leaves it at the credits out, whichever is
+// more. Every such wake holds a credit, so the reading is above the credits out only by the lag
+// of a view a machine has not stored yet. The boot pass corrects an empty gate, which is what a
 // restart leaves: no machine of this daemon holds a wake yet, so the reading is zero and the
 // fleet's refresh starts with every credit free (supervise.RefreshGate.Correct).
 //
@@ -2981,14 +2984,17 @@ func claimsToRefresh(claims []supervise.Claim, noPluginInstall func(supervise.Cl
 //
 // Every kind is in the set, not the lane's own: what the pass reads it for is whether the machine
 // would decide this claim anything, and refreshPlugin decides a claim that holds a wake of any
-// kind nothing at all. The count beside it is the lane's own kind alone, because that is what the
-// gate counts.
+// kind nothing at all. The count beside it is the lane's own kind alone, because those are the
+// wakes the gate bounds, and each holds a credit. A launch of the lane that waits outside the
+// pacing — held by the pause's gate, parked at its issue pod's start gate, or a retry — is in no
+// view as a waiting wake, and the credit it keeps is what the gate counts for it.
 //
 // The reading is of the views each machine last published, so it lags a decision in flight in both
 // directions (Machine.WaitingWake): a claim whose wake was parked a moment ago can be missing from
-// it, and one whose wake has just run can still be in it. Neither costs anything here. The first
-// is a post the machine answers by giving its credit straight back, and the second is a claim the
-// pass leaves to the next sweep, a minute later.
+// it, and one whose wake has just run can still be in it. The first costs nothing here: it is a
+// post the machine answers by giving its credit straight back. The second is a claim the pass
+// leaves to the next sweep, a minute later, and it can make the count one more than the credits
+// out, which admits one fewer until then (supervise.RefreshGate.Correct).
 func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 	parked := map[claim.Token]bool{}
 	refreshes := 0

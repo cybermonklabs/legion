@@ -35,7 +35,7 @@ const idleRigOlderImage = "ghcr.io/example/worker@sha256:" + "bbbbbbbbbbbbbbbbbb
 func TestAClaimRetiredForPromptFailuresInAPodOnAnOlderImageComesBackOnTheDaemonsContract(t *testing.T) {
 	t.Parallel()
 	pinned := config.PluginsConfig{PiLegion: "9.7.0", PiEnvoy: "9.6.1"}
-	rig := newTunedIdleWakeRig(t, func(r *idleWakeRig) {
+	rig := newIdleWakeRigWith(t, idleRigOptions{Tune: func(r *idleWakeRig) {
 		// The pair this daemon pins (ResolvedPlugins), which its specs and its runtime both read.
 		r.cfg.Runtime.Kubernetes.Plugins = &pinned
 		// Real timers: the wait for an acknowledged prompt's turn is the machine's own (noTurn),
@@ -46,7 +46,7 @@ func TestAClaimRetiredForPromptFailuresInAPodOnAnOlderImageComesBackOnTheDaemons
 		// the project's open-round limits hold it back: the pod stays on the image it was built on
 		// (the planner's read for R8).
 		r.orphanSweep = time.Hour
-	}, nil, "older")
+	}}, nil, "older")
 	issue := rig.issue("older")
 	token := rig.token(issue)
 	defer func() {

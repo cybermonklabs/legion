@@ -112,11 +112,14 @@ type idleWakeRig struct {
 	pods     *idleRigPods
 	agents   *idleRigAgents
 	listener *idleRigListener
-	records  record.Store
-	project  string
-	logs     *syncBuffer
-	built    *built
-	api      *daemon
+	// listenerEnv is each NAME=VALUE the rig's listener is started with beside the rig's own
+	// (idleRigOptions.ListenerEnv), at its first start and at every start after.
+	listenerEnv []string
+	records     record.Store
+	project     string
+	logs        *syncBuffer
+	built       *built
+	api         *daemon
 	// issues are the rig's issues, in the order they were seeded.
 	issues []idleRigIssue
 	// daemonLog is where a copy of the daemon's log is kept.
@@ -161,13 +164,22 @@ type idleRigIssue struct {
 // are set before the boot (idleRigPlan says why).
 func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
 	t.Helper()
-	return newTunedIdleWakeRig(t, nil, plans, issues...)
+	return newIdleWakeRigWith(t, idleRigOptions{}, plans, issues...)
 }
 
-// newTunedIdleWakeRig is newIdleWakeRig with tune changing the rig before anything reads it: its
-// configuration (cfg), the daemon's sweep interval (orphanSweep) and the supervisor's clock
-// (clock), before the issues are seeded and the daemon boots. A nil tune changes nothing.
-func newTunedIdleWakeRig(t *testing.T, tune func(*idleWakeRig), plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
+// idleRigOptions is what a test changes of the rig's parts before it boots. ListenerEnv is each
+// NAME=VALUE the Envoy listener is started with beside the rig's own, such as the session windows
+// a test shortens so a session it stops hearing from is unresponsive, then gone, and its role
+// claim freed within the test. Tune changes the rig before anything reads it: its configuration
+// (cfg), the daemon's sweep interval (orphanSweep) and the supervisor's clock (clock), before the
+// issues are seeded and the daemon boots; nil changes nothing.
+type idleRigOptions struct {
+	ListenerEnv []string
+	Tune        func(*idleWakeRig)
+}
+
+// newIdleWakeRigWith is newIdleWakeRig with the parts opts changes.
+func newIdleWakeRigWith(t *testing.T, opts idleRigOptions, plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	if _, err := pool.Exec(context.Background(), idleRigSessionTable()); err != nil {
@@ -176,7 +188,7 @@ func newTunedIdleWakeRig(t *testing.T, tune func(*idleWakeRig), plans map[string
 	natsURL := testnats.URL(t)
 	// The listener owns the notification stream: it creates it with its own subjects before the
 	// daemon binds a consumer on it, which is the order a deployment rolls them in.
-	listener := startIdleRigListener(t, natsURL, "idlerig")
+	listener := startIdleRigListener(t, natsURL, "idlerig", opts.ListenerEnv...)
 	cfg := workflowConfig(t, natsURL)
 	cfg.PostgresDSN = pool.Config().ConnString()
 	cfg.EnvoyURL = listener.url
@@ -206,7 +218,7 @@ func newTunedIdleWakeRig(t *testing.T, tune func(*idleWakeRig), plans map[string
 	board.lists = true
 	cfg.DispatchURL = board.url
 	rig := &idleWakeRig{t: t, cfg: cfg, board: board, pool: pool, natsURL: natsURL, js: workflowJetStream(t, natsURL),
-		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener,
+		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener, listenerEnv: opts.ListenerEnv,
 		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
 	rig.pods = newIdleRigPods(t, func(string, string) (string, bool, bool) { return rig.address(), false, true },
 		cfg.Runtime.Kubernetes.SessionStore.Database,
@@ -223,8 +235,8 @@ func newTunedIdleWakeRig(t *testing.T, tune func(*idleWakeRig), plans map[string
 	rig.kube.onPodReady = rig.podReady
 	rig.kube.onPodGone = rig.pods.podGone
 	rig.kube.run(t)
-	if tune != nil {
-		tune(rig)
+	if opts.Tune != nil {
+		opts.Tune(rig)
 	}
 
 	for i, name := range issues {
@@ -294,7 +306,7 @@ func (r *idleWakeRig) awaitListenerReady() {
 			restarted = true
 			socket, port := r.listener.socket, r.listener.port
 			r.listener.stop()
-			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", socket, port)
+			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", socket, port, r.listenerEnv...)
 		}
 		return false
 	})
