@@ -26,15 +26,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
-import {
-  Fragment,
-  type ReactNode,
-  useCallback,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { Fragment, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ColumnFilter, IssueTablePager } from "../features/project/issues-table-controls";
 import { useRowKeymap } from "../features/project/issues-table-keys";
 import type { TableLayoutModel } from "../features/project/issues-table-layout";
@@ -56,11 +48,10 @@ import { TruncatedText } from "./TruncatedText";
 const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 const NO_SELECTION: RowSelectionState = {};
 const NONE_UNLOADED: readonly string[] = [];
-const NO_WIDTHS: Readonly<Record<string, number>> = {};
 
 /** The width of the slot a sortable column's header draws its sort mark in, ▲ or ▼, beside its
  *  label. Each such column's minimum counts it whether or not the table is sorted by the column
- *  now, so a sort never takes room from the label (`DataTableModel.measureHeader`); a header that
+ *  now, so a sort never takes room from the label (`TableLayoutModel.measureHeader`); a header that
  *  wraps (`wrap`) draws the slot only while its column is sorted. */
 export const SORT_MARK_WIDTH = 10;
 
@@ -138,10 +129,6 @@ export interface DataTableModel<Row> {
   readonly virtual: boolean;
   /** Whether `ViewportAnchor` may hold the row in hand across this commit. */
   readonly anchorEnabled: () => boolean;
-  /** Takes the width column `columnId`'s header draws at with nothing cut, which the column is
-   *  never drawn narrower than, whatever width the layout or the reader gives it. `DataTable`'s
-   *  header cells measure it once per layout. */
-  readonly measureHeader: (columnId: string, width: number) => void;
 }
 
 /**
@@ -201,15 +188,6 @@ export function useDataTable<Row>({
   virtual = true,
 }: DataTableOptions<Row>): DataTableModel<Row> {
   const [expanded, setExpanded] = useState<ExpandedState>(true);
-  // Each column's header width, by column id, as `measureHeader` last took it.
-  const [headerWidths, setHeaderWidths] = useState(NO_WIDTHS);
-  const measureHeader = useCallback(
-    (columnId: string, width: number) =>
-      setHeaderWidths((widths) =>
-        widths[columnId] === width ? widths : { ...widths, [columnId]: width }
-      ),
-    []
-  );
   const [sortedRowModel] = useState(() =>
     groupOrder === undefined ? getSortedRowModel<Row>() : sortedByGroup(groupOrder)
   );
@@ -255,12 +233,15 @@ export function useDataTable<Row>({
     getExpandedRowModel: getExpandedRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
   });
-  // No column is drawn narrower than its header: each takes the larger of the width the layout
-  // gives it, which holds the layout's minimum, and its header's width, and TanStack still keeps
-  // it at its definition's `minSize`. Folded in once TanStack has resolved each column's id and
-  // own width, then handed to it as the sizing every width, offset and total is read from.
+  // No column is drawn narrower than its header. The layout folds each header's width into the
+  // width it gives a column before it pins (`TableLayoutModel.measureHeader`), so the pins hold
+  // their share; a column it gives no width takes the larger of its definition's width and its
+  // header's here, and TanStack still keeps each at its definition's `minSize`. Folded in once
+  // TanStack has resolved each column's id and own width, then handed to it as the sizing every
+  // width, offset and total is read from.
   const leafColumns = table.getAllLeafColumns();
   const laidOut = layout.responsive.sizing;
+  const { headerWidths } = layout;
   const columnSizing = useMemo(() => {
     const sizing: ColumnSizingState = { ...laidOut };
     for (const column of leafColumns) {
@@ -340,7 +321,6 @@ export function useDataTable<Row>({
     anchorEnabled: () => previousView.current === viewKey,
     displayRows,
     layout,
-    measureHeader,
     table,
     virtual,
     virtualizer,
@@ -517,7 +497,7 @@ export function DataTable<Row>({
                       divider={drawsPinnedDivider(header.column, trailingWidth > 0)}
                       dragColumn={dragColumn}
                       header={header}
-                      measure={model.measureHeader}
+                      measure={layout.measureHeader}
                       noun={noun}
                       key={header.id}
                       openFilter={openFilter}
@@ -601,7 +581,7 @@ function TableHeaderCell<TData>({
   /** Whether it draws the pinned columns' divider at its right (`drawsPinnedDivider`). */
   divider: boolean;
   header: Header<TData, unknown>;
-  /** Takes the width this header draws at with nothing cut (`DataTableModel.measureHeader`). */
+  /** Takes the width this header draws at with nothing cut (`TableLayoutModel.measureHeader`). */
   measure: (columnId: string, width: number) => void;
   /** What one row of this table is, which this cell's filter menu counts in. */
   noun: RowNoun;
