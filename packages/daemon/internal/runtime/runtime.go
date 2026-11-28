@@ -273,10 +273,14 @@ const BreakingDrift = "[breaks the pod] "
 // further on says nothing.
 func Breaks(reason string) bool { return strings.HasPrefix(reason, BreakingDrift) }
 
+// roundReasonsSeparator is what RoundReasons joins a round's reasons with, and where AccountDrift
+// cuts the configured account from the reason after it.
+const roundReasonsSeparator = ", "
+
 // RoundReasons is the one string an update round records of the reasons PodDrift gave for its pod
 // (supervise.Claim.UpdateReasons): each reason of a drift that breaks the pod (Breaks) first, then
-// every other, each group in the order given, joined with ", ". The string opens on BreakingDrift
-// exactly where a reason does (Breaks).
+// every other, each group in the order given, joined with roundReasonsSeparator. The string opens
+// on BreakingDrift exactly where a reason does (Breaks).
 func RoundReasons(reasons []string) string {
 	ordered := make([]string, 0, len(reasons))
 	for _, reason := range reasons {
@@ -289,7 +293,7 @@ func RoundReasons(reasons []string) string {
 			ordered = append(ordered, reason)
 		}
 	}
-	return strings.Join(ordered, ", ")
+	return strings.Join(ordered, roundReasonsSeparator)
 }
 
 // The words of the account drift's reason around its two accounts (AccountDriftReason,
@@ -313,8 +317,8 @@ func AccountDriftReason(old, next string) string {
 // AccountDrift reads the account drift out of reasons, a round's recorded reasons
 // (RoundReasons): the account the pod runs as (old), the configured account (next), and whether
 // the reasons hold an account drift at all (AccountDriftReason wrote it). RoundReasons joins its
-// reasons with ", ", and no Kubernetes service account name holds a comma, so the configured
-// account ends where the next reason begins.
+// reasons with roundReasonsSeparator, and no Kubernetes service account name holds a comma, so the
+// configured account ends where the next reason begins.
 func AccountDrift(reasons string) (old, next string, ok bool) {
 	_, account, ok := strings.Cut(reasons, BreakingDrift+accountDriftLead)
 	if !ok {
@@ -324,7 +328,7 @@ func AccountDrift(reasons string) (old, next string, ok bool) {
 	if !ok {
 		return "", "", false
 	}
-	next, _, _ = strings.Cut(next, ", ")
+	next, _, _ = strings.Cut(next, roundReasonsSeparator)
 	return old, next, true
 }
 

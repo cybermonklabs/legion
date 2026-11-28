@@ -2101,7 +2101,7 @@ func TestPodUpdateAnOpenRoundHoldsATaskOnlyFromAWorkerThatAnsweredIt(t *testing.
 // claim that left the round and carries no lift mark is asked nothing: the round asks it nothing.
 func TestPodUpdateTheRoundAsksAClaimAgainWhetherOrNotTheHoldLiftedItsAnswer(t *testing.T) {
 	const task = "review the pull request"
-	breaking := runtime.BreakingDrift + "account default, now legion-worker"
+	breaking := runtime.AccountDriftReason("default", "legion-worker")
 	for _, tc := range []struct {
 		name            string
 		answers, lifted bool

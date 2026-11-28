@@ -157,15 +157,13 @@ func TestWorkHoldLetsTheControllerStartItsClaimOnceTheTreeOpens(t *testing.T) {
 // tree's work hold stands is resumed by the controller's resume, as when no hold stands.
 func TestWorkHoldLetsTheControllerResumeAMergerWhileTheTreeIsHeld(t *testing.T) {
 	c := queuedClaim()
-	c.Token, c.Role = "legion-LEGION-209-merger", claim.RoleMerger
+	c.Token, c.Role = mergerToken, claim.RoleMerger
 	h := newHarnessOf(t, c)
 	suspendedBy(h, SuspendedByController)
 	h.store.closeHold(h.claim().Tree)
 	resumes := len(h.calls("Resume"))
 
-	if err := h.handle(RequestResume{Claim: h.token, By: SuspendedByController}); errors.Is(err, ErrHeldByWorkHold) {
-		t.Fatalf("the controller's resume of the merger answered %v, want it taken: the hold holds no merger", err)
-	}
+	h.must(RequestResume{Claim: h.token, By: SuspendedByController})
 
 	h.wantState(StateLaunching)
 	if got := len(h.calls("Resume")); got != resumes+1 {

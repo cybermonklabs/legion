@@ -27,7 +27,7 @@ import (
 // backoff, and a run of three, with about three seconds of backoff between the first and the last
 // (record.RetryBackoff), is no longer a moment's fault. Recording it is what lets the news go,
 // naming why the change list, or the version the holder last took, could not be read, and what
-// releases a merger held for it (mergerWaitsForTheDesignGate). An unread history is still asked
+// releases a merger held for it (mergerWaitsForItsNews). An unread history is still asked
 // again by every later reconcile, since a read that failed says nothing about the document, and
 // nothing is told from it while such a reconcile is pending (readNewsRecorded).
 const designChangesAttempts = 3
@@ -83,7 +83,7 @@ func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
 //     before: the news says the version could not be read, and why (workflow.RenderNews), and the
 //     next reconcile asks the history again, nothing being told from the unread row while that
 //     one is pending (readNewsRecorded). So every read this row makes ends within its bounded
-//     attempts, and a merger held for the news is released then (mergerWaitsForTheDesignGate).
+//     attempts, and a merger held for the news is released then (mergerWaitsForItsNews).
 //  4. In one transaction under the fact lock (intake.SerializeFacts), it settles each owed member
 //     (settleNews).
 //  5. In that same transaction, it settles the tree root's architect row, and queues the root
@@ -723,7 +723,7 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 // the record and its review history has no unread row that stands: none is recorded, or a
 // reconcile of the tree is pending, which reads that history again (readNewsRecorded). A merger
 // released without it could merge before it reads what changed, or be told a failure the pending
-// reconcile would replace, so its start waits (mergerWaitsForTheDesignGate). The wait ends within
+// reconcile would replace, so its start waits (mergerWaitsForItsNews). The wait ends within
 // the design_changes row's bounded attempts, since a pair Dispatch cannot read is recorded
 // unavailable, and a review history it cannot read is recorded unread (designChangesAttempts).
 func (r *outbox) mergerNewsUnrecorded(ctx context.Context, issue record.Issue) (bool, error) {

@@ -483,16 +483,8 @@ func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	if len(awaiting) > 0 {
 		held := gateHoldsWork
 		if !held {
-			// The hold is read against the tree root: issue itself, or the member of this read
-			// (store.TreeIssues) whose key is the tree's, nil where the record does not hold it.
-			treeRoot := &issue
-			if !root {
-				treeRoot = nil
-				if i := slices.IndexFunc(members, func(member record.Issue) bool { return member.Key == issue.Tree }); i >= 0 {
-					treeRoot = &members[i]
-				}
-			}
-			if held, err = workHoldStands(ctx, tx, store, treeRoot); err != nil {
+			// The hold is read against the tree root (treeRootAmong).
+			if held, err = workHoldStands(ctx, tx, store, treeRootAmong(&issue, root, members)); err != nil {
 				return record.CatchUpTree{}, "", err
 			}
 		}
@@ -506,6 +498,19 @@ func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		}
 	}
 	return catchUp, reason, nil
+}
+
+// treeRootAmong is the tree root of issue: issue itself where root says it is the tree root, else
+// the member of members, the issues of issue's tree as one read gives them (store.TreeIssues),
+// whose key is the tree's, and nil where members do not hold it.
+func treeRootAmong(issue *record.Issue, root bool, members []record.Issue) *record.Issue {
+	if root {
+		return issue
+	}
+	if i := slices.IndexFunc(members, func(member record.Issue) bool { return member.Key == issue.Tree }); i >= 0 {
+		return &members[i]
+	}
+	return nil
 }
 
 // awaitingAcceptance is the keys, in the order given, of accepting — issues of issue's tree that

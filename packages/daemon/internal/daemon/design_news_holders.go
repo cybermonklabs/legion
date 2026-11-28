@@ -333,14 +333,13 @@ func holdsUntakenTask(held *record.RoleClaim) bool {
 // news; and no suspension that holds is over its agent and the work hold did not stop it
 // (stopped: a suspension no rule may lift, supervise.SuspendSource.RuleMayLift). A suspension that
 // holds is the operator's or the controller's (supervise.SuspendSource.Holds), which no start the
-// daemon queues gets past. A claim an idle pod
-// release suspended takes the news, and the start that carries it wakes the claim as any start
-// wakes one. A claim the work hold stopped takes none: a news-only start that reached it would end
-// the hold, and its one task would carry news and no work. The start that ends the hold is the
-// opening's (record.SuperviseRequest.Opening), and it carries the news behind the opening's
-// sentences (the outbox's startNewsOf). Both readers state it through this: the reconcile and the
-// architect's summary over the claim the record holds (recordedClaimTakesNews), and the start over
-// the claim its machine holds (newsOnlyRefusal).
+// daemon queues gets past. A claim an idle pod release suspended takes the news, and the start
+// that carries it wakes the claim as any start wakes one. A claim the work hold stopped takes
+// none: a news-only start that reached it would end the hold, and its one task would carry news
+// and no work. The start that ends the hold is the opening's (record.SuperviseRequest.Opening),
+// and it carries the news behind the opening's sentences (the outbox's startNewsOf). Both readers
+// state it through this: the reconcile and the architect's summary over the claim the record holds
+// (recordedClaimTakesNews), and the start over the claim its machine holds (newsOnlyRefusal).
 func newsClaimTakes(given, entry int64, state supervise.ClaimState, stopped bool) bool {
 	return given == entry && !claimEnded(state) && !stopped
 }

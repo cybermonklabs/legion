@@ -192,8 +192,8 @@ const (
 // naming the step approved last, and, where a gated step stands open on an ancestor's approval,
 // each such step with the approval it stands on (gateOpenedMessage); and the closed sentence,
 // naming the version that closed it, once a later version has (gateClosedSentence). tellGateMoved
-// writes both through the same two functions, so a merger's release reads the words its prompt
-// quotes, and news sent after the gate closed again says so.
+// writes both through the same two functions, so the gate sentence of a news task is the role
+// message's own words, and news sent after the gate closed again says so.
 //
 // To a holder it then names, for each step, the version pair as the version its phase last took,
 // the sections and the typed blocks that changed (requirements and the other non-check blocks for

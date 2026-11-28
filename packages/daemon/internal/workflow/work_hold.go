@@ -41,8 +41,7 @@ import (
 // running is cut: long enough for a worker to end its turn at its next step. The outbox names
 // each stop's deadline that far after the message reached the claim (internal/daemon's
 // postHoldStop), the close names the deadline of the stop of a start under way that far after the
-// close (workHoldClose), and the close message names it to the worker (workHoldSentence). The
-// hold stops no merger, so nothing counts it from a merger's start.
+// close (workHoldClose), and the close message names it to the worker (workHoldSentence).
 const HoldStopGrace = 2 * time.Minute
 
 // The sentences of the hold's texts beside today's gate messages (gateClosedHead,
@@ -210,7 +209,7 @@ func TellsOwnersAcceptance(issue record.Issue, notice record.Notice) bool {
 	if issue.Phase != phase.Accepting {
 		return false
 	}
-	return notice.Kind == "phase-finished" || notice.Kind == "merge-holds-changed" ||
+	return notice.Kind == "phase-finished" || notice.Kind == mergeHoldsChangedNoticeKind ||
 		(notice.Kind == AwaitingChildrenNoticeKind && notice.Phase == phase.AwaitingChildren)
 }
 
@@ -380,23 +379,19 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 	told, stopped := 0, 0
 	for _, c := range claims {
 		var how string
-		underWay := startUnderWay(c.run, root)
 		switch {
-		case c.role == claim.RoleArchitect && c.live():
-			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: architectClose, Close: true}); err != nil {
-				return err
-			}
-			told++
-			continue
-		case c.role == claim.RoleArchitect:
-			continue
-		case !claim.HeldByWorkHold(c.role) && c.live():
-			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: mergerClose, Close: true}); err != nil {
-				return err
-			}
-			told++
-			continue
 		case !claim.HeldByWorkHold(c.role):
+			if !c.live() {
+				continue
+			}
+			body := mergerClose
+			if c.role == claim.RoleArchitect {
+				body = architectClose
+			}
+			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: body, Close: true}); err != nil {
+				return err
+			}
+			told++
 			continue
 		case c.live():
 			how = "told to end its turn"
@@ -405,7 +400,7 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 				return err
 			}
 			told++
-		case c.state().Released() || underWay:
+		case c.state().Released() || startUnderWay(c.run, root):
 			how = "held at the ready of a start under way"
 			if c.state().Released() {
 				how = "held over its release at once"

@@ -35,10 +35,9 @@
 #   - a6-a-merged-root-is-told-nothing: a root in merging on a pull request GitHub reports merged
 #     is sent nothing and its merger's request_backward_move is refused naming the merge, while
 #     its unmerged child in reviewing is sent the task;
-#   - a7-the-merger-waits-then-reads-the-opening: with the gate closed the merger is not launched,
-#     in the window a merger whose gate is open is launched; the approval launches it with a start
-#     task that holds the start's own text, a blank line, and then the news, which opens with the
-#     gate's opening and names what changed;
+#   - a7-the-merger-starts-then-reads-the-opening: with the gate closed the merger is launched, as
+#     a merger whose gate is open is, since no value of gates.hold holds the merge; the approval
+#     sends it a news task, which opens with the gate's opening and names what changed;
 #   - r6-only-the-root-is-told-of-its-checks: a root's checks-only approval reaches the root's
 #     phase holder and the root's architect, each at the entry the daemon's start path gave it,
 #     and its children's workers are sent no task;
@@ -229,7 +228,7 @@ part_one_checks=(
   a3-a-checks-change-reaches-accepting-and-implementing:7
   a5-the-tester-passes-and-the-reviewer-is-told:9
   a6-a-merged-root-is-told-nothing:5
-  a7-the-merger-waits-then-reads-the-opening:7
+  a7-the-merger-starts-then-reads-the-opening:7
   r6-only-the-root-is-told-of-its-checks:4
   off-the-daemon-sends-nothing:5
 )

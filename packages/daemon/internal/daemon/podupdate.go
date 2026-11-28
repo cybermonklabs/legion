@@ -1408,13 +1408,13 @@ type roundCall struct {
 // (keepForHeldWork, with the late notice and the lift of the answers the round holds), and a
 // round that owes its claims an ask again (heldWork.owesAsk) asks them, with a new bound, and
 // replaces nothing at this attempt (askRoundAgain). Only if neither keeps the pod do we write a
-// replacement record before the call
-// (recordRoundReplacement), so the last word is the last decision before the suspension, and a last
-// word that refuses takes it away again (recordedDue), which also says whether the runtime asked
-// the last word (asked). The call is bounded to one sweep interval. A last word that refuses is the
-// daemon's own and is logged only, and the round stays open. A call that fails otherwise is logged
-// and its record left for the next sweep (finishReplacements), and past the bound it holds the
-// round, so it is told to the controller once (tellLateRound, failedReplacementReason).
+// replacement record before the call (recordRoundReplacement), so the last word is the last
+// decision before the suspension, and a last word that refuses takes it away again (recordedDue),
+// which also says whether the runtime asked the last word (asked). The call is bounded to one
+// sweep interval. A last word that refuses is the daemon's own and is logged only, and the round
+// stays open. A call that fails otherwise is logged and its record left for the next sweep
+// (finishReplacements), and past the bound it holds the round, so it is told to the controller
+// once (tellLateRound, failedReplacementReason).
 //
 // A call that answers nil made the replacement, or found the round's pod already taken and asked
 // no last word. Such a call took nothing, and the round ends as the act that did take the pod: as
@@ -1444,7 +1444,7 @@ func (s *supervision) replaceForRound(ctx context.Context, replace podReplacemen
 		}
 		return
 	case heldWorkAsksAgain:
-		s.askRoundAgain(ctx, issue, round, pod, told, work, clock)
+		s.askRoundAgain(ctx, issue, round, pod, told, clock)
 		return
 	}
 	// Record the replacement only after both keep decisions, before the runtime acts. The last
@@ -1694,27 +1694,29 @@ const (
 
 // heldWork is what a breaking-drift round's claims, and this daemon's record of the round's keeps,
 // say at one reading of the work the hold stopped (heldWorkOf): held is the claims the hold
-// stopped whose work may be on the pod's disk (heldWorkClaims); lifted, the claims whose answer's
-// hold on their tasks the hold lifted (holdToldClaims); opened, the claims the hold's opening
-// started that the round has not asked again since (openedClaims); and kept, whether the round's
-// last replacement attempt found held work keeping the pod (heldWorkKept).
+// stopped whose work may be on the pod's disk (heldWorkClaims); lifted, whether a claim of the
+// round holds an answer whose hold on its tasks the hold lifted (supervise.Claim.UpdateHoldToldAt,
+// liftAnswerHolds); opened, the claims the hold's opening started that the round has not asked
+// again since (openedClaims); and kept, whether the round's last replacement attempt found held
+// work keeping the pod (heldWorkKept).
 type heldWork struct {
-	held, lifted, opened []supervise.Claim
-	kept                 bool
+	held, opened []supervise.Claim
+	lifted, kept bool
 }
 
 // heldWorkOf is the round's heldWork over group, the issue's claims, with held, the claims
 // heldWorkClaims gives of them. The caller reads held, since only it knows whether the pod's disk
 // holds earlier work (roundPodHoldsEarlierWork).
 func (s *supervision) heldWorkOf(issue string, group []supervise.Claim, round string, held []supervise.Claim) heldWork {
-	return heldWork{held: held, lifted: holdToldClaims(group, round), opened: openedClaims(group, round), kept: s.heldWorkKept(issue, round)}
+	lifted := slices.ContainsFunc(group, func(c supervise.Claim) bool { return c.UpdateRound == round && c.UpdateHoldToldAt != nil })
+	return heldWork{held: held, lifted: lifted, opened: openedClaims(group, round), kept: s.heldWorkKept(issue, round)}
 }
 
 // marked is whether the round carries any mark of the hold: an answer the hold lifted, a claim
 // the opening started that the round has not asked again, or a keep this daemon recorded. The
 // walk reads nothing more of a round that carries none (settleHeldWork).
 func (w heldWork) marked() bool {
-	return len(w.lifted) > 0 || len(w.opened) > 0 || w.kept
+	return w.lifted || len(w.opened) > 0 || w.kept
 }
 
 // owesAsk is whether the round asks its claims again, with a new bound, before anything replaces
@@ -1725,7 +1727,7 @@ func (w heldWork) marked() bool {
 // not the hold lifted any answer (the Legion reviewer's finding PRRT_kwDORFy7ds69Beqt): the claim
 // the opening started never answered, and the bound the round has run to may be past.
 func (w heldWork) owesAsk() bool {
-	return len(w.lifted) > 0 || len(w.opened) > 0 || (w.kept && len(w.held) == 0)
+	return w.lifted || len(w.opened) > 0 || (w.kept && len(w.held) == 0)
 }
 
 // step is the one decision of the rule (heldWorkStep). cleared is whether a read of the workspace
@@ -2037,24 +2039,11 @@ func (s *supervision) liftAnswerHolds(ctx context.Context, issue string, told []
 	}
 }
 
-// holdToldClaims is every claim of group in round whose answer's hold on its tasks the work hold
-// lifted (supervise.Claim.UpdateHoldToldAt, liftAnswerHolds).
-func holdToldClaims(group []supervise.Claim, round string) []supervise.Claim {
-	var of []supervise.Claim
-	for _, c := range group {
-		if c.UpdateRound == round && c.UpdateHoldToldAt != nil {
-			of = append(of, c)
-		}
-	}
-	return of
-}
-
 // askRoundAgain asks the round's claims again once the hold no longer keeps the round's pod and
 // the round owes that ask (heldWork.owesAsk): the hold's opening started the claims it stopped, an
 // operator started one, or a read found the held work pushed. The walk asks (settleHeldWork), and
 // so does the replacement (replaceForRound); a launch keeps the pod for that ask
-// (roundPodEndsAtLaunch). work is the round's heldWork at that reading, and told the issue's
-// claims as they hold their answers.
+// (roundPodEndsAtLaunch). told is the issue's claims as they hold their answers.
 //
 // It asks again each claim of told that askedAgainClaims gives, whether or not the hold lifted
 // any answer (the Legion reviewer's finding PRRT_kwDORFy7ds69Beqt): each claim the round asks,
@@ -2065,20 +2054,21 @@ func holdToldClaims(group []supervise.Claim, round string) []supervise.Claim {
 // bound, which can be past by the opening. Each is stamped asked again (supervise's
 // Machine.PodUpdateAskedAgain): its answer and its ask mark go, so a later sweep asks it
 // (askRound). A claim the round passes over keeps its answer: it has run nothing since. The stamp
-// is the clock's now, or the latest queueing of an opening's task of work.opened where that is
-// later, so the stamp ends the opening mark of each such claim. The round's bound starts again at
-// that stamp for every claim of the round (roundStartedAt), so each ask states a moment the
-// round's whole grace away, a claim the opening started included. Nothing is replaced at this
-// attempt: the round replaces its pod once each claim it asks has answered and no turn runs, or
-// at that new bound, as any round does. The next replacement attempt reads the workspace afresh.
+// is the clock's now, or the latest queueing of an opening's task of the claims the opening
+// started (openedClaims) where that is later, so the stamp ends the opening mark of each such
+// claim. The round's bound starts again at that stamp for every claim of the round
+// (roundStartedAt), so each ask states a moment the round's whole grace away, a claim the opening
+// started included. Nothing is replaced at this attempt: the round replaces its pod once each
+// claim it asks has answered and no turn runs, or at that new bound, as any round does. The next
+// replacement attempt reads the workspace afresh.
 //
 // A stamp the store refused is logged, and the round still owes the ask: the claim keeps its lift
 // mark or its opening mark, and the keep this daemon recorded (heldWorkKept) is forgotten only
 // once every stamp went through. So the next sweep asks again, and that ask, like this one, is of
 // every claim the round asks.
-func (s *supervision) askRoundAgain(ctx context.Context, issue, round, pod string, told []supervise.Claim, work heldWork, clock roundClock) {
+func (s *supervision) askRoundAgain(ctx context.Context, issue, round, pod string, told []supervise.Claim, clock roundClock) {
 	at := clock.now
-	for _, c := range work.opened {
+	for _, c := range openedClaims(told, round) {
 		if c.Pending.QueuedAt.After(at) {
 			at = c.Pending.QueuedAt
 		}
@@ -2169,7 +2159,7 @@ func (s *supervision) tellWaitingLaunches(ctx context.Context, issue string, tol
 
 // settleHeldWork is the walk's step, at each sweep, over round, a breaking-drift round of issue
 // open over pod that carries a mark of the work hold (heldWork.marked): an answer the hold lifted
-// (holdToldClaims), a claim the hold's opening started that the round has not asked again
+// (heldWork.lifted), a claim the hold's opening started that the round has not asked again
 // (openedClaims), or a keep for held work that the last replacement attempt recorded
 // (heldWorkKept). It decides by the one rule the replacement and the launch read
 // (heldWork.step), with no read of the workspace. While the hold still stops a claim whose work
@@ -2191,7 +2181,7 @@ func (s *supervision) settleHeldWork(ctx context.Context, issue, round, pod stri
 		// Release its task before waiting for that report.
 		s.liftAnswerHolds(ctx, issue, told, round)
 	case heldWorkAsksAgain:
-		s.askRoundAgain(ctx, issue, round, pod, told, work, clock)
+		s.askRoundAgain(ctx, issue, round, pod, told, clock)
 		return true
 	}
 	return false

@@ -584,6 +584,15 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
     return sent;
   };
 
+  /** Gives up the placement waiting for its answer where it is `session`'s, and returns it:
+   *  undefined where none waits or the one waiting is another session's, which stays. */
+  const giveUp = (session: string): Pending | undefined => {
+    const waiting = pending;
+    if (waiting?.session !== session) return undefined;
+    pending = undefined;
+    return waiting;
+  };
+
   /** The new placement of `session` whose answer `messages` already hold, recorded: the request
    *  after it can reach this plugin before that answer's `message_end` does. */
   const settle = (messages: readonly unknown[], session: string): ApprovalSent | undefined => {
@@ -618,7 +627,7 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
   ): boolean => {
     const now = standing;
     if (now === null || present.some((sent) => sent.version === now.version)) {
-      if (pending?.session === session) pending = undefined;
+      giveUp(session);
       return false;
     }
     // Newer than every message of the request, so Oh My Pi, which tells messages apart by role
@@ -688,8 +697,7 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
     // Only the newest request of such a model counts: the answer that is saved next answers it.
     carrying = undefined;
     const session = context.sessionManager.getSessionId();
-    const waiting = pending?.session === session ? pending : undefined;
-    if (waiting !== undefined) pending = undefined;
+    const waiting = giveUp(session);
     const rewrite =
       model.api !== undefined && Object.hasOwn(TOP_LEVEL, model.api)
         ? TOP_LEVEL[model.api]
@@ -735,7 +743,7 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
       // model records it. The request's own model decides, not `context.model`, which a fallback
       // return made earlier in the same hook has already moved to the next request's.
       if (refusingMidConversationSystem(model) !== undefined) {
-        if (pending?.session === session) pending = undefined;
+        giveUp(session);
         return false;
       }
       // The host can move to another session while the read waits: the request is the session's

@@ -66,14 +66,10 @@ func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
-	held := func(stands phase.Phase) *api.WhyView {
-		return &api.WhyView{State: api.WhyHeld, Reason: "Its phase is " + string(stands) + ", and the work hold holds the work of its tree " +
-			"LEGION-800 until every gated step stands open again: version 4 of its spec document (artifact-800) closed the design gate."}
-	}
-	for key, want := range map[string]*api.WhyView{"LEGION-801": held(phase.Implementing)} {
-		if got := got.Issues[key].Why; !reflect.DeepEqual(got, want) {
-			t.Errorf("%s's why = %+v, want %+v", key, got, want)
-		}
+	want := &api.WhyView{State: api.WhyHeld, Reason: "Its phase is " + string(phase.Implementing) + ", and the work hold holds the work of its tree " +
+		"LEGION-800 until every gated step stands open again: version 4 of its spec document (artifact-800) closed the design gate."}
+	if got := got.Issues["LEGION-801"].Why; !reflect.DeepEqual(got, want) {
+		t.Errorf("LEGION-801's why = %+v, want %+v", got, want)
 	}
 	for key, view := range got.Issues {
 		if key == "LEGION-801" {

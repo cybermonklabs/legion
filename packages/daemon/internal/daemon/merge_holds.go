@@ -29,9 +29,9 @@ import (
 // another phase, it is out of the workflow, its tree lingers, or its pull request has merged. What
 // follows - a claim that failed or retired, the news the merger is owed, the wake and the publish -
 // is deliverHeld's, as it is a merge-queue removal's: it ends on a failed or retired merger, and
-// holds a released merger under mergerWaitsForTheDesignGate while the news of the approved design
-// the merger is owed is not yet recorded. No value of the hold holds the merge, so a closed design
-// gate holds nothing of this row.
+// holds a released merger under mergerWaitsForItsNews while the news of the approved design the
+// merger is owed is not yet recorded. No value of the hold holds the merge, so a closed design gate
+// holds nothing of this row.
 func (r *outbox) mergeHoldsChanged(ctx context.Context, row record.OutboxRow, payload record.MergeHoldsChanged) error {
 	if r.notices == nil {
 		return errors.New("merge-holds change executor has no Envoy publisher")

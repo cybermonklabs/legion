@@ -38,6 +38,9 @@ const (
 	resumeTask = "Continue Implement LEGION-209. Issue: LEGION-209. Phase: implementing. Resume the existing phase work."
 )
 
+// mergerToken is the merger's claim of the harness's issue.
+const mergerToken claim.Token = "legion-LEGION-209-merger"
+
 // holdStop is the work hold's stop of h's claim as the outbox posts it, once the close has written
 // the tree's work hold row (closeHold): the message that asked the agent to end its turn reached
 // the claim at after, and the stop is cut holdGrace later.

@@ -2738,16 +2738,18 @@ func (m *Machine) PodUpdateHoldTold(ctx context.Context, round string, tell func
 // keeps its pod (internal/daemon's askRoundAgain): the hold's opening, a read that finds the held
 // work pushed, or an operator's act on a claim the hold stopped. The round asks again each claim
 // it asks, each claim the hold's opening started, and each claim whose answer's hold on its tasks
-// the work hold lifted (UpdateHoldToldAt), whether or not the hold lifted any answer: a claim the
-// hold lifted went on with its work, a claim the opening started goes on with the work the hold
-// stopped, so the answer of either says nothing of the work it did since, and the ask every
-// other claim holds names the round's old bound. Its answer, its ask mark and its mark of the
-// hold's message go (UpdateSignalledAt, UpdateTaskedAt, UpdateHoldToldAt), so the sweep asks it
-// again, and at is stamped as the start of the round's new bound (UpdateAskedAgainAt). The
-// round's notice mark stays (UpdateToldAt): one round is told late once. A claim that left the
-// round since keeps its answer and its ask, and only its mark of the hold's message goes: the
-// round asks it nothing, and what it had answered when it left is what the round's end reads of
-// it (Claim.LeftPodRound).
+// the work hold lifted (UpdateHoldToldAt): a claim the hold lifted went on with its work, a claim
+// the opening started goes on with the work the hold stopped, so the answer of either says nothing
+// of the work it did since, and the ask every other claim holds names the round's old bound. After
+// the opening or an operator's act the round asks again whether or not the hold lifted any answer;
+// after a read that finds the held work pushed while the hold still stops a claim, it asks again
+// only where the hold lifted an answer (internal/daemon's heldWork.owesAsk). Its answer, its ask
+// mark and its mark of the hold's message go (UpdateSignalledAt, UpdateTaskedAt, UpdateHoldToldAt),
+// so the sweep asks it again, and at is stamped as the start of the round's new bound
+// (UpdateAskedAgainAt). The round's notice mark stays (UpdateToldAt): one round is told late once.
+// A claim that left the round since keeps its answer and its ask, and only its mark of the hold's
+// message goes: the round asks it nothing, and what it had answered when it left is what the
+// round's end reads of it (Claim.LeftPodRound).
 //
 // It does nothing and reports false where the claim is not in round, and, for a claim that carries
 // no mark of the hold's message, where it left the round or the round asked it again at at or
@@ -2759,14 +2761,13 @@ func (m *Machine) PodUpdateHoldTold(ctx context.Context, round string, tell func
 func (m *Machine) PodUpdateAskedAgain(ctx context.Context, round string, at time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.unlock()
-	c := m.claim
-	if c.UpdateRound != round {
-		return false, nil
-	}
-	if c.UpdateHoldToldAt == nil && (c.LeftPodRound(round) || (c.UpdateAskedAgainAt != nil && !c.UpdateAskedAgainAt.Before(at))) {
-		return false, nil
-	}
 	before := m.claim
+	if before.UpdateRound != round {
+		return false, nil
+	}
+	if before.UpdateHoldToldAt == nil && (before.LeftPodRound(round) || (before.UpdateAskedAgainAt != nil && !before.UpdateAskedAgainAt.Before(at))) {
+		return false, nil
+	}
 	m.claim.UpdateHoldToldAt = nil
 	if !m.claim.LeftPodRound(round) {
 		m.claim.UpdateAskedAgainAt = &at

@@ -1865,12 +1865,10 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // each would start a pod for every CI settlement and every gate move, once per released role.
 // Published, the message would meet a released role as one nobody holds: the listener answers
 // holder_lapsed, or unclaimed once the reaper has freed the claim, and raises the role's wake
-// beside either, so the pod would come back for a message the row had already dropped. The design
-// gate's close message to a released merger is no exception: no value of the hold holds the
-// merge, so the merger has nothing to do on it. The one exception is a row a project's pause held
-// for a role a pause stopped: without the pause the role would have had the message, so the row
-// is published to the role after the resume, and that publish wakes it (internal/daemon's
-// outbox.roleMessage, R4 of dispatch://INFRA-3759).
+// beside either, so the pod would come back for a message the row had already dropped. The one
+// exception is a row a project's pause held for a role a pause stopped: without the pause the role
+// would have had the message, so the row is published to the role after the resume, and that
+// publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759).
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
@@ -2540,11 +2538,10 @@ func MergeHoldsChangedReason(project string) string {
 //
 // The row is held as a merge-queue removal is held (MergeQueueRemoval): it wakes a released merger
 // and waits until the merger's session holds its role, and while the rule that holds the merger's
-// start holds it (the daemon's mergerWaitsForTheDesignGate: the news of the approved design the
-// merger is owed is not yet recorded; no value of the design gate's hold holds the merge) it
-// neither wakes nor tells a released merger. It ends undelivered when the issue has left
-// merging (its phase is not merging, it is out of the workflow, its tree lingers, or its pull
-// request has merged), and when the merger's claim is failed or retired.
+// start holds it (the daemon's mergerWaitsForItsNews: the news of the approved design the merger
+// is owed is not yet recorded) it neither wakes nor tells a released merger. It ends undelivered
+// when the issue has left merging (its phase is not merging, it is out of the workflow, its tree
+// lingers, or its pull request has merged), and when the merger's claim is failed or retired.
 type MergeHoldsChanged struct {
 	Project string `json:"project"`
 }

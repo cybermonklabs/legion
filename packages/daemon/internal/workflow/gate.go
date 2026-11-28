@@ -1477,8 +1477,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 // approval is named first, as the person's clause. Where onBasis is empty, that clause is the
 // whole cause of the opening, and the message says the design worked to is the approved one.
 // Otherwise each step on a basis is named after it with the ancestor's approval it stands on, and
-// with the root's version that no person approved. It says nothing of a merge: no value of the
-// hold holds one, so the opening releases none.
+// with the root's version that no person approved.
 func gateOpenedMessage(tree string, step record.DesignStep, document string, version int, onBasis []record.DesignGate) string {
 	var body strings.Builder
 	fmt.Fprintf(&body, "The design gate of %s opened: ", tree)

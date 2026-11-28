@@ -81,12 +81,11 @@ const cutoverOldContract = 68
 const cutoverStoredSeq = 5
 
 // cutoverWait bounds each wait of this test on the daemon's own work after its boot: a launch, a
-// registration, an outbox row's tries, an idle pass. The longest of those is a row on its
-// backoff, up to the outbox's 64 seconds (record.RetryBackoff), so the bound stays above that. It
-// is the bound a
-// fault is reported at, so a slow machine is no failure, and a start that never comes fails here
-// rather than at the package's deadline. cutoverPoll is how often a wait asks: most questions are a
-// read of the daemon's claims over its API or of its database.
+// registration, an outbox row's tries, an idle pass. The longest of those is a row on its backoff,
+// up to the outbox's 64 seconds (record.RetryBackoff), so the bound stays above that. It is the
+// bound a fault is reported at, so a slow machine is no failure, and a start that never comes
+// fails here rather than at the package's deadline. cutoverPoll is how often a wait asks: most
+// questions are a read of the daemon's claims over its API or of its database.
 const (
 	cutoverWait = 90 * time.Second
 	cutoverPoll = 100 * time.Millisecond
@@ -96,11 +95,6 @@ const (
 // production minute): the idle release of the second half is read from the claim rows the test
 // back-dates (releaseAgain), so the tick buys nothing but the wait for it.
 const cutoverIdleTick = 250 * time.Millisecond
-
-// cutoverEntrySweep is how often this test's daemon runs its entry sweep (overrides.entrySweep,
-// the production minute), whose backstop queues the reconcile of design news a member is owed
-// (queueOwedDesignNews). At the production minute a wait on it would be most of this test's time.
-const cutoverEntrySweep = time.Second
 
 // TestTheCutoverStartsTheMergersTheOldBuildLeftStopped holds that the first boot of this release on
 // a record legion-v19.57.3 left gives a merging task to each merger nothing else would start
@@ -205,7 +199,7 @@ const cutoverEntrySweep = time.Second
 //     (record.KeepsSlot), so it is claimable at once, as any start of `merging` is.
 //   - E's merger is started while its gate is closed and gets exactly one merging task: its phase
 //     took the approved version 1 (20261119203047_design_news), so it is owed no news
-//     (mergerWaitsForTheDesignGate, which reads no gate).
+//     (mergerWaitsForItsNews).
 //   - A's merger is relaunched and gets exactly one task, the merging task; G's merger claim is
 //     resumed and gets exactly one task, the same merging task. That is the architect's case,
 //     decision D8 of the plan: no start the boot makes gives either a second merging task. The
@@ -534,7 +528,6 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 	rig.o.workflowTokens = &workflowTokenRecorder{}
 	rig.o.githubAPI = rig.github(t)
 	rig.o.idleTick = cutoverIdleTick
-	rig.o.entrySweep = cutoverEntrySweep
 	relaunchable := true
 	rig.o.pluginRelaunchable = &relaunchable
 	return rig

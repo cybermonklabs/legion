@@ -545,11 +545,18 @@ func (r carriedRig) close() {
 	}
 }
 
+// token is the claim token of role on the rig's root (tokenOf).
 func (r carriedRig) token(role claim.Role) string {
 	r.t.Helper()
-	token, err := claim.NewToken("acme", carriedRoot, role)
+	return r.tokenOf(carriedRoot, role)
+}
+
+// tokenOf is the claim token of role on issue, a member of the rig's tree.
+func (r carriedRig) tokenOf(issue string, role claim.Role) string {
+	r.t.Helper()
+	token, err := claim.NewToken("acme", issue, role)
 	if err != nil {
-		r.t.Fatalf("the %s token of %s: %v", role, carriedRoot, err)
+		r.t.Fatalf("the %s token of %s: %v", role, issue, err)
 	}
 	return string(token)
 }
@@ -574,11 +581,7 @@ func (r carriedRig) childOwed() []string {
 // After the opening it may be told the open message too (openingDelivery).
 func (r carriedRig) wantTheMergeGoesOn() {
 	r.t.Helper()
-	token, err := claim.NewToken("acme", carriedMerging, claim.RoleMerger)
-	if err != nil {
-		r.t.Fatalf("the merger token of %s: %v", carriedMerging, err)
-	}
-	closed := record.RoleMessage{Role: string(token), Body: r.words.startClose(45), Close: true}
+	closed := record.RoleMessage{Role: r.tokenOf(carriedMerging, claim.RoleMerger), Body: r.words.startClose(45), Close: true}
 	if got := roleMessagesOf(r.t, r.pool, carriedMerging); len(got) == 0 || !reflect.DeepEqual(got[0], closed) {
 		r.t.Fatalf("the merger of %s was told %s, want the close message %s first", carriedMerging, asJSON(got), asJSON(closed))
 	}
@@ -650,12 +653,11 @@ func (r carriedRig) wantStartOpening() {
 	wantSupervise(r.t, r.pool, carriedRoot, "start", nil)
 }
 
-// H1, H16: under `start` the close is today's without "the merge waits until every gated step
-// stands open again.", word for word, to each phase holder and the root's architect, the released
-// merger's holder among them, and stops nothing; no message is marked to wake its role, so the
-// outbox wakes no released merger for it (decision 28). At the opening each holder, owed news since
-// the rig records no told row, is told it by the task that carries its news (openingDelivery), so
-// it is sent no open message and its told row owes it.
+// H1, H16: under `start` the close is today's, word for word, to each phase holder and the root's
+// architect, the released merger's holder among them, and stops nothing; no message is marked to
+// wake its role, so the outbox wakes no released merger for it (decision 28). At the opening each
+// holder, owed news since the rig records no told row, is told it by the task that carries its
+// news (openingDelivery), so it is sent no open message and its told row owes it.
 func TestStartHoldKeepsTodaysTextsAndStopsNothing(t *testing.T) {
 	t.Parallel()
 	rig := newHoldRig(t)
@@ -1568,10 +1570,8 @@ func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 	rig.close(engine, 4)
 	rig.stopsMade(legionStops...)
 	state := projectHeld(t, rig.pool)
-	for key, want := range map[string]*api.WhyView{"LEGION-209": heldWhy(phase.Implementing)} {
-		if got := state.Issues[key].Why; !reflect.DeepEqual(got, want) {
-			t.Fatalf("%s's why is %s, want %s", key, asJSON(got), asJSON(want))
-		}
+	if got, want := state.Issues["LEGION-209"].Why, heldWhy(phase.Implementing); !reflect.DeepEqual(got, want) {
+		t.Fatalf("LEGION-209's why is %s, want %s", asJSON(got), asJSON(want))
 	}
 	for _, key := range []string{"LEGION-208", "LEGION-210"} {
 		if why := state.Issues[key].Why; why != nil && why.State == api.WhyHeld {

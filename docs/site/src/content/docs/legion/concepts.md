@@ -527,7 +527,7 @@ A `merge-holds-changed` notice of an issue in `accepting` waits too, and when th
 The architect's other notices go meanwhile.
 When the gate opens, the daemon sends that notice for each issue that stands in `accepting`.
 The daemon records a step that an architect reports while the gate is closed, such as its sign-off or a move back.
-The start that the report makes waits for the opening, as every phase start does.
+The start that the report makes waits for the opening, as every phase start but the merger's does.
 
 No value of `gates.hold` wakes a merger for the close message.
 A merger whose idle pod the daemon released gets no close message.

@@ -69,9 +69,9 @@ const holdGrace = 2 * time.Minute
 // so the record owes it no news of that approval (record.OwedNews). The default stays so because
 // the tester's opening-text cases pin the opening task word for word, with no news after its work
 // (TestWorkHoldStartsAStopMadeWhileTheOpeningCommitsWithTheOpeningsTask among them). So in a
-// default case the merger's start waits for no news (mergerWaitsForTheDesignGate), a start carries
-// no news, and the opening tells each live holder the open message with the words that nothing
-// its issue holds changed since that version (openingDelivery, openedTo).
+// default case the merger's start waits for no news (mergerWaitsForItsNews), a start carries no
+// news, and the opening tells each live holder the open message with the words that nothing its
+// issue holds changed since that version (openingDelivery, openedTo).
 //
 // A case that holds the news an opening's start carries seeds took at the approved version
 // (withNews), as a phase's first start records it (record.Store.BaselineTold). Each approval of a

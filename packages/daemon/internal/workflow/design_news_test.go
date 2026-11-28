@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -235,21 +234,6 @@ func everyNewsForm() map[string]string {
 	}
 }
 
-// openedGateSentence is the start of the opened message of a person's approval of version of
-// step's document (gateOpenedMessage), with its tree filled in: the gate sentence that a news task
-// owed the opening leads with while the gate stands open.
-func openedGateSentence(step, document string, version int) string {
-	return fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
-		"and every step the deployment gates now stands open", newsTree, version, step, document)
-}
-
-// closedGateSentence is the start of the close message of version of step's document
-// (gateClosedHead), with its tree filled in: the gate sentence of a news task that the daemon sends
-// after that version closed the gate.
-func closedGateSentence(step, document string, version int) string {
-	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s)", newsTree, version, step, document)
-}
-
 // newsItem is the item of a news list whose first line opens with opening, that line and the
 // lines indented under it.
 func newsItem(t *testing.T, text, opening string) string {
@@ -289,7 +273,7 @@ func TestNewsOwedTheOpeningLeadsWithTheOpenedMessage(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(rootHolderNews())
 	t.Logf("the root holder's news:\n%s", text)
-	opened := openedGateSentence("spec", "artifact-spec", 5)
+	opened := gateMovedBodyOf(newsTree, record.DesignStepSpec, "artifact-spec", 5, true)
 	if !strings.HasPrefix(text, opened) {
 		t.Fatalf("the news opens %q, want the opened message %q first", firstLine(text), opened)
 	}
@@ -307,7 +291,7 @@ func TestNewsSentAfterALaterVersionClosedTheGateSaysClosed(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(closedHolderNews())
 	t.Logf("the news sent after version 6 closed the gate:\n%s", text)
-	closed := closedGateSentence("spec", "artifact-spec", 6)
+	closed := gateMovedBodyOf(newsTree, record.DesignStepSpec, "artifact-spec", 6, false)
 	if !strings.HasPrefix(text, closed) {
 		t.Fatalf("the news opens %q, want the close of version 6 %q first", firstLine(text), closed)
 	}
@@ -477,7 +461,7 @@ func TestADecisionOnlyVersionOwedTheOpeningSaysNothingChanged(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(decisionOnlyHolderNews())
 	t.Logf("the news of a decision-only version:\n%s", text)
-	if opened := openedGateSentence("spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
+	if opened := gateMovedBodyOf(newsTree, record.DesignStepSpec, "artifact-spec", 5, true); !strings.HasPrefix(text, opened) {
 		t.Fatalf("the news opens %q, want the opening %q first", firstLine(text), opened)
 	}
 	if !strings.Contains(text, "Nothing your issue holds changed since version 4, which your phase took.") {
@@ -499,7 +483,7 @@ func TestAnUnchangedVersionOwedTheOpeningSaysItHoldsTheSameText(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(unchangedHolderNews())
 	t.Logf("the news of an unchanged version:\n%s", text)
-	if opened := openedGateSentence("spec", "artifact-spec", 5); !strings.HasPrefix(text, opened) {
+	if opened := gateMovedBodyOf(newsTree, record.DesignStepSpec, "artifact-spec", 5, true); !strings.HasPrefix(text, opened) {
 		t.Fatalf("the news opens %q, want the opening %q first", firstLine(text), opened)
 	}
 	if want := "Nothing your issue holds changed since version 4, which your phase took. " +
@@ -641,7 +625,7 @@ func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(mergedRootSummaryNews())
 	t.Logf("the summary of a merged root:\n%s", text)
-	if opened := openedGateSentence("criteria", "artifact-checks", 3); !strings.HasPrefix(text, opened) {
+	if opened := gateMovedBodyOf(newsTree, record.DesignStepCriteria, "artifact-checks", 3, true); !strings.HasPrefix(text, opened) {
 		t.Fatalf("the summary owed the opening opens %q, want %q first", firstLine(text), opened)
 	}
 	merged := newsLine(t, text, "- LEGION-208, in merging: ")

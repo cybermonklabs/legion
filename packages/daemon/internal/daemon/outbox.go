@@ -5241,7 +5241,7 @@ func (r *outbox) treeGateTx(ctx context.Context, tx pgx.Tx, tree string) (record
 //  2. A start waits at the fence of its tree's closed standing design gate (startWaitsForTheHold):
 //     every phase worker's but the merger's under `work` while the gate is closed, and a merger's,
 //     under either hold and whatever the gate, while its news is not recorded
-//     (mergerWaitsForTheDesignGate). The fence comes after the refusal, so a news-only start that
+//     (mergerWaitsForItsNews). The fence comes after the refusal, so a news-only start that
 //     reaches no claim finishes rather than waits.
 //  3. Every phase start (an entry's work, the held phase's retry among them), every start of the
 //     work hold's opening (record.SuperviseRequest.Opening) and every news-only start carries the
@@ -5346,11 +5346,10 @@ func (r *outbox) settleHeldOpening(ctx context.Context, issue record.Issue, role
 	return nil
 }
 
-// mergerWaitsForTheDesignGate is the merger's one wait at the fence of its start
-// (startWaitsForTheHold), under either hold, and nil for every other role. It reads no gate: no
-// value of the hold holds the merge (dispatch://INFRA-904/spec#b-d1672de0-a9f8-40f8-9ad3-b2fa2f432219),
-// so a merger starts, is woken and merges while its tree's standing gate is closed, as when no
-// version waits.
+// mergerWaitsForItsNews is the merger's one wait at the fence of its start
+// (startWaitsForTheHold), under either hold, and nil for every other role. No value of the hold
+// holds the merge (dispatch://INFRA-904/spec#b-d1672de0-a9f8-40f8-9ad3-b2fa2f432219), so a merger
+// starts, is woken and merges while its tree's standing gate is closed, as when no version waits.
 //
 // It waits while the merger's member is owed news of the approved design that no start can carry
 // yet, its change set not recorded, read or unavailable, or its earlier version neither read nor
@@ -5364,7 +5363,7 @@ func (r *outbox) settleHeldOpening(ctx context.Context, issue record.Issue, role
 // released merger (deliverHeld: a merge-queue removal, a merge forward's hold and landed, and a
 // merge-holds change) before it wakes it, so no such message brings back a merger that its own
 // start would hold.
-func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.Issue, role claim.Role) error {
+func (r *outbox) mergerWaitsForItsNews(ctx context.Context, issue record.Issue, role claim.Role) error {
 	if role != claim.RoleMerger {
 		return nil
 	}
@@ -5391,13 +5390,13 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 //
 // No value of the hold holds the merger: its start, and its wake for a CI settlement, a hook
 // prompt or a merge-queue message, go on while the gate is closed. Under either hold the merger
-// waits for its news alone (mergerWaitsForTheDesignGate). An architect is never held, nor is the
+// waits for its news alone (mergerWaitsForItsNews). An architect is never held, nor is the
 // controller. The gate's opening releases the row's next try, within the outbox's backoff (64
 // seconds at most), and tells every phase worker of the tree and the root's architect as well
 // (workflow's tellGateMoved).
 func (r *outbox) startWaitsForTheHold(ctx context.Context, issue record.Issue, role claim.Role, checkLook int) error {
 	if !r.holdIsWork() || checkLook != 0 || !claim.HeldByWorkHold(role) {
-		return r.mergerWaitsForTheDesignGate(ctx, issue, role)
+		return r.mergerWaitsForItsNews(ctx, issue, role)
 	}
 	gate, err := r.treeGate(ctx, issue.Tree)
 	if err != nil {

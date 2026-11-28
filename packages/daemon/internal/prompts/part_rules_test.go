@@ -176,8 +176,12 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 		for _, part := range []string{"roles/merger.md", "go/merger.md"} {
 			ruleIn(t, part, news, "before you merge", "`request_backward_move`", noHold)
 		}
-		composedSays(t, composer, claim.RoleMerger, false, news, noHold)
 		text := foldWhitespace(composedText(t, composer, claim.RoleMerger, false))
+		for _, want := range []string{news, noHold} {
+			if !strings.Contains(text, want) {
+				t.Errorf("the composed merger prompt (root false) omits %q", want)
+			}
+		}
 		for _, gone := range []string{"The root's design gate holds", "A closed design gate", "wait for the opening", "dequeuePullRequest"} {
 			if strings.Contains(text, gone) {
 				t.Errorf("the composed merger prompt still says %q", gone)

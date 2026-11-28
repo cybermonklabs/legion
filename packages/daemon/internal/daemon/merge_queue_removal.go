@@ -134,8 +134,8 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // No value of the hold holds the merge, so the design gate holds nothing of this row: a released
 // merger is woken for it while the gate is closed, and the merger merges. A merger woken before
 // what changed in the approved design is recorded could enqueue the pull request again before it
-// reads that change, so the row waits as the merger's start waits (mergerWaitsForTheDesignGate,
-// which startWaitsForTheHold reads).
+// reads that change, so the row waits as the merger's start waits (mergerWaitsForItsNews, which
+// startWaitsForTheHold reads).
 func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, payload record.MergeQueueRemoval) error {
 	if r.notices == nil {
 		return errors.New("merge-queue removal executor has no Envoy publisher")
@@ -200,21 +200,19 @@ type heldMessage struct {
 //
 // It reads, in this order, what ends or holds the row. The row finishes undelivered, logging
 // m.claimEnded, once the role's claim has failed or retired, since that launch will not hold its
-// role again. A released merger is held by the rule that holds its start
-// (mergerWaitsForTheDesignGate: the news of the approved design it is owed, and no gate, since no
-// value of the hold holds the merge), and a released role of another kind while the root's
-// standing design gate is closed (record.TreeGate.Standing, the one predicate the hold's fence
-// reads, treeGate): such a role is neither woken nor told, and the row waits, since a role the
-// gate holds may not know the gate closed, and woken by this message it would work against the
+// role again. A released merger is held by the rule that holds its start (mergerWaitsForItsNews:
+// the news of the approved design it is owed), and a released role of another kind while the
+// root's standing design gate is closed (record.TreeGate.Standing, the one predicate the hold's
+// fence reads, treeGate): such a role is neither woken nor told, and the row waits, since a role
+// the gate holds may not know the gate closed, and woken by this message it would work against the
 // gate. Both are read before the wake (wakeReleasedFor), which skips the hold's fence for a role
 // read here. Nor is a role the work hold holds (supervise.Claim.WorkHeld) woken: the row waits for
-// the hold's opening, which starts the role (wakeReleasedFor). The work hold stops no merger, so
-// none is held that way. A role whose session holds it, and that the work hold does not hold, is
-// told at once, gate or none, and m.delivered is logged. The three other answers of the confirmed
-// publish route keep the ordinary retry, as they do for a hook prompt: a holder that did not
-// confirm in time (notify.ErrNotDelivered), one that does not advertise the delivery mode
-// (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied).
+// the hold's opening, which starts the role (wakeReleasedFor). A role whose session holds it, and
+// that the work hold does not hold, is told at once, gate or none, and m.delivered is logged. The
+// three other answers of the confirmed publish route keep the ordinary retry, as they do for a
+// hook prompt: a holder that did not confirm in time (notify.ErrNotDelivered), one that does not
+// advertise the delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS
+// grant denies (notify.ErrPublishDenied).
 //
 // Each message is for the session of the role's current launch, and the listener's word is the one
 // evidence of who took it: its 200 names the session it stored the message for
@@ -247,7 +245,7 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	}
 	if held.Released() {
 		if m.role == claim.RoleMerger {
-			if err := r.mergerWaitsForTheDesignGate(ctx, m.issue, m.role); err != nil {
+			if err := r.mergerWaitsForItsNews(ctx, m.issue, m.role); err != nil {
 				return err
 			}
 		} else if gate, err := r.treeGate(ctx, m.issue.Tree); err != nil {

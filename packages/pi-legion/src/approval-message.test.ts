@@ -332,6 +332,13 @@ function pane(options: {
     ui: { notify: () => undefined },
   });
   const MAIN = { kind: "main", id: "Main" } as const;
+  /** `message`, a saved answer of `model`, as Oh My Pi's `message_end` hands it: naming the model
+   *  that wrote it. */
+  const answeredBy = (message: unknown, model: Model): Record<string, unknown> => ({
+    ...record(message, "the answer"),
+    provider: model.provider,
+    model: model.id,
+  });
   return {
     lines,
     reads: () => reads,
@@ -376,10 +383,7 @@ function pane(options: {
     end: (name, index, model, liveModel = model) => {
       const item = recorded(name, index, "message_end");
       // Oh My Pi's `message_end` names the model that wrote the answer.
-      const message =
-        model === undefined
-          ? item.message
-          : { ...record(item.message, "the answer"), provider: model.provider, model: model.id };
+      const message = model === undefined ? item.message : answeredBy(item.message, model);
       approval.messageEnd(message, contextOf(String(item.session), item.agent, [], liveModel));
     },
     compact: (name, index) => {
@@ -404,10 +408,7 @@ function pane(options: {
         contextOf(options.session, agent, [], model)
       ),
     answer: (message, model) =>
-      approval.messageEnd(
-        { ...record(message, "the answer"), provider: model.provider, model: model.id },
-        contextOf(options.session, MAIN, [], model)
-      ),
+      approval.messageEnd(answeredBy(message, model), contextOf(options.session, MAIN, [], model)),
   };
 }
 

@@ -32,15 +32,15 @@ import "github.com/sjawhar/legion/daemon/internal/supervise"
 // with a strict enumeration that lacks `hold`, so shapeAnswer serves it the answer without a
 // source that names the hold; both keys are optional to every such reader.
 // The work hold also adds a fifth word to an issue's `why.state`, on `GET /legion/v1/state` and on
-// the record route: `held` (api.WhyHeld), an issue whose work is a phase worker's in a running tree
-// the work hold holds (record.WorkHold), whose `reason` names the version that closed the tree's
-// design gate. A reader from 85 up to the contract before this entry reads `state` with a
-// `z.enum` of the four earlier words and refuses the whole body for another. A reader from 85
-// up to 192 requires `state` and `reason` together. The strip below (withoutUnadmittedWhy)
-// reads the arrival of `held` from the registry. It serves that issue without `why` to a caller
-// whose restore contract (the one it states, else the lowest its pod records) is below this entry.
-// It leaves every other issue's `why` as written. Every reader from 85 on takes `why` as optional.
-// A caller whose strip is below 85 has lost every `why` to that
+// the record route: `held` (api.WhyHeld), an issue whose work is a phase worker's but the merger's
+// in a running tree the work hold holds (record.WorkHold), whose `reason` names the version that
+// closed the tree's design gate. A reader from 85 up to the contract before this entry reads
+// `state` with a `z.enum` of the four earlier words and refuses the whole body for another. A
+// reader from 85 up to 192 requires `state` and `reason` together. The strip below
+// (withoutUnadmittedWhy) reads the arrival of `held` from the registry. It serves that issue
+// without `why` to a caller whose restore contract (the one it states, else the lowest its pod
+// records) is below this entry. It leaves every other issue's `why` as written. Every reader from
+// 85 on takes `why` as optional. A caller whose strip is below 85 has lost every `why` to that
 // contract's band already, so the strip takes nothing from it. No other key or value moves.
 //
 // approvalRouteContract identifies this entry. The registry gives it a contract number in each

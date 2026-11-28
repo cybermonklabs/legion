@@ -663,8 +663,7 @@ func TestGatesHoldLoadsItsWord(t *testing.T) {
 }
 
 // Any value of `gates.hold` but the two words is refused at load, with the value as the file
-// wrote it: a word, the word `merge` that no value of the hold is any more, the empty word, a
-// number, a list and a mapping alike.
+// wrote it: a word, the word `merge`, the empty word, a number, a list and a mapping alike.
 func TestGatesHoldRefusesAnotherValue(t *testing.T) {
 	for _, tc := range []struct{ name, value, refusal string }{
 		{name: "another word", value: "drain", refusal: `gates.hold must be start or work (got "drain")`},

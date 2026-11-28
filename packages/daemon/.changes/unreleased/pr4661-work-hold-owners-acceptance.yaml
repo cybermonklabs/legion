@@ -10,9 +10,9 @@ body: |-
   that acceptance, a catch-up composed before the gate closed included. When the gate opens, the
   daemon sends that notice for each issue that stands in `accepting`, also to an architect that
   got it before the gate closed; an issue whose notice of its acceptance still waits gets that
-  notice and no second. The daemon
-  records an architect's sign-off or move back while the gate is closed, and the start that it
-  makes waits for the opening, as every phase start of the tree does. Under `work`, the
-  architect's close message ends `Your own work goes on, and a step that you report starts nothing
-  until every gated step stands open again.` Under `start`, nothing of this changes.
-  Under `work`, the end-of-turn reminder tells a worker the hold holds that it has nothing to do.
+  notice and no second. The daemon records an architect's sign-off or move back while the gate is
+  closed, and the start that it makes waits for the opening, as every phase start of the tree but
+  the merger's does. Under `work`, the architect's close message ends `Your own work goes on, and
+  a step that you report starts nothing until every gated step stands open again.` Under `start`,
+  nothing of this changes. Under `work`, the end-of-turn reminder tells a worker the hold holds
+  that it has nothing to do.

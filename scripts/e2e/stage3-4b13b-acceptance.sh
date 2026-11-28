@@ -12,7 +12,8 @@
 #     rerun_child with its refusal, and the Dispatch writes' actor;
 #   - phase-finished carrying the worker's summary and verdict;
 #   - the merger merging its own pull request, under the squash message it writes itself, and a
-#     design gate re-closed in merging holding that merge until the person approves the new version;
+#     design gate re-closed in merging that holds no merge: the merger merges before the person
+#     approves the new version;
 #   - pr-merged / pr-closed-unmerged, and a merge the merger did not make closing the issue.
 # Nothing here merges into sjawhar/legion-smoke's main: each proof PR is retargeted to a scratch base
 # branch before any merge, and the scratch base is deleted at the end.
@@ -1187,16 +1188,15 @@ n=$(notice_deliveries "$root1" architect "$(notice_needle pr-merged "$root1")")
 note "the merger merged $repo#${pr_of[$root1]} at $merge_when_clean_commit under its own message ('$merge_message'); $root1 → done on the daemon's read of that merge, pr-merged notices $n (negative control)"
 pass
 
-# ---- 8. a design gate that re-closes in merging holds the merge until a person approves ------------
-begin a-reclosed-gate-holds-the-merge
-# The design gate holds the merge as well as the tree's start. A new primary spec version while
-# $root3 is in merging closes the gate, and its merger, told to merge, merges nothing while the
-# gate is closed: it ends its turn on a WAITING line instead (roles/merger.md, "A closed design
-# gate"). The proof human then approves that version, the opening reaches the merger, as a task
-# that names what changed or as the opened message, and the merge follows it. The new version
-# keeps the approved text and adds one section that asks for no change, so a merger that reads it
-# has no reason to move the issue back. $root3 merges into a base of its own for the same reason
-# $root1 did.
+# ---- 8. a design gate that re-closes in merging holds no merge -------------------------------------
+begin a-reclosed-gate-holds-no-merge
+# No value of gates.hold holds the merge: the merger merges while the design gate is closed
+# (roles/merger.md: "the design gate holds no merge"). A new primary spec version while $root3 is
+# in merging closes the gate, the closed message reaches its merger and ends "Your phase goes on.",
+# and the merger, told to merge after that message, merges while the proof human has not approved
+# that version. The new version keeps the approved text and adds one section that asks for no
+# change, so a merger that reads it has no reason to move the issue back. $root3 merges into a base
+# of its own for the same reason $root1 did.
 gh api "repos/$repo/git/refs" -f ref="refs/heads/$gate_base" -f sha="$main_sha" >/dev/null
 gh -R "$repo" pr edit "${pr_of[$root3]}" --base "$gate_base" >/dev/null
 gate_artifact=${gate_artifacts[$root3]}
@@ -1214,44 +1214,24 @@ until_true 180 "the new primary spec version to close $root3's gate" sh -c \
   "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$root3' '.issues[\$issue].designGate.currentVersion > .issues[\$issue].designGate.approvedVersion'"
 reclosed=$(daemon_state | jq -er --arg issue "$root3" '.issues[$issue].designGate.currentVersion')
 note "$root3's gate closed on spec version $reclosed while it stood in merging, and $repo#${pr_of[$root3]} is on its own base $gate_base"
-# The closed role message comes first: an instruction that reached the merger before it would be
-# answered as an open gate allows, and its WAITING line, if any, would be for another reason.
+# The closed role message comes first, so the merger that merges below was told that the gate is
+# closed. The message ends with the close's sentence of the design (gateClosedHead) and "Your phase
+# goes on." (gateClosedSentence), with no sentence that the merge waits.
 closed="The design gate of $root3 closed"
 until_true 600 "the closed message of $root3's gate to reach its merger" session_contains "$root3" merger "$closed"
-marker_gate="GATED-MERGE-$stamp"
-send_agent "$root3" merger "Acceptance merge operation ($marker_gate): merge pull request #${pr_of[$root3]} exactly as your instructions describe, then end this phase with the legion tool: op handoff_complete and a summary. Where your instructions say to wait first, wait as they say: this operation still stands when the wait ends."
-# merger_waits_after MARKER: $root3's merger session holds, after the first entry carrying MARKER
-# (the instruction), an assistant turn with a line that starts WAITING and names the opening, the
-# line roles/merger.md ends each turn on while the gate is closed ("names the opening you wait
-# for"). A WAITING line that names no opening waits for something else.
-merger_waits_after() {
-  local f
-  f=$(claim_session_file "$root3" merger) || return 1
-  jq -R -s -e --arg marker "$1" '[split("\n")[] | fromjson?] as $e
-    | ([$e | to_entries[] | select(.value | tostring | contains($marker)) | .key] | first) as $at
-    | $at != null and any($e[($at + 1):][]; .type == "message" and .message.role == "assistant"
-        and any(.message.content[]?; .type == "text" and (.text | test("(^|\n)WAITING[^\n]*[Oo]pen"))))' "$f" >/dev/null
-}
-until_true 900 "$root3's merger to end its turn on a WAITING line naming the opening while the gate is closed" merger_waits_after "$marker_gate"
-# The merger's turn has ended, so nothing of that turn merges. The pull request is read after a
-# further minute, in which only the opening could release the merge, and that read is the last one
-# before the person approves, so the merge that follows is the approval's.
-sleep 60
-held=$(gh -R "$repo" pr view "${pr_of[$root3]}" --json state,autoMergeRequest,isInMergeQueue --jq '[.state, (.autoMergeRequest != null), .isInMergeQueue] | @tsv')
-[ "$held" = $'OPEN\tfalse\tfalse' ] ||
-  fail "$repo#${pr_of[$root3]} reads '$held' (state, auto-merge armed, in a merge queue) while $root3's gate is closed, want it open with nothing armed or queued"
-note "$root3's merger ended its turn on a WAITING line, and $repo#${pr_of[$root3]} stayed open with nothing armed or queued a minute later"
-dispatch_human POST "artifacts/$gate_artifact/reviews" '{"state":"approved"}' >/dev/null
-until_true 180 "the person's approval of version $reclosed to open $root3's gate" sh -c \
-  "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$root3' --argjson v '$reclosed' '.issues[\$issue].designGate.approvedVersion == \$v'"
-opening="The design gate of $root3 opened: a person approved version $reclosed"
-until_true 600 "the opening of version $reclosed to reach $root3's merger" session_contains "$root3" merger "$opening"
-how="a task"
-! notice_delivered "$root3" merger "$opening" || how="the opened role message"
+goes_on="so the design you are working to may change. Your phase goes on."
+session_contains "$root3" merger "$goes_on" ||
+  fail "the closed message of $root3's gate reached its merger without '$goes_on' at its end"
+send_agent "$root3" merger "Acceptance merge operation: merge pull request #${pr_of[$root3]} exactly as your instructions describe, then end this phase with the legion tool: op handoff_complete and a summary. Then wait."
 await_merger_merge "$repo" "${pr_of[$root3]}"
+# The proof human never approves version $reclosed, so the gate still reads it unapproved after
+# the merge: the closed gate held no merge.
+gate_after=$(daemon_state | jq -c --arg issue "$root3" '.issues[$issue].designGate')
+jq -e --argjson v "$reclosed" '.currentVersion == $v and (.approvedVersion // 0) < $v' <<<"$gate_after" >/dev/null ||
+  fail "$root3's gate reads $gate_after after the merge, want version $reclosed still unapproved"
 wait_for_phase "$root3" "done" 600
 daemon_state >"$evidence/state-after-gated-merge.json" || true
-note "the closed gate held the merge: $repo#${pr_of[$root3]} stayed open while version $reclosed was with the person, the opening reached the merger as $how, and the merger merged at $merge_when_clean_commit; $root3 reached done"
+note "the closed gate held no merge: the merger merged $repo#${pr_of[$root3]} at $merge_when_clean_commit while version $reclosed was with the person (gate $gate_after); $root3 reached done"
 pass
 
 begin production-untouched

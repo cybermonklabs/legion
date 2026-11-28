@@ -9165,7 +9165,8 @@ The next attempt reads the workspace again.
 
 While held work keeps a breaking-drift round open, the daemon tells each role that answered once that it can continue its work (`liftAnswerHolds`).
 The answer still counts for the round but does not hold the role's tasks.
-After a clean read, after the hold opens, or after an operator acts on the stopped claim, the round asks again every role it asks (`askRoundAgain`), whether or not the daemon lifted any answer, a role the opening started included.
+After the hold opens, or after an operator acts on the stopped claim, the round asks again every role it asks (`askRoundAgain`), whether or not the daemon lifted any answer, a role the opening started included.
+After a clean read while the hold still stops a claim, the round asks again only where the daemon lifted an answer.
 A launch into the kept pod before that ask keeps the pod for it, the opening's own launch of a stopped role included: that role's pending task is the opening's, which marks the role as one the opening started until the round asks it again (`openedSinceAsk`).
 The new ask gives the roles a full grace period from the new start, plus any time that a project pause adds.
 The two claim marks preserve which answers the daemon lifted and when the round started again (`20261125105345_claim_round_hold_marks`).
@@ -9748,8 +9749,7 @@ The wakes are these:
 
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 No value of `gates.hold` holds that message: it wakes a released merger also while the root's design gate is closed.
-It waits while the merger is owed news of an approved new version whose change the daemon has not recorded yet.
-It wakes the merger only once that change is recorded (`mergerWaitsForTheDesignGate` in `internal/daemon/outbox.go` reads `mergerNewsUnrecorded` in `internal/daemon/design_news.go`).
+It waits until the daemon records the change of each approved new version that the merger is owed news of, and only then wakes the merger (`mergerWaitsForItsNews` in `internal/daemon/outbox.go` reads `mergerNewsUnrecorded` in `internal/daemon/design_news.go`).
 That wait has a bound: after the reconcile's bounded attempts, the daemon records a change that Dispatch cannot read as unavailable, and a review history that it cannot read as unread.
 The message can also wait for a merger that has no claim yet, because the merger's start is still owed.
 The message wakes no merger that the operator or the controller suspended, since a wake starts only an agent whose claim is still `released` (`wakeForDelivery`, `internal/daemon/wake.go`).

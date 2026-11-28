@@ -142,8 +142,7 @@ const dequeueRetry = 20 * time.Millisecond
 //     phase has put the issue back, and only while the start the retry writes, which relaunches
 //     the claim, waits. The test applies that retry as the API applies it, and the merger's news
 //     of the approved design, whose change set is not recorded (the outbox's
-//     mergerWaitsForTheDesignGate), holds the start, so the claim is still failed when the row
-//     reads it.
+//     mergerWaitsForItsNews), holds the start, so the claim is still failed when the row reads it.
 //  9. The design gate closed and the merger's pod released: no value of the hold holds the merge
 //     (decision 28 of dispatch://INFRA-4528's plan), so the row wakes the merger while the gate is
 //     closed and tells it once, as when no version waits.
@@ -173,8 +172,8 @@ const dequeueRetry = 20 * time.Millisecond
 //  17. The gate open at a version the merger's phase has not taken, and the merger's pod released:
 //     a merger woken before what changed is recorded could enqueue the pull request again before
 //     it reads that change, so the row waits as the merger's start waits
-//     (mergerWaitsForTheDesignGate): it neither wakes the merger nor publishes while the change set
-//     is not recorded, and once the test records it, the merger is woken and told once.
+//     (mergerWaitsForItsNews): it neither wakes the merger nor publishes while the change set is
+//     not recorded, and once the test records it, the merger is woken and told once.
 func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	t.Parallel()
 	rig := newDequeueRig(t)

@@ -382,9 +382,9 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 // 2026-11-22), and the stack's own asynchronous merge refuses a GitHub App on a merge-queue base
 // ("Enqueuer is not authorized to merge", github/gh-stack#497, measured on the same pull request
 // with the merge App's token). That merge would also land every open pull request below, which
-// the base holds to its reviews and checks alone and not to its issue's acceptance, retro or
-// design gate. So the merger waits while every pull request below lands through its own issue,
-// then takes the stack apart, after which its pull request merges as any other.
+// the base holds to its reviews and checks alone and not to its issue's acceptance or retro. So
+// the merger waits while every pull request below lands through its own issue, then takes the
+// stack apart, after which its pull request merges as any other.
 func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testing.T) {
 	merger := rolePart(t, "merger.md")
 	for _, want := range []string{

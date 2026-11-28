@@ -2,19 +2,19 @@ package daemon
 
 // Row H47 of the work hold's plan (decision 17): under `work`, a breaking-drift round passed over
 // a stopped worker whose unpushed commit is on the pod's disk. A read that finds work or fails
-// keeps the round open and the pod in place until the
-// hold opens or the work is pushed. The round holds no task of a claim the hold does not stop
-// meanwhile: an answer to the round is told once, on its role's topic, that the round waits for
-// the hold, and holds none of its claim's tasks from then on, and the round does not ask it again
-// at each sweep. A launch goes into the pod the hold keeps, so the issue's architect goes on there;
-// no merger is woken for the close message (decision 28). Once a read finds the held work pushed,
-// or at the opening, the round asks again each
-// claim it asks, whether or not the hold lifted an answer, a claim the opening started included,
-// under a bound of the round's own length from that ask; the opening's own launch into the kept
-// pod keeps it for that ask; and the round replaces the pod only once each claim it asks has
-// answered. Under dispatch_token_broker with no
-// dispatch_token_transition_file the runtime refuses every launch into such a pod: no role starts,
-// the pod is kept, and each launch that begins to wait is told to the operator's side.
+// keeps the round open and the pod in place until the hold opens or the work is pushed. The round
+// holds no task of a claim the hold does not stop meanwhile: an answer to the round is told once,
+// on its role's topic, that the round waits for the hold, and holds none of its claim's tasks from
+// then on, and the round does not ask it again at each sweep. A launch goes into the pod the hold
+// keeps, so the issue's architect goes on there; no merger is woken for the close message
+// (decision 28). At the opening the round asks again each claim it asks, whether or not the hold
+// lifted an answer, a claim the opening started included, under a bound of the round's own length
+// from that ask; once a read finds the held work pushed while the hold still stops a claim, it
+// asks again only where the hold lifted an answer. The opening's own launch into the kept pod
+// keeps it for that ask, and the round replaces the pod only once each claim it asks has answered.
+// Under dispatch_token_broker with no dispatch_token_transition_file the runtime refuses every
+// launch into such a pod: no role starts, the pod is kept, and each launch that begins to wait is
+// told to the operator's side.
 //
 // The cases drive the work-hold rig of workhold_outbox_test.go, whose close, opening and outbox
 // are the daemon's own, with the update-round sweep of supervision bound over its supervisor and

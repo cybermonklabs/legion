@@ -6,8 +6,9 @@ body: |-
   holds until every gated step stands open again: a person approves that version, or the step
   opens on an ancestor's approval. `gates.hold` is `start`, the default, or `work`, and no value
   holds the merge: a merger starts, is woken and merges while the gate is closed, where before the
-  gate held the merger's start. The daemon wakes no merger for the close message, and a hook
-  prompt to a released merger now waits until the daemon records what changed in an approved
+  gate held the merger's start and a live merger merged nothing and took its pull request out of
+  the merge queue until the gate opened. The daemon wakes no merger for the close message, and a
+  hook prompt to a released merger now waits until the daemon records what changed in an approved
   version, as the merger's own start does. The open message under either value no longer says
   that a merge the closed gate held is released. No message of the gate's close is sent when the
   gate opened again before the daemon could send it, the architect's message included, so no role
@@ -16,72 +17,66 @@ body: |-
   the sentence that the merge waits. `work` also holds the tree's running work. No phase of the
   tree but `merging` starts, and each phase worker of the tree but the merger is told to end its
   turn and is stopped, with its session kept, when its turn ends or 2 minutes after the message
-  reached it. The 2 minutes count from the
-  delivery of the message that the daemon confirmed. A daemon restart or a late confirmation can make
-  the stop later, by the length of the restart or of a retry's backoff, but never earlier. A project
-  pause can release a worker before its close message runs. The pause's resume then relaunches the
-  worker, the worker gets the close message, and the daemon stops it 2 minutes later at most. A start
-  of a worker that is not a merger, which read the gate open just before the close, is stopped at
-  its agent's ready, before the agent takes a task, or 2 minutes after the close at the latest.
-  Where a daemon restart
-  leaves a worker's launch uncertain, the daemon launches the worker again and stops it at the
-  latest 64 seconds after its agent's ready, where that is later than those 2 minutes. A merger is
-  told `Your phase goes on.` and is not stopped. The architects go on. The stop
-  is a suspension source of its own, `hold`: no rule starts the claim, the daemon keeps its pod, and
-  `legion claims list` shows it as `suspended:hold`.
-  A worker the hold stopped stays in Dispatch's role holders of its issue through the hold, as a
-  worker the idle release suspended does. A pod update round passes over such a claim as
-  it passes over a role the daemon suspended: it does not ask it or wait for it. The daemon keeps
-  no copy of a workspace and the stopped worker cannot push, so where a role process runs in the
-  pod, the round reads the issue workspace through that process at each attempt and replaces the
-  pod only where the read finds nothing that origin does not hold, as the idle release takes a pod
-  only then. A read that finds such work, fails or cannot be made holds the replacement, and the
-  next sweep reads again. Where no role process runs in the pod, nothing can read the workspace, so
-  the round does not replace the pod until a role runs in it again or the hold ends. An issue at a
-  phase worker's phase but `merging` of a held tree reads `why.state` `held`, with
-  the version that closed the gate. A caller below the contract for entry `20261126175637` is
-  served such an issue with no `why`. While the hold stands, no architect is told to start its own
-  acceptance: the notice that an issue waits in `accepting` waits for the opening, the
-  `awaiting-children` notice of an issue that comes back to `accepting` from its wait on its
-  children and a `merge-holds-changed` notice of an issue in `accepting` among them, and every
-  other notice goes. When the gate opens again, the daemon starts each
-  claim it stopped with one task, which names the version that closed the gate and tells the worker
-  to check what its turn already did. The daemon builds that task when the start runs, so a start
-  that waits through a second close and opening names the later version and the later approval.
-  That task also carries the news of the approved version that the worker is owed, after its work,
-  and each send of the task keeps the opening's sentences in front. A news task alone never starts
-  a claim the hold stopped. Each
-  holder is told the opening once: a live holder that is owed news gets no open message, and the
-  task that carries its news starts with the opening.
-  A claim can keep a task that an operator gave it before the hold stopped it, where no turn took
-  that task. The opening never retires that task: the daemon sends it first, then the opening's
-  task, and then the task of a phase start that came after the opening, where the opening's start
-  carries no phase work. A later phase start of the same role takes the place of an opening's start
-  that carries phase work and keeps the opening's sentences in front of its own work, so the worker
-  gets one task after the operator's, and is told the opening once. Where no start of the
-  opening is queued for that claim, because its stop was made after the opening read it or a newer
-  stop or run undid that start, a phase start ends the hold instead: the worker is not told that
-  the hold stopped its turn, and is told the gate's open message only where its issue's holder was
-  still owed the opening then. Under `start`, where a restart ended the hold, a phase start that
-  runs after the opening's start ended the hold, and before that start's task went, can take its
-  place, so the worker is not told the restart's sentence.
-  An operator's own resume or retry of such a claim starts it
-  too. The hold survives a daemon restart.
-  While the hold stands, the controller starts no phase worker of the tree but the merger: its
-  `resume_agent`, `retry` and `fresh_session` of such a worker are refused `409 HELD_BY_WORK_HOLD`,
-  whatever suspended the worker, and the agent is left as it was. A worker the controller suspended is not
-  started by the opening: the controller's own resume or `fresh_session` starts it once the gate
-  is open. That includes a live worker whose `fresh_session` suspended it before the close refused
-  its forget; the `409` then says that suspension stands. One case is answered as every refusal
-  after a fresh session's forget is: where the gate closes after `fresh_session` has dropped the
-  worker's recorded session, the answer is `200`, with the hold's words, its two ways out and the
-  session left behind in `phaseNotRestarted`, and no start; a caller below contract entry
-  `20261127094305` still reads the `409`.
-  Any other value of `gates.hold` is refused at load,
-  `legion config check` prints the word as `design-gate-hold=`, and `legion state --json` shows it
-  at `settings.gates.hold`. A daemon before this release refuses the key, so take it out of
-  `legion.yaml` before a rollback. Then run the ways back in the headers of
-  `20261122085244_pending_delivery_opening.up.sql`,
+  reached it. The 2 minutes count from the delivery of the message that the daemon confirmed. A
+  daemon restart or a late confirmation can make the stop later, by the length of the restart or
+  of a retry's backoff, but never earlier. A project pause can release a worker before its close
+  message runs. The pause's resume then relaunches the worker, the worker gets the close message,
+  and the daemon stops it 2 minutes later at most. A start of a worker that is not a merger,
+  which read the gate open just before the close, is stopped at its agent's ready, before the
+  agent takes a task, or 2 minutes after the close at the latest. Where a daemon restart leaves
+  a worker's launch uncertain, the daemon launches the worker again and stops it at the latest
+  64 seconds after its agent's ready, where that is later than those 2 minutes. A merger is told
+  `Your phase goes on.` and is not stopped. The architects go on. The stop is a suspension source
+  of its own, `hold`: no rule starts the claim, the daemon keeps its pod, and `legion claims list`
+  shows it as `suspended:hold`. A worker the hold stopped stays in Dispatch's role holders of its
+  issue through the hold, as a worker the idle release suspended does. A pod update round passes
+  over such a claim as it passes over a role the daemon suspended: it does not ask it or wait
+  for it. The daemon keeps no copy of a workspace and the stopped worker cannot push, so where
+  a role process runs in the pod, the round reads the issue workspace through that process at
+  each attempt and replaces the pod only where the read finds nothing that origin does not hold,
+  as the idle release takes a pod only then. A read that finds such work, fails or cannot be made
+  holds the replacement, and the next sweep reads again. Where no role process runs in the pod,
+  nothing can read the workspace, so the round does not replace the pod until a role runs in it
+  again or the hold ends. An issue at a phase worker's phase but `merging` of a held tree reads
+  `why.state` `held`, with the version that closed the gate. A caller below the contract for entry
+  `20261126175637` is served such an issue with no `why`. While the hold stands, no architect is
+  told to start its own acceptance: the notice that an issue waits in `accepting` waits for the
+  opening, the `awaiting-children` notice of an issue that comes back to `accepting` from its
+  wait on its children and a `merge-holds-changed` notice of an issue in `accepting` among them,
+  and every other notice goes. When the gate opens again, the daemon starts each claim it stopped
+  with one task, which names the version that closed the gate and tells the worker to check what
+  its turn already did. The daemon builds that task when the start runs, so a start that waits
+  through a second close and opening names the later version and the later approval. That task
+  also carries the news of the approved version that the worker is owed, after its work, and each
+  send of the task keeps the opening's sentences in front. A news task alone never starts a claim
+  the hold stopped. Each holder is told the opening once: a live holder that is owed news gets
+  no open message, and the task that carries its news starts with the opening. A claim can keep
+  a task that an operator gave it before the hold stopped it, where no turn took that task. The
+  opening never retires that task: the daemon sends it first, then the opening's task, and then the
+  task of a phase start that came after the opening, where the opening's start carries no phase
+  work. A later phase start of the same role takes the place of an opening's start that carries
+  phase work and keeps the opening's sentences in front of its own work, so the worker gets one
+  task after the operator's, and is told the opening once. Where no start of the opening is queued
+  for that claim, because its stop was made after the opening read it or a newer stop or run undid
+  that start, a phase start ends the hold instead: the worker is not told that the hold stopped
+  its turn, and is told the gate's open message only where its issue's holder was still owed the
+  opening then. Under `start`, where a restart ended the hold, a phase start that runs after the
+  opening's start ended the hold, and before that start's task went, can take its place, so the
+  worker is not told the restart's sentence. An operator's own resume or retry of such a claim
+  starts it too. The hold survives a daemon restart. While the hold stands, the controller starts
+  no phase worker of the tree but the merger: its `resume_agent`, `retry` and `fresh_session`
+  of such a worker are refused `409 HELD_BY_WORK_HOLD`, whatever suspended the worker, and the
+  agent is left as it was. A worker the controller suspended is not started by the opening: the
+  controller's own resume or `fresh_session` starts it once the gate is open. That includes a
+  live worker whose `fresh_session` suspended it before the close refused its forget; the `409`
+  then says that suspension stands. One case is answered as every refusal after a fresh session's
+  forget is: where the gate closes after `fresh_session` has dropped the worker's recorded session,
+  the answer is `200`, with the hold's words, its two ways out and the session left behind in
+  `phaseNotRestarted`, and no start; a caller below contract entry `20261127094305` still reads the
+  `409`. Any other value of `gates.hold` is refused at load, `legion config check` prints the word
+  as `design-gate-hold=`, and `legion state --json` shows it at `settings.gates.hold`. A daemon
+  before this release refuses the key, so take it out of `legion.yaml` before a rollback. Then
+  run the ways back in the headers of `20261122085244_pending_delivery_opening.up.sql`,
   `20261122072401_cleared_spec_approval_latest_version.up.sql`,
   `20261122023421_work_hold_openings.up.sql`, `20261121000254_work_holds.up.sql`,
   `20261120224328_claim_suspended_by_hold.up.sql` and
