@@ -5,13 +5,17 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -46,14 +50,10 @@ func holdRow(t *testing.T, db duty.Holds) (holder uuid.UUID, token string, expir
 	return holder, token, expiresAt
 }
 
-// waitLost waits up to within for hold's Lost to close and fails the test when it does not.
-func waitLost(t *testing.T, hold *duty.Hold, within time.Duration) {
+// waitLost waits for the hold to report its loss.
+func waitLost(t *testing.T, hold *duty.Hold) {
 	t.Helper()
-	select {
-	case <-hold.Lost():
-	case <-time.After(within):
-		t.Fatalf("Lost did not close within %s", within)
-	}
+	testwait.Receive(t, "the hold's Lost to close", hold.Lost())
 }
 
 // Two processes, each with a pool of its own: the second cannot take a hold the first holds live,
@@ -138,19 +138,35 @@ func TestHoldTakesOverWithinASecondAfterTheLapse(t *testing.T) {
 	}
 }
 
-// A holder whose renewals cannot land - its row locked by another transaction for longer than a
-// renewal waits - reports the loss before the row lapses on the database's clock: the loss
-// deadline is Margin ahead of the expiry the last confirmed renewal wrote.
+// The loss deadline is at least Margin before the row expires on the database's clock.
+// With a renewal blocked on the row, the test moves the hold's clock to that deadline.
+// Lost stays open until the deadline and closes while the row is still live.
 func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
-	// Not parallel: it reads the row once Lost closes and wants it still live, which it is for the
-	// hold's 1 s Margin, and the hold stays live until its row is locked only while a renewal lands
-	// inside its 2 s loss deadline; the parallel tests' load could push either past its bound.
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	holder := uuid.New()
+	var sent time.Time
+	if err := database.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&sent); err != nil {
+		t.Fatalf("read the database's clock before taking the hold: %v", err)
+	}
+	fake := clocktest.New(sent)
+	opts := duty.HoldOptions{TTL: testwait.PastTheRun, Renew: 500 * time.Millisecond, Margin: time.Second, Clock: fake}
 	hold := mustTakeHold(t, database.Pool, holder, opts)
+	deadline := hold.Deadline()
+	if want := sent.Add(opts.TTL - opts.Margin); !deadline.Equal(want) {
+		t.Errorf("Deadline() after the take = %s, want send time + TTL - Margin = %s", deadline, want)
+	}
+	_, _, expiresAt := holdRow(t, database.Pool)
+	if latest := expiresAt.Add(-opts.Margin); deadline.After(latest) {
+		t.Errorf("Deadline() after the take = %s, want at or before database expiry - Margin = %s", deadline, latest)
+	}
+	armed := fake.AwaitArmed(t, "the first renewal and the loss deadline", 2)
+	if !armed[0].Equal(sent.Add(opts.Renew)) || !armed[len(armed)-1].Equal(deadline) {
+		t.Fatalf("timers armed at %v, want first renewal at %s and latest timer at loss deadline %s",
+			armed, sent.Add(opts.Renew), deadline)
+	}
 
 	locker, err := second.Pool.Begin(ctx)
 	if err != nil {
@@ -160,30 +176,37 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	if _, err := locker.Exec(ctx, `select 1 from duty_holds where name = $1 for update`, holdName); err != nil {
 		t.Fatalf("lock the hold's row: %v", err)
 	}
-	storetest.WaitForLockWaiters(t, locker, 1)
+	fake.Advance(opts.Renew)
+	storetest.WaitForStatementBehind(t, database, locker, duty.RenewHold)
+	select {
+	case <-hold.Lost():
+		t.Fatal("Lost closed before the loss deadline while the renewal was blocked")
+	default:
+	}
+	if got := hold.Deadline(); !got.Equal(deadline) {
+		t.Fatalf("Deadline() while the renewal waits = %s, want unchanged at %s", got, deadline)
+	}
 
-	waitLost(t, hold, 2*opts.TTL)
+	fake.Set(deadline)
+	waitLost(t, hold)
 	var (
 		lapsed bool
 		named  uuid.UUID
-		ahead  int64
 	)
 	if err := locker.QueryRow(ctx, `
-		select clock_timestamp() >= expires_at, holder, (extract(epoch from expires_at - clock_timestamp()) * 1000000)::bigint
-		from duty_holds where name = $1`, holdName).Scan(&lapsed, &named, &ahead); err != nil {
+		select clock_timestamp() >= expires_at, holder
+		from duty_holds where name = $1`, holdName).Scan(&lapsed, &named); err != nil {
 		t.Fatalf("read the row once Lost closed: %v", err)
 	}
-	margin := time.Duration(ahead) * time.Microsecond
 	if lapsed {
-		t.Fatalf("Lost closed %s after the row lapsed on the database's clock", -margin)
+		t.Fatal("the row had lapsed on the database's clock when Lost closed")
 	}
 	if named != holder {
 		t.Fatalf("the row names %s, want the holder %s: the loss must come from the deadline, not a take-over", named, holder)
 	}
-	if !time.Now().After(hold.Deadline()) {
-		t.Errorf("Lost is closed but the deadline %s is still ahead", time.Until(hold.Deadline()))
+	if got := hold.Deadline(); got.After(fake.Now()) {
+		t.Errorf("Lost is closed but the deadline %s is after the hold's clock at %s", got, fake.Now())
 	}
-	t.Logf("Lost closed %s before the row's expiry on the database's clock", margin)
 }
 
 // Release frees the name at once, so a standby takes it on its next try, and wakes every session
@@ -274,31 +297,34 @@ func TestHoldLapseFreesAtOnceAndKeepsTheToken(t *testing.T) {
 	mustTakeHold(t, second.Pool, uuid.New(), opts)
 }
 
-// A renewal that affects no row - the row taken over by another holder after a lapse - closes Lost
-// at once, long before the loss deadline, and the holder's Release then leaves the new holder's
-// row alone. The renewal says so on the logger the holder handed it (HoldOptions.Logger), not on
-// the default one.
+// The test advances the hold's clock to the first renewal after another holder takes the row.
+// The renewal affects no row, logs on the holder's logger, and closes Lost before the old deadline.
+// Deadline moves back to the loss time, and Release leaves the new holder's row alone.
 func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
-	// Not parallel: it holds the loss to within 3 s of the take-over (waitLost) and to before the
-	// hold's own loss deadline; the parallel tests' load could delay the renewal that finds no row
-	// past either.
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	var logs bytes.Buffer
+	fake := clocktest.New(tickDue)
 	opts := duty.HoldOptions{TTL: 10 * time.Second, Renew: 200 * time.Millisecond, Margin: time.Second,
-		Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+		Clock: fake, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
 	ctx := context.Background()
 	hold := mustTakeHold(t, database.Pool, uuid.New(), opts)
+	deadline := hold.Deadline()
+	fake.AwaitArmed(t, "the first renewal and the loss deadline", 2)
 
 	other := uuid.New()
 	if _, err := second.Pool.Exec(ctx, `update duty_holds set holder = $2, expires_at = now() + interval '10 seconds' where name = $1`,
 		holdName, other); err != nil {
 		t.Fatalf("take the row over for another holder: %v", err)
 	}
-	deadline := hold.Deadline()
-	waitLost(t, hold, 3*time.Second)
-	if !time.Now().Before(deadline) {
+	fake.Advance(opts.Renew)
+	waitLost(t, hold)
+	if !fake.Now().Before(deadline) {
 		t.Fatal("Lost closed at the deadline rather than on the zero-row renewal")
+	}
+	if got := hold.Deadline(); !got.Equal(fake.Now()) {
+		t.Errorf("Deadline() after the zero-row renewal = %s, want the loss time %s", got, fake.Now())
 	}
 	// The renewal writes its line before it closes Lost, and writes nothing after, so the buffer
 	// is read once Lost has closed.
@@ -311,6 +337,84 @@ func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 	}
 	if holder, _, _ := holdRow(t, database.Pool); holder != other {
 		t.Fatalf("the row names %s after the lost holder's Release, want the new holder %s", holder, other)
+	}
+}
+
+// unansweredRenewal records when each renewal reaches the wrapper on the hold's clock.
+// The second renewal stays unanswered until its context ends. All other statements reach the database.
+type unansweredRenewal struct {
+	duty.Holds
+	clock      *clocktest.Fake
+	unanswered chan struct{}
+
+	mu   sync.Mutex
+	sent []time.Time
+}
+
+func (u *unansweredRenewal) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	if sql == duty.RenewHold {
+		u.mu.Lock()
+		u.sent = append(u.sent, u.clock.Now())
+		second := len(u.sent) == 2
+		u.mu.Unlock()
+		if second {
+			close(u.unanswered)
+			<-ctx.Done()
+			return pgconn.CommandTag{}, ctx.Err()
+		}
+	}
+	return u.Holds.Exec(ctx, sql, args...)
+}
+
+// requireRenewals checks the send time and count of the renewals so far.
+func (u *unansweredRenewal) requireRenewals(t *testing.T, want ...time.Time) {
+	t.Helper()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if !slices.EqualFunc(u.sent, want, time.Time.Equal) {
+		t.Fatalf("renewals sent at %v on the hold's clock, want %v", u.sent, want)
+	}
+}
+
+// The fake clock brings the first renewal at 5 s, which moves the loss deadline to 18 s.
+// The second renewal at 10 s gets no answer and times out at 15 s.
+// The third renewal goes out at 15 s and moves the deadline to 28 s without closing Lost.
+// Waiting another interval would send it at 20 s, after the hold was lost.
+func TestAHoldRenewsAgainAtOnceAfterARenewalDrawsNoAnswer(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	fake := clocktest.New(tickDue)
+	db := &unansweredRenewal{Holds: database.Pool, clock: fake, unanswered: make(chan struct{})}
+	opts := duty.HoldOptions{TTL: 15 * time.Second, Renew: 5 * time.Second, Margin: 2 * time.Second, Clock: fake}
+	hold := mustTakeHold(t, db, uuid.New(), opts)
+
+	first := tickDue.Add(opts.Renew)
+	second := first.Add(opts.Renew)
+	third := second.Add(opts.Renew)
+	awaitDeadline := func(what string, want time.Time) {
+		t.Helper()
+		fake.AwaitArmedAt(t, what, want)
+		if got := hold.Deadline(); !got.Equal(want) {
+			t.Fatalf("Deadline() = %s, want %s", got, want)
+		}
+	}
+
+	fake.AwaitArmedAt(t, "the first renewal", first)
+	fake.Set(first)
+	awaitDeadline("the first renewal's loss deadline at 18 s", first.Add(opts.TTL-opts.Margin))
+
+	fake.AwaitArmedAt(t, "the second renewal", second)
+	fake.Set(second)
+	testwait.Receive(t, "the second renewal to reach the wrapper and draw no answer", db.unanswered)
+	fake.AwaitArmedAt(t, "the unanswered renewal's bound at 15 s", third)
+	fake.Set(third)
+
+	awaitDeadline("the third renewal's loss deadline at 28 s", third.Add(opts.TTL-opts.Margin))
+	db.requireRenewals(t, first, second, third)
+	select {
+	case <-hold.Lost():
+		t.Fatal("the hold reported itself lost despite the renewal at 15 s")
+	default:
 	}
 }
 
@@ -361,13 +465,14 @@ func TestHoldTokenReadsBack(t *testing.T) {
 // lengthen it, so a slow runner cannot fail the test, while a reading wrong by more than the time
 // those two statements took still falls outside the bracket: the now() plus or minus one second
 // mutants of this issue's plan (INFRA-985, task T7) are caught.
+//
+// The hold runs on a clocktest.Fake that nothing moves, so no renewal runs and expires_at stays
+// where the take wrote it between Expiry and the direct read, however far apart load puts them.
 func TestHoldExpiryMatchesTheDatabaseClock(t *testing.T) {
-	// Not parallel: Expiry and the read it is compared with must both fall between two of the
-	// hold's renewals, 500 ms apart, since a renewal moves expires_at; the parallel tests' load
-	// widens the time between the two statements.
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
-	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
+	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Clock: clocktest.New(tickDue)}
 
 	if _, held, err := duty.Expiry(ctx, database.Pool, holdName); err != nil || held {
 		t.Fatalf("Expiry with no row: held %v, error %v; want not held", held, err)
@@ -399,7 +504,7 @@ func TestHoldExpiryMatchesTheDatabaseClock(t *testing.T) {
 func databaseNow(t *testing.T, database *store.Store) time.Time {
 	t.Helper()
 	var now time.Time
-	if err := database.Pool.QueryRow(context.Background(), `select now()`).Scan(&now); err != nil {
+	if err := database.Pool.QueryRow(testwait.Context(t), `select now()`).Scan(&now); err != nil {
 		t.Fatalf("read the database's clock: %v", err)
 	}
 	return now

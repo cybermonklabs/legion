@@ -9,8 +9,10 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Most rows below run inside a synctest bubble, so the loop's timers run on a fake clock: an hour
@@ -37,10 +39,17 @@ func runLoop(loop duty.WokenLoop, exclusive duty.ExclusiveFunc) (cancel context.
 	return cancel, finished
 }
 
-// stop cancels the loop and waits for it to return.
-func stop(cancel context.CancelFunc, done <-chan struct{}) {
+// stop checks that the loop returns after cancellation without another wake or tick.
+// A blocking receive would let a loop that ignored its cancel keep ticking until go test's alarm.
+func stop(t *testing.T, loop string, cancel context.CancelFunc, done <-chan struct{}) {
+	t.Helper()
 	cancel()
-	<-done
+	synctest.Wait()
+	select {
+	case <-done:
+	default:
+		t.Fatalf("%s had not returned once its context ended", loop)
+	}
 }
 
 // wantPassesAt fails unless the passes started exactly offsets after start, and no other pass did.
@@ -82,7 +91,7 @@ func TestAWokenLoopRunsOnceAtStartAndThenNothingWhileIdle(t *testing.T) {
 			Pass:   func(context.Context) time.Time { passes.record(); return time.Time{} },
 		}, noLease(t))
 		time.Sleep(time.Hour)
-		stop(cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0)
 	})
 }
@@ -113,7 +122,7 @@ func TestAWokenLoopReportsIdleOnlyWithNothingOwedOrDue(t *testing.T) {
 		time.Sleep(time.Minute)
 		signal(wake)
 		time.Sleep(time.Minute)
-		stop(cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 10*time.Second, time.Minute)
 		var reported []time.Duration
 		for _, at := range idles.times() {
@@ -148,7 +157,7 @@ func TestWakesInsideTheMinimumGapCollapseIntoOnePass(t *testing.T) {
 
 		signal(wake)
 		synctest.Wait()
-		stop(cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 5*time.Second, 20*time.Second)
 	})
 }
@@ -176,11 +185,17 @@ func TestAWakeDuringAPassEarnsAPassAfterIt(t *testing.T) {
 				return time.Time{}
 			},
 		}, noLease(t))
-		<-inside
+		defer cancel()
+		synctest.Wait()
+		select {
+		case <-inside:
+		default:
+			t.Fatal("WokenLoop had not entered its first pass")
+		}
 		signal(wake)
 		close(release)
 		time.Sleep(time.Minute)
-		stop(cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 5*time.Second)
 	})
 }
@@ -204,7 +219,7 @@ func TestADueTimeAPassReturnsFiresOnce(t *testing.T) {
 			},
 		}, noLease(t))
 		time.Sleep(time.Hour)
-		stop(cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 30*time.Second)
 	})
 }
@@ -236,7 +251,7 @@ func TestALaterPassesDueTimeReplacesTheEarlierOne(t *testing.T) {
 		time.Sleep(10 * time.Second)
 		signal(wake)
 		time.Sleep(2 * time.Hour)
-		stop(cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 10*time.Second, 70*time.Second)
 	})
 }
@@ -261,7 +276,7 @@ func TestADueTimeWaitsOutTheMinimumGap(t *testing.T) {
 			},
 		}, noLease(t))
 		time.Sleep(time.Hour)
-		stop(cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 5*time.Second, 10*time.Second)
 	})
 }
@@ -313,7 +328,7 @@ func TestARefusedLeaseIsRetriedUntilAPassOfItsOwnRuns(t *testing.T) {
 			Pass:   func(context.Context) time.Time { passes.record(); return time.Time{} },
 		}, lease.exclusive)
 		time.Sleep(time.Hour)
-		stop(cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 
 		lease.mu.Lock()
 		defer lease.mu.Unlock()
@@ -342,13 +357,7 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 	returnsAtOnce := func(t *testing.T, cancel context.CancelFunc, done <-chan struct{}) {
 		t.Helper()
 		synctest.Wait()
-		cancel()
-		synctest.Wait()
-		select {
-		case <-done:
-		default:
-			t.Fatal("the loop had not returned once its context ended")
-		}
+		stop(t, "WokenLoop", cancel, done)
 	}
 	idlePass := func(context.Context) time.Time { return time.Time{} }
 
@@ -396,15 +405,13 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 	})
 }
 
-// Against Postgres: a lease another session holds keeps the pass from running, and the retry runs
-// it once that session lets go, with no wake in between.
+// A lease another session holds keeps both the boot attempt and a retry from running the pass.
+// After that session gives the lease back, the next retry runs the pass without a wake.
 func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
-	// Not parallel: it holds the pass to not running in the 500 ms the lease is held elsewhere, a
-	// quiet window the parallel tests' load could make vacuous by holding the loop's first lease
-	// attempt past it.
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	const name = "reference-excerpts"
 
 	holder, err := database.Pool.Acquire(ctx)
@@ -418,6 +425,7 @@ func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
 	}
 
 	ran := make(chan struct{}, 8)
+	fake := clocktest.New(tickDue)
 	loopCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -427,26 +435,32 @@ func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
 			Leases: leases,
 			Wake:   make(chan struct{}, 1),
 			MinGap: 50 * time.Millisecond,
+			Clock:  fake,
 			Pass:   func(context.Context) time.Time { ran <- struct{}{}; return time.Time{} },
 		})
 	}()
-	defer func() {
+	t.Cleanup(func() {
 		cancel()
-		<-done
-	}()
+		testwait.Receive(t, "the woken loop to return after cancellation", done)
+	})
 
+	retry := fake.AwaitArmed(t, "a retry after the held lease refused the boot attempt", 1)[0]
 	select {
 	case <-ran:
-		t.Fatal("the pass ran while another session held its lease")
-	case <-time.After(500 * time.Millisecond):
+		t.Fatal("the boot attempt ran its pass while another session held the lease")
+	default:
+	}
+	fake.Set(retry)
+	retry = fake.AwaitArmed(t, "a second retry after the held lease refused the first retry", 1)[0]
+	select {
+	case <-ran:
+		t.Fatal("the first retry ran its pass while another session held the lease")
+	default:
 	}
 	var freed bool
 	if err := holder.QueryRow(ctx, duty.FreeLease, duty.LeaseNamespace, name).Scan(&freed); err != nil || !freed {
 		t.Fatalf("let the lease go: %v (%t)", err, freed)
 	}
-	select {
-	case <-ran:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the pass did not run within 5s of the lease being let go")
-	}
+	fake.Set(retry)
+	testwait.Receive(t, "the woken pass after the lease was released", ran)
 }

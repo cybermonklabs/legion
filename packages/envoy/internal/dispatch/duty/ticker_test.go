@@ -7,8 +7,10 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fixJitter makes every jittered wait draw what draw answers for its bound, until the test ends.
@@ -73,8 +75,7 @@ func TestRunJitteredWaitsMoreThanNineTenthsAndAtMostOneIntervalAfterEveryPass(t 
 					})
 				}()
 				time.Sleep(6 * interval)
-				cancel()
-				<-done
+				stop(t, "RunJittered", cancel, done)
 
 				at := passes.times()
 				if len(at) < 6 {
@@ -109,10 +110,6 @@ func TestRunJitteredDoesNotStartWhenIdle(t *testing.T) {
 	})
 }
 
-// runLeasedDeadline bounds each wait for a pass below: far longer than any tick here takes, so
-// reaching it is a pass that never came, not a slow one.
-const runLeasedDeadline = 30 * time.Second
-
 // A loop that speeds up while work remains - the block-index reconciliation asks for a two-second
 // step after a full batch and the full interval otherwise - must make its first pass at start and
 // then every pass at the step it asked for, with the step as each tick's period. A loop that held
@@ -121,85 +118,141 @@ const runLeasedDeadline = 30 * time.Second
 // indexed. And no tick may come sooner than its wait after the pass before it ended, which is what
 // keeps two of a lone loop's ticks out of one period.
 func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *testing.T) {
-	// Not parallel: it holds each pass to beginning at least the 100 ms step after the one before
-	// it ended, and the parallel tests' load could delay a tick by that much, so a loop that
-	// ticked on a fixed cadence would go unseen.
+	t.Parallel()
 	leases := leasesOf(t, storetest.Open(t))
 	const interval, step = time.Hour, 100 * time.Millisecond
 	const passes = 4
 
-	type passTimes struct{ began, ended time.Time }
-	ran := make(chan passTimes)
+	type passTimes struct {
+		began, ended time.Time
+		period       time.Duration
+	}
+	ran := make(chan passTimes, 1)
+	tickSet := make(chan struct{}, 1)
+	tickSet <- struct{}{}
 	ctx, stop := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	started := time.Now()
+	fake := clocktest.New(tickDue)
 	go func() {
 		defer close(done)
-		duty.RunLeasedAfterEachPass(ctx, leases, "block-index", interval, func(ctx context.Context, _ time.Duration) time.Duration {
-			began := time.Now()
-			// A pass's own time, so a loop that ticks on a fixed cadence instead of after the
-			// pass shows here as a gap shorter than the step.
-			time.Sleep(step / 2)
+		duty.RunLeasedAfterEachPassOn(ctx, fake, nil, leases, "block-index", interval, func(ctx context.Context, period time.Duration) time.Duration {
+			// The test's Set must finish before the pass moves the clock again.
 			select {
-			case ran <- passTimes{began: began, ended: time.Now()}:
+			case <-tickSet:
+			case <-ctx.Done():
+				return step
+			}
+			began := fake.Now()
+			// A pass takes time so a timer measured from its tick's due arms too early.
+			fake.Advance(step / 2)
+			select {
+			case ran <- passTimes{began: began, ended: fake.Now(), period: period}:
 			case <-ctx.Done():
 			}
 			return step
 		})
 	}()
-	defer func() { stop(); <-done }()
+	t.Cleanup(func() {
+		stop()
+		testwait.Receive(t, "the pass-paced loop to return after cancellation", done)
+	})
 
-	var got []passTimes
-	for len(got) < passes {
-		select {
-		case p := <-ran:
-			got = append(got, p)
-		case <-time.After(runLeasedDeadline):
-			t.Fatalf("the loop made %d passes in %v, the step %v and the interval %v; want %d: a tick was held to the interval or refused by its own previous pass",
-				len(got), runLeasedDeadline, step, interval, passes)
+	wantStart, wantPeriod := tickDue, interval
+	for i := 1; i <= passes; i++ {
+		p := testwait.Receive(t, "the next block-index pass", ran)
+		if !p.began.Equal(wantStart) || p.period != wantPeriod {
+			t.Fatalf("pass %d started at %s with period %v; want %s with period %v",
+				i, p.began.Format(time.RFC3339Nano), p.period, wantStart.Format(time.RFC3339Nano), wantPeriod)
 		}
-	}
-	if first := got[0].began.Sub(started); first >= interval {
-		t.Errorf("the first pass came %v after start; want it at start", first)
-	}
-	for i := 1; i < len(got); i++ {
-		if gap := got[i].began.Sub(got[i-1].ended); gap < step {
-			t.Errorf("pass %d began %v after pass %d ended; want at least the %v it asked for", i+1, gap, i, step)
+		wantStart, wantPeriod = p.ended.Add(step), step
+		armed := fake.AwaitArmed(t, "the wait after the block-index pass", 1)
+		if len(armed) != 1 || !armed[0].Equal(wantStart) {
+			t.Fatalf("after pass %d ended at %s, timers armed at %v; want just %s (%v later)",
+				i, p.ended.Format(time.RFC3339Nano), armed, wantStart.Format(time.RFC3339Nano), step)
+		}
+		if i < passes {
+			fake.Set(armed[0])
+			tickSet <- struct{}{}
 		}
 	}
 }
 
 // A loop whose first tick is one interval in - the issue-ask repair (the boot makes its own pass
-// first) - must not pass at start: the issue-ask repair's boot pass would run twice on each
-// deploy.
+// first) - must not pass at start: the boot pass would run twice on each deploy. Cancellation
+// during the first pass waits for that pass to return and stops the ticker before the loop returns.
 func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
-	// Not parallel: it holds the first pass to coming at least the 300 ms interval after start,
-	// and the parallel tests' load could delay a pass made at start by that much, so a loop that
-	// passed at start would go unseen.
-	leases := leasesOf(t, storetest.Open(t))
+	t.Parallel()
 	const interval = 300 * time.Millisecond
-
-	ran := make(chan time.Time, 1)
-	ctx, stop := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	started := time.Now()
-	go func() {
-		defer close(done)
-		duty.RunLeased(ctx, leases, "issue-ask-repair", interval, duty.TickAfterInterval, func(context.Context) {
+	const name = "issue-ask-repair"
+	first := tickDue.Add(interval)
+	database := storetest.Open(t)
+	t.Run("first tick", func(t *testing.T) {
+		t.Parallel()
+		leases := leasesOf(t, database)
+		fake := clocktest.New(tickDue)
+		ran := make(chan time.Time, 1)
+		startLeasedLoop(t, fake, nil, leases, name+"/first-tick", interval, func(context.Context) {
 			select {
-			case ran <- time.Now():
+			case ran <- fake.Now():
 			default:
 			}
 		})
-	}()
-	defer func() { stop(); <-done }()
 
-	select {
-	case began := <-ran:
-		if first := began.Sub(started); first < interval {
-			t.Errorf("the first pass came %v after start; want one interval, %v, in", first, interval)
+		fake.AwaitArmedAt(t, "the first issue-ask-repair tick", first)
+		select {
+		case at := <-ran:
+			t.Fatalf("the first pass ran at %s before the first tick at %s", at, first)
+		default:
 		}
-	case <-time.After(runLeasedDeadline):
-		t.Fatalf("no pass in %v with an interval of %v", runLeasedDeadline, interval)
-	}
+		fake.Set(first)
+		if at := testwait.Receive(t, "the first issue-ask-repair pass", ran); !at.Equal(first) {
+			t.Fatalf("the first pass ran at %s, want %s", at, first)
+		}
+		fake.AwaitArmedAt(t, "the second tick, after the first pass returns", first.Add(interval))
+	})
+
+	t.Run("cancel during the first pass", func(t *testing.T) {
+		t.Parallel()
+		leases := leasesOf(t, database)
+		fake := clocktest.New(tickDue)
+		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		letPassReturn := sync.OnceFunc(func() { close(release) })
+		ctx, stop := context.WithCancel(context.Background())
+		waitCtx := testwait.Context(t)
+		go func() {
+			defer close(done)
+			duty.RunLeasedOn(ctx, fake, nil, leases, name+"/cancel", interval, duty.TickAfterInterval, func(context.Context) {
+				close(entered)
+				select {
+				case <-release:
+				case <-waitCtx.Done():
+				}
+			})
+		}()
+		t.Cleanup(func() {
+			stop()
+			letPassReturn()
+			testwait.Receive(t, "the loop to finish after releasing its first pass", done)
+		})
+
+		fake.AwaitArmedAt(t, "the first tick of the loop to cancel", first)
+		select {
+		case <-entered:
+			t.Fatal("the loop entered its first pass before the test fired its first tick")
+		default:
+		}
+		fake.Set(first)
+		testwait.Receive(t, "the first pass to enter", entered)
+		stop()
+		select {
+		case <-done:
+			t.Fatal("the loop returned while its first pass was still blocked")
+		default:
+		}
+		letPassReturn()
+		testwait.Receive(t, "the cancelled loop to return after its first pass", done)
+		if armed := fake.Armed(); len(armed) != 0 {
+			t.Fatalf("the loop returned with ticks still armed at %v", armed)
+		}
+	})
 }

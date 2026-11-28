@@ -57,8 +57,15 @@ func TestTheFiveMinuteReadsWaitAtMostFiveMinutesBetweenPasses(t *testing.T) {
 							duty.RunJittered(ctx, loop.interval, func() bool { return false }, func(context.Context, time.Time) { passes.record() })
 						}()
 						time.Sleep(20 * loop.interval)
+						// Inline rather than woken_test.go's stop, so this file still names only
+						// what the comment above lists and runs against an older build.
 						cancel()
-						<-done
+						synctest.Wait()
+						select {
+						case <-done:
+						default:
+							t.Fatal("RunJittered had not returned once its context ended")
+						}
 
 						at := passes.times()
 						if len(at) < 10 {
