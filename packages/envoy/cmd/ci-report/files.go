@@ -24,8 +24,8 @@ import (
 // regular file directly in the directory whose name ends in specgraph.FileSuffix, read with
 // notes.GitKind from its type and mode, and each other entry is in Rejected; the set is
 // checked with notes.CheckSet (notes.MaxFiles files, notes.MaxSetSize bytes in sum) and every
-// spec file with notes.CheckSize, both from the listed sizes before any file is read, and both
-// again from the files read, in notes.ReadSet's order. Its answers are notes.ReadSet's:
+// spec file with notes.CheckSize, in notes.ReadSet's order, from the listed sizes before any file
+// is read. Its answers are notes.ReadSet's:
 // notes.ErrNoDirectory for a path that the commit does not hold, a *notes.SizeRefusal for a set or
 // a file over a bound, and an
 // error for any other case, in the reporter's words for a path outside the checkout and for one
@@ -91,7 +91,8 @@ func filesAt(dir, commit string) (notes.Set, error) {
 		names, blobs, listed = append(names, name), append(blobs, fields[2]), listed+size
 	}
 	// The set's bounds first, then each file's, as notes.ReadSet orders them, and both from the
-	// listing, so a set over a bound is refused before any file is read.
+	// listing, so a set over a bound is refused before any file is read. `git ls-tree -l` lists
+	// each blob's own byte count, so the files read hold the sizes checked here.
 	if err := notes.CheckSet(dir, len(names), listed); err != nil {
 		return set, &notes.SizeRefusal{Held: len(names), Problems: []error{err}}
 	}
@@ -103,21 +104,10 @@ func filesAt(dir, commit string) (notes.Set, error) {
 	if err != nil {
 		return set, fmt.Errorf("cannot be read: %w", err)
 	}
-	files := make(map[string][]byte, len(names))
-	var read int64
+	set.Files = make(map[string][]byte, len(names))
 	for i, name := range names {
-		if err := notes.CheckSize(filepath.Join(dir, name), int64(len(contents[i]))); err != nil {
-			refusals = append(refusals, err)
-		}
-		files[name], read = contents[i], read+int64(len(contents[i]))
+		set.Files[name] = contents[i]
 	}
-	if err := notes.CheckSet(dir, len(names), read); err != nil {
-		return set, &notes.SizeRefusal{Held: len(names), Problems: []error{err}}
-	}
-	if len(refusals) > 0 {
-		return set, &notes.SizeRefusal{Held: len(names), Problems: refusals}
-	}
-	set.Files = files
 	return set, nil
 }
 
