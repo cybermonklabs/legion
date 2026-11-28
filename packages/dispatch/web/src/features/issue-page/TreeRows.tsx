@@ -111,7 +111,8 @@ export function TreeRows({
   report?: { readonly line: string; readonly row: string | undefined };
   rows: readonly DrawnRow[];
   /** Where the tree's keys find what they ask of the rows drawn in slices: whether a row is drawn,
-   *  and the drawing of the rows up to one before they move the focus there. */
+   *  and the drawing of the rows up to one before they move the focus there; and where the
+   *  address's landing waits for every row up to its row to be drawn before it gives the focus. */
   slices: RefObject<RowSlices | null>;
   /** The key of the row that is the tree's one tab stop. */
   tabStop: string | undefined;

@@ -14,6 +14,7 @@ import {
   outlineRow,
   outlineRows,
   SCREEN_PX,
+  type TasksByHand,
   tasksByHand,
 } from "./slices-fixtures";
 import { focusedRow } from "./slots/stage-fixtures";
@@ -24,10 +25,11 @@ import { focusedRow } from "./slots/stage-fixtures";
  * `first-drawing-scroll.test.tsx`'s. The rows the page opens on are the first screen drawn: the
  * question that waits on the reader, the node an address names, and the rows that fill a screen
  * above and below it. The commit that draws them brings that row under the header in its layout
- * effect, before any frame, and the row takes the focus in the frame after, as at the base, with
- * no scroll of its own, which then moves nothing. A read that answers later with rows above the
- * focused row leaves it where it stood, until the reader acts; from then on nothing the page does
- * moves the focus or the scroll.
+ * effect, before any frame. The question takes the focus in the frame after, as at the base, and
+ * the node an address names in the frame after the commit that has every row up to it drawn,
+ * each with no scroll of its own, which then moves nothing. A read that answers later with rows
+ * above the focused row leaves it where it stood, until the reader acts; from then on nothing the
+ * page does moves the focus or the scroll.
  *
  * happy-dom lays nothing out, so the page is laid out by hand (`layoutByHand`), every row 100 px
  * tall in a window 600 px tall under a header's band, and the slices are tasks run by hand
@@ -42,11 +44,12 @@ beforeAll(async () => {
 /** Every stand-in a case made, put back after it. */
 let restores: (() => void)[] = [];
 let layout: LayoutByHand;
+let tasks: TasksByHand;
 /** Runs every frame asked for and not run yet (`framesByHand`). */
 let runFrames: () => Promise<void>;
 beforeEach(() => {
   layout = layoutByHand({ band: true });
-  const tasks = tasksByHand();
+  tasks = tasksByHand();
   const frames = framesByHand();
   runFrames = () => frames.run();
   restores = [layout.restore, tasks.restore, frames.restore];
@@ -161,20 +164,55 @@ test("row 1: the first commit of rows draws the waiting question's screen and br
   }
 });
 
-// Row 3. An address that names a node drawn at the first drawing: as row 1, for that node.
-test("row 3: the first commit of rows draws the addressed node's screen and brings it under the header", async () => {
+// Row 3. An address that names a node drawn at the first drawing: the first commit of rows draws
+// that node's screen and brings it under the header, as row 1 does for the question, and the node
+// takes the focus only in the frame after the commit that has every row up to it drawn, so the
+// rows a reader reads above the focus are there once it is: the slices draw them, and the commit
+// of each leaves the node where it stood.
+test("row 3: the first commit of rows draws the addressed node's screen, and the node takes the focus only once every row up to it is drawn", async () => {
   const root = issueOf(false);
   const named = root.children[30];
   if (named === undefined) throw new Error("the tree holds no 31st comment");
   const outline = drawOutline({ placesSettled: false, reveal: [root, named], root });
+  const { container } = outline.view;
+  const upToIt = idsOf(31);
   try {
-    expect(
-      outlineRows(outline.view.container),
-      "rows were drawn before the reads answered"
-    ).toEqual([]);
+    expect(outlineRows(container), "rows were drawn before the reads answered").toEqual([]);
     const focuses = watchFocuses();
     act(() => outline.redraw({ placesSettled: true }));
-    await expectLandedAtFirstDrawing(outline.view.container, "c30", focuses, "the addressed node");
+    const drawn = outlineRows(container);
+    expect(drawn, "the first drawing drew no row of the addressed node").toContain("c30");
+    expect(drawn, "the first drawing drew the outline's first row too").not.toContain("c00");
+    expect(drawn, "the first drawing drew the outline's last row too").not.toContain("c39");
+    const top = layout.topOf(outlineRow(container, "c30"));
+    expect(
+      top !== undefined && top >= BAND_PX && top < SCREEN_PX,
+      `the first drawing left the addressed node at ${top} px, not under the header's ${BAND_PX} px band`
+    ).toBe(true);
+    // Each frame asked for, then the next slice, until no slice is left: wherever the node holds
+    // the focus, every row up to it is drawn, and the frame that gave it the focus scrolled
+    // nothing.
+    do {
+      const scrolled = layout.scrolls.length;
+      await runFrames();
+      if (focusedRow() === "c30") {
+        expect(
+          upToIt.filter((id) => outlineRow(container, id) === null),
+          "the addressed node took the focus with these rows above it not drawn"
+        ).toEqual([]);
+        expect(layout.scrolls.slice(scrolled), "the focus scrolled the page").toEqual([]);
+        break;
+      }
+    } while (await tasks.runNext());
+    expect(focusedRow(), "the addressed node never took the focus").toBe("c30");
+    expect(
+      focuses.given.filter((focus) => focus.id === "c30"),
+      "the addressed node was focused with the browser's scroll, or more than once"
+    ).toEqual([{ id: "c30", options: { preventScroll: true } }]);
+    expect(
+      layout.topOf(outlineRow(container, "c30")),
+      "the rows drawn above the addressed node, or its focus, moved it"
+    ).toBe(top);
   } finally {
     outline.view.unmount();
   }

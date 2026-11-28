@@ -31,7 +31,10 @@ import { abortOnReaderAct } from "./useNodeEditing";
  *
  * A row a key, an address or the Contents list is to take the reader to is drawn first, with every
  * row between the anchor and it: a render names it among `needed`, and a key asks `drawUpTo` from
- * its handler before it moves the focus. Rows the given rows gain - a read that answers, an
+ * its handler before it moves the focus. The row an address names takes the focus only once every
+ * row up to it is drawn (`whenDrawnUpTo`): from the first drawing on it stands on screen alone
+ * with the rows that fill a screen around it, and a reader who read the page from the focus would
+ * find the rows above it still to come. Rows the given rows gain - a read that answers, an
  * unfold, a page's control pressed - are drawn as the rows around them are: where the row before
  * them is drawn, the first screen of them is drawn in the commit that brings them and the rest in
  * slices, and where it is not, they wait with it. A fold takes its rows out of the rows given, so
@@ -73,6 +76,11 @@ export interface RowSlices {
    *  and the row of `key`, that row included: what a key asks before it moves the focus there.
    *  It is for an event's handler; a render asks for a row by `needed`. */
   readonly drawUpTo: (key: string) => void;
+  /** Calls `then` once every row from the first to the row of `key`, that row included, is drawn:
+   *  at once where they are, else in the layout effect of the commit that draws the last of them,
+   *  before its frame is painted. A key the rows do not hold reads as drawn. Answers how to call
+   *  it off. */
+  readonly whenDrawnUpTo: (key: string, then: () => void) => () => void;
 }
 
 /** One screen still to fill around a row the rows were drawn from: the anchor at the first
@@ -112,6 +120,9 @@ interface Ledger {
   /** The keys the hook itself has drawn since the last commit was laid out: a slice's, a key's,
    *  a needed row's and a first screen's. */
   readonly drew: Set<string>;
+  /** Who waits for every row up to a row to be drawn (`RowSlices.whenDrawnUpTo`), by that row's
+   *  key, each told once. */
+  readonly waiting: Set<{ readonly key: string; readonly then: () => void }>;
   /** How to call off the slice asked for, while one is. */
   cancel: (() => void) | undefined;
   /** Whether a slice's task is running now. */
@@ -140,6 +151,7 @@ function newLedger(): Ledger {
     scrolled: false,
     scrollY: undefined,
     slicing: false,
+    waiting: new Set(),
   };
 }
 
@@ -195,6 +207,12 @@ export function useDrawnInSlices<Row>({
         flushSync(() => setDrawing((drawings) => drawings + 1));
       },
       isDrawn: (key) => !ledger.held.has(key),
+      whenDrawnUpTo: (key, then) => {
+        const waiter = { key, then };
+        if (drawnUpTo(ledger, key)) then();
+        else ledger.waiting.add(waiter);
+        return () => ledger.waiting.delete(waiter);
+      },
     }),
     [ledger]
   );
@@ -219,11 +237,13 @@ export function useDrawnInSlices<Row>({
       ledger.cancel?.();
       ledger.cancel = undefined;
       noteHeld(ledger, false);
+      ledger.waiting.clear();
     };
   }, [ledger]);
 
   // After every commit, before the frame is painted: the row the reader reads is put back where it
-  // stood, the screens still to fill are filled, and a slice is asked for the rows left. The row
+  // stood, those who wait for the rows up to a row are told where this commit drew the last of
+  // them, the screens still to fill are filled, and a slice is asked for the rows left. The row
   // the reader reads is read again only where it may have changed (`referenceStale`), so a commit
   // that draws rows below it alone, the reader not having scrolled, reads no layout: the browser
   // lays the rows out once, as it paints.
@@ -234,6 +254,11 @@ export function useDrawnInSlices<Row>({
     keepReference(ledger, topOf, acted);
     ledger.drew.clear();
     ledger.drawnBefore = new Set(ledger.keys.filter((key) => !ledger.held.has(key)));
+    for (const waiter of ledger.waiting) {
+      if (!drawnUpTo(ledger, waiter.key)) continue;
+      ledger.waiting.delete(waiter);
+      waiter.then();
+    }
     let grew = false;
     if (ledger.fills.length > 0) {
       ledger.fills = ledger.fills.filter((fill) => {
@@ -386,6 +411,17 @@ function takeRows(ledger: Ledger, keys: readonly string[], anchor: string | unde
     if (!waits && heldAny && first !== undefined) ledger.fills.push({ from: first, up: false });
     start = end;
   }
+}
+
+/** Whether every row from the first to the row of `key`, that row included, is drawn: a key the
+ *  rows do not hold reads as drawn. */
+function drawnUpTo(ledger: Ledger, key: string): boolean {
+  const to = ledger.at.get(key);
+  if (to === undefined || ledger.held.size === 0) return true;
+  for (let index = 0; index <= to; index += 1) {
+    if (ledger.held.has(ledger.keys[index] ?? "")) return false;
+  }
+  return true;
 }
 
 /** Draws every row not drawn yet between the anchor and the row of `key`, that row included: from

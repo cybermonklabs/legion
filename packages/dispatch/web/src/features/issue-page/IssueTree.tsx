@@ -845,33 +845,36 @@ export function IssueTree({
         : rowKeyOf(first);
 
   // An address that names a node brings its row on screen in the layout effect of the commit that
-  // draws it, before that commit is painted, and puts the focus on it in the frame after that
-  // commit (`landOnRow`): the commit draws every row between the anchor and it (`needed`), and the
-  // rows around it are drawn in slices after it. The row is not on the page until the read that
-  // holds it has answered, and the document the preset draws beside the tree mounts later still
-  // and can leave the focus nowhere as it does, so this looks again on every tree the page draws
-  // and takes the focus back whenever nothing holds it (`focusIsLoose`: the page itself, or the
-  // element the app focuses at a page change, which holds the tree), until the reader's first act
-  // since they followed the address (`addressActs`; `READER_ACTS`, which end `acts`). A reader
-  // who acted before the row drew - the reads still out, a press on another control, a key, a
-  // turn of the wheel - keeps the focus where they put it and the page where they had it: the
-  // landing does nothing to the page - no focus, no scroll, no row's hold ended, no report - and
-  // the row is drawn where it stands, the branches the address opens opened. Watched only from
-  // the row's drawing, a row that drew late took the focus from the control they had moved to;
-  // brought on screen alone, it took the page away from the place they had scrolled to or the row
-  // they had moved to, and ended that row's hold. Whatever else holds the focus keeps it, and from
-  // the reader's first act the focus is theirs wherever they put it, nowhere included - a second
-  // Escape, a press on blank space: the effect takes it no more until the address is followed
-  // again (`landingKey`: the following and the node), to this node or another. Keyed on the node
-  // alone, a link to the node the reader had moved away from, followed again, landed nowhere; a
-  // tree drawn again at the same following lands nowhere again. A tree drawn before the landing's
-  // frame comes - a read answering - leaves that landing waiting (`landingAsked`): asked again, it
-  // was put off by a frame at each render. The issue itself is no row: an address lands on it for
-  // a turn of a thread only agents wrote in whose nearest drawn ancestor is the issue
-  // (`slots/body.tsx`), and the row it lands on is then the tree's tab stop, where the tree says
-  // what has no row of its own. What the landing says (`landingReport`) is said at the row once it
-  // holds the focus: the focus moving there lets go of what was said before. The page's own
-  // opening on its first row or its question (below) keeps its own rule.
+  // draws it, before that commit is painted, and puts the focus on it in the frame after the
+  // commit that has every row up to it drawn (`landOnRow`, `RowSlices.whenDrawnUpTo`): the commit
+  // draws every row between the anchor and it (`needed`), and the rows around it are drawn in
+  // slices after it, those above it among them, which the focus waits for, so a reader who reads
+  // the page from the focus finds every row above it drawn. The row is not on the page until the
+  // read that holds it has answered, and the document the preset draws beside the tree mounts
+  // later still and can leave the focus nowhere as it does, so this looks again on every tree the
+  // page draws and takes the focus back whenever nothing holds it (`focusIsLoose`: the page
+  // itself, or the element the app focuses at a page change, which holds the tree), until the
+  // reader's first act since they followed the address (`addressActs`; `READER_ACTS`, which end
+  // `acts`). A reader who acted before the row drew - the reads still out, a press on another
+  // control, a key, a turn of the wheel - keeps the focus where they put it and the page where
+  // they had it: the landing does nothing to the page - no focus, no scroll, no row's hold ended,
+  // no report - and the row is drawn where it stands, the branches the address opens opened.
+  // Watched only from the row's drawing, a row that drew late took the focus from the control
+  // they had moved to; brought on screen alone, it took the page away from the place they had
+  // scrolled to or the row they had moved to, and ended that row's hold. Whatever else holds the
+  // focus keeps it, and from the reader's first act the focus is theirs wherever they put it,
+  // nowhere included - a second Escape, a press on blank space: the effect takes it no more until
+  // the address is followed again (`landingKey`: the following and the node), to this node or
+  // another. Keyed on the node alone, a link to the node the reader had moved away from, followed
+  // again, landed nowhere; a tree drawn again at the same following lands nowhere again. A tree
+  // drawn before the landing's frame comes, or while it waits for the rows above its row - a read
+  // answering - leaves that landing waiting (`landingAsked`): asked again, it was put off by a
+  // frame at each render. The issue itself is no row: an address lands on it for a turn of a
+  // thread only agents wrote in whose nearest drawn ancestor is the issue (`slots/body.tsx`), and
+  // the row it lands on is then the tree's tab stop, where the tree says what has no row of its
+  // own. What the landing says (`landingReport`) is said at the row once it holds the focus: the
+  // focus moving there lets go of what was said before. The page's own opening on its first row
+  // or its question (below) keeps its own rule.
   const taken = useRef<{ readonly acts: AbortController; readonly key: string } | undefined>(
     undefined
   );
@@ -906,11 +909,17 @@ export function IssueTree({
       }
       taken.current = { acts: abortOnReaderAct(), key: landingKey };
     }
-    // The landing on this row still waits for its frame.
+    // The landing on this row still waits for the rows above it, or for its frame.
     const asked = landingAsked.current;
     if (asked?.row === row && !asked.signal.aborted) return;
     const landed = landingReport === undefined ? undefined : () => reportHere(landingReport);
-    landingAsked.current = { row, signal: landOnRow(row, onScreenHold, landed).signal };
+    const key = row.dataset.rowKey;
+    const rowSlices = slices.current;
+    const drawnUpTo =
+      key === undefined || rowSlices === null
+        ? undefined
+        : (then: () => void) => rowSlices.whenDrawnUpTo(key, then);
+    landingAsked.current = { row, signal: landOnRow(row, onScreenHold, landed, drawnUpTo).signal };
   }, [
     addressActs,
     focusReveal,
@@ -1552,7 +1561,9 @@ export function holdOnScreen(row: HTMLElement): AbortController {
  * focus given in the commit that draws the row makes the browser lay the whole new page out
  * there and then, inside the reader's press: on a large issue, 831 ms of a 3.9 s press that
  * changed the view. In the frame, the one read of the row's box meets the layout the browser
- * makes for that frame anyway.
+ * makes for that frame anyway. Where `drawnUpTo` is given, the frame is asked for only once it
+ * calls back: the outline's address waits so for every row up to its row to be drawn
+ * (`RowSlices.whenDrawnUpTo`), which answers how to stop waiting.
  *
  * Until the frame the landing is what `held` holds, so a later landing, the hold of another row
  * or the tree leaving the page ends it, and so does the reader's own act (`READER_ACTS`): the
@@ -1565,7 +1576,8 @@ export function holdOnScreen(row: HTMLElement): AbortController {
 export function landOnRow(
   row: HTMLElement,
   held: RefObject<AbortController | undefined>,
-  landed?: () => void
+  landed?: () => void,
+  drawnUpTo?: (then: () => void) => () => void
 ): AbortController {
   bringOnScreen(row);
   held.current?.abort();
@@ -1575,17 +1587,25 @@ export function landOnRow(
   // the row - a script's focus, which is no act of the reader's - it stays there, as it would
   // have had it moved just after the landing.
   const from = document.activeElement;
-  const frame = requestAnimationFrame(() => {
-    landing.abort();
-    if (!row.isConnected) return;
-    const now = document.activeElement;
-    if (now !== from && !focusOnDocument() && now?.contains(row) !== true) return;
-    row.focus({ preventScroll: true });
-    if (row.contains(document.activeElement)) landed?.();
-    bringOnScreen(row);
-    holdInPlaceOf(row, held);
+  let frame: number | undefined;
+  const focusInFrame = (): void => {
+    frame = requestAnimationFrame(() => {
+      landing.abort();
+      if (!row.isConnected) return;
+      const now = document.activeElement;
+      if (now !== from && !focusOnDocument() && now?.contains(row) !== true) return;
+      row.focus({ preventScroll: true });
+      if (row.contains(document.activeElement)) landed?.();
+      bringOnScreen(row);
+      holdInPlaceOf(row, held);
+    });
+  };
+  const stopWaiting = drawnUpTo?.(focusInFrame);
+  if (drawnUpTo === undefined) focusInFrame();
+  landing.signal.addEventListener("abort", () => {
+    stopWaiting?.();
+    if (frame !== undefined) cancelAnimationFrame(frame);
   });
-  landing.signal.addEventListener("abort", () => cancelAnimationFrame(frame));
   return landing;
 }
 

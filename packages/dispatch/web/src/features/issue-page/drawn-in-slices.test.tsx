@@ -5,6 +5,7 @@ import { memo, Profiler, type ReactNode, useCallback, useRef } from "react";
 
 import { pageFocusedRow } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { node } from "./decisions-filter/decisions-fixtures";
 import { type RowSlices, SLICE_LIMIT_MS, SLICE_MS, useDrawnInSlices } from "./drawn-in-slices";
 import {
   BAND_PX,
@@ -376,20 +377,36 @@ test("row 4: j on the last row drawn draws the next row and gives it the focus r
 });
 
 // Row 5. While rows are still to be drawn, `k` on the first row drawn, with rows above it not
-// drawn, draws the row above in the same commit, and that row takes the focus.
+// drawn, draws the row above in the same commit, and that row takes the focus. The page opens on
+// a question that waits on the reader, the 31st row, which takes the focus with its screen alone
+// drawn (`first-drawing-scroll-slices.test.tsx`'s row 1); a row an address names takes it only
+// once every row above it is drawn (its row 3).
 test("row 5: k on the first row drawn, with rows above it not drawn, draws the row above and gives it the focus", async () => {
   const { tasks } = byHand();
   const user = userEvent.setup();
-  const root = fortyComments();
-  const named = root.children[30];
-  if (named === undefined) throw new Error("the tree holds no 31st comment");
-  const { view } = drawOutline({ reveal: [root, named], root });
+  const comments = fortyComments();
+  const root = {
+    ...comments,
+    children: comments.children.map((comment) =>
+      comment.id === "c30"
+        ? node({
+            id: "q30",
+            question: true,
+            state: "open",
+            text: "Which width does the header condense at?",
+            type: "ask",
+            waiting: true,
+          })
+        : comment
+    ),
+  };
+  const { view } = drawOutline({ root });
   try {
-    await waitFor(() => expect(focusedRow(), "the address landed on no row").toBe("c30"));
+    await waitFor(() => expect(focusedRow(), "the page opened on no question").toBe("q30"));
     const first = outlineRows(view.container);
     expect(first, "the first drawing drew the first row").not.toContain("c00");
     const top = first[0] ?? "";
-    for (let at = first.indexOf("c30"); at > 0; at -= 1) await user.keyboard("k");
+    for (let at = first.indexOf("q30"); at > 0; at -= 1) await user.keyboard("k");
     expect(focusedRow(), "k did not reach the first row drawn").toBe(top);
     const above = idsOf(40)[idsOf(40).indexOf(top) - 1] ?? "";
     expect(outlineRow(view.container, above), "the row above was drawn already").toBeNull();

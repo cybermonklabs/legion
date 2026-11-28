@@ -314,9 +314,13 @@ export function DecisionsRow({
           {statements.length === 0 ? null : (
             // One line, 20 px, for each statement, whether its name has come or not: what does
             // not fit is cut with an ellipsis, its whole words in the link's title, so no line
-            // wraps and no name of a later statement is hidden behind an earlier one.
+            // wraps and no name of a later statement is hidden behind an earlier one. The word
+            // and the lines are set by their tops, each of the line's 20 px and one size of type,
+            // so their text stands on one baseline: set by their baselines, a line whose name has
+            // not come holds no text to give one, its foot stood in for it, and the word was set
+            // 6 px lower, the line 6 px taller, until the name came (Job `e2e-rows-dlw7l`).
             <div
-              className={`flex min-w-0 items-baseline gap-x-2 text-xs leading-5 ${pageQuietText}`}
+              className={`flex min-w-0 items-start gap-x-2 text-xs leading-5 ${pageQuietText}`}
               data-decision-informs=""
             >
               <span className="shrink-0" {...pageChrome}>

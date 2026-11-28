@@ -41,6 +41,14 @@ import {
  * the rows. The row holds that line's place from its first drawing while a statement it shaped is
  * still to be named, and names the statements in that same line.
  *
+ * At the head after that, the row of `spec#b-d1` shrank from 212 to 206 px at 1440 px as its
+ * statement's name came, in each of five loads (Job `e2e-rows-hg9qc`): the probe of Job
+ * `e2e-rows-dlw7l` read the informs line go from 26 to 20 px in the frame its name was drawn,
+ * and its word "informs" move 6 px up. The line set its word and its statements' lines by their
+ * baselines, and a line still to be named holds no text to give one: its baseline was taken at
+ * its foot, 20 px down, 6 px under where a named line's text has its own, and the word was set
+ * that much lower, which made the line 6 px taller until the name came.
+ *
  * A unit test's DOM lays nothing out, so the place is read by the element that holds it and its
  * classes, and the names by the element they are drawn in.
  */
@@ -90,7 +98,9 @@ function body(client: QueryClient, published: PublishedReferences) {
   );
 }
 
-test("a decision's row holds its informs line while the statements it shaped are still to be named", async () => {
+/** A client that holds every read the view draws its entries from, answered: the decisions read
+ *  with the decision that shaped the statement, and no ask, comment, block or covered statement. */
+function answeredReads(): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -106,6 +116,11 @@ test("a decision's row holds its informs line while the statements it shaped are
   // The coverage read, which part T's Decisions view waits on before it draws its entries
   // (`decisions-entries.ts`'s `entriesHeld`): one that holds no statement.
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
+  return client;
+}
+
+test("a decision's row holds its informs line while the statements it shaped are still to be named", async () => {
+  const client = answeredReads();
   const view = render(body(client, NAMES_OUT));
   try {
     const row = view.container.querySelector<HTMLElement>(
@@ -135,6 +150,47 @@ test("a decision's row holds its informs line while the statements it shaped are
       line?.textContent,
       "the informs line does not name the statement once the names came"
     ).toBe("The page draws s1.");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a decision's informs line sets its word and its statements' lines by their tops, so a line still to be named is as tall as a named one", async () => {
+  const client = answeredReads();
+  const view = render(body(client, NAMES_OUT));
+  try {
+    const informs = view.container.querySelector<HTMLElement>(
+      `[data-node-row][data-node-id="${decisionNode("first").id}"] [data-decision-informs]`
+    );
+    expect(informs, "the row held no place for its informs line").not.toBeNull();
+    // The classes that set a part of the line by its baseline, on the line or inside it, which a
+    // line still to be named holds none of.
+    const alignments = (): string[] =>
+      [informs, ...(informs?.querySelectorAll("*") ?? [])].flatMap((element) =>
+        (element?.getAttribute("class") ?? "")
+          .split(/\s+/)
+          .filter((name) => /^(items|self)-baseline/.test(name))
+      );
+    expect(
+      alignments(),
+      "the informs line sets its parts by their baselines while its statement is still to be named"
+    ).toEqual([]);
+    expect(informs?.className, "the informs line sets its parts by no top").toContain(
+      "items-start"
+    );
+
+    await act(async () => view.rerender(body(client, namesAnswered())));
+    expect(
+      informs?.textContent,
+      "the informs line does not name the statement once the names came"
+    ).toContain("The page draws s1.");
+    expect(
+      alignments(),
+      "the informs line sets its parts by their baselines once its statement is named"
+    ).toEqual([]);
+    expect(informs?.className, "the names changed how the informs line sets its parts").toContain(
+      "items-start"
+    );
   } finally {
     view.unmount();
   }
