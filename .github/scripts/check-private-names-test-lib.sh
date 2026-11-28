@@ -195,8 +195,8 @@ GREP
 # every page, as GitHub's comparison does at 1000 commits; `$work/miscount.<list>` (history,
 # comments, reviews, threads, or thread for each thread's comments) holding N makes the first N
 # answers that carry that list (for thread, PrText's that ask for the threads and every
-# ThreadComments answer) report a totalCount one fewer than the items they list, as GitHub's
-# answer did on #5960 (5 counted, 6 listed) while a review landed; `$work/base-gone` answers no base
+# ThreadComments answer) report a totalCount one fewer than the items the list holds across its
+# pages, as GitHub's answer did on #5960 (5 counted, 6 listed); `$work/base-gone` answers no base
 # branch; `$work/compare-not-found` answers the comparison as GitHub answers one it cannot make,
 # null with a NOT_FOUND error at its path, on which gh fails; `$work/graphql-fails` holding N
 # fails the Nth GraphQL call as gh fails on an answer that carries an error; and

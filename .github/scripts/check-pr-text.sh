@@ -238,13 +238,17 @@ live="$work/live.json"
 reads="$work/reads.json"
 echo '{}' > "$reads"
 round=0
-# read_lists <asked>: reads the lists <asked> names (an object of PrText's six Boolean flags: full,
-# and one for each list) in rounds of PrText, folding each answer into $reads. While a page says
-# more follow, the next round asks again for those of the lists <asked> named alone, each from its
-# own cursor; a list $reads does not hold is asked for from its first page. The run's first round,
-# the one that asks for full, is the pull request as it is now ($live).
+# read_lists <list>...: reads the named lists (full, PrText's flag for the pull request's own
+# fields, among them) in rounds of PrText, folding each answer into $reads, each list from its first
+# page: what $reads held of it is dropped first. While a page says more follow, the next round asks
+# again for those lists alone, each from its own cursor. The run's first round, the one that asks
+# for full, is the pull request as it is now ($live).
 read_lists() {
-  local scope=$1 asked=$1 variables
+  local asked variables
+  asked=$(jq -nc '{full: false, commits: false, history: false, comments: false, reviews: false,
+    threads: false} + ($ARGS.positional | map({key: ., value: true}) | from_entries)' --args "$@")
+  jq --argjson asked "$asked" 'with_entries(select($asked[.key] | not))' "$reads" > "$reads.next"
+  mv "$reads.next" "$reads"
   while :; do
     round=$((round + 1))
     variables=$(jq -c --arg owner "${repository%%/*}" --arg repo "${repository#*/}" \
@@ -258,15 +262,13 @@ read_lists() {
     jq --slurpfile answer "$work/answer" --argjson asked "$asked" "$fold_round" "$reads" \
       > "$reads.next"
     mv "$reads.next" "$reads"
-    asked=$(jq -c --argjson scope "$scope" '. as $read
+    asked=$(jq -c '. as $read
       | {full: false} + ({commits, history, comments, reviews, threads} | map_values(.more == true))
-      | .commits = (.commits and $read.commits.total <= 1000)
-      | with_entries(.value = (.value and $scope[.key]))' "$reads")
+      | .commits = (.commits and $read.commits.total <= 1000)' "$reads")
     [ "$(jq '[.[]] | any' <<< "$asked")" = true ] || break
   done
 }
-read_lists '{"full": true, "commits": true, "history": true, "comments": true, "reviews": true,
-  "threads": true}'
+read_lists full commits history comments reviews threads
 # READ AGAIN. GitHub's count of a list and the items it lists can disagree for a moment while an
 # item lands: run 46114422660 refused #5960 at 05:58:10Z with its reviews counted 5 and listed 6,
 # a review was submitted at 05:58:14Z, and a run of the same head passed at 05:59:34Z. So a list
@@ -275,10 +277,15 @@ read_lists '{"full": true, "commits": true, "history": true, "comments": true, "
 # waits are gh-read.sh's ladder: the second read GH_RETRY_SECONDS seconds (10 by default; the
 # tests set 0) after the first, the third twice as many after the second. That bound keeps a list
 # GitHub never answers whole refused by name, each such list waiting at most 30 s more.
-# read_again <read> <counts>: says that a list whose <counts> (`<total> <name> but listed
-# <listed>`) disagree is read again, as its read <read> (2 or 3), and waits for that read.
+# read_again <read> <counts>: for a list whose read <read> (1, 2 or 3) found its <counts>
+# (`<total> <name> but listed <listed>`) disagree: after the third, refuses it, naming both counts;
+# before, says it is read again and waits for the next read.
 read_again() {
-  local seconds=$((($1 - 1) * ${GH_RETRY_SECONDS:-10}))
+  if [ "$1" -eq 3 ]; then
+    echo "::error::GitHub's GraphQL API reports $2, so not every one can be checked" >&2
+    exit 1
+  fi
+  local seconds=$(($1 * ${GH_RETRY_SECONDS:-10}))
   echo "check-pr-text: GitHub's GraphQL API reports $2, so they are read again in $seconds s"
   sleep "$seconds"
 }
@@ -298,18 +305,9 @@ whole() {
     # Compared as text: an integer test inside `if` that cannot parse a number would skip the
     # refusal.
     if [ "$listed" = "$total" ]; then return 0; fi
-    if [ "$attempt" -eq 3 ]; then
-      echo "::error::GitHub's GraphQL API reports $total $name but listed $listed, so not every" \
-        "one can be checked" >&2
-      exit 1
-    fi
-    attempt=$((attempt + 1))
     read_again "$attempt" "$total $name but listed $listed"
-    jq --arg list "$list" 'del(.[$list])' "$reads" > "$reads.next"
-    mv "$reads.next" "$reads"
-    read_lists "$(jq -nc --arg list "$list" \
-      '{full: false, commits: false, history: false, comments: false, reviews: false,
-        threads: false} | .[$list] = true')"
+    attempt=$((attempt + 1))
+    read_lists "$list"
   done
 }
 
@@ -453,13 +451,8 @@ while IFS=$'\t' read -r -u 3 thread thread_id listed total more cursor; do
           (.pageInfo.endCursor // "")] | @tsv' "$work/answer")
     done
     if [ "$listed" = "$total" ]; then break; fi
-    if [ "$attempt" -eq 3 ]; then
-      echo "::error::GitHub's GraphQL API reports $total comments in review thread $thread of" \
-        "#$number but listed $listed, so not every one can be checked" >&2
-      exit 1
-    fi
-    attempt=$((attempt + 1))
     read_again "$attempt" "$total comments in review thread $thread of #$number but listed $listed"
+    attempt=$((attempt + 1))
     : > "$work/thread-nodes"
     listed=0 more=true cursor=''
   done

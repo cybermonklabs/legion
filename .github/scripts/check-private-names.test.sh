@@ -891,17 +891,27 @@ check "the refusal names the thread and the last read's counts" \
 check "after two reads again by the thread's id from their first page" \
   "$(is "$(grep -c '^graphql ThreadComments {"thread":"thread-1-0","after":null}$' "$work/calls")" 2)"
 # The waits are gh-read.sh's ladder: GH_RETRY_SECONDS seconds before the second read and twice as
-# many before the third. The library sets it to 0 for every case; this run sets 1.
+# many before the third. The library sets it to 0 for every case; this run sets 1, with a stand-in
+# sleep first on PATH that records each wait it is asked for in $work/sleepbin/slept, so the case
+# reads the waits from the record and spends none of them.
+mkdir -p "$work/sleepbin"
+cat > "$work/sleepbin/sleep" <<'SLEEP'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$(dirname "$0")/slept"
+SLEEP
+chmod +x "$work/sleepbin/sleep"
 clean_pr
 items 9201 "fine" 9202 "fine" > "$work/reviews.1"
 echo 3 > "$work/miscount.reviews"
-GH_RETRY_SECONDS=1 run_pr_text
+PATH="$work/sleepbin:$PATH" GH_RETRY_SECONDS=1 run_pr_text
 check "reviews counted one short at all three reads, with waits of GH_RETRY_SECONDS=1, fail" \
   "$(is "$status" 1)"
 check "waits 1 s before the second read" \
   "$(contains "$out" "^check-pr-text: GitHub's GraphQL API reports 1 reviews of #7 but listed 2, so they are read again in 1 s\$")"
 check "and 2 s before the third" \
   "$(contains "$out" "^check-pr-text: GitHub's GraphQL API reports 1 reviews of #7 but listed 2, so they are read again in 2 s\$")"
+check "sleeps exactly those two waits, 1 s and then 2 s" \
+  "$(is "$(cat "$work/sleepbin/slept" 2> /dev/null)" "$(printf '1\n2')")"
 
 echo "case: a read GitHub's GraphQL API does not answer is refused by name"
 clean_pr

@@ -77,6 +77,13 @@ marker_on_main() {
   jq -nc --arg sha "$marker_sha" '[{sha: $sha, commit: {committer: {date: "2026-11-18T00:00:00Z"}}}]' \
     > "$work/cutoff-commits"
 }
+# marker_on_second_page: the commits route names 100 later commits that touch the marker, then the
+# marker commit, the oldest, so it is on the history's second page; all dated before every release.
+marker_on_second_page() {
+  history_remote
+  jq -nc --arg sha "$marker_sha" '[range(100) | {sha: "later-\(.)"}] + [{sha: $sha}]
+    | map(. + {commit: {committer: {date: "2026-11-18T00:00:00Z"}}})' > "$work/cutoff-commits"
+}
 # key_rule_on: the fixtures of an active rule: the marker commit on main, and legion-v9.0.0, the
 # lowest version that contains it, published at cutoff_at; legion-v8.9.9, which does not, and
 # legion-v9.1.0, which does, published later.
@@ -353,8 +360,7 @@ echo "case: the marker commit is found past the first page of its history"
 # touch it too, so it is on the second page.
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
-jq -nc --arg sha "$marker_sha" '[range(100) | {sha: "later-\(.)"}] + [{sha: $sha}]
-  | map(. + {commit: {committer: {date: "2026-11-18T00:00:00Z"}}})' > "$work/cutoff-commits"
+marker_on_second_page
 key_run
 check "the rule is active since the release that holds it" \
   "$(contains "$out" "^check-pr-text: the issue-key rule is active since legion-v9.0.0, published $cutoff_at\$")"
@@ -385,8 +391,7 @@ check "the refusal names the history and the last read's counts" \
   "$(contains "$out" "^::error::GitHub's GraphQL API reports 0 commits on main that touch .github/issue-key-cutoff but listed 1, so not every one can be checked")"
 check "after three reads of the history" "$(is "$(grep -c '^graphql PrText .*"history":true' "$work/calls")" 3)"
 # A history of two pages is read again whole: here both pages of its first read are counted short.
-jq -nc --arg sha "$marker_sha" '[range(100) | {sha: "later-\(.)"}] + [{sha: $sha}]
-  | map(. + {commit: {committer: {date: "2026-11-18T00:00:00Z"}}})' > "$work/cutoff-commits"
+marker_on_second_page
 echo 2 > "$work/miscount.history"
 key_run
 history_reads=$(grep '^graphql PrText .*"history":true' "$work/calls" || true)
