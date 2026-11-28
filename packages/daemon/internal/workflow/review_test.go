@@ -1398,7 +1398,7 @@ func TestOnlyTheReviewAppOrAWriterDecidesARound(t *testing.T) {
 			pool := migratedPool(t)
 			seedReviewOf(t, pool, headOne, "green")
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-			apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+			apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", Commit: headOne, HandoffRecord: "review-1", HandoffVersion: 1})
 			if got := reviewStuckNotices(t, pool); len(got) != 1 {
 				t.Fatalf("the reviewer's completion told the architect %d times (%+v), want once", len(got), got)
 			}
@@ -1991,7 +1991,7 @@ func TestAPersonsReviewDecidesWhileTheReviewersClaimRecordsNoSession(t *testing.
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil))))
 	apply("a writer's approval", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headOne,
 		Author: "a-writer", AuthorCanWrite: true, Body: "looks good", SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)})
-	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", Commit: headOne, HandoffRecord: "review-1", HandoffVersion: 1})
 	if got := issuePhase(t, pool); got != phase.Accepting {
 		t.Fatalf("after the writer's approval and the reviewer's completion the issue is in %s, want accepting", got)
 	}
@@ -2183,7 +2183,7 @@ func TestAPersonsReviewDecidesByWebhookAndNotFromTheList(t *testing.T) {
 				Author: "a-writer", AuthorCanWrite: true, ReadFromList: tc.readFromList, Body: "ship it",
 				SubmittedAt: time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)})
 			apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim,
-				Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+				Summary: "reviewed", Commit: headOne, HandoffRecord: "review-1", HandoffVersion: 1})
 			if got := issuePhase(t, pool); got != tc.want {
 				t.Fatalf("after the writer's approval and the reviewer's completion the issue is in %s, want %s", got, tc.want)
 			}

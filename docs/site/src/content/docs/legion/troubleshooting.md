@@ -1819,8 +1819,10 @@ These arrive as messages on the Dispatch issue:
   as `workflow: a review decides nothing: a person's review read from the list`. A person's
   approval leaves the issue in `needs_review` until the reviewer completes its round, since an
   agent can approve on a person's account: a review the reviewer submits after it decides the
-  round instead, and the reviewer's completion with no review of its own ends the round on the
-  person's approval. A review-App
+  round instead, and the reviewer's completion at the approved head with no review of its own ends
+  the round on the person's approval. A completion at another head, or at none, leaves the round
+  stuck, and the stuck notice names both heads: the reviewer has not read the approved code, and
+  its review of the head ends the round. A review-App
   review with no footer at all, whose footer is not valid JSON (an unquoted placeholder left in
   it, say), or whose
   footer names another session (the controller's, an architect's), is set aside and decides

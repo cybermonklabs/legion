@@ -648,7 +648,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 			return err
 		}
 		if err := r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: created.Key, Role: claim.RoleReviewer, Claim: "seeded-reviewer",
-			HandoffRecord: "review-1", HandoffVersion: 1, Summary: "reviewed"}); err != nil {
+			HandoffCommit: stepRecordsHead, HandoffRecord: "review-1", HandoffVersion: 1, Summary: "reviewed"}); err != nil {
 			return err
 		}
 		return r.records.PutPullRequest(ctx, tx, stepRecordsPullRequest(created.Key, number))
