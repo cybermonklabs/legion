@@ -778,12 +778,6 @@ func (e *Engine) owningArchitectsMove(ctx context.Context, tx pgx.Tx, issue reco
 	if !record.OutOfWorkflow(fact.Status) || claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return false, nil
 	}
-	if fact.Status == record.DoneStatus {
-		byChecks, err := e.closesByChecks(ctx, tx, issue)
-		if err != nil || byChecks {
-			return false, err
-		}
-	}
 	architect, held, err := e.store.ArchitectIssueOfSession(ctx, tx, issue.Tree, fact.ActorSession)
 	if err != nil || !held {
 		return false, err
