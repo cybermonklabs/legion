@@ -103,6 +103,19 @@ func TestResetReportsNoMoveForAnAnswerThatUpdatedNothing(t *testing.T) {
 	}
 }
 
+// An answer to the move with no errors and no update, after which the re-read finds no branch at
+// all, is an error that says so. It said the branch still pointed at the merged head, which sent
+// whoever read it after a commit that was no longer on any branch.
+func TestResetNamesABranchThatIsGoneAfterAnAnswerThatUpdatedNothing(t *testing.T) {
+	g := &github{refs: map[string]string{"main": baseHead, resetBranch: mergedCommit}, empty: true, emptyDeletes: true}
+	got, err := g.reset(t, "main", "main")
+	want := "move refs/heads/" + resetBranch + " on acme/widgets from " + mergedCommit + " to " + baseHead +
+		": GitHub answered with no update, and the branch is gone"
+	if errorText(err) != want {
+		t.Fatalf("Reset = %+v, %q; want the error %q: the re-read found no branch", got, errorText(err), want)
+	}
+}
+
 // A push that lands on the branch between Reset's read of its tip and its move is not overwritten:
 // GitHub refuses the move, which names the merged head as the commit the branch must point at, and
 // Reset reads the branch again and judges its new tip as any other. A tip that holds commits the

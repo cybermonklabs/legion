@@ -28,7 +28,8 @@ const baseCommit = "c0ffee0123456789abcdef0123456789abcdef01"
 // create of a ref answered with create's status and body, the GraphQL mutation updateRefs, which
 // moves a ref only while it points at the update's beforeOid and answers refuse's message as an
 // error where refuse is set, or, where empty is set, moves nothing and answers a 200 with no errors
-// and no update, and a compare of two commits answered with the status compared names
+// and no update (and where emptyDeletes is set too, the branch is gone by the next read), and a
+// compare of two commits answered with the status compared names
 // for "base...head". pushAfterRead, where set, is another process's push that lands on the branch
 // it names just after the first read of that branch's ref is answered. It records each read, each
 // create, each move and each compare; any other request fails the test, so a Create that reads the
@@ -40,6 +41,7 @@ type github struct {
 	create        func() (int, string)
 	refuse        string
 	empty         bool
+	emptyDeletes  bool
 	compared      map[string]string
 	pushAfterRead map[string]string
 	mu            sync.Mutex
@@ -156,6 +158,9 @@ func (g *github) updateRefs(t *testing.T, w http.ResponseWriter, r *http.Request
 		return
 	}
 	if g.empty {
+		if g.emptyDeletes {
+			delete(g.refs, branch)
+		}
 		_, _ = io.WriteString(w, `{"data":{"updateRefs":null}}`)
 		return
 	}
