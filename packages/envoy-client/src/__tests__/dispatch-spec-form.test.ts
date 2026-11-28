@@ -7,6 +7,7 @@ import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
 import { DispatchServiceError } from "../dispatch-http";
+import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 // `dispatch spec-form` and the form refusal `dispatch request-approval` prints, against a stub
 // Dispatch that answers `GET /api/v1/artifacts/{id}/spec-form` and the approval request route as
@@ -282,6 +283,8 @@ const server = Bun.serve({
     async (request: Request) => {
       const url = new URL(request.url);
       const { pathname, search } = url;
+      // Every read command reads whoami first (`whoami-stand-in.ts`); it is not recorded.
+      if (asksWhoami(pathname)) return Response.json(WHOAMI_NO_CUT);
       const text = await request.text();
       const body: unknown = text === "" ? undefined : JSON.parse(text);
       requests.push({ method: request.method, path: pathname, search, body });
