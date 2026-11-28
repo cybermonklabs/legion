@@ -75,7 +75,7 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 //
 // Default is the directory the issue's own repository routes to, which GH_CONFIG_DIR names: the
 // one `legion gh` and `legion git-credential` answer that repository from (ghconfig.RouteDir,
-// cmd/legion's ghConfigDirFor), which is the recorded owner's own directory for every repository
+// ghroute.DirFor), which is the recorded owner's own directory for every repository
 // no configured pair moved, and the directory of the owner it moved to for the one a pair did.
 // The recorded owner alone is the wrong answer over a transfer: where the App is installed on
 // both accounts of the pair, the `from` owner's directory holds that owner's own lease, which
@@ -615,7 +615,7 @@ func (l bundleLayout) mintOwner(name string) string {
 // both repositories of a pair whose two owners the App is installed on: `legion gh` and `legion
 // git-credential` route the pair's `from` repository to the `to` owner's directory and every
 // other repository of that owner to its own, which is a question about the repository and not
-// about the owner (cmd/legion's ghConfigDirFor).
+// about the owner (ghroute.DirFor).
 //
 // A name ghconfig holds to be no owner's directory (ghconfig.IsOwner) is left out of the layout
 // and kept in refused, for the bundle to say once it stands (mintBundle), as an owner whose
