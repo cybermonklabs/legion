@@ -89,7 +89,17 @@ test("the project List's View menu offers every grouping it had, and each one ba
       inputs.map((input) => (input as HTMLInputElement).value)
     ),
     "the View menu's Group by choices"
-  ).toEqual(["", "priority", "status", "epic", "assignee", "author", "claim", "created", "updated"]);
+  ).toEqual([
+    "",
+    "priority",
+    "status",
+    "epic",
+    "assignee",
+    "author",
+    "claim",
+    "created",
+    "updated",
+  ]);
   await page.keyboard.press("Escape");
   // The one issue's heading under each grouping: no priority, Todo, no epic, the assignee the
   // server gave it (the creator, alice), nobody claiming it, made and changed today, and its
