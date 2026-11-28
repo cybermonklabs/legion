@@ -232,6 +232,43 @@ func TestAProductionReasonAnEndedChangeCarriedJoinsNoLaterChange(t *testing.T) {
 	}
 }
 
+// A report naming a check joins that check's reason only while the reason stands: one waiting for
+// a change to start, or one the open next change carries. A change carries c-after's fail and ends
+// with no pull request once c-after passes, so that change answered the fail. The owning
+// architect's report of a defect naming c-after after that end is a defect of its own, recorded at
+// the issue's generation and waiting for the change after it. Joined to the answered reason, the
+// report recorded nothing and its answer named the ended change, so no change would ever take it.
+func TestAReportNamingACheckAnEndedChangeAnsweredIsADefectOfItsOwn(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, claim.RoleTester)
+	mergedRoot(t, rig)
+	rig.read(waitRoot, answerOf(waitRoot, nil, failing("c-after", waitRootMerge)))
+	rig.started(waitRoot, changeGeneration, 1)
+	rig.readAt(waitRoot, changeGeneration, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+	rig.stands(waitRoot, phase.Verifying, "testing")
+	if got := rig.issue(waitRoot); got.Generation != changeGeneration || got.NextChange != 0 {
+		t.Fatalf("%s after its change ended stands at generation %d with change %d open, want %d with none", waitRoot, got.Generation,
+			got.NextChange, changeGeneration)
+	}
+
+	result := rig.fact(intake.DefectReport{Issue: waitRoot, Role: claim.RoleArchitect, By: rig.rootArchitect(), Text: "The page is blank after a save.",
+		Head: headOne, Check: "c-after"})
+	if result.Refusal != nil || result.Defect == nil {
+		t.Fatalf("the architect's report naming c-after = %+v, want it answered", result)
+	}
+	rows := rig.defectRows(waitRoot)
+	if answer := *result.Defect; answer.State != intake.DefectRecorded || answer.NextChange != changeGeneration+1 ||
+		len(rows) != 2 || answer.Defect != rows[1].id {
+		t.Fatalf("the architect's report naming c-after = %+v with the reasons %+v, want a new defect waiting for the change after %d",
+			answer, rows, changeGeneration)
+	}
+	if rows[0].kind != record.DefectKindCheck || rows[0].carriedBy != changeGeneration ||
+		rows[1].kind != record.DefectKindDefect || rows[1].check != "c-after" || rows[1].generation != changeGeneration || rows[1].carriedBy != 0 {
+		t.Fatalf("the reasons of %s = %+v, want c-after's fail with the ended change %d and the reported defect naming c-after, carried by none",
+			waitRoot, rows, changeGeneration)
+	}
+}
+
 // changeMerges stands issue's open change in merging on pull request number at head, its merger
 // done, and merges it at merge.
 func (r *waitRig) changeMerges(key string, number int, merge, head string) {

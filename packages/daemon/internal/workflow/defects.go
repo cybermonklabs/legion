@@ -28,8 +28,9 @@ const maxOpenDefects = 20
 // retro for its children included (DEFECT_BEFORE_LAST_STEP), and for a caller that may not report
 // there (DEFECT_CALLER_NOT_ALLOWED, mayReportDefect). A report whose text, trimmed with its white
 // space folded, is an open reported defect's of the issue is that defect, and one naming a check
-// that is already a reason of the issue joins that reason: either answers that defect's id and
-// records nothing. Past those, a report on an issue that holds maxOpenDefects open reported
+// whose reason still stands (checkReasonStands) joins that reason: either answers that defect's id
+// and records nothing. A reason that a change already answered takes no report, which is then a
+// defect of its own. Past those, a report on an issue that holds maxOpenDefects open reported
 // defects is refused DEFECT_LIMIT_REACHED. Otherwise it records the defect at the issue's
 // generation, writes it into the stored wait that close-wait.md renders (waitNamesDefects), and
 // tells the owning architect where another role reported it (defect-reported).
@@ -88,7 +89,7 @@ func (e *Engine) defectReport(ctx context.Context, tx pgx.Tx, fact intake.Defect
 	}
 	if fact.Check != "" {
 		for _, defect := range open {
-			if defect.Kind == record.DefectKindCheck && defect.Check == fact.Check {
+			if defect.Kind == record.DefectKindCheck && defect.Check == fact.Check && checkReasonStands(defect, issue) {
 				return intake.Result{Defect: &intake.DefectAnswer{Defect: defect.ID, State: intake.DefectJoined, NextChange: carrier(defect)}}, nil
 			}
 		}

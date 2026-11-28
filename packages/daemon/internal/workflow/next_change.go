@@ -319,13 +319,9 @@ func (e *Engine) recordCheckReasons(ctx context.Context, tx pgx.Tx, issue record
 				known = true
 				break
 			}
-			// A check that is already a reason adds none: one waiting for a change to start
-			// (carried by none, record.CarriedNow) and one the issue's open change carries. A reason
-			// a change carried that has ended, or that a re-admission ended, holds nothing: that
-			// change answered it, and a fail after it is the check failing again, which is a reason
-			// of its own.
-			if defect.Check == failed.Check && defect.Open() &&
-				(!record.CarriedNow(defect, issue) || record.OnNextChange(issue) && defect.CarriedBy == issue.NextChange) {
+			// A check that is already a reason adds none (checkReasonStands). A fail after a reason
+			// that a change answered is the check failing again, which is a reason of its own.
+			if defect.Check == failed.Check && defect.Open() && checkReasonStands(defect, issue) {
 				known = true
 				break
 			}
@@ -342,6 +338,15 @@ func (e *Engine) recordCheckReasons(ctx context.Context, tx pgx.Tx, issue record
 			"generation", issue.Generation, "check", failed.Check, "result", failed.Result, "defect", id)
 	}
 	return nil
+}
+
+// checkReasonStands says whether defect, a check's reason of issue, is still a reason: one waiting
+// for a change to start (carried by none, record.CarriedNow) or one the issue's open next change
+// carries. A reason that a change carried which has ended, or that a re-admission ended, holds
+// nothing: that change answered it. It is the one rule of "the check is already a reason", which a
+// new fail of the check (recordCheckReasons) and a report naming the check (defectReport) both ask.
+func checkReasonStands(defect record.Defect, issue record.Issue) bool {
+	return !record.CarriedNow(defect, issue) || record.OnNextChange(issue) && defect.CarriedBy == issue.NextChange
 }
 
 // checkFailedText is what a check's reason says: the check Dispatch computed as failed and the
