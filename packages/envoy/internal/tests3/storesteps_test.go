@@ -35,6 +35,9 @@ import (
 //     the shell its first line names runs it, and the runner's -e does not reach it. So its first
 //     line is #!/bin/sh and its first statement `set -eu` (scriptHeadFindings, which holds
 //     one-collection.sh to the same), or a failed command, prepare among them, would not end it.
+//   - They run one-collection.sh only as a statement of its own, never where the shell acts on
+//     its failure (the condition of an if, until or while, a side of || or &&, a pipe's left side,
+//     a !), so a failed prepare or check ends the step.
 //   - They ask the store things only through the wait step's s3, whose one kind of curl is
 //     `curl -q -g --proto =http -sf --max-time "$seconds" "$@"`: -q, first, reads no .curlrc,
 //     which could make curl try again; -g makes a URL's [..] and {..} text, not a list of
@@ -57,6 +60,9 @@ import (
 //     anywhere, no sleep outside such a wait, and no wait inside another wait or in a function,
 //     which a call from inside another wait would run there: either would set the deadline the
 //     outer wait reads on every pass, so it might never end.
+//   - The S3 port's wait, the wait step's first, ends at portDeadline (seaweedfs.go), the bound
+//     startServer gives the Go tests' store for the same start, so the two places that start this
+//     store give its S3 port one span to answer in (portWaitFinding).
 //   - The rules shellpolicy_test.go's ownFindings reads for the script hold here too: no own
 //     function takes the name of a command these rules read or is defined twice, only a wait's
 //     deadline statement sets deadline and holds arithmetic, and only s3's first statement sets
@@ -286,6 +292,24 @@ func endsOnTimeout(decl *syntax.FuncDecl) bool {
 	return found
 }
 
+// portWait matches the wait step's deadline for the S3 port's first answer and the until after
+// it, with the deadline's seconds.
+var portWait = regexp.MustCompile(`deadline=\$\(\( \$\(date \+%s\) \+ (\d+) \)\)\nuntil s3 \d+ "the S3 port's first request"`)
+
+// portWaitFinding answers what the wait step's script (text) breaks of the one span a start of
+// this store has until its S3 port answers: its S3 port's wait occurs once, and ends at
+// portDeadline, the bound startServer gives the Go tests' store for the same start.
+func portWaitFinding(text string) string {
+	found := portWait.FindAllStringSubmatch(text, -1)
+	if len(found) != 1 {
+		return fmt.Sprintf("the S3 port's wait (a deadline, then until s3 ... \"the S3 port's first request\") occurs %d times, not once", len(found))
+	}
+	if want := fmt.Sprint(int(portDeadline.Seconds())); found[0][1] != want {
+		return fmt.Sprintf("the S3 port's wait ends at %s s, not at portDeadline's %s s (seaweedfs.go), so the two places that start this store give its S3 port two spans", found[0][1], want)
+	}
+	return ""
+}
+
 // stepFindings answers what the shell of the shard job's step name (step: its run: text, or the
 // script that text names, with the shell that runs it) breaks of the rules above for the
 // workflow's store steps.
@@ -356,6 +380,8 @@ func stepFindings(name string, step storeStep) []string {
 			finding(c.line, `a curl outside s3, or other than s3's own curl -q -g --proto =http -sf --max-time "$seconds" "$@", so with no bound, one turned off, a .curlrc, a URL pattern or a scheme other than http`)
 		case command == "nohup" && (name != storeSteps[0] || !c.background || len(c.args) < 2 || !c.args[0].is("weed") || !c.args[1].is("server")):
 			finding(c.line, "a nohup that is not `nohup weed server ... &` in the step that starts the store, so it may hold the step")
+		case command == "one-collection.sh" && c.acted:
+			finding(c.line, "a one-collection.sh step whose failure the shell acts on (the condition of an if, until or while, a side of || or &&, a pipe's left side, a !), so a failed prepare or check does not end the step")
 		case command == "sleep" && !c.waiting:
 			finding(c.line, "a sleep outside a wait with a deadline")
 		case command == "sleep" && (len(c.args) != 1 || !c.args[0].is("1")):
@@ -366,6 +392,11 @@ func stepFindings(name string, step storeStep) []string {
 	}
 	if name == waitStep && !endsOnTimeout(read.functions["s3"]) {
 		findings = append(findings, fmt.Sprintf("%s, step %q: s3 does not end the step by name, with exit 1, on curl's timeout (exit 28)", step.file, name))
+	}
+	if name == waitStep {
+		if what := portWaitFinding(step.text); what != "" {
+			findings = append(findings, fmt.Sprintf("%s, step %q: %s", step.file, name, what))
+		}
 	}
 	return findings
 }

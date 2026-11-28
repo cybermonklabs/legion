@@ -67,6 +67,15 @@ const scriptDeadline = 6 * time.Minute
 // request still open at a minute is to a server that stopped answering.
 const requestDeadline = time.Minute
 
+// portDeadline bounds a start of this store until its S3 port answers, in both places that start
+// it: startServer's wait strategy here, and the S3 port's wait of
+// .github/scripts/dispatch-browser-wait-for-store.sh in the shard job, whose seconds
+// TestEveryWaitAndCheckOfTheScriptHasACase holds to this (portWaitFinding). The wait ends when the
+// port answers; its 2 minutes decide only a store that never does, and come from the shard job's
+// budget rule over the slowest store start read in CI, 66.2 s
+// (.github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object).
+const portDeadline = 2 * time.Minute
+
 // Start runs an S3-compatible server holding the empty bucket, removed when t ends, points this
 // process's AWS SDK at it for the rest of t (filestest.PointSDKAt), so files.NewS3(ctx, bucket)
 // reaches it exactly as a deployment's reaches its bucket, and returns the endpoint for a caller
@@ -122,7 +131,7 @@ func startServer(ctx context.Context, t testing.TB, script string) (testcontaine
 			FileMode:          0o755,
 		}),
 		testcontainers.WithExposedPorts("8333/tcp"),
-		testcontainers.WithWaitStrategy(wait.ForHTTP("/").WithPort("8333/tcp").WithStartupTimeout(90*time.Second)),
+		testcontainers.WithWaitStrategy(wait.ForHTTP("/").WithPort("8333/tcp").WithStartupTimeout(portDeadline)),
 		// One CPU and 1 GiB, as every container the repository's tests start is capped on a shared
 		// host: one process runs the master, volume, filer and S3 servers for a few small objects.
 		testcontainers.WithHostConfigModifier(func(hostConfig *container.HostConfig) {

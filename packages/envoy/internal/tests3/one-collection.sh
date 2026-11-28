@@ -79,9 +79,9 @@ fail() {
 # 44425048628's four shard legs every shell took under 0.2 s by the master's log, and with the
 # store held to a tenth of a CPU on a dev box the slowest took 1.8 s. A shell still running at 60 s
 # is talking to a store that stopped answering, and 60 s fails it by name a minute in, rather than
-# at the shard job's 22 minutes or go test's 20. It is ended by KILL: weed shell catches TERM and
-# exits 0, and busybox's timeout answers its program's own exit, so a shell ended by TERM read as
-# one that succeeded in the SeaweedFS image.
+# at the shard job's timeout-minutes or go test's -timeout. It is ended by KILL: weed shell catches
+# TERM and exits 0, and busybox's timeout answers its program's own exit, so a shell ended by TERM
+# read as one that succeeded in the SeaweedFS image.
 shell() {
   out=$1
   shift

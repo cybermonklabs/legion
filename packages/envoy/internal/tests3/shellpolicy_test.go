@@ -195,6 +195,32 @@ func setsArguments(args []shellWord) bool {
 	return false
 }
 
+// undoesStrict answers whether the words of a set turn off what the script's `set -eu` turned on:
+// a cluster after + that holds e or u (+e, +u, +xe), or errexit or nounset named after an o of such
+// a cluster (+o errexit). Without e a failed command, prepare's among them, no longer ends the
+// script; without u a variable a bound reads may be empty. A cluster after - turns options on, and
+// its o names one to turn on, so neither is read here; setsArguments refuses any word that is not
+// an option or an option's literal name.
+func undoesStrict(args []shellWord) bool {
+	for i := 0; i < len(args); i++ {
+		w := args[i]
+		if !w.literal || len(w.text) < 2 || w.text[0] != '-' && w.text[0] != '+' {
+			continue
+		}
+		off := w.text[0] == '+'
+		if off && strings.ContainsAny(w.text[1:], "eu") {
+			return true
+		}
+		for names := strings.Count(w.text[1:], "o"); names > 0 && i+1 < len(args); names-- {
+			i++
+			if off && (args[i].is("errexit") || args[i].is("nounset")) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // scriptHeadFindings answers, by line, what the head of a script that runs as a program of its
 // own breaks (one-collection.sh, and a script a store step's run: names). The kernel runs such a
 // file in the shell its first line names, so that line is #!/bin/sh, the POSIX sh this program

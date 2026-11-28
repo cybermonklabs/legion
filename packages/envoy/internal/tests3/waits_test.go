@@ -107,7 +107,8 @@ var goBounds = []goBound{
 //   - The script runs as a program of its own (the check step, the wait script and tests3.Start
 //     run it by its path), in the shell its first line names and out of reach of a runner's -e:
 //     its first line is #!/bin/sh and its first statement `set -eu` (scriptHeadFindings), so the
-//     shell that runs it is the POSIX sh this program reads, and a failed command ends it.
+//     shell that runs it is the POSIX sh this program reads, and a failed command ends it. No
+//     later set turns e or u off again (+e, +u, +o errexit, +o nounset; undoesStrict).
 //   - No check ends the script with no message for a case to want: exit runs only in fail and
 //     usage, return only as `return "$status"`, and no test (`[`, `test`, `grep`) runs where
 //     nothing acts on its failure (an if, until or while, || or &&), which `set -e` turns into an
@@ -327,6 +328,13 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"a long sleep in a wait", wait("  sleep 1\ndone\npackages/envoy/internal/tests3/one-collection.sh prepare", "  sleep 100000\ndone\npackages/envoy/internal/tests3/one-collection.sh prepare"), "a sleep in a wait other than its sleep 1"},
 			{"a wait whose done is never found", wait("one-collection.sh check", "one-collection.sh check dispatch-e2e-objects \"$RUNNER_TEMP/weed.log\"\ndeadline=$(( $(date +%s) + 60 ))\nuntil s3 10 \"the root\" -o /dev/null http://127.0.0.1:18333/; do\n  sleep 1\n#"), "does not parse as POSIX shell"},
 			{"a store started in the foreground", start("2>&1 &", "2>&1"), "a nohup that is not `nohup weed server ... &`"},
+			// The S3 port's wait ends at portDeadline, the Go tests' bound for the same start.
+			{"a port wait shorter than portDeadline", wait("deadline=$(( $(date +%s) + 120 ))\nuntil s3 10 \"the S3 port's", "deadline=$(( $(date +%s) + 90 ))\nuntil s3 10 \"the S3 port's"), "not at portDeadline's 120 s"},
+			{"a port wait gone", wait("until s3 10 \"the S3 port's first request\"", "until s3 10 \"the first request\""), "occurs 0 times, not once"},
+			// A store step runs as a statement of its own, so its failure ends the step.
+			{"a prepare whose failure an || takes", wait(prepare, strings.TrimSuffix(prepare, "\n")+" || echo prepare failed\n"), "a one-collection.sh step whose failure the shell acts on"},
+			{"a check in an if's condition", wait("packages/envoy/internal/tests3/one-collection.sh check dispatch-e2e-objects \"$RUNNER_TEMP/weed.log\"\n", "if packages/envoy/internal/tests3/one-collection.sh check dispatch-e2e-objects \"$RUNNER_TEMP/weed.log\"; then echo checked; fi\n"), "a one-collection.sh step whose failure the shell acts on"},
+			{"the check step's check under an ||", workflowPlant("one-collection.sh check dispatch-e2e-objects \"$RUNNER_TEMP/weed.log\"\n", "one-collection.sh check dispatch-e2e-objects \"$RUNNER_TEMP/weed.log\" || echo check failed\n", storeSteps[2]), "a one-collection.sh step whose failure the shell acts on"},
 			// A word whose value this program cannot know, before --.
 			{"a tail whose follow a quoted variable gives", inPrepare("  follow=-f\n  tail -n 200 \"$follow\" /tmp/weed.log > /dev/null\n"), "a tail given \"$follow\", " + unknown},
 			{"a tail whose follow ~ gives", inPrepare("  HOME=-f\n  tail -n 200 ~ /tmp/weed.log > /dev/null\n"), "a tail given ~, " + unknown},
@@ -434,6 +442,13 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"a set of a word this program cannot know", script("set -eu\n", "set -eu\nset -$opts\n"), "a set that sets the arguments"},
 			{"a set whose option's name the shell gives", script("set -eu\n", "set -eu\nset -o $name\n"), "a set that sets the arguments"},
 			{"a set of an option by its name and an argument", script("set -eu\n", "set -eu\nset -o noglob 99999999\n"), "a set that sets the arguments"},
+			// A later set that turns off what set -eu turned on.
+			{"a set that turns the exit on a failure off", script("set -eu\n", "set -eu\nset +e\n"), "a set that turns off e or u"},
+			{"a set that turns the unset-variable check off", script("set -eu\n", "set -eu\nset +u\n"), "a set that turns off e or u"},
+			{"a set whose + cluster turns e off beside another option", script("set -eu\n", "set -eu\nset +xe\n"), "a set that turns off e or u"},
+			{"a set that turns errexit off by its name", script("set -eu\n", "set -eu\nset +o errexit\n"), "a set that turns off e or u"},
+			{"a set that turns nounset off by its name", script("set -eu\n", "set -eu\nset +o nounset\n"), "a set that turns off e or u"},
+			{"a set in a function that turns the exit off", inPrepare("  set +e\n"), "a set that turns off e or u"},
 			{"registered whose arguments a set -- sets", script("registered() {\n  within \"$1\"", "registered() {\n  set -- +99999999\n  within \"$1\""), "a set that sets the arguments"},
 			{"registered whose arguments a set - sets", script("registered() {\n  within \"$1\"", "registered() {\n  set - +99999999\n  within \"$1\""), "a set that sets the arguments"},
 			{"registered that shifts its seconds away", script("registered() {\n  within \"$1\"", "registered() {\n  shift\n  within \"$1\""), "a bound whose seconds this program cannot read"},
@@ -536,6 +551,8 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"a tail given an escaped ~ and a ~ inside a word", inPrepare("  tail -n 200 \\~ a~b /tmp/weed.log > /dev/null\n")},
 			{"an s3 call whose what is an option", inWait("s3 2 -m0 -o /dev/null -- \"$store\"\n")},
 			{"a set of options alone", script("set -eu\n", "set -eu\nset +x\n")},
+			{"a set that turns errexit on by its name", script("set -eu\n", "set -eu\nset -o errexit\n")},
+			{"a set that turns an option other than e or u off by its name", script("set -eu\n", "set -eu\nset +o noglob\n")},
 			{"a set of an option by its name", script("set -eu\n", "set -eu\nset -o noglob\n")},
 			{"a trap on EXIT past its --", script(`trap 'rm -rf "$work"' EXIT`, `trap -- 'rm -rf "$work"' EXIT`)},
 		} {
@@ -793,6 +810,8 @@ func scriptFindings(script string, cases []storeCase, bounds []scriptBound, name
 			finding(c.line, tailFinding(c.args))
 		case name == "set" && setsArguments(c.args):
 			finding(c.line, "a set that sets the arguments, so a $1 that a bound reads may not be its call's word; the script needs set -eu alone")
+		case name == "set" && undoesStrict(c.args):
+			finding(c.line, "a set that turns off e or u, which the script's set -eu turned on, so a failed command, prepare's among them, no longer ends the script, or a variable a bound reads may be unset")
 		case name == "trap" && !exitTrap(c.args):
 			finding(c.line, "a trap on a condition other than EXIT, whose command the shell runs in the middle of what it runs then, a wait among them, so it may set that wait's deadline again or shift its arguments; the script needs a trap on EXIT alone")
 		case !scriptCommands[name] && read.functions[name] == nil:

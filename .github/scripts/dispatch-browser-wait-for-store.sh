@@ -47,7 +47,9 @@ s3() {
 }
 # The S3 port's wait ends when the store answers; its 2 minutes decide only a store that never
 # does. They are the shard job's budget rule over the slowest store start read in CI, 66.2 s
-# (.github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object).
+# (.github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object),
+# and packages/envoy/internal/tests3/seaweedfs.go's portDeadline, the Go tests' bound for the same
+# start, which TestEveryWaitAndCheckOfTheScriptHasACase holds these seconds to.
 deadline=$(( $(date +%s) + 120 ))
 until s3 10 "the S3 port's first request" -o /dev/null http://127.0.0.1:18333/; do
   [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the file store's S3 port did not answer within two minutes"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
