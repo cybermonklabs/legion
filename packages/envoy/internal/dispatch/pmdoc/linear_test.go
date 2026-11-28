@@ -190,33 +190,33 @@ func delimiterAndOpenerShapes() []countedShape {
 	return withLinearReadings(shapes, delimiterAndOpenerReadings)
 }
 
-// delimiterAndOpenerReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+// delimiterAndOpenerReadings records the counts at the chosen sizes (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
 var delimiterAndOpenerReadings = map[string]linearReading{
-	"**a …a*a…/Parse":          {585, countedReading{past: 1709.5667887667887, most: 1715.7760683760685, scanMost: 7}},
-	"**a …a*a…/ParseRendering": {585, countedReading{past: 1517.063492063492, most: 1523.1641025641027, scanMost: 7}},
-	"*a …a~ …/Parse":           {682, countedReading{past: 1520.0312107247591, most: 1524.983870967742, scanMost: 6}},
-	"*a …a~ …/ParseRendering":  {682, countedReading{past: 1342.0312107247591, most: 1346.9516129032259, scanMost: 6}},
-	"*~a…~*…/Parse":            {819, countedReading{past: 1766.060003488575, most: 1775.3003663003662, scanMost: 5}},
-	"*~a…~*…/ParseRendering":   {819, countedReading{past: 1650.060003488575, most: 1659.2905982905984, scanMost: 5}},
-	"<a/Render":                {2048, countedReading{past: 989, most: 991.22314453125, searchedMost: 1.99993896484375, scanMost: 4.00048828125}},
-	"[^a/Render":               {1365, countedReading{past: 86, most: 86.35531135531136, searchedMost: 2.999908424908425}},
-	"[a/Render":                {2048, countedReading{past: 61, most: 61.23681640625, searchedMost: 1.99993896484375}},
-	"a typed block of spaced items in a list item/ParseForWrite": {19, countedReading{past: 124479.03007518797, most: 125217.05263157895, scanMost: 218.26315789473685}},
-	"a**a*a …a*a**a…/Parse":                                      {315, countedReading{past: 3474.7292517006804, most: 3486.504761904762, scanMost: 13}},
-	"a**a*a …a*a**a…/ParseRendering":                             {315, countedReading{past: 3099.0625850340134, most: 3110.5174603174605, scanMost: 13}},
-	"a_/ParseRendering":                                          {2048, countedReading{past: 515, most: 516.6591796875, scanMost: 2}},
-	"a_b&/Render":                                                {1024, countedReading{past: 129, most: 129.4619140625}},
+	"**a …a*a…/Parse":          {292, countedReading{past: 1709.5308219178082, most: 1722.541095890411, scanMost: 7}},
+	"**a …a*a…/ParseRendering": {292, countedReading{past: 1517.0308219178082, most: 1529.7705479452054, scanMost: 7}},
+	"*a …a~ …/Parse":           {682, countedReading{past: 1522.0312107247591, most: 1526.983870967742, scanMost: 7}},
+	"*a …a~ …/ParseRendering":  {341, countedReading{past: 1344.0314201927106, most: 1353.8709677419354, scanMost: 7}},
+	"*~a…~*…/Parse":            {819, countedReading{past: 1770.060003488575, most: 1779.3003663003662, scanMost: 7}},
+	"*~a…~*…/ParseRendering":   {819, countedReading{past: 1654.060003488575, most: 1663.2905982905984, scanMost: 7}},
+	"<a/Render":                {2, countedReading{past: 988.7142857142857, most: 3267.5, searchedMost: 1.9375, scanMost: 4.5}},
+	"[^a/Render":               {2, countedReading{past: 86, most: 328.5, searchedMost: 2.9375}},
+	"[a/Render":                {4, countedReading{past: 61, most: 182.25, searchedMost: 1.96875}},
+	"a typed block of spaced items in a list item/ParseForWrite": {2, countedReading{past: 124479, most: 131490.5, scanMost: 263}},
+	"a**a*a …a*a**a…/Parse":                                      {19, countedReading{past: 3473.7894736842104, most: 3679.1052631578946, scanMost: 13}},
+	"a**a*a …a*a**a…/ParseRendering":                             {19, countedReading{past: 3098.1954887218044, most: 3297.2105263157896, scanMost: 13}},
+	"a_/ParseRendering":                                          {128, countedReading{past: 515, most: 541.546875, scanMost: 2}},
+	"a_b&/Render":                                                {32, countedReading{past: 129, most: 143.78125}},
 	"a_b*/ParseRendering":                                        {1024, countedReading{past: 1267.015625, most: 1270.1640625, scanMost: 4}},
-	"a~b_/ParseRendering":                                        {1024, countedReading{past: 1245.515625, most: 1248.8251953125, scanMost: 4}},
-	"quoted typed blocks ending on a bare line/ParseForWrite":    {16, countedReading{past: 26852.348214285714, most: 27019.1875, scanMost: 299.2734375}},
-	"~a [~~a …a~ …](u)/Parse":                                    {585, countedReading{past: 1418.0312576312576, most: 1427.1299145299145, scanMost: 7.013675213675214}},
-	"~a [~~a …a~ …](u)/ParseRendering":                           {585, countedReading{past: 1239.0312576312576, most: 1247.6564102564103, scanMost: 7.013675213675214}},
-	"~a …a~~ …/Parse":                                            {585, countedReading{past: 1516.0312576312576, most: 1521.5384615384614, scanMost: 7}},
-	"~a …a~~ …/ParseRendering":                                   {585, countedReading{past: 1337.0312576312576, most: 1342.5008547008547, scanMost: 7}},
-	"~~a …a* …/Parse":                                            {585, countedReading{past: 1524.0312576312576, most: 1529.5299145299145, scanMost: 7}},
-	"~~a …a* …/ParseRendering":                                   {585, countedReading{past: 1345.0312576312576, most: 1350.4923076923078, scanMost: 7}},
-	"~~a …a~ …/Parse":                                            {585, countedReading{past: 1516.0312576312576, most: 1521.531623931624, scanMost: 7}},
-	"~~a …a~ …/ParseRendering":                                   {585, countedReading{past: 1337.0312576312576, most: 1342.4940170940172, scanMost: 7}},
+	"a~b_/ParseRendering":                                        {1024, countedReading{past: 1247.515625, most: 1250.8251953125, scanMost: 5}},
+	"quoted typed blocks ending on a bare line/ParseForWrite":    {32, countedReading{past: 26856.959821428572, most: 26934.15625, scanMost: 300.13671875}},
+	"~a [~~a …a~ …](u)/Parse":                                    {292, countedReading{past: 1422.0313111545988, most: 1440.2671232876712, scanMost: 10.030821917808218}},
+	"~a [~~a …a~ …](u)/ParseRendering":                           {292, countedReading{past: 1243.0313111545988, most: 1260.3184931506848, scanMost: 10.030821917808218}},
+	"~a …a~~ …/Parse":                                            {292, countedReading{past: 1520.0308219178082, most: 1531.0650684931506, scanMost: 10}},
+	"~a …a~~ …/ParseRendering":                                   {292, countedReading{past: 1341.0308219178082, most: 1351.9897260273972, scanMost: 10}},
+	"~~a …a* …/Parse":                                            {585, countedReading{past: 1526.0312576312576, most: 1531.5299145299145, scanMost: 9}},
+	"~~a …a* …/ParseRendering":                                   {585, countedReading{past: 1347.0312576312576, most: 1352.4923076923078, scanMost: 9}},
+	"~~a …a~ …/Parse":                                            {292, countedReading{past: 1520.0308219178082, most: 1531.0513698630136, scanMost: 10}},
+	"~~a …a~ …/ParseRendering":                                   {292, countedReading{past: 1341.0308219178082, most: 1351.9760273972602, scanMost: 10}},
 }
 
 // refusedForItsMarks reports whether err refuses markdown for the inline marks it makes: more
@@ -261,18 +261,18 @@ func runsAndLabelsShapes() []countedShape {
 	return withLinearReadings(shapes, runsAndLabelsReadings)
 }
 
-// runsAndLabelsReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+// runsAndLabelsReadings records the counts at the chosen sizes (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
 var runsAndLabelsReadings = map[string]linearReading{
-	"[^a before one ] with a long label defined/Render":  {4096, countedReading{past: 32.333077566964285, most: 49.72216796875, searchedMost: 0.99993896484375}},
-	"[^a before one ] with a short label defined/Render": {4096, countedReading{past: 32.333077566964285, most: 32.7998046875, searchedMost: 0.99993896484375}},
-	"[^a before one ] with no footnote/Render":           {4096, countedReading{past: 28.999860491071427, most: 29.117431640625, searchedMost: 0.99993896484375}},
-	"\\~ and a run of ~/Parse":                           {4096, countedReading{past: 225, most: 225.841064453125, scanMost: 1}},
-	"a run of */Render":                                  {4096, countedReading{past: 58, most: 59.095947265625, scanMost: 2.000244140625}},
-	"a run of _/Render":                                  {4096, countedReading{past: 46, most: 47.10791015625, scanMost: 2.000244140625}},
-	"a run of ~/Parse":                                   {4096, countedReading{past: 222, most: 222.9013671875, scanMost: 1}},
-	"a run of ~/Render":                                  {4096, countedReading{past: 631, most: 633.312744140625, scanMost: 4.000732421875}},
-	"a\\~~ repeated/ParseRendering":                      {1024, countedReading{past: 754.015625, most: 757.431640625, scanMost: 4}},
-	"line feeds/Render":                                  {2048, countedReading{past: 286, most: 286.14404296875}},
+	"[^a before one ] with a long label defined/Render":  {512, countedReading{past: 32.335379464285715, most: 171.4296875, searchedMost: 0.999755859375}},
+	"[^a before one ] with a short label defined/Render": {32, countedReading{past: 32.36607142857143, most: 91.8125, searchedMost: 0.99609375}},
+	"[^a before one ] with no footnote/Render":           {8, countedReading{past: 29.071428571428573, most: 88.625, searchedMost: 0.984375}},
+	"\\~ and a run of ~/Parse":                           {512, countedReading{past: 225, most: 231.732421875, scanMost: 1.99951171875}},
+	"a run of */Render":                                  {32, countedReading{past: 58, most: 198.28125, scanMost: 2.03125}},
+	"a run of _/Render":                                  {32, countedReading{past: 46, most: 187.8125, scanMost: 2.03125}},
+	"a run of ~/Parse":                                   {512, countedReading{past: 222, most: 229.21484375, scanMost: 1.999755859375}},
+	"a run of ~/Render":                                  {512, countedReading{past: 631, most: 649.509765625, scanMost: 6.001953125}},
+	"a\\~~ repeated/ParseRendering":                      {128, countedReading{past: 756.015625, most: 783.34375, scanMost: 5}},
+	"line feeds/Render":                                  {256, countedReading{past: 286, most: 287.15234375}},
 }
 
 // TestParseIsLinearInATableOfEscapedPipes counts the read-back of a table whose every row
@@ -294,9 +294,9 @@ func escapedPipeTableShapes() []countedShape {
 	}, escapedPipeTableReadings)
 }
 
-// escapedPipeTableReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+// escapedPipeTableReadings records the counts at the chosen sizes (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
 var escapedPipeTableReadings = map[string]linearReading{
-	"a table of \\| cells/ParseRendering": {819, countedReading{past: 2010.027036455608, most: 2016.4725274725274, scanMost: 5.017094017094017}},
+	"a table of \\| cells/ParseRendering": {409, countedReading{past: 2010.03108627314, most: 2022.9364303178484, scanMost: 5.034229828850855}},
 }
 
 // TestNoReaderRegistersGoldmarksTableASTTransformer checks the display and inline readers as
@@ -413,11 +413,12 @@ func footnoteReferenceShapes() []countedShape {
 	return withLinearReadings(shapes, footnoteReferenceReadings)
 }
 
-// footnoteReferenceReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+// footnoteReferenceReadings keeps the prior counts (2026-11-28, pod legion-infra-infra-6314,
+// Go 1.27.3) until a build-cluster Job reads the new sizes. The largest body exceeds a mebibyte.
 var footnoteReferenceReadings = map[string]linearReading{
-	"many paragraphs that each refer to their own definition/ParseRendering": {113, countedReading{past: 7477.022756005057, most: 7451.804203539823, scanMost: 35.52433628318584}},
-	"one paragraph that refers to each definition/ParseRendering":            {157, countedReading{past: 5671.787079162876, most: 5651.548566878981, scanMost: 26.35748407643312}},
-	"references that match their definitions up to case/ParseRendering":      {146, countedReading{past: 6462.86301369863, most: 6437.9375, scanMost: 28.158390410958905}},
+	"many paragraphs that each refer to their own definition/ParseRendering": {3616, countedReading{past: 7477.022756005057, most: 7451.804203539823, scanMost: 35.52433628318584}},
+	"one paragraph that refers to each definition/ParseRendering":            {2512, countedReading{past: 5671.787079162876, most: 5651.548566878981, scanMost: 26.35748407643312}},
+	"references that match their definitions up to case/ParseRendering":      {1168, countedReading{past: 6462.86301369863, most: 6437.9375, scanMost: 28.158390410958905}},
 }
 
 // TestBareURLShapesParseAndRenderLinearly counts a read and its render as one operation.
@@ -455,40 +456,40 @@ func bareURLShapes() []countedShape {
 	return withLinearReadings(shapes, bareURLReadings)
 }
 
-// bareURLReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+// bareURLReadings records the counts at the chosen sizes (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
 var bareURLReadings = map[string]linearReading{
-	" \"'https://-a.b/ParseRendering+Render":                          {273, countedReading{past: 5194, most: 5215.934065934066, scanMost: 30.014652014652015}},
-	" \".www.a/ParseRendering+Render":                                 {512, countedReading{past: 3789, most: 3800.298828125, scanMost: 16.0078125}},
-	"&amp;https://-a./ParseRendering+Render":                          {256, countedReading{past: 2896, most: 2932.21875, scanMost: 28.01953125}},
-	"&lt;!-- a@b.cc …-->/ParseRendering+Render":                       {273, countedReading{past: 6351, most: 6383.871794871795, searchedMost: 65.97802197802197, scanMost: 45.040293040293044}},
-	"&lt;!X a@b.cc …>/ParseRendering+Render":                          {292, countedReading{past: 5752, most: 5780.311643835616, searchedMost: 33.98929794520548, scanMost: 43.023972602739725}},
-	"&lt;![CDATA[ a@b.cc …]]>/ParseRendering+Render":                  {204, countedReading{past: 13617, most: 13598.96875, searchedMost: 165.94975490196077, scanMost: 73.07843137254902}},
-	"&lt;?x;https://a.bc/ …?>/ParseRendering+Render":                  {195, countedReading{past: 4980, most: 5024.54358974359, searchedMost: 41.98205128205128, scanMost: 40.04615384615385}},
-	"&lt;a b=\"x;a@b.cc …\">/ParseRendering+Render":                   {227, countedReading{past: 20821, most: 20858.40088105727, searchedMost: 14, scanMost: 178.13215859030836}},
-	"&lt;a b='&lt;a c=\"x;a@b.cc …'>/ParseRendering+Render":           {151, countedReading{past: 31924, most: 31950.71523178808, searchedMost: 26, scanMost: 217.19867549668874}},
-	"(\"\"www.a_/ParseRendering+Render":                               {455, countedReading{past: 2771.0153846153844, most: 2787.9142857142856, scanMost: 19.01098901098901}},
-	"(https://-a.b\\/ParseRendering+Render":                           {292, countedReading{past: 2658, most: 2689.695205479452, scanMost: 27.017123287671232}},
-	"-www.x_/ParseRendering+Render":                                   {585, countedReading{past: 3556.015628815629, most: 3575.8581196581194, scanMost: 31.017094017094017}},
-	".www.a&/ParseRendering+Render":                                   {585, countedReading{past: 1318, most: 1327.9675213675214, scanMost: 7.005128205128205}},
-	".www/ParseRendering+Render":                                      {1024, countedReading{past: 811, most: 818.5224609375, scanMost: 8.0048828125}},
-	";;/ParseRendering+Render":                                        {2048, countedReading{past: 334, most: 336.177734375, scanMost: 2.00146484375}},
-	";a_a@/ParseRendering+Render":                                     {819, countedReading{past: 2018, most: 2027.3797313797313, scanMost: 10.006105006105006}},
-	";https://-a.b/ParseRendering+Render":                             {315, countedReading{past: 2572, most: 2601.209523809524, scanMost: 26.015873015873016}},
-	"HTTP://a /ParseRendering+Render":                                 {455, countedReading{past: 2204, most: 2219.8043956043957, scanMost: 18.01098901098901}},
-	"\\*/ParseRendering+Render":                                       {2048, countedReading{past: 216, most: 220.2490234375, scanMost: 4.00390625}},
-	"\\*https://-a/ParseRendering+Render":                             {341, countedReading{past: 2706, most: 2728.6217008797653, scanMost: 24.01466275659824}},
-	"_www.a/ParseRendering+Render":                                    {682, countedReading{past: 5082, most: 5115.260997067448, scanMost: 39.077712609970675}},
-	"http\\://-a./ParseRendering+Render":                              {372, countedReading{past: 2074, most: 2097.798387096774, scanMost: 21.013440860215052}},
-	"unreadableRun before repeated lorem ipsum/ParseRendering+Render": {341, countedReading{past: 165728, most: 180542.63929618767, scanMost: 848.8181818181819}},
-	"www./ParseRendering+Render":                                      {1024, countedReading{past: 420, most: 428.8740234375, scanMost: 8.0048828125}},
-	"www\\./ParseRendering+Render":                                    {819, countedReading{past: 1008, most: 1020.6483516483516, scanMost: 14.008547008547009}},
-	"www\\.a /ParseRendering+Render":                                  {585, countedReading{past: 2885, most: 2897.459829059829, scanMost: 13.008547008547009}},
-	"www\\.a@/ParseRendering+Render":                                  {585, countedReading{past: 639, most: 648.3128205128205, scanMost: 7.005128205128205}},
-	"www\\.a_/ParseRendering+Render":                                  {585, countedReading{past: 3313, most: 3329.4307692307693, scanMost: 20.015384615384615}},
-	"x\"www.a_/ParseRendering+Render":                                 {512, countedReading{past: 2529, most: 2543.978515625, scanMost: 16.01171875}},
-	"x;www.a_/ParseRendering+Render":                                  {512, countedReading{past: 2529, most: 2543.978515625, scanMost: 16.01171875}},
-	"é+a@b-/ParseRendering+Render":                                    {585, countedReading{past: 1515, most: 1528.5589743589744, scanMost: 14.008547008547009}},
-	"éhttps://-a./ParseRendering+Render":                              {315, countedReading{past: 2548, most: 2573.133333333333, scanMost: 26.015873015873016}},
+	" \"'https://-a.b/ParseRendering+Render":                          {8, countedReading{past: 5194, most: 5942.5, scanMost: 30.5}},
+	" \".www.a/ParseRendering+Render":                                 {16, countedReading{past: 3789, most: 4150.5625, scanMost: 16.25}},
+	"&amp;https://-a./ParseRendering+Render":                          {4, countedReading{past: 2896, most: 5214, scanMost: 29.25}},
+	"&lt;!-- a@b.cc …-->/ParseRendering+Render":                       {2, countedReading{past: 6351, most: 10838, searchedMost: 63, scanMost: 50.5}},
+	"&lt;!X a@b.cc …>/ParseRendering+Render":                          {2, countedReading{past: 5752, most: 9885.5, searchedMost: 32.4375, scanMost: 46.5}},
+	"&lt;![CDATA[ a@b.cc …]]>/ParseRendering+Render":                  {3, countedReading{past: 7972, most: 11105.666666666666, searchedMost: 97.58333333333333, scanMost: 58.666666666666664}},
+	"&lt;?x;https://a.bc/ …?>/ParseRendering+Render":                  {3, countedReading{past: 4980, most: 7875.333333333333, searchedMost: 40.833333333333336, scanMost: 43}},
+	"&lt;a b=\"x;a@b.cc …\">/ParseRendering+Render":                   {908, countedReading{past: 20821, most: 20830.350220264318, searchedMost: 14, scanMost: 178.03303964757708}},
+	"&lt;a b='&lt;a c=\"x;a@b.cc …'>/ParseRendering+Render":           {604, countedReading{past: 31924, most: 31930.67880794702, searchedMost: 26, scanMost: 217.0496688741722}},
+	"(\"\"www.a_/ParseRendering+Render":                               {14, countedReading{past: 2771.0102040816328, most: 3320.214285714286, scanMost: 19.357142857142858}},
+	"(https://-a.b\\/ParseRendering+Render":                           {4, countedReading{past: 2658, most: 4971.75, scanMost: 28.25}},
+	"-www.x_/ParseRendering+Render":                                   {9, countedReading{past: 3556.0158730158732, most: 4845.777777777777, scanMost: 32.111111111111114}},
+	".www.a&/ParseRendering+Render":                                   {4, countedReading{past: 1318, most: 2775.75, scanMost: 7.75}},
+	".www/ParseRendering+Render":                                      {16, countedReading{past: 811, most: 1292.4375, scanMost: 8.3125}},
+	";;/ParseRendering+Render":                                        {64, countedReading{past: 334, most: 403.6875, scanMost: 2.046875}},
+	";a_a@/ParseRendering+Render":                                     {25, countedReading{past: 2018, most: 2325.28, scanMost: 10.2}},
+	";https://-a.b/ParseRendering+Render":                             {4, countedReading{past: 2572, most: 4872.25, scanMost: 27.25}},
+	"HTTP://a /ParseRendering+Render":                                 {56, countedReading{past: 2204, most: 2332.410714285714, scanMost: 18.089285714285715}},
+	"\\*/ParseRendering+Render":                                       {32, countedReading{past: 216, most: 487.9375, scanMost: 4.25}},
+	"\\*https://-a/ParseRendering+Render":                             {5, countedReading{past: 2706, most: 4248.8, scanMost: 25}},
+	"_www.a/ParseRendering+Render":                                    {21, countedReading{past: 5082, most: 6162.190476190476, scanMost: 41.523809523809526}},
+	"http\\://-a./ParseRendering+Render":                              {5, countedReading{past: 2074, most: 3844.6, scanMost: 22}},
+	"unreadableRun before repeated lorem ipsum/ParseRendering+Render": {10, countedReading{past: 165728, most: 670920.8, scanMost: 1945.3}},
+	"www./ParseRendering+Render":                                      {8, countedReading{past: 420, most: 1555.875, scanMost: 8.625}},
+	"www\\./ParseRendering+Render":                                    {25, countedReading{past: 1008, most: 1422.36, scanMost: 14.28}},
+	"www\\.a /ParseRendering+Render":                                  {73, countedReading{past: 2885, most: 2984.849315068493, scanMost: 13.068493150684931}},
+	"www\\.a@/ParseRendering+Render":                                  {9, countedReading{past: 639, most: 1244.3333333333333, scanMost: 7.333333333333333}},
+	"www\\.a_/ParseRendering+Render":                                  {18, countedReading{past: 3313, most: 3847, scanMost: 20.5}},
+	"x\"www.a_/ParseRendering+Render":                                 {16, countedReading{past: 2529, most: 3008.3125, scanMost: 16.375}},
+	"x;www.a_/ParseRendering+Render":                                  {16, countedReading{past: 2529, most: 3008.3125, scanMost: 16.375}},
+	"é+a@b-/ParseRendering+Render":                                    {9, countedReading{past: 1515, most: 2396.3333333333335, scanMost: 14.555555555555555}},
+	"éhttps://-a./ParseRendering+Render":                              {4, countedReading{past: 2548, most: 4527.25, scanMost: 27.25}},
 }
 
 // TestUnclosedRawHTMLShapesParseAndRenderLinearly counts a read and its render as one operation.
@@ -521,14 +522,14 @@ func unclosedRawHTMLShapes() []countedShape {
 	return withLinearReadings(shapes, unclosedRawHTMLReadings)
 }
 
-// unclosedRawHTMLReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+// unclosedRawHTMLReadings records the counts at the chosen sizes (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
 var unclosedRawHTMLReadings = map[string]linearReading{
-	"p <!--/ParseRendering+Render":                {1024, countedReading{past: 920, most: 924.9296875, searchedMost: 20.0087890625, scanMost: 4.0048828125}},
-	"p <!A/ParseRendering+Render":                 {1365, countedReading{past: 625, most: 628.6717948717949, searchedMost: 9.003663003663004, scanMost: 3.0036630036630036}},
-	"p <![CDATA[/ParseRendering+Render":           {455, countedReading{past: 1716, most: 1727.0263736263737, searchedMost: 54.01758241758242, scanMost: 9.010989010989011}},
-	"p <!a/ParseRendering+Render":                 {1365, countedReading{past: 625, most: 628.6717948717949, searchedMost: 9.003663003663004, scanMost: 3.0036630036630036}},
-	"p <?/ParseRendering+Render":                  {2048, countedReading{past: 480, most: 482.4658203125, searchedMost: 10.00439453125, scanMost: 2.00244140625}},
-	"x <!a and a line feed/ParseRendering+Render": {682, countedReading{past: 1792.0043988269795, most: 1798.7771260997067, searchedMost: 17.999816715542522, scanMost: 6.004398826979473}},
+	"p <!--/ParseRendering+Render":                {2, countedReading{past: 920, most: 3444, searchedMost: 24.5, scanMost: 6.5}},
+	"p <!A/ParseRendering+Render":                 {5, countedReading{past: 625, most: 1627.4, searchedMost: 10, scanMost: 4}},
+	"p <![CDATA[/ParseRendering+Render":           {3, countedReading{past: 1716, most: 3388.3333333333335, searchedMost: 56.666666666666664, scanMost: 10.666666666666666}},
+	"p <!a/ParseRendering+Render":                 {5, countedReading{past: 625, most: 1627.4, searchedMost: 10, scanMost: 4}},
+	"p <?/ParseRendering+Render":                  {4, countedReading{past: 480, most: 1742.5, searchedMost: 12.25, scanMost: 3.25}},
+	"x <!a and a line feed/ParseRendering+Render": {2, countedReading{past: 1792, most: 4103, searchedMost: 17.9375, scanMost: 7.5}},
 }
 
 // readAndRenderShape keeps the input's prefix and closer fixed while the middle grows.
@@ -582,28 +583,28 @@ func updateShapes() []countedShape {
 	return withLinearReadings(append(shapes, alternatingShape()), updateReadings)
 }
 
-// updateReadings records this row's counts (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
+// updateReadings records the counts at the chosen sizes (2026-11-28, pod legion-infra-infra-6314, Go 1.27.3).
 var updateReadings = map[string]linearReading{
-	"replacing a quote of headings with a quote of rules/Update": {512, countedReading{past: 856.8727678571429, most: 854.93701171875}},
-	"replacing every other block/Update":                         {4096, countedReading{past: 118718.47330729167, most: 95164.82373046875}},
-	"replacing headings with paragraphs/Update":                  {512, countedReading{past: 1323.205357142857, most: 1321.139892578125}},
-	"seeding a quote of rules/Update":                            {512, countedReading{past: 411, most: 412.349609375}},
-	"seeding paragraphs/Update":                                  {512, countedReading{past: 906, most: 906.513671875}},
+	"replacing a quote of headings with a quote of rules/Update": {128, countedReading{past: 846.875, most: 845.55859375}},
+	"replacing every other block/Update":                         {512, countedReading{past: 15670.966145833334, most: 12725.46142578125}},
+	"replacing headings with paragraphs/Update":                  {128, countedReading{past: 1313.205357142857, most: 1311.3720703125}},
+	"seeding a quote of rules/Update":                            {128, countedReading{past: 411, most: 416.3984375}},
+	"seeding paragraphs/Update":                                  {128, countedReading{past: 906, most: 908.0546875}},
 }
 
-// alternatingBlocks ends near the most paragraphs a caller write's element budget allows.
-var alternatingBlocks = [2]int{4096, 16384}
+// alternatingBlocks uses a fourfold step for the index walks this shape cannot avoid.
+var alternatingBlocks = [2]int{512, 2048}
 
 // alternatingAllowance permits that many items reached per block beside ygo's own walks, and
 // that many times ygo's counted statements for Update with its read-back.
 const alternatingAllowance = 4
 
 // alternatingFloor and alternatingCeiling bound the counted statements per reached item allowed.
-// At the same reading as updateReadings, 4,096 blocks took 11.941460 statements per allowed item
-// and 16,384 took 11.611130. The bounds are a quarter of the lower and four times the higher.
+// At the same reading as updateReadings, 512 blocks took 14.957489 statements per allowed item
+// and 2,048 took 12.378854. The bounds are a quarter of the lower and four times the higher.
 const (
-	alternatingFloor   = 11.611130 / countedMargin
-	alternatingCeiling = 11.941460 * countedMargin
+	alternatingFloor   = 12.378854 / countedMargin
+	alternatingCeiling = 14.957489 * countedMargin
 )
 
 // alternatingShape replaces each heading between two kept paragraphs as a run of its own.

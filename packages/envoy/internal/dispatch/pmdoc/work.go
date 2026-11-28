@@ -30,9 +30,10 @@ func RenderWork() uint64 { return renderWork.Load() }
 // passed to Yjs. Coverage counts ygo's statements but does not separate these items from its work.
 func UpdateWork() uint64 { return updateWork.Load() }
 
-// ScanWork returns the bytes read by standard-library searches on the heavy-body path, apart from
-// ParseWork and RenderWork. The whole-source tab scan in readSource counts through the first tab,
-// or the full source if there is none. Coverage counts the search call, not the bytes it reads.
+// ScanWork returns the bytes that scans read apart from ParseWork and RenderWork.
+// The tab scan in readSource counts through the first tab or to the end of the source.
+// tildeParser counts the run of tildes read by Goldmark's delimiter scan, even if the run is too long
+// to become a delimiter. Coverage does not count the bytes of either scan.
 func ScanWork() uint64 { return scanWork.Load() }
 
 // indexByteWork counts the bytes an IndexByte search reaches, including a match if it finds one.

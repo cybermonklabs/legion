@@ -68,6 +68,11 @@ func TestEachWorkCounterCountsWhatItsOperationReaches(t *testing.T) {
 			name: "P2 first tab", run: parse(strings.Repeat("x", 10)+"\t"+strings.Repeat("x", 189), ScanWork), want: 11,
 		},
 		{
+			// readSource reads all 4 bytes for tabs. The delimiter scan reads the 3 tildes
+			// before tildeParser refuses the run. It refuses the remaining starts without scanning.
+			name: "P3 refused tilde run", run: parse("a~~~", ScanWork), want: 4 + 3,
+		},
+		{
 			// The closing-bracket search must read all 31 bytes after the first opener.
 			name: "R1 unclosed brackets", want: 31, atLeast: true,
 			run: func(t *testing.T) uint64 {
