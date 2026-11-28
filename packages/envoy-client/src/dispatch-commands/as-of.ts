@@ -257,7 +257,7 @@ export async function readAtCut(session: SessionContext): Promise<Reading> {
  *  prints its own notes on standard error, a read's `Left out at` line at a cut among them
  *  (`withLeftOut`). */
 export function printsJson(args: Readonly<Record<string, unknown>>): boolean {
-  return args.json === true;
+  return args["json"] === true;
 }
 
 /**
