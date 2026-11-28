@@ -96,11 +96,16 @@ export function coverageStatements(
  * every result of the check (`pass_stands`, main's e98fc56ef8): a pass recorded before a later
  * fail still stands, while a retracted pass, a pass recorded against an older wording of the
  * check and a pass at a commit the check no longer compares with stand for nothing. A check that
- * reads the live deploy comes here only for an answer of `no` for no result, which the server
- * gives before any deploy logic, where it compared the check with nothing (`liveResultStands`,
- * as `newestResultStands` for a code check), and every result of it then stands at another
- * commit; `checkStanding` reads every other answer for it from `pass_stands` (`liveStanding`),
- * as `liveResultStands` decides it. The other states read what no pass standing is:
+ * reads the live deploy comes here only for an answer of `no` for no result, which
+ * `liveResultStands` gives before it compares the deploy, where it compared the check with
+ * nothing (the issue's pull request has not merged, or it has no pull request or branch), as
+ * `newestResultStands` does for a code check. Its payload can still name the program's current
+ * deploy (`pass_stands.deploy`) and mark results `not_counted` (`markNotCounted` runs first),
+ * which the code path reads as it reads them for any check: a `not_counted` result stands at no
+ * basis (`standsAtBasis`), and every result stands at another commit (`commit_stands` answers
+ * `other_commit`). `checkStanding` reads every other answer for it from `pass_stands`
+ * (`liveStanding`), as `liveResultStands` decides it. The other states read what no pass
+ * standing is:
  *
  * - **`no-result`,** no result recorded at all, which the results say by themselves.
  * - **`unreadable`,** a payload carrying no `pass_stands` at all, which is a server that does
@@ -192,28 +197,31 @@ export interface CheckStanding {
  * at the basis only where nobody withdrew it and its check's words have not moved since it was
  * recorded.
  *
- * **A check that reads the live deploy is the server's answer alone.** A check of production or
- * of the graph, run after the merge or on the default branch (`readsTheLiveDeploy`, the page's
- * form of the server's function of that name in `results_deploys.go`), is decided by the
- * current deploy of the program it reads and not by its basis: the server counts only the
- * results recorded at the commit that deploy runs and after it went out, marks every other one
- * `not_counted` (`markNotCounted`), and answers over the rest (`liveResultStands` in
- * `results_pass_stands.go`). So such a check takes its state from `pass_stands`, with or without
- * results: `yes` is Passed and `no` for a fail is Failed, each standing on the result the answer
- * names (`pass_stands.results`) where the read holds it; and `unknown` is Cannot tell, whatever
- * its reason - no deploy of the program, no result since its deploy, a program the check leaves
- * unnamed, a deploy at a commit that does not hold the merge, or a read that failed. A pass at
- * its basis says nothing of it, so with no deploy, or after a deploy at another commit, the page
- * says what the route says: it cannot tell. `no` for no result is no answer about the deploy:
- * the server gives it where it compared the check with nothing - the issue's pull request has
- * not merged, or it has no pull request or branch - before any deploy logic, in
- * `liveResultStands` as in `newestResultStands` for a code check, and every result of the check
- * then stands at another commit (`commitStands` answers `other_commit`). So that answer is read
- * as any check's is, as the rest of this says: No result where the check holds no result at
- * all, Retracted where every result was withdrawn, and else Out of date, standing on the newest
- * result that stands, and never No result over the results drawn under it, which the record
- * route takes before the merge. One whose payload carries no `pass_stands` reads Could not read,
- * whatever results it holds. Every other check is read as the rest of this says.
+ * **A check that reads the live deploy is the server's answer alone, but for an answer of `no`
+ * for no result.** A check of production or of the graph, run after the merge or on the default
+ * branch (`readsTheLiveDeploy`, the page's form of the server's function of that name in
+ * `results_deploys.go`), is decided by the current deploy of the program it reads and not by its
+ * basis: the server counts only the results recorded at the commit that deploy runs and after it
+ * went out, marks every other one `not_counted` (`markNotCounted`), and answers over the rest
+ * (`liveResultStands` in `results_pass_stands.go`). So such a check takes its state from
+ * `pass_stands`, with or without results: `yes` is Passed and `no` for a fail is Failed, each
+ * standing on the result the answer names (`pass_stands.results`) where the read holds it; and
+ * `unknown` is Cannot tell, whatever its reason - no deploy of the program, no result since its
+ * deploy, a program the check leaves unnamed, a deploy at a commit that does not hold the merge,
+ * or a read that failed. A pass at its basis says nothing of it, so with no deploy, or after a
+ * deploy at another commit, the page says what the route says: it cannot tell. `no` for no
+ * result is no answer about the deploy: `liveResultStands` gives it before it compares the
+ * deploy, where it compared the check with nothing - the issue's pull request has not merged, or
+ * it has no pull request or branch - as `newestResultStands` does for a code check. Its payload
+ * can still name the program's current deploy (`pass_stands.deploy`) and mark results
+ * `not_counted` (`markNotCounted` runs first), which the code path reads as it reads them for
+ * any check: a `not_counted` result stands at no basis (`standsAtBasis`), and every result stands
+ * at another commit (`commit_stands` answers `other_commit`). So that answer is read as any
+ * check's is, as the rest of this says: No result where the check holds no result at all,
+ * Retracted where every result was withdrawn, and else Out of date, standing on the newest result
+ * that stands, and never No result over the results drawn under it, which the record route takes
+ * before the merge. One whose payload carries no `pass_stands` reads Could not read, whatever
+ * results it holds. Every other check is read as the rest of this says.
  *
  * **The latest evidence at the basis decides.** A check with no result reads No result, and one
  * whose payload carries no `pass_stands` reads Could not read, as `checkState` reads them. Else,
@@ -262,9 +270,15 @@ function readsTheLiveDeploy(check: CheckStateReads): boolean {
  *  which of the results that deploy counts is the server's to say (`markNotCounted`), so nothing
  *  the page reads of the results itself decides it: the check stands on the result the answer
  *  names, the newest one that deploy counts, and on none where the answer names none or the read
- *  does not hold the one named. An answer of `no` for no result never comes here: the server
- *  gives it before any deploy logic, where it compared the check with nothing, so
- *  `checkStanding` reads it on the code path, as it reads any check's. */
+ *  does not hold the one named. An answer of `no` for no result never comes here:
+ *  `liveResultStands` gives it before it compares the deploy, where it compared the check with
+ *  nothing (the issue's pull request has not merged, or it has no pull request or branch), as
+ *  `newestResultStands` does for a code check, so `checkStanding` reads it on the code path, as
+ *  it reads any check's. Its payload can still name the program's current deploy
+ *  (`pass_stands.deploy`) and mark results `not_counted` (`markNotCounted` runs first), which
+ *  the code path reads as it reads them for any check: a `not_counted` result stands at no basis
+ *  (`standsAtBasis`), and every result stands at another commit (`commit_stands` answers
+ *  `other_commit`). */
 function liveStanding(check: CheckStateReads): CheckStanding {
   const answer = check.pass_stands;
   if (answer === undefined) return { state: "unreadable" };
