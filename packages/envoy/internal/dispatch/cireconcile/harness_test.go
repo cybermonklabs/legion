@@ -103,7 +103,8 @@ type harness struct {
 	defaults int
 	// bound is the fake clock this harness's passes put their own bound on where the test ends
 	// that bound rather than the wall clock (boundByTheTest), and nil until a test asks for it.
-	bound *clocktest.Fake
+	bound   *clocktest.Fake
+	summary *summaryWitness
 }
 
 // newHarness is the whole stack with the listener already running, which every test wants but
@@ -272,7 +273,8 @@ func (w *holdingWriter) RecordRuns(ctx context.Context, observations []contracts
 // to make this listener settle, and a record alone does not prove that.
 func (h *harness) startListener() {
 	h.t.Helper()
-	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerify(h.verify))
+	h.summary = &summaryWitness{records: map[string]scheduledRecord{}, wake: make(chan struct{}, 1)}
+	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerify(h.verify), cistore.WithSummaryObserver(h.summary))
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}
@@ -282,7 +284,7 @@ func (h *harness) startListener() {
 	loop, endLoop := context.WithCancel(h.ctx)
 	h.t.Cleanup(endLoop)
 	h.loopLogs = &syncBuffer{}
-	cistore.StartSummaryLoop(loop, listener, h.bus, 100*time.Millisecond, 20*time.Millisecond,
+	cistore.StartSummaryLoop(loop, listener, h.bus, summaryDebounce, 20*time.Millisecond,
 		metrics.New().NewGauge("held", ""), logging.NewWithWriter("loop", h.loopLogs))
 	h.listener = listener
 	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.verdict, h.bus, listener, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
@@ -446,14 +448,10 @@ func (h *harness) settlement(sub *nats.Subscription, why string) cistore.Summary
 	return summary
 }
 
-// noSettlement fails when another settlement is published within the summary loop's own debounce
-// several times over.
+// noSettlement waits for completed summary decisions for this harness's default pull request.
 func (h *harness) noSettlement(sub *nats.Subscription, why string) {
 	h.t.Helper()
-	message, err := sub.NextMsg(2 * time.Second)
-	if err == nil {
-		h.t.Fatalf("%s: a settlement was published: %s", why, message.Data)
-	}
+	h.noSettlementAt(sub, why, gitHubOwner, gitHubName, pullNumber)
 }
 
 // settledRecord is the head's record once the summary loop has finished with it. Publishing a
@@ -462,15 +460,20 @@ func (h *harness) noSettlement(sub *nats.Subscription, why string) {
 // test comparing revisions across a pass has to start from one that has stopped.
 func (h *harness) settledRecord() (cistore.State, uint64) {
 	h.t.Helper()
-	var state cistore.State
+	return h.settledRecordAt(gitHubRepository, 7, headSHA, testwait.Poll)
+}
+
+// settledRecordAt waits for the named head's settled record and a revision stable over poll.
+func (h *harness) settledRecordAt(repository string, number int64, sha string, poll time.Duration) (cistore.State, uint64) {
+	h.t.Helper()
 	var revision uint64
-	testwait.Until(h.t, "the head's settled record with a stable revision", func() (cistore.State, bool) {
-		next, nextRevision, ok := h.record()
-		settled := ok && next.SettledEmitted && next.Claim == nil && nextRevision == revision
-		state, revision = next, nextRevision
+	state := testwait.UntilPolling(h.t, poll, "the head's settled record with a stable revision", func() (*cistore.State, bool) {
+		next, nextRevision := h.recordAt(repository, number, sha)
+		settled := next != nil && next.SettledEmitted && next.Claim == nil && nextRevision == revision
+		revision = nextRevision
 		return next, settled
 	})
-	return state, revision
+	return *state, revision
 }
 
 // record is the head's record as the bucket holds it, with its revision, and ok false when the

@@ -37,6 +37,14 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
+// readyPace is how often the wait for the server to accept connections asks again; it bounds
+// nothing. The server's own failures end this command: Start reports a listen error, a port
+// another process holds among them, through the logger's Fatalf, which exits 1 naming it, and a
+// server that shuts down before it accepts any connection ends the wait below. A server that is
+// merely slow to start, as on a loaded machine, is waited for for as long as it takes, since every
+// caller's own wait for the port has no bound either.
+const readyPace = time.Second
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "natsd: %v\n", err)
@@ -76,13 +84,18 @@ func run(args []string) error {
 		return err
 	}
 	srv.ConfigureLogger()
+	stopped := make(chan struct{})
+	go func() {
+		srv.WaitForShutdown()
+		close(stopped)
+	}()
 	go srv.Start()
-	// The server's own readiness, asked every 100 ms, for as long as it takes: a JetStream start
-	// on a loaded machine can take longer than any fixed wait allows, and the script that started
-	// natsd waits for its readiness line under a deadline of its own. A listener the server cannot
-	// open, a port another process holds among them, is logged as fatal, and nats-server's logger
-	// (ConfigureLogger's) exits on a fatal line, so that ends this command at once, naming the port.
-	for !srv.ReadyForConnections(100 * time.Millisecond) {
+	for !srv.ReadyForConnections(readyPace) {
+		select {
+		case <-stopped:
+			return fmt.Errorf("the server on %s:%d shut down before it accepted a connection", opts.Host, opts.Port)
+		default:
+		}
 	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)

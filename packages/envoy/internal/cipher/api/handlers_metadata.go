@@ -59,6 +59,13 @@ type authorizationServerMetadata struct {
 	// 8414 makes the member optional with a default of the authorization code and implicit
 	// grants, neither of which this broker has, so leaving it out would say something untrue.
 	GrantTypesSupported []string `json:"grant_types_supported"`
+	// The scopes a device login may ask for (RFC 8414's scopes_supported, which lets a server
+	// name some of its scopes and not others): machine, and dispatch beside it while the broker
+	// serves a Dispatch sign-in (BROKER_DISPATCH_SIGNIN=on), read from the provider
+	// (oauth.Provider.DeviceScopes). Absent from a broker that serves no device grant. A caller
+	// tells from it whether the broker serves a Dispatch sign-in before it asks for one, as
+	// Dispatch does for its pages (cipher.Client.Capabilities, the capability dispatch_sign_in).
+	ScopesSupported []string `json:"scopes_supported,omitempty"`
 	// The response types this broker supports, which is none: it has no authorization endpoint
 	// at all, since nobody signs in to it through a browser to get a token — a person's part in
 	// a machine login is typing a code, and every other caller presents an identity it already
@@ -98,6 +105,7 @@ func (s *server) authorizationServerMetadata(w http.ResponseWriter, _ *http.Requ
 	}
 	if s.deps.OAuth.DeviceGrant() {
 		document.DeviceAuthorizationEndpoint = s.deps.PublicURL + deviceAuthorizationPath
+		document.ScopesSupported = s.deps.OAuth.DeviceScopes()
 	}
 	writeJSON(w, http.StatusOK, document)
 }

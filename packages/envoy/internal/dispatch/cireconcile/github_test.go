@@ -75,6 +75,9 @@ type fakeGitHub struct {
 	// is the moment a test that ends the pass's bound itself ends it (boundEndsAtTheStall). Nil
 	// calls nothing, and the answer waits out its stall or its caller's end.
 	stalled func()
+	// now and queryWait share the pacing test's clock. Nil keeps real request timing.
+	now       func() time.Time
+	queryWait func(time.Duration)
 	// answerCodes is the status one path is answered with in place of its route's answer, which
 	// is how a test makes GitHub give up on or refuse that one read (answerStatus).
 	answerCodes map[string]int
@@ -621,4 +624,11 @@ func (f *fakeGitHub) forgetRequests() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = nil
+}
+
+func (f *fakeGitHub) clockNow() time.Time {
+	if f.now != nil {
+		return f.now()
+	}
+	return time.Now()
 }

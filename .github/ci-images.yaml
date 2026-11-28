@@ -94,6 +94,14 @@ images:
     tag: pgbouncer-v1.25.2-p0-7d7a27d9
     digest: sha256:7d7a27d9e90985cab5cf42256f5c13a3120baa4b055b69df37beb272b89b2340
 
+  # PostgreSQL 16.16, the server internal/ompsessions' TestTheClientHoldsUnderEveryLeftSetting
+  # starts with docker, directly and behind the PgBouncer row above. 16.4 is the first 16 release
+  # with restrict_nonsystem_relation_kind, which every transaction of the session client sets.
+  # Docker Hub's 16.16 tag has moved since, so the row names the digest alone.
+  - upstream: docker.io/library/postgres@sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f
+    tag: postgres-3950ad7c
+    digest: sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f
+
   # NATS: the `services:` NATS of the pi-envoy and pi-legion jobs, both testnats.Image constants,
   # the envoy-client and claude-envoy jobs' pre-pulls, packages/envoy-client/test/nats-server.ts
   # and scripts/e2e/lib/nats-stream.test.ts.

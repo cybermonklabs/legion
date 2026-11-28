@@ -100,10 +100,25 @@ type routeShape struct {
 // it would offer a client a parameter that cannot work. No struct here is ever a request body,
 // and the emitter reads only each field's `query` and `enum` tags and the Go type it carries.
 
+// asOfQuery is the query of a route that answers as_of (asOfAnswers, read_classes.go) and reads no
+// other key. Each query struct of a route that answers as_of declares the same AsOf field, but
+// searchRouteQuery (its comment says why). TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument
+// holds the GET rows to this: each that answers as_of declares it, and no other GET row does.
+type asOfQuery struct {
+	// AsOf is the past time that the route answers as of, the cut: RFC 3339 with an offset, with
+	// or without a fraction of a second, rounded down to the microsecond. asOfGate reads it, and
+	// no handler does. A value it cannot read, a time later than the database's now() and a
+	// repeat are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut,
+	// and asOfGate then reads no as_of.
+	AsOf string `query:"as_of"`
+}
+
 // projectArtifactsQuery is GET /api/v1/projects/{key}/artifacts's query.
 type projectArtifactsQuery struct {
 	// Unlinked, `true`, lists only the project's documents that belong to no issue.
 	Unlinked bool `query:"unlinked"`
+	// AsOf is the cut the route answers as of (asOfQuery).
+	AsOf string `query:"as_of"`
 }
 
 // relatedQuery is GET /api/v1/projects/{key}/related's query: the related-item check an issue
@@ -175,6 +190,9 @@ type issueResultsQuery struct {
 	// leaves is the check runs of a check CI proves, read at each open pull request head, or with
 	// none open the final head of the newest merged one.
 	At string `query:"at"`
+	// AsOf is the cut the route answers as of (asOfQuery). With At it is 400 AS_OF_NOT_SERVED:
+	// At reads GitHub now, and a read at a cut reads nothing from GitHub.
+	AsOf string `query:"as_of"`
 }
 
 // deliveryPipelineQuery is GET /api/v1/delivery/pipeline's query.
@@ -229,6 +247,9 @@ type issueListQuery struct {
 	Limit int `query:"limit"`
 	// Offset is where the page starts, 0 or more; alone it pages at the default limit.
 	Offset int `query:"offset"`
+	// AsOf is the cut the route answers as of (asOfQuery). With RouteStatus or Pinned it is 400
+	// AS_OF_NOT_SERVED naming that key: the route roster and a person's pins keep no history.
+	AsOf string `query:"as_of"`
 }
 
 // prioritiesQuery is GET /api/v1/priorities's query. The list of priorities is the whole
@@ -247,6 +268,8 @@ type prioritiesQuery struct {
 type issueResolveQuery struct {
 	// Ref is the reference to resolve: an issue key, or owner/repo#n.
 	Ref string `query:"ref"`
+	// AsOf is the cut the route answers as of (asOfQuery).
+	AsOf string `query:"as_of"`
 }
 
 // eventListQuery is the query GET /api/v1/issues/{key}/events and GET /api/v1/artifacts/{id}/events
@@ -264,6 +287,8 @@ type eventListQuery struct {
 	Order string `query:"order"`
 	// Limit is how many events the page holds.
 	Limit int `query:"limit"`
+	// AsOf is the cut the route answers as of (asOfQuery).
+	AsOf string `query:"as_of"`
 }
 
 // eventLogQuery is GET /api/v1/events/log's query: one page of the whole event log, which is
@@ -274,6 +299,8 @@ type eventLogQuery struct {
 	After int `query:"after"`
 	// Limit is how many events the page holds, 1 to 1000, and 1000 by default.
 	Limit int `query:"limit"`
+	// AsOf is the cut the route answers as of (asOfQuery).
+	AsOf string `query:"as_of"`
 }
 
 // issueReferencesQuery is GET /api/v1/issues/{key}/references's query.
@@ -341,6 +368,8 @@ type postHistoryQuery struct {
 	// caller reads the page after one of 200 rows: the oldest edited_at it was answered.
 	// Anything that is not an RFC3339 time is 400 INVALID_QUERY.
 	Before string `query:"before"`
+	// AsOf is the cut the route answers as of (asOfQuery).
+	AsOf string `query:"as_of"`
 }
 
 // inboxQuery is GET /api/v1/inbox's query.
@@ -350,6 +379,8 @@ type inboxQuery struct {
 	// Assignee is me, unassigned (document asks included) or an email; an email nobody has
 	// signed in with is 400 ASSIGNEE_NOT_ALLOWED.
 	Assignee string `query:"assignee"`
+	// AsOf is the cut the route answers as of (asOfQuery).
+	AsOf string `query:"as_of"`
 }
 
 // myAnswersQuery is the offset page GET /api/v1/me/answers and
@@ -390,7 +421,9 @@ type myRepliesQuery struct {
 // already has a searchQuery of its own, the parsed query a search runs on. It names the four
 // members every build of the server has served. The handler still reads the other five on this
 // route, for a page served by a release before this one, and those five are declared on
-// GET /api/v1/search/results (searchResultsRouteQuery), the path a caller asks them of.
+// GET /api/v1/search/results (searchResultsRouteQuery), the path a caller asks them of. It does
+// not name as_of, for the same reason: the handler reads a cut on this route too (asOfGate), and
+// a caller sends a search at a cut to GET /api/v1/search/results.
 type searchRouteQuery struct {
 	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
 	Q string `query:"q"`
@@ -403,10 +436,11 @@ type searchRouteQuery struct {
 	Offset int `query:"offset"`
 }
 
-// searchResultsRouteQuery is GET /api/v1/search/results's query, all ten members: the four
-// searchRouteQuery names and the six a build released before them does not serve, which is why
-// that path exists. The ten are written out rather than embedded because the emitter reads a
-// query struct's own fields and refuses one carrying no query tag (openapi.go, queryParameters).
+// searchResultsRouteQuery is GET /api/v1/search/results's query, all ten members and as_of: the
+// four searchRouteQuery names, the six a build released before them does not serve, which is why
+// that path exists, and the cut. The members are written out rather than embedded because the
+// emitter reads a query struct's own fields and refuses one carrying no query tag (openapi.go,
+// queryParameters).
 type searchResultsRouteQuery struct {
 	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
 	Q string `query:"q"`
@@ -435,6 +469,8 @@ type searchResultsRouteQuery struct {
 	// with none named every kind the index holds is searched. A kind outside the five is
 	// 400 INVALID_QUERY (searchIndexedKinds, parseSearchKinds).
 	Kind []string `query:"kind" enum:"issue,document,comment,ask,message"`
+	// AsOf is the cut the route answers as of (asOfQuery).
+	AsOf string `query:"as_of"`
 }
 
 // relatedChecksQuery is GET /api/v1/related-checks's query.
@@ -470,6 +506,10 @@ type sessionAnswersQuery struct {
 	Since string `query:"since"`
 	// MaxChars bounds how much of each item's text the answer carries.
 	MaxChars int `query:"max_chars"`
+	// AsOf is the cut the route answers as of (asOfQuery). At a cut the window counts from the
+	// cut: an absent Since is 72 hours before the cut, one more than 7 days before the cut is
+	// 400 INVALID_QUERY, and one after the cut answers no items.
+	AsOf string `query:"as_of"`
 }
 
 // knownSessionsQuery is GET /api/v1/agents/known's query.
@@ -496,22 +536,36 @@ type issueAsksQuery struct {
 	Before string `query:"before"`
 	// Author keeps threads the login or session ID wrote in.
 	Author string `query:"author"`
+	// AsOf is the cut the route answers as of (asOfQuery). With Order it is 400
+	// AS_OF_NOT_SERVED: a page of threads is answered at the present only (refuseThreadPageAtCut).
+	AsOf string `query:"as_of"`
 }
 
 // artifactAsksQuery is GET /api/v1/artifacts/{id}/asks's query.
 type artifactAsksQuery struct {
 	// State filters the list: all, open or answered.
 	State string `query:"state"`
+	// AsOf is the cut the route answers as of (asOfQuery).
+	AsOf string `query:"as_of"`
 }
 
-// artifactTextQuery is the query the three document text reads share: GET
-// /api/v1/artifacts/{id}/text, GET /api/v1/issues/{key}/artifacts/{slug}/text and
-// GET /api/v1/projects/{key}/artifacts/{slug}/text.
+// artifactTextQuery is the query the two document text reads by slug share: GET
+// /api/v1/issues/{key}/artifacts/{slug}/text and GET /api/v1/projects/{key}/artifacts/{slug}/text.
+// Neither answers as_of. GET /api/v1/artifacts/{id}/text does (artifactTextAsOfQuery).
 type artifactTextQuery struct {
 	// Blocks, `true`, carries the document's blocks beside the markdown, the token and the
 	// version, every one of them rendered from the one tree, so no write by another session
 	// splits a listing. Any other value carries no blocks.
 	Blocks bool `query:"blocks"`
+}
+
+// artifactTextAsOfQuery is GET /api/v1/artifacts/{id}/text's query: artifactTextQuery's key and
+// as_of.
+type artifactTextAsOfQuery struct {
+	// Blocks is artifactTextQuery's Blocks.
+	Blocks bool `query:"blocks"`
+	// AsOf is the cut the route answers as of (asOfQuery).
+	AsOf string `query:"as_of"`
 }
 
 // artifactChangesQuery is GET /api/v1/artifacts/{id}/changes's query: the two versions of the
@@ -523,11 +577,11 @@ type artifactChangesQuery struct {
 	To int `query:"to"`
 }
 
-// artifactVersionQuery is the query the four version reads share: GET
-// /api/v1/artifacts/{id}/versions/{number}, GET
+// artifactVersionQuery is the query the three version reads by slug share: GET
 // /api/v1/issues/{key}/artifacts/{slug}/versions/{number}, GET
 // /api/v1/projects/{key}/artifacts/{slug}/versions/{number} and GET
-// /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}.
+// /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}. None answers as_of.
+// GET /api/v1/artifacts/{id}/versions/{number} does (artifactVersionAsOfQuery).
 type artifactVersionQuery struct {
 	// Download, `true`, answers a download: `Content-Disposition: attachment` with the file's
 	// name, `Cache-Control: private, no-cache`, and a document as its Markdown rather than the
@@ -542,6 +596,18 @@ type artifactVersionQuery struct {
 	Blocks bool `query:"blocks"`
 }
 
+// artifactVersionAsOfQuery is GET /api/v1/artifacts/{id}/versions/{number}'s query:
+// artifactVersionQuery's key and as_of.
+type artifactVersionAsOfQuery struct {
+	// Download is artifactVersionQuery's Download.
+	Download bool `query:"download"`
+	// Blocks is artifactVersionQuery's Blocks: a version's blocks are read from its own text,
+	// which no later write changes, so a cut changes no block, only which versions exist.
+	Blocks bool `query:"blocks"`
+	// AsOf is the cut the route answers as of (asOfQuery). A version made after the cut is 404.
+	AsOf string `query:"as_of"`
+}
+
 // openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.
 type openAsksQuery struct {
 	// AuthorSession lists the open asks one session authored.
@@ -550,6 +616,9 @@ type openAsksQuery struct {
 	Project string `query:"project"`
 	// Since lists the asks opened at or after this one RFC3339 time.
 	Since string `query:"since"`
+	// AsOf is the cut the route answers as of (asOfQuery). At a cut the answer's as_of is the
+	// cut, and each ask's age_seconds counts from the cut.
+	AsOf string `query:"as_of"`
 }
 
 // issueCommentsQuery is GET /api/v1/issues/{key}/comments's query.
@@ -566,6 +635,9 @@ type issueCommentsQuery struct {
 	Author string `query:"author"`
 	// Person, `in`, keeps threads involving a person or on text.
 	Person string `query:"person" enum:"in"`
+	// AsOf is the cut the route answers as of (asOfQuery). With Order it is 400
+	// AS_OF_NOT_SERVED: a page of threads is answered at the present only (refuseThreadPageAtCut).
+	AsOf string `query:"as_of"`
 }
 
 // issueMessagesQuery is GET /api/v1/issues/{key}/messages's query.
@@ -581,6 +653,9 @@ type issueMessagesQuery struct {
 	// Person, `in`, keeps threads involving a person or with no target. `none` keeps targeted
 	// threads with no person. Both omit roots from the issue project's Legion daemon.
 	Person string `query:"person" enum:"in,none"`
+	// AsOf is the cut the route answers as of (asOfQuery). With Order it is 400
+	// AS_OF_NOT_SERVED: a page of threads is answered at the present only (refuseThreadPageAtCut).
+	AsOf string `query:"as_of"`
 }
 
 // credentialApproverQuery is the query GET /api/v1/credential-requests and

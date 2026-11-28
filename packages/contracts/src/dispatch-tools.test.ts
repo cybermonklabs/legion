@@ -680,11 +680,13 @@ describe("dispatchToolSpecs", () => {
     expect(refusal({ project: "ACME" })).toEqual([
       "With project, the read needs commit, the 40-character lowercase hex commit whose results it prints.",
     ]);
-    expect(refusal({ ...project, at: project.commit, brief: true })).toEqual([
-      "With project, the read takes commit, check and json alone, and this call also carries at, brief.",
+    expect(
+      refusal({ ...project, at: project.commit, brief: true, as_of: "2026-11-10T12:00:00Z" })
+    ).toEqual([
+      "With project, the read takes commit, check and json alone, and this call also carries at, brief, as_of.",
     ]);
     expect(refusal({ issue: "DSP-1", commit: project.commit, check: "p-1", json: true })).toEqual([
-      "With issue, the read takes at and brief alone, and this call also carries commit, check, json.",
+      "With issue, the read takes at, brief and as_of alone, and this call also carries commit, check, json.",
     ]);
   });
 
@@ -1223,9 +1225,10 @@ describe("dispatchToolSpecs", () => {
     expect(namesMissing(description ?? "", ["P0", "P3", "null"])).toEqual([]);
   });
 
-  // A priority of 0 needs the p0 scope, which only a person at a browser or a token its maker gave
-  // it to holds, so the description a host shows beside each issue tool's priority, and the
-  // command prints on its --priority row, names the scope before Dispatch refuses the write.
+  // A priority of 0 needs the p0 scope, which only a person at a browser, a token its maker gave
+  // it to and a Dispatch sign-in its person ticked it for hold, so the description a host shows
+  // beside each issue tool's priority, and the command prints on its --priority row, names the
+  // scope before Dispatch refuses the write.
   test("dispatch_issue and dispatch_issue_update say a priority of 0 needs p0", () => {
     for (const name of ["dispatch_issue", "dispatch_issue_update"] as const) {
       const json = z.toJSONSchema(schemaFor(name), { io: "input" }) as {

@@ -1,0 +1,505 @@
+import { afterAll, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { ABSENT_FIELD_WORDS, absentFieldWords, LEFT_OUT } from "../dispatch-commands/as-of";
+import {
+  ASK_OPENED,
+  callsAtCutProblems,
+  HOLDER_TITLE,
+  leftOutParts,
+  OWNER,
+  READ_FORMS,
+  type Run,
+  routesCalled,
+  startAsOfStandIn,
+} from "./as-of-stand-in";
+import { AT, ISSUE } from "./dispatch-command-surface-responses";
+
+// Each read command of spec R3 run with and without `--as-of` against a stand-in Dispatch that
+// records every request (dispatch://INFRA-4620). At the cut a command sends the cut
+// as `as_of` to every route of kind "answers" it calls, calls no route that holds no history,
+// names in its `Left out at <cut>:` line each part it did not read and each field an answer named
+// absent, and prints a field left out as left out, never as a value. The test's clock stands
+// years after the cut, so an age or a window that a command counts from its own clock at a cut
+// prints differently from one counted from the cut.
+
+/** The cut each read at a past time sends. */
+const CUT = "2026-11-10T12:00:00Z";
+/** The stand-in clock: years after the cut. */
+const CLOCK = "2031-06-01T00:00:00Z";
+
+const standIn = startAsOfStandIn("dispatch-as-of");
+
+beforeAll(() => {
+  setSystemTime(new Date(CLOCK));
+});
+
+afterAll(() => {
+  setSystemTime();
+  standIn.stop();
+});
+
+/** A search at a cut is sent to the other route of the same row of the plan's table. */
+function sameRow(routes: readonly string[]): string[] {
+  return routes.map((route) => route.replace("/api/v1/search/results", "/api/v1/search")).sort();
+}
+
+/** The run's output and any failure line, on one text. */
+function said(run: Run): string {
+  return `exit ${run.code}: ${run.stdout}${run.stderr}`;
+}
+
+/**
+ * Runs `argv` without `--as-of`, then with it, and checks what every read at a cut must do: the
+ * calls of the plan's table, each route of kind "answers" the present read calls called at the
+ * cut too, the routes that hold no history called at the present alone (`noHistory`), and a `Left
+ * out at` line that names each part left out (`parts`) and, in words (`fields`), each field an
+ * answer named absent, or `nothing`, which the present read does not print. A field left out
+ * never prints as `undefined`, nor as the words for a Dispatch older than the field.
+ */
+async function readBothWays(
+  argv: readonly string[],
+  expected: {
+    readonly noHistory: readonly string[];
+    readonly parts: readonly string[];
+    readonly fields: readonly string[];
+  }
+): Promise<{ readonly present: Run; readonly past: Run }> {
+  const present = await standIn.run(argv);
+  const past = await standIn.run([...argv, "--as-of", CUT]);
+  const named = [...new Set([...expected.parts, ...expected.fields])].sort();
+  expect({
+    present: [
+      ...(present.code === 0 ? [] : [said(present)]),
+      ...present.calls.filter((call) => call.asOf.length > 0).map((call) => call.text),
+      ...present.stdout.split("\n").filter((line) => line.startsWith("Left out at")),
+    ],
+    past: [
+      ...(past.code === 0 ? [] : [said(past)]),
+      ...callsAtCutProblems(past, CUT),
+      ...["undefined", "does not say"].filter((words) => past.stdout.includes(words)),
+    ],
+    answersAtTheCut: sameRow(routesCalled(past, "answers")),
+    noHistoryAtThePresent: routesCalled(present, "no history"),
+    leftOut: leftOutParts(past.stdout, CUT),
+  }).toEqual({
+    present: [],
+    past: [],
+    answersAtTheCut: sameRow(routesCalled(present, "answers")),
+    noHistoryAtThePresent: [...expected.noHistory].sort(),
+    leftOut: named.length === 0 ? ["nothing"] : named,
+  });
+  return { present, past };
+}
+
+/** The lines of `text` after the `Left out at` line. */
+function body(text: string): string[] {
+  const lines = text.trimEnd().split("\n");
+  return lines[0]?.startsWith("Left out at") ? lines.slice(1) : lines;
+}
+
+/** `age` as `dispatch open-asks` prints it: days and hours past a day. */
+function daysAndHours(fromMs: number, toMs: number): string {
+  const hours = Math.floor((toMs - fromMs) / 3_600_000);
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+/** The words for an ask's wording left out at the cut where a restore changed it with no event. */
+const ASK_WORDING_FIELDS = [
+  "the question of each ask whose wording a restore changed",
+  "the options of each ask whose wording a restore changed",
+  "whether each ask whose wording a restore changed takes several options",
+  "the urgency of each ask whose wording a restore changed",
+];
+
+/** The words for the fields the issue read leaves out at the cut: its route, its holder's
+ *  liveness, its components, its place in the reference graph and its open ask's wording. */
+const ISSUE_FIELDS = [
+  "the route's state now",
+  "the route's holder now",
+  "why the route stands as it does now",
+  "whether the claim's holder runs now",
+  "when the claim's holder was last seen",
+  "when another session may take the claim",
+  "the design gates",
+  "how many nodes reference each item now",
+  "the component ids",
+  "the unknown components",
+  ...ASK_WORDING_FIELDS,
+];
+
+describe("each read command with and without --as-of", () => {
+  test("read of an issue leaves out the graph, the coverage and liveness, and says nothing present of its route or claim", async () => {
+    const { present, past } = await readBothWays(READ_FORMS.issue, {
+      noHistory: [
+        "GET /api/v1/agents",
+        "GET /api/v1/issues/{key}/coverage",
+        "GET /api/v1/issues/{key}/references",
+        "GET /api/v1/references",
+      ],
+      parts: [LEFT_OUT.graph, LEFT_OUT.issueReferences, LEFT_OUT.coverage, LEFT_OUT.liveness],
+      fields: ISSUE_FIELDS,
+    });
+    expect(body(present.stdout)).toEqual(
+      expect.arrayContaining([
+        `Claimed by: ${HOLDER_TITLE} since ${AT}`,
+        `Route: role:implementer (held by ${HOLDER_TITLE})`,
+        "Components: cli",
+        "- a5c00001-0000-4000-8000-000000000001: Which way should the release go?",
+      ])
+    );
+    const pastLines = body(past.stdout);
+    const claimed = pastLines.find((line) => line.startsWith("Claimed by: "));
+    expect(claimed?.endsWith(` since ${AT} · liveness left out at ${CUT}`)).toBe(true);
+    expect(pastLines).toEqual(
+      expect.arrayContaining([
+        `Route: role:implementer (whether it reaches anyone is left out at ${CUT})`,
+        `Components: left out at ${CUT}`,
+        `Coverage: left out at ${CUT}`,
+        `- a5c00001-0000-4000-8000-000000000001: left out at ${CUT}`,
+      ])
+    );
+    for (const present of [
+      "liveness unknown",
+      "not running",
+      "held by",
+      "right now",
+      "none live",
+    ]) {
+      expect(past.stdout).not.toContain(present);
+    }
+  });
+
+  test("read of a comment prints its body and the block a reply answers as left out", async () => {
+    const { present, past } = await readBothWays(READ_FORMS.comment, {
+      noHistory: ["GET /api/v1/references"],
+      parts: [LEFT_OUT.graph],
+      fields: [
+        "the bodies of posts deleted or edited since",
+        "whether the block a reply answers was removed",
+        "the text of the block a reply answers",
+      ],
+    });
+    expect(body(present.stdout)).toEqual(
+      expect.arrayContaining([
+        "Body: The words before the long edit.",
+        "Re: block b1: The quoted words.",
+        "Body: A reply.",
+      ])
+    );
+    expect(body(past.stdout)).toEqual(
+      expect.arrayContaining([
+        `Body: left out at ${CUT}`,
+        `Re: block b1 (whether it was removed is left out at ${CUT})`,
+        "Body: A reply.",
+      ])
+    );
+  });
+
+  test("read of an ask prints its wording and a reply's body the records at the cut cannot give as left out", async () => {
+    const { present, past } = await readBothWays(READ_FORMS.ask, {
+      noHistory: ["GET /api/v1/references"],
+      parts: [LEFT_OUT.graph],
+      fields: [...ASK_WORDING_FIELDS, "the bodies of posts deleted or edited since"],
+    });
+    expect(body(present.stdout)).toEqual(
+      expect.arrayContaining([
+        "Question: Which way should the release go?",
+        "Options:",
+        "- Ship it",
+        "Body: The words of the reply before its edit.",
+      ])
+    );
+    const pastLines = body(past.stdout);
+    expect(pastLines).toEqual(
+      expect.arrayContaining([
+        `Question: left out at ${CUT}`,
+        `Options: left out at ${CUT}`,
+        `Body: left out at ${CUT}`,
+      ])
+    );
+    expect(pastLines).not.toContain("Options:");
+  });
+
+  test("doc-read prints an open anchored ask's question the records at the cut cannot give as left out", async () => {
+    const { present, past } = await readBothWays(READ_FORMS.document, {
+      noHistory: [],
+      parts: [],
+      fields: [...ISSUE_FIELDS, "the document token"],
+    });
+    expect(body(present.stdout)).toContain("Question: Which way should the release go?");
+    expect(body(past.stdout)).toContain(`Question: left out at ${CUT}`);
+  });
+
+  test("doc-read --blocks prints a token, an id, the anchored counts and a table's ids left out as left out, never as none", async () => {
+    // The document is found through the issue read, whose answer names its own fields absent.
+    const { present, past } = await readBothWays(READ_FORMS.blocks, {
+      noHistory: [],
+      parts: [],
+      fields: [
+        ...ISSUE_FIELDS,
+        "the document token",
+        "the block tokens",
+        "the block embeddings",
+        "the ids of blocks that no index holds",
+        "the references of each block",
+        "the ids of table rows",
+        "the ids of table cells",
+      ],
+    });
+    const table = "| Mode | Opens | | --- | --- | | native | yes |";
+    expect(body(present.stdout).slice(1)).toEqual([
+      "intro heading (sha256:intro; 0 comments, 0 asks): # Spec",
+      "p-1 paragraph (sha256:p-1; 0 comments, 0 asks): The workspace opens natively.",
+      `modes table (sha256:modes; 0 comments, 0 asks): ${table}`,
+      "  row 0, id r-0",
+      '    row 0 column 0, id c-0-0, under "Mode": Mode',
+      '    row 0 column 1, id c-0-1, under "Opens": Opens',
+      "  row 1, id r-1",
+      '    row 1 column 0, id c-1-0, under "Mode": native',
+      '    row 1 column 1, id c-1-1, under "Opens": yes',
+      "",
+      "Document token: sha256:spec-token",
+      "Document version: 1",
+    ]);
+    const counts = `anchored comments and asks left out at ${CUT}`;
+    const id = `id left out at ${CUT}`;
+    expect(body(past.stdout).slice(1)).toEqual([
+      `intro heading (token left out at ${CUT}; ${counts}): # Spec`,
+      `(${id}) paragraph (token left out at ${CUT}; ${counts}): The workspace opens natively.`,
+      `modes table (token left out at ${CUT}; ${counts}): ${table}`,
+      `  row 0, ${id}`,
+      `    row 0 column 0, ${id}, under "Mode": Mode`,
+      `    row 0 column 1, ${id}, under "Opens": Opens`,
+      `  row 1, ${id}`,
+      `    row 1 column 0, ${id}, under "Mode": native`,
+      `    row 1 column 1, ${id}, under "Opens": yes`,
+      "",
+      "Document version: 1",
+    ]);
+  });
+
+  test("search at a cut names the broadened query and an ask hit's link and snippet left out", async () => {
+    const { present, past } = await readBothWays(READ_FORMS.search, {
+      noHistory: [],
+      parts: [],
+      fields: [
+        "the broadened query",
+        "the link of each ask hit whose document changed since",
+        "the snippet of each ask hit whose wording a restore changed",
+      ],
+    });
+    const label = `${ISSUE} [todo] Native workspace - ask: `;
+    const hitLine = (run: Run) => body(run.stdout).find((line) => line.startsWith(label));
+    expect(hitLine(present)).toStartWith(`${label}Which way should the **release** go? -> `);
+    expect(hitLine(present)).toEndWith(`/issues/${ISSUE}/ask/a5c00001-0000-4000-8000-000000000001`);
+    expect(hitLine(past)).toBe(`${label}snippet left out at ${CUT} -> link left out at ${CUT}`);
+  });
+
+  test("answers counts its 72 hours back from the cut, says so, and prints an ask's question left out", async () => {
+    const { present, past } = await readBothWays(READ_FORMS.answers, {
+      noHistory: [],
+      parts: [],
+      fields: ["the question of each ask whose wording a restore changed"],
+    });
+    expect(body(present.stdout)[0]).toBe(
+      "1 item people wrote to this session in the last 72 hours, newest first, word for word:"
+    );
+    expect(body(past.stdout)[0]).toBe(
+      `1 item people wrote to this session in the 72 hours before ${CUT}, newest first, word for word:`
+    );
+    expect(body(present.stdout)).toContain("Question: Which way should the release go?");
+    expect(body(past.stdout)).toContain(`Question: left out at ${CUT}`);
+    for (const run of [present, past]) {
+      expect(run.stdout).toContain("The words of an hour before.");
+      expect(run.stdout).not.toContain("The words of 80 hours before.");
+    }
+  });
+
+  test("answers prints a named omission at the effective cut rather than a false empty list", async () => {
+    const requested = "2026-11-10T13:00:00Z";
+    const past = await standIn.run([...READ_FORMS.answers, "--as-of", requested], {
+      whoamiCut: CUT,
+      omitSessionAnswers: true,
+    });
+    expect(past.code).toBe(0);
+    expect(callsAtCutProblems(past, CUT)).toEqual([]);
+    expect(leftOutParts(past.stdout, CUT)).toEqual([
+      "the session's answer count",
+      "the session's answers list",
+    ]);
+    expect(body(past.stdout)).toEqual([
+      `People's answers for this session were left out at ${CUT}.`,
+    ]);
+    expect(past.stdout).not.toContain(requested);
+  });
+
+  // Dispatch reads `as_of` with Go's RFC 3339 parse, which takes spellings `Date.parse` does not:
+  // a comma before the fraction of a second is one. The window counts from the cut the answer
+  // names in `Dispatch-As-Of`, so every spelling of one time Dispatch reads holds the same items.
+  for (const spelling of ["2026-11-10T12:00:00,5Z", "2026-11-10T14:00:00+02:00"]) {
+    test(`answers --as-of ${spelling} counts its 72 hours back from the cut the answer names`, async () => {
+      const past = await standIn.run([...READ_FORMS.answers, "--as-of", spelling]);
+      expect({
+        failed: past.code === 0 ? [] : [said(past)],
+        calls: callsAtCutProblems(past, spelling),
+        head: body(past.stdout)[0],
+        recent: past.stdout.includes("The words of an hour before."),
+        old: past.stdout.includes("The words of 80 hours before."),
+      }).toEqual({
+        failed: [],
+        calls: [],
+        head: `1 item people wrote to this session in the 72 hours before ${spelling}, newest first, word for word:`,
+        recent: true,
+        old: false,
+      });
+    });
+  }
+
+  test("open-asks prints each age at the cut and a person the records cannot give as left out", async () => {
+    const { present, past } = await readBothWays(READ_FORMS.openAsks, {
+      noHistory: [],
+      parts: [],
+      fields: ["the person an ask waits on by its project's default"],
+    });
+    const opened = Date.parse(ASK_OPENED);
+    const rows = (run: Run) => body(run.stdout).filter((line) => line.startsWith("- "));
+    expect(rows(present).map((row) => row.split(" · ").slice(0, 4))).toEqual([
+      [
+        `- ${daysAndHours(opened, Date.parse(CLOCK))}`,
+        "P1",
+        "DSP-1: Native workspace",
+        `asked of ${OWNER}`,
+      ],
+      [
+        `- ${daysAndHours(opened, Date.parse(CLOCK))}`,
+        "P1",
+        "DSP-1: Native workspace",
+        `asked of ${OWNER}`,
+      ],
+    ]);
+    expect(rows(past).map((row) => row.split(" · ").slice(0, 4))).toEqual([
+      [
+        `- ${daysAndHours(opened, Date.parse(CUT))}`,
+        "P1",
+        "DSP-1: Native workspace",
+        `asked of ${OWNER}`,
+      ],
+      [
+        `- ${daysAndHours(opened, Date.parse(CUT))}`,
+        "P1",
+        "DSP-1: Native workspace",
+        `asked of (left out at ${CUT})`,
+      ],
+    ]);
+  });
+
+  test("inbox at a cut lists each ask under whose turn it is, prints a left-out question, and leaves out Later, threads and credential requests", async () => {
+    const { present, past } = await readBothWays(READ_FORMS.inbox, {
+      noHistory: ["GET /api/v1/credential-requests", "GET /api/v1/me/replies"],
+      parts: [LEFT_OUT.unreadThreads, LEFT_OUT.credentialRequests, LEFT_OUT.snoozes],
+      fields: ["snoozes", ...ASK_WORDING_FIELDS],
+    });
+    const ask = (key: string, id: string, question = `Question of ${key}?`) =>
+      `- ${key} · P1 · question · ${question} · dispatch://${key}/ask/${id}`;
+    const human = ask("DSP-11", "11111111-1111-4111-8111-111111111111");
+    const deferred = ask("DSP-12", "22222222-2222-4222-8222-222222222222");
+    const deferralEnded = ask("DSP-13", "33333333-3333-4333-8333-333333333333");
+    const agent = ask("DSP-14", "44444444-4444-4444-8444-444444444444");
+    const agentAtCut = ask("DSP-14", "44444444-4444-4444-8444-444444444444", `left out at ${CUT}`);
+    expect(body(present.stdout)).toEqual([
+      "Needs you 2",
+      human,
+      deferralEnded,
+      "",
+      "Waiting on agents 1",
+      agent,
+      "",
+      "Later 1",
+      deferred,
+      "",
+      "Unread threads 1",
+      "- DSP-16 · comment · The staging box lost its disk again · user bob@example.com · 5m · /issues/DSP-16/comments/66666666-6666-4666-8666-666666666666",
+      "",
+      "Credential requests 0",
+    ]);
+    expect(body(past.stdout)).toEqual([
+      "Needs you 3",
+      human,
+      deferred,
+      deferralEnded,
+      "",
+      "Waiting on agents 1",
+      agentAtCut,
+      "",
+      `Later left out at ${CUT}`,
+    ]);
+  });
+
+  test("results at a cut prints what GitHub says now, and a check version no index holds, as left out", async () => {
+    const { present, past } = await readBothWays(READ_FORMS.results, {
+      noHistory: [],
+      parts: [],
+      fields: [
+        "what each check is compared with on GitHub now",
+        "why a check is compared with nothing",
+        "whether a pass stands now",
+        "the CI result of each check",
+        "where the commit of each result stands now",
+        "the GitHub currency of each result",
+        "the document version of each check",
+        "the digest of the words of each check",
+        "whether the words of a check moved after each result",
+      ],
+    });
+    const presentText = body(present.stdout).join("\n");
+    expect(presentText).toContain(
+      "A pass stands: yes. Newest at that commit: implementer: pass (01234567)."
+    );
+    expect(presentText).toContain(
+      "The check's words did not move after this result (result version 1, check version 1)."
+    );
+    const pastText = body(past.stdout).join("\n");
+    expect(pastText).toContain(
+      `- k1 (before_merge). What it is compared with is left out at ${CUT}. Whether a pass stands is left out at ${CUT}.`
+    );
+    expect(pastText).toContain(`Where that commit stands is left out at ${CUT}.`);
+    expect(pastText).toContain(
+      `Whether the check's words moved is left out at ${CUT} (result version 1, check version left out at ${CUT}).`
+    );
+  });
+});
+
+/** The pointers of `asof.AbsentFields`, the table of every field a route can name absent, by
+ *  route: the file packages/envoy/internal/dispatch/asof's TestTheAbsentFieldsFixtureIsAbsentFields
+ *  writes from the table and holds to it. */
+const ABSENT_FIELDS = join(
+  import.meta.dir,
+  "../../../envoy/internal/dispatch/asof/testdata/absent-fields.json"
+);
+
+describe("the words of the Left out at line", () => {
+  test("name each field absent.go's AbsentFields can name, and no field it does not", () => {
+    const byRoute: Record<string, readonly string[]> = JSON.parse(
+      readFileSync(ABSENT_FIELDS, "utf8")
+    );
+    const pointers = [...new Set(Object.values(byRoute).flat())].sort();
+    expect({
+      // A few pointers of each kind, so a file that holds none fails here.
+      notRead: [
+        "/route_status",
+        "/comment/deliveries/*/session_id",
+        "/comment/anchor_block",
+        "/results/*/href",
+      ].filter((pointer) => !pointers.includes(pointer)),
+      withoutWords: pointers.filter((pointer) => absentFieldWords(pointer) === pointer),
+      // A key that starts with `/` is a whole pointer, any other a pointer's end.
+      wordsOfNoField: Object.keys(ABSENT_FIELD_WORDS).filter(
+        (end) =>
+          !pointers.some((pointer) =>
+            end.startsWith("/") ? pointer === end : pointer.endsWith(`/${end}`)
+          )
+      ),
+    }).toEqual({ notRead: [], withoutWords: [], wordsOfNoField: [] });
+  });
+});
