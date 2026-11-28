@@ -110,16 +110,6 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 				return err
 			}
 		}
-		for _, key := range []string{"LEGION-3", "LEGION-31", "LEGION-4"} {
-			if err := records.PutGate(ctx, tx, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "artifact-" + key, LatestVersion: 3,
-				ApprovedVersion: &approved, EverOpened: true}); err != nil {
-				return err
-			}
-		}
-		if err := records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-31", Step: record.DesignStepCriteria, ArtifactID: "criteria-LEGION-31",
-			LatestVersion: 1}); err != nil {
-			return err
-		}
 		if _, err := tx.Exec(ctx, `update issues set released_for_wait_at = $2 where key = $1`, "LEGION-62", lingers); err != nil {
 			return err
 		}
@@ -127,6 +117,15 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 	}); err != nil {
 		t.Fatalf("seed the release before's records: %v", err)
 	}
+	// The gates go through the write of the release before the hash gate (writeAsTheReleaseBefore),
+	// whose columns this schema holds: this release's PutGate names the verdict's columns too, which
+	// 20261127204213 adds above this migration.
+	for _, key := range []string{"LEGION-3", "LEGION-31", "LEGION-4"} {
+		writeAsTheReleaseBefore(t, store, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "artifact-" + key, LatestVersion: 3,
+			ApprovedVersion: &approved, EverOpened: true})
+	}
+	writeAsTheReleaseBefore(t, store, record.DesignGate{Issue: "LEGION-31", Step: record.DesignStepCriteria, ArtifactID: "criteria-LEGION-31",
+		LatestVersion: 1})
 
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the members' mark: %v", err)

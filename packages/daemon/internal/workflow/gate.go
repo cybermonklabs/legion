@@ -1296,7 +1296,8 @@ func copyTakes(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 //     close is told by putGateTold. An opening that Dispatch's verdict gives with no new approval
 //     (Departure D6) answers a root's wait on that gate as an approval does (answerVerdictOpening),
 //     and is told with the kinds today's openings use, naming the approval the row holds and no
-//     actor: the digest's actor is Dispatch's fill (openedNotice).
+//     actor: the digest's actor is Dispatch's fill. Either opening is told only while the approval
+//     it names is still the person's word (tellArtifactOpening, through SupersedingApproval).
 //   - In hash mode a review of a version below the latest gives no verdict, and queues the gate
 //     seed, whose read of Dispatch does (classify.GateFactResult.SeedWanted).
 //
@@ -1408,7 +1409,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// its role prompt, packages/daemon/internal/prompts/roles/architect-root.md.
 		if issue.AwaitingPerson() {
 			e.logOnCommit(ctx, "workflow: a root waiting on a person is told its gate's opening by its resume", "issue", key, "version", fact.Version)
-		} else if err := e.notice(ctx, tx, key, openedNotice(key, gate, updated, fact, carried, withApproval)); err != nil {
+		} else if err := e.tellArtifactOpening(ctx, tx, key, gate, updated, fact, carried, withApproval); err != nil {
 			return err
 		}
 		// The members the opening releases take their first phase from admission's pass over this
@@ -1500,36 +1501,57 @@ func (e *Engine) seedOlderReview(ctx context.Context, tx pgx.Tx, gate record.Des
 	return err
 }
 
-// openedNotice is the notice of an opening of gate, the row of key's step, that fact left as
-// updated: design-approved to the tree's architect, or, for a carried copy, carried-gate-opened,
-// which says only what the opening released. An opening with the person's approval fact carries
-// (withApproval) names that approval's version, the person and Dispatch's mark of it, as every
-// opening did before the hash gate. One that Dispatch's verdict gives with no new approval
-// (Departure D6 of dispatch://INFRA-6065) names the approval the row holds, its version and mark,
-// and no actor, since the row stores no reviewer and the digest's actor is Dispatch's fill; a
-// carried copy's reason names the verdict where it would name a human's approval. On a parked tree
-// an actor that is no person relays nothing to the controller (record.RelayParkedDecision).
-func openedNotice(key string, gate, updated record.DesignGate, fact intake.DispatchArtifact, carried, withApproval bool) record.Notice {
+// tellArtifactOpening queues the notice of an opening of gate, the row of key's step, that fact
+// left as updated: design-approved to the tree's architect, or, for a carried copy,
+// carried-gate-opened, which says only what the opening released. An opening with the person's
+// approval fact carries (withApproval) names that approval's version, the person and Dispatch's
+// mark of it, as every opening did before the hash gate. One that Dispatch's verdict gives with
+// no new approval (Departure D6 of dispatch://INFRA-6065) names the approval the row holds, its
+// version and mark, and no actor, since the row stores no reviewer and the digest's actor is
+// Dispatch's fill; a carried copy's reason names the verdict where it would name a human's
+// approval. On a parked tree an actor that is no person relays nothing to the controller
+// (record.RelayParkedDecision).
+//
+// The notice tells a person's approval, so it is asked first whether that approval is still the
+// person's word (SupersedingApproval), as every sender of one asks and as the relay of the notice
+// asks it again (NoticeSuperseded, the outbox's parkDecision): of updated, the row as this fact
+// writes it, under whether a person approves the step (gatesStep), for the version the notice
+// names and Dispatch's mark of that approval. One that is no longer their word is told to nobody:
+// an opening Dispatch's verdict gives on a row that records no person's approval would name a
+// version no person approved. The tree is still told the opening (putGateTold).
+func (e *Engine) tellArtifactOpening(ctx context.Context, tx pgx.Tx, key string, gate, updated record.DesignGate, fact intake.DispatchArtifact,
+	carried, withApproval bool) error {
+	var notice record.Notice
+	review := fact.Mark
 	if withApproval {
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
 		// decision then goes to the controller instead (the outbox's parkDecision).
 		reviewer := fact.Actor.Name()
+		notice = record.Notice{Kind: "design-approved", Version: fact.Version, Actor: reviewer, Ref: stepRef(key, gate.Step), Review: fact.Mark, Artifact: gate.ArtifactID}
 		if carried {
-			return record.Notice{Kind: "carried-gate-opened", Version: fact.Version, Actor: reviewer, Ref: stepRef(fact.Key, gate.Step), Reason: fmt.Sprintf(
+			notice = record.Notice{Kind: "carried-gate-opened", Version: fact.Version, Actor: reviewer, Ref: stepRef(fact.Key, gate.Step), Reason: fmt.Sprintf(
 				"a human approved %s's spec document at version %d, which opens the gate %s carried; any child waiting on it starts", fact.Key, fact.Version, key)}
 		}
-		return record.Notice{Kind: "design-approved", Version: fact.Version, Actor: reviewer, Ref: stepRef(key, gate.Step), Review: fact.Mark, Artifact: gate.ArtifactID}
+	} else {
+		version := updated.LatestVersion
+		review = record.EventMark{}
+		if approval := updated.ApprovedByPerson(); approval != nil {
+			version, review = approval.Version, approval.Mark
+		}
+		notice = record.Notice{Kind: "design-approved", Version: version, Ref: stepRef(key, gate.Step), Review: review, Artifact: gate.ArtifactID}
+		if carried {
+			notice = record.Notice{Kind: "carried-gate-opened", Version: version, Ref: stepRef(fact.Key, gate.Step), Reason: fmt.Sprintf(
+				"Dispatch reports the approval of %s's spec document current for version %d, which opens the gate %s carried; any child waiting on it starts",
+				fact.Key, updated.LatestVersion, key)}
+		}
 	}
-	version, review := updated.LatestVersion, record.EventMark{}
-	if approval := updated.ApprovedByPerson(); approval != nil {
-		version, review = approval.Version, approval.Mark
+	opening := Decision{Kind: record.DecisionDesignApproved, Step: gate.Step, Artifact: gate.ArtifactID, Version: notice.Version, Mark: review}
+	if SupersedingApproval(&updated, e.gatesStep(gate.Step), opening) != nil {
+		e.logOnCommit(ctx, "workflow: an opening whose approval is no longer the person's word is not told", "issue", key,
+			"step", gate.Step.OrSpec(), "artifact", gate.ArtifactID, "event", fact.Kind, "version", notice.Version)
+		return nil
 	}
-	if carried {
-		return record.Notice{Kind: "carried-gate-opened", Version: version, Ref: stepRef(fact.Key, gate.Step), Reason: fmt.Sprintf(
-			"Dispatch reports the approval of %s's spec document current for version %d, which opens the gate %s carried; any child waiting on it starts",
-			fact.Key, updated.LatestVersion, key)}
-	}
-	return record.Notice{Kind: "design-approved", Version: version, Ref: stepRef(key, gate.Step), Review: review, Artifact: gate.ArtifactID}
+	return e.notice(ctx, tx, key, notice)
 }
 
 // toldAsSettled gives gate, a row in hash mode that owes no digest, the standing told that its own

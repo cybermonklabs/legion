@@ -379,7 +379,9 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 	// The opening is told with today's kinds, naming the approval the row holds and no actor
 	// (Departure D6), and the opened message names the version Dispatch reports it current for.
 	// ApprovedVersion did not rise, and every holder took 5, so no news is queued. A root waiting
-	// on that gate is answered as an approval answers it.
+	// on that gate is answered as an approval answers it. On a row that records no person's
+	// approval the notice would name a version no person approved: the predicate finds it is not
+	// the person's word (SupersedingApproval), and no architect is sent it.
 	t.Run("W3", func(t *testing.T) {
 		t.Parallel()
 		t.Run("the tree is told the opening", func(t *testing.T) {
@@ -430,6 +432,20 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 			assertWait(t, pool, 7, record.AnsweredByApproval, "version 5", 5)
 			assertNoticeCount(t, pool, "design-approved", 0)
 			assertOutboxCount(t, pool, string(record.OutboxKindDesignChanges), 0)
+		})
+		t.Run("an opening on no approval of the person's sends no notice", func(t *testing.T) {
+			t.Parallel()
+			pool, apply := rig(t)
+			hashTree(t, pool, 5)
+			// Closed at 6 by Dispatch's verdict, with no person's approval recorded.
+			seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 6,
+				Verdict: &record.GateVerdict{Version: 6, Current: false, Mark: hashMark(21)}, ToldOpen: new(false)})
+
+			apply("digest-7", digestOf(t, gatedRoot, gateDoc, 7, 31, true, 5))
+
+			assertHashGate(t, pool, gatedRoot, true, true, 0)
+			assertNoticeCount(t, pool, "design-approved", 0)
+			assertOutboxCount(t, pool, string(record.OutboxKindNotice), 0)
 		})
 	})
 
