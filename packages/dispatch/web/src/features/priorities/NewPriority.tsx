@@ -20,8 +20,13 @@ const BUTTON = `rounded-lg border text-sm ${controlPadding.toolbar} ${borderDefa
  * the priorities table's control row as the page's own control (`TableToolbar`), and on the page
  * alone where no priority is written yet, which is the one place a fresh deployment can write
  * its first. Drawn only for a reader who may write a priority (`usePriorityWrites`); every other
- * reader is shown nothing here. The form opens beside the button in the control row, whose slot
- * keeps one line from `sm` up, and takes a line of its own in a row that wraps.
+ * reader is shown nothing here. Open, the form takes a line of its own at the end of the flex
+ * line it is drawn in (`order-last basis-full`), at every width, so that line never has to hold
+ * the title box, Add priority and Cancel beside its other controls. In the control row the form
+ * is marked as the row's own line (`data-row-line`): while it is drawn, the row's first line
+ * wraps and the slot of the page's own controls draws no box, so the form stands under the row's
+ * other controls and the row never runs past its width (`ControlRow`). Its title box, Add priority
+ * and Cancel wrap inside the form where the line cannot hold them.
  */
 export function NewPriority(): ReactNode {
   const { add, canWrite } = usePriorityWrites();
@@ -36,7 +41,8 @@ export function NewPriority(): ReactNode {
       {adding ? (
         <form
           aria-label="New priority"
-          className="flex basis-full flex-wrap items-center gap-2"
+          className="order-last flex basis-full flex-wrap items-center gap-2"
+          data-row-line=""
           onSubmit={(event) => {
             event.preventDefault();
             const named = title.trim();

@@ -1871,6 +1871,57 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
   }
 });
 
+// The New priority form, opened in the priorities table's control row, takes a line of its own
+// there rather than run the row past its width (`NewPriority`, `ControlRow`). At 700 and 720 px
+// wide the row is just over 40rem, the width from which its first line is one line, and that line
+// cannot hold the search box, New priority, the form, Columns and View; at 1280 by 800 it can.
+// At each size, with the form open, the row's scroll width is its client width, and Cancel, the
+// form's last control, stands inside the row's box.
+// SLOW(>=2s): two priorities written, and the page loaded and its form opened at three sizes.
+test("with the New priority form open the priorities control row scrolls nothing sideways at 700, 720 and 1280 px, and Cancel stands inside it", async ({
+  browser,
+}) => {
+  const first = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  const second = await createPriority({ owner: "bob", title: "Cut the review queue" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    const cancel = page
+      .locator('form[aria-label="New priority"]')
+      .getByRole("button", { exact: true, name: "Cancel" });
+    // How far the control row Cancel stands in runs past its own width, and whether Cancel's box
+    // lies inside the row's, to within half a pixel of rounding.
+    const fit = () =>
+      cancel.evaluate((button) => {
+        const row = button.closest('[data-control="control-row"]');
+        if (row === null) throw new Error("Cancel stands in no control row");
+        const box = row.getBoundingClientRect();
+        const own = button.getBoundingClientRect();
+        return {
+          cancelInside: own.left >= box.left - 0.5 && own.right <= box.right + 0.5,
+          past: row.scrollWidth - row.clientWidth,
+        };
+      });
+    for (const size of [{ height: 900, width: 700 }, { height: 900, width: 720 }, DESKTOP]) {
+      await page.setViewportSize(size);
+      await page.goto(PRIORITIES_PATH);
+      await expectRowOrder(page.getByRole("table", { exact: true, name: "Priorities table" }), [
+        `#1 ${first.title}`,
+        `#2 ${second.title}`,
+      ]);
+      await page.getByRole("button", { exact: true, name: "New priority" }).click();
+      await expect(cancel).toBeVisible();
+      soft(
+        await settledValue(`at ${size.width} px: the control row with the form open`, fit),
+        `at ${size.width} px the control row with the New priority form open scrolls nothing sideways, and Cancel stands inside it`
+      ).toEqual({ cancelInside: true, past: 0 });
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 // INFRA-2947 R7 (spec v83 to v85) and check 138e9e4d (Verification v60 to v62), read on a phone,
 // 390 by 844: the priorities tab draws each priority as its place beside one cell, which holds
 // its title, the start of its description, its owner, its three counts under their column names
