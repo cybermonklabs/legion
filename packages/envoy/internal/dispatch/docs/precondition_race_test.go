@@ -223,12 +223,8 @@ func waitForAsksQueryLock(t *testing.T, database *store.Store) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*)
-			from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and query like '%from asks%'
-		`).Scan(&waiting); err != nil {
+		waiting, err := storetest.CountLockWaits(context.Background(), database, "%from asks%")
+		if err != nil {
 			t.Fatalf("inspect asks query lock: %v", err)
 		}
 		if waiting > 0 {

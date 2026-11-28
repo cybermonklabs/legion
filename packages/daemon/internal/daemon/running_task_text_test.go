@@ -255,7 +255,7 @@ func TestALaterVersionChangesTheTextOfARunningTaskForEveryLaterStart(t *testing.
 		t.Fatalf("register_plan of version 3, which changes a's steps while it runs, = %d %s, want 409 PLAN_REFUSED naming task a as running", status, body)
 	}
 	reviewer.endTurn()
-	r.publishReview(r.number, "APPROVED")
+	r.approve(reviewer, r.number)
 	r.waitPhase(phase.Retro)
 	holdsText(t, "retro", takeText(fresh), two, one)
 

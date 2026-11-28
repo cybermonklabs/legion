@@ -88,56 +88,45 @@ jobs:
       - name: Build contracts for the stall suites
         run: bun run build
         working-directory: packages/contracts
-      - name: Stall test of envoy-client's NATS connection options
-        run: bun test src/__tests__/nats-stall.test.ts
-        working-directory: packages/envoy-client
-      # A session's broker-token credential on a real natsd behind the real NATS auth service
-      # (packages/envoy/internal/testnats/cmd/calloutd, built beside natsd): a token that lapses
-      # while the stub broker is away, every reconnect refused and the connection admitted again
-      # once a token is live (slice E2, t-e-9); and a session switch that subscribes
-      # the new session's subject only once the connection is admitted with its token (t-e-10).
-      - name: Broker credential tests on a hub behind the auth service
-        run: bun test src/__tests__/nats-credential.test.ts -t "a session's connection to a hub behind the auth service"
-        working-directory: packages/envoy-client
-      # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
-      # this one as a file because of the leading "./".
-      - name: Session state rig of a stalled session
-        run: bun test ./test/session-stall.ts
-        working-directory: packages/envoy-client
-      # Through the package's own test script, so the file's hooks get the one --timeout that
-      # packages/pi-envoy/package.json sets, as the pi-envoy job's run gives them.
-      - name: Stall test of pi-envoy
-        run: bun run test extensions/envoy.test.ts -t "NATS path freezes"
-        working-directory: packages/pi-envoy
-      # The topics a deployment names for a role (ENVOY_ROLE_TOPICS), with real Oh My Pi client
-      # processes against the listener and natsd this job sets Go up for: a mention-free post to a
-      # private Slack channel, through the listener's own signed webhook, reaches the session that
-      # holds the role after its pod is killed and its session relaunched, and after a new session
-      # claims the role, and never reaches a session holding another role.
-      - name: Role topics across a relaunch
-        run: bun run test extensions/role-topics.test.ts
-        working-directory: packages/pi-envoy
-      - name: Stall test of claude-envoy
-        run: bun test tests/envoy-channel-stall.test.ts
-        working-directory: packages/claude-envoy
+      # why: .github/ci-notes/ci.md#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack
+      # The Go commands of packages/envoy the suites below build that the go-envoy entry does not
+      # hold: the Dispatch server (the six Dispatch suites), the NATS auth service (the broker
+      # credential tests), and the secrets broker, the cluster token issuer, the airlock's authority
+      # and fronts and agent-secrets (the two CI-result suites). It compiles each once, before any
+      # suite starts, so that no suite compiles one beside rows that read real clocks; each suite
+      # then links what it builds from this run's build cache. A go build of more than one main
+      # package links each and writes no binary.
+      - name: Build once the Go commands the suites below build
+        run: go build ./cmd/dispatch ./internal/testnats/cmd/calloutd ./cmd/cipherd ./cmd/dev-oidc-issuer ./cmd/dev-proxy-stands ./cmd/cipher
+        working-directory: packages/envoy
+      # why: .github/ci-notes/ci.md#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack
+      # The suites below, each a Bun suite or the shell smoke against a stack of its own, mostly
+      # wait out the real windows and timers they are about. Each step below keeps its name and
+      # hands its suite to .github/scripts/harness-pool.sh, which queues it and returns; the suites
+      # then run beside each other, no more at once than the runner has cores, queued longest
+      # first, and "Wait for the script harnesses and judge them" is their verdict and prints each
+      # one's log (.github/ci-notes/ci.md#the-harness-pool). Each stack builds its binaries into a
+      # scratch directory of its own, serves on ports the kernel chose, and makes a database of its
+      # own for each Dispatch server and the CI-result stack's brokers; the suites share only the
+      # checkout, the Postgres service and the Go module and build caches.
+      #
       # The role takeover smoke (INFRA-404, A5): one line per row of its spec's R8 table, driven
       # with real client processes against a listener and natsd this job already sets Go up for.
       # It needs no model provider and no deployment, so unlike the other smokes in
       # packages/pi-envoy/scripts it runs here.
       - name: Role takeover smoke
-        run: bash packages/pi-envoy/scripts/smoke-role-takeover.sh
-      # The design-gate advice over the real CLI and a real Dispatch server (dispatch://INFRA-1727):
-      # the server this suite starts is built from this tree, so what it asserts is the sentence a
-      # person reads in a terminal rather than one rendered from a stub.
-      - name: Design-gate advice of the real CLI against a real Dispatch
-        run: bun test src/__tests__/design-gate-advice.live.test.ts
+        run: .github/scripts/harness-pool.sh start packages/pi-envoy/scripts/smoke-role-takeover.sh bash packages/pi-envoy/scripts/smoke-role-takeover.sh
+      - name: Stall test of envoy-client's NATS connection options
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/nats-stall.test.ts bun test src/__tests__/nats-stall.test.ts
         working-directory: packages/envoy-client
-      # The moved-approval-request advice over the same real CLI and real Dispatch
-      # (dispatch://INFRA-3096): it proves the field the server fills on a write that takes an
-      # open approval request back from the person is the field the CLI reads and prints.
-      - name: Moved-approval advice of the real CLI against a real Dispatch
-        run: bun test src/__tests__/moved-approval-advice.live.test.ts
+      # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
+      # this one as a file because of the leading "./".
+      - name: Session state rig of a stalled session
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/test/session-stall.ts bun test ./test/session-stall.ts
         working-directory: packages/envoy-client
+      - name: Stall test of claude-envoy
+        run: ../../.github/scripts/harness-pool.sh start packages/claude-envoy/tests/envoy-channel-stall.test.ts bun test tests/envoy-channel-stall.test.ts
+        working-directory: packages/claude-envoy
       # A CI job's result over the whole path a job writes it through: the real
       # `agent-secrets result-grant` trades the job's OIDC token from a stand-in of GitHub at
       # the real secrets broker for the proxy placeholder of a result grant, the real CLI, run
@@ -149,27 +138,101 @@ jobs:
       # ./cmd/dev-proxy-stands, ./cmd/cipher with -o agent-secrets, and the server, and runs them
       # on this job's Postgres; it needs no container and no fixed port.
       - name: A CI job's result through the real broker and a real Dispatch
-        run: bun test src/__tests__/ci-results.live.test.ts
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/ci-results.live.test.ts bun test src/__tests__/ci-results.live.test.ts
         working-directory: packages/envoy-client
-      # The same stack, for a commit whose spec file's name holds a line break and a workflow
-      # command: the real CLI prints Dispatch's refusal of that tree on one line, so no line of a
-      # job's log that runs the command is a workflow command to its runner.
-      - name: A CI job's refused result prints no workflow command
-        run: bun test src/__tests__/ci-result-refusal-log.live.test.ts
+      # A session's broker-token credential on a real natsd behind the real NATS auth service
+      # (packages/envoy/internal/testnats/cmd/calloutd, built beside natsd): a token that lapses
+      # while the stub broker is away, every reconnect refused and the connection admitted again
+      # once a token is live (slice E2, t-e-9); and a session switch that subscribes
+      # the new session's subject only once the connection is admitted with its token (t-e-10).
+      - name: Broker credential tests on a hub behind the auth service
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/nats-credential.test.ts bun test src/__tests__/nats-credential.test.ts -t "a session's connection to a hub behind the auth service"
         working-directory: packages/envoy-client
+      # Through the package's own test script, so the file's hooks get the one --timeout that
+      # packages/pi-envoy/package.json sets, as the pi-envoy job's run gives them.
+      - name: Stall test of pi-envoy
+        run: ../../.github/scripts/harness-pool.sh start packages/pi-envoy/extensions/envoy.test.ts bun run test extensions/envoy.test.ts -t "NATS path freezes"
+        working-directory: packages/pi-envoy
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
       # target, which is what lets an agent write to the owner of a subject and leave the retry
       # to Dispatch.
       - name: Comment mention of the real CLI against a real Dispatch
-        run: bun test src/__tests__/comment-mention.live.test.ts
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/comment-mention.live.test.ts bun test src/__tests__/comment-mention.live.test.ts
+        working-directory: packages/envoy-client
+      # The topics a deployment names for a role (ENVOY_ROLE_TOPICS), with real Oh My Pi client
+      # processes against the listener and natsd this job sets Go up for: a mention-free post to a
+      # private Slack channel, through the listener's own signed webhook, reaches the session that
+      # holds the role after its pod is killed and its session relaunched, and after a new session
+      # claims the role, and never reaches a session holding another role.
+      - name: Role topics across a relaunch
+        run: ../../.github/scripts/harness-pool.sh start packages/pi-envoy/extensions/role-topics.test.ts bun run test extensions/role-topics.test.ts
+        working-directory: packages/pi-envoy
+      # The same stack, for a commit whose spec file's name holds a line break and a workflow
+      # command: the real CLI prints Dispatch's refusal of that tree on one line, so no line of a
+      # job's log that runs the command is a workflow command to its runner.
+      - name: A CI job's refused result prints no workflow command
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/ci-result-refusal-log.live.test.ts bun test src/__tests__/ci-result-refusal-log.live.test.ts
+        working-directory: packages/envoy-client
+      # The design-gate advice over the real CLI and a real Dispatch server (dispatch://INFRA-1727):
+      # the server this suite starts is built from this tree, so what it asserts is the sentence a
+      # person reads in a terminal rather than one rendered from a stub.
+      - name: Design-gate advice of the real CLI against a real Dispatch
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/design-gate-advice.live.test.ts bun test src/__tests__/design-gate-advice.live.test.ts
         working-directory: packages/envoy-client
       # A keyed write a real Dispatch refused because it could not resolve the caller.
       # The client of this tree sends it again under its own key against a server of this tree,
       # started with an OIDC issuer nothing serves, and the issue holds the comment once.
       # It needs the same Postgres and Go this job already has.
       - name: A refused keyed write resent under its key against a real Dispatch
-        run: bun test src/__tests__/dispatch-keyed-resend-live.test.ts
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/dispatch-keyed-resend-live.test.ts bun test src/__tests__/dispatch-keyed-resend-live.test.ts
         working-directory: packages/envoy-client
+      # The moved-approval-request advice over the same real CLI and real Dispatch
+      # (dispatch://INFRA-3096): it proves the field the server fills on a write that takes an
+      # open approval request back from the person is the field the CLI reads and prints.
+      - name: Moved-approval advice of the real CLI against a real Dispatch
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/moved-approval-advice.live.test.ts bun test src/__tests__/moved-approval-advice.live.test.ts
+        working-directory: packages/envoy-client
+      # The verdict on the suites the steps above queued: it waits for the last of them, prints
+      # each one's log in a group of its own with its wall and CPU seconds, and fails naming each
+      # suite that failed (.github/scripts/harness-pool.sh). A job that passed every step to here
+      # queued all of its suites, so a wait that finds none fails it; one that failed before the
+      # suite steps has nothing to judge, and --allow-none keeps that from adding a second error
+      # to the first. `!cancelled()` rather than `always()`: the runner signals a running step on
+      # a cancel only when its condition no longer holds, and the wait answers that signal by
+      # naming each suite still running with its log so far; `exec`, so the signal reaches the
+      # wait itself.
+      - id: harness-wait
+        name: Wait for the script harnesses and judge them
+        if: ${{ !cancelled() }}
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          args=()
+          if [[ $JOB_STATUS != success ]]; then args+=(--allow-none); fi
+          exec .github/scripts/harness-pool.sh wait "${args[@]}"
+      # A job cancelled, or past its timeout, before the step above began: name each suite it
+      # queued as it is, with its log so far, rather than lose them with the job.
+      - name: Name the script harnesses a cancelled job left
+        if: cancelled() && steps.harness-wait.outcome == 'skipped'
+        run: .github/scripts/harness-pool.sh wait --allow-none --now
+      # When each line of each of those suites' logs was written: the pool stamps every line of
+      # every suite's log with the time it was written, and this keeps that record for 90 days, as
+      # envoy-go-checks and the test job keep theirs (.github/actions/harness-times-upload,
+      # docs/testing.md). .github/scripts/harness_case_times.py reads every job of a run that has
+      # the wait step above and reads one with no record as UNKNOWN. It reads each of the smoke's
+      # rows as a case, from the case line before it to the `PASS:` or `FAIL:` line the smoke prints
+      # as the row ends, its first from the smoke's start, the smoke's build of natsd and the
+      # listener included; and each Bun suite as one harness row, since no line of a Bun suite
+      # matches its case grammar. `always()`, so a cancelled or timed-out job keeps what was
+      # stamped before it ended. `continue-on-error`, since nothing the pool records may change
+      # what a test run decides: a failed upload is a red mark on this step alone, and the job and
+      # its ci-ok report keep the suites' verdict.
+      - name: Upload the harness case times
+        if: always()
+        continue-on-error: true
+        uses: ./.github/actions/harness-times-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

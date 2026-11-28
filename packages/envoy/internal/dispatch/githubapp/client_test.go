@@ -20,8 +20,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
@@ -722,9 +724,10 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 }
 
 // A request GitHub gave no answer to is noted, with the error the caller is given: a transport
-// error, and the client's own RequestTimeout ending while the caller's context is live. A request
-// whose caller's context ended is not noted, since the caller's end -- a pass's own bound, or the
-// process shutting down -- is no failure of GitHub's. Both are marked sent.
+// error, and the client's own request timeout (WithRequestTimeout) ending while the caller's
+// context is live. A request whose caller's context ended is not noted, since the caller's end --
+// a pass's own bound, or the process shutting down -- is no failure of GitHub's. Both are marked
+// sent.
 func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 	t.Run("a transport error", func(t *testing.T) {
 		// A port the test holds and nothing listens on: a closed server's port is any process's
@@ -747,14 +750,11 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 	})
 
 	t.Run("the client's own timeout", func(t *testing.T) {
-		client := hangingGitHub(t, nil)
-		saved := RequestTimeout
-		RequestTimeout = 50 * time.Millisecond
-		t.Cleanup(func() { RequestTimeout = saved })
+		client := hangingGitHub(t, nil, WithRequestTimeout(50*time.Millisecond))
 		ctx, attempt := githubreads.Begin(context.Background(), githubreads.CIReconcile)
 		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
 		if !errors.Is(readErr, context.DeadlineExceeded) {
-			t.Fatalf("a read past RequestTimeout: err = %v, want the deadline", readErr)
+			t.Fatalf("a read past the client's request timeout: err = %v, want the deadline", readErr)
 		}
 		sent, failed, cause := attempt.Outcome()
 		if !sent || !failed || cause != readErr.Error() {
@@ -762,9 +762,12 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 		}
 	})
 
+	// The caller ends the read once it reaches GitHub, however late a loaded machine runs that
+	// end: the read's own bound is the test's give-up, so the client's RequestTimeout does not
+	// end it first, which would read as GitHub's failure.
 	t.Run("a caller that ended", func(t *testing.T) {
 		arrived := make(chan struct{}, 1)
-		client := hangingGitHub(t, arrived)
+		client := hangingGitHub(t, arrived, WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 		caller, end := context.WithCancel(context.Background())
 		defer end()
 		go func() {
@@ -782,9 +785,9 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 	})
 }
 
-// hangingGitHub is a client of a GitHub that answers no request until the request's own context
-// ends, signalling arrived, when it is not nil, as each request reaches it.
-func hangingGitHub(t *testing.T, arrived chan<- struct{}) *Client {
+// hangingGitHub is a client, built with options, of a GitHub that answers no request until the
+// request's own context ends, signalling arrived, when it is not nil, as each request reaches it.
+func hangingGitHub(t *testing.T, arrived chan<- struct{}, options ...Option) *Client {
 	t.Helper()
 	base := githubtest.Server(t, githubtest.Spec{Handle: func(_ http.ResponseWriter, r *http.Request) {
 		if arrived != nil {
@@ -796,11 +799,116 @@ func hangingGitHub(t *testing.T, arrived chan<- struct{}) *Client {
 		<-r.Context().Done()
 	}})
 	_, pemText := testKeyPEM(t)
-	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base, options...)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
 	return client
+}
+
+// deadlineTransport answers every call 200 with an empty JSON object, in memory, and records the
+// deadline each request's context carries.
+type deadlineTransport struct{ deadlines []time.Time }
+
+func (d *deadlineTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	deadline, _ := r.Context().Deadline()
+	d.deadlines = append(d.deadlines, deadline)
+	recorder := httptest.NewRecorder()
+	_, _ = recorder.WriteString("{}")
+	return recorder.Result(), nil
+}
+
+// Each call the client sends is bounded by the client's request timeout: RequestTimeout for a
+// client built without WithRequestTimeout, and the timeout WithRequestTimeout names for one built
+// with it. The read runs in a synctest bubble, whose clock stands still while nothing waits, so the
+// deadline the transport sees is that bound past the moment the read began.
+func TestEachCallIsBoundedByTheClientsRequestTimeout(t *testing.T) {
+	_, pemText := testKeyPEM(t)
+	for _, row := range []struct {
+		name    string
+		options []Option
+		want    time.Duration
+	}{
+		{name: "RequestTimeout by default", want: RequestTimeout},
+		{name: "a timeout of the client's own", options: []Option{WithRequestTimeout(time.Hour)}, want: time.Hour},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				transport := &deadlineTransport{}
+				options := append([]Option{WithHTTPClient(&http.Client{Transport: transport})}, row.options...)
+				client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, "https://github.test", options...)
+				if err != nil {
+					t.Fatalf("new client: %v", err)
+				}
+				began := time.Now()
+				if _, _, _, err := client.Read(context.Background(), "installation-token", "/repos/acme/web"); err != nil {
+					t.Fatalf("read: %v", err)
+				}
+				if want := began.Add(row.want); len(transport.deadlines) != 1 || !transport.deadlines[0].Equal(want) {
+					t.Fatalf("the read's requests carried the deadlines %v, want one at %v, %s past the read's start", transport.deadlines, want, row.want)
+				}
+			})
+		})
+	}
+}
+
+// limitTransport answers every call in memory as GitHub answers a spent budget: 403, no requests
+// left, and the budget's reset at reset (X-RateLimit-Reset, in whole seconds).
+type limitTransport struct{ reset time.Time }
+
+func (l limitTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Body != nil {
+		_ = r.Body.Close()
+	}
+	recorder := httptest.NewRecorder()
+	recorder.Header().Set("X-RateLimit-Remaining", "0")
+	recorder.Header().Set("X-RateLimit-Reset", strconv.FormatInt(l.reset.Unix(), 10))
+	recorder.WriteHeader(http.StatusForbidden)
+	_, _ = recorder.WriteString(`{"message":"API rate limit exceeded"}`)
+	return recorder.Result(), nil
+}
+
+// A client given WithRateLimitClock reads the wait of a limit GitHub answers against that clock:
+// the reset GitHub names less the clock's now, for a REST call (a token mint) and a GraphQL query
+// alike, both on the error the caller is given and as the limit is recorded for every process.
+// The clock is a fake standing at a moment years before any run, so a wait read against the wall
+// clock reads the reset as long past, no wait at all, and the row fails.
+func TestAClientReadsARateLimitsWaitAgainstItsRateLimitClock(t *testing.T) {
+	_, pemText := testKeyPEM(t)
+	start := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
+	const wait = 90 * time.Second
+	limits := &holdingLimits{}
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, "https://github.test",
+		WithHTTPClient(&http.Client{Transport: limitTransport{reset: start.Add(wait)}}),
+		WithLimits(limits), WithRateLimitClock(clocktest.New(start)))
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	ctx := context.Background()
+	for _, row := range []struct {
+		name  string
+		scope string
+		call  func() error
+	}{
+		{name: "a REST call", scope: AppScope, call: func() error {
+			_, err := client.Token(ctx, 7)
+			return err
+		}},
+		{name: "a GraphQL query", scope: GraphQLScope, call: func() error {
+			_, _, _, err := client.GraphQL(ctx, "ghs_test", "query { viewer { login } }", nil)
+			return err
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			err := row.call()
+			if limited, ok := AsRateLimit(err); !ok || limited.Held || limited.Wait != wait {
+				t.Fatalf("err = %v, want GitHub's limit with a wait of %s: the reset %s less the clock's now %s", err, wait, start.Add(wait), start)
+			}
+			if recorded, ok := limits.recordedWait(row.scope); !ok || recorded != wait {
+				t.Fatalf("the limit under %s was recorded with %s (recorded: %v), want %s: the reset less the clock's now", row.scope, recorded, ok, wait)
+			}
+		})
+	}
 }
 
 func TestGraphQLPostsQueryAndVariablesWithAnInstallationToken(t *testing.T) {
