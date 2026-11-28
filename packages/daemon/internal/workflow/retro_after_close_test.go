@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -173,6 +175,25 @@ func (r *retroRig) report(t *testing.T, key string, generation uint64) intake.Re
 func (r *retroRig) expireLinger(t *testing.T) {
 	t.Helper()
 	r.apply("linger:LEGION-208:1", intake.LingerExpired{Issue: "LEGION-208", Generation: 1})
+}
+
+// todoEnds ends key's open retro after its close by a todo, as admission's re-admission ends it:
+// admit's readmit calls EndOpenRetro on the issue as the record holds it, before it writes the new
+// generation, in the fact of the todo, whose settle writes the end of the retro's step row.
+func (r *retroRig) todoEnds(t *testing.T, key string) {
+	t.Helper()
+	if err := store.Transact(r.engine.OpenFact(t.Context()), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := r.engine.store.Issue(ctx, tx, key)
+		if err != nil || issue == nil {
+			return fmt.Errorf("read %s: %v", key, err)
+		}
+		if err := r.engine.EndOpenRetro(ctx, tx, *issue); err != nil {
+			return err
+		}
+		return r.engine.SettleFact(ctx, tx)
+	}); err != nil {
+		t.Fatalf("the todo's end of %s's open retro after its close: %v", key, err)
+	}
 }
 
 // mark is the id of the newest outbox row, 0 for none: every row a later fact writes is newer.
@@ -1502,13 +1523,13 @@ func TestTheEndOfATreesLastRetroLeavesTheRootArchitectToTheWakeQueuedForIt(t *te
 }
 
 // hourAfterRetros is a tree inside its linger whose last retro after a close ended (P6, P7). The
-// rig's linger is 72 hours, as the default's, so the hour after that end passes well inside it. The
-// root LEGION-208 closes while its child LEGION-209, whose run started the root's, still works in
-// implementing, so the root's own retro is the tree's one open retro, and the root architect's
-// claim is the one the close suspended, as the daemon's own. ended is when the root's report ended
-// that retro, and stop and id are the fact of the linger_close row that end queued for the hour
-// after it and the end's own event it applies under (LingerAfterRetrosEventID), as the outbox
-// applies it.
+// rig's linger is 72 hours, as the default's, so the hour after that end passes well inside it. In
+// the tree newHourAfterRetros stands up, the root LEGION-208 closes while its child LEGION-209,
+// whose run started the root's, still works in implementing, so the root's own retro is the tree's
+// one open retro, and the root architect's claim is the one the close suspended, as the daemon's
+// own; newHourAfterTodo's tree ends the child's retro by a todo instead. ended is when that end
+// was, and stop and id are the fact of the linger_close row that end queued for the hour after it
+// and the end's own event it applies under (LingerAfterRetrosEventID), as the outbox applies it.
 type hourAfterRetros struct {
 	*retroRig
 	ended time.Time
@@ -1538,26 +1559,95 @@ func newHourAfterRetros(t *testing.T, wake bool) *hourAfterRetros {
 	if result := h.report(t, "LEGION-208", 1); result.Refusal != nil {
 		t.Fatalf("the report of the root's retro was refused: %+v", result.Refusal)
 	}
-	ended, found := runRetroOf(t, h.pool, "LEGION-208", 1)
-	if !found || ended.ended == nil {
-		t.Fatalf("the root's run_retros row after its report = %+v (found %t), want it ended", ended, found)
-	}
 	if row, found := runRetroOf(t, h.pool, "LEGION-209", 3); found && row.open() {
 		t.Fatalf("LEGION-209's run_retros row = %+v, want no retro of it open: the root's was the tree's last", row)
 	}
-	h.ended = *ended.ended
-	queued := rowsSince(t, h.pool, "LEGION-208", string(record.OutboxKindLingerClose), mark)
-	if len(queued) != 1 || !queued[0].nextAt.Equal(h.ended.Add(pods.RetroWakeWindow)) {
-		t.Fatalf("linger_close rows at the end of the tree's last retro, inside its linger = %+v, want one due the hour after the end, %s",
-			queued, h.ended.Add(pods.RetroWakeWindow))
+	h.endedBy(t, "LEGION-208", 1, mark)
+	return h
+}
+
+// newHourAfterTodo is that tree with its last retro after a close ended by a todo instead (review
+// thread PRRT_kwDORFy7ds69CjgV of #5630). The child LEGION-209 closes before the root, so each
+// holds a retro after its close, and the root's report ends the root's own while the child's is
+// still open. Ten minutes on, a person sets the child to todo: its tree lingers and does not take
+// it back (ReenterChild stops before its own EndOpenRetro), so admission re-admits it, and the
+// re-admission ends the tree's last open retro (todoEnds). With wake, a finding of the child's
+// retro wakes the root architect before the todo, and the wake's start is still queued at the end.
+// It answers the tree and the mark of the outbox just before the todo.
+func newHourAfterTodo(t *testing.T, wake bool) (*hourAfterRetros, int64) {
+	t.Helper()
+	h := &hourAfterRetros{retroRig: newRetroRig(t)}
+	h.engine.cfg.Pods = wakePods(t, h.pool)
+	h.engine.cfg.Linger = 72 * time.Hour
+	h.root(t, phase.Implementing)
+	h.member(t, "LEGION-209", "LEGION-208", phase.Admitted, 43)
+	h.runTo(t, "LEGION-209", phase.Implementing)
+	h.person(t, "LEGION-209", "done")
+	h.person(t, "LEGION-208", "done")
+	lingering(t, h.pool, "LEGION-208")
+	seedRunClaim(t, h.pool, "LEGION-208", claim.RoleArchitect, 1, "suspended", "daemon", "session-architect")
+	if result := h.report(t, "LEGION-208", 1); result.Refusal != nil {
+		t.Fatalf("the report of the root's retro was refused: %+v", result.Refusal)
+	}
+	if row, found := runRetroOf(t, h.pool, "LEGION-209", 3); !found || !row.open() {
+		t.Fatalf("LEGION-209's run_retros row after the root's report = %+v (found %t), want its retro after the close open, the tree's last", row, found)
+	}
+	h.at(10 * time.Minute)
+	if wake {
+		h.wakeArchitect(t, "finding")
+	}
+	mark := h.mark(t)
+	h.todoEnds(t, "LEGION-209")
+	if row, found := runRetroOf(t, h.pool, "LEGION-209", 3); !found || row.outcome != record.RetroOutcomeStopped || row.endedBy != record.RetroEndTodo {
+		t.Fatalf("LEGION-209's run_retros row after the todo = %+v (found %t), want it ended stopped by the todo", row, found)
+	}
+	h.endedBy(t, "LEGION-209", 3, mark)
+	return h, mark
+}
+
+// retrosEndedRow reads the end of key's retro of run, which ended the last open retro after a close
+// of the tree, and fails unless the root's outbox holds one linger_close row newer than mark, due
+// the hour after that end, at the root's generation 1 and naming the end (record.LingerClose with
+// RetrosEnded). It answers the end and the row's fact.
+func retrosEndedRow(t *testing.T, pool *pgxpool.Pool, key string, run uint64, mark int64) (time.Time, intake.LingerExpired) {
+	t.Helper()
+	row, found := runRetroOf(t, pool, key, run)
+	if !found || row.ended == nil {
+		t.Fatalf("%s's run_retros row of run %d = %+v (found %t), want it ended", key, run, row, found)
+	}
+	ended := *row.ended
+	queued := rowsSince(t, pool, "LEGION-208", string(record.OutboxKindLingerClose), mark)
+	if len(queued) != 1 || !queued[0].nextAt.Equal(ended.Add(pods.RetroWakeWindow)) {
+		t.Fatalf("linger_close rows of the root at the end of the tree's last retro = %+v, want one due the hour after the end, %s",
+			queued, ended.Add(pods.RetroWakeWindow))
 	}
 	var payload record.LingerClose
-	if err := json.Unmarshal(queued[0].payload, &payload); err != nil || payload.Generation != 1 || payload.RetrosEnded == nil || !payload.RetrosEnded.Equal(h.ended) {
-		t.Fatalf("the linger_close row = %s (%v), want generation 1 naming the retro's end %s", queued[0].payload, err, h.ended)
+	if err := json.Unmarshal(queued[0].payload, &payload); err != nil || payload.Generation != 1 || payload.RetrosEnded == nil || !payload.RetrosEnded.Equal(ended) {
+		t.Fatalf("the linger_close row = %s (%v), want generation 1 naming the retro's end %s", queued[0].payload, err, ended)
 	}
-	h.stop = intake.LingerExpired{Issue: "LEGION-208", Generation: 1, RetrosEnded: payload.RetrosEnded}
-	h.id = LingerAfterRetrosEventID("LEGION-208", 1, *payload.RetrosEnded)
-	return h
+	return ended, intake.LingerExpired{Issue: "LEGION-208", Generation: 1, RetrosEnded: payload.RetrosEnded}
+}
+
+// endedBy keeps the end of key's retro of run, the tree's last, the fact of the linger_close row
+// that end queued newer than mark (retrosEndedRow), and the end's own event the outbox applies it
+// under (LingerAfterRetrosEventID).
+func (h *hourAfterRetros) endedBy(t *testing.T, key string, run uint64, mark int64) {
+	t.Helper()
+	h.ended, h.stop = retrosEndedRow(t, h.pool, key, run, mark)
+	h.id = LingerAfterRetrosEventID("LEGION-208", 1, *h.stop.RetrosEnded)
+}
+
+// assertTodoTookNothingOf fails unless key, which a todo took into a new run, has no stop of its
+// retro's agent (the implementer) and no issue_suspend row newer than mark: its claims and its pod
+// are the new run's.
+func assertTodoTookNothingOf(t *testing.T, pool *pgxpool.Pool, key string, mark int64) {
+	t.Helper()
+	if stops := stopsOf(supervisesSince(t, pool, key, mark), claim.RoleImplementer); len(stops) != 0 {
+		t.Fatalf("stops of %s's retro agent at the todo = %+v, want none: its claims are the new run's", key, stops)
+	}
+	if got := rowsSince(t, pool, key, string(record.OutboxKindIssueSuspend), mark); len(got) != 0 {
+		t.Fatalf("issue_suspend rows of %s at the todo = %d, want none: its pod is the new run's", key, len(got))
+	}
 }
 
 // after moves the rig's clock to d past the end of the tree's last retro.
@@ -1825,6 +1915,166 @@ func TestARootArchitectIsNotStoppedAtTheHoursEndWhileItsTreeStillHoldsIt(t *test
 			if stops, suspensions := h.stopsSince(t, mark); len(stops) != 0 || suspensions != 0 {
 				t.Fatalf("the stop wrote stops %+v and %d issue_suspend rows of the root, want none", stops, suspensions)
 			}
+		})
+	}
+}
+
+// Review thread PRRT_kwDORFy7ds69CjgV of #5630: a todo that ends the last retro after a close of a
+// tree inside its linger stops what the tree kept, as a report's end does (P7). The child LEGION-209
+// holds the tree's one open retro, and a person sets it to todo, which its lingering tree does not
+// take back, so its re-admission ends that retro (EndOpenRetro). That end used to stop nothing: the
+// tree took a retro's wake for one more hour, and after that hour the idle rule held the root's pod
+// for the linger's close, so an architect a finding woke, whose turn ended after the hour, kept its
+// pod until the linger's end, 72 hours on. The end now leaves an architect a retro's wake is queued
+// for to that wake and suspends one owed none at once, takes the root's pod (an IssueSuspend of the
+// root) either way, and queues the stop of the architect for the hour after it
+// (suspendArchitectAfterRetros), which suspends the woken architect once its turn has ended, and
+// the root's pod with it, while the linger still runs. The child the todo took into a new run
+// loses nothing to that end: no stop of its retro's agent and no IssueSuspend of it.
+func TestATodoThatEndsALingeringTreesLastRetroStopsItsWokenRootArchitect(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// wake is whether a finding of the child's retro wakes the architect before the todo, so
+		// that the wake's start is still queued at the end, which leaves the architect to it.
+		wake bool
+	}{
+		{name: "a retro's wake of the architect is queued at the end", wake: true},
+		{name: "no wake of the architect is owed at the end"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h, mark := newHourAfterTodo(t, tc.wake)
+			assertTodoTookNothingOf(t, h.pool, "LEGION-209", mark)
+			stops, suspensions := h.stopsSince(t, mark)
+			if suspensions != 1 {
+				t.Fatalf("issue_suspend rows of the root at the todo's end of the tree's last retro = %d, want one", suspensions)
+			}
+			if !tc.wake {
+				if len(stops) != 1 || stops[0].Op != "suspend" || stops[0].Generation != 1 {
+					t.Fatalf("stops of the root architect at the todo's end of the tree's last retro, no wake owed = %+v, want one suspend", stops)
+				}
+				return
+			}
+			if len(stops) != 0 {
+				t.Fatalf("stops of the root architect at the todo's end of the tree's last retro, a wake of it queued = %+v, want none: it is left to that wake", stops)
+			}
+			h.ranWake(t)
+			h.architectAt(t, "working", "", true)
+			h.after(pods.RetroWakeWindow + time.Minute)
+			waited := h.mark(t)
+			if err := h.applyStop(); !errors.Is(err, wait.ErrWaiting) {
+				t.Fatalf("the stop once the hour has passed, the architect's turn on the wake still running = %v, want a wait", err)
+			}
+			if stops, suspensions := h.stopsSince(t, waited); len(stops) != 0 || suspensions != 0 {
+				t.Fatalf("while the architect's turn on the wake runs the stop wrote stops %+v and %d issue_suspend rows of the root, want none", stops, suspensions)
+			}
+			h.after(pods.RetroWakeWindow + 5*time.Minute)
+			h.architectAt(t, "idle", "", false)
+			stopped := h.mark(t)
+			if err := h.applyStop(); err != nil {
+				t.Fatalf("the stop once the hour has passed and the architect's turn has ended = %v, want it applied", err)
+			}
+			if stops, suspensions := h.stopsSince(t, stopped); len(stops) != 1 || stops[0].Op != "suspend" || stops[0].Generation != 1 || suspensions != 1 {
+				t.Fatalf("once the hour has passed the stop wrote stops %+v and %d issue_suspend rows of the root, want one suspend and one", stops, suspensions)
+			}
+			if root := issueRecord(t, h.pool, "LEGION-208"); root == nil || !record.Lingering(*root, h.clock.now) {
+				t.Fatalf("the root once its architect was stopped = %+v, want its linger still running at %s", root, h.clock.now)
+			}
+		})
+	}
+}
+
+// The same todo in a tree past its linger (review thread PRRT_kwDORFy7ds69CjgV of #5630, P8). The
+// linger's end applied at its deadline with the child's retro open, and left that child's claims
+// and workspace to the retro (lingerExpired). A todo that ends that retro, the tree's last, owes the
+// close of what the linger's end left, as a report's end does: it queues the tree's close for the
+// hour after the end (closeTreeAfterRetros), so a root architect a finding brought back in the
+// lifecycle the retro kept open, and that lifecycle, close again. That end used to queue nothing,
+// and nothing else closes either. The child the todo took into a new run loses nothing to that end.
+func TestATodoThatEndsTheLastRetroOfATreePastItsLingerQueuesTheTreesClose(t *testing.T) {
+	t.Parallel()
+	r := newRetroRig(t)
+	r.root(t, phase.Implementing)
+	r.member(t, "LEGION-209", "LEGION-208", phase.Admitted, 43)
+	r.runTo(t, "LEGION-209", phase.Implementing)
+	r.person(t, "LEGION-209", "done")
+	r.person(t, "LEGION-208", "done")
+	lingering(t, r.pool, "LEGION-208")
+	if result := r.report(t, "LEGION-208", 1); result.Refusal != nil {
+		t.Fatalf("the report of the root's retro was refused: %+v", result.Refusal)
+	}
+	r.at(2 * time.Hour)
+	if _, err := intake.ApplyFact(context.Background(), r.pool, "outbox", LingerEventID("LEGION-208", 1),
+		intake.LingerExpired{Issue: "LEGION-208", Generation: 1}, r.engine, admissionStub{}); err != nil {
+		t.Fatalf("the linger's end with the child's retro open = %v, want it applied at its deadline", err)
+	}
+	if row, found := runRetroOf(t, r.pool, "LEGION-209", 3); !found || !row.open() {
+		t.Fatalf("LEGION-209's run_retros row after the linger's end = %+v (found %t), want its retro after the close open, the tree's last", row, found)
+	}
+	r.at(3 * time.Hour)
+	mark := r.mark(t)
+	r.todoEnds(t, "LEGION-209")
+	retrosEndedRow(t, r.pool, "LEGION-209", 3, mark)
+	assertTodoTookNothingOf(t, r.pool, "LEGION-209", mark)
+}
+
+// A todo that ends a retro after a close in a tree that runs, or that takes the whole tree into a
+// new run, stops nothing of that tree (EndOpenRetro). A child set back to todo under a tree that
+// runs re-enters it (ReenterChild), and its root is in the workflow and does not linger. A root set
+// back to todo while its tree lingers is re-admitted (admit's readmit), and its own retro, the
+// tree's last, ends there: the architect the stop would suspend is a claim of the root, which the
+// new run starts again. Either end stops nothing of the root architect and queues no IssueSuspend
+// and no linger_close row of the root, and the issue the todo took loses neither its retro's agent
+// nor its pod to it.
+func TestATodoThatTakesItsTreeIntoARunStopsNothingOfTheTree(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// key is the issue the todo takes into a new run, and run the run whose retro it ends.
+		key     string
+		run     uint64
+		arrange func(t *testing.T, r *retroRig)
+		todo    func(t *testing.T, r *retroRig)
+	}{
+		{name: "a child's todo under a tree that runs", key: "LEGION-209", run: 3,
+			arrange: func(t *testing.T, r *retroRig) {
+				r.root(t, phase.Implementing)
+				r.member(t, "LEGION-209", "LEGION-208", phase.Admitted, 43)
+				r.runTo(t, "LEGION-209", phase.Implementing)
+				r.person(t, "LEGION-209", "done")
+			},
+			todo: func(t *testing.T, r *retroRig) { r.person(t, "LEGION-209", "todo") }},
+		{name: "the root's own todo while its tree lingers", key: "LEGION-208", run: 1,
+			arrange: func(t *testing.T, r *retroRig) {
+				r.root(t, phase.Admitted)
+				r.runTo(t, "LEGION-208", phase.Implementing)
+				r.person(t, "LEGION-208", "done")
+				lingering(t, r.pool, "LEGION-208")
+			},
+			todo: func(t *testing.T, r *retroRig) { r.todoEnds(t, "LEGION-208") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRetroRig(t)
+			tc.arrange(t, r)
+			if row, found := runRetroOf(t, r.pool, tc.key, tc.run); !found || !row.open() {
+				t.Fatalf("%s's run_retros row of run %d before the todo = %+v (found %t), want its retro after the close open", tc.key, tc.run, row, found)
+			}
+			mark := r.mark(t)
+			tc.todo(t, r)
+			if row, found := runRetroOf(t, r.pool, tc.key, tc.run); !found || row.endedBy != record.RetroEndTodo {
+				t.Fatalf("%s's run_retros row of run %d after the todo = %+v (found %t), want it ended by the todo", tc.key, tc.run, row, found)
+			}
+			if stops := stopsOf(supervisesSince(t, r.pool, "LEGION-208", mark), claim.RoleArchitect); len(stops) != 0 {
+				t.Fatalf("stops of the root architect at the todo = %+v, want none", stops)
+			}
+			for _, kind := range []record.OutboxKind{record.OutboxKindIssueSuspend, record.OutboxKindLingerClose} {
+				if got := rowsSince(t, r.pool, "LEGION-208", string(kind), mark); len(got) != 0 {
+					t.Fatalf("%s rows of the root at the todo = %+v, want none", kind, got)
+				}
+			}
+			assertTodoTookNothingOf(t, r.pool, tc.key, mark)
 		})
 	}
 }

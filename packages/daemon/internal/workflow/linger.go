@@ -632,8 +632,9 @@ func (e *Engine) handOver(ctx context.Context, tx pgx.Tx, root, child record.Iss
 // (closeTreeAfterRetros): a fact naming RetrosEnded is that close coming due (closeAfterRetros). A
 // fact naming RetrosEnded while the linger still runs is the stop of the root architect that the
 // end of the tree's last retro after a close inside the linger left to that hour
-// (suspendArchitectAfterRetros, suspendAfterRetros): it deletes no member's Sandbox, so no open
-// production check of a member holds it. A tree whose root was reopened, or that lingers at a later
+// (suspendArchitectAfterRetros, suspendAfterRetros): it deletes no Sandbox but the root's, and that
+// one only while no production check of the root is open (suspendRootPod), so no open production
+// check of another member holds it. A tree whose root was reopened, or that lingers at a later
 // generation, changes nothing.
 func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.LingerExpired) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)

@@ -25,7 +25,8 @@ import (
 // phase, since a closed issue stands in none. Every close of an issue runs through leave, which
 // asks retroAtClose once and opens the retro with openRetroAfterClose. The retro ends by its
 // report (retroReported), at its bound (retroBoundEnded) or at a todo that takes the issue into a
-// new run (EndOpenRetro); finishRetroAfterClose stops what the retro kept.
+// new run (EndOpenRetro). finishRetroAfterClose stops what the retro kept at its report or its
+// bound, and every end stops what the tree kept for its retros (stopTreeAfterRetro).
 
 // RetroAfterCloseBound is how long the retro Legion runs after an issue's close may wait for its
 // report: 24 hours from the start of the retro's step row, and never sooner. At the bound the
@@ -411,7 +412,17 @@ func (e *Engine) retroBoundEnded(ctx context.Context, tx pgx.Tx, fact intake.Ret
 // no rating: the todo takes the issue into a new run, as a child's re-entry
 // (ReenterChild) and admission's re-admission (admit's readmit) each do, and the closed run's
 // retro ends there, as the re-entry ends an open production check as not run. Its step row ends
-// stopped at the fact's settle. It stops no claim and takes no pod: those are the new run's.
+// stopped at the fact's settle. It stops no claim of the issue and takes no pod of it: those are
+// the new run's.
+//
+// The tree the ended row names, the one the retro ran in, which a re-admission moves the issue
+// out of, is then stopped as any end of its retros stops it (stopTreeAfterRetro): a todo can end
+// the last open retro of a tree that lingers or is past its linger, since a child of such a tree is
+// re-admitted as an orphan or a hand-over (its re-entry stops before this, its tree not live), and
+// the woken root architect, the root's pod and the tree's close are then owed as at a report. A
+// tree that runs gets nothing from it, and neither does the tree of a root's own todo: that todo
+// takes the whole tree into the new run, and the root architect the stop would suspend is a claim
+// of the issue.
 func (e *Engine) EndOpenRetro(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	open, err := e.store.OpenRetroOfIssue(ctx, tx, issue.Key)
 	if err != nil || open == nil {
@@ -420,11 +431,22 @@ func (e *Engine) EndOpenRetro(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if err := e.nameRetroEnd(ctx, tx, issue, open.Generation, stepStopped); err != nil {
 		return err
 	}
-	if _, _, err := e.store.EndRetroAfterClose(ctx, tx, issue.Key, open.Generation, e.now(), record.RetroOutcomeStopped, record.RetroEndTodo); err != nil {
+	ended, ok, err := e.store.EndRetroAfterClose(ctx, tx, issue.Key, open.Generation, e.now(), record.RetroOutcomeStopped, record.RetroEndTodo)
+	if err != nil || !ok {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a todo ended the open retro after the close", "issue", issue.Key, "run", open.Generation, "agent", open.Agent)
-	return nil
+	if claim.IsTreeRoot(issue.Key, ended.Tree) {
+		return nil
+	}
+	root, err := e.store.Issue(ctx, tx, ended.Tree)
+	if err != nil {
+		return err
+	}
+	if root == nil {
+		return fmt.Errorf("end the retro after the close of %s run %d: its tree root %s is not recorded", issue.Key, ended.Generation, ended.Tree)
+	}
+	return e.stopTreeAfterRetro(ctx, tx, *root, ended)
 }
 
 // nameRetroEnd names end as the end of the retro step row of issue's run (nameEnd), which the
@@ -447,22 +469,8 @@ func (e *Engine) nameRetroEnd(ctx context.Context, tx pgx.Tx, issue record.Issue
 // its session kept), unless it is the role of the issue's open production check, whose close
 // stops it (closeCheck). The pod goes with an IssueSuspend, unless the check is still open: its
 // close writes the suspension. An issue back in the workflow keeps all of it: its claims and its
-// pod are the new run's.
-//
-// The tree's root architect, which a message to its role topic woke while a retro after a close
-// of the tree was open, is the daemon's to suspend again once no such retro is open and the
-// root has left the workflow or lingers, and the root's pod goes with it where no check of
-// the root is open. One that a retro's wake is queued for, or whose claim holds the task of one
-// (retroWakeOwed), is not suspended: the retro's agent publishes its finding and then reports, so
-// that wake can stand behind the very report that ends the tree's last open retro, and a
-// suspension written now would stand above its start and stop the architect before it took the
-// task. While the tree takes a retro's wake, its idle release stops it once its turn on the finding
-// ends (pods.IdleView.RetroHolds); the root's IssueSuspend still goes, and waits while the
-// architect's process runs (store.IssueSuspension). That hold ends an hour after this end, and a
-// wake within that hour can bring an architect suspended here back too, so in a tree inside its
-// linger the end, whichever of the two it took, also queues the stop of the root architect for the
-// end of that hour (suspendArchitectAfterRetros). A tree past its linger closes again once the hour
-// after its last retro's end has passed (closeTreeAfterRetros).
+// pod are the new run's. What the issue's tree kept for its retros then stops as at every end of
+// one of them (stopTreeAfterRetro).
 func (e *Engine) finishRetroAfterClose(ctx context.Context, tx pgx.Tx, issue record.Issue, ended record.RunRetro) error {
 	if InWorkflow(issue) {
 		return nil
@@ -473,10 +481,6 @@ func (e *Engine) finishRetroAfterClose(ctx context.Context, tx pgx.Tx, issue rec
 	}
 	if root == nil {
 		return fmt.Errorf("finish the retro after the close of %s: its tree root %s is not recorded", issue.Key, issue.Tree)
-	}
-	open, err := e.store.OpenRetrosOfTree(ctx, tx, issue.Tree)
-	if err != nil {
-		return err
 	}
 	check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
 	if err != nil {
@@ -495,30 +499,59 @@ func (e *Engine) finishRetroAfterClose(ctx context.Context, tx pgx.Tx, issue rec
 			return err
 		}
 	}
+	return e.stopTreeAfterRetro(ctx, tx, *root, ended)
+}
+
+// stopTreeAfterRetro stops what root's tree kept for its retros after a close, once one of them
+// ended (ended, its row): by its report or its bound (finishRetroAfterClose), or at a todo that took
+// its issue into a new run (EndOpenRetro). It stops nothing of the issue whose retro ended: that is
+// its caller's.
+//
+// The tree's root architect, which a message to its role topic woke while a retro after a close
+// of the tree was open, is the daemon's to suspend again once no such retro is open and the
+// root has left the workflow or lingers, and the root's pod goes with it where no check of
+// the root is open (suspendRootPod), unless the retro that ended is the root's own, whose end
+// took the root's pod itself. One that a retro's wake is queued for, or whose claim holds the task
+// of one (retroWakeOwed), is not suspended: the retro's agent publishes its finding and then
+// reports, so that wake can stand behind the very report that ends the tree's last open retro, and
+// a suspension written now would stand above its start and stop the architect before it took the
+// task. While the tree takes a retro's wake, its idle release stops it once its turn on the finding
+// ends (pods.IdleView.RetroHolds); the root's IssueSuspend still goes, and waits while the
+// architect's process runs (store.IssueSuspension). That hold ends an hour after this end, and a
+// wake within that hour can bring an architect suspended here back too, so in a tree inside its
+// linger the end, whichever of the two it took, also queues the stop of the root architect for the
+// end of that hour (suspendArchitectAfterRetros). A tree past its linger closes again once the hour
+// after its last retro's end has passed (closeTreeAfterRetros). A tree that runs, its root in the
+// workflow and not lingering, gets none of it.
+func (e *Engine) stopTreeAfterRetro(ctx context.Context, tx pgx.Tx, root record.Issue, ended record.RunRetro) error {
 	if ended.EndedAt == nil {
-		return fmt.Errorf("finish the retro after the close of %s run %d: the record names no end", issue.Key, ended.Generation)
+		return fmt.Errorf("stop the tree of %s after the retro after the close of %s run %d: the record names no end", root.Key, ended.Issue, ended.Generation)
 	}
-	if len(open) == 0 && record.Stopped(*root) {
-		owed, err := e.retroWakeOwed(ctx, tx, *root)
+	open, err := e.store.OpenRetrosOfTree(ctx, tx, root.Tree)
+	if err != nil {
+		return err
+	}
+	if len(open) == 0 && record.Stopped(root) {
+		owed, err := e.retroWakeOwed(ctx, tx, root)
 		if err != nil {
 			return err
 		}
 		if owed {
 			e.logOnCommit(ctx, "workflow: the tree's last open retro after a close ended while a retro's wake of its root architect waits; the architect is left to that wake",
-				"tree", root.Key, "issue", issue.Key)
-		} else if err := e.suspend(ctx, tx, *root, claim.RoleArchitect, fmt.Sprintf("no retro after a close of the tree of %s is open", root.Key)); err != nil {
+				"tree", root.Key, "issue", ended.Issue)
+		} else if err := e.suspend(ctx, tx, root, claim.RoleArchitect, fmt.Sprintf("no retro after a close of the tree of %s is open", root.Key)); err != nil {
 			return err
 		}
-		if root.Key != issue.Key {
-			if err := e.suspendRootPod(ctx, tx, *root); err != nil {
+		if root.Key != ended.Issue {
+			if err := e.suspendRootPod(ctx, tx, root); err != nil {
 				return err
 			}
 		}
-		if err := e.suspendArchitectAfterRetros(ctx, tx, *root, *ended.EndedAt); err != nil {
+		if err := e.suspendArchitectAfterRetros(ctx, tx, root, *ended.EndedAt); err != nil {
 			return err
 		}
 	}
-	return e.closeTreeAfterRetros(ctx, tx, *root, open, *ended.EndedAt)
+	return e.closeTreeAfterRetros(ctx, tx, root, open, *ended.EndedAt)
 }
 
 // suspendRootPod queues the IssueSuspend of root's pod, unless a production check of root is

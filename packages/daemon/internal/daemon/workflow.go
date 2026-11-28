@@ -1440,11 +1440,11 @@ func (w *workflowRuntime) retroWakeHolds(ctx context.Context, key string) (bool,
 // read-only transaction: whether the retro Legion runs after the close of key, on the run the
 // claim's held task names, is still open (record.RunRetro.Open). A todo that takes the issue into a
 // new run ends it as stopped (workflow's EndOpenRetro, from a child's re-entry or a root's
-// re-admission) and stops no claim, so the task still waiting on the retro's agent is dropped
-// here rather than sent into that new run; a retro its report or its bound ended has nothing left
-// to ask either. A run of which the record holds no retro is none open, as the outbox's fence of
-// the retro's start reads it (retroHolds). An issue the record does not hold holds the task, as
-// phaseHolds holds a task of an issue it does not record.
+// re-admission) and stops no claim of the issue, so the task still waiting on the retro's agent is
+// dropped here rather than sent into that new run; a retro its report or its bound ended has
+// nothing left to ask either. A run of which the record holds no retro is none open, as the
+// outbox's fence of the retro's start reads it (retroHolds). An issue the record does not hold
+// holds the task, as phaseHolds holds a task of an issue it does not record.
 func (w *workflowRuntime) retroAfterCloseHolds(ctx context.Context, key string, run supervise.RetroRun) (bool, error) {
 	open := true
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {

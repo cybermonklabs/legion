@@ -1022,7 +1022,7 @@ func TestARetroTaskFollowsTheRunningTurnOfTheSparedAgent(t *testing.T) {
 // A person sets the closed child back to `todo` while the task of its retro after the close waits
 // unsent on the agent's claim (INFRA-5602, the review of #5630): the todo takes the child into its
 // next run and ends that retro, stopped by the todo (workflow's EndOpenRetro), and it stops no
-// claim. The task waits in either of two windows: for the ready of the process the retro's start
+// claim of the child. The task waits in either of two windows: for the ready of the process the retro's start
 // resumed, or behind a turn of the agent's own. When the window ends the task is dropped rather
 // than sent (workflowRuntime.retroAfterCloseHolds): its text says the issue is closed and the
 // retro moves it nowhere, which the todo made false, and the report it asks for would be refused.
