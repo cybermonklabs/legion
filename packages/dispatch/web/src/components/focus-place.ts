@@ -450,7 +450,7 @@ function markedListAround(bar: Element): Element | null {
 }
 
 /** The selection bar, by the name its component draws on it (`SelectionBar`). */
-const SELECTION_BAR = `[data-control="${CONTROL.selectionBar}"]`;
+export const SELECTION_BAR = `[data-control="${CONTROL.selectionBar}"]`;
 
 /** The regions of their own a focus can sit in: a dialog or a panel (`DIALOG`), or the selection
  *  bar. A press that empties a selection could land in one and still be the reader's own, and a
@@ -600,13 +600,17 @@ export function landWhole(element: HTMLElement): boolean {
  *  already lies whole in a box's sight moves nothing there, even inside that padding. The window's
  *  scroll padding is not read: the root's bottom padding keeps what the browser scrolls into view
  *  clear of the review sheet below 1280 px, and a landing scrolls the window by the cut alone.
+ *  `over`, if given, is an element fixed over the window that no box holds, as the selection bar
+ *  stands under the header below `sm`: the window shows `element` whole below its bottom edge as
+ *  below a head no box holds, below the lower of the two, and a box's own sight does not read it.
  *  When `origin` is given, its box moves to `origin.top` where `element` lies whole in sight
  *  there, else to the closest position to it that brings `element` into the room, rather than
  *  anchoring to an approximate virtual jump. */
 export function scrollToNearest(
   element: Element,
   head: Element | null = null,
-  origin?: { readonly box: HTMLElement; readonly top: number }
+  origin?: { readonly box: HTMLElement; readonly top: number },
+  over: Element | null = null
 ): void {
   const boxes = clippingBoxes(element);
   const headBox = head === null ? undefined : boxes.find((box) => box.contains(head));
@@ -619,22 +623,24 @@ export function scrollToNearest(
   scrollNearestIn(
     window,
     boxOf(element),
-    belowHead(viewport(), headBox === undefined ? head : null)
+    belowHead(belowHead(viewport(), headBox === undefined ? head : null), over)
   );
 }
 
 /** Lands the selection bar's target at its nearest visible edge, inside the room of each box
- *  that must scroll and by the cut alone in the window (`scrollToNearest`). The table can supply
- *  the scroll position before it had to draw a virtual row: show the measured checkbox at the
- *  closest position to that starting point, not to the draw's jump. */
+ *  that must scroll and by the cut alone in the window, below `over` there if given
+ *  (`scrollToNearest`). The table can supply the scroll position before it had to draw a virtual
+ *  row: show the measured checkbox at the closest position to that starting point, not to the
+ *  draw's jump. */
 export function landNearest(
   element: HTMLElement,
   head: Element | null = null,
-  origin?: { readonly box: HTMLElement; readonly top: number }
+  origin?: { readonly box: HTMLElement; readonly top: number },
+  over: Element | null = null
 ): boolean {
   let firstOrigin = origin;
   return land(element, () => {
-    scrollToNearest(element, head, firstOrigin);
+    scrollToNearest(element, head, firstOrigin, over);
     firstOrigin = undefined;
   });
 }
@@ -704,7 +710,8 @@ function scrollportOf(box: Element): Edges {
   };
 }
 
-/** The part of `edges` below a list's sticky head. */
+/** The part of `edges` below `head`: a list's sticky head, or an element fixed over the window
+ *  (`scrollToNearest`'s `over`). */
 function belowHead(edges: Edges, head: Element | null): Edges {
   return head === null
     ? edges
