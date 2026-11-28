@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // stubDispatch is the stand-in for the dispatch command that the tests hand ci-report through
@@ -146,7 +147,7 @@ func newStub(t *testing.T) stub {
 	if err := os.Mkdir(s.dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(s.path, []byte(stubDispatch), 0o755); err != nil {
+	if err := testexec.WriteFile(s.path, []byte(stubDispatch), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return s
