@@ -10,18 +10,46 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
 var (
 	ordersRows = regexp.MustCompile(`\border by\b`)
+	// clauseMarks are the marks that end an order by clause, or nest inside one: a parenthesis,
+	// and a limit.
+	clauseMarks = regexp.MustCompile(`[()]|\blimit\b`)
 	// readsReviewTable matches the table after a from or a join, since a statement reaches it
-	// either way and a join's newest-row pick is as ordinary a shape as a plain read's.
-	readsReviewTable = regexp.MustCompile(`\b(?:from|join)\s+` + reviewTable)
+	// either way and a join's newest-row pick is as ordinary a shape as a plain read's. Its group
+	// is the word after the table, which is the table's alias unless it is a keyword of SQL.
+	readsReviewTable = regexp.MustCompile(`\b(?:from|join)\s+` + reviewTable + `(?:\s+(?:as\s+)?(\w+))?`)
 	// reviewOrderText is the leading term of docs.ReviewOrder, the one a statement written with
 	// another order cannot carry: the two after it, created_at and id, are what the wrong order
 	// is made of.
 	reviewOrderText = "event_seq desc nulls last"
+	// unqualifiedOrderColumns names those two columns alone, which the guard reads as the reviews'
+	// own, and no column that only ends in id, such as artifact_id.
+	unqualifiedOrderColumns = regexp.MustCompile(`(?:^|[^\w.])(?:created_at|id)\b`)
+	// notAnAlias is each word that can follow a table in a from or a join and is no alias of it.
+	notAnAlias = map[string]bool{
+		"where": true, "on": true, "using": true, "join": true, "left": true, "right": true, "inner": true, "outer": true,
+		"full": true, "cross": true, "natural": true, "order": true, "group": true, "limit": true, "offset": true,
+		"union": true, "for": true, "window": true, "having": true, "lateral": true,
+	}
 )
+
+// wrongOrderColumns matches created_at or id of the reviews in a clause of statement: the column
+// alone, or after artifact_reviews or an alias that statement gives it. The same column after
+// another table or alias, such as covered.id of the artifacts, is no column of the reviews.
+func wrongOrderColumns(statement string) *regexp.Regexp {
+	qualifiers := []string{`"?artifact_reviews"?`}
+	for _, match := range readsReviewTable.FindAllStringSubmatch(statement, -1) {
+		if alias := match[1]; alias != "" && !notAnAlias[alias] {
+			qualifiers = append(qualifiers, regexp.QuoteMeta(alias))
+		}
+	}
+	return regexp.MustCompile(unqualifiedOrderColumns.String() + `|(?:^|[^\w.])(?:` + strings.Join(qualifiers, "|") + `)\.(?:created_at|id)\b`)
+}
 
 // The guard reads an order by clause and nothing else, so one edge is outside it: a newest-row
 // pick written with no order by at all, such as
@@ -32,7 +60,8 @@ var (
 // TestEveryReviewReadOrdersByReviewOrder enforces, over the whole module, what
 // docs/review_order_plan_test.go enforces over the three reads it explains: a statement that
 // reads artifact_reviews and orders its rows orders them by docs.ReviewOrder, the order the
-// reviews' events committed. artifact_reviews.created_at is its transaction's start and its id is
+// reviews' events committed, in each order by clause that names created_at or id and in one
+// clause at least. artifact_reviews.created_at is its transaction's start and its id is
 // random, so `created_at desc, id desc` returns a review that committed first ahead of one that
 // committed after it - an approval committed while a version write was open ahead of the
 // approval that write's own carry made, for one - and a reader of the newest review then reads
@@ -56,13 +85,11 @@ func TestEveryReviewReadOrdersByReviewOrder(t *testing.T) {
 	seen := map[string]struct{}{}
 	for _, source := range sources {
 		for _, statement := range sqlStatements(source.file, constants) {
-			if !readsReviewTable.MatchString(statement) || !ordersRows.MatchString(statement) {
+			clause := reviewOrderOffence(statement)
+			if clause == "" {
 				continue
 			}
-			if strings.Contains(statement, reviewOrderText) {
-				continue
-			}
-			offence := filepath.ToSlash(source.path) + ": " + statement
+			offence := filepath.ToSlash(source.path) + ": " + clause + "\n\t\tin " + statement
 			if _, repeat := seen[offence]; repeat {
 				continue
 			}
@@ -71,7 +98,7 @@ func TestEveryReviewReadOrdersByReviewOrder(t *testing.T) {
 		}
 	}
 	if len(offences) > 0 {
-		t.Fatalf("a read of artifact_reviews orders its rows otherwise than docs.ReviewOrder:\n\t%s\n"+
+		t.Fatalf("an order by clause of a read of artifact_reviews orders its rows otherwise than docs.ReviewOrder:\n\t%s\n"+
 			"Order by docs.ReviewOrder, which reads artifact_reviews_by_artifact_event_seq: "+
 			"created_at is the writing transaction's start and id is random, so the two alone "+
 			"rank a review that committed later below one that committed first.",
@@ -79,14 +106,81 @@ func TestEveryReviewReadOrdersByReviewOrder(t *testing.T) {
 	}
 }
 
+// reviewOrderOffence is the order by clause of statement that orders the rows of a read of
+// artifact_reviews otherwise than docs.ReviewOrder, or "" when it has none. One statement can
+// order rows in several clauses, such as two windows and its own order by a rank of one of them,
+// so each clause is read on its own: a clause that names created_at or id holds ReviewOrder, and
+// one clause at least holds it. The order held in one window then keeps no other window, and the
+// statement's own order by a rank breaks nothing.
+func reviewOrderOffence(statement string) string {
+	if !readsReviewTable.MatchString(statement) {
+		return ""
+	}
+	clauses := orderByClauses(statement)
+	wrong := wrongOrderColumns(statement)
+	held := false
+	for _, clause := range clauses {
+		switch {
+		case strings.Contains(clause, reviewOrderText):
+			held = true
+		case wrong.MatchString(clause):
+			return clause
+		}
+	}
+	if len(clauses) > 0 && !held {
+		return clauses[0]
+	}
+	return ""
+}
+
+// orderByClauses returns each order by clause of statement. A clause ends at a limit at its own
+// depth, at the ")" that closes the parenthesis it stands in, or at the end of the statement. So
+// the clause of a window ends at the close of its over (...), and a call inside a clause, such as
+// coalesce(...), does not end it.
+func orderByClauses(statement string) []string {
+	var clauses []string
+	for _, start := range ordersRows.FindAllStringIndex(statement, -1) {
+		clause := statement[start[0]:]
+		depth := 0
+		for _, at := range clauseMarks.FindAllStringIndex(clause, -1) {
+			mark := clause[at[0]]
+			switch {
+			case mark == '(':
+				depth++
+				continue
+			case depth > 0:
+				if mark == ')' {
+					depth--
+				}
+				continue
+			}
+			clause = clause[:at[0]]
+			break
+		}
+		clauses = append(clauses, strings.TrimSpace(clause))
+	}
+	return clauses
+}
+
 // The guard reads the order of a statement written as the repository writes one - several raw
 // string lines spliced with the ReviewOrder constant - and refuses the order migration 0120
-// replaced, whether the clause sits in the same literal as the table or in another.
+// replaced, whether the clause sits in the same literal as the table or in another, and in each
+// window of a statement that ranks the reviews in two.
 func TestTheReviewOrderGuardReadsBothOrders(t *testing.T) {
 	t.Parallel()
 	right := "select id from artifact_reviews where artifact_id = $1 order by " +
 		"event_seq desc nulls last, created_at desc, artifact_reviews.id desc limit 1"
 	wrong := "select id from artifact_reviews where artifact_id = $1 order by created_at desc, id desc limit 1"
+	// twoWindows is a statement that ranks the reviews in two windows and orders its own rows by
+	// one of those ranks, as definitionJoinsQuery is written.
+	twoWindows := func(newest, ofVersion string) string {
+		return "with approved as (select artifact_id, version, " +
+			"row_number() over (partition by artifact_id order by " + newest + ") as newest, " +
+			"row_number() over (partition by artifact_id, version order by " + ofVersion + ") as of_version " +
+			"from artifact_reviews where artifact_id = any($1::uuid[])) " +
+			"select ap.artifact_id from approved ap order by ap.artifact_id, ap.newest"
+	}
+	old := "created_at desc, id desc"
 	for _, test := range []struct {
 		name      string
 		statement string
@@ -107,13 +201,52 @@ func TestTheReviewOrderGuardReadsBothOrders(t *testing.T) {
 			statement: "select count(*) from asks a join artifact_reviews r on r.artifact_id = a.artifact_id " +
 				"where a.id = $1",
 		},
+		{
+			name:      "an order by another column, with ReviewOrder in no clause",
+			statement: "select id from artifact_reviews where artifact_id = $1 order by version desc limit 1",
+			refused:   true,
+		},
+		{name: "two windows, both in ReviewOrder", statement: twoWindows(docs.ReviewOrder, docs.ReviewOrder)},
+		{
+			name:      "two windows, the first in the order 0120 replaced",
+			statement: twoWindows(old, docs.ReviewOrder),
+			refused:   true,
+		},
+		{
+			name:      "two windows, the second in the order 0120 replaced",
+			statement: twoWindows(docs.ReviewOrder, old),
+			refused:   true,
+		},
+		{
+			name:      "two windows, the second in the order 0120 replaced after a call",
+			statement: twoWindows(docs.ReviewOrder, "coalesce(version, 0) desc, "+old),
+			refused:   true,
+		},
+		{
+			// As approvedSpecTexts is written: the reviews ordered in a lateral subquery, and the
+			// statement's own rows by columns of the artifacts.
+			name: "another table's id beside the reviews in ReviewOrder",
+			statement: "select covered.id from artifacts covered cross join lateral (select artifact_reviews.version " +
+				"from artifact_reviews where artifact_reviews.artifact_id = covered.id order by " + docs.ReviewOrder + " limit 1) approved " +
+				"order by covered.issue_key, covered.id",
+		},
+		{
+			name: "the reviews' own id beside the reviews in ReviewOrder",
+			statement: "select covered.id from artifacts covered cross join lateral (select artifact_reviews.version " +
+				"from artifact_reviews where artifact_reviews.artifact_id = covered.id order by " + docs.ReviewOrder + " limit 1) approved " +
+				"order by artifact_reviews.id",
+			refused: true,
+		},
+		{
+			name:      "the order 0120 replaced, through the reviews' alias after as",
+			statement: "select r.id from artifact_reviews as r where r.artifact_id = $1 order by r.created_at desc limit 1",
+			refused:   true,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			refused := readsReviewTable.MatchString(test.statement) &&
-				ordersRows.MatchString(test.statement) &&
-				!strings.Contains(test.statement, reviewOrderText)
-			if refused != test.refused {
-				t.Fatalf("refused = %t, want %t for %q", refused, test.refused, test.statement)
+			clause := reviewOrderOffence(test.statement)
+			if refused := clause != ""; refused != test.refused {
+				t.Fatalf("refused = %t (clause %q), want %t for %q", refused, clause, test.refused, test.statement)
 			}
 		})
 	}

@@ -67,9 +67,11 @@ func RetroWakeHoldsSQL(root, now string) string {
 }
 
 // IdleClaim is one claim of an issue's pod as the idle rule reads it. Every field comes from the
-// claims table and none from a live machine: the activity columns are written by the session's
-// activity route alone and are deliberately absent from the claim insert's conflict update, so a
-// machine's in-memory claim shows their zero values until the claim is read again.
+// store and none from a live machine: the claims table, but for the four of its role's record
+// (RowEntry, RowCompleted, MergeForwardHeld, MergedInMerging). The activity columns are written
+// by the session's activity route alone and are deliberately absent from the claim insert's
+// conflict update, so a machine's in-memory claim shows their zero values until the claim is
+// read again.
 type IdleClaim struct {
 	Role           claim.Role
 	State          supervise.ClaimState
@@ -89,9 +91,31 @@ type IdleClaim struct {
 	// suspensions no daemon rule may undo, the operator's and the controller's, from every other
 	// (IdleClaim.SuspensionHolds).
 	SuspendedBy supervise.SuspendSource
-	// ServingGeneration is the run the claim is serving, which tells a phase worker of the
-	// issue's current run from one left over by an older one.
+	// ServingGeneration and ServingEntry are the run and the phase entry the claim serves, read at
+	// the issue's run and phase by the one reading every reader of what a claim owes takes
+	// (supervise.Claim.ServingAt, through ReadServing, which the store applies to the claim it
+	// reads: store's readIdleView). The run tells a phase worker of the issue's current run from
+	// one left over by an older one, and a fresh claim whose first task of the run is not yet
+	// delivered serves that task's run and entry. Each is 0 for a claim that serves none.
 	ServingGeneration uint64
+	ServingEntry      int64
+	// RowEntry and RowCompleted are the claim's role's phases row: the entry it stands on and
+	// whether it records the role's completion (record.PhaseRow.Entry, record.PhaseRow.Completed),
+	// 0 and false where the role has no row.
+	RowEntry     int64
+	RowCompleted bool
+	// MergeForwardHeld is whether a merge forward of the issue's pull request holds the claim's
+	// role at the phase the issue stands in (record.MergeForwardHolds).
+	MergeForwardHeld bool
+	// MergedInMerging is whether the issue stands in merging with its pull request merged
+	// (record.MergedInMerging), which finishes merging. It is the issue's and the same on every
+	// claim of the pod.
+	//
+	// It, MergeForwardHeld, RowEntry and RowCompleted are the record's, read in the view's own
+	// transaction (record.FillIdleClaims). With ServingGeneration and ServingEntry they are what the
+	// reminder hold asks of a claim that works the open phase: whether it owes that phase
+	// (record.PhaseOwed, workflow's IdleRelease).
+	MergedInMerging bool
 	// LastStartRow is the newest start row the outbox ran against the claim. The release records
 	// the highest of the pod's as its mark's started_row, which is what tells a start queued
 	// before the boundary and already run from one of the release's own rows.
@@ -128,6 +152,15 @@ type IdleClaim struct {
 	// every activity report. The newest UpdatedAt of a pod's claims is when the pod last did
 	// anything the daemon recorded, which is what the idle period is measured from.
 	UpdatedAt time.Time
+}
+
+// ReadServing sets c's ServingGeneration and ServingEntry to what of, the claim c is read from,
+// serves while its issue stands at run generation in phase at (supervise.Claim.ServingAt): the
+// run and the entry the owed answer reads too. The store's idle view reads them so
+// (store's readIdleView), for the reminder hold (workflow's IdleRelease), and so does the backstop
+// of a released or pause-stopped worker (internal/daemon's getsBackstop).
+func (c *IdleClaim) ReadServing(of supervise.Claim, generation uint64, at phase.Phase) {
+	c.ServingGeneration, c.ServingEntry = of.ServingAt(generation, at)
 }
 
 // Live is whether the claim still holds its place in the pod: a failed, retired or already

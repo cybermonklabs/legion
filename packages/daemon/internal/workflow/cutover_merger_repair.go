@@ -33,16 +33,18 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // left stopped (intake.CutoverMergerRepair, dispatch://INFRA-3274/spec R2). A build with that
 // phase moved an issue there when its merger completed merging with a READY head, since the
 // daemon merged then, and no role worked the phase, so the idle release stopped the merger's pod
-// while the issue waited and armed no backstop for it. Migration 20261029120700 moved each such
-// issue back to merging, where the merger now merges, and wrote no task. Nothing else would start
-// that merger again: the boot's resume by rule (booted) passes over a released claim; admission's
-// slot repair and the entry sweep (admit's owedEntryRoles) pass over a released claim level with
-// the entry its phases row names, which is where the upgrade to the phase entry puts a merger
-// that took its merging task (migration 20261111225552); the relaunch's ready (readyWorkerTask)
-// and the silence repair read only a live claim; no backstop is armed; and no CI result or
-// message may ever come. Its pull request would stay open unless GitHub's queue or auto-merge
-// still held it. The boot applies the fact once per project under a fixed event id, so
-// processed_events is its once-only record and a later boot repairs nothing.
+// while the issue waited and armed no backstop for it, where a later build before
+// dispatch://INFRA-2746 R1 armed one at every release of a role that works its phase. Migration
+// 20261029120700 moved each such issue back to merging, where the merger now merges, and wrote
+// no task. Nothing else would start that merger again: the boot's resume by rule (booted) passes
+// over a released claim; admission's slot repair and the entry sweep (admit's owedEntryRoles)
+// pass over a released claim level with the entry its phases row names, which is where the
+// upgrade to the phase entry puts a merger that took its merging task (migration
+// 20261111225552); the relaunch's ready (readyWorkerTask) and the silence repair read only a live
+// claim; no backstop is armed; and no CI result or message may ever come. Its pull request would
+// stay open unless GitHub's queue or auto-merge still held it. The boot applies the fact once per
+// project under a fixed event id, so processed_events is its once-only record and a later boot
+// repairs nothing.
 //
 // It reads its mergers from the suspended owners of the project's unfinished phases in running
 // trees (suspendedPhaseOwners), the read booted starts its owners from, so the repair and the
@@ -65,9 +67,16 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 //     is told of one closed unmerged.
 //   - the merger's phase row holds a READY head (HandoffCommit): the old build moved the issue
 //     to awaiting_merge on that completion.
-//   - no backstop of the merger is open (Pods.OpenPodBackstop): a release of a role that works
-//     its phase arms one, which wakes it, and the old build armed none in awaiting_merge, since
-//     no role worked it there.
+//   - no backstop of the merger is open (Pods.OpenPodBackstop): the old build armed none in
+//     awaiting_merge, since no role worked it there, and a build before dispatch://INFRA-2746 R1
+//     armed one, which wakes the merger, at every release of a role that works its phase. A
+//     release made by such a build is all this check now tells apart: under R1 a release arms no
+//     backstop for a merger whose completion stands, which the READY head above is, so the
+//     check would read a merger released by a build that carries R1 as one the old build left
+//     stopped. The repair reads no such release: it runs once a project, under a fixed event
+//     id, at a boot before that boot's attach and consumers (internal/daemon's
+//     repairCutoverMergers), so the first boot of a build that carries R1 releases nothing
+//     before it, and a later boot repairs nothing.
 //   - StartFor answers true: a role a start already covers gets no second, as in booted.
 //
 // For each issue it selects, in the fact's transaction, it clears the merger's handoff

@@ -54,9 +54,11 @@ func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
 				SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion()}); err != nil {
 				t.Fatalf("seed the released implementer: %v", err)
 			}
-			// The backstop an earlier release of this pod armed, still open.
+			// The backstop an earlier release of this pod armed, still open. The store refuses a
+			// backstop with no arm time (store.armPodBackstop), so the seed carries one.
+			armed := time.Now().UTC()
 			if err := st.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: "legion", Issue: issue.Key, Role: claim.RoleImplementer,
-				DueAt: time.Now().UTC().Add(30 * time.Minute)}); err != nil {
+				ArmedAt: armed, DueAt: armed.Add(30 * time.Minute)}); err != nil {
 				t.Fatalf("arm the earlier release's backstop: %v", err)
 			}
 			runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", trees: st,

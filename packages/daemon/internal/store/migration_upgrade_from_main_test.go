@@ -449,14 +449,16 @@ const mainsAppliedSequence = 20261121170714
 // main dc18a1fed31c into dispatch://INFRA-5602's branch set them below that branch's run retros
 // (20261126164240), then the newest version this branch embedded: no database of an earlier merge
 // holds either, so each lacks both above its newest. One that main at dc18a1fed31c migrated holds
-// the state events, its newest, and lacks six versions below it, which main recorded after
+// the state events, its newest, and lacks seven versions below it, which main recorded after
 // dc18a1fed31c and later merges of main brought this branch: cybermonklabs/legion#3712's four
 // (20261112012123, 20261112215432, 20261118073048 and 20261122212816),
 // cybermonklabs/legion#5204's parent of a plan task (20261124022547) and the launch model totals
-// (20261125171320), which the merge of main ac9e87136eaa brought. It lacks the run retros and the
-// record of why a claim release left an issue's Dispatch claim (20261127193428) above its newest,
-// and the upgrade applies all eight. The launch model totals stands above the newest of every
-// other database here, and each of them lacks it above its newest.
+// (20261125171320), which the merge of main ac9e87136eaa brought, and dispatch://INFRA-2746's arm
+// time of an idle backstop (20261119232419, backstopArmedAtVersion), which the merge of main
+// f16e32b476b brought. It lacks the run retros and the record of why a claim release left an
+// issue's Dispatch claim (20261127193428) above its newest, and the upgrade applies all nine. The
+// launch model totals stands above the newest of every other database here, and each of them
+// lacks it above its newest.
 // Store.Migrate asks each embedded migration whether its own version is recorded (apply) and never
 // compares it with the newest, so each upgrade applies the versions that database lacks, below its
 // newest and above it alike, and leaves every embedded version recorded once.
@@ -543,6 +545,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			lacks: []int{
 				repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion,
 				readmittedApprovalArtifactVersion, planTasksParentRefVersion, launchTotalsVersion,
+				backstopArmedAtVersion,
 			},
 			seed: queueMainsKinds,
 			check: func(t *testing.T, store *Store) {

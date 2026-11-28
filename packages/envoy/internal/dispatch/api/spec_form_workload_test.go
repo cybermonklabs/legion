@@ -141,12 +141,12 @@ func TestAJudgmentReadsTheApprovedDocumentsUnderItsRootInOneStatement(t *testing
 	sent := map[int]int{}
 	for _, count := range []int{1, 4, 7} {
 		approve(count)
-		read, err := served.approvedSpecTexts(context.Background(), tree.database.Pool, tree.root, map[string]bool{judged.PrimaryArtifactID: true})
+		read, err := served.approvedSpecTexts(context.Background(), tree.database.Pool, tree.root)
 		if err != nil {
 			t.Fatalf("read the approved documents under a root of %d: %v", count, err)
 		}
-		if len(read.SystemNames) != count {
-			t.Fatalf("under a root of %d approved documents the judgment read the names %q, want %d", count, read.SystemNames, count)
+		if names := read.systemNames(map[string]bool{judged.PrimaryArtifactID: true}); len(names) != count {
+			t.Fatalf("under a root of %d approved documents the judgment read the names %q, want %d", count, names, count)
 		}
 		counter := &countingQueryer{q: tree.database.Pool}
 		if _, err := served.specFormOf(context.Background(), counter, documents, specform.ActRequest); err != nil {

@@ -19,7 +19,7 @@ import (
 )
 
 // A parent's move into awaiting_children drops the merge forward its record holds (awaitChildren),
-// and names it to the role it was asked of only while it is the open ask of the head (openAsk)
+// and names it to the role it was asked of only while it is the open ask of the head (record.OpenMergeForward)
 // and not withdrawn: an ask that landed, an ask on a pull request that is closed, and an ask the
 // implementer was told is no longer its work (record.MergeForward.Withdrawn, withdrawUnowed) are
 // dropped with no message. Otherwise the implementer, told on the move out of implementing to
