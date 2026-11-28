@@ -75,9 +75,8 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 
 	// A resolution that reads the role unclaimed ends the claim. The holder is gone from the
 	// claim store, which is what a session that stopped leaves behind it.
-	unheld := liveClaim("")
 	deps = Deps{Store: database, Publisher: &recordingPublisher{}, Broker: broker,
-		RoleClaims: unheld, Sessions: unheld}
+		RoleClaims: unclaimedRoles, Sessions: unclaimedRoles}
 	appendEvent(t, database, broker, model.Event{
 		IssueKey: new(key), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "0f9c2d2b-6a16-4b2f-9b2a-7c5a1a6d4f11", IssueKey: new(key), Body: "for a role nobody holds"},

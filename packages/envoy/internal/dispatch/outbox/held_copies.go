@@ -50,9 +50,6 @@ type heldCopy struct {
 }
 
 func newHeldCopies(clk clock.Clock) *heldCopies {
-	if clk == nil {
-		clk = clock.Real()
-	}
 	return &heldCopies{clock: clk, rows: map[heldCopyKey]*heldCopy{}}
 }
 

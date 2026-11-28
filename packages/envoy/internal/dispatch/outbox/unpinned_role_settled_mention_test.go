@@ -56,7 +56,7 @@ func TestAForwardCarriesTheKeyOfALiveUnnamedMentionBesideASettledOne(t *testing.
 	})
 	// The first mention's sender resolved its role to no session and failed the attempt, which
 	// settles it: no send of it is owed, and it names no session for any copy to be keyed by.
-	// The second is a send a sender claimed just now, and it can be pinned to this very holder.
+	// The second stays live through the test and can be pinned to this very holder.
 	seedDelivery(t, rig.database, commentID, settledTarget, "", "failed")
 	seedDelivery(t, rig.database, commentID, liveTarget, "", "pending")
 

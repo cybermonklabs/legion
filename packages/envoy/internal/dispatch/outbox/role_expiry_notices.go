@@ -38,7 +38,7 @@ const keptExpiryNotices = bus.KeptExpiredSubjectPrefix + ">"
 // left cannot record an expiry the holder's own pass is about to keep again.
 func (o *Outbox) readKeptExpiries(ctx context.Context, hold fence) (full, failed bool) {
 	deps, instance, stream := o.deps, o.instance, &o.keptStream
-	if deps.KeptLanes == nil || ctx.Err() != nil || !o.holdTime().Now().Before(hold.Deadline()) {
+	if deps.KeptLanes == nil || ctx.Err() != nil || o.pastDeadline(hold) {
 		return false, false
 	}
 	after, proceed, failed := keptExpiryStart(ctx, deps, instance, stream)

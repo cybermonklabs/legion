@@ -503,8 +503,9 @@ type Client struct {
 	dialer                      *socks5Dialer
 	publishAcknowledgementClock AcknowledgementClock
 	reconnectErrClock           func() time.Time
-	// windowClock is the clock a publish window reads its deadline against, times its first send's
-	// wait for a connection on and times its probe on (WithWindowClock); nil is the real clock.
+	// windowClock governs publish-window deadlines, the first connection wait,
+	// a request's pre-send state read, and probe and confirmed-publish flushes
+	// (WithWindowClock). Nil uses real time.
 	windowClock clock.Clock
 	// reconnectWaitTick, when not nil, runs at each pass of ensureConnWithContext's wait for a
 	// reconnect, before the pass blocks; a connection event it causes is read before the wait looks

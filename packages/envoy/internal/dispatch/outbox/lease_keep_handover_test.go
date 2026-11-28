@@ -35,7 +35,6 @@ type keepHandoverRow struct {
 	held     *process
 	client   *bus.Client
 	working  *process
-	clock    *clocktest.Fake
 	probes   *probeClock
 }
 
@@ -63,8 +62,9 @@ type keepHandoverRow struct {
 // and the stream holds no notice.
 func startKeepHandoverRow(t *testing.T, name string, kept int) *keepHandoverRow {
 	t.Helper()
-	row := &keepHandoverRow{recorder: &logtest.Recorder{}, gate: newPassGate(t), clock: clocktest.New(time.Time{})}
-	row.probes = &probeClock{Clock: clocktest.WithNow(row.clock, time.Now), fake: row.clock}
+	row := &keepHandoverRow{recorder: &logtest.Recorder{}, gate: newPassGate(t)}
+	fake := clocktest.New(time.Time{})
+	row.probes = &probeClock{Clock: clocktest.WithNow(fake, time.Now), fake: fake}
 	logtest.SetDefault(t, row.recorder)
 	_, url := testnats.Start(t)
 	row.proxy = testnats.StartProxy(t, url)
@@ -149,10 +149,8 @@ func (r *keepHandoverRow) silenced(t *testing.T) {
 	r.proxy.Freeze()
 	t.Cleanup(r.proxy.Restore)
 	probeEnd := r.endKeptLaneRead(t).Add(probeTimeout)
-	r.clock.AwaitArmedAt(t, "the keep's handover probe after the kept-lane read failed", probeEnd)
-	r.clock.Set(probeEnd.Add(-time.Nanosecond))
-	r.requireStillHeld(t, "the handover probe")
-	r.clock.Set(probeEnd)
+	r.probes.fake.AwaitArmedAt(t, "the keep's handover probe after the kept-lane read failed", probeEnd)
+	crossDeadline(r.probes.fake, probeEnd, func() { r.requireStillHeld(t, "the handover probe") })
 	r.publishedAfter(t, "a silence")
 	requireNoTakeBackWhileSilent(t, r.recorder, r.held, r.working, r.probes)
 }
@@ -161,15 +159,16 @@ func (r *keepHandoverRow) silenced(t *testing.T) {
 // opens the gate and moves just far enough for the read's own deadline to end it.
 func (r *keepHandoverRow) endKeptLaneRead(t *testing.T) time.Time {
 	t.Helper()
-	readEnd := r.clock.Now().Add(probeTimeout)
-	r.clock.AwaitArmedAt(t, "the handover's kept-lane read bound", readEnd)
-	r.clock.Set(readEnd.Add(-time.Nanosecond))
-	r.requireStillHeld(t, "the kept-lane read")
-	r.gate.release()
-	if r.client.Connected() {
-		r.probes.awaitConfirmedReadFlush(t)
-	}
-	r.clock.Set(readEnd)
+	fake := r.probes.fake
+	readEnd := fake.Now().Add(probeTimeout)
+	fake.AwaitArmedAt(t, "the handover's kept-lane read bound", readEnd)
+	crossDeadline(fake, readEnd, func() {
+		r.requireStillHeld(t, "the kept-lane read")
+		r.gate.release()
+		if r.client.Connected() {
+			r.probes.awaitConfirmedReadFlush(t)
+		}
+	})
 	return readEnd
 }
 

@@ -21,9 +21,9 @@ import (
 // claim on it is this very moment's, so it is neither abandoned nor the delivery sweep's
 // (model.MentionAbandonedSQL, model.OwedMentionAttemptSQL). A sender writes that claim again
 // every mentionClaimRefresh for as long as its process lives, so an attempt staged this way
-// stays pending however old it grows (mentionClaimRefresh in internal/dispatch/api). Here the claim
-// is written once, by this call, so the product reads it live only within model.DeliveryClaimLapse
-// (60 s) of it: the caller scans at once (TestMain names this bound).
+// stays pending however old it grows (mentionClaimRefresh in internal/dispatch/api). The rows
+// that use this fixture read it from a frozen database clock, so the claim stays live without
+// any refresh.
 func agedUnnamedAttempts(t *testing.T, database *store.Store, commentID string, age time.Duration) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -101,8 +101,8 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	})
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "resumed")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "resumed")
-	// Both attempts are past their lease and within the bound, their claims this moment's, which the
-	// scan below reads within model.DeliveryClaimLapse (agedUnnamedAttempts).
+	// Both attempts are past their lease and within the bound, with live claims on the frozen
+	// database clock (agedUnnamedAttempts).
 	agedUnnamedAttempts(t, rig.database, commentID, unnamedForwardBound/2)
 
 	// The owner's next event of the same issue, which the forward's wait holds behind it: the
@@ -156,7 +156,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	// The row waits for the send the forward was waiting for, which is what keeps the double
 	// closed: a copy published here would stand beside a mention a send may yet pin to this
 	// holder (decideFallbackCopy, mentionHolds.state).
-	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
+	bareOutbox(rig.deps(), holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 	if row := readHeldCopy(t, rig.database, commentID, roleTopic); row.settled || row.published || row.attempts != 0 {
 		t.Fatalf("the role row is settled %v, published %v and attempts %d while a send of the comment's unnamed mentions is still owed, want it waiting with none counted: the row waits for that send as every other copy of the comment does",
 			row.settled, row.published, row.attempts)
@@ -179,7 +179,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 		t.Fatalf("make the role row due: %v", err)
 	}
 
-	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
+	bareOutbox(rig.deps(), holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 
 	copies := recv.receivedNow(t, rig.client)
 	if len(copies) != 2 || copies[1].SourceEventID != fmt.Sprint(comment.ID) {

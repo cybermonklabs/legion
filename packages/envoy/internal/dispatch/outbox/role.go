@@ -795,7 +795,7 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 // publish - can be stored on the previous holder's subject after that takeover record has ended,
 // and no copy would carry it to the role's next holder. So the stream's acknowledgement is judged
 // again on this process's clock (Deps.now): a forward stored later than roles.ForwardFenceAge and
-// its acknowledgement window (Deps.forwardAckTimeout, the wait its Request runs under) after its
+// its acknowledgement window (roleForwardAckTimeout, the wait its Request runs under) after its
 // resolution is no delivery (roles.ForwardStoredTooLate). Its answer wraps
 // roles.ErrForwardStoredTooLate, so the destination stays pending and the next read of the event
 // resolves the holder again, as a stale resolution's does. The copy stored on the previous holder's
@@ -810,15 +810,14 @@ func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envel
 	}
 	item.DedupeKey = contracts.RoleForwardDedupeKey(item, f.holder)
 	subject := contracts.LegacyAgentSubject(f.holder)
-	ackWindow := roleForwardAckTimeout
 	stored := sender.Request(subject, item, bus.RequestOptions{
 		MsgID:   bus.ForwardMsgID(item.DedupeKey, subject),
-		Timeout: ackWindow,
+		Timeout: roleForwardAckTimeout,
 	})
 	answer := make(chan error, 1)
 	go func() {
 		err := <-stored
-		if now := deps.now(); err == nil && roles.ForwardStoredTooLate(f.resolvedAt, now, ackWindow) {
+		if now := deps.now(); err == nil && roles.ForwardStoredTooLate(f.resolvedAt, now, roleForwardAckTimeout) {
 			err = fmt.Errorf("forward to %s: %w (resolved %s before the stream stored it)",
 				f.holder, roles.ErrForwardStoredTooLate, now.Sub(f.resolvedAt).Round(time.Second))
 		}
@@ -954,7 +953,7 @@ var errHandoverProbeFailed = errors.New("the probe after the failed handover fou
 // of them (lostToContextEnd), the batch saying that itself. Each read is bounded at 2 s - the lane
 // and its cursor at probeTimeout (boundedKeptLanes, which New puts in front of Deps.KeptLanes),
 // the claim and the session at readTimeout in internal/roles - and the forward at its
-// acknowledgement window, roleForwardAckTimeout (Deps.forwardAckTimeout). Such a failure, while
+// acknowledgement window, roleForwardAckTimeout. Such a failure, while
 // the batch's ctx stands, is followed by a probe of sender's connection (bus.Sender.Probe,
 // probeTimeout), because a silence fails the read at its bound and sends no connection event: the
 // keep would answer reached, and the chain would send its next send - another keep of the role -
@@ -1148,23 +1147,23 @@ type KeptLaneReader interface {
 // its ctx (awaitAnswer).
 type boundedKeptLanes struct {
 	reader KeptLaneReader
-	outbox *Outbox
+	clock  *timerClock
 }
 
 func (b boundedKeptLanes) NextStoredMessage(ctx context.Context, subject string, seq uint64) (bus.StoredMessage, error) {
-	ctx, cancel := clock.WithShownTimeout(b.outbox.clock, ctx, probeTimeout)
+	ctx, cancel := clock.WithShownTimeout(*b.clock, ctx, probeTimeout)
 	defer cancel()
 	return b.reader.NextStoredMessage(ctx, subject, seq)
 }
 
 func (b boundedKeptLanes) ReadKeptRoleCursor(ctx context.Context, role string) (bus.StoredKeptRoleCursor, error) {
-	ctx, cancel := clock.WithShownTimeout(b.outbox.clock, ctx, probeTimeout)
+	ctx, cancel := clock.WithShownTimeout(*b.clock, ctx, probeTimeout)
 	defer cancel()
 	return b.reader.ReadKeptRoleCursor(ctx, role)
 }
 
 func (b boundedKeptLanes) StreamID(ctx context.Context) (string, error) {
-	ctx, cancel := clock.WithShownTimeout(b.outbox.clock, ctx, probeTimeout)
+	ctx, cancel := clock.WithShownTimeout(*b.clock, ctx, probeTimeout)
 	defer cancel()
 	return b.reader.StreamID(ctx)
 }

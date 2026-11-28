@@ -111,7 +111,7 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	`, commentID); err != nil {
 		t.Fatalf("make the role row due: %v", err)
 	}
-	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
+	bareOutbox(rig.deps(), holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 	got := recv.receivedNow(t, rig.client)
 	var ids []string
 	for _, item := range got {

@@ -182,8 +182,7 @@ type roleClaimStub struct {
 const retainedHolder = "ses_restored"
 
 func liveClaim(holder string) roleClaimStub {
-	epoch := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	return roleClaimStub{holder: holder, seenAgo: time.Millisecond, windows: roles.Windows{Now: func() time.Time { return epoch }}}
+	return roleClaimStub{holder: holder, seenAgo: time.Millisecond, windows: roles.Windows{Now: roleRigNow}}
 }
 
 // unclaimedRoles is the store in which no role is claimed.
@@ -345,11 +344,8 @@ func TestARoleRouteToAnUnresponsiveHolderErrsWithNothingKept(t *testing.T) {
 	const role = "kept-unresponsive"
 	database, broker, event := keptRoleEvent(t, "T-1", role)
 	publisher := &keepRecorder{}
-	moment := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	claim := roleClaimStub{
-		holder: retainedHolder, seenAgo: session.LiveWindow + time.Minute,
-		windows: roles.Windows{Now: func() time.Time { return moment }},
-	}
+	claim := liveClaim(retainedHolder)
+	claim.seenAgo = session.LiveWindow + time.Minute
 	deps := Deps{Store: database, Publisher: publisher, Broker: broker, RoleClaims: claim, Sessions: claim}
 
 	holding(t, deps).scan(context.Background(), unfenced{})
@@ -490,9 +486,8 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 	publisher := claimedUnderTheKeep(rig.client, func() {
 		claimed <- rig.claimUnder(role, holder, session.SessionEntry{SelfSubscribed: true})
 	})
-	keptAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	deps := rig.publisherOn(publisher)
-	deps.clock = func() time.Time { return keptAt }
+	deps.clock = roleRigNow
 	outbox := holding(t, deps)
 	outbox.scan(context.Background(), unfenced{})
 
@@ -512,8 +507,8 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 	// The handover's copy carries the time of the keep, as the drain's own forward of a copy
 	// carries the stream's store time of it: every holder is reached through the stream, which keeps
 	// whichever of the two reached its agent subject first, which is this one here.
-	if handed.KeptAt == nil || *handed.KeptAt != keptAt.UnixMilli() {
-		t.Fatalf("the holder was handed kept_at %v, want %d", handed.KeptAt, keptAt.UnixMilli())
+	if handed.KeptAt == nil || *handed.KeptAt != fixtureTime.UnixMilli() {
+		t.Fatalf("the holder was handed kept_at %v, want %d", handed.KeptAt, fixtureTime.UnixMilli())
 	}
 	if copies := keptCopies(t, rig.client, role); len(copies) != 1 || copies[0].EventID != keptKey || copies[0].KeptAt != nil {
 		t.Fatalf("role %s's kept lane holds %d copies, want the one the outbox kept with no kept_at of its own: the lane stays the authority for a later holder, and the time is stamped on the forward", role, len(copies))

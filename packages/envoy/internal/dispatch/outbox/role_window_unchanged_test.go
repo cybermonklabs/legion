@@ -85,9 +85,7 @@ func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("subscribe the holder's relay subject: %v", err)
 	}
-	if err := relay.FlushWithContext(testnats.Context(t)); err != nil {
-		t.Fatalf("flush the holder's relay subscription: %v", err)
-	}
+	flushSubscriber(t, relay)
 	rig.claim(t, role, holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Delivery: session.DeliveryConsumer})
 	if err := probeRelaySubject(testwait.Context(t), rig.conn, holder); err != nil {
 		t.Fatalf("a probe of %s's relay subject while its subscriber holds it answered %v, want the subscriber's answer", holder, err)

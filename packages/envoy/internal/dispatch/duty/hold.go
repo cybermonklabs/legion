@@ -117,8 +117,6 @@ type Hold struct {
 	name   string
 	holder uuid.UUID
 	opts   HoldOptions
-	// clock is what the renewals and the loss deadline run on: opts.Clock, or the real clock.
-	clock clock.Clock
 
 	// stop ends the renewal goroutine, which closes done when it returns.
 	stop context.CancelFunc
@@ -141,11 +139,10 @@ func TryHold(ctx context.Context, db Holds, name string, holder uuid.UUID, opts 
 		return nil, fmt.Errorf("hold %q: options TTL %s, Renew %s, Margin %s: need 0 <= Margin < TTL and 0 < Renew < TTL - Margin",
 			name, opts.TTL, opts.Renew, opts.Margin)
 	}
-	c := opts.Clock
-	if c == nil {
-		c = clock.Real()
+	if opts.Clock == nil {
+		opts.Clock = clock.Real()
 	}
-	sent := c.Now()
+	sent := opts.Clock.Now()
 	tag, err := db.Exec(ctx, takeHold, name, holder, opts.Token, opts.TTL.Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("take hold %q: %w", name, err)
@@ -159,14 +156,13 @@ func TryHold(ctx context.Context, db Holds, name string, holder uuid.UUID, opts 
 		name:     name,
 		holder:   holder,
 		opts:     opts,
-		clock:    c,
 		stop:     stop,
 		done:     make(chan struct{}),
 		deadline: sent.Add(opts.TTL - opts.Margin),
 		lost:     make(chan struct{}),
 	}
 	h.mu.Lock()
-	h.timer = c.AfterFunc(h.deadline.Sub(c.Now()), h.expire)
+	h.timer = opts.Clock.AfterFunc(h.deadline.Sub(opts.Clock.Now()), h.expire)
 	h.mu.Unlock()
 	go h.renew(renewing)
 	return h, nil
@@ -268,7 +264,7 @@ func HoldToken(ctx context.Context, db Holds, name string) (token string, held b
 // order keeps the loss deadline Margin ahead of the row's lapse.
 func (h *Hold) renew(ctx context.Context) {
 	defer close(h.done)
-	renewals := clock.NewTicker(h.clock, h.opts.Renew, false)
+	renewals := clock.NewTicker(h.opts.Clock, h.opts.Renew, false)
 	defer renewals.Stop()
 	for {
 		select {
@@ -279,7 +275,7 @@ func (h *Hold) renew(ctx context.Context) {
 		case <-renewals.C():
 		}
 		sent := renewals.Took()
-		bounded, cancel := h.clock.WithTimeout(ctx, h.opts.Renew)
+		bounded, cancel := h.opts.Clock.WithTimeout(ctx, h.opts.Renew)
 		tag, err := h.db.Exec(bounded, renewHold, h.name, h.holder, h.opts.TTL.Seconds())
 		cancel()
 		switch {
@@ -307,12 +303,12 @@ func (h *Hold) confirm(sent time.Time) {
 	if h.expired {
 		return
 	}
-	if !h.clock.Now().Before(h.deadline) {
+	if !h.opts.Clock.Now().Before(h.deadline) {
 		h.loseLocked()
 		return
 	}
 	h.deadline = sent.Add(h.opts.TTL - h.opts.Margin)
-	h.timer.Reset(h.deadline.Sub(h.clock.Now()))
+	h.timer.Reset(h.deadline.Sub(h.opts.Clock.Now()))
 }
 
 // expire is the deadline timer's callback. A renewal confirmed while the timer was firing has
@@ -321,7 +317,7 @@ func (h *Hold) confirm(sent time.Time) {
 func (h *Hold) expire() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.expired || h.clock.Now().Before(h.deadline) {
+	if h.expired || h.opts.Clock.Now().Before(h.deadline) {
 		return
 	}
 	h.loseLocked()
@@ -341,7 +337,7 @@ func (h *Hold) loseLocked() {
 	}
 	h.expired = true
 	h.timer.Stop()
-	if now := h.clock.Now(); now.Before(h.deadline) {
+	if now := h.opts.Clock.Now(); now.Before(h.deadline) {
 		h.deadline = now
 	}
 	close(h.lost)

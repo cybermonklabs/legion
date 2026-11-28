@@ -286,7 +286,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 		t.Fatalf("the gauges read %q before any pass, want no held copy", body)
 	}
 
-	publishFallbackCopies(ctx, deps, unfenced{}, holder)
+	bareOutbox(deps, holder).publishFallbackCopies(ctx, unfenced{})
 	if row := readHeldCopy(t, database, commentID, s1); row.settled || row.published {
 		t.Fatalf("the row is settled %v and published %v while event %d owes its topic family, want it waiting", row.settled, row.published, earlier.ID)
 	}
@@ -300,15 +300,15 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 
 	fake.Advance(model.MentionCopyHeldWarnAfter - time.Nanosecond)
 	due()
-	publishFallbackCopies(ctx, deps, unfenced{}, holder)
+	bareOutbox(deps, holder).publishFallbackCopies(ctx, unfenced{})
 	if got := warnings(); got != 0 {
 		t.Fatalf("%d WARN lines one tick before the threshold, want none", got)
 	}
 	fake.Advance(time.Nanosecond)
 	due()
-	publishFallbackCopies(ctx, deps, unfenced{}, holder)
+	bareOutbox(deps, holder).publishFallbackCopies(ctx, unfenced{})
 	due()
-	publishFallbackCopies(ctx, deps, unfenced{}, holder)
+	bareOutbox(deps, holder).publishFallbackCopies(ctx, unfenced{})
 	body := heldGauges(t, registry)
 	oldest := fmt.Sprintf("envoy_dispatch_outbox_fallback_copy_held_oldest_seconds %d\n", model.MentionCopyHeldWarnAfter/time.Second)
 	if !strings.Contains(body, "envoy_dispatch_outbox_fallback_copies_held 1\n") || !strings.Contains(body, oldest) {
@@ -335,7 +335,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 		t.Fatalf("publish the earlier event: %v", err)
 	}
 	due()
-	publishFallbackCopies(ctx, deps, unfenced{}, holder)
+	bareOutbox(deps, holder).publishFallbackCopies(ctx, unfenced{})
 	if row := readHeldCopy(t, database, commentID, s1); !row.settled || !row.published {
 		t.Fatalf("the row is settled %v and published %v once the earlier event was published, want both", row.settled, row.published)
 	}
@@ -468,7 +468,7 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 			t.Fatalf("read the database's clock: %v", err)
 		}
 		before := len(sent.Statements())
-		publishFallbackCopies(ctx, deps, unfenced{}, holder)
+		bareOutbox(deps, holder).publishFallbackCopies(ctx, unfenced{})
 		readsOf := map[string]int{}
 		for _, statement := range sent.Statements()[before:] {
 			switch {

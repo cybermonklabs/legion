@@ -33,10 +33,9 @@ import (
 // stagedAhead leaves a row live for the whole test, until the test makes it due.
 const stagedAhead = 24 * time.Hour
 
-// A synchronous fallback pass in a test has no running outbox and uses the real hold clock.
-func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance uuid.UUID) (full, failed, natsLost bool) {
-	o := Outbox{deps: deps, instance: instance}
-	return o.publishFallbackCopies(ctx, hold)
+// bareOutbox runs a synchronous fallback pass with the supplied dependencies and real hold clock.
+func bareOutbox(deps Deps, instance uuid.UUID) *Outbox {
+	return &Outbox{deps: deps, instance: instance}
 }
 
 // stagePublisherHold keeps the database row live while the holder's clock stands still.
@@ -96,9 +95,7 @@ func advanceRenewal(t *testing.T, fake *clocktest.Fake, move func(time.Time), ho
 	deadline := next.Add(publisherHoldOptions.TTL - publisherHoldOptions.Margin)
 	waitFor(t, "the publisher hold's renewal confirmed", func() bool {
 		requireHoldLive(t, hold, "before its renewal was confirmed")
-		if check != nil {
-			check()
-		}
+		check()
 		return hold.Deadline().Equal(deadline)
 	})
 }
@@ -142,9 +139,8 @@ func startRetryTest(t *testing.T, outbox *Outbox) (stop func(), retryNow func(id
 	database := outbox.deps.Store
 	check := recordAttemptMoment(t, database)
 	timers := clocktest.New(time.Time{})
-	outbox.clock = timers
-	atRest := restReading(t, outbox)
-	return runOn(t, outbox), func(id int64) {
+	stop, atRest := runResting(t, outbox, timers)
+	return stop, func(id int64) {
 		t.Helper()
 		atRest("the holder resting after recording the failed attempt")
 		check(id)
@@ -478,19 +474,19 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	}
 	deadline := timers.Now().Add(since[0].wait)
 	timers.AwaitArmedAt(t, "the timer covering the back-off", deadline)
-	timers.Set(deadline.Add(-time.Nanosecond))
-	if at, beforeDue := backOffState(t, database, backedOff.ID); at != nil || !beforeDue {
-		t.Fatalf("one tick before retry the back-off is published at %v, still ahead: %v; want unpublished and ahead", at, beforeDue)
-	}
-	makeDue(t, other, backedOff)
 	var due time.Time
-	if err := database.Pool.QueryRow(t.Context(), `select next_attempt_at from events where id = $1`, backedOff.ID).Scan(&due); err != nil {
-		t.Fatalf("read the planted back-off deadline: %v", err)
-	}
-	if made := outbox.claims.Load() - since[0].claims; made != 0 {
-		t.Fatalf("the outbox made %d claims before the back-off's timer fired, want none", made)
-	}
-	timers.Set(deadline)
+	crossDeadline(timers, deadline, func() {
+		if at, beforeDue := backOffState(t, database, backedOff.ID); at != nil || !beforeDue {
+			t.Fatalf("one tick before retry the back-off is published at %v, still ahead: %v; want unpublished and ahead", at, beforeDue)
+		}
+		makeDue(t, other, backedOff)
+		if err := database.Pool.QueryRow(t.Context(), `select next_attempt_at from events where id = $1`, backedOff.ID).Scan(&due); err != nil {
+			t.Fatalf("read the planted back-off deadline: %v", err)
+		}
+		if made := outbox.claims.Load() - since[0].claims; made != 0 {
+			t.Fatalf("the outbox made %d claims before the back-off's timer fired, want none", made)
+		}
+	})
 	var published *time.Time
 	waitFor(t, "the back-off published by its retry timer", func() bool {
 		published = publishedAt(t, database, backedOff.ID)
@@ -626,8 +622,8 @@ func TestOnlyOneOutboxPublishesAtATime(t *testing.T) {
 // A process that stops gracefully releases the publisher hold, and the other takes it over at once
 // rather than when the hold would have lapsed.
 //
-// Not parallel: keep this row serial, as at main. Neither process's timer clock moves;
-// only a wake can let the standby try before its lapse timer.
+// Not parallel: neither process's timer clock moves; only a wake can let the standby try before
+// its lapse timer.
 func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)
@@ -841,11 +837,11 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	proxy.Cut()
 	graceEnd := timers.Now().Add(natsLossGrace)
 	timers.AwaitArmedAt(t, "the cut holder's NATS loss grace", graceEnd)
-	timers.Set(graceEnd.Add(-time.Nanosecond))
-	if !cut.outbox.Publishing() || working.outbox.Publishing() {
-		t.Fatalf("before NATS loss grace ended, publishing %v, want only the cut holder", publishing(cut, working))
-	}
-	timers.Set(graceEnd)
+	crossDeadline(timers, graceEnd, func() {
+		if !cut.outbox.Publishing() || working.outbox.Publishing() {
+			t.Fatalf("before NATS loss grace ended, publishing %v, want only the cut holder", publishing(cut, working))
+		}
+	})
 	waitFor(t, "the cut process releasing the publisher hold at the end of the grace", func() bool {
 		return cut.outbox.hold.Load() == nil
 	})
@@ -890,14 +886,10 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 	}
 	ackEnd := ack.Now().Add(windowAckWait)
 	ack.AwaitArmedAt(t, "the silent holder waiting for the batch acknowledgement", ackEnd)
-	ack.Set(ackEnd.Add(-time.Nanosecond))
-	requireStillHeld("the acknowledgement wait")
-	ack.Set(ackEnd)
+	crossDeadline(ack, ackEnd, func() { requireStillHeld("the acknowledgement wait") })
 	probeEnd := fake.Now().Add(probeTimeout)
 	fake.AwaitArmedAt(t, "the silent holder's probe after the batch sends go unanswered", probeEnd)
-	fake.Set(probeEnd.Add(-time.Nanosecond))
-	requireStillHeld("the probe")
-	fake.Set(probeEnd)
+	crossDeadline(fake, probeEnd, func() { requireStillHeld("the probe") })
 	waitFor(t, "the working process publishing the event", func() bool {
 		return working.outbox.Publishing() && publishedAt(t, database, event.ID) != nil
 	})
@@ -941,18 +933,14 @@ func TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses(t *tes
 	`, publisherHold, killed); err != nil {
 		t.Fatalf("lapse the killed holder's row: %v", err)
 	}
-	timers.Set(deadline.Add(-time.Nanosecond))
-	timers.AwaitArmedAt(t, "the lapse timer still armed one tick short", deadline)
-	if outbox.Publishing() {
-		t.Fatal("the standby took the hold before its lapse timer fired")
-	}
-	timers.Set(deadline)
+	crossDeadline(timers, deadline, func() {
+		timers.AwaitArmedAt(t, "the lapse timer still armed one tick short", deadline)
+		if outbox.Publishing() {
+			t.Fatal("the standby took the hold before its lapse timer fired")
+		}
+	})
 	waitFor(t, "the standby taking the lapsed hold when its timer fires", outbox.Publishing)
-	var holder uuid.UUID
-	if err := database.Pool.QueryRow(ctx, `select holder from duty_holds where name = $1`, publisherHold).Scan(&holder); err != nil {
-		t.Fatalf("read the publisher hold's holder: %v", err)
-	}
-	if holder != outbox.instance {
+	if holder := holdingProcess(t, database); holder != outbox.instance {
 		t.Fatalf("the hold names %s after the lapse timer fired, want the standby %s", holder, outbox.instance)
 	}
 }
@@ -1095,12 +1083,7 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 	timers := clocktest.New(epoch)
 	outbox.clock = timers
 	waiting := make(chan struct{}, 1)
-	outbox.afterServeWait = func() {
-		select {
-		case waiting <- struct{}{}:
-		default:
-		}
-	}
+	outbox.afterServeWait = notify(waiting)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	hold, _ := outbox.tryHold(ctx)
@@ -1114,17 +1097,17 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 	testwait.Receive(t, "the disconnected holder entering its serve wait", waiting)
 	deadline := epoch.Add(natsLossGrace)
 	timers.AwaitArmedAt(t, "the end of the NATS loss grace", deadline)
-	timers.Set(deadline.Add(-time.Nanosecond))
-	select {
-	case end := <-ended:
-		t.Fatalf("serve ended %s before the grace expired", end)
-	default:
-	}
-	if outbox.claims.Load() != 0 {
-		t.Fatal("the holder scanned while its client read disconnected")
-	}
-	publisher.connected.Store(true)
-	timers.Advance(time.Nanosecond)
+	crossDeadline(timers, deadline, func() {
+		select {
+		case end := <-ended:
+			t.Fatalf("serve ended %s before the grace expired", end)
+		default:
+		}
+		if outbox.claims.Load() != 0 {
+			t.Fatal("the holder scanned while its client read disconnected")
+		}
+		publisher.connected.Store(true)
+	})
 	// Wait for what the holder does at the grace deadline, without another clock move.
 	var stopped *holdEnd
 	waitFor(t, "the holder scanning or ending its serve once the grace ends", func() bool {
@@ -1150,7 +1133,7 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 // its Lost is closed, it sends no renewal across the first tick that follows, and the other's row
 // is left alone. This is also the one path that touches the hold not at all, so its deadline says
 // nothing about when the process stopped publishing: the line that ends the turn has to date the
-// stop at serve's return rather than at a deadline still minutes ahead. That makes it the one
+// stop at serve's return rather than at a deadline still seconds ahead. That makes it the one
 // path in this package's rows where the line's two bounds, stopped and stopped_by, are not both
 // that deadline but bracket the store that turned Publishing() false, so this is the row that
 // holds their order.
@@ -1175,12 +1158,7 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	t.Cleanup(func() { bustest.Close(t, client) })
 	outbox := New(Deps{Store: tracedStore(t, database, tracer), Publisher: client})
 	outbox.holdClock = renewals
-	recordPath := publisherHoldOptions
-	recordPath.Token, recordPath.Clock = outbox.token, renewals
-	hold, err := duty.TryHold(ctx, outbox.deps.Store.Pool, publisherHold, outbox.instance, recordPath)
-	if err != nil {
-		t.Fatalf("take the publisher hold under the row's own options: %v", err)
-	}
+	hold, _ := outbox.tryHold(ctx)
 	if hold == nil {
 		t.Fatal("the outbox did not take the publisher hold")
 	}
@@ -1367,9 +1345,7 @@ func TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop(t *testing.T) {
 		t.Fatalf("take the hold's row away: %v", err)
 	}
 	fake.AwaitArmedAt(t, "the first renewal after taking the publisher hold", firstTick)
-	fake.Set(firstTick.Add(-time.Nanosecond))
-	requireHoldLive(t, hold, "before its first renewal")
-	fake.Set(firstTick)
+	crossDeadline(fake, firstTick, func() { requireHoldLive(t, hold, "before its first renewal") })
 	testwait.Receive(t, "the hold lost at its first renewal after its row went", hold.Lost())
 
 	testwait.Receive(t, "the holder running the release", held.started)
@@ -1479,7 +1455,7 @@ func TestAFallbackPassWhoseClaimFailedBacksTheHolderOff(t *testing.T) {
 	held, release := store.HoldsConnection(store.WithTransactionTracking(context.Background()))
 	defer release()
 
-	full, failed, _ := publishFallbackCopies(held, deps, unfenced{}, outbox.instance)
+	full, failed, _ := outbox.publishFallbackCopies(held, unfenced{})
 
 	if full || !failed {
 		t.Fatalf("a pass whose claim failed reports full=%v failed=%v, want a failure and no full claim", full, failed)
@@ -1562,11 +1538,11 @@ func TestAFallbackPassWhoseClaimFailedHasTheHolderPassAgain(t *testing.T) {
 
 	deadline := fake.Now().Add(retry.BaseDelay)
 	fake.AwaitArmedAt(t, "the back-off after the failed fallback claim", deadline)
-	fake.Set(deadline.Add(-time.Nanosecond))
-	if claims := failedClaims(&logged); claims != 1 {
-		t.Fatalf("%d failed claims one tick before retry.BaseDelay, want only the first pass", claims)
-	}
-	fake.Set(deadline)
+	crossDeadline(fake, deadline, func() {
+		if claims := failedClaims(&logged); claims != 1 {
+			t.Fatalf("%d failed claims one tick before retry.BaseDelay, want only the first pass", claims)
+		}
+	})
 	waitFor(t, "a second pass of the claim that keeps failing", func() bool {
 		return failedClaims(&logged) >= 2
 	})

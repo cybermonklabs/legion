@@ -90,9 +90,8 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	publisher := &countingPublisher{fail: unreachable}
 	outbox := outboxOn(database, publisher, broker)
 	timers := clocktest.New(time.Time{})
-	outbox.clock = timers
-	atRest := restReading(t, outbox)
-	defer runOn(t, outbox)()
+	stop, atRest := runResting(t, outbox, timers)
+	defer stop()
 
 	waitFor(t, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
 	// Read after both the hold's scan and the LISTEN connection's catch-up scan have returned.
@@ -134,9 +133,7 @@ func TestABatchWhoseRecordWriteFailsIsLeftAsItWasRead(t *testing.T) {
 	}
 	publisher := &countingPublisher{}
 	outbox := outboxOn(database, publisher, broker)
-	outbox.clock = clocktest.New(time.Time{})
-	atRest := restReading(t, outbox)
-	stop := runOn(t, outbox)
+	stop, atRest := runResting(t, outbox, clocktest.New(time.Time{}))
 	defer stop()
 
 	waitFor(t, "the event's three destinations sent", func() bool { return len(publisher.attempted()) >= 3 })

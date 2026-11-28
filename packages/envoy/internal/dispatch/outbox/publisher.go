@@ -135,11 +135,10 @@ type Deps struct {
 	// model.MentionCopyHeldWarnAfter. New makes it; a pass run with none - one by itself, as
 	// this package's tests run it - counts and reports nothing.
 	held *heldCopies
-	// clock is the time a role forward is judged at: its resolution's fence before it publishes,
-	// and its acknowledgement once the stream answers (roleForward.forward, roles.ResolutionTooOld,
-	// roles.ForwardStoredTooLate). nil is time.Now, which is what cmd/dispatch runs. A test moves
-	// it past a forward's fence and acknowledgement window while the forward waits, which no test
-	// could otherwise wait out; it is unexported, so no importer can.
+	// clock is the role-forward clock: it judges a resolution's fence and the
+	// stream's acknowledgement (roleForward.forward), and sets the timestamp
+	// on a kept copy (roleForward.keep). Nil uses time.Now. A test can move it
+	// past the forward's fence or acknowledgement window while the forward waits.
 	clock func() time.Time
 	// holdRead, when set, runs inside a holder transaction right after its first, unlocked read of
 	// the publisher hold found the hold this process's (inHolderTransaction), before the
@@ -160,7 +159,7 @@ type Deps struct {
 	lanes *lanes
 }
 
-// now is the outbox's clock (clock), time.Now unless a test set one.
+// now reads the role-forward clock, or time.Now unless a test set one.
 func (d Deps) now() time.Time {
 	if d.clock != nil {
 		return d.clock()

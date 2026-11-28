@@ -187,7 +187,7 @@ func New(deps Deps) *Outbox {
 		clock:       clock.Real(),
 	}
 	if deps.KeptLanes != nil {
-		o.deps.KeptLanes = boundedKeptLanes{reader: deps.KeptLanes, outbox: o}
+		o.deps.KeptLanes = boundedKeptLanes{reader: deps.KeptLanes, clock: &o.clock}
 	}
 	return o
 }
@@ -199,6 +199,10 @@ func (o *Outbox) holdTime() clock.Clock {
 	return clock.Real()
 }
 
+func (o *Outbox) pastDeadline(hold fence) bool {
+	return !o.holdTime().Now().Before(hold.Deadline())
+}
+
 // Publishing reports whether this process publishes the outbox now: it holds the publisher hold
 // and the hold's loss deadline has not passed. A nil outbox (NATS disabled) never publishes.
 func (o *Outbox) Publishing() bool {
@@ -206,7 +210,7 @@ func (o *Outbox) Publishing() bool {
 		return false
 	}
 	hold := o.hold.Load()
-	return hold != nil && o.holdTime().Now().Before(hold.Deadline())
+	return hold != nil && !o.pastDeadline(hold)
 }
 
 // Run publishes the outbox whenever this process holds the publisher hold, and stands by for it
@@ -711,7 +715,7 @@ func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 			switch {
 			case ctx.Err() != nil:
 				stop = true
-			case !o.holdTime().Now().Before(hold.Deadline()):
+			case o.pastDeadline(hold):
 				end.fenced, stop = true, true
 			default:
 				inflight++

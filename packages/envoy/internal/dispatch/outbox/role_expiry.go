@@ -298,7 +298,7 @@ type expiryRecord struct {
 // and the holder each take once. It reports what the holder does next, as the fallback pass does.
 func (o *Outbox) keepExpiredCopiesAgain(ctx context.Context, hold fence) (full, failed bool) {
 	deps, instance := o.deps, o.instance
-	if deps.KeptLanes == nil || ctx.Err() != nil || !o.holdTime().Now().Before(hold.Deadline()) {
+	if deps.KeptLanes == nil || ctx.Err() != nil || o.pastDeadline(hold) {
 		return false, false
 	}
 	claimed, err := claimExpiredCopies(ctx, deps, instance)

@@ -245,7 +245,7 @@ type expiryPassRow struct {
 	held     *process
 	client   *bus.Client
 	working  *process
-	probes   *countedProbes
+	probes   atomic.Int64
 	window   *probeClock
 }
 
@@ -257,12 +257,16 @@ type expiryPassRow struct {
 // expiry pass, which reads the notice, records it and keeps the copy again. held reads the kept
 // lanes, the notices and the role and session buckets through its own client, as cmd/dispatch
 // wires them, so what the proxy does reaches every NATS call of the pass.
-func startExpiryPassRow(t *testing.T, name string, call expiryPassCall, fake, windows *clocktest.Fake) *expiryPassRow {
+func startExpiryPassRow(t *testing.T, name string, call expiryPassCall, fake *clocktest.Fake, silent bool) *expiryPassRow {
 	t.Helper()
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
 	_, url := testnats.Start(t)
 	row := &expiryPassRow{proxy: testnats.StartProxy(t, url), database: storetest.Open(t), counter: &sendCounter{}, recorder: recorder, gate: newPassGate(t)}
+	windows := fake
+	if !silent {
+		windows = clocktest.New(time.Time{})
+	}
 	row.window = &probeClock{Clock: windows, fake: windows}
 	seedIssue(t, row.database, "T-1", nil)
 	row.held = startProcessWith(t, name, row.database, row.proxy.URL(), row.counter, func(client *bus.Client, deps *Deps) {
@@ -270,15 +274,14 @@ func startExpiryPassRow(t *testing.T, name string, call expiryPassCall, fake, wi
 		holders := roles.NewBuckets(client, roles.Windows{})
 		deps.RoleClaims, deps.Sessions, deps.KeptLanes = holders, holders, client
 		call.gateOn(deps, row.gate)
-		row.probes = &countedProbes{Publisher: deps.Publisher}
-		deps.Publisher = row.probes
+		deps.Publisher = &probeHook{Publisher: deps.Publisher, probing: func() { row.probes.Add(1) }}
 	}, func(o *Outbox) {
-		if windows == fake {
+		if silent {
 			row.window.setOutbox(o)
 		} else {
 			o.clock = fake
 		}
-	}, bus.WithWindowClock(row.window))
+	}, bus.WithWindowClock(row.window), bus.WithPublishAcknowledgementClock(clocktest.New(time.Time{})))
 	waitFor(t, "the first process taking the publisher hold", row.held.outbox.Publishing)
 	row.working = startProcess(t, "working", storetest.SecondProcess(t, row.database), url, row.counter)
 	reader, err := bus.ConnectOwningStream([]string{url})
@@ -309,16 +312,16 @@ func startExpiryPassRow(t *testing.T, name string, call expiryPassCall, fake, wi
 	return row
 }
 
-// A cut inside any of the expiry pass's four NATS calls ends the pass at the connection change,
-// not the call's own timeout. The holder then releases exactly at natsLossGrace, and the other
-// process alone publishes what was written after the cut.
+// After a cut inside any of the expiry pass's four NATS calls, the holder releases at
+// natsLossGrace and the other process alone publishes what was written after the cut. The three
+// rows that hold a read also check that it ends on cancellation or reconnect, not its deadline.
 //
 // Not parallel: it swaps the default logger (logtest.SetDefault).
 func TestAnOutboxCutFromNATSInItsExpiryPassReleasesThePublisher(t *testing.T) {
 	for _, call := range expiryPassCalls {
 		t.Run(call.name, func(t *testing.T) {
 			fake := clocktest.New(time.Time{})
-			row := startExpiryPassRow(t, "cut", call, fake, clocktest.New(time.Time{}))
+			row := startExpiryPassRow(t, "cut", call, fake, false)
 			row.proxy.Cut()
 			graceEnd := fake.Now().Add(natsLossGrace)
 			waitFor(t, "the cut process's client reporting itself disconnected", func() bool { return !row.client.Connected() })
@@ -331,11 +334,11 @@ func TestAnOutboxCutFromNATSInItsExpiryPassReleasesThePublisher(t *testing.T) {
 				}
 			}
 			fake.AwaitArmedAt(t, "the grace after the expiry pass ended at the cut", graceEnd)
-			fake.Set(graceEnd.Add(-time.Nanosecond))
-			if row.held.outbox.hold.Load() == nil {
-				t.Fatal("the cut process released the hold before the grace ended")
-			}
-			fake.Set(graceEnd)
+			crossDeadline(fake, graceEnd, func() {
+				if row.held.outbox.hold.Load() == nil {
+					t.Fatal("the cut process released the hold before the grace ended")
+				}
+			})
 			waitFor(t, "the cut process releasing the publisher hold at the grace deadline", func() bool {
 				return row.held.outbox.hold.Load() == nil
 			})
@@ -356,30 +359,28 @@ func TestAnOutboxWhoseNATSGoesSilentInItsExpiryPassGivesThePublisherToTheOther(t
 	for _, call := range expiryPassCalls {
 		t.Run(call.name, func(t *testing.T) {
 			fake := clocktest.New(time.Time{})
-			row := startExpiryPassRow(t, "silent", call, fake, fake)
+			row := startExpiryPassRow(t, "silent", call, fake, true)
 			row.proxy.Freeze()
 			t.Cleanup(row.proxy.Restore)
 			due := fake.Now().Add(probeTimeout)
 			event := writeMessage(t, row.working, "after the silence")
 			fake.AwaitArmedAt(t, "the expiry watcher's first probe", due)
-			fake.Set(due.Add(-time.Nanosecond))
-			if probes := row.probes.count.Load(); probes != 0 {
-				t.Fatalf("the expiry watcher made %d probes before its first probe was due", probes)
-			}
-			row.requireStillHeld(t, event)
-			row.gate.release()
-			if call.stored {
-				row.window.awaitConfirmedReadFlush(t)
-			}
-			fake.Set(due)
+			crossDeadline(fake, due, func() {
+				if probes := row.probes.Load(); probes != 0 {
+					t.Fatalf("the expiry watcher made %d probes before its first probe was due", probes)
+				}
+				row.requireStillHeld(t, event)
+				row.gate.release()
+				if call.stored {
+					row.window.awaitConfirmedReadFlush(t)
+				}
+			})
 			probeEnd := due.Add(probeTimeout)
 			waitFor(t, "the watcher's probe proceeding from the connection wait to the flush", func() bool {
 				return row.window.flushingSince(due)
 			})
 			fake.AwaitArmedAt(t, "the expiry watcher's probe flush", probeEnd)
-			fake.Set(probeEnd.Add(-time.Nanosecond))
-			row.requireStillHeld(t, event)
-			fake.Set(probeEnd)
+			crossDeadline(fake, probeEnd, func() { row.requireStillHeld(t, event) })
 			waitFor(t, "the working process publishing the event at the failed probe's deadline", func() bool {
 				return row.working.outbox.Publishing() && publishedAt(t, row.database, event.ID) != nil
 			})
@@ -394,25 +395,6 @@ func (r *expiryPassRow) requireStillHeld(t *testing.T, event model.Event) {
 	if r.held.outbox.hold.Load() == nil || !r.client.Connected() || publishedAt(t, r.database, event.ID) != nil {
 		t.Fatal("before the probe's deadline, want the silent client connected, its hold still held and the event unpublished")
 	}
-}
-
-type countedProbes struct {
-	Publisher
-	count atomic.Int64
-}
-
-func (p *countedProbes) WindowUntil(deadline func() time.Time) bus.Sender {
-	return countedProbeSender{Sender: p.Publisher.WindowUntil(deadline), count: &p.count}
-}
-
-type countedProbeSender struct {
-	bus.Sender
-	count *atomic.Int64
-}
-
-func (w countedProbeSender) Probe(timeout time.Duration) error {
-	w.count.Add(1)
-	return w.Sender.Probe(timeout)
 }
 
 // answeredOnce is a test publisher with no NATS whose connection answers the first probe made of

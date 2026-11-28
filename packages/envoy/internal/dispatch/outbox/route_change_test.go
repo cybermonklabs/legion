@@ -128,7 +128,7 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 				// The batch the route's event wakes, before the row is decided.
 				holder.scan(ctx, unfenced{})
 			}
-			publishFallbackCopies(ctx, deps, unfenced{}, holder.instance)
+			holder.publishFallbackCopies(ctx, unfenced{})
 			dueNow(t, database, earlier.ID)
 			// Every unpublished event of T-1 falls due again, a batch runs and the row is decided
 			// again, until the comment's copy and every event have gone or the rounds run out.
@@ -153,7 +153,7 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 				if _, err := database.Pool.Exec(ctx, `update comment_fallback_copies set next_attempt_at = now() - interval '1 second' where comment_id = $1`, commentID); err != nil {
 					t.Fatalf("make the row due: %v", err)
 				}
-				publishFallbackCopies(ctx, deps, unfenced{}, holder.instance)
+				holder.publishFallbackCopies(ctx, unfenced{})
 			}
 			var unpublished []string
 			if err := database.Pool.QueryRow(ctx, `

@@ -110,7 +110,7 @@ func TestRunRetriesARoleForwardNATSDenies(t *testing.T) {
 		IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", IssueKey: new("T-1"), Body: "Route to the reviewer"},
 	})
-	stop := runRetriesHeld(t, withHeldRoles(Deps{Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener}))
+	stop := runRetriesHeld(t, outboxOn(database, client, broker))
 	defer stop()
 
 	waitFor(t, "the outbox's first attempt at the event settled", func() bool {
@@ -156,10 +156,9 @@ func TestRunRetriesARoleForwardNATSDenies(t *testing.T) {
 
 // runRetriesHeld leaves the first back-off not due on the database and keeps the
 // retry timer on a fake. A later LISTEN wake cannot retry the event either.
-func runRetriesHeld(t *testing.T, deps Deps) func() {
+func runRetriesHeld(t *testing.T, outbox *Outbox) func() {
 	t.Helper()
-	deps.Store, _ = frozenDatabaseClock(t, deps.Store)
-	outbox := New(deps)
+	outbox.deps.Store, _ = frozenDatabaseClock(t, outbox.deps.Store)
 	outbox.clock = clocktest.New(time.Time{})
 	return runOn(t, outbox)
 }
@@ -176,7 +175,7 @@ func TestRunDeliversTheGrantedRoutesOfAnEventWhoseRoleForwardNATSDenies(t *testi
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
-	stop := runRetriesHeld(t, outboxOn(database, client, broker).deps)
+	stop := runRetriesHeld(t, outboxOn(database, client, broker))
 	defer stop()
 
 	waitFor(t, "the outbox's first attempt at the event settled", func() bool {
@@ -234,9 +233,7 @@ func TestTheRetryAfterAGrantDeliversOnlyTheDeniedRoute(t *testing.T) {
 	testwait.Receive(t, "the role holder's forward after the grant", forwarded)
 	// Everything the two attempts published was answered before the event was marked published,
 	// so the server has queued it to the subscriber ahead of the PONG this flush waits for.
-	if err := subscriber.FlushWithContext(testnats.Context(t)); err != nil {
-		t.Fatalf("flush the subscriber: %v", err)
-	}
+	flushSubscriber(t, subscriber)
 	if sent := len(authorReceived); sent != 1 {
 		t.Fatalf("the author route was sent %d times across the two attempts, want once", sent)
 	}
@@ -313,11 +310,11 @@ func TestRunRetriesAnIssueTopicNATSDenies(t *testing.T) {
 		Payload: model.Message{ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", IssueKey: new("T-1"), Body: "Only the issue topic"},
 	})
 	registry := metrics.New()
-	stop := runRetriesHeld(t, Deps{
+	stop := runRetriesHeld(t, New(Deps{
 		Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener,
 		PublishFailures: registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
 			"Destinations of an outbox publish attempt that did not reach NATS"),
-	})
+	}))
 	defer stop()
 
 	// A denial the outbox counts settles the wait through attempt_count; one it reads as an
@@ -480,8 +477,8 @@ func TestRunCountsEveryDeniedJetStreamDestinationOfOneEvent(t *testing.T) {
 
 // holdPassingDuringAcknowledgement is a publisher hold whose deadline passes during the
 // acknowledgement wait the hold itself opened, and the publisher of the batch that runs under it:
-// its window writes the batch's sends while the deadline is still an hour ahead and passes the
-// deadline as the last of them goes out, so no send is refused for the deadline
+// its window writes the batch's sends while the deadline is still open (openDeadline) and passes
+// the deadline as the last of them goes out, so no send is refused for the deadline
 // (bus.ErrWindowDeadline) and every answer comes back past it. That is what the live hold leaves
 // behind when a renewal lands late while a denied send waits out publishAcknowledgementTimeout.
 type holdPassingDuringAcknowledgement struct {
@@ -566,11 +563,11 @@ func TestRunCountsADeniedSubjectOncePerRefusedMessage(t *testing.T) {
 		Payload: map[string]any{"id": "comment-2", "body": "The second, a moment later."},
 	})
 	registry := metrics.New()
-	stop := runRetriesHeld(t, Deps{
+	stop := runRetriesHeld(t, New(Deps{
 		Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener,
 		PublishFailures: registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
 			"Destinations of an outbox publish attempt that did not reach NATS"),
-	})
+	}))
 	defer stop()
 
 	// An outage line settles the wait as a counted attempt does, so the assertions below name it

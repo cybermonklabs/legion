@@ -299,12 +299,7 @@ func TestABacklogPublishedAcrossANATSOutageKeepsItsOrder(t *testing.T) {
 	outbox := wiredOutbox(t, database, client, client, broker)
 	outbox.clock = timers
 	standby := make(chan struct{}, 1)
-	outbox.afterStandbyWait = func() {
-		select {
-		case standby <- struct{}{}:
-		default:
-		}
-	}
+	outbox.afterStandbyWait = notify(standby)
 	stop := runOn(t, outbox)
 	defer stop()
 	testwait.Receive(t, "the standby waiting while NATS is disconnected", standby)
@@ -596,6 +591,7 @@ func TestAnOutboxThatDiesBetweenAckAndMarkPublishesAgainWithoutDuplicates(t *tes
 
 	stop := runOutbox(t, database, client, broker)
 	reader := testnats.Connect(t, url)
+	defer reader.Close()
 	waitFor(t, "every destination and the kept lane acknowledged", func() bool {
 		_, all := streamOrder(t, reader)
 		return len(all) == wantOnDestinations+wantKept

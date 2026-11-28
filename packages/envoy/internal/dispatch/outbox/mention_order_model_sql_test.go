@@ -16,14 +16,13 @@ import (
 // The order model (TestTheMentionCopyOrderModel) restates model.MentionCopyHolderSQL as
 // moRuleOwedSeq, so this runs both on the same rows, the SQL through copyrule.Holder, the one read
 // of the rule both roads of a copy make (mentionCopyHolderFor in internal/dispatch/api, copyHolder
-// here; TestOnlyHolderReadsTheCopyRule): T-1's two earlier events, a comment that mentions s1 and
-// a later event no record has written, the earlier two set to every pairing of published or not,
-// each owed_keys the model has (null, nothing, the topic family, s1's subject, s2's subject, both
-// subjects) and each owed_seq (null, one behind the owner's last_seq, at it). The SQL's answer for
-// s1's copy must be the model's, event for event. The later event's null owed_keys hold nothing
-// in either - only earlier events hold a copy - and no role route is owed, so no role's holder is
-// asked. A rule the model restated wrongly - a missing clause, a comparison the wrong way round, a
-// later event counted - fails here on the first row the two disagree on.
+// here; TestOnlyHolderReadsTheCopyRule). Each first-event configuration gets its own issue (T-1
+// through T-36) with two earlier events, a comment that mentions s1, and a later unrecorded event.
+// The earlier events cover every pairing of published or not, every owed_keys shape (null,
+// empty, topic family, s1, s2, or both subjects), and each owed_seq (null, one behind last_seq,
+// or at it). The SQL's answer for s1's copy must match the model's, event for event. No role
+// route is owed, and the later event holds nothing. A missing clause, a reversed comparison,
+// or a later event counted fails on the first disagreement.
 func TestTheModelsCopyRuleIsTheSQLRule(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -31,14 +30,6 @@ func TestTheModelsCopyRuleIsTheSQLRule(t *testing.T) {
 	broker := events.NewBroker()
 	const lastSeq = 4
 	route := "session:s1"
-	seedIssue(t, database, "T-1", &route)
-	if _, err := database.Pool.Exec(ctx, `
-		insert into issues (key, project_key, number, title, route, created_by, rank)
-		select 'T-' || n, 'TT', n, 'Model configuration', $1, '{"kind":"user","id":"alice"}', 'V'
-		from generate_series(2, 36) n
-	`, route); err != nil {
-		t.Fatalf("seed one issue per first-event configuration: %v", err)
-	}
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seed := func(t *testing.T, key string) ([]int64, model.Event) {
 		t.Helper()
@@ -64,8 +55,8 @@ func TestTheModelsCopyRuleIsTheSQLRule(t *testing.T) {
 		if err := database.Pool.QueryRow(ctx, `select last_seq from issues where key = $1`, key).Scan(&sequence); err != nil {
 			t.Fatalf("read %s's last_seq: %v", key, err)
 		}
-		if sequence != lastSeq || sequence != len(ids) {
-			t.Fatalf("%s's last_seq is %d, want %d: the model's last_seq is its event count", key, sequence, len(ids))
+		if sequence != lastSeq || len(ids) != lastSeq {
+			t.Fatalf("%s's last_seq is %d and the fixture has %d events, want both to be %d", key, sequence, len(ids), lastSeq)
 		}
 		if _, err := database.Pool.Exec(ctx, `update events set owed_keys = null, owed_seq = null where id = $1`, later.ID); err != nil {
 			t.Fatalf("leave the later event unrecorded: %v", err)
@@ -99,6 +90,14 @@ func TestTheModelsCopyRuleIsTheSQLRule(t *testing.T) {
 				configs = append(configs, config{published: published, owed: owed, seq: seq})
 			}
 		}
+	}
+	seedIssue(t, database, "T-1", &route)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into issues (key, project_key, number, title, route, created_by, rank)
+		select 'T-' || n, 'TT', n, 'Model configuration', $1, '{"kind":"user","id":"alice"}', 'V'
+		from generate_series(2, $2::int) n
+	`, route, len(configs)); err != nil {
+		t.Fatalf("seed one issue per first-event configuration: %v", err)
 	}
 	write := func(t *testing.T, id int64, cfg config) moEvent {
 		t.Helper()

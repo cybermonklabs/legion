@@ -345,6 +345,7 @@ type throughputRig struct {
 	client   *bus.Client
 	reader   *natsgo.Conn
 	broker   *events.Broker
+	clock    *clocktest.Fake
 	// role is every forward the role's holder received, in arrival order, and marks the markers
 	// it took (markers.await).
 	roleMu sync.Mutex
@@ -396,10 +397,8 @@ func (c *outstandingSends) peakOutstanding() int {
 	return c.peak
 }
 
-// outstandingWindow is one counted window. Each of its three sending methods counts its send
-// outstanding and hands the caller a channel of its own, which yields what the real channel
-// yielded, exactly once, so the outbox sees what it would have seen. Probe goes straight through,
-// as Connected and ConnectionChanged do on the publisher.
+// outstandingWindow counts sends and relays their real answers after the gate opens.
+// Probe goes straight through, as Connected and ConnectionChanged do on the publisher.
 type outstandingWindow struct {
 	bus.Sender
 	sends *outstandingSends
@@ -417,8 +416,8 @@ func (s outstandingWindow) Request(subject string, item contracts.Envelope, opts
 	return s.count(s.Sender.Request(subject, item, opts))
 }
 
-// count holds one send outstanding until answer yields, and relays that one value on a buffered
-// channel, which the relaying goroutine can always write to whether the outbox reads it or not.
+// count marks a send outstanding until it can relay the answer. It waits for ready before
+// taking the answer, and abandons the relay if stop wins either wait.
 func (s outstandingWindow) count(answer <-chan error) <-chan error {
 	s.sends.began()
 	relayed := make(chan error, 1)
@@ -438,43 +437,67 @@ func (s outstandingWindow) count(answer <-chan error) <-chan error {
 	return relayed
 }
 
-// runProxyClock fires the next held chunk, whenever one is armed. InHelper asks at the
-// shared wait's pace. Its result is joined on the test goroutine.
-func runProxyClock(t *testing.T, fake *clocktest.Fake) {
+// proxyChunkClock signals the driver as soon as the proxy arms a chunk's delay.
+type proxyChunkClock struct {
+	*clocktest.Fake
+	armed chan struct{}
+}
+
+func (c proxyChunkClock) Sleep(ctx context.Context, d time.Duration) error {
+	timer := c.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case c.armed <- struct{}{}:
+	default:
+	}
+	select {
+	case <-timer.C():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// runProxyClock drains the armed chunk delays whenever the proxy signals, with the
+// shared wait's poll as a fallback. The test goroutine joins the driver at cleanup.
+func runProxyClock(t *testing.T, c proxyChunkClock) {
 	t.Helper()
-	stop := make(chan struct{})
-	done := make(chan error, 1)
+	stop, done := make(chan struct{}), make(chan struct{})
+	wake := notify(c.armed)
 	go func() {
-		done <- testwait.InHelper(t.Name(), "the proxy clock driver to stop", func() bool {
+		defer close(done)
+		for {
 			select {
 			case <-stop:
-				return true
+				return
 			default:
-				fireNext(fake)
-				return false
 			}
-		})
+			if !fireNext(c.Fake) {
+				testwait.Within(c.armed, testwait.Poll)
+			}
+		}
 	}()
 	t.Cleanup(func() {
 		close(stop)
-		if err := testwait.Receive(t, "the proxy clock driver returning", done); err != nil {
-			t.Fatal(err)
-		}
+		wake()
+		testwait.Receive(t, "the proxy clock driver returning", done)
 	})
 }
 
-func newThroughputRig(t *testing.T, rtt time.Duration, fake *clocktest.Fake) *throughputRig {
+func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	t.Helper()
 	_, url := testnats.Start(t)
-	proxied := testnats.StartProxy(t, url, testnats.ProxyLatency(rtt), testnats.ProxyClock(fake)).URL()
-	runProxyClock(t, fake)
+	chunks := proxyChunkClock{Fake: clocktest.New(time.Time{}), armed: make(chan struct{}, 1)}
+	proxied := testnats.StartProxy(t, url, testnats.ProxyLatency(rtt), testnats.ProxyClock(chunks)).URL()
+	runProxyClock(t, chunks)
 	client, err := bus.ConnectOwningStream([]string{proxied})
 	if err != nil {
 		t.Fatalf("connect the outbox's client through the latency proxy: %v", err)
 	}
 	t.Cleanup(func() { bustest.Close(t, client) })
 	reader := testnats.Connect(t, url)
-	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
+	t.Cleanup(reader.Close)
+	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker(), clock: chunks.Fake}
 	if _, err := reader.Subscribe(contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg) {
 		if rig.marks.took(message) {
 			return
@@ -486,9 +509,7 @@ func newThroughputRig(t *testing.T, rtt time.Duration, fake *clocktest.Fake) *th
 	}); err != nil {
 		t.Fatalf("subscribe the role's holder: %v", err)
 	}
-	if err := reader.FlushWithContext(testnats.Context(t)); err != nil {
-		t.Fatalf("flush the holder's subscription: %v", err)
-	}
+	flushSubscriber(t, reader)
 	registry, err := envoystore.Open(t.Context(), reader)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
@@ -610,17 +631,16 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 				name := load.name + ", " + shape
 				t.Run(shape, func(t *testing.T) {
 					t.Parallel()
-					fake := clocktest.New(time.Time{})
-					rig := newThroughputRig(t, rtt, fake)
+					rig := newThroughputRig(t, rtt)
 					seeded := load.seed(t, rig.database, rig.broker, issues, count)
 					outboxStore := rig.database
 					if tc.busy {
 						outboxStore = busySharedPool(t, rig.database)
 					}
 
-					started := fake.Now()
-					release := make(chan struct{})
-					sends := &outstandingSends{Publisher: rig.client, floor: minOutstanding, ready: make(chan struct{}), stop: release}
+					started := rig.clock.Now()
+					stopRelaying := make(chan struct{})
+					sends := &outstandingSends{Publisher: rig.client, floor: minOutstanding, ready: make(chan struct{}), stop: stopRelaying}
 					if tc.burst {
 						sends.floor = 0
 						close(sends.ready)
@@ -628,16 +648,12 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					outbox := wiredOutbox(t, outboxStore, rig.client, sends, rig.broker)
 					stop := runOn(t, outbox)
 					defer stop()
-					defer close(release)
+					defer close(stopRelaying)
 					if !tc.burst {
-						testwait.Until(t, fmt.Sprintf("%s: at least %d sends outstanding at the peak", name, minOutstanding),
-							func() (int, bool) {
-								peak := sends.peakOutstanding()
-								return peak, peak >= minOutstanding
-							})
+						testwait.Receive(t, fmt.Sprintf("%s: at least %d sends outstanding at the peak", name, minOutstanding), sends.ready)
 					}
 					waitFor(t, name+": every event published", func() bool { return unpublishedCount(t, rig.database) == 0 })
-					elapsed := fake.Now().Sub(started)
+					elapsed := rig.clock.Now().Sub(started)
 					rate := float64(count) / elapsed.Seconds()
 					peak := sends.peakOutstanding()
 					if tc.burst {

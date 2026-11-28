@@ -64,7 +64,7 @@ func writePublisherHold(ctx context.Context, database *store.Store, holder uuid.
 }
 
 // holdingProcess is the process the publisher hold's row names, whatever its lease says: the
-// identity a test gives a fallback pass it runs outside an Outbox (publishFallbackCopies), since
+// identity a test gives a bareOutbox for a synchronous fallback pass (publishFallbackCopies), since
 // in production the pass runs in the process that took the hold and is given that process's
 // instance (Outbox.serve), and its record is written only while the hold is still that
 // process's (recordFallbackCopies). A test whose pass must find the hold gone passes an identity
@@ -127,25 +127,23 @@ func tracedStore(t *testing.T, database *store.Store, tracer pgx.QueryTracer) *s
 	return &store.Store{Pool: pool}
 }
 
-// probeHook is a bus client whose windows call probing once, as the first probe of any of them
-// starts and before that probe asks the connection anything.
+// probeHook calls probing before each probe of its publisher's windows.
 type probeHook struct {
-	*bus.Client
-	once    sync.Once
+	Publisher
 	probing func()
 }
 
 func (c *probeHook) WindowUntil(deadline func() time.Time) bus.Sender {
-	return probeHookSender{Sender: c.Client.WindowUntil(deadline), hook: c}
+	return probeHookSender{Sender: c.Publisher.WindowUntil(deadline), probing: c.probing}
 }
 
 type probeHookSender struct {
 	bus.Sender
-	hook *probeHook
+	probing func()
 }
 
 func (s probeHookSender) Probe(timeout time.Duration) error {
-	s.hook.once.Do(s.hook.probing)
+	s.probing()
 	return s.Sender.Probe(timeout)
 }
 
@@ -257,7 +255,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	t.Parallel()
 	ack := clocktest.New(time.Time{})
-	rig := newRoleRigWithClient(t, ack)
+	rig := newRoleRigWithAckClock(t, ack)
 	const role, holder = "reviewer", "S"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+role)
@@ -283,9 +281,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 		t.Fatalf("subscribe S: %v", err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	if err := rig.conn.FlushWithContext(testnats.Context(t)); err != nil {
-		t.Fatalf("flush S's subscription: %v", err)
-	}
+	flushSubscriber(t, rig.conn)
 	taken := func() []int64 {
 		mu.Lock()
 		defer mu.Unlock()
@@ -371,9 +367,8 @@ func stageBlockedRetry(t *testing.T, outbox *Outbox, id int64, driveAck func()) 
 	// the test arranges the later events.
 	backOffIn(t, database, id, 1, stagedAhead)
 	timers := clocktest.New(time.Time{})
-	outbox.clock = timers
-	atRest := restReading(t, outbox)
-	return runOn(t, outbox), func(ids ...int64) {
+	stop, atRest := runResting(t, outbox, timers)
+	return stop, func(ids ...int64) {
 		t.Helper()
 		atRest("the holder resting after reading the later events against the first's back-off")
 		plantRetry(t, database, timers, ids...)
@@ -841,42 +836,46 @@ func frozenDatabaseClock(t *testing.T, database *store.Store) (*store.Store, tim
 	if err := database.Pool.QueryRow(t.Context(), `select pg_catalog.now() + interval '1 hour'`).Scan(&frozen); err != nil {
 		t.Fatalf("read the moment to freeze on the database: %v", err)
 	}
-	if _, err := database.Pool.Exec(t.Context(), fmt.Sprintf(`
-		create schema testclock;
+	return storeWithClock(t, database, fmt.Sprintf(`
 		create function testclock.now() returns timestamptz language sql stable
 			as $$ select '%s'::timestamptz $$;
-	`, frozen.UTC().Format(time.RFC3339Nano))); err != nil {
-		t.Fatalf("freeze the database's clock: %v", err)
-	}
-	return storetest.Reopened(t, database, func(config *pgxpool.Config) {
-		config.ConnConfig.RuntimeParams["search_path"] = "testclock, pg_catalog, public"
-	}), frozen
+	`, frozen.UTC().Format(time.RFC3339Nano)), nil), frozen
 }
 
 // databaseMoment makes unqualified now() on the returned store follow the hold clock.
 // Move the database first so a renewal fired by the clock observes the new moment.
 func databaseMoment(t *testing.T, database *store.Store, fake *clocktest.Fake) (*store.Store, func(time.Time)) {
 	t.Helper()
-	if _, err := database.Pool.Exec(t.Context(), `
-		create schema testclock;
+	timed := storeWithClock(t, database, `
 		create table testclock.moment (stamp timestamptz not null);
 		create function testclock.now() returns timestamptz language sql stable
 			as $$ select stamp from testclock.moment $$;
-	`); err != nil {
-		t.Fatalf("create the database's movable clock: %v", err)
+	`, func() {
+		if _, err := database.Pool.Exec(t.Context(), `insert into testclock.moment values ($1)`, fake.Now()); err != nil {
+			t.Fatalf("set the database clock's initial moment: %v", err)
+		}
+	})
+	return timed, func(at time.Time) {
+		t.Helper()
+		if _, err := database.Pool.Exec(t.Context(), `update testclock.moment set stamp = $1`, at); err != nil {
+			t.Fatalf("move the database clock to %s: %v", at, err)
+		}
+		fake.Set(at)
 	}
-	if _, err := database.Pool.Exec(t.Context(), `insert into testclock.moment values ($1)`, fake.Now()); err != nil {
-		t.Fatalf("set the database clock's initial moment: %v", err)
+}
+
+// storeWithClock creates a test now() and reopens the pool with that clock first in its search path.
+func storeWithClock(t *testing.T, database *store.Store, setup string, initialize func()) *store.Store {
+	t.Helper()
+	if _, err := database.Pool.Exec(t.Context(), "create schema testclock;\n"+setup); err != nil {
+		t.Fatalf("install the database's test clock: %v", err)
+	}
+	if initialize != nil {
+		initialize()
 	}
 	return storetest.Reopened(t, database, func(config *pgxpool.Config) {
-			config.ConnConfig.RuntimeParams["search_path"] = "testclock, pg_catalog, public"
-		}), func(at time.Time) {
-			t.Helper()
-			if _, err := database.Pool.Exec(t.Context(), `update testclock.moment set stamp = $1`, at); err != nil {
-				t.Fatalf("move the database clock to %s: %v", at, err)
-			}
-			fake.Set(at)
-		}
+		config.ConnConfig.RuntimeParams["search_path"] = "testclock, pg_catalog, public"
+	})
 }
 
 // The bus's publish acknowledgement and initial connection pin use the same five-second bound.
@@ -959,17 +958,17 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		event := seed(t, database)
 		checkBackOff := recordAttemptMoment(t, database)
 		// Thaw only when the post-acknowledgement probe starts so it can answer.
-		publisher := &probeHook{Client: client, probing: server.Freeze(t)}
+		publisher := &probeHook{Publisher: client, probing: sync.OnceFunc(server.Freeze(t))}
 		outbox := holding(t, Deps{Store: database, Publisher: publisher})
 		done := make(chan scanEnd, 1)
 		go func() { done <- outbox.scan(t.Context(), unfenced{}) }()
 		deadline := ack.Now().Add(windowAckWait)
 		ack.AwaitArmedAt(t, "the stream's unanswered acknowledgement", deadline)
-		ack.Set(deadline.Add(-time.Nanosecond))
-		if publishedAt(t, database, event.ID) != nil {
-			t.Fatal("the event was marked published before its acknowledgement wait ended")
-		}
-		ack.Set(deadline)
+		crossDeadline(ack, deadline, func() {
+			if publishedAt(t, database, event.ID) != nil {
+				t.Fatal("the event was marked published before its acknowledgement wait ended")
+			}
+		})
 		testwait.Receive(t, "the scan after the stream's acknowledgement deadline", done)
 		backedOff(t, database, event, bus.ErrNotAcknowledged.Error())
 		checkBackOff(event.ID)

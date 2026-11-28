@@ -558,8 +558,8 @@ func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing
 	event := appendCommentEvent(t, database, broker, "comment.created", alice, model.Comment{
 		ID: commentID, Anchor: &model.Anchor{ArtifactID: notes}, Body: "@session-writer look at this.",
 	}, writer.ID)
-	// A send a sender claimed just now, which is the state that holds a session's own copy back
-	// and blocks its event while it lasts (destinations.leftTo, mentionSending).
+	// A send that stays live through the test holds back the session's copy and blocks its event
+	// while it lasts (destinations.leftTo, mentionSending).
 	seedMentionDelivery(t, database, commentID, writer.ID, "pending")
 
 	publisher := &recordingPublisher{}
@@ -896,18 +896,9 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 				}
 				published := make(chan error, 1)
 				go func() { published <- publishing(through) }()
-				waitFor(t, "the outbox's backend to queue behind the claim's owner lock", func() bool {
-					select {
-					case early := <-published:
-						t.Fatalf("the publish answered %v while the claim held the comment's owner lock", early)
-					default:
-					}
-					queued, err := storetest.QueuedBehind(t.Context(), claim, pid)
-					if err != nil {
-						t.Fatal(err)
-					}
-					return queued
-				})
+				if early, answered := storetest.WaitForQueuedBehind(t, claim, pid, published); answered {
+					t.Fatalf("the publish answered %v while the claim held the comment's owner lock", early)
+				}
 				var holdingXid bool
 				if err := database.Pool.QueryRow(t.Context(),
 					`select backend_xid is not null from pg_stat_activity where pid = $1`, pid).Scan(&holdingXid); err != nil {
@@ -1073,8 +1064,8 @@ func TestAResumedMentionsHeldCopyFollowsItsResend(t *testing.T) {
 				t.Fatalf("published %#v in all, want the issue topic alone: the event's publish never sends a held copy", got)
 			}
 
-			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+			bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
+			bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 			copies := publisher.all()[1:]
 			if tc.wantCopy {
 				wantKey := contracts.AgentSendDedupeKey("s1", model.CommentMentionIdempotencyKey(commentID, "session:s1", "steer"))
@@ -1227,7 +1218,7 @@ func TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitH
 	}
 
 	before := databaseNow(t, database)
-	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+	bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 	after := databaseNow(t, database)
 	row := readHeldCopy(t, database, commentID, sessionTopic)
 	if row.attempts != 0 || row.settled || row.published || row.due == nil {
@@ -1250,7 +1241,7 @@ func TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitH
 	`, commentID, sessionTopic).Scan(&waiting); err != nil {
 		t.Fatalf("hold the held copy's wait open past this test: %v", err)
 	}
-	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+	bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 	if again := readHeldCopy(t, database, commentID, sessionTopic); again.attempts != 0 || again.due == nil ||
 		!again.due.Equal(waiting) {
 		t.Fatalf("a pass inside the wait left the held copy attempts=%d next_attempt_at=%v, want 0 and %v: "+
@@ -1273,7 +1264,7 @@ func TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitH
 	`, commentID); err != nil {
 		t.Fatalf("pass the held copy's wait: %v", err)
 	}
-	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+	bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 	if settled := readHeldCopy(t, database, commentID, sessionTopic); settled.attempts != 0 || !settled.settled ||
 		!settled.published {
 		t.Fatalf("once the wait had passed the held copy has attempts=%d settled=%v published=%v, want no attempt "+
@@ -1313,14 +1304,14 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 		`, commentID); err != nil {
 			t.Fatalf("pass the held copy's backoff: %v", err)
 		}
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+		bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 	}
 
 	denied := retry.DeadLetterAttempts + 2
 	for want := 1; want <= denied; want++ {
 		before := databaseNow(t, database)
 		if want == 1 {
-			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+			bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 		} else {
 			pass()
 		}
@@ -1336,7 +1327,7 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 		}
 		if want == 1 {
 			backoff := notDueAhead(t, database, commentID, sessionTopic)
-			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+			bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 			if again := readHeldCopy(t, database, commentID, sessionTopic); again.attempts != 1 || again.due == nil || !again.due.Equal(backoff) {
 				t.Fatalf("a pass inside the backoff left the held copy attempts=%d next_attempt_at=%v, want 1 and %v",
 					again.attempts, again.due, backoff)
@@ -1417,7 +1408,7 @@ func TestAFallbackCopyOutlivesANATSOutageLongerThanTheDeadLetterThreshold(t *tes
 		`, commentID); err != nil {
 			t.Fatalf("pass the held copy's backoff: %v", err)
 		}
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+		bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 	}
 
 	outage := retry.DeadLetterAttempts + 2
@@ -1510,7 +1501,7 @@ func TestAFallbackPassWritesNothingToARowClaimedSinceItsClaim(t *testing.T) {
 				}
 			}
 
-			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+			bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 			if secondClaim.IsZero() {
 				t.Fatal("the pass published no copy, so no second process claimed the row")
 			}
@@ -1552,7 +1543,7 @@ func TestAFallbackPassThatIsStoppingClaimsNoRow(t *testing.T) {
 
 	stopping, stop := context.WithCancel(ctx)
 	stop()
-	publishFallbackCopies(stopping, deps, unfenced{}, holdingProcess(t, deps.Store))
+	bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(stopping, unfenced{})
 
 	row := readHeldCopy(t, database, commentID, sessionTopic)
 	if row.attempts != 0 || row.settled || row.published || row.due == nil || !row.due.Equal(due) {

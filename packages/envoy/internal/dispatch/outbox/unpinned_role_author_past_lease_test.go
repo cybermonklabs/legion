@@ -90,7 +90,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 
 	// The pass that reads that row waits on it: the resend is still owed, and whichever session
 	// it pins is a session this read cannot name (mentionHolds.state).
-	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
+	bareOutbox(rig.deps(), holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 	if got := wrote.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("the fallback pass sent %s %v while the resend of the mention of %s is still owed: the resend can pin this very author, and that send lands under %q, which this copy does not claim",
 			author, keysOf(got), target, mentionKey)
@@ -116,7 +116,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 		t.Fatalf("pass the held copy's wait: %v", err)
 	}
 
-	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
+	bareOutbox(rig.deps(), holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 	want := []string{eventKey}
 	if got := keysOf(wrote.receivedNow(t, rig.client)); !slices.Equal(got, want) {
 		t.Fatalf("%s was sent %v once the resend had failed, want %v: no mention of the comment is coming, so the copy is the outbox's and carries the event's own key",

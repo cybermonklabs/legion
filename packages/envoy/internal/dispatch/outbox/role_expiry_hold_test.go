@@ -9,15 +9,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -52,8 +51,9 @@ func TestATakeoverOfThePublisherHoldWaitsForAnOpenExpiryRecord(t *testing.T) {
 	const role = "expiry-record-open"
 	locked, release := make(chan struct{}), make(chan struct{})
 	unlock := sync.OnceFunc(func() { close(release) })
-	var recordPID, takerPID atomic.Uint32
-	database := tracedStore(t, rig.database, expiryLockTrace{record: &recordPID, taker: &takerPID})
+	record := backendMatching("select holder = $2 and expires_at > now() from duty_holds")
+	taker := backendMatching("insert into duty_holds")
+	database := tracedStore(t, rig.database, backendPIDTrace{record, taker})
 	deps := rig.deps()
 	deps.Store = database
 	deps.holdLocked = func() {
@@ -86,7 +86,7 @@ func TestATakeoverOfThePublisherHoldWaitsForAnOpenExpiryRecord(t *testing.T) {
 				select from pg_stat_activity where pid = $1 and wait_event_type = 'Lock'
 				and $2 = any(pg_blocking_pids(pid))
 			)
-		`, takerPID.Load(), recordPID.Load()).Scan(&waiting); err != nil {
+		`, taker.pid.Load(), record.pid.Load()).Scan(&waiting); err != nil {
 			t.Fatalf("read which backend the takeover waits on: %v", err)
 		}
 		return waiting
@@ -100,23 +100,6 @@ func TestATakeoverOfThePublisherHoldWaitsForAnOpenExpiryRecord(t *testing.T) {
 		t.Fatalf("the holder's record wrote %+v, want its one expiry, committed before the takeover", rows)
 	}
 }
-
-// expiryLockTrace identifies the backends that perform the final hold check and the takeover.
-type expiryLockTrace struct {
-	record, taker *atomic.Uint32
-}
-
-func (tr expiryLockTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	switch {
-	case strings.Contains(data.SQL, "select holder = $2 and expires_at > now() from duty_holds"):
-		tr.record.Store(conn.PgConn().PID())
-	case strings.Contains(data.SQL, "insert into duty_holds"):
-		tr.taker.Store(conn.PgConn().PID())
-	}
-	return ctx
-}
-
-func (expiryLockTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // A takeover of the publisher hold that lands after a holder transaction's first, unlocked read
 // and before its final lock makes the transaction roll back: under READ COMMITTED the final lock
@@ -205,8 +188,12 @@ func TestAnExpiryRecordWaitingOnTheOwnerLockKeepsThePublisherHold(t *testing.T) 
 	t.Cleanup(func() { bustest.Close(t, client) })
 	rig := newRoleRigOn(t, url, client, testnats.Connect(t, url))
 	database, move := databaseMoment(t, rig.database, fake)
-	trace := &expiryRenewalTrace{}
-	rig.database = tracedStore(t, database, trace)
+	record := &backendPID{matches: func(sql string) bool {
+		return strings.Contains(sql, "from duty_holds where name = $1") &&
+			strings.HasPrefix(strings.TrimSpace(sql), "select")
+	}}
+	renewal := backendMatching("update duty_holds set expires_at = now() + make_interval")
+	rig.database = tracedStore(t, database, backendPIDTrace{record, renewal})
 	const role = "expiry-record-waits"
 	rig.silent(t, contracts.RoleTopicPrefix+role)
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
@@ -215,11 +202,9 @@ func TestAnExpiryRecordWaitingOnTheOwnerLockKeepsThePublisherHold(t *testing.T) 
 	deps.holdLocked = func() { finalLock.Store(true) }
 	outbox := New(deps)
 	outbox.holdClock = fake
-	options := publisherHoldOptions
-	options.Clock = fake
-	hold, err := duty.TryHold(ctx, rig.database.Pool, publisherHold, outbox.instance, options)
-	if err != nil || hold == nil {
-		t.Fatalf("take the publisher hold: %v", err)
+	hold, _ := outbox.tryHold(ctx)
+	if hold == nil {
+		t.Fatal("the outbox did not take the publisher hold")
 	}
 	t.Cleanup(func() { _ = hold.Release(context.Background()) })
 	outbox.scan(ctx, hold)
@@ -236,10 +221,6 @@ func TestAnExpiryRecordWaitingOnTheOwnerLockKeepsThePublisherHold(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer blocker.Rollback(context.Background())
-	var blockerPID uint32
-	if err := blocker.QueryRow(ctx, `select pg_backend_pid()`).Scan(&blockerPID); err != nil {
-		t.Fatalf("read the owner lock's backend: %v", err)
-	}
 	if _, err := blocker.Exec(ctx, `select 1 from issues where key = 'T-1' for update`); err != nil {
 		t.Fatalf("lock T-1's row: %v", err)
 	}
@@ -258,9 +239,8 @@ func TestAnExpiryRecordWaitingOnTheOwnerLockKeepsThePublisherHold(t *testing.T) 
 			t.Fatal("the expiry record returned before waiting on the T-1 owner lock")
 		default:
 		}
-		var blocked bool
-		if err := database.Pool.QueryRow(ctx, `select $2 = any(pg_blocking_pids($1))`,
-			trace.record.Load(), blockerPID).Scan(&blocked); err != nil {
+		blocked, err := storetest.QueuedBehind(ctx, blocker, record.pid.Load())
+		if err != nil {
 			t.Fatalf("read the expiry record's owner-lock wait: %v", err)
 		}
 		return blocked
@@ -269,7 +249,7 @@ func TestAnExpiryRecordWaitingOnTheOwnerLockKeepsThePublisherHold(t *testing.T) 
 	for !fake.Now().After(lossWithoutRenewal) {
 		advanceRenewal(t, fake, move, hold, func() {
 			var blockers []int32
-			if err := database.Pool.QueryRow(ctx, `select pg_blocking_pids($1)`, trace.renewal.Load()).Scan(&blockers); err != nil {
+			if err := database.Pool.QueryRow(ctx, `select pg_blocking_pids($1)`, renewal.pid.Load()).Scan(&blockers); err != nil {
 				t.Fatalf("read whether the renewal is blocked: %v", err)
 			}
 			if len(blockers) != 0 {
@@ -302,20 +282,3 @@ func TestAnExpiryRecordWaitingOnTheOwnerLockKeepsThePublisherHold(t *testing.T) 
 		t.Fatalf("event %d has %d role.undelivered records once the owner lock was free, want one", event.ID, records)
 	}
 }
-
-// expiryRenewalTrace identifies the expiry record and the single-statement renewal.
-type expiryRenewalTrace struct {
-	record, renewal atomic.Uint32
-}
-
-func (tr *expiryRenewalTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	switch {
-	case strings.Contains(data.SQL, "from duty_holds where name = $1") && strings.HasPrefix(strings.TrimSpace(data.SQL), "select"):
-		tr.record.Store(conn.PgConn().PID())
-	case strings.Contains(data.SQL, "update duty_holds set expires_at = now() + make_interval"):
-		tr.renewal.Store(conn.PgConn().PID())
-	}
-	return ctx
-}
-
-func (*expiryRenewalTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}

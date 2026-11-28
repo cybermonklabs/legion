@@ -190,7 +190,7 @@ func (w undeliveredWindow) messageID() string {
 // window unposted.
 func (o *Outbox) postUndeliveredNotes(ctx context.Context, hold fence) (full, failed bool) {
 	deps, instance := o.deps, o.instance
-	if deps.PostIssueMessage == nil || ctx.Err() != nil || !o.holdTime().Now().Before(hold.Deadline()) {
+	if deps.PostIssueMessage == nil || ctx.Err() != nil || o.pastDeadline(hold) {
 		return false, false
 	}
 	windows, err := dueUndeliveredWindows(ctx, deps, instance)
@@ -201,7 +201,7 @@ func (o *Outbox) postUndeliveredNotes(ctx context.Context, hold fence) (full, fa
 		return false, true
 	}
 	for _, window := range windows {
-		if ctx.Err() != nil || !o.holdTime().Now().Before(hold.Deadline()) {
+		if ctx.Err() != nil || o.pastDeadline(hold) {
 			return false, false
 		}
 		messageID, err := deps.PostIssueMessage(ctx, graphWriter, model.SystemMessage{

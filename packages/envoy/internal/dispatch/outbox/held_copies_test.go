@@ -2,7 +2,6 @@ package outbox
 
 import (
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -14,7 +13,7 @@ import (
 // keeps only what this process's passes last found waiting.
 func TestAHandedOverHeldCopyLeavesTheRecordWithoutAScrape(t *testing.T) {
 	t.Parallel()
-	moment := clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	moment := clocktest.New(fixtureTime)
 	held := newHeldCopies(moment)
 	issue := "A-1"
 	event := model.Event{IssueKey: &issue}

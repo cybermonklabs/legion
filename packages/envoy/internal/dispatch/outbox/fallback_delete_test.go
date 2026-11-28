@@ -190,7 +190,7 @@ func TestAFallbackPassPublishesNoCopyOfACommentItsAuthorDeleted(t *testing.T) {
 			var logged lockedBuffer
 			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 
-			_, failed, _ := publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, database))
+			_, failed, _ := bareOutbox(deps, holdingProcess(t, database)).publishFallbackCopies(ctx, unfenced{})
 			if failed {
 				t.Fatalf("the pass's claim failed; it logged:\n%s", logged.String())
 			}
@@ -294,7 +294,7 @@ func TestAFallbackPassPublishesNoCopyHeldAfterItsCommentWasDeleted(t *testing.T)
 			var logged lockedBuffer
 			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 
-			_, failed, _ := publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, database))
+			_, failed, _ := bareOutbox(deps, holdingProcess(t, database)).publishFallbackCopies(ctx, unfenced{})
 			if failed {
 				t.Fatalf("the pass's claim failed; it logged:\n%s", logged.String())
 			}

@@ -35,7 +35,7 @@ func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *t
 		liveRole, liveHolder       = "live-reviewer", "ses_acknowledged"
 	)
 	ack := clocktest.New(time.Time{})
-	rig := newRoleRigWithClient(t, ack)
+	rig := newRoleRigWithAckClock(t, ack)
 	rig.claim(t, stalledRole, stalledHolder, session.SessionEntry{SelfSubscribed: true})
 	rig.claim(t, liveRole, liveHolder, session.SessionEntry{SelfSubscribed: true})
 	// The stream stores and acknowledges the live holder's forwards alone, so the stalled

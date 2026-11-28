@@ -211,7 +211,7 @@ func TestAForwardWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 		},
 	})
 	// The first attempt's sender died with the send in flight, so the delivery sweep owes it a
-	// resend; the second is a send a sender claimed just now.
+	// resend; the second is a send that stays live through the test.
 	seedDelivery(t, rig.database, commentID, lapsedTarget, "", "resumed")
 	seedDelivery(t, rig.database, commentID, liveTarget, "", "pending")
 

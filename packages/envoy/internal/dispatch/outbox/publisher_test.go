@@ -171,15 +171,8 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 		default:
 			answer = dest.forward.send(ctx, deps, sender, routed, newKeptHandovers())
 		}
-		var answerErr error
-		if err := testwait.InHelper("publish", "the answer to "+dest.subject, func() bool {
-			select {
-			case answerErr = <-answer:
-				return true
-			default:
-				return false
-			}
-		}); err != nil {
+		answerErr, err := testwait.ReceiveInHelper("publish", "the answer to "+dest.subject, answer)
+		if err != nil {
 			return err
 		}
 		if err := answerErr; err != nil && !errors.Is(err, bus.ErrRefused) {
@@ -1855,8 +1848,8 @@ func TestAFullBatchOfFailingEventsHoldsBackOnlyItsOwnIssue(t *testing.T) {
 	// test binary's deadline less testwait's margin turns that into a named failure instead of a
 	// package timeout.
 	ctx := testwait.Context(t)
-	clock, frozen := frozenDatabaseClock(t, database)
-	holding(t, Deps{Store: clock, Publisher: publisher, Broker: broker}).scan(ctx, unfenced{})
+	frozenStore, frozen := frozenDatabaseClock(t, database)
+	holding(t, Deps{Store: frozenStore, Publisher: publisher, Broker: broker}).scan(ctx, unfenced{})
 	if ctx.Err() != nil {
 		t.Fatal("scan did not return before the test binary's deadline: the failed rows keep refilling every batch")
 	}
@@ -1965,9 +1958,7 @@ func TestRunReplacesOverflowedSubscriptionWithoutBusyLoop(t *testing.T) {
 	})
 	publisher := &blockingFailPublisher{started: make(chan struct{}), release: make(chan struct{})}
 	outbox := outboxOn(database, publisher, broker)
-	outbox.clock = clocktest.New(time.Time{})
-	atRest := restReading(t, outbox)
-	stop := runOn(t, outbox)
+	stop, atRest := runResting(t, outbox, clocktest.New(time.Time{}))
 	defer stop()
 
 	testwait.Receive(t, "the initial outbox scan starting", publisher.started)
@@ -2084,6 +2075,24 @@ func runOn(t *testing.T, outbox *Outbox) func() {
 	return func() {
 		cancel()
 		testwait.Receive(t, "the outbox's Run to return once its context ended", done)
+	}
+}
+
+// runResting installs the timer clock and rest reader before starting Run.
+func runResting(t *testing.T, outbox *Outbox, timers *clocktest.Fake) (stop func(), atRest func(string)) {
+	t.Helper()
+	outbox.clock = timers
+	atRest = restReading(t, outbox)
+	return runOn(t, outbox), atRest
+}
+
+// notify coalesces hook calls while a wake is already buffered.
+func notify(wake chan<- struct{}) func() {
+	return func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -2235,12 +2244,10 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 // the standby takes the hold on the release notification, not a timer.
 //
 // The remaining wall-clock dependencies are:
-//   - a mention attempt's claim a test writes as this moment's (claimed_at = now()):
-//     agedUnnamedAttempts in TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound
-//     and TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents, and the rows
-//     that put a mention back in flight. The product reads such a claim live for
-//     model.DeliveryClaimLapse, 60 s, and the test scans or passes at once after the write:
-//     millisecond work against 60 s.
+//   - The rows that put a mention back in flight set claimed_at to the database's now().
+//     The product reads the claim as live for model.DeliveryClaimLapse (60 s), and these
+//     rows scan or pass at once after writing it. The agedUnnamedAttempts rows instead read
+//     from a frozen database clock.
 //
 // TestTheOutboxDoesNotScanWhileIdle keeps a named 12 s span to catch a periodic
 // scan on the wall clock that the outbox's timer state cannot expose. Its back-off

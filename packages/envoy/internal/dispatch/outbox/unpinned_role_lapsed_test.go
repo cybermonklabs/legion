@@ -154,7 +154,7 @@ func TestACopyKeptPastAnUnpinnedRoleMentionsLeaseIsKeyedByThatMention(t *testing
 			t.Fatalf("settle the mention of %s sent: %v", staged.target, err)
 		}
 
-		publishFallbackCopies(ctx, staged.rig.deps(), unfenced{}, holdingProcess(t, staged.rig.database))
+		bareOutbox(staged.rig.deps(), holdingProcess(t, staged.rig.database)).publishFallbackCopies(ctx, unfenced{})
 
 		row := readHeldCopy(t, staged.rig.database, staged.commentID, contracts.LegacyAgentSubject(staged.holder))
 		if !row.settled || row.published {
@@ -180,7 +180,7 @@ func TestACopyKeptPastAnUnpinnedRoleMentionsLeaseIsKeyedByThatMention(t *testing
 			t.Fatalf("settle the mention of %s failed: %v", staged.target, err)
 		}
 
-		publishFallbackCopies(ctx, staged.rig.deps(), unfenced{}, holdingProcess(t, staged.rig.database))
+		bareOutbox(staged.rig.deps(), holdingProcess(t, staged.rig.database)).publishFallbackCopies(ctx, unfenced{})
 
 		row := readHeldCopy(t, staged.rig.database, staged.commentID, contracts.LegacyAgentSubject(staged.holder))
 		if !row.settled || !row.published {

@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestRecordBatchTakesAPrefixOfTheStoreLockOrder is the outbox half of the check
@@ -185,10 +187,10 @@ func followTheRecord(t *testing.T, ctx context.Context, database *store.Store, h
 	t.Helper()
 	var queued []*recordHold
 	var end scanEnd
-	waitFor(t, "the scan to return as the record queues behind each hold in turn", func() bool {
+	testwait.Until(t, "the scan to return as the record queues behind each hold in turn", func() (string, bool) {
 		select {
 		case end = <-scanned:
-			return true
+			return "", true
 		default:
 		}
 		behind := holdsTheRecordWaitsOn(t, ctx, database, holds)
@@ -200,7 +202,7 @@ func followTheRecord(t *testing.T, ctx context.Context, database *store.Store, h
 		default:
 			t.Fatalf("the record queued behind %d holds at once, which one statement cannot do", len(behind))
 		}
-		return false
+		return fmt.Sprintf("the record queued behind %d of %d holds; %d at the last read", len(queued), len(holds), len(behind)), false
 	})
 	return queued, end
 }

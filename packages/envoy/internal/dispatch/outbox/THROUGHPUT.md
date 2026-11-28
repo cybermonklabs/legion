@@ -43,12 +43,12 @@ Treat the numbers as order-of-magnitude figures.
 
 The results above predate the fake clock and the answer gate. The test checks the backlog's peak
 count, and checks the order and destination counts in every case. It asserts no rate.
-Chains cost one round trip per event per destination of one
-issue: a batch of the backlog holds five events of each issue, so it takes five round trips, and
-a burst on one issue takes one round trip per event, which is the price of each destination
-taking an issue's events in order whatever fails (`planChains`). With role routes forwarded to
-the holder and answered by its receipt, the backlog cases took about 1.6 times as long as with
-role routes published to the role's topic, and the burst cases about as long.
+Chains cost one round trip per event per destination of one issue: a batch of the backlog holds
+five events of each issue, so it takes five round trips, and a burst on one issue takes one round
+trip per event. That lets each destination take an issue's events in order whatever fails
+(`planChains`). With role routes forwarded to the holder and answered by its receipt, the
+backlog cases took about 1.6 times as long as with role routes published to the role's topic,
+and the burst cases about as long.
 
 ## Two real processes at the production step and ten times it
 

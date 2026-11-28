@@ -1428,7 +1428,7 @@ func (o *Outbox) publishFallbackCopies(ctx context.Context, hold fence) (full, f
 		// left for whatever process runs next, as a pass that claimed them would leave them.
 		return false, false, false
 	}
-	if !o.holdTime().Now().Before(hold.Deadline()) {
+	if o.pastDeadline(hold) {
 		// The hold's deadline has passed before a row was claimed, so this process may be one the
 		// hold has left already - it resumed past the margin, or a renewal of its own never
 		// landed - and a claim it took would keep rows out of the holder's own pass for
