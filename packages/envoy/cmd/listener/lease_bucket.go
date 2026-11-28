@@ -13,10 +13,14 @@ import (
 
 // The listener state bucket (bus.ListenerStateBucket) keeps one value per key and drops a key
 // nobody has written for listenerStateMaxAge, so a lease record nobody renews leaves the bucket
-// after 20 minutes. A pod that starts between an earlier build's 10 minutes and 20 minutes after a
+// after 20 minutes, and so does a delivery ledger record or a clean-hand-back mark nobody writes
+// again. The bucket holds the lease, the hand-back marks and the ledger alone: the sessions'
+// last-seen records, which must outlive the session's last-seen window, are in a bucket of their
+// own (bus.LastSeenBucket, last_seen_bucket.go), so no record of this bucket stands longer than
+// its 20 minutes. A pod that starts between an earlier build's 10 minutes and 20 minutes after a
 // killed holder's last renewal now finds that holder's record rather than none: it waits the
-// lease's ttl and takes the lease as expired, with a settle hold, where it took an absent record at
-// once and settled nothing.
+// lease's ttl and takes the lease as expired, with a settle hold and the ack wait that term owes
+// its successor, where it took an absent record at once and settled nothing.
 //
 // listenerStateRequestWait is the JetStream wait of every request on the bucket's handle: a
 // renewal that hangs must give up well inside the holder's validity (leaseTTL - leaseMargin) so
@@ -83,9 +87,9 @@ func openListenerState(ctx context.Context, conn *nats.Conn, replicas int, wait 
 	return bus.KeyValue{}, fmt.Errorf("open %s KV bucket: %w", bus.ListenerStateBucket, err)
 }
 
-// ensureAgedBucket is the create and the raise of one bucket's open (openListenerState): it
-// creates bucket at replicas with file storage, age as its MaxAge and one value per key when it
-// does not exist, and raises a found bucket that keeps its keys for a shorter age
+// ensureAgedBucket is the create and the raise of one bucket's open (openListenerState,
+// openLastSeen): it creates bucket at replicas with file storage, age as its MaxAge and one value
+// per key when it does not exist, and raises a found bucket that keeps its keys for a shorter age
 // to age (bus.RaiseMaxAge), under ctx and over js, the caller's. It returns the create's or the
 // raise's error as it came, which the caller wraps or reads for a refusal.
 func ensureAgedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int, age time.Duration) (bus.KeyValue, error) {

@@ -140,7 +140,7 @@ func TestARoleLaneOfAnotherProjectReachesNoHolderOfItsLegionRole(t *testing.T) {
 	other := lane("PRIV", "lane-other")
 	// The lane records its forward before it hands it on, in the call that took the message, so
 	// a forward to the holder is seen here as soon as that call returns.
-	if cfg.attemptCache.Seen(other.DedupeKey, holder) || cfg.dedupeCache.Seen(other.DedupeKey, holder) {
+	if ledgerAttempted(t, cfg, other.DedupeKey, holder) || ledgerDelivered(t, cfg, other.DedupeKey, holder) {
 		t.Fatalf("the role lane forwarded the message on %s to %s, the holder of INFRA's %s", other.Topic, holder, role)
 	}
 	after := lane("INFRA", "lane-after")
@@ -708,7 +708,7 @@ func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
 	cfg := wireTestRoleForwarder(t, rig.harness.config)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+infraRole, "edge-infra-role-"+id.New())
 	coreNATSDeliveryHandler(cfg)(&natsgo.Msg{Subject: item.Topic, Data: marshalListenerEnvelope(t, item)})
-	if cfg.attemptCache.Seen(item.DedupeKey, moved) || cfg.dedupeCache.Seen(item.DedupeKey, moved) {
+	if ledgerAttempted(t, cfg, item.DedupeKey, moved) || ledgerDelivered(t, cfg, item.DedupeKey, moved) {
 		t.Fatalf("the role lane forwarded INFRA's %s message to %s, a session whose token lists only PRIV", infraRole, moved)
 	}
 	sentinel, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-1.comment.created")
@@ -746,7 +746,7 @@ func TestAnEdgeWithholdsARoleMessageForwardedBeforeItsRegistration(t *testing.T)
 	cfg := wireTestRoleForwarder(t, rig.harness.config)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+infraRole, "edge-forwarded-before-"+id.New())
 	coreNATSDeliveryHandler(cfg)(&natsgo.Msg{Subject: item.Topic, Data: marshalListenerEnvelope(t, item)})
-	if !cfg.attemptCache.Seen(item.DedupeKey, sessionID) && !cfg.dedupeCache.Seen(item.DedupeKey, sessionID) {
+	if !ledgerAttempted(t, cfg, item.DedupeKey, sessionID) && !ledgerDelivered(t, cfg, item.DedupeKey, sessionID) {
 		t.Fatalf("UNKNOWN: the role lane forwarded INFRA's %s message to no session, so the row has no frame to see", infraRole)
 	}
 

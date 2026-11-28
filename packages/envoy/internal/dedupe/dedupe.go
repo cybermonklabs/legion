@@ -1,161 +1,124 @@
-// Package dedupe provides a time-windowed cache for suppressing duplicate
-// envelope delivery. The cache is keyed by (DedupeKey, SessionID) so the same
-// envelope can be delivered to different sessions independently.
+// Package dedupe is the listener's delivery ledger: what it knows of each (dedupe key, session)
+// pair it forwards to a role's holder, or reports or gives up a delivery of, so a message already
+// delivered to a session, or being delivered to it, is not delivered again, and a failure already
+// reported is not reported twice. Every pod of one machine shares one ledger (KV, over the listener
+// state bucket), so a pod that takes the delivery lease over does not forward to a session again
+// what the pod before it delivered. A listener that cannot open that bucket keeps its ledger in
+// process (Memory), as one listener process alone always did, and one that opens it later, once its
+// grant lets it, moves to the shared ledger then (Joining).
 package dedupe
 
-import (
-	"sync"
-	"time"
+import "time"
+
+// The ages a record counts for. A delivered record stops repeats for DeliveredAge; an attempt the
+// delivery kept (Keep), which a pair a delivery disposed of for good leaves, for AttemptedAge.
+const (
+	DeliveredAge = 10 * time.Minute
+	AttemptedAge = 5 * time.Minute
 )
 
-// Key identifies a unique delivery: same envelope to same session.
+// attemptHolds is the hold rule both ledgers settle an unresolved attempt by: an attempt the
+// delivery kept (Keep) holds its pair for AttemptedAge, and one nothing has settled for
+// takeoverAfter, the age past which another delivery takes it over (KVConfig.TakeoverAfter).
+// age is how long ago the attempt was written. The bound is exclusive, the comparison KV has
+// always made: an attempt exactly as old as its limit no longer holds, and the delivery that
+// finds it proceeds. Memory held such an attempt for one more instant (it compared age <=
+// limit); it now answers as KV does.
+func attemptHolds(age time.Duration, kept bool, takeoverAfter time.Duration) bool {
+	limit := takeoverAfter
+	if kept {
+		limit = AttemptedAge
+	}
+	return age < limit
+}
+
+// deliveredStops is the rule both ledgers judge a delivered record by: it stops a further
+// delivery of its pair until it is deliveredAge old (DeliveredAge, which a test of the KV ledger
+// shortens through KVConfig). age is how long ago the delivery was recorded. The bound is
+// exclusive, as attemptHolds' is: a record exactly that old stops nothing, and the delivery that
+// finds it proceeds. Memory stopped one for one more instant (it compared age <= DeliveredAge);
+// it now answers as KV does.
+func deliveredStops(age, deliveredAge time.Duration) bool {
+	return age < deliveredAge
+}
+
+// Key identifies one delivery: an envelope's dedupe key to one session.
 type Key struct {
 	DedupeKey string
 	SessionID string
 }
 
-// Cache tracks recently delivered (dedupe_key, session_id) pairs to prevent
-// duplicate delivery during NATS retry storms. Thread-safe via sync.RWMutex.
-type Cache struct {
-	mu      sync.RWMutex
-	entries map[Key]entry
-	// forwards is, for each request key its recorder names (RecordForward), the newest stored
-	// copy that request's delivery made: the session it went to and the copy's sequence.
-	forwards map[string]stored
-	ttl      time.Duration
-	clock    func() time.Time
-	stop     chan struct{}
-}
+// Verdict is the ledger's answer to an Attempt.
+type Verdict uint8
 
-// entry is one recorded delivery: when it was recorded, and the stream sequence of the copy it
-// stored where the recorder named one (RecordStored), 0 where it named none.
-type entry struct {
-	at       time.Time
-	sequence uint64
-}
+const (
+	// Proceed: this process now holds the pair's attempt and delivers or forwards it, then
+	// settles the attempt with Record, Clear or Keep.
+	Proceed Verdict = iota + 1
+	// Delivered: the pair was delivered within DeliveredAge; the message is skipped and acked.
+	Delivered
+	// InFlight: this process holds the pair's attempt and has not resolved it: the attempt is not
+	// settled yet and younger than the takeover age (its delivery may still be running), or the
+	// delivery kept it (Keep) less than AttemptedAge ago. The message is skipped and acked. An
+	// attempted record of this process that it holds no such attempt for (a clear that could not
+	// be written, a write whose reply was lost) is taken over, which is Proceed.
+	InFlight
+	// Deferred: another process attempted the pair less than its takeover age ago and may still
+	// be delivering it. The durable lane retries the message once RetryIn has passed, when the
+	// attempt is old enough to take over; a core lane skips it.
+	Deferred
+)
 
-// stored is the newest stored copy one request's delivery made: the session it went to, when it
-// was recorded, and the copy's stream sequence.
-type stored struct {
-	sessionID string
-	at        time.Time
-	sequence  uint64
-}
-
-// New creates a dedupe cache with the given TTL and starts a background
-// cleanup goroutine that periodically removes expired entries.
-func New(ttl time.Duration) *Cache {
-	return NewWithClock(ttl, time.Now)
-}
-
-// NewWithClock creates a dedupe cache with an injectable clock for testing.
-func NewWithClock(ttl time.Duration, clock func() time.Time) *Cache {
-	c := &Cache{
-		entries:  make(map[Key]entry),
-		forwards: make(map[string]stored),
-		ttl:      ttl,
-		clock:    clock,
-		stop:     make(chan struct{}),
-	}
-	go c.cleanup()
-	return c
-}
-
-// Seen returns true if the (dedupeKey, sessionID) pair was delivered within
-// the TTL window. Does not modify state — call Record after successful delivery.
-func (c *Cache) Seen(dedupeKey, sessionID string) bool {
-	_, ok := c.Stored(dedupeKey, sessionID)
-	return ok
-}
-
-// Stored reports whether the (dedupeKey, sessionID) pair was delivered within the TTL window, and
-// the stream sequence of the copy that delivery stored where RecordStored named one, else 0.
-func (c *Cache) Stored(dedupeKey, sessionID string) (uint64, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	e, ok := c.entries[Key{DedupeKey: dedupeKey, SessionID: sessionID}]
-	if !ok || c.clock().Sub(e.at) > c.ttl {
-		return 0, false
-	}
-	return e.sequence, true
-}
-
-// Record marks a (dedupeKey, sessionID) pair as delivered.
-// Call only after successful delivery to preserve at-least-once semantics.
-func (c *Cache) Record(dedupeKey, sessionID string) {
-	c.RecordStored(dedupeKey, sessionID, 0)
-}
-
-// RecordStored marks a (dedupeKey, sessionID) pair as delivered by the copy the stream holds at
-// sequence, which Stored hands back to a later reader of the pair.
-func (c *Cache) RecordStored(dedupeKey, sessionID string, sequence uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries[Key{DedupeKey: dedupeKey, SessionID: sessionID}] = entry{at: c.clock(), sequence: sequence}
-}
-
-// RecordForward records that the request request names, a key of its recorder's own that holds
-// everything that makes two requests the same request, was delivered to sessionID by the copy the
-// stream holds at sequence, which Forward hands back to a later reader of the request whichever
-// session it went to.
-func (c *Cache) RecordForward(request, sessionID string, sequence uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.forwards[request] = stored{sessionID: sessionID, at: c.clock(), sequence: sequence}
-}
-
-// Forward reports the session the newest delivery of request recorded by RecordForward went to
-// within the TTL window, and the stream sequence of the copy it stored.
-func (c *Cache) Forward(request string) (sessionID string, sequence uint64, ok bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	s, ok := c.forwards[request]
-	if !ok || c.clock().Sub(s.at) > c.ttl {
-		return "", 0, false
-	}
-	return s.sessionID, s.sequence, true
-}
-
-// Clear removes a recorded delivery so a retry can run after a failed attempt.
-func (c *Cache) Clear(dedupeKey, sessionID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.entries, Key{DedupeKey: dedupeKey, SessionID: sessionID})
-}
-
-// Len returns the number of entries currently in the cache.
-func (c *Cache) Len() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.entries)
-}
-
-// Stop halts the background cleanup goroutine.
-func (c *Cache) Stop() {
-	close(c.stop)
-}
-
-func (c *Cache) cleanup() {
-	ticker := time.NewTicker(c.ttl)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			c.mu.Lock()
-			now := c.clock()
-			for k, e := range c.entries {
-				if now.Sub(e.at) > c.ttl {
-					delete(c.entries, k)
-				}
-			}
-			for k, s := range c.forwards {
-				if now.Sub(s.at) > c.ttl {
-					delete(c.forwards, k)
-				}
-			}
-			c.mu.Unlock()
-		case <-c.stop:
-			return
-		}
+func (v Verdict) String() string {
+	switch v {
+	case Proceed:
+		return "proceed"
+	case Delivered:
+		return "delivered"
+	case InFlight:
+		return "in_flight"
+	case Deferred:
+		return "deferred"
+	default:
+		return "none"
 	}
 }
+
+// Attempt is the ledger's answer for one pair. The zero Attempt holds nothing: Record, Clear and
+// Keep of it touch nothing, which is how a lane that delivers without the ledger settles its pairs.
+type Attempt struct {
+	Verdict Verdict
+	// RetryIn is, for Deferred, how long until the other process's attempt is old enough to
+	// take over.
+	RetryIn time.Duration
+
+	pair     Key
+	key      string
+	revision uint64
+}
+
+// Ledger is the delivery ledger the listener's delivery paths ask before they forward a role-lane
+// message to a session or record a copy it read itself. KV and Memory are its two implementations,
+// and Joining moves from the one to the other.
+type Ledger interface {
+	// Attempt claims (dedupeKey, sessionID) for a delivery by this process, or says why not.
+	// An error means the ledger could not be read or written.
+	Attempt(dedupeKey, sessionID string) (Attempt, error)
+	// Record marks the pair of a Proceed attempt delivered.
+	Record(attempt Attempt) error
+	// Clear gives up a Proceed attempt that failed in a way worth retrying, so a retry of the
+	// message, by this process or another, delivers the pair again. An attempt another process
+	// has since taken over or recorded is left as it is. A clear the ledger cannot write still
+	// gives the attempt up in this process: its next Attempt for the pair proceeds.
+	Clear(attempt Attempt) error
+	// Keep settles a Proceed attempt whose record is to stand: a delivery whose outcome this
+	// process does not know, or a pair the delivery disposed of for good. Attempt answers InFlight
+	// for the pair until the attempt is AttemptedAge old.
+	Keep(attempt Attempt)
+}
+
+var (
+	_ Ledger = (*KV)(nil)
+	_ Ledger = (*Memory)(nil)
+	_ Ledger = (*Joining)(nil)
+)

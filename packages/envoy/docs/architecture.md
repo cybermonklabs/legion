@@ -44,7 +44,8 @@ Agent messages  --/       |
 - The stream and every KV bucket hold the deployment's replica count, `ENVOY_NATS_REPLICAS` (1 to 5, default 1; more than 1 needs a clustered NATS), and the stream at least the byte limit `ENVOY_STREAM_MAX_BYTES` when set: a start creates them at that count and limit, raises one found with fewer copies or a smaller limit (or none), and never lowers either, and every program that owns the stream (each listener, the Dispatch server) runs a keeper that every 30 seconds raises the stream's copies and byte limit back to its settings, puts back the discard policy and `envoy_stream_id`, and raises its own buckets' copies. An operator's raise of the limit stands, and programs with different settings do not fight: the largest stands. JetStream's stream update has no compare-and-swap, so a start with other or no settings can put back what it read until the next keeper pass; a clustered deployment sets the same `ENVOY_NATS_REPLICAS` and `ENVOY_STREAM_MAX_BYTES` in every program
 - JetStream KV bucket `envoy_interests` for session subscriptions. A subscription too large for one NATS message (the server's max payload) is stored in chunks under `=chunk.<generation>.<index>` and a manifest under the session's id, written last; readers join and check the chunks, so they read the old subscription or the new one whole (`internal/kvchunk`). The known-session records of `envoy_known_sessions` are stored the same way
 - JetStream KV bucket `envoy_sessions` for session host data, plus the `plugin` and `plugin_version` each registration names (the npm package the session registers through and that plugin's build; absent for a session whose plugin predates them). A listener that finds no bucket creates it with a `MaxAge` of 2h, the default gone horizon plus one hour (`session.BucketMaxAge`). `ENVOY_SESSION_MAX_AGE` sets the bucket's `MaxAge` at start; unset, the listener leaves an existing bucket as it is. That age bounds how long a record survives, not how long a session is alive: liveness is computed from each record's `UpdatedAt` (see “Session state”), never from the presence of a key
-- JetStream KV bucket `envoy_listener` with a 20m `MaxAge` for what a machine's listeners share: the delivery lease
+- JetStream KV bucket `envoy_listener` with a 20m `MaxAge` for what a machine's listeners share: the delivery lease, its clean-hand-back marks and the delivery ledger
+- JetStream KV bucket `envoy_last_seen` for each session's last-seen record, which every pod of every machine answers a lapsed session's `last_seen` from. Its `MaxAge` is that record's window, the session TTL and its last-seen retention (2h, never less than the TTL) past the last registration, plus the interest reaper's 15m: 4h15m at the default 2h TTL. A longer TTL raises it at each listener's open of the bucket, and no open lowers it. The listener opens it on its main connection in a loop of its own, which never ends the process and holds back neither the lease nor, past its first try (at most 6 s), readiness; until it opens, a pod keeps last-seen times in its own process
 - JetStream KV bucket `legion_agents`, no TTL and never deleted, for the Legion agent registry: one entry per Legion session the daemon ran, under `session.<id>` and the same entry under `issue.<ISSUE>.<id>` and `role.<role_token>.<id>` (`project.*` is the daemon's own and no listener read reaches it)
 - Each listener serves both buckets from an in-memory copy its watcher keeps (`internal/kvwatch`), and the role claims of `envoy_roles` too. A watcher reads its bucket again on a reconnect, a recreated bucket or a failed watch without emptying the copy: every row stays until the new read completes, each delivered record replaces its row as it arrives, and only the completed read removes the rows it did not find. An incomplete read removes nothing, and the listener reads again itself. The role claim watcher also reads its bucket in full one minute after each read that completed, by the same rules, so a claim the copy lost is put back and one the bucket no longer holds is taken out within 2 minutes. No act decides from that copy: each reads the role's claim record from the bucket when it acts.
 
@@ -216,8 +217,10 @@ attempt:
 A target whose entry the store holds within the gone horizon is resolved whatever its state, so a
 send to an `unresponsive` session is published to its inbox and waits there for it. The `404` is
 only a target with no entry within the gone horizon and no known-session record; it reports that
-target's `state` as `gone`, and its `last_seen` while the registry still remembers it (two hours
-past the last registration, `session.LastSeenMemory`), so a caller never reads a refusal as the end
+target's `state` as `gone`, and its `last_seen` while the registry can still name it (the session
+TTL and its last-seen retention past the last registration, 4 hours at the defaults: the time its
+`seen.` record in `envoy_last_seen` gives, which that bucket keeps for longer, or this listener's
+own on a listener that has not opened that bucket), so a caller never reads a refusal as the end
 of a session that is merely quiet. A listener whose known-session store does not answer (no store,
 a bucket its grant does not open yet, its first read not complete, or a copy past its stale bound)
 holds no records, so a target with no entry within the gone horizon gets the `404` there, and one
@@ -375,7 +378,7 @@ other line of the listener carries that field.
 | --- | --- |
 | `delivered` | A role forward the stream acknowledged storing for its holder |
 | `skipped` | Nothing to deliver: the session's own consumer holds the message and the relay of that consumer delivers it, a message on a session's agent subject finds the session's record, the durable's subject matches no session of this machine, or a role message would echo back to the session that holds the role |
-| `dedupe` | A repeat the dedupe cache recognised as already delivered, or the attempt cache as already attempted |
+| `dedupe` | A repeat the delivery ledger every pod of the machine shares recognised as already delivered, or as already attempted by this process |
 | `kept` | A role message no live holder could take, kept for one hour for the next session to hold the role live, and dropped at the end of that hour if none does |
 | `failed` | The delivery, the role forward, or the delivery-mode guard before either, failed |
 | `wake_reported` | A message on the agent subject of a session with no record, once the stream stored the session's wake report and the listener acknowledged the message. A report the stream never stored is the WARN `listener agent wake not stored`, which no label counts |
@@ -737,12 +740,12 @@ that already showed the message drops the copy by its event id. A pass reads at 
 two hundred messages and writes the record again with the sequence it reached. The claim route's
 handover runs passes before it walks the lane, on whichever pod of the machine served the claim and
 within its handover window rather than the request, and the sweep runs passes of every record that
-is not finished every five minutes, on the pod holding the machine's delivery lease alone; two pods'
-passes over one record store each copy once, so a listener that stopped at any step delays a
-message and loses none. A record is finished by the first pass that starts more than one hour
-after the claim, the keep window, and reads to the end of the subject; no pass runs it again or
-writes over it, each listener reads it again only when the age limit takes one of its subject's
-older messages, and it
+is not finished every five minutes, on the pod holding the machine's delivery lease alone, each
+copy and record write held to its receive term and the lease's loss deadline; two pods' passes over
+one record store each copy once, so a listener that stopped at any step delays a message and loses
+none. A record is finished by the first pass that starts more than one hour after the claim, the
+keep window, and reads to the end of the subject; no pass runs it again or writes over it, each
+listener reads it again only when the age limit takes one of its subject's older messages, and it
 ages out with the stream. Every forward that resolved the previous holder before the
 claim starts inside the fence below, so it is stored before that pass reads. A listener whose NATS
 user holds none of the session consumers' calls, Dispatch's and a host's, runs no pass and reads no
@@ -778,7 +781,8 @@ the claim stands, and the client's next claim judges and writes the record. A `p
 no session consumer can be named for (one holding `.`, `*`, `>`, `/`, `\` or whitespace) is
 answered `400` before anything is written. A handover record's passes are a takeover record's,
 run where those run - the claim route's on the pod that served the claim, the sweep's on the pod
-holding the machine's delivery lease alone - with five differences.
+holding the machine's delivery lease alone, each copy and record write held to its receive term -
+with five differences.
 
 First, while the replaced session is `live` they copy nothing and set the record back as a pass
 that finds the previous holder holding the role does: a session that answers reads its own

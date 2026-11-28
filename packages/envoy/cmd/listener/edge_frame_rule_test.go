@@ -85,7 +85,7 @@ func newScopeRigSocketReader(t *testing.T, cold bool) (*scopeRig, *edgeRepositor
 		cancel()
 		<-done
 	})
-	rig.relays.setOwned(true)
+	rig.relays.setOwned(endlessTerm())
 	edge.broker = ciphertokentest.NewStubBroker(t)
 	edge.caller = ciphertokentest.NewCaller(t)
 	edge.handler = apiAuth(listenerAPIAuth{brokers: listenerBrokerTokens(t, edge.broker), edgeProjects: projects, logger: logger}, rig.mux)

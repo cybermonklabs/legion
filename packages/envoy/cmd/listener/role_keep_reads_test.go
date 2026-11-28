@@ -40,7 +40,7 @@ func TestAKeptCopyWithAnExpectsReplyWordThisBuildDoesNotKnowIsReadAlikeByTheWalk
 	}
 
 	walk := judgeKeptRoleCopy(listenerDeliveryHandlerConfig{}, role, "", session.SessionEntry{}, stored,
-		keptCopyClaimOf(bus.KeptRoleCursor{}, stored.Sequence), time.Now, func(string, string) bool { return false })
+		keptCopyClaimOf(bus.KeptRoleCursor{}, stored.Sequence), time.Now)
 	if walk.step != keptCopyWait {
 		t.Errorf("the walk with no holder judges the copy as step %d, want %d: it waits for the role's next holder", walk.step, keptCopyWait)
 	}

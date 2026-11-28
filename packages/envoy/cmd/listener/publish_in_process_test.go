@@ -316,9 +316,9 @@ func (rig *inProcessRig) forwardAttempts(key string) []float64 {
 // as one that failed makes a second.
 //
 // Both attempts the leader is handed carry one Nats-Msg-Id, which is what makes the stream refuse
-// the second as in process. That is the control of the delivery exception's row below
-// (TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce), which requires
-// the header absent on what the leader is handed.
+// the second as in process. That is the control of the delivery exceptions' row below
+// (TestTwoDistinctDeliveryExceptionsAreBothStoredAndAnOversizedOneLogsOneError), which requires
+// a distinct Nats-Msg-Id on each of the two exceptions the leader is handed.
 func TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsStored(t *testing.T) {
 	t.Parallel()
 	rig := newInProcessRig(t)
@@ -598,16 +598,20 @@ func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing
 	}
 }
 
-// A delivery exception is published under no Nats-Msg-Id (publishDeliveryException), so a
-// clustered stream never refuses it as still in process (bus.ErrDuplicateInProcess). Two
-// listeners that raise an exception for one message each store a copy, and neither logs a line.
+// Two delivery exceptions of distinct events, to one recipient for one reason, are two reports.
+// Each is published under the Nats-Msg-Id of its own dedupe key, which deliveryExceptionID derives
+// from its event, the recipient and the reason (publishDeliveryException), so a clustered stream
+// that holds one of them in process never refuses the other as still in process under it
+// (bus.ErrDuplicateInProcess): it stores both, and neither listener logs a line. One report raised
+// twice carries one id and is stored once (TestARepeatedDeliveryExceptionCarriesOneIDAndIsStoredOnce).
 // A failure of the same publish, an exception past the server's max payload, is still logged once
 // at ERROR as exceptionPublishFailedLine, which the deployed publish-failure filter counts:
 // `{ $.level = "ERROR" && $.msg = "listener exception publish failed" }`
 // (packages/envoy/infra/aws/rendering/metricfilters.go). The first row freezes the members'
-// routes and thaws them once the leader holds both publishes. Under one message id the stream
-// would refuse the second publish while the first is in process.
-func TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce(t *testing.T) {
+// routes, has two listeners each report one of the events, and thaws the routes once the leader
+// holds both publishes. Under one message id the stream would refuse the second publish while the
+// first is in process.
+func TestTwoDistinctDeliveryExceptionsAreBothStoredAndAnOversizedOneLogsOneError(t *testing.T) {
 	t.Parallel()
 	rig := newInProcessRig(t)
 	const topic, recipient, reason = "notifications.team.exception-in-process", "ses_exception_in_process", "delivery_failed"
@@ -616,7 +620,7 @@ func TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce(t 
 		name     string
 		tooLarge bool
 	}{
-		{"raised by two listeners while the routes are frozen", false},
+		{"two events reported by two listeners while the routes are frozen", false},
 		{"past the server's max payload", true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -648,37 +652,42 @@ func TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce(t 
 				}
 				return
 			}
+			// The other listener's event: another message to the same recipient, refused for the
+			// same reason.
+			reported := listenerTestEnvelope(topic, "exception-in-process-"+id.New())
 			rig.requireLeader(t)
 			heard, before := rig.hear(t, lane), rig.copies(t, lane)
 			thaw := rig.cluster.FreezeRoutes(t)
 			t.Cleanup(thaw)
 			other := make(chan error, 1)
-			go func() { other <- publishDeliveryException(rig.d.client, item, reason, recipient) }()
+			go func() { other <- publishDeliveryException(rig.d.client, reported, reason, recipient) }()
 			applied := make(chan struct{})
 			go func() {
 				defer close(applied)
 				applyDeliveryOutcome(cfg, item, outcome)
 			}()
+			msgIDs := make([]string, 0, 2)
 			for n := range 2 {
 				msg, err := heard.NextMsg(10 * time.Second)
 				if err != nil {
 					t.Fatalf("the leader was handed %d of the 2 publishes: %v", n, err)
 				}
-				if msgID := msg.Header.Get(natsgo.MsgIdHdr); msgID != "" {
-					t.Errorf("an exception was published under Nats-Msg-Id %q, want none", msgID)
-				}
+				msgIDs = append(msgIDs, msg.Header.Get(natsgo.MsgIdHdr))
+			}
+			if msgIDs[0] == "" || msgIDs[1] == "" || msgIDs[0] == msgIDs[1] {
+				t.Errorf("the leader was handed the exceptions of %s and %s under Nats-Msg-Id %q and %q, want two ids, one of each event", item.EventID, reported.EventID, msgIDs[0], msgIDs[1])
 			}
 			thaw()
 			if err := <-other; err != nil {
-				t.Fatalf("the other listener's publish of the exception: %v; want it stored", err)
+				t.Fatalf("the other listener's publish of the exception of %s: %v; want it stored", reported.EventID, err)
 			}
 			<-applied
 			waitFor(t, "the stream to store both exceptions on "+lane, func() bool { return rig.copies(t, lane) >= before+2 })
 			if got := rig.copies(t, lane) - before; got != 2 {
-				t.Fatalf("the stream stored %d copies on %s, want 2: each exception is an event of its own", got, lane)
+				t.Fatalf("the stream stored %d copies on %s, want 2: each exception reports an event of its own", got, lane)
 			}
 			if text := strings.TrimSpace(logs.String()); text != "" {
-				t.Fatalf("the exception the stream stored logged lines, want none:\n%s", text)
+				t.Fatalf("the exceptions the stream stored logged lines, want none:\n%s", text)
 			}
 		})
 	}

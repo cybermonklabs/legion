@@ -747,7 +747,7 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 				TraceID:        "trace-evt-session-consumer",
 			}
 			require.NoError(t, owner.Publish(item))
-			pull, err := consumers.Pull(ctx, liveSession)
+			pull, err := consumers.Pull(ctx, liveSession, nil)
 			require.NoError(t, err)
 			msg, err := pull.Next(ctx)
 			require.NoError(t, err)
@@ -769,7 +769,7 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 			unacked.SourceEventID = unacked.EventID
 			unacked.DedupeKey = "permissions-live-test." + unacked.EventID
 			require.NoError(t, owner.Publish(unacked))
-			pull, err = consumers.Pull(ctx, liveSession)
+			pull, err = consumers.Pull(ctx, liveSession, nil)
 			require.NoError(t, err)
 			held, err := pull.Next(ctx)
 			require.NoError(t, err)

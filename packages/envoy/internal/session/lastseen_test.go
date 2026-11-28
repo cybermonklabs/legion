@@ -1,0 +1,400 @@
+package session
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/testnats"
+)
+
+// lastSeenBucket opens the last-seen bucket over conn: one value per key, kept for a default
+// registry's last-seen window (the listener's own open, cmd/listener's openLastSeen, keeps them
+// the interest reaper's allowance longer).
+func lastSeenBucket(t *testing.T, conn *natsgo.Conn) bus.KeyValue {
+	t.Helper()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	kv, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{Bucket: bus.LastSeenBucket, History: 1, Replicas: 1, Storage: natsgo.FileStorage, TTL: DefaultLastSeenWindow})
+	if err != nil {
+		t.Fatalf("open the last-seen bucket: %v", err)
+	}
+	return kv
+}
+
+// lastSeenPod opens one listener pod's session registry over a NATS connection of its own, gives
+// it the last-seen bucket opened over that connection too, as the listener does once the
+// registry is open (SetLastSeenBucket), and returns it once its cache is warm.
+func lastSeenPod(t *testing.T, name string, ttl time.Duration, options ...SessionRegistryOption) *SessionRegistry {
+	t.Helper()
+	client := setupNATS(t)
+	options = append([]SessionRegistryOption{WithSessionReplicas(1), WithSessionTTL(ttl)}, options...)
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, options...)
+	if err != nil {
+		t.Fatalf("open pod %s's session registry: %v", name, err)
+	}
+	t.Cleanup(reg.StopWatch)
+	reg.SetLastSeenBucket(lastSeenBucket(t, client.Conn))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := reg.WaitForCacheReady(ctx); err != nil {
+		t.Fatalf("warm pod %s's session cache: %v", name, err)
+	}
+	return reg
+}
+
+// A session that heartbeated only through pod A and then expired is reported with one last-seen
+// time by every pod: pod B, started after the session lapsed on a connection of its own, answers
+// what pod A answers. Before, the last-seen time lived only in the memory of a pod whose cache had
+// held the session, so pod B had none.
+func TestEveryPodReportsALapsedSessionsLastSeenAlike(t *testing.T) {
+	const (
+		sessionID = "ses_lapsing"
+		ttl       = 3 * time.Second
+	)
+	a := lastSeenPod(t, "a", ttl)
+	if err := a.Put(sessionID, SessionEntry{Port: 4242, MachineID: "box-a"}); err != nil {
+		t.Fatalf("register %s through pod a: %v", sessionID, err)
+	}
+	written, err := a.watcher.KV().Get(sessionID)
+	if err != nil {
+		t.Fatalf("read %s's registration: %v", sessionID, err)
+	}
+	// The registration expires when the session bucket's MaxAge removes it.
+	deadline := time.Now().Add(ttl + 10*time.Second)
+	for {
+		if _, err := a.watcher.KV().Get(sessionID); errors.Is(err, natsgo.ErrKeyNotFound) {
+			break
+		} else if err != nil {
+			t.Fatalf("read %s while it expires: %v", sessionID, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s's registration was not removed within %s of its write", sessionID, ttl+10*time.Second)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := a.Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("pod a's cache still holds the expired %s: %v", sessionID, err)
+	}
+
+	onA := a.LastSeen(context.Background(), sessionID)
+	if onA == 0 {
+		t.Fatalf("pod a reports no last-seen time for %s, which it registered %s ago", sessionID, time.Since(written.Created()))
+	}
+	b := lastSeenPod(t, "b", ttl)
+	if onB := b.LastSeen(context.Background(), sessionID); onB != onA {
+		t.Fatalf("pod b, started after %s lapsed, reports last seen %d; pod a reports %d", sessionID, onB, onA)
+	}
+	if want := written.Created().UnixMilli(); onA != want {
+		t.Fatalf("last seen = %d, want the server's timestamp of the registration write, %d", onA, want)
+	}
+}
+
+// Every pod answers a lapsed session's last-seen time out of the bucket's `seen.` record alone,
+// so a pod that watched the session answers exactly what a pod that never saw it answers for as
+// long as the window lasts, and nothing once the record is gone. The listener keeps the record for
+// the whole window and more (cmd/listener's lastSeenAge), so a live deployment reaches the
+// second case for a record that could not be read or that a bucket with a shorter MaxAge dropped,
+// as the listener state bucket's 20 minutes did inside the window at the default retention when
+// the records were kept there (lastseen.go). A pod that kept an answer of its own would go on
+// reporting the session after the bucket's record was gone, and two pods would answer
+// GET /v1/interests/ differently for one session.
+func TestEveryPodAnswersAlikeOnceTheBucketsLastSeenRecordIsGone(t *testing.T) {
+	const (
+		sessionID = "ses_outlives_record"
+		ttl       = 2 * time.Second
+	)
+	a := lastSeenPod(t, "a", ttl, WithLastSeenRetention(time.Minute))
+	if err := a.Put(sessionID, SessionEntry{Port: 4243, MachineID: "box-a"}); err != nil {
+		t.Fatalf("register %s through pod a: %v", sessionID, err)
+	}
+	deadline := time.Now().Add(ttl + 10*time.Second)
+	for a.LastSeen(context.Background(), sessionID) == 0 || func() bool { _, err := a.Get(sessionID); return err == nil }() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not lapse on pod a with a last-seen time within %s", sessionID, ttl+10*time.Second)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	b := lastSeenPod(t, "b", ttl, WithLastSeenRetention(time.Minute))
+	if onA, onB := a.LastSeen(context.Background(), sessionID), b.LastSeen(context.Background(), sessionID); onA != onB {
+		t.Fatalf("pod a reports %s last seen %d while the record stands; pod b, started after it lapsed, reports %d", sessionID, onA, onB)
+	}
+	// This delete does what a bucket MaxAge shorter than the window does to the record, as the
+	// listener state bucket's 20 minutes did inside the window at the default retention.
+	if err := a.seen.Delete(lastSeenKey(sessionID)); err != nil {
+		t.Fatalf("remove %s's seen record: %v", sessionID, err)
+	}
+	onA, onB := a.LastSeen(context.Background(), sessionID), b.LastSeen(context.Background(), sessionID)
+	if onA != onB {
+		t.Fatalf("pod a, which watched %s, reports last seen %d once the bucket's record is gone; pod b reports %d", sessionID, onA, onB)
+	}
+	if onA != 0 {
+		t.Fatalf("pods report %s last seen %d with no record in the bucket, want none", sessionID, onA)
+	}
+}
+
+// A registry's LastSeenWindow is the span seenUntil adds to a registration write at the TTL and
+// retention the registry runs with: one TTL and then the retention, never less than that TTL, and
+// DefaultLastSeenWindow on a registry opened with no option over a bucket it created. The
+// listener sizes the last-seen bucket's age by it (cmd/listener's lastSeenAge), so a `seen.`
+// record stands for as long as any pod reports it.
+func TestLastSeenWindowIsWhereSeenUntilEndsALapsedSessionsAnswer(t *testing.T) {
+	client := setupNATS(t)
+	opened, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the session registry: %v", err)
+	}
+	t.Cleanup(opened.StopWatch)
+	if got := opened.LastSeenWindow(); got != DefaultLastSeenWindow {
+		t.Fatalf("a default registry's last-seen window is %s, want DefaultLastSeenWindow, %s", got, DefaultLastSeenWindow)
+	}
+
+	const at = int64(1_800_000_000_000)
+	for _, row := range []struct {
+		ttl, want time.Duration
+	}{
+		{ttl: time.Hour, want: time.Hour + LastSeenMemory},
+		{ttl: 6 * time.Hour, want: 12 * time.Hour},
+	} {
+		r := newTestRegistry(row.ttl)
+		r.lastSeenRetention = LastSeenMemory
+		window := r.LastSeenWindow()
+		if window != row.want {
+			t.Errorf("the last-seen window at a %s TTL is %s, want %s: the TTL and the retention, never less than the TTL", row.ttl, window, row.want)
+		}
+		if until, want := seenUntil(at, r.ttl, r.retention()), time.UnixMilli(at).Add(window); !until.Equal(want) {
+			t.Errorf("at a %s TTL a lapsed session's answer ends at %v, want the write plus the last-seen window, %v", row.ttl, until, want)
+		}
+	}
+}
+
+// failingPutKV is a last-seen bucket whose every Put fails.
+type failingPutKV struct {
+	natsgo.KeyValue
+}
+
+var errSeenPut = errors.New("injected last-seen put failure")
+
+func (failingPutKV) Put(string, []byte) (uint64, error) { return 0, errSeenPut }
+
+// syncBuffer is a log sink the registry writes to from its own goroutines.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A last-seen record the bucket refuses is a WARN, not a failed registration: the session is
+// registered all the same.
+func TestARegistrationWhoseLastSeenRecordFailsIsStillWritten(t *testing.T) {
+	client := setupNATS(t)
+	var logs syncBuffer
+	state := lastSeenBucket(t, client.Conn)
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1),
+		WithSessionLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	if err != nil {
+		t.Fatalf("open the session registry: %v", err)
+	}
+	reg.SetLastSeenBucket(bus.NewKeyValue(failingPutKV{KeyValue: state.Legacy()}, state.WatchHandle(), state.Streams()))
+	t.Cleanup(reg.StopWatch)
+	if err := reg.Put("ses_unrecorded", SessionEntry{Port: 4242, MachineID: "box-a"}); err != nil {
+		t.Fatalf("register with a failing last-seen record: %v, want the registration written", err)
+	}
+	if _, err := reg.watcher.KV().Get("ses_unrecorded"); err != nil {
+		t.Fatalf("read the registration from the session bucket: %v", err)
+	}
+	if got := logs.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "session last-seen not recorded") || !strings.Contains(got, errSeenPut.Error()) {
+		t.Fatalf("no WARN naming the failed last-seen record:\n%s", got)
+	}
+}
+
+// A registration through a connection holding exactly the listener's grant
+// (testnats.ListenerGrant, the grant envoy-infra renders) records the session's last-seen time,
+// with no WARN: the registration write is read back by key, a direct get on the key's subject,
+// which the grant allows. A read by revision is a direct get on the session stream's bare subject,
+// which the grant refuses, so the read waited out its budget and no record was written.
+func TestARegistrationUnderTheListenersGrantRecordsItsLastSeen(t *testing.T) {
+	const sessionID = "ses_granted"
+	seed, public := testnats.User(t)
+	granted := testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: testnats.ListenerGrant(t, "box-a")})
+	conn, err := testnats.ConnectSeed(t, granted.URL(), seed)
+	if err != nil {
+		t.Fatalf("connect as the listener's user: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	var logs syncBuffer
+	reg, err := OpenSessionRegistry(t.Context(), conn, WithSessionReplicas(1),
+		WithSessionLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	if err != nil {
+		t.Fatalf("open the session registry under the listener's grant: %v", err)
+	}
+	t.Cleanup(reg.StopWatch)
+	reg.SetLastSeenBucket(lastSeenBucket(t, conn))
+	if err := reg.Put(sessionID, SessionEntry{Port: 4242, MachineID: "box-a"}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+
+	admin := testnats.Connect(t, granted.AdminURL)
+	t.Cleanup(admin.Close)
+	js, err := admin.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	sessions, err := js.KeyValue(bus.SessionBucket)
+	if err != nil {
+		t.Fatalf("open the session bucket: %v", err)
+	}
+	written, err := sessions.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read %s's registration: %v", sessionID, err)
+	}
+	state, err := js.KeyValue(bus.LastSeenBucket)
+	if err != nil {
+		t.Fatalf("open the last-seen bucket: %v", err)
+	}
+	entry, err := state.Get(lastSeenKey(sessionID))
+	if err != nil {
+		t.Fatalf("read %s's last-seen record: %v\nregistry log:\n%s", sessionID, err, logs.String())
+	}
+	var record seenRecord
+	if err := json.Unmarshal(entry.Value(), &record); err != nil {
+		t.Fatalf("decode %s's last-seen record %q: %v", sessionID, entry.Value(), err)
+	}
+	if want := written.Created().UnixMilli(); record.At != want {
+		t.Fatalf("last seen = %d, want the server's timestamp of the registration write, %d", record.At, want)
+	}
+	if got := logs.String(); strings.Contains(got, "level=WARN") {
+		t.Fatalf("the registry warned under the listener's grant:\n%s", got)
+	}
+}
+
+// A registration write that a newer write replaced before its read back records nothing: the read
+// by key finds the newer revision, and that write records its own time. The newer write's own
+// read back records it.
+func TestALastSeenReadBackThatFindsANewerWriteRecordsNothing(t *testing.T) {
+	const sessionID = "ses_replaced"
+	client := setupNATS(t)
+	var logs syncBuffer
+	state := lastSeenBucket(t, client.Conn)
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1),
+		WithSessionLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	if err != nil {
+		t.Fatalf("open the session registry: %v", err)
+	}
+	reg.SetLastSeenBucket(state)
+	t.Cleanup(reg.StopWatch)
+	value, err := encodeSessionEntry(SessionEntry{Port: 4242, MachineID: "box-a"})
+	if err != nil {
+		t.Fatalf("encode the registration: %v", err)
+	}
+	kv := reg.watcher.KV()
+	older, err := kv.Put(sessionID, value)
+	if err != nil {
+		t.Fatalf("write the older registration: %v", err)
+	}
+	newer, err := kv.Put(sessionID, value)
+	if err != nil {
+		t.Fatalf("write the newer registration: %v", err)
+	}
+
+	reg.recordSeen(context.Background(), kv, sessionID, older)
+	if entry, err := state.Get(lastSeenKey(sessionID)); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("the replaced write recorded %v, %v; want no last-seen record", entry, err)
+	}
+	reg.recordSeen(context.Background(), kv, sessionID, newer)
+	entry, err := state.Get(lastSeenKey(sessionID))
+	if err != nil {
+		t.Fatalf("read the newer write's last-seen record: %v", err)
+	}
+	written, err := kv.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read the newer registration: %v", err)
+	}
+	var record seenRecord
+	if err := json.Unmarshal(entry.Value(), &record); err != nil || record.At != written.Created().UnixMilli() {
+		t.Fatalf("last-seen record %q (%v), want the newer write's timestamp %d", entry.Value(), err, written.Created().UnixMilli())
+	}
+	if got := logs.String(); strings.Contains(got, "level=WARN") {
+		t.Fatalf("the registry warned:\n%s", got)
+	}
+}
+
+// A write of the gap mark alone (SetRepositoryGap, ClearRepositoryGap) leaves the session's
+// last-seen time where its last registration put it, and a renewal of the stored entry
+// (RenewWithin) moves it to the renewal's stamp: the mark says nothing of whether the session
+// answers, and a renewal stands for the heartbeats a repository outage refuses. The registry has
+// no last-seen bucket, as the edge listener's has none (it opens none), so LastSeen
+// answers the stamp of the entry its copy holds. Its clock moves on a second before each write,
+// so a write that stamped the entry would show. Control: with SetRepositoryGap stamping the entry
+// as RenewWithin does, the mark's write moves the last-seen time and the row fails.
+func TestAGapMarkWriteLeavesTheSessionsLastSeenAndARenewalMovesIt(t *testing.T) {
+	const sessionID, mark = "ses_mark_last_seen", "a-mark"
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixMilli())
+	client := setupNATS(t)
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1),
+		WithSessionClock(func() time.Time { return time.UnixMilli(clock.Load()) }))
+	if err != nil {
+		t.Fatalf("open the session registry: %v", err)
+	}
+	t.Cleanup(reg.StopWatch)
+	if err := reg.Put(sessionID, SessionEntry{MachineID: "box-a"}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	registered := clock.Load()
+	if seen := reg.LastSeen(t.Context(), sessionID); seen != registered {
+		t.Fatalf("UNKNOWN: %s's last-seen time after its registration is %d, not the registration's stamp %d, so the row reads nothing", sessionID, seen, registered)
+	}
+
+	for _, write := range []struct {
+		what  string
+		write func() error
+		mark  string
+	}{
+		{"a gap mark (SetRepositoryGap)", func() error { return reg.SetRepositoryGap(t.Context(), sessionID, mark) }, mark},
+		{"the mark's clear (ClearRepositoryGap)", func() error { return reg.ClearRepositoryGap(t.Context(), sessionID, mark) }, ""},
+	} {
+		clock.Add(time.Second.Milliseconds())
+		if err := write.write(); err != nil {
+			t.Fatalf("%s: %v", write.what, err)
+		}
+		if entry, err := reg.Get(sessionID); err != nil || entry.RepositoryGap != write.mark {
+			t.Fatalf("UNKNOWN: after %s %s's entry is %+v (%v), not marked %q, so the write did not land and the row holds nothing", write.what, sessionID, entry, err, write.mark)
+		}
+		if seen := reg.LastSeen(t.Context(), sessionID); seen != registered {
+			t.Fatalf("%s moved %s's last-seen time to %d from the registration's %d: a write of the mark alone says nothing of whether the session answers",
+				write.what, sessionID, seen, registered)
+		}
+	}
+
+	clock.Add(time.Second.Milliseconds())
+	if err := reg.RenewWithin(t.Context(), sessionID, func(SessionEntry) bool { return true }); err != nil {
+		t.Fatalf("renew %s: %v", sessionID, err)
+	}
+	if seen, renewed := reg.LastSeen(t.Context(), sessionID), clock.Load(); seen != renewed {
+		t.Fatalf("after the renewal %s's last-seen time is %d, want the renewal's stamp %d", sessionID, seen, renewed)
+	}
+}

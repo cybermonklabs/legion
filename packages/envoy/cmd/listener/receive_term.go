@@ -33,9 +33,18 @@ type receiveTerm struct {
 	logger      *logging.Logger
 	// hold, when it is above zero, is the longest the handler holds what the term receives before
 	// it delivers it in stream order (settle): a term that must settle. leaseTerm is the lease
-	// term the hold's end reports settled; zero for a term received without a lease.
-	hold      time.Duration
-	leaseTerm uint64
+	// term the hold's end reports settled, and whose clean-hand-back mark, when the term was
+	// taken from a candidate for one, can end the hold sooner (readHandBackMark); zero for a term
+	// received without a lease, until a lease that joined takes the term over, which sets it under
+	// durableReceiver.mu (joinTerm). markReadFailed is that read's log-once state, the settle
+	// hold's own.
+	hold           time.Duration
+	leaseTerm      uint64
+	markReadFailed bool
+	// settleAsked is closed once a lease that joined took this term over as one that must settle
+	// (askSettle, durableReceiver.adopt): the handler holds what the term receives from its next
+	// message on, for the receiver's settleCap at most.
+	settleAsked chan struct{}
 
 	mu sync.Mutex
 	// closed is set once the term takes no more messages (close).
@@ -107,9 +116,9 @@ func (t *receiveTerm) handBack(delay time.Duration) {
 // handBackLocked NAKs m with the hand-back delay, up to handBackNaksMax times for one stream
 // sequence: a repeat reaches this pod alone when the server redelivered it before the next holder
 // subscribed, and NAKed again it comes back to that holder after the delay rather than at its ack
-// wait. A repeat past that is dropped with neither ack nor NAK, so a message the hand-back keeps
-// going round costs at most handBackNaksMax deliveries. A message whose JetStream metadata cannot
-// be read is NAKed.
+// wait, which the next holder's settle hold does not wait for. A repeat past that is dropped with
+// neither ack nor NAK, so a message the hand-back keeps going round costs at most handBackNaksMax
+// deliveries. A message whose JetStream metadata cannot be read is NAKed.
 func (t *receiveTerm) handBackLocked(m *nats.Msg) {
 	if meta, err := m.Metadata(); err == nil {
 		naks := t.handedBack[meta.Sequence.Stream]
@@ -250,12 +259,16 @@ func sortByStreamSequence(messages []*nats.Msg) {
 // NAK, so the durable redelivers it after the ack wait to whoever holds the lease then.
 //
 // A term that must settle first holds what it receives (settle), then delivers that batch in
-// stream order before it reads the queue.
+// stream order before it reads the queue. A term asked to settle once it runs (askSettle) enters
+// the same hold between two messages: the message in hand is delivered first, and a message the
+// handler took from the queue as the ask came is held with the rest rather than handed on.
 func (t *receiveTerm) handle(r *durableReceiver) {
 	defer close(t.handled)
 	if t.hold > 0 && !t.settle(r, t.hold) {
 		return
 	}
+	// asked is the ask until its hold has run, and nil, never ready, after it.
+	asked := t.settleAsked
 	for {
 		select {
 		case <-t.closing:
@@ -267,14 +280,44 @@ func (t *receiveTerm) handle(r *durableReceiver) {
 			select {
 			case <-t.closing:
 				return
+			case <-asked:
 			case m = <-t.queue:
 			}
+		}
+		select {
+		case <-asked:
+			asked = nil
+			t.holdBack(m)
+			if !t.settle(r, r.timing.settleCap) {
+				return
+			}
+			continue
+		default:
 		}
 		if r.holding() {
 			r.handle(t.handling, m)
 		}
 		t.settled(m)
 	}
+}
+
+// askSettle has the handler hold what the term receives from its next message on, for the
+// receiver's settleCap at most, as a term that must settle holds from its subscribe (settle): the
+// term a lease that joined took over as it stood, when that lease's term must settle
+// (durableReceiver.adopt). It is called once, after the term's leaseTerm is set.
+func (t *receiveTerm) askSettle() {
+	close(t.settleAsked)
+}
+
+// holdBack puts m, a message the handler took and did not hand on, at the head of the held batch,
+// which the hold gathers and sorts with what arrives after it. A nil m holds nothing.
+func (t *receiveTerm) holdBack(m *nats.Msg) {
+	if m == nil {
+		return
+	}
+	t.mu.Lock()
+	t.held = slices.Insert(t.held, 0, m)
+	t.mu.Unlock()
 }
 
 // settle is a term's settle hold, which lasts hold at most. It delivers nothing while the
@@ -285,7 +328,16 @@ func (t *receiveTerm) handle(r *durableReceiver) {
 // holder handed back once the hand-back delay does, after newer messages pushed to this pod, and
 // the stream-order sort puts it back before them. The batch is gathered before each read, so
 // every message it counts was still outstanding at the read. A read that fails keeps the hold.
-// The hold ends at its cap regardless, and its end clears the lease term's unsettled.
+// The hold ends at its cap regardless, and its end clears the lease term's unsettled and the ack
+// wait it owed.
+//
+// A term taken from a hand-back candidate reads the stopping pod's mark beside the durable, and
+// ends the hold once that mark is there and handBackSettleCap has passed since the hold began, at
+// the subscribe or at the adopt (readHandBackMark): the mark says the stop NAKed what it held with
+// the hand-back delay and held the deliver subject until this pod was receiving, so nothing of it
+// is waiting out an ack wait. It comes after this pod is receiving, which is why the hold is where
+// it is read and not the subscribe. A mark that is absent, or that cannot be read, leaves the hold
+// to its cap.
 //
 // It reports false when the term closed first.
 func (t *receiveTerm) settle(r *durableReceiver, hold time.Duration) bool {
@@ -306,10 +358,15 @@ func (t *receiveTerm) settle(r *durableReceiver, hold time.Duration) bool {
 	defer limit.Stop()
 	poll := time.NewTicker(r.timing.settlePoll)
 	defer poll.Stop()
-	outcome, pending, failing := "cap", -1, false
+	outcome, pending, failing, marked := "cap", -1, false, false
 read:
 	for {
 		held := t.gather(false)
+		marked = marked || t.readHandBackMark(ctx, r)
+		if marked && time.Since(start) >= r.timing.handBackSettleCap {
+			outcome = "handed back"
+			break read
+		}
 		info, err := listenerDurable(ctx, r.client, r.consumer)
 		switch {
 		case err == nil && info != nil:
@@ -339,8 +396,8 @@ read:
 		}
 	}
 	held := t.gather(true)
-	if r.lease != nil {
-		r.lease.Settled(t.leaseTerm)
+	if l := r.lease.Load(); l != nil {
+		l.Settled(t.leaseTerm)
 	}
 	r.logger.Info("settle hold ended; delivering the held messages in stream order",
 		slog.String("consumer", r.consumer),
@@ -348,7 +405,35 @@ read:
 		slog.Int64("held_ms", time.Since(start).Milliseconds()),
 		slog.Int("messages", held),
 		slog.Int("ack_pending", pending),
+		slog.Bool("hand_back_marked", marked),
 	)
+	return true
+}
+
+// readHandBackMark reports whether the pod that released the record this term was taken from has
+// marked that hand-over clean (lease.HandBackMarked). The lease answers a term that is no
+// candidate for one, or is no longer current, with false and no bucket call, so the settle hold
+// of any term may ask. The mark also says that a binding this term subscribed beside was that
+// stop's own linger, so the stale binding the term recorded is cleared with it. A read that
+// fails is logged once, as a failed durable read is, and holds on.
+func (t *receiveTerm) readHandBackMark(ctx context.Context, r *durableReceiver) bool {
+	l := r.lease.Load()
+	if l == nil {
+		return false
+	}
+	seen, err := l.HandBackMarked(ctx, t.leaseTerm)
+	if err != nil {
+		if ctx.Err() == nil && !t.markReadFailed {
+			t.markReadFailed = true
+			r.logger.Warn("settle hold: hand-back mark read failed; holding on",
+				slog.String("consumer", r.consumer), slog.String("error", err.Error()))
+		}
+		return false
+	}
+	if !seen {
+		return false
+	}
+	l.SetStaleBinding(t.leaseTerm, false)
 	return true
 }
 

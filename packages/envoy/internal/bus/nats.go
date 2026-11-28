@@ -3261,6 +3261,19 @@ func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contr
 	return ack.Duplicate, err
 }
 
+// DeliveryExceptionDedupePrefix begins the dedupe key of a delivery exception the listener
+// publishes on an ExceptionTopicPrefix topic. The listener derives the exception's id from the
+// delivery it reports (the event, the recipient and the reason), so a redelivery that ends the same
+// way publishes the same key, and the stream stores that exception once.
+const DeliveryExceptionDedupePrefix = "envoy.exception."
+
+// namesItsDeliveryException reports whether item is the listener's delivery exception, whose
+// dedupe key names the delivery it reports (DeliveryExceptionDedupePrefix).
+func namesItsDeliveryException(item contracts.Envelope) bool {
+	return item.Source == "envoy" && strings.HasPrefix(item.Topic, ExceptionTopicPrefix) &&
+		strings.HasPrefix(item.DedupeKey, DeliveryExceptionDedupePrefix)
+}
+
 // StoredAck is the stream's acknowledgement of a stored publish (PublishStoredAck,
 // PublishAckWithin): the stream sequence of the copy the stream holds under the publish's message
 // id, whether an earlier publish stored that copy, and whether the acknowledgement answers a
@@ -3329,17 +3342,18 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 }
 
 // publishJetStream publishes item to the notification stream with ctx as its bound, and returns the
-// stream's acknowledgement (StoredAck). The MsgId, where the envelope earns one, is the dedupe key
-// and the topic together, because one upstream event can be published on several topics under one
-// key - a GitHub comment that mentions the trigger is published on its mention topic beside its
-// comment topic - and each of those must be retained. The bound PublishStoredAck sets is the
-// earlier of the caller's own deadline and publishBound, since WithTimeout keeps the parent's
-// deadline when that is the earlier one; publishBound is what bounds a caller that passed none.
-// The acknowledgement wait is still taken from publishAcknowledgementClock, the seam a test uses
-// to expire that bound without spending it. The bound does not cover the send's wait for nats.go's
-// connection lock: js.Publish takes the lock to send before it waits on ctx, so a publish made
-// while a reconnect's handshake holds that lock waits for the attempt (readWithin lists such
-// calls).
+// stream's acknowledgement (StoredAck). The MsgId, where the envelope earns one (its key names its
+// event, contracts.DedupeKeyNamesTheUpstreamEvent, or it is the listener's delivery exception,
+// namesItsDeliveryException), is the dedupe key and the topic together, because one upstream event
+// can be published on several topics under one key - a GitHub comment that mentions the trigger is
+// published on its mention topic beside its comment topic - and each of those must be retained.
+// The bound PublishStoredAck sets is the earlier of the caller's own deadline and publishBound,
+// since WithTimeout keeps the parent's deadline when that is the earlier one; publishBound is what
+// bounds a caller that passed none. The acknowledgement wait is still taken from
+// publishAcknowledgementClock, the seam a test uses to expire that bound without spending it. The
+// bound does not cover the send's wait for nats.go's connection lock: js.Publish takes the lock to
+// send before it waits on ctx, so a publish made while a reconnect's handshake holds that lock
+// waits for the attempt (readWithin lists such calls).
 //
 // A publish the server refuses under the connection's own publish permissions is answered
 // ErrPublishDenied, as a publish window's sends are (window.acknowledged): a denied JetStream
@@ -3366,7 +3380,7 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // the failure names (ErrUnacknowledged, sendStored).
 func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope) (StoredAck, error) {
 	msgID := ""
-	if contracts.DedupeKeyNamesTheUpstreamEvent(item) {
+	if contracts.DedupeKeyNamesTheUpstreamEvent(item) || namesItsDeliveryException(item) {
 		msgID = ForwardMsgID(item.DedupeKey, item.Topic)
 	}
 	return c.PublishStoredAck(ctx, item.Topic, item, msgID)

@@ -73,7 +73,11 @@ type sessionConsumerSweep struct {
 	deps *listenerDeps
 	// relays holds this pod's receive term (sessionRelays.owned), which the pass requires: a pod
 	// that relays nothing sweeps nothing either. Inside holderLoops the term's own context
-	// already stops a pass, so that check is for a caller that starts the sweep elsewhere.
+	// already stops a pass, so that check is for a caller that starts the sweep elsewhere. Each
+	// delete is held to that term and to the lease's loss deadline as well
+	// (sessionDelivery.deleteConsumer, sessionRelays.termContext): the lease ends a term a moment
+	// before the context those loops run under ends, and a delete reached in that moment sends
+	// nothing.
 	relays *sessionRelays
 	logger *logging.Logger
 }
@@ -156,7 +160,7 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 		// The info the list already answered is handed to the delete, which records the
 		// consumer's floor from it rather than reading the consumer again: a session the
 		// delete confirms gone has nobody left to move that floor.
-		if s.delivery.deleteConsumer(ctx, s.deps, sessionID, info) {
+		if s.delivery.deleteConsumer(ctx, s.deps, sessionID, info, s.relays) {
 			deleted++
 		}
 	}

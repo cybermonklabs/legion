@@ -289,7 +289,7 @@ func TestAReceiveTermsEndForgetsTheGapMarksItsRelaysNoted(t *testing.T) {
 	})
 	mark := noted()
 
-	rig.relays.setOwned(false)
+	rig.relays.setOwned(nil)
 	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool { return noted() == "" }) {
 		t.Fatalf("the relay set still notes the gap mark %q for %s 10 s after its receive term ended: a mark noted under a term outlives it", noted(), sessionID)
 	}
@@ -299,7 +299,7 @@ func TestAReceiveTermsEndForgetsTheGapMarksItsRelaysNoted(t *testing.T) {
 	}
 	rig.repositories.failWith(0)
 	awaitConsumerSettled(t, rig, sessionID)
-	rig.relays.setOwned(true)
+	rig.relays.setOwned(endlessTerm())
 	if again := noted(); again != "" {
 		t.Fatalf("the receive term that began after the end notes the gap mark %q for %s", again, sessionID)
 	}
