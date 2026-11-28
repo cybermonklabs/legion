@@ -1,3 +1,9 @@
+/** The server decides every number these rows read: a save of a project's delivery settings
+ *  notifies dispatch_delivery_settings, which wakes its regroup (codesurvival.Regroup); the regroup
+ *  builds both code evals' day rows from the code survival run's stored results; and the tab draws
+ *  each card from the hub's evals views and the items route over those rows. A save or a clear of a
+ *  project's default repository is a write that the rows then read back. */
+
 // The two code cards of the Evals tab (dispatch://INFRA-3206/artifact/plan-md, T10; spec R7 to
 // R11 and R14; checks k6, k9, k11 and k16), on the real stack. Two projects, CODEA and CODEB,
 // share one default repository and so one seeded branch: CODEA reads its deploys from a GitHub

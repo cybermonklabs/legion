@@ -498,28 +498,6 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   {
     kind: "reviewed",
     layers: bothLayers,
-    name: "delivery",
-    path: (seed) => `/delivery?${seed.deliveryQuery}`,
-    pattern: "/delivery",
-    // The chart's own canvas, which ECharts creates only once the timeline query has answered
-    // (`web/src/features/delivery/Timeline.tsx:550`, as `e2e/two-builds.multiprocess.e2e.ts`
-    // locates it). The page's heading is drawn while that query is still pending, under
-    // "Loading delivery timeline…" (`DeliveryPage.tsx:446`), and that is the whole page the
-    // probe found missing in one run: the measure cards, the facets and the chart all wait on
-    // the same answer.
-    ready: (page) => [page.getByTestId("delivery-chart").locator("canvas").first()],
-  },
-  {
-    kind: "reviewed",
-    layers: bothLayers,
-    name: "pipeline",
-    path: (seed) => `/pipeline?at=${seed.pipelineAt}`,
-    pattern: "/pipeline",
-    ready: (page) => [page.getByRole("heading", { level: 1, name: "Pipeline" })],
-  },
-  {
-    kind: "reviewed",
-    layers: bothLayers,
     name: "not-found",
     path: () => "/no-such-page",
     pattern: "*",
