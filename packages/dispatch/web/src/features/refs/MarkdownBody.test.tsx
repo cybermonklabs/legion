@@ -1092,9 +1092,7 @@ test("a block reference to a deleted post keeps the words its author wrote, and 
     view.container.querySelector(`a[data-dispatch-ref="${block(id)}"]`)?.textContent;
 
   try {
-    await waitFor(() => expect(link("b1")).toBe("Keep the export at noon. · edited"), {
-      timeout: 2000,
-    });
+    await waitFor(() => expect(link("b1")).toBe("Keep the export at noon. · edited"));
     await waitFor(() => expect(getComment).toHaveBeenCalledWith(comment));
     expect(getReferences).toHaveBeenCalledWith(block("b2"));
     expect(link("b2")).toBe(block("b2"));

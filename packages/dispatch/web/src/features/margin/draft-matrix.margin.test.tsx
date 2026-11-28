@@ -608,17 +608,21 @@ const IN_A_KEPT_LINE = { found: "in a line saying it is kept for its words" } as
  * Where the reader finds, on CORE-1's spec, the draft written for `MARK_ANCHOR`'s words once no
  * compose the reader opened holds it: the compose holding its text, with that compose's words
  * and note; else a line saying it is kept for those words that shows its text (`IN_A_KEPT_LINE`);
- * else nowhere. Read once the margin has arrived on the document, which it says by no longer
- * being `aria-busy`: by then the arrival (`useMarginSheet`), the only code that brings a compose
- * back with nothing the reader pressed, has shown the compose it brings back, so a kept line
- * drawn before that compose cannot be read in its place. Then waits, until the row's deadline
- * (setup.ts's budget), for either place to hold the text: past the arrival each is where the
- * draft stays, since a kept line is drawn only while no compose is, and the draft of a compose
- * that ends with no arrival after it (its issue's closing) reaches its line a commit after the
- * compose goes. Neither by then reads as nowhere.
+ * else nowhere. Read once the margin has arrived on the document, which its card list says by no
+ * longer being `aria-busy`: by then the arrival (`useMarginSheet`), the only code that brings a
+ * compose back with nothing the reader pressed, has shown the compose it brings back, so a kept
+ * line drawn before that compose cannot be read in its place. Then waits, until the row's
+ * deadline (setup.ts's budget), for either place to hold the text: past the arrival each is where
+ * the draft stays, since a kept line is drawn only while no compose is, and the draft of a
+ * compose that ends with no arrival after it (its issue's closing) reaches its line a commit
+ * after the compose goes. Neither by then reads as nowhere.
  */
 async function foundBack(): Promise<Record<string, string>> {
-  await waitFor(() => expect(screen.getByTestId("margin-sheet")).not.toHaveAttribute("aria-busy"));
+  await waitFor(() =>
+    expect(
+      within(screen.getByTestId("margin-sheet")).getByLabelText("Margin review items")
+    ).not.toHaveAttribute("aria-busy")
+  );
   return await waitFor((): Record<string, string> => {
     const back = composesOnScreen().find((compose) => compose.text === BODY);
     if (back !== undefined) return { found: "in a compose", ...back };
@@ -652,16 +656,19 @@ for (const held of HELD) {
       await page.user.click(screen.getByRole("button", { name: "Back to the first issue" }));
       await screen.findByTestId(`margin-comment-${threadA.id}`);
       // The compose the margin shows on arrival, waited for until the row's deadline (setup.ts's
-      // budget); none on screen by then reads as absent.
+      // budget); none on screen by then reads as absent, and fails here, on its own diff, before
+      // the next selection is pressed.
       await screen.findByRole("textbox", { name: "Comment" }).catch(() => null);
-      const back = composeShown();
+      expect(composeShown(), "the compose back at its words on CORE-1's spec").toEqual(
+        backAtItsWords(held)
+      );
       await page.user.click(screen.getByRole("button", { name: "Compose on another selection" }));
       await screen.findByText(ANOTHER_ANCHOR.quote);
       const elsewhere = composesOnScreen()
         .filter((compose) => compose.text === BODY && compose.quote !== MARK_ANCHOR.quote)
         .map((compose) => compose.quote)
         .join(", ");
-      expect({ back, elsewhere }).toEqual({ back: backAtItsWords(held), elsewhere: "" });
+      expect(elsewhere, "a compose at other words holding the draft").toBe("");
     } finally {
       page.restore();
     }

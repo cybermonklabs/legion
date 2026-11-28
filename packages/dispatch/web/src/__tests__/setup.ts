@@ -97,6 +97,19 @@ expect.extend(reportableJestDomMatchers());
 // `afterEach` hooks in that order (measured on Bun 1.4.4): its mark after a row then follows this
 // file's `jest.useRealTimers()` below, so a row that left the fake clock held still gets one.
 //
+// So a real-clock wait that never succeeds takes the rest of its row's deadline: about 57 s of
+// `test:web`'s 60 s guard (less the margin of `guard / 20`), where this file's 10 s took 10 s. No
+// cap is set, because a cap is the fixed bound this budget removes. What a run then shows was
+// read on Bun 1.4.4 with `test:web`'s flags over two probe files, one whose row's `waitFor` never
+// succeeded and one whose row failed at once beside a 20 s row that passed. Under `--parallel`
+// each failed row prints its error and its `(fail)` line as it ends, before the summary: the row
+// that failed at once was in the log at 1.8 s while its file ran on, and the waiting row printed
+// at 58.8 s, its wait 57,019 ms. The same run ended at 30 s by a SIGTERM (`timeout 30`, standing
+// in for a job's own limit) printed the row that had failed, then `Interrupted while still
+// running:` naming the file still running and its 30 s, and no summary. So when many rows fail
+// this way and the job's limit ends the run first, the log holds each row that had failed by
+// then, with its error, and names each file still running, not its rows.
+//
 // Under `jest.useFakeTimers()` the budget stays 10 s of *fake* time, not of the machine's, and
 // does not read `timeLeft()`, which refuses a held clock: Testing Library advances the held clock
 // by its polling interval until the wait succeeds or the budget passes, which spends a few
@@ -251,8 +264,16 @@ afterEach(restoreQuietConsoleError);
 //
 // That `afterAll` runs the same checks, once per file under `--parallel`, which `test:web` passes;
 // a plain `bun test` over several files runs it once, at the end of the run. Keep this block the
-// last of the file, so its throws skip no other hook and its checks run after every other: a hook
-// added later goes above it.
+// last of the file, so its checks run after every other hook of this file and its throws skip
+// none of them: a hook added later goes above it. One `afterEach` still runs after the one below:
+// the row-deadline preload's mark of the row's end, since that preload is the last of
+// `test:web`'s list (the wait budget above says why). A throw here skips that mark, as a
+// preload's `afterEach` that throws skips the next preload's (measured on Bun 1.4.4; the mark
+// that preload's `beforeEach` registers for the end of the row's body still ran, before the
+// file's hooks). After a row these checks failed, a hook that runs before the next row's start
+// mark - a `describe`'s `beforeAll` - then counts its waits from an earlier mark (the end of that
+// row's body, or its start where the row held the fake clock), so they end earlier than its own
+// clock would allow, never later.
 //
 // The `beforeEach` puts back a spy of `quietConsoleError` that the row before left in place
 // because one of that row's own `afterEach` hooks threw before the one beside the clock restore

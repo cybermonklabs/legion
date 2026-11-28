@@ -543,7 +543,7 @@ test("the work table opens with the issue, its title, its status and its project
   const user = userEvent.setup();
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"])]);
   const work = await screen.findByRole("region", { name: "Work advancing this priority" });
-  await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 });
+  await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" });
   await user.click(within(work).getByRole("button", { name: "Columns" }));
   const menu = screen.getByRole("dialog", { name: "Columns" });
   for (const name of ["Key", "Title", "Status", "Project"])
@@ -557,11 +557,7 @@ test("j, k, x and Enter act on the work rows, the one table the page draws", asy
   const user = userEvent.setup();
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
   const work = await screen.findByRole("region", { name: "Work advancing this priority" });
-  const first = await within(work).findByRole(
-    "row",
-    { name: "CORE-1 Work CORE-1" },
-    { timeout: 3000 }
-  );
+  const first = await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" });
   await within(work).findByRole("row", { name: "CORE-4 Work CORE-4" });
   const focused = () => document.activeElement?.getAttribute("data-issue-row");
   first.focus();

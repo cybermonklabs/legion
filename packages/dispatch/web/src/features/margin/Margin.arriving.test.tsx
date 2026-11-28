@@ -1,8 +1,9 @@
 /**
- * The margin is `aria-busy` while it arrives on a document (`useMarginSheet`'s `arriving`): until
- * the document's threads are in and its arrival has shown again what it holds there. A busy flag
- * that never clears takes the margin from a screen-reader user for good, so each row here holds
- * one path on which it must clear, or must not be set at all:
+ * The margin's card list (`CommentsTab`'s "Margin review items") is `aria-busy` while the margin
+ * arrives on a document (`useMarginSheet`'s `arriving`): until the document's threads are in and
+ * its arrival has shown again what it holds there. The tabs above the list are outside it. A busy
+ * flag that never clears takes the margin's cards from a screen-reader user for good, so each row
+ * here holds one path on which it must clear, or must not be set at all:
  *
  * - the arrival runs, and what it brings back (a thread whose reply is held) is open as it clears;
  * - the document holds no drafts, so the arrival has nothing to bring back;
@@ -13,9 +14,10 @@
  * - an arrival on one document does not stand for the next one;
  * - the margin is taken away while busy. "Clears on unmount" means this in the code: the flag is
  *   the `arrivedOn` state of the sheet's own `useMarginSheet` and the `aria-busy` attribute of the
- *   `<aside>` that `MarginSheet` draws, and nothing else holds it (no store, no document-level
- *   attribute, no effect clean-up). Taking the margin away removes both from the page, so nothing
- *   is left busy, and a margin drawn again starts from no arrival and clears at its own;
+ *   card list that `CommentsTab` draws inside `MarginSheet`'s `<aside>`, and nothing else holds it
+ *   (no store, no document-level attribute, no effect clean-up). Taking the margin away removes
+ *   both from the page, so nothing is left busy, and a margin drawn again starts from no arrival
+ *   and clears at its own;
  * - the arrival throws. The margin is drawn as the app draws it, inside its own error boundary
  *   (`app.tsx`), which takes the whole margin away for its alert, so nothing is left busy: the
  *   reader loses the margin to the throw, which the alert names, not to a flag left set. A wait for
@@ -23,7 +25,7 @@
  */
 import { expect, spyOn, test } from "bun:test";
 import { hashKey, type QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
@@ -159,16 +161,19 @@ function threadsUnread(): QueryClient {
   return queryClient;
 }
 
-/** The margin's `aria-busy` now, or `"no margin"` where none is on screen. */
+/** The `aria-busy` of the margin's card list now, `"no margin"` where no margin is on screen, or
+ *  `"no card list"` where the margin draws none. */
 function busy(): string | null {
   const sheet = screen.queryByTestId("margin-sheet");
-  return sheet === null ? "no margin" : sheet.getAttribute("aria-busy");
+  if (sheet === null) return "no margin";
+  const cards = within(sheet).queryByLabelText("Margin review items");
+  return cards === null ? "no card list" : cards.getAttribute("aria-busy");
 }
 
 /**
- * Waits until the margin is on screen and no longer `aria-busy`, through setup.ts's budget: a
- * margin still busy at the row's deadline fails naming its `aria-busy`, and one the error boundary
- * took away fails naming the boundary's alert.
+ * Waits until the margin's card list is on screen and no longer `aria-busy`, through setup.ts's
+ * budget: a list still busy at the row's deadline fails naming its `aria-busy`, and a margin the
+ * error boundary took away fails naming the boundary's alert.
  */
 async function marginArrives(): Promise<void> {
   await waitFor(() => {
@@ -178,8 +183,8 @@ async function marginArrives(): Promise<void> {
       throw new Error(`waited for the margin to arrive, and no margin is on screen: ${alert}`);
     }
     expect(
-      sheet.getAttribute("aria-busy"),
-      "the margin's aria-busy, which its arrival on the document clears"
+      within(sheet).getByLabelText("Margin review items").getAttribute("aria-busy"),
+      "the card list's aria-busy, which the margin's arrival on the document clears"
     ).toBeNull();
   });
 }
@@ -246,7 +251,11 @@ test("the margin is never aria-busy when the issue read fails, since it has no d
   const page = drawPage(queryClient, new ApiError(503, { code: "UNAVAILABLE", error: "down" }));
   try {
     await screen.findByText("Could not load this issue's margin.");
-    expect(busy()).toBe(null);
+    // No card list is drawn with no document, and nothing else in the margin is busy.
+    expect({
+      busy: screen.getByTestId("margin-sheet").querySelectorAll("[aria-busy]").length,
+      cards: busy(),
+    }).toEqual({ busy: 0, cards: "no card list" });
   } finally {
     page.restore();
   }

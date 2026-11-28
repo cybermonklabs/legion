@@ -2751,7 +2751,7 @@ test("?item= naming a thread row whose read lands while a pointer moves over the
     expect(address()).toBe("/?item=reply:c1");
 
     // Settled, the list draws the thread row, and the address the reader opened selects it.
-    await waitFor(() => expect(selectedIds()).toEqual(["reply:c1"]), { timeout: 2000 });
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:c1"]));
     expect(address()).toBe("/?item=reply:c1");
   } finally {
     unmount();
