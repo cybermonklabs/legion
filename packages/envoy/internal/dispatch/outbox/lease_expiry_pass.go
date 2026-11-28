@@ -43,7 +43,7 @@ import (
 // So a silence that one of the pass's NATS calls meets is found by a probe: one made when due, at
 // most probeTimeout after the silence, or the one made as the pass returns, which that call brings
 // on; the probe fails probeTimeout after it was made. A read in flight then is bounded from its own
-// start at probeTimeout, and the end of the pass's context does not end its flush
+// start at probeTimeout. In production the end of the pass's context does not end its flush
 // (boundedKeptLanes), so the pass returns, and the holder gives the hold up, at most about
 // 3 x probeTimeout (6 s) after the silence. A silence that starts after the pass's last NATS call,
 // while the pass does its database work, meets no call of the pass and may meet no probe of it: it
@@ -69,7 +69,7 @@ func (o *Outbox) passKeptExpiriesWhileNATSAnswers(ctx context.Context, hold fenc
 	defer endPass()
 	returned := make(chan bool, 1)
 	watched := make(chan expiryPassEnd, 1)
-	began := time.Now()
+	began := o.clock.Now()
 	go func() { watched <- o.watchExpiryPass(ctx, changed, returned, endPass, began) }()
 	full, failed = o.passKeptExpiries(pass, hold)
 	returned <- failed
@@ -143,7 +143,7 @@ func (o *Outbox) watchExpiryPass(ctx context.Context, changed <-chan struct{}, r
 		endPass()
 		return expiryPassConnectionChanged
 	}
-	due := time.NewTimer(time.Until(began.Add(probeTimeout)))
+	due := o.clock.NewTimer(began.Add(probeTimeout).Sub(o.clock.Now()))
 	defer due.Stop()
 	for {
 		select {
@@ -153,17 +153,17 @@ func (o *Outbox) watchExpiryPass(ctx context.Context, changed <-chan struct{}, r
 			done = true
 		case <-changed:
 			return atConnectionEvent()
-		case <-due.C:
+		case <-due.C():
 		}
 		switch {
 		case !done:
 		case connectionReplaced(changed):
 			return atConnectionEvent()
-		case !failed && time.Since(began) < probeTimeout:
+		case !failed && o.clock.Now().Sub(began) < probeTimeout:
 			return expiryPassFinished
 		}
 		// A probe left behind, at a stop or a connection event, answers into its buffer.
-		sent := time.Now()
+		sent := o.clock.Now()
 		answer := make(chan error, 1)
 		go func() { answer <- o.deps.Publisher.WindowUntil(nil).Probe(probeTimeout) }()
 		var err error
@@ -178,7 +178,7 @@ func (o *Outbox) watchExpiryPass(ctx context.Context, changed <-chan struct{}, r
 		case err == nil && returnedNow():
 			return expiryPassFinished
 		case err == nil:
-			due.Reset(time.Until(sent.Add(probeTimeout)))
+			due.Reset(sent.Add(probeTimeout).Sub(o.clock.Now()))
 			continue
 		case connectionReplaced(changed):
 			return atConnectionEvent()

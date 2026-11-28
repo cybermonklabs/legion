@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -13,7 +14,7 @@ import (
 // keeps only what this process's passes last found waiting.
 func TestAHandedOverHeldCopyLeavesTheRecordWithoutAScrape(t *testing.T) {
 	t.Parallel()
-	held := newHeldCopies()
+	held := newHeldCopies(clock.Real())
 	issue := "A-1"
 	event := model.Event{IssueKey: &issue}
 	stale := fallbackCopy{commentID: "stale", destination: "notifications.agent.s1"}
