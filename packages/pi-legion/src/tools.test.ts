@@ -1608,7 +1608,10 @@ const defectTool = (daemon: () => LegionDaemonClient, active: LegionToolSession)
 // report_defect records a defect of the change, found once its task's last step passed, and moves
 // no phase: the role goes on with its step. The implementer in retro, the merger in merging and
 // the owning architect report through the one phase op, and no report tells the session anything.
-test("report_defect does not close the phase", async () => {
+// The plugin holds no phase input (INFRA-3136), so the one way the tool could close or move a
+// phase is a daemon phase op, handoffComplete or phaseBackward among them: the case holds the
+// tool to a grant and the report for each call, and any other route it posts fails it.
+test("report_defect moves no phase", async () => {
   const recorded = { defect: "41", state: "recorded", nextChange: 4 };
   const { calls, daemon } = recordingDaemon({ answers: { reportDefect: recorded } });
   for (const role of ["implementer", "merger", "architect"] as const) {
@@ -1632,6 +1635,14 @@ test("report_defect does not close the phase", async () => {
     ["reportDefect", sent],
     ["reportDefect", sent],
     ["reportDefect", sent],
+  ]);
+  expect(calls.map(([name]) => name)).toEqual([
+    "grant",
+    "reportDefect",
+    "grant",
+    "reportDefect",
+    "grant",
+    "reportDefect",
   ]);
 });
 
