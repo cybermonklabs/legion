@@ -123,7 +123,7 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err := e.store.MarkIssueMoved(ctx, tx, started.Key, now); err != nil {
 		return err
 	}
-	if err := e.store.ClearChangeGeneration(ctx, tx, started.Key); err != nil {
+	if err := e.ClearTreeGeneration(ctx, tx, started.Tree, now); err != nil {
 		return err
 	}
 	if err := e.publishWait(ctx, tx, started); err != nil {
