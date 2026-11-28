@@ -113,7 +113,7 @@ export function StageSlot({
         </StageBox>
       ) : (
         <ViewStage box={viewBox} key={preset}>
-          <View {...props} onAddressDrawn={onAddressDrawn} />
+          <View {...props} acts={acts} onAddressDrawn={onAddressDrawn} />
         </ViewStage>
       )}
     </DocumentStages>
@@ -123,6 +123,9 @@ export function StageSlot({
 /** What the stage hands the view it draws in place of the outline: the slot's own props, and
  *  how the view tells the stage whether its tree draws the node the address names. */
 export interface ViewSlotProps extends SlotProps {
+  /** The reader's acts since the address was followed (`ReaderActsWatch`, keyed on the
+   *  following): a controller their first act aborts, which a view's landing reads. */
+  readonly acts?: RefObject<AbortController | undefined>;
   /**
    * Tells the stage whether the view's tree draws the node the address names (`drawn`). The
    * stage takes the first call of each following of the address (`useFollowing`) that names a
@@ -165,7 +168,7 @@ export const SLOT_FILLED: SlotsFilled = {
   dashboard: true,
   decisions: true,
   plan: true,
-  spec: false,
+  spec: true,
   threads: true,
   verification: true,
 };
