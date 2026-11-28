@@ -1311,19 +1311,14 @@ func endedOnTheOwnersWithdrawal(r *doneByChecksRig, issue string) {
 	}
 }
 
-// closesOnTheNewAssessment is the close after the change's end. A production check of generation 2
-// opens at the retained merge and replaces first's row. A pass of the check after the merge, at a
-// commit that holds the merge, leaves the issue waiting for that new check. Its look 1 reports
-// pass, and the read after it closes the issue.
+// closesOnTheNewAssessment is the close after the change's end. A pass of the check after the merge,
+// at a commit that holds the merge, comes first, and the issue still waits: a production check of
+// generation 2 opens at the retained merge, replaces first's row, and holds the close. Its look 1
+// reports pass, and the read after it closes the issue. The hold is asserted before the test reads
+// the new check or its look, so a daemon that closes on the earlier generation's pass fails there.
 func closesOnTheNewAssessment(r *doneByChecksRig, issue string, first record.ProductionCheck) {
 	t := r.t
 	t.Helper()
-	tester := r.worker(claim.RoleTester)
-	opened := r.lookOf(tester, 1, stepRecordsWait)
-	if check := readProductionCheck(t, r.st.Pool(), r.records, issue); !check.Open() || check.Generation != 2 || check.MergeSHA != doneByChecksMergeCommit ||
-		check.OpenedAt.Equal(first.OpenedAt) {
-		t.Fatalf("%s's production check after the change's end is %+v, want generation 2's own open at %s in place of generation 1's", issue, check, doneByChecksMergeCommit)
-	}
 	passed := r.awaitResultFact(r.record("pass", r.standIn.commitOnMain(doneByChecksLaterCommit)))
 	r.awaitCloseRead(issue, "the pass of the check after the merge", passed, func(read doneByChecksRead) error {
 		if block, held := read.check(doneByChecksCheck); !held || block.PassStands.Answer != dispatch.PassStandsYes {
@@ -1340,6 +1335,12 @@ func closesOnTheNewAssessment(r *doneByChecksRig, issue string, first record.Pro
 		}
 		return nil
 	})
+	if check := readProductionCheck(t, r.st.Pool(), r.records, issue); !check.Open() || check.Generation != 2 || check.MergeSHA != doneByChecksMergeCommit ||
+		check.OpenedAt.Equal(first.OpenedAt) {
+		t.Fatalf("%s's production check after the change's end is %+v, want generation 2's own open at %s in place of generation 1's", issue, check, doneByChecksMergeCommit)
+	}
+	tester := r.worker(claim.RoleTester)
+	opened := r.lookOf(tester, 1, stepRecordsWait)
 	reported := r.reportLook(tester, opened, 1, "pass", nil)
 	tester.endTurn()
 	r.awaitCloseRead(issue, "the new production check's pass", reported, passesAt(doneByChecksBeforeCheck, stepRecordsHead))
