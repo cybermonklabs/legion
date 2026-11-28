@@ -99,7 +99,7 @@ same daemon and an anonymous pull from `ghcr.io/cybermonklabs/legion/ci`, where 
 2.12.2 from the repository's digest-pinned copy. `deploy/scripts/autodeploy_test.sh` runs one group
 of its cases per run, `autodeploy_test.sh <group>`, and `--groups` lists the groups; each group runs
 from a fresh fixture, as CI runs each as a pool entry of its own. Every group runs, from
-`packages/envoy`, with `for g in $(bash deploy/scripts/autodeploy_test.sh --groups); do bash deploy/scripts/autodeploy_test.sh "$g" || exit 1; done`.
+`packages/envoy`, with `(for g in $(bash deploy/scripts/autodeploy_test.sh --groups); do bash deploy/scripts/autodeploy_test.sh "$g" || exit 1; done)`.
 `autodeploy_test.sh` runs its Compose reads on the Compose plugin straight (the first
 `docker-compose` in the docker CLI's plugin search order, which must answer the version
 `docker compose` does), with `DOCKER_HOST` on a socket nothing listens on, while the

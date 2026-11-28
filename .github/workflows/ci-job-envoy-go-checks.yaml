@@ -115,19 +115,21 @@ jobs:
         working-directory: packages/envoy
       # The deploy tests' URL cases run under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past
       # ASCII, to hold the deployer's URL grammar to ASCII; their groups refuse to run without that
-      # locale. This step runs the harness's own control and generates the locale only where it
-      # fails, so one condition decides both, and on ubuntu-24.04 it did not fail: probe run
-      # 46134562966 found `en_US.utf8` in `locale -a` before any locale-gen, where at main the
-      # harness's pooled command ran `sudo locale-gen` first in every run, 3.3 to 5.9 s inside its
-      # pool entry. A plain step, not pooled, after the four longest harnesses are queued, so no
-      # slot waits on it.
+      # locale. This step runs the same test as url_locale_control in
+      # deploy/scripts/autodeploy_test.sh, which must stay the same as it, and generates the locale
+      # only where that test fails, so one condition decides both, and on ubuntu-24.04 it did not
+      # fail: probe run 46134562966 found `en_US.utf8` in `locale -a` before any locale-gen, where
+      # at d519fc9a the harness's pooled command ran `sudo locale-gen` first in every run, 3.3 to
+      # 5.9 s inside its pool entry. A plain step, not pooled, after the four longest harnesses are
+      # queued, so no slot waits on it.
       - name: Generate en_US.UTF-8 where the runner lacks it, for the deploy tests' URL cases
         run: LC_ALL=en_US.UTF-8 bash -c '[[ "ä" =~ ^[a-z]$ ]]' 2>/dev/null || sudo locale-gen en_US.UTF-8
-      # The last group of the env cases pulled this image inside its own pool entry at main (2.6 to
-      # 3.9 s); pulled once here, after the four longest harnesses hold every slot, no harness waits
-      # on it. No continue-on-error: a failed pull is this repository's fault and must be seen.
+      # The last group of the env cases pulled this image inside its own pool entry at d519fc9a
+      # (2.6 to 3.9 s); pulled once here, after the four longest harnesses hold every slot, no
+      # harness waits on it. No continue-on-error: a failed pull is this repository's fault and
+      # must be seen.
       - name: Pull the Compose 2.12.2 image the deploy tests take
-        run: bash -c '. deploy/scripts/compose-2.12.2_test.sh && pull_compose_2_12'
+        run: . deploy/scripts/compose-2.12.2_test.sh && pull_compose_2_12
         working-directory: packages/envoy
       # autodeploy_test.sh runs one group of its cases per run, each from a fresh fixture, so each
       # group is a pool entry of its own, named `deploy/scripts/autodeploy_test.sh <group>`. The

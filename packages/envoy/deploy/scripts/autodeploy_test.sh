@@ -28,7 +28,7 @@ if [[ -z "$group" ]]; then
     printf '  %s\n' "${group_names[@]}"
     printf 'and every group, from packages/envoy, as:\n'
     # shellcheck disable=SC2016 # printed for a shell to run, with $(...) and "$g" unexpanded
-    printf '  %s\n' 'for g in $(bash deploy/scripts/autodeploy_test.sh --groups); do bash deploy/scripts/autodeploy_test.sh "$g" || exit 1; done'
+    printf '  %s\n' '(for g in $(bash deploy/scripts/autodeploy_test.sh --groups); do bash deploy/scripts/autodeploy_test.sh "$g" || exit 1; done)'
   } >&2
   exit 2
 fi
@@ -490,6 +490,9 @@ run_deployer() {
 deploy_once() {
   run_deployer --once
 }
+# fail prints the deployer's output a case captured last, and a group can fail before any case has
+# captured one.
+output=
 fail() {
   printf '%s\n' "$1" >&2
   printf -- '--- deployer output:\n%s\n--- compose:\n%s\n--- argv:\n%s\n' "$output" "$(<"$log")" "$(<"$argv")" >&2
@@ -502,6 +505,8 @@ no_secret() {
     fail "$1: a password or psql's stderr reached the output or a process's arguments"
   fi
 }
+# A value with a byte outside printable ASCII shows as LC_ALL=C printf %q prints it; LC_ALL stays.
+shown() ( LC_ALL=C; if [[ "$1" == *[![:print:]]* ]]; then printf %q "$1"; else printf %s "$1"; fi )
 # Every database client container runs under pg_client's timeout, so each one records its bound.
 # Each try of the schema read (a psql run) gets at least one second: pg_client reads 0 as
 # unbounded. The pre-deploy backup (pg_dump) asks pg_client for no bound (0), and this check
@@ -532,7 +537,39 @@ schema_value() {
 # shellcheck source=SCRIPTDIR/autodeploy_test_env.sh
 . "$(dirname "$0")/autodeploy_test_env.sh"
 
+arguments_refused() {
+# autodeploy_test.sh run with no group, or with a name that is no group, exits 2 before its setup,
+# so a CI pool entry that lost its group fails at once, and its refusal names every group that
+# --groups prints. Each of the two runs has a TMPDIR of its own under $root, which stays empty, and
+# first on its PATH a stand-in mktemp in a directory of its own, which leaves a marker under $root,
+# outside that TMPDIR, and exits 1. A refusal moved below the setup's `root=$(mktemp -d)` would
+# leave that TMPDIR empty all the same, since the setup's EXIT trap deletes what mktemp made; the
+# stand-in's marker stays, and its exit fails the setup with status 1.
+bash "$0" --groups >"$root/groups" || fail "autodeploy_test.sh --groups exited $?, not 0"
+printf '%s\n' "${group_names[@]}" | cmp -s - "$root/groups" ||
+  fail "autodeploy_test.sh --groups printed $(<"$root/groups"), not the list of groups"
+for refused in '' no-such-group; do
+  tmp="$root/tmpdir${refused:+-$refused}"
+  stand_in="$root/mktemp-bin${refused:+-$refused}"
+  marker="$root/mktemp-ran${refused:+-$refused}"
+  mkdir "$tmp" "$stand_in"
+  printf '#!/usr/bin/env bash\n: >%q\nexit 1\n' "$marker" >"$stand_in/mktemp"
+  chmod +x "$stand_in/mktemp"
+  status=0
+  output=$(PATH="$stand_in:$PATH" TMPDIR="$tmp" bash "$0" ${refused:+"$refused"} 2>&1 >/dev/null) || status=$?
+  ((status == 2)) || fail "autodeploy_test.sh ${refused:-with no group} exited $status, not 2"
+  while IFS= read -r listed; do
+    [[ "$output" == *"$listed"* ]] || fail "autodeploy_test.sh ${refused:-with no group} did not name the group $listed"
+  done <"$root/groups"
+  [[ ! -e "$marker" ]] || fail "autodeploy_test.sh ${refused:-with no group} ran mktemp before it refused"
+  [[ -z "$(find "$tmp" -mindepth 1)" ]] ||
+    fail "autodeploy_test.sh ${refused:-with no group} made $(find "$tmp" -mindepth 1) in its TMPDIR before it refused"
+done
+printf 'PASS: %s\n' 'autodeploy_test.sh with no group, or with an unknown one, exits 2 before its setup, naming every group that --groups prints'
+}
+
 url_locale_control() {
+# CI's step 'Generate en_US.UTF-8 where the runner lacks it' runs the same test; the two must match.
 # Both URL loops below run under en_US.UTF-8, where bash's [[ =~ ]] ranges such as [a-z] and
 # [0-9] also match non-ASCII characters, so a grammar that left the locale in force would accept
 # what it should refuse. The control needs that locale installed and widening the ranges.
@@ -599,9 +636,9 @@ for case in \
     [[ -s "$log" || -s "$argv" ]]; then
     fail "deployer did not refuse ${case#*|} before running anything, without printing it"
   fi
-  printf -v url_shown %s "$(LC_ALL=C; if [[ "${case#*|}" == *[![:print:]]* ]]; then printf %q "${case#*|}"; else printf %s "${case#*|}"; fi)"
-  printf 'PASS: %s\n' "DATABASE_URL $url_shown is refused before anything runs, and the refusal does not print it"
+  printf 'PASS: %s\n' "DATABASE_URL $(shown "${case#*|}") is refused before anything runs, and the refusal does not print it"
 done
+((row == 97)) || fail "url_refused_rows: the loop's cases are rows 68 to $row, and the url-refused groups run 68 to 97, so a case would run in no group"
 }
 
 # This file's groups: each is a function whose body is its cases as they stood at the top level,
@@ -1020,10 +1057,10 @@ for listed in "${group_names[@]}"; do
     fail "autodeploy_test: the group $listed has no function group_${listed//-/_}, so it would run no case"
   listed_functions+="group_${listed//-/_} "
 done
-while read -r _ _ defined; do
-  [[ "$defined" != group_* || "$listed_functions" == *" $defined "* ]] ||
+for defined in $(compgen -A function group_); do
+  [[ "$listed_functions" == *" $defined "* ]] ||
     fail "autodeploy_test: the function $defined is no group the list at the top of autodeploy_test.sh names, so no run calls it"
-done < <(declare -F)
+done
 # The group the argument names, called as a plain command, so set -e holds inside it.
 "group_${group//-/_}"
 clients_bounded

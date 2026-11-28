@@ -8,9 +8,6 @@
 # autodeploy_test.sh's variables, so shellcheck's unused (SC2034) and unassigned (SC2154) warnings
 # are off here.
 
-# fail prints the deployer's output a case captured last, and a group can fail before any case has
-# captured one.
-output=
 # with_line NAME LINE drops the lines of compose/.env that begin NAME= and adds LINE at its end.
 with_line() {
   grep -v "^$1=" "$compose/.env" >"$compose/.env.new"
@@ -73,6 +70,7 @@ for setting in \
     printf 'PASS: %s\n' "$spelling, which Compose resolves $resolution"
   done
 done
+((row == 21)) || fail "env_spelling_rows: the loop's cases are rows 2 to $row, and the env-spellings groups run 2 to 21, so a case would run in no group"
 }
 
 # compose_resolves NAME [VAR=value...] prints NAME as Compose resolves it from the test's
@@ -151,29 +149,9 @@ sys.exit(1 if problems else 0)
 PY
 }
 here=$(dirname "$0")
-repo_root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 
 group_env_spellings_1() {
-# autodeploy_test.sh run with no group, or with a name that is no group, exits 2 before its setup,
-# so a CI pool entry that lost its group fails at once, and its refusal names every group that
-# --groups prints. Each of the two runs has a TMPDIR of its own under $root, which stays empty: the
-# setup's mktemp -d never ran.
-bash "$0" --groups >"$root/groups" || fail "autodeploy_test.sh --groups exited $?, not 0"
-printf '%s\n' "${group_names[@]}" | cmp -s - "$root/groups" ||
-  fail "autodeploy_test.sh --groups printed $(<"$root/groups"), not the list of groups"
-for refused in '' no-such-group; do
-  tmp="$root/tmpdir${refused:+-$refused}"
-  mkdir "$tmp"
-  status=0
-  output=$(TMPDIR="$tmp" bash "$0" ${refused:+"$refused"} 2>&1 >/dev/null) || status=$?
-  ((status == 2)) || fail "autodeploy_test.sh ${refused:-with no group} exited $status, not 2"
-  while IFS= read -r listed; do
-    [[ "$output" == *"$listed"* ]] || fail "autodeploy_test.sh ${refused:-with no group} did not name the group $listed"
-  done <"$root/groups"
-  [[ -z "$(find "$tmp" -mindepth 1)" ]] ||
-    fail "autodeploy_test.sh ${refused:-with no group} made $(find "$tmp" -mindepth 1) in its TMPDIR before it refused"
-done
-printf 'PASS: %s\n' 'autodeploy_test.sh with no group, or with an unknown one, exits 2 before its setup, naming every group that --groups prints'
+arguments_refused
 
 # A .env with neither of Dispatch's identity settings is refused before anything of the deploy
 # runs: Dispatch's container refuses to start without one and restart-loops, and so would the
@@ -356,8 +334,7 @@ sys.stdout.write(text.replace(anchor, anchor + "  " + os.environ["PLANT"] + "\n"
   if env_reads "$root/planted.sh" >/dev/null; then
     fail "the static check passed a copy of autodeploy.sh with this read of the env file planted: $plant"
   fi
-  printf -v plant_shown %s "$(LC_ALL=C; if [[ "$plant" == *[![:print:]]* ]]; then printf %q "$plant"; else printf %s "$plant"; fi)"
-  printf 'PASS: %s\n' "the static check refuses a copy of autodeploy.sh with this read of the env file planted: $plant_shown"
+  printf 'PASS: %s\n' "the static check refuses a copy of autodeploy.sh with this read of the env file planted: $(shown "$plant")"
 done
 
 # The text scan above is fast, and it is a text scan: a path spelled in pieces or matched by a glob
@@ -419,6 +396,7 @@ printf 'PASS: %s\n' 'a start keeps a staging file younger than a minute and dele
 # over it. A deployer killed there by SIGKILL, which no trap sees, leaves that file: git ignores
 # exactly that name (packages/envoy/.gitignore), and the next start removes it after a minute, and
 # nothing else in the directory. A TERM exits the deployer and its EXIT trap removes the file.
+repo_root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 fresh_env
 AUTODEPLOY_TEST_KILL_AT_ENV_MV=1 deploy_once >/dev/null 2>&1 || true
 read -r _ staged staged_mode < <(grep '^mv-source ' "$argv" | head -n 1) ||
