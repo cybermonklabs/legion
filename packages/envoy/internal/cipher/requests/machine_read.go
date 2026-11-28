@@ -1699,7 +1699,8 @@ type Session struct {
 
 // PendingSummary is one credential-request record for GET /v1/pending: its id, kind, the plain
 // identifiers its request object names (secret names for agent_secret, the single host for
-// launcher_credential), when it was requested, the session it names, its state and its deadline.
+// launcher_credential), when it was requested, the session it names, its state and its deadline,
+// the Dispatch scopes a Dispatch sign-in asks for, and the reason its request object signed.
 type PendingSummary struct {
 	RecordID    string
 	Kind        string
@@ -1713,6 +1714,12 @@ type PendingSummary struct {
 	// requests.pending_expires_at, the column its decision reads, and a machine login's
 	// credential_requests.expires_at.
 	ExpiresAt time.Time
+	// DispatchScopes is the record's own dispatch_scopes column (machine.Service.LoginDevice):
+	// nil for a machine login and for a secret request, and for a Dispatch sign-in the scopes it
+	// asks for, {} for one that asks none.
+	DispatchScopes *[]string
+	// Reason is the reason the record's request object signed, verbatim, "" where it signed none.
+	Reason string
 }
 
 // PendingStates is which records PendingForApprover lists. Its zero value asks for no state and
@@ -1820,9 +1827,10 @@ const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
 // is listed for each of the groups $3 names, the fresh groups the group reader lists the person in
 // (Machine.Groups' GroupsOf), in the group form. Each row carries the approver it waits on, so the
 // list tells a person's own machine login from a row that waits on them only as one of its
-// approvers (approverRow).
+// approvers (approverRow), and its own dispatch_scopes column, which says whether a machine login
+// is a Dispatch sign-in and the scopes it asks for (machine.Service.LoginDevice).
 var pendingListFrom = `select cr.id, cr.kind, cr.approver, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
-		s.state, ` + recordDeadlineSQL + `, coalesce(cr.notify, ''), ` + credentialColumnsOf("enr") + `, ` + credentialColumnsOf("cur") + `
+		s.state, ` + recordDeadlineSQL + `, coalesce(cr.notify, ''), cr.dispatch_scopes, ` + credentialColumnsOf("enr") + `, ` + credentialColumnsOf("cur") + `
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
 	left join enrollments enr on enr.id = cr.enrollment_id
@@ -1975,8 +1983,9 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	for rows.Next() {
 		var id, kind, approverOf, canonical, requestSession, enrollmentSession, state, notify string
 		var createdAt, expiresAt time.Time
+		var dispatchScopes *[]string
 		var asked, current enrollmentRow
-		if err := rows.Scan(slices.Concat([]any{&id, &kind, &approverOf, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt, &notify},
+		if err := rows.Scan(slices.Concat([]any{&id, &kind, &approverOf, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt, &notify, &dispatchScopes},
 			asked.credentialDest(), current.credentialDest())...); err != nil {
 			return nil, err
 		}
@@ -1990,7 +1999,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 		out = append(out, PendingSummary{
 			RecordID: id, Kind: kind, Identifiers: identifiers, RequestedAt: createdAt,
 			Session: Session{Request: requestSession, Enrollment: enrollmentSession},
-			State:   state, ExpiresAt: expiresAt,
+			State:   state, ExpiresAt: expiresAt, DispatchScopes: dispatchScopes, Reason: reason,
 		})
 		reads = append(reads, seen{sessionProjects: m.credentialsProjects(asked, current), reason: reason, notify: notify, approverRow: approverRow(kind, approverOf, login, service == "")})
 	}

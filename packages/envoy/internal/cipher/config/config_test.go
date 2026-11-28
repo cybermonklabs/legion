@@ -115,6 +115,44 @@ func TestTheMachineLoginURLIsOptionalAndHeldToItsForm(t *testing.T) {
 	}
 }
 
+// TestTheDispatchSignInSwitchIsOnOrOff: BROKER_DISPATCH_SIGNIN unset or blank is off and on is
+// on; any other value refuses the start naming the setting and the value, and on refuses beside
+// no BROKER_MACHINE_LOGIN_URL, since a Dispatch sign-in is a device login.
+func TestTheDispatchSignInSwitchIsOnOrOff(t *testing.T) {
+	for _, row := range []struct {
+		value string
+		set   bool
+		want  bool
+	}{
+		{set: false, want: false},
+		{value: "", set: true, want: false},
+		{value: "  ", set: true, want: false},
+		{value: "on", set: true, want: true},
+	} {
+		e := validEnv()
+		if row.set {
+			e["BROKER_DISPATCH_SIGNIN"] = row.value
+		}
+		if cfg, err := Load(env(e)); err != nil || cfg.DispatchSignIn != row.want {
+			t.Errorf("Load(BROKER_DISPATCH_SIGNIN=%q, set %t) = (%t, %v), want %t", row.value, row.set, cfg.DispatchSignIn, err, row.want)
+		}
+	}
+	for _, bad := range []string{"off", "ON", "true", "1", "yes"} {
+		e := validEnv()
+		e["BROKER_DISPATCH_SIGNIN"] = bad
+		want := "BROKER_DISPATCH_SIGNIN must be on or unset, got " + strconv.Quote(bad)
+		if _, err := Load(env(e)); err == nil || err.Error() != want {
+			t.Errorf("Load(BROKER_DISPATCH_SIGNIN=%q) = %v, want %q", bad, err, want)
+		}
+	}
+	e := validEnv()
+	e["BROKER_DISPATCH_SIGNIN"] = "on"
+	delete(e, "BROKER_MACHINE_LOGIN_URL")
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_DISPATCH_SIGNIN=on needs BROKER_MACHINE_LOGIN_URL") {
+		t.Errorf("Load(BROKER_DISPATCH_SIGNIN=on, no BROKER_MACHINE_LOGIN_URL) = %v, want a refusal naming both", err)
+	}
+}
+
 func TestLoadKeepsTheAzureProjectedTokenPathForEachRelease(t *testing.T) {
 	for _, row := range []struct{ configured, want string }{
 		{"", "/var/run/secrets/azure/tokens/azure-identity-token"},

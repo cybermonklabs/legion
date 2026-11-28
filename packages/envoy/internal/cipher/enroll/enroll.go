@@ -196,11 +196,18 @@ type LiveCredential struct {
 	// (system:serviceaccount:<namespace>:<name>), or a machine as the token exchange names it
 	// (exchange.MachineSubject); nil for every login a person approved.
 	Subject *string
+	// DispatchScopes is non-nil only for a Dispatch sign-in, including one approved with none.
+	DispatchScopes *[]string
 	// Person is the person a person's pod login acts for: the person BROKER_POD_OPERATORS maps
 	// the login's subject to now, which is the person whose list holds it. It is nil for every
 	// other login. liveCredentials sets it from the setting after the query, so the query reads
 	// no column for it.
 	Person *string `db:"-"`
+	// Reason is the reason the login's request object signed, so a person tells several logins
+	// of one host apart: "" when it signed none, for every token login, which signs no request
+	// object, and for a record this broker cannot verify. liveCredentials reads it from the
+	// login's record after the query (requestReasons).
+	Reason string `db:"-"`
 	// ApprovedBy is the login of the person who approved it, "" for every token login, a person's
 	// pod login among them, which no person approves.
 	ApprovedBy string
@@ -417,13 +424,15 @@ type execer interface {
 // machine-login flow); AuthenticateLauncher refuses such a credential outright. approver is the
 // account that approved it (migration 0047), which a revoke of that account, once it no longer
 // holds the operator's address, ends it by; the zero value records none, as an approval an
-// older Dispatch relayed carries none.
+// older Dispatch relayed carries none. dispatchScopes are the Dispatch scopes a Dispatch sign-in's
+// person approved (migration 0053), written once here and never changed: nil for a machine login,
+// and non-nil, also when empty, for a Dispatch sign-in.
 //
 // It runs on db, which is the caller's own transaction — machine.Service.ApplyDecision's own
 // approval commit, so a crash between minting and recording its decision rolls back both together
 // instead of leaving an orphaned, unrecoverable credential — or, for a test fixture, the pool. It
 // refuses a key a live read token is bound to first (keyBindsReadToken).
-func (s *Service) mintLauncherCredential(ctx context.Context, db oauthstore.Querier, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time, approver store.IssuerSubject) (uuid.UUID, error) {
+func (s *Service) mintLauncherCredential(ctx context.Context, db oauthstore.Querier, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time, approver store.IssuerSubject, dispatchScopes *[]string) (uuid.UUID, error) {
 	if operator != nil {
 		operator = new(record.CanonicalLogin(*operator))
 	}
@@ -431,9 +440,9 @@ func (s *Service) mintLauncherCredential(ctx context.Context, db oauthstore.Quer
 		return uuid.Nil, err
 	}
 	id := uuid.New()
-	_, err := db.Exec(ctx, `insert into launcher_credentials (id, operator, service, host, key_thumbprint, public_jwk, record_id, expires_at, approver_issuer, approver_subject)
-		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		id, operator, service, host, thumbprint, []byte(jwk), nullable(recordID), expires, nullable(approver.Issuer), nullable(approver.Subject))
+	_, err := db.Exec(ctx, `insert into launcher_credentials (id, operator, service, host, key_thumbprint, public_jwk, record_id, expires_at, approver_issuer, approver_subject, dispatch_scopes)
+		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		id, operator, service, host, thumbprint, []byte(jwk), nullable(recordID), expires, nullable(approver.Issuer), nullable(approver.Subject), dispatchScopes)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -466,8 +475,10 @@ func keyBindsReadToken(ctx context.Context, db oauthstore.Querier, thumbprint st
 // MintLauncherCredentialTx mints a person's launcher credential, operating operator's machine and
 // approved by the account approver, inside tx, joined to the caller's own transaction —
 // machine.Service.ApplyDecision's own approval commit.
-func (s *Service) MintLauncherCredentialTx(ctx context.Context, tx pgx.Tx, operator, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time, approver store.IssuerSubject) (uuid.UUID, error) {
-	return s.mintLauncherCredential(ctx, tx, &operator, nil, host, thumbprint, jwk, recordID, expires, approver)
+// dispatchScopes is null for a machine login and non-nil, including when empty, for a Dispatch
+// sign-in.
+func (s *Service) MintLauncherCredentialTx(ctx context.Context, tx pgx.Tx, operator, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time, approver store.IssuerSubject, dispatchScopes *[]string) (uuid.UUID, error) {
+	return s.mintLauncherCredential(ctx, tx, &operator, nil, host, thumbprint, jwk, recordID, expires, approver, dispatchScopes)
 }
 
 // TokenLogin is one verified token login, as IssueTokenLogin records it: the identity the token
@@ -680,25 +691,32 @@ func NewChainVerifier(st *store.Store, audience string, skew time.Duration) *rec
 // and so its service, as the table's check constraint holds) authenticates while its subject is
 // still listed for its service (tokenLoginListed), so removing an account from
 // BROKER_SERVICE_LOGINS or BROKER_VM_SERVICES ends its credential at its next call, as does an
-// entry that stops naming the issuer whose token made the credential. A missing, expired,
-// revoked, chain-broken or no-longer-listed credential all answer ("", false, nil); only a
-// genuine dependency failure is a non-nil error, matching Lookup's own contract.
+// entry that stops naming the issuer whose token made the credential. A Dispatch sign-in's
+// credential (dispatch_scopes set, oauthwire.ScopeDispatch) never authenticates a launcher proof:
+// its person approved it for Dispatch alone, so it enrolls no session and reads no secret. Its own
+// device grant never comes here: the device code grant locks its row through
+// oauthstore.LockCredential (machine.Service.Live), a refresh through the update that moves its
+// expiry (machine.Service.Refreshed), and a trade through LockCredential again. A missing,
+// expired, revoked, chain-broken, no-longer-listed or Dispatch-only credential all answer ("",
+// false, nil); only a genuine dependency failure is a non-nil error, matching Lookup's own
+// contract.
 func (s *Service) AuthenticateLauncher(ctx context.Context, lid string) (string, bool, error) {
 	if _, err := uuid.Parse(lid); err != nil {
 		return "", false, nil
 	}
 	var thumbprint string
 	var recordID, service, subject, issuer *string
+	var dispatchScopes *[]string
 	var expiresAt time.Time
-	err := s.Store.Pool.QueryRow(ctx, `select key_thumbprint, record_id, service, subject, issuer, expires_at from launcher_credentials where id=$1 and revoked_at is null`, lid).
-		Scan(&thumbprint, &recordID, &service, &subject, &issuer, &expiresAt)
+	err := s.Store.Pool.QueryRow(ctx, `select key_thumbprint, record_id, service, subject, issuer, dispatch_scopes, expires_at from launcher_credentials where id=$1 and revoked_at is null`, lid).
+		Scan(&thumbprint, &recordID, &service, &subject, &issuer, &dispatchScopes, &expiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, err
 	}
-	if !expiresAt.After(time.Now()) {
+	if !expiresAt.After(time.Now()) || dispatchScopes != nil {
 		return "", false, nil
 	}
 	if subject != nil {
@@ -2630,7 +2648,7 @@ func (s *Service) liveCredentials(ctx context.Context, person string, services b
 	// c.subject = any(...) is null for a credential with no subject, and coalesce reads that
 	// null as "not mapped". So a login a person approved, which has no subject, keeps the rule of
 	// an unmapped credential.
-	rows, err := s.Store.Pool.Query(ctx, `select c.id, c.host, c.service, c.subject,
+	rows, err := s.Store.Pool.Query(ctx, `select c.id, c.host, c.service, c.subject, c.dispatch_scopes,
 			coalesce((select ev.login from credential_request_events ev where ev.record_id = r.id and ev.event = 'approved'), ''),
 			c.created_at, c.expires_at, c.expires_at <= now() from launcher_credentials c
 		left join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential'
@@ -2660,7 +2678,54 @@ func (s *Service) liveCredentials(ctx context.Context, person string, services b
 			live[i].Person = &owner
 		}
 	}
+	if err := s.requestReasons(ctx, live); err != nil {
+		return nil, err
+	}
 	return live, nil
+}
+
+// requestReasons sets each of live's Reason from the request object its login's record signed, read
+// in one statement for the whole list. A record whose request object this broker cannot verify
+// leaves its Reason "", as a login that is listed must not fail the list for a display text.
+func (s *Service) requestReasons(ctx context.Context, live []LiveCredential) error {
+	if len(live) == 0 || s.Chain == nil {
+		return nil
+	}
+	ids := make([]uuid.UUID, len(live))
+	for i, c := range live {
+		ids[i] = c.ID
+	}
+	rows, err := s.Store.Pool.Query(ctx, `select c.id, r.body, r.created_at from launcher_credentials c
+		join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.id = any($1)`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	reasons := make(map[uuid.UUID]string, len(live))
+	for rows.Next() {
+		var id uuid.UUID
+		var canonical string
+		var createdAt time.Time
+		if err := rows.Scan(&id, &canonical, &createdAt); err != nil {
+			return err
+		}
+		body, err := record.ParseBody(canonical)
+		if err != nil {
+			continue
+		}
+		obj, err := record.VerifyStoredRequestObject(body.Request, s.Chain.Audience, s.Chain.EdgeAudience, s.Chain.Skew, createdAt)
+		if err != nil {
+			continue
+		}
+		reasons[id] = obj.Reason
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range live {
+		live[i].Reason = reasons[live[i].ID]
+	}
+	return nil
 }
 
 // RevokeCredential ends launcher credential id on the word of person, expired or not: from then on
@@ -2824,17 +2889,7 @@ const ReuseActor = "broker:refresh-token-reuse"
 // credential's row first, as RevokeCredential does. A credential already revoked, or unknown,
 // changes nothing. It is the broker's oauthstore.Store.Reused.
 func RevokeReusedCredential(ctx context.Context, tx pgx.Tx, id string) error {
-	var host string
-	var service *string
-	var revokedAt *time.Time
-	err := tx.QueryRow(ctx, `select host, service, revoked_at from launcher_credentials where id = $1 for no key update`, id).Scan(&host, &service, &revokedAt)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && revokedAt != nil {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	_, err = endCredential(ctx, tx, id, host, service, ReuseActor, "its machine login's refresh token was reused")
+	_, err := endLiveCredential(ctx, tx, id, ReuseActor, "its machine login's refresh token was reused")
 	return err
 }
 
@@ -2931,6 +2986,29 @@ func endKeyCredential(ctx context.Context, tx pgx.Tx, thumbprint string, subject
 		return 0, err
 	}
 	return endCredential(ctx, tx, credential, host, service, actor, reason)
+}
+
+// endLiveCredential is endKeyCredential's twin keyed by the credential's id: it ends, in tx, the
+// live launcher credential id and everything it holds (endCredential), writing actor and reason on
+// every row it writes, and answers whether it ended one: false, writing nothing, for an id no live
+// credential has. The row is read `for no key update`, which is the hold endCredential asks of its
+// caller, so of two such ends of one credential the second waits on the first and then ends
+// nothing. RevokeReusedCredential and revokeDispatchSignIn call it.
+func endLiveCredential(ctx context.Context, tx pgx.Tx, id, actor, reason string) (bool, error) {
+	var host string
+	var service *string
+	err := tx.QueryRow(ctx, `select host, service from launcher_credentials where id = $1 and revoked_at is null for no key update`, id).
+		Scan(&host, &service)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := endCredential(ctx, tx, id, host, service, actor, reason); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // endCredential revokes launcher credential id in tx, whose row the caller holds: it sets

@@ -46,13 +46,14 @@
 // The principal is the caller's standing identity, never the instance asking: the listed account
 // for a pod, the listed workflow for a run, the listed workflow of a result entry, whatever its
 // ref, for a run that writes results, the listed Google account for a machine, the person for a
-// sign-in and for a dev box. A session name belongs to one principal, so a pod's replacement and
-// a workflow's next run keep writing under the name their predecessor held, and a caller of any
-// other principal is refused it, but for a pod of an account the broker pairs with the holder's
-// (BROKER_SESSION_ACCOUNT_PAIRS, oauthstore.Store.BindSession), whose claim takes the name.
-// Instance is the second rule beside it, and the only thing that separates two callers of one
-// principal: the pod uid a registration has to name for a pod of a free-session entry to write
-// under a session name.
+// sign-in and for a dev box, and the one sign-in for a Dispatch sign-in, whose principal is its
+// own and no other sign-in's (Machine). A session name belongs to one principal, so a pod's
+// replacement and a workflow's next run keep writing under the name their predecessor held, and
+// a caller of any other principal is refused it, but for a pod of an account the broker pairs
+// with the holder's (BROKER_SESSION_ACCOUNT_PAIRS, oauthstore.Store.BindSession), whose claim
+// takes the name. Instance is the second rule beside it, and the only thing that separates two
+// callers of one principal: the pod uid a registration has to name for a pod of a free-session
+// entry to write under a session name.
 package exchange
 
 import (
@@ -83,8 +84,9 @@ import (
 // registration, leave an entry that fixes a session alone (ErrSessionFixed), ask for no project
 // but those an operator's entry gives (ErrProjectsFixed), ask for no project at all for a token
 // that names no person and no job list (ErrProjectsNoPerson), ask for exactly one project for a
-// restricted member's machine login (ErrRestrictedOneProject), or say what kind of member a
-// machine login's approver is (ErrApproverKindUnknown).
+// restricted member's machine login (ErrRestrictedOneProject), sign in to Dispatch as a person who
+// is no restricted member (ErrRestrictedSignIn), or say what kind of member a machine login's
+// approver is (ErrApproverKindUnknown).
 var (
 	ErrNoEntry           = errors.New("exchange: no entry lists this identity")
 	ErrTwoEntries        = errors.New("exchange: two entries list this identity")
@@ -105,6 +107,10 @@ var (
 	// ErrRestrictedOneProject is a restricted member's machine login asking for no project or for
 	// several: its token is held to exactly one (Machine).
 	ErrRestrictedOneProject = errors.New("exchange: a restricted member's machine login names exactly one project")
+	// ErrRestrictedSignIn is a Dispatch sign-in whose person is a restricted member: its token
+	// acts in every project its person may reach (ProjectScopePerson), which a restricted member's
+	// token never does (Machine).
+	ErrRestrictedSignIn = errors.New("exchange: a restricted member's Dispatch sign-in is given no token")
 	// ErrApproverKindUnknown is a machine login's decision made with no word on what kind of
 	// member its approver is (ApproverUnknown), which no caller of this package means to make.
 	ErrApproverKindUnknown = errors.New("exchange: the machine login's approver is of no member kind the decision was told")
@@ -453,6 +459,9 @@ type Claims struct {
 	// ProjectScopePublic, nil for none), and nil for a ProjectScopeNone token, which names no
 	// project. The slice is this Claims' own.
 	Projects []string
+	// Consented is non-nil only for a Dispatch sign-in, and names the consentable OAuth scopes
+	// its person approved. An empty slice is the deliberate approval of no scopes.
+	Consented []string
 	// Job is whether a job entry made this decision, which grant sets from the entry's job list
 	// (JobProjects.Listed), so a job's token names the entry's listed identity as its service, no
 	// person and the list's projects. Like Principal it is no claim of the minted token: the
@@ -476,8 +485,11 @@ type Claims struct {
 	// token naming a session another principal writes under, unless the broker pairs the caller's
 	// account with that principal's (oauthstore.Store.SetSessionPairs), when the claim takes the
 	// name. It is the listed identity of the caller's kind, spelled with that kind first
-	// (account:, workflow:, workflow-results:, google:, person:) so principals of two kinds never
-	// compare equal, and every caller of one listed identity is one holder (the package doc).
+	// (account:, workflow:, workflow-results:, google:, person:, and oauthwire.ConsentedPrincipal's
+	// consented: for a Dispatch sign-in) so principals of two kinds never compare equal, and every
+	// caller of one listed identity is one holder (the package doc), but for a Dispatch sign-in:
+	// each is a holder of its own, holding none of its person's machines' names and none of their
+	// other sign-ins'.
 	Principal string
 	// Instance is which caller of that principal is asking, and is not a claim of the minted
 	// token either: it is the pod uid a registration has to name for this exchange to be made
@@ -1625,10 +1637,11 @@ func personClaims(token map[string]any) oidc.Claims {
 // records, and the session is the one the caller names. A machine login's token names the
 // credential it was issued under, so a token naming none is refused as not being one.
 //
-// The principal is the person, not the credential: every machine and every session of one person
-// is one holder, so a person's session resumed on another of their machines, or after their
-// machine logged in again, keeps its name, and one person's dev box cannot write under another's
-// session name or under one an entry fixes.
+// A machine login's principal is the person, not the credential: every machine and every session
+// of one person is one holder, so a person's session resumed on another of their machines, or
+// after their machine logged in again, keeps its name, and one person's dev box cannot write under
+// another's session name or under one an entry fixes. A Dispatch sign-in's principal is the
+// sign-in itself (below).
 //
 // A full member's token acts as its person, and says so: its scope is ProjectScopePerson, and it
 // carries the projects the trade asked for. A machine credential is a person's own identity on
@@ -1647,9 +1660,22 @@ func personClaims(token map[string]any) oidc.Claims {
 // person sees; a trade asking for none or for several is refused, ErrRestrictedOneProject. It
 // lives at most RestrictedLifetime.
 //
+// consented is nil for a machine login, and for a Dispatch sign-in the scopes its person approved
+// (also when empty), which the claims carry as Consented: such a token acts as its person's
+// session with those scopes alone (the oauth package writes it as the consented project scope,
+// which a verifier reads under its person scope). So a restricted member's Dispatch sign-in is
+// refused, ErrRestrictedSignIn, never held to one project in a scope it cannot carry.
+//
+// A sign-in's claims hold oauthwire.ConsentedPrincipal of its person and its credential rather
+// than PersonPrincipal, so each sign-in is a principal of its own: a name its person's machine
+// login, dev box session or other sign-in holds is refused it (oauthstore.Store.BindSession,
+// ErrSessionHeld), and it acts on Envoy as no session but its own. A refresh keeps the credential,
+// so a sign-in keeps its names for its life; any new sign-in, after a revoke, a lapse or for other
+// scopes, is a new credential, and so a new principal, refused the names the old one wrote under.
+//
 // A kind nobody decided (ApproverUnknown) is refused, ErrApproverKindUnknown, never read as
 // either.
-func (s *Set) Machine(credential, approver, session string, projects []string, kind ApproverKind) (Claims, error) {
+func (s *Set) Machine(credential, approver, session string, projects []string, kind ApproverKind, consented *[]string) (Claims, error) {
 	if strings.TrimSpace(credential) == "" {
 		return Claims{}, fmt.Errorf("%w: the subject token names no machine credential id, so it is not a machine login's token", ErrClaimMissing)
 	}
@@ -1660,11 +1686,20 @@ func (s *Set) Machine(credential, approver, session string, projects []string, k
 	if err != nil {
 		return Claims{}, err
 	}
-	claims := Claims{Session: name, Person: approver, Projects: slices.Clone(projects), Principal: PersonPrincipal(approver)}
+	// A sign-in's names are its own sign-in's, and a machine login's its person's.
+	principal := PersonPrincipal(approver)
+	if consented != nil {
+		principal = oauthwire.ConsentedPrincipal(approver, credential)
+	}
+	claims := Claims{Session: name, Person: approver, Projects: slices.Clone(projects), Principal: principal}
 	switch kind {
 	case ApproverUnrestricted:
 		claims.Scope = ProjectScopePerson
 	case ApproverRestricted:
+		if consented != nil {
+			return Claims{}, fmt.Errorf("%w: %s is a restricted member, whose machine's token is held to one project, and a Dispatch sign-in acts in every project its person may reach; sign in to Dispatch in a browser instead",
+				ErrRestrictedSignIn, approver)
+		}
 		if len(projects) != 1 {
 			return Claims{}, fmt.Errorf("%w: %s is a restricted member, who sees only the projects that name them, and the trade asked for %d; set AGENT_SECRETS_PROJECTS to the one project this session works on",
 				ErrRestrictedOneProject, approver, len(projects))
@@ -1673,16 +1708,21 @@ func (s *Set) Machine(credential, approver, session string, projects []string, k
 	default:
 		return Claims{}, fmt.Errorf("%w: %s's machine login was decided with member kind %d", ErrApproverKindUnknown, approver, int(kind))
 	}
+	if consented != nil {
+		claims.Consented = make([]string, len(*consented))
+		copy(claims.Consented, *consented)
+	}
 	return claims, nil
 }
 
-// The five spellings of a principal, each led by its kind so that no account, workflow, result
-// workflow, Google account and person ever spell the same string. A workflow's is
-// <repository>/<path>@<ref>, as an operator reads one elsewhere; a path or ref carrying "@" could
-// make two entries spell one string, and NewSet refuses that pair rather than let one's runs hold
-// the other's names. A result workflow's is <repository>/<path>, since every ref of it is one
-// holder, and a repository holds exactly one "/", so no two pairs spell it alike; it is
-// oauthwire.ResultPrincipal, since Dispatch stores it as the recorder of a result.
+// The six spellings of a principal, each led by its kind so that no account, workflow, result
+// workflow, Google account, person and Dispatch sign-in ever spell the same string. A workflow's
+// is <repository>/<path>@<ref>, as an operator reads one elsewhere; a path or ref carrying "@"
+// could make two entries spell one string, and NewSet refuses that pair rather than let one's
+// runs hold the other's names. A result workflow's is <repository>/<path>, since every ref of it
+// is one holder, and a repository holds exactly one "/", so no two pairs spell it alike; it is
+// oauthwire.ResultPrincipal, since Dispatch stores it as the recorder of a result. A Dispatch
+// sign-in's is oauthwire.ConsentedPrincipal, defined there once because a verifier spells it too.
 //
 // Three of them are exported because a broker grant follows a session name under one principal
 // too: enroll.Service.Create writes one of these into enrollments.carry_principal, and the next

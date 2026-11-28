@@ -59,13 +59,61 @@ cloud identity and nobody ever types a code. The boot line says which of the two
 `machine login device grant state=on verification_uri=…`, or `state=off` naming the unset
 variable.
 
+`BROKER_DISPATCH_SIGNIN=on` lets a device login name the OAuth scope `dispatch`: a Dispatch
+sign-in, which a person approves on Dispatch's machine-login page with the Dispatch scopes they
+tick, and which enrolls no session and reads no secret. The broker's metadata then names
+`dispatch` in `scopes_supported`, which is how Dispatch knows to offer a sign-in's guidance.
+Unset or blank, it is off: every step of a Dispatch sign-in is refused `DISPATCH_SIGNIN_OFF`,
+"this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off" — its device
+authorization, its approval, its device code grant, its refresh and its trade — so turning it off
+stops every sign-in until it is turned on again. A denial is still decided, since it grants
+nothing, and every machine login is served as before. Any other value refuses the start, and so
+does `on` without `BROKER_MACHINE_LOGIN_URL`. The boot line says which this broker is: `Dispatch
+sign-in state=on`, or `state=off`.
+
+Each Dispatch sign-in is a principal of its own, `consented:<person>:<sign-in>`, where the sign-in
+is the launcher credential its approval minted. The broker holds a session name to one principal,
+so a sign-in is refused, `invalid_grant`, any session name its person's machine login, dev box
+session or other sign-in has written under in the last 90 days. The Envoy listener passes no
+handover between two sign-ins' sessions: a session of one that names a session of another as the
+one it replaces takes none of its unread messages. A role goes to whichever session claims it
+last, with the unread messages sent for that role, as for any session. A refresh keeps the
+credential, so a sign-in keeps its names for as long as it lives.
+
+A sign-in's scopes never change, so any new sign-in is a new principal: one made after a revoke
+or a lapse, and one made to hold other scopes, alike. The old sign-in holds every session name it
+wrote under until 90 days after its last token's expiry, and every hosted session trades under its
+own session id. So after any new sign-in, a scope change included, the session starts as a new
+session, with a new session id, and does not continue the session before it.
+
+Turn it on only once every broker replica runs a build that reads it: a replica from before it
+would decide and trade a Dispatch sign-in as a machine login, which reads its person's secrets.
+Rolling back below that build is four steps, in this order:
+
+1. Unset `BROKER_DISPATCH_SIGNIN` on every replica and let that roll finish. From then no replica
+   approves, refreshes or trades a Dispatch sign-in.
+2. Let the sign-ins still pending expire — the pending lifetime, 15 minutes — which step 1 makes
+   final, since no replica can approve one.
+3. Run `envoy-broker revoke-dispatch-signins` ([Running a subcommand](#running-a-subcommand) says
+   where). The broker revokes every launcher credential whose `dispatch_scopes` is not null itself
+   — every Dispatch sign-in, the expired ones among them — under its own actor
+   `broker:revoke-dispatch-signins`, which ends the tokens each issued, and prints how many it
+   revoked:
+
+   ```text
+   revoke-dispatch-signins: revoked 2 Dispatch sign-ins
+   ```
+4. Roll the build back. No Dispatch sign-in is left for the earlier build to read as a machine
+   login.
+
 `GET /.well-known/oauth-authorization-server` is that metadata, RFC 8414. It needs no credential,
 since it is what a client reads before it holds one, and nothing in it is a fact a caller could
 not learn by calling the endpoints it names. It names this broker's issuer
 (`BROKER_PUBLIC_URL`), its token, introspection and revocation endpoints, the grants it serves,
-the DPoP signing algorithms it takes, and the subject token types its exchange is configured
-with, so a client reads off one document what this deployment turned on rather than being
-configured with it twice.
+the device scopes a device login may ask it for (`scopes_supported`: `machine`, and `dispatch`
+beside it only with `BROKER_DISPATCH_SIGNIN=on`), the DPoP signing algorithms it takes, and the
+subject token types its exchange is configured with, so a client reads off one document what this
+deployment turned on rather than being configured with it twice.
 
 `BROKER_K8S_OIDC_ISSUER` names the issuer of each Kubernetes cluster whose ServiceAccount tokens
 the broker takes: comma-separated `<name>=<issuer URL>` entries, each name lowercase letters,
@@ -142,7 +190,7 @@ first issuer of the list alone, so an entry written for one cluster keeps its me
 cluster stays first in the list. When you change `BROKER_K8S_OIDC_ISSUER` from one URL to named
 entries, list the cluster the broker trusted before first: an entry that names no issuer takes
 the first issuer, and a token login's credential or a pod's enrollment recorded before migration
-0053 reads as the first issuer's. A listed account's token from an issuer its entry does not
+0054 reads as the first issuer's. A listed account's token from an issuer its entry does not
 name is answered `403 ACCOUNT_NOT_LISTED`, as an account the list does not name is.
 A Google caller presents its machine's own Google identity token for `BROKER_GOOGLE_OIDC_AUDIENCE`
 — the audience every machine of the deployment already holds a token for, so the Envoy listener on
@@ -1477,13 +1525,16 @@ of the Workspace or out of `BROKER_SIGNIN_DOMAIN` first.
 
 ### Running a subcommand
 
-The broker takes three subcommands, `end-sessions`, `versions` ([A migration recorded under
-another file](#a-migration-recorded-under-another-file)) and `profiles check`, which reads the
+The broker takes four subcommands, `end-sessions`, `versions` ([A migration recorded under
+another file](#a-migration-recorded-under-another-file)), `revoke-dispatch-signins` (step 3 of
+rolling `BROKER_DISPATCH_SIGNIN` back, above) and `profiles check`, which reads the
 file `BROKER_PROFILES_FILE` names and needs no setting; the removed `airlock-check` is refused
 naming `profiles check`, anything else is refused with a usage line, and `envoy-broker` with no
-argument serves. `end-sessions` and
-`versions` read the broker's settings and sign in to its database as the server does, and bind no
-listener, so either runs in any one-off process of the image that has what the serving broker has:
+argument serves. The first three read the broker's database, sign in to it as the server does,
+and bind no listener. `end-sessions` and `versions` read the broker's settings, so either runs in
+any one-off process of the image that has what the serving broker has, all three items below.
+`revoke-dispatch-signins` reads no broker setting but `BROKER_DATABASE_URL`, so it needs the first
+item alone, signing in by RDS IAM token or by password as that item says:
 
 - a route to the broker's database, such as any proxy the broker's pods reach it through, and the
   serving broker's `BROKER_DATABASE_URL`, with whatever else it signs in to the database with:
@@ -1492,8 +1543,8 @@ listener, so either runs in any one-off process of the image that has what the s
   password from `PGPASSWORD` or a passfile;
 - `BROKER_PUBLIC_URL` and the secret store's settings, as the serving broker has them
   (`BROKER_SECRETS_STORE`, `BROKER_SECRETS_PREFIX` and that store's key setting), which every
-  process of the image requires;
-- `BROKER_SIGNIN=off`, in place of the serving broker's sign-in: neither subcommand signs anyone
+  process of the image that reads the broker's settings requires;
+- `BROKER_SIGNIN=off`, in place of the serving broker's sign-in: no subcommand signs anyone
   in. `BROKER_SIGNIN=off` refuses to start beside any sign-in or judge setting, so leave unset the
   four of the sign-in client, `BROKER_SIGNIN_SESSION_SECONDS` and `BROKER_SIGNIN_DEVICE_AUDIENCE`,
   and the judge's six (`BROKER_JUDGE_MODEL_URL`, `BROKER_JUDGE_MODEL`,
@@ -1504,8 +1555,9 @@ Take those from wherever your deployment keeps them, and run the subcommand wher
 run a one-off process of the image: an exec into a broker pod,
 `kubectl -n <namespace> exec <broker pod> -- envoy-broker end-sessions ada@example.com`, or a
 one-off pod, job or container of the image with those settings in its environment. `end-sessions`
-writes through that login; `versions` writes nothing. Run `end-sessions` with the image that
-serves now, and `versions` with the image you mean to roll out.
+writes through that login, and `revoke-dispatch-signins` through the broker itself; `versions`
+writes nothing. Run `end-sessions` and `revoke-dispatch-signins` with the image that serves now,
+and `versions` with the image you mean to roll out.
 
 ### A broker that signs nobody in
 

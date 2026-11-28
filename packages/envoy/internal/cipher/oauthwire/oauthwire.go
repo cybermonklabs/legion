@@ -31,6 +31,13 @@ const (
 	ClientID = "agent-secrets-helper"
 	// Scope is the one scope a machine login asks for and is granted.
 	Scope = "machine"
+	// ScopeDispatch is the one scope a Dispatch sign-in asks for and is granted: a device login
+	// its person approves for Dispatch alone. Its launcher credential enrolls no session and
+	// reads no secret, and every token traded from it holds the Dispatch scopes its person
+	// approved and no other (ProjectScopeConsented). Its request asks for those scopes as the
+	// actions of its one launcher_credential detail, each one of ConsentableScopes. A request
+	// names this scope or Scope, never both.
+	ScopeDispatch = "dispatch"
 	// ScopeRead is the OAuth scope of a token that only reads: one a read entry
 	// (BROKER_EXCHANGE_READ_ACCOUNTS) mints, and one any trade narrows to reading because it
 	// asked for this scope. Such a token writes nothing and reads only the routes a resource
@@ -47,7 +54,9 @@ const (
 	ScopeApprove = "approve"
 	// ScopePerson is the OAuth scope a token narrowed to reading holds beside ScopeRead when it
 	// acts for its person: a ProjectScopeReadPerson token that names a person, whose answer's
-	// scope is "read person". No other token holds it.
+	// scope is "read person". A ProjectScopeConsented token holds it, alone or beside ScopeP0,
+	// when its person approved it for that Dispatch sign-in (ConsentableScopes). No other token
+	// holds it.
 	ScopePerson = "person"
 	// ScopeResults is the one OAuth scope a token minted from a result entry
 	// (BROKER_EXCHANGE_RESULT_WORKFLOWS) holds, beside the project scope ProjectScopeResults: a
@@ -58,6 +67,11 @@ const (
 	// entry's trade that asks for ScopeRead is refused invalid_scope, since no result entry's
 	// token is narrowed.
 	ScopeResults = "results"
+	// ScopeP0 is Dispatch's scope that lets a credential make an issue's own priority 0. Of the
+	// broker's tokens only a ProjectScopeConsented token holds it, alone or beside ScopePerson,
+	// and only when its person ticked it for that Dispatch sign-in (ConsentableScopes); the
+	// exchange grants it to no other token.
+	ScopeP0 = "p0"
 	// ScopeLegionStatus is the OAuth scope the exchange grants a Legion daemon's own token: the
 	// token of an account entry that names a project and fixes the session legion-daemon:<that
 	// project>, for a trade that does not ask for ScopeRead. Dispatch lets a credential that holds
@@ -79,6 +93,13 @@ const (
 	// ExtraCredentialExpiresAt is the token answer's field holding that credential's expiry
 	// (RFC 3339).
 	ExtraCredentialExpiresAt = "credential_expires_at"
+	// ExtraDispatchScopes is the token answer's field holding a Dispatch sign-in's approved
+	// scopes, a JSON array of none or more of ConsentableScopes, on each answer of its device code
+	// grant and its refresh grant. A machine login's answers carry none. The login's session
+	// carries the same array under the same key (machine.Service.decideDevice writes it beside
+	// ExtraCredentialID), so every access token the login is issued names the scopes its person
+	// approved, and a trade of one reads them from the token itself.
+	ExtraDispatchScopes = "dispatch_scopes"
 	// ExchangeClientID is the OAuth client every caller asking the RFC 8693 token exchange for a
 	// Dispatch access token presents: a pod, a workflow run, and a dev box session exchanging the
 	// access token its machine login holds. It is registered confidential, because the library
@@ -297,19 +318,74 @@ const (
 	// entry's token, narrowed on request. It holds the OAuth scope ScopeRead alone, as the read
 	// entry's token does.
 	ProjectScopeReadNone = "read-none"
+	// ProjectScopeConsented is a token traded from a Dispatch sign-in (ScopeDispatch): it acts
+	// for its person as a ProjectScopePerson token does, its Projects read by the same rules, and
+	// its OAuth scope lists the Dispatch scopes its person approved, none or more of
+	// ConsentableScopes, and nothing else. It writes, and no trade narrows it to reading. A
+	// resource server of a build that predates it refuses it, since it does not know the word,
+	// so no build reads it as a person-scoped token holding more than its person approved.
+	ProjectScopeConsented = "consented"
 )
 
+// ConsentableScopes are the Dispatch scopes a person may approve for a Dispatch sign-in, in the
+// order a page lists them. ScopePerson lets the token act as its person on the routes a
+// person's own credential reaches, and ScopeP0 lets it make an issue's own priority 0, which
+// Dispatch's page starts unticked, so a sign-in holds it only where its person ticks it. Every
+// other word is outside the set, Dispatch's approve first: it settles what only the person
+// settles, so no token traded from a Dispatch sign-in holds it. The one broker token that holds
+// approve is the approve capability's, which the broker mints and holds itself for a person's own
+// sign-in (oauth.Provider.grantApprove), and which no Dispatch sign-in is traded for.
+//
+// It is contracts.DispatchSignInScopes, generated from DISPATCH_SIGN_IN_SCOPES in
+// packages/contracts, so the broker that takes a sign-in's scopes, the verifier that reads its
+// tokens (ciphertoken's shapeOf) and the clients and page that ask for them hold one list.
+var ConsentableScopes = contracts.DispatchSignInScopes
+
+// Consentable reports whether word is one of ConsentableScopes.
+func Consentable(word string) bool {
+	return slices.Contains(ConsentableScopes, word)
+}
+
+// ConsentedPrincipal is the principal of one Dispatch sign-in: consented:<person>:<sign-in>,
+// where signIn is the id of the launcher credential its approval minted (ExtraCredentialID, which
+// every token of the sign-in and every token traded from it carry, and Introspection.SignIn). The
+// broker holds a session name to it (exchange.Set.Machine) and a verifier answers it for a token
+// traded from the sign-in (ciphertoken.Caller.Principal), so the holder the broker records and
+// the principal a listener reads are this one string. A refresh keeps the credential, so a
+// sign-in keeps its principal for its life; every other sign-in, of the same person or another,
+// is another principal, and so is any new sign-in, after a revoke, a lapse or for other scopes,
+// which is a new credential. The person stays in it, so a reader still sees whose sign-in it is,
+// and the id is a UUID, which holds no ':', so no two pairs spell one string.
+func ConsentedPrincipal(person, signIn string) string {
+	return "consented:" + person + ":" + signIn
+}
+
+// DeviceScope reads raw, the scope parameter of a device login as it was sent: exactly one word,
+// Scope (a machine login) or ScopeDispatch (a Dispatch sign-in), answered with true. Anything
+// else, no word, several words or another word, answers "" and false. It is the one reading of a
+// device login's scope: the broker's device route and its edge, the device route's preflight, and
+// the decision of a stored device authorization all read a scope through it.
+func DeviceScope(raw string) (string, bool) {
+	words := strings.Fields(raw)
+	if len(words) != 1 || (words[0] != Scope && words[0] != ScopeDispatch) {
+		return "", false
+	}
+	return words[0], true
+}
+
 // BaseProjectScope is the word whose rules a project-scope word's projects are read under:
-// ProjectScopeNamed for ProjectScopeReadNamed, ProjectScopePerson for ProjectScopeReadPerson,
-// ProjectScopeNone for ProjectScopeReadNone, and any other word as it is. A narrowed token's
-// projects mean what its base word's do, so every reader that checks a token's projects reads
-// this word, and a narrowed trade is checked and answered as the same trade without ScopeRead.
-// A word is narrowed exactly when this answers another word.
+// ProjectScopeNamed for ProjectScopeReadNamed, ProjectScopePerson for ProjectScopeReadPerson and
+// for ProjectScopeConsented, ProjectScopeNone for ProjectScopeReadNone, and any other word as it
+// is. A narrowed token's projects mean what its base word's do, so every reader that checks a
+// token's projects reads this word, and a narrowed trade is checked and answered as the same
+// trade without ScopeRead. A word is narrowed exactly when this answers another word: to
+// reading for the three read words, and to the scopes its person approved for
+// ProjectScopeConsented, which still writes.
 func BaseProjectScope(word string) string {
 	switch word {
 	case ProjectScopeReadNamed:
 		return ProjectScopeNamed
-	case ProjectScopeReadPerson:
+	case ProjectScopeReadPerson, ProjectScopeConsented:
 		return ProjectScopePerson
 	case ProjectScopeReadNone:
 		return ProjectScopeNone
@@ -667,13 +743,23 @@ type Introspection struct {
 	// exchanged token holds ScopeRead when a read entry minted it or its trade asked for it, and
 	// then ScopePerson beside it ("read person") for a ProjectScopeReadPerson token that names
 	// its person; ScopeResults when a result entry minted it; ScopeLegionStatus when a Legion
-	// daemon's own entry minted it and its trade did not ask for ScopeRead. The token the broker
-	// mints for a person's approve grant holds ScopeApprove alone. Every other exchanged token
-	// holds no scope, and a machine login's own token holds Scope.
+	// daemon's own entry minted it and its trade did not ask for ScopeRead. A
+	// ProjectScopeConsented token holds the ConsentableScopes its person approved, sorted, none or
+	// more. The token the broker mints for a person's approve grant holds ScopeApprove alone.
+	// Every other exchanged token holds no scope, and a machine login's own token holds Scope.
 	Scope string `json:"scope,omitempty"`
 	// CI is the run a result entry's token was minted for. It is set exactly beside
 	// ProjectScopeResults, and absent from every other token.
 	CI *CIRun `json:"ci,omitempty"`
+	// SignIn is the Dispatch sign-in a ProjectScopeConsented token was traded from: the id of the
+	// launcher credential its person's approval minted, which the token's own row records
+	// (ExtraCredentialID) and every refresh of the sign-in keeps. It is set beside that project
+	// scope alone and absent from every other token. A verifier builds the token's principal from
+	// it and Person (ConsentedPrincipal), which is what keeps two sign-ins of one person two
+	// principals, and refuses a consented answer that names none. A verifier of a build before
+	// this member refuses every consented token as an unknown project scope, so no earlier reader
+	// meets it.
+	SignIn string `json:"sign_in,omitempty"`
 	// AsOf is the token's cut: the past time a narrowed token reads at, which its trade asked for
 	// (FormAsOf), in UTC to the microsecond (2006-01-02T15:04:05.000000Z). Only a token of one of
 	// the three narrowed project scopes carries one, and it is absent with no cut.

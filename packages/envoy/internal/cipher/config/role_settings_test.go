@@ -53,6 +53,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_METRICS_LISTEN_ADDR":           givesNone("a listen address"),
 	"BROKER_PUBLIC_URL":                    givesNone("the broker's own URL"),
 	"BROKER_MACHINE_LOGIN_URL":             givesNone("a page's URL"),
+	"BROKER_DISPATCH_SIGNIN":               givesNone("the Dispatch sign-in's switch"),
 	"BROKER_EDGE_LISTEN_ADDR":              givesNone("a listen address"),
 	"BROKER_EDGE_URL":                      givesNone("the broker's own URL at its edge"),
 	"BROKER_EDGE_MACHINE_LOGIN_URL":        givesNone("a page's URL"),
