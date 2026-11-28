@@ -616,7 +616,9 @@ const FOLLOWING = "default /issues/CORE-1/messages";
  *  case starts, it wraps the writer, and the history is drawn only while it is open, as
  *  `details-more.tsx`'s `DetailsHistory` draws it, so a case that shuts Details takes the history
  *  off the page. The issue's newest event is past the read mark, so the history reads the first
- *  event past it, which `stubHistoryReads` answers with its `boundary`. */
+ *  event past it, which `stubHistoryReads` answers with its `boundary`, or, where the case gives
+ *  that stub a reader of the log, the reader answers as it answers every read of the log, and
+ *  `boundary` is not read. */
 function drawHistory(
   item: string | undefined,
   {
