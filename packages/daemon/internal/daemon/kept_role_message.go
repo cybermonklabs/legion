@@ -162,11 +162,11 @@ func (m keptRoleMessage) roleNotComing(state supervise.ClaimState) *keptRoleMess
 //     inside the hour. A refused publish stores nothing, so the one publish a session takes is the
 //     one it is handed, and a retry of a publish whose answer was lost is stored once, under the
 //     row's own key (record.OutboxKey), which every attempt sends;
-//   - every other refusal of the listener's (listenerRefused): a holder that did not confirm in
-//     time, one that does not advertise the delivery mode, a forward the listener's own NATS grant
-//     denies: the row waits for its role the same way, since a later attempt can go through;
-//   - every other failure, a publish that reached no answer of the listener's: the error is
-//     returned, wrapped with the message's subject, and the row keeps the outbox's retry.
+//   - every other failed publish (publishFailed): a holder that did not confirm in time, one that
+//     does not advertise the delivery mode, a forward the listener's own NATS grant denies, any
+//     other refusal or 5xx of the listener's, and a publish that did not reach the listener or
+//     could not read its answer: the row waits for its role the same way, since a later attempt
+//     can go through, the failure being the listener's last answer its wait's lines name.
 //
 // The row is not held for a holder as an architect's notice is held, and it can reach a later
 // session than the one it was written for: for a role nobody claims, the listener hands a kept
@@ -182,8 +182,9 @@ func (m keptRoleMessage) roleNotComing(state supervise.ClaimState) *keptRoleMess
 // (record.OutboxKind.WaitsForRole: notice, controller_notice, merge_queue_removal,
 // merge_holds_changed, merge_forward, hook_prompt, phase_ended, role_message and update_ask),
 // passes through the one gate roleWaitGate (daemon/role_wait.go,
-// dispatch://INFRA-4131/spec#b-r-wait-ready) before publishing, and turns every listener refusal
-// that keeps its row into a roleWait on the capped backoff (dispatch://INFRA-4131/spec#b-r-capped):
+// dispatch://INFRA-4131/spec#b-r-wait-ready) before publishing, and turns every failed publish
+// that keeps its row (publishFailed) into a roleWait on the capped backoff
+// (dispatch://INFRA-4131/spec#b-r-capped):
 // whoever changes the rule for waiting on a role changes roleWaitGate and role_wait.go rather than
 // chasing the nine executors apart. The executors still own their own non-claim ends and waits,
 // and what each listener refusal ends rather than keeps (notice's fence and architectEnded,
@@ -228,8 +229,6 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 		return nil, nil
 	case errors.Is(err, notify.ErrNoHolder), errors.Is(err, notify.ErrHolderUnresponsive):
 		return nil, r.roleWait(topic, gate.view, err, wait.Errorf("%s waits for a session to hold its %s's role: %w", m.subject, m.role, err))
-	case listenerRefused(err):
-		return nil, r.roleWait(topic, gate.view, err, wait.Errorf("%s waits for its %s to take it: %w", m.subject, m.role, err))
 	}
-	return nil, fmt.Errorf("publish %s to its %s: %w", m.subject, m.role, err)
+	return nil, r.roleWait(topic, gate.view, err, wait.Errorf("%s waits for its %s to take it: %w", m.subject, m.role, err))
 }

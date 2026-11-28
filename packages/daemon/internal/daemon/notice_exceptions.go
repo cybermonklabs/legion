@@ -153,12 +153,12 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 // the capped backoff of a role wait until the session's heartbeats land, which is what reaches a
 // session stalled under box load once it answers again (dispatch://INFRA-392,
 // dispatch://INFRA-4131/spec#b-r-capped). A forward the listener could not make at all (504
-// `delivery_failed`) waits the same way, since the next attempt can make it. Each is logged as the
-// wait it is (settle's logWait), naming the architect and the listener's answer: a wait costs no
-// error line per attempt, where a publish that did fail still costs one. A role no session holds
-// is held for its architect while that architect's claim can hold it again (errNoticeWaits, a role
-// wait too), and finishes undelivered once nobody will. Any other failure, a publish that reached
-// no answer of the listener's, is the row's, retried on the outbox's backoff.
+// `delivery_failed`) waits the same way, since the next attempt can make it, and so does every
+// other failed publish (publishFailed): any other refusal or 5xx of the listener's, and a publish
+// that did not reach the listener or could not read its answer. Each is logged as the wait it is
+// (settle's logWait), naming the architect and the listener's last answer, not as an error line
+// per attempt. A role no session holds is held for its architect while that architect's claim can
+// hold it again (errNoticeWaits, a role wait too), and finishes undelivered once nobody will.
 func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, payload record.Notice,
 	tree treeSnapshot, architect claim.Token, view supervise.ClaimView, published error,
 ) error {
@@ -216,7 +216,10 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 			wait.Errorf("the notice for %s waits for its architect %s, to whom the listener could not forward it: %w",
 				row.Issue, architect, published))
 	case !errors.Is(published, notify.ErrNoHolder):
-		return fmt.Errorf("publish notice for %s to its architect %s: %w", row.Issue, architect, published)
+		// Any other failed publish (publishFailed): a refusal or a 5xx the listener gave, or a
+		// publish that did not reach it, which the next attempt can get through.
+		return r.roleWait(notify.RoleTopicPrefix+string(architect), view, published,
+			wait.Errorf("the notice for %s waits for its architect %s to take it: %w", row.Issue, architect, published))
 	}
 	if ended := architectEnded(tree, r.claimState(architect)); ended != "" {
 		return r.noticeArchitectEnded(ctx, row, payload, tree, architect, ended)

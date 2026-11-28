@@ -409,7 +409,7 @@ func (r *outbox) heldBack(ctx context.Context, topic, dedupeKey string) error {
 // unheldSession is heldBack's refusal of a publish to a claim that records a session it does not
 // hold. err wraps notify.ErrNoHolder, which every executor answers as it answers the listener's
 // own, and the hold's claim.Refusal; it reached no listener, so a role wait reads it as no publish
-// and no answer of the listener's (roleWait, listenerRefused).
+// and no answer of the listener's (roleWait, publishFailed).
 type unheldSession struct{ err error }
 
 func (e unheldSession) Error() string { return e.err.Error() }
@@ -2327,8 +2327,9 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // later attempt can go through. So does a holder the listener calls only unresponsive
 // (notify.ErrHolderUnresponsive): its session is past the listener's live window but still holds
 // the role, so the message is kept for it rather than dropped as a message to a role nobody holds
-// (dispatch://INFRA-392). A publish that reached no answer of the listener's is the row's failure,
-// retried on the outbox's backoff.
+// (dispatch://INFRA-392). Every other failed publish (publishFailed), any other refusal or 5xx of
+// the listener's and a publish that did not reach the listener or could not read its answer, waits
+// for the role the same way, since a later attempt can go through.
 //
 // A role whose claim is released ends the row before the publish, with no wake (record.RoleMessage
 // says why). The claim is read from its machine's View, as wakeForDelivery reads it. One window is
@@ -2423,11 +2424,9 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 		r.log.Error("outbox role message finished undelivered: the listener's own NATS grant denied the forward",
 			"row", row.ID, "issue", row.Issue, "role", payload.Role, "denial", denied.Message)
 		return nil
-	case listenerRefused(err):
+	case err != nil:
 		return r.roleWait(topic, gate.view, err, wait.Errorf("%s's role message for %s waits for its role to take it: %w",
 			row.Issue, payload.Role, err))
-	case err != nil:
-		return fmt.Errorf("publish %s's message to role %s: %w", row.Issue, payload.Role, err)
 	}
 	return nil
 }
@@ -2675,13 +2674,14 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // claim again (askRound). The round waits for every claim it asks until its bound, and a claim
 // the ask never reached has nothing to answer: a fresh session that has not claimed its topic yet
 // is the ordinary case, and a mark that counted such an ask as given held BET-1291's and BET-690's
-// rounds for hours on 2026-11-17 (dispatch://INFRA-4109 R4). Every other refusal of the
-// listener's waits for the role (roleWait) on the capped backoff of a role wait
+// rounds for hours on 2026-11-17 (dispatch://INFRA-4109 R4). Every other failed publish
+// (publishFailed) waits for the role (roleWait) on the capped backoff of a role wait
 // (dispatch://INFRA-4131/spec#b-r-capped), as hookPrompt's does: a holder the listener calls
-// unresponsive, one that did not confirm in time, one that does not advertise the delivery mode,
-// and a forward the listener's own NATS grant denies can each go through on a later attempt. A
-// publish that reached no answer of the listener's keeps the outbox's retry, and so does a mark the
-// store did not take, whose next attempt writes it and publishes nothing.
+// unresponsive, one that did not confirm in time, one that does not advertise the delivery mode, a
+// forward the listener's own NATS grant denies, any other refusal or 5xx of the listener's, and a
+// publish that did not reach the listener or could not read its answer can each go through on a
+// later attempt. A mark the store did not take keeps the outbox's retry, whose next attempt writes
+// it and publishes nothing.
 func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk) error {
 	if r.notices == nil {
 		return errors.New("update ask executor has no Envoy publisher")
@@ -2701,10 +2701,8 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	}
 	topic := notify.RoleTopicPrefix + string(token)
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
-	gateView := view
 	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, func(ctx context.Context) (bool, error) {
 		gate := r.roleWaitGate(row, topic)
-		gateView = gate.view
 		if gate.ended != "" {
 			r.log.Info("outbox update ask finished undelivered: "+gate.ended, fields...)
 			return false, nil
@@ -2712,12 +2710,18 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		if gate.wait != nil {
 			return false, gate.wait
 		}
-		return r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
+		delivered, err := r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
 			"outbox update ask finished undelivered: no live session holds the role", fields...)
+		if err != nil {
+			return false, r.roleWait(topic, gate.view, err, wait.Errorf("the ask of round %s for %s waits for its %s to take it: %w",
+				payload.Round, row.Issue, payload.Role, err))
+		}
+		return delivered, nil
 	})
 	var roleErr roleWaiting
 	switch {
 	case errors.As(err, &roleErr):
+		// The gate's wait, or the failed publish the callback made a role wait.
 		return err
 	case errors.Is(err, supervise.ErrMachineBusy):
 		// The lock's holder tells the claim's change hook of this refusal when it lets the lock go
@@ -2728,11 +2732,10 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	case err != nil && (outcome == supervise.UpdateAskDelivered || outcome == supervise.UpdateAskAlreadyDelivered):
 		return fmt.Errorf("the ask of round %s for %s reached its %s, and the claim write that marks it asked is not made yet: %w",
 			payload.Round, row.Issue, payload.Role, err)
-	case listenerRefused(err):
-		return r.roleWait(topic, gateView, err, wait.Errorf("the ask of round %s for %s waits for its %s to take it: %w",
-			payload.Round, row.Issue, payload.Role, err))
 	case err != nil:
-		return fmt.Errorf("publish the ask of round %s for %s to its %s: %w", payload.Round, row.Issue, payload.Role, err)
+		// The machine answers no other error today; one it came to answer is the row's failure,
+		// never read as an outcome below.
+		return err
 	}
 	switch outcome {
 	case supervise.UpdateAskDelivered:
@@ -2773,9 +2776,9 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 // topic answers the publisher.
 //
 // A topic with no live holder (notify.ErrNoHolder) ends the row: noHolder is logged at Info with
-// fields, and the answer is false with no error. Every other failure is returned as the
-// publisher gave it, and the row keeps its retry. The answer is true when the publisher took the
-// message.
+// fields, and the answer is false with no error. Every other failed publish (publishFailed) is
+// returned as the publisher gave it, which updateAsk makes the row's wait for its role (roleWait).
+// The answer is true when the publisher took the message.
 func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic, message, noHolder string, fields ...any) (bool, error) {
 	err := r.publish(ctx, topic, message, message, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {
@@ -2874,10 +2877,10 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // notify.ErrNoHolder), and the row waits for its role, as it waits on controllerHolds. Under
 // `controller: daemon` the publish is also held to the launched controller claim's session
 // (heldBack), whose refusal, notify.ErrNoHolder, is the same wait: an operator's settle of that
-// claim's name lets the next attempt through. Every other refusal of the listener's
-// (listenerRefused) waits the same way, since a later attempt can go through. Each wait is logged
-// by its wait rather than by its attempts, never as an Error at every attempt; controllerHolds
-// says how.
+// claim's name lets the next attempt through. Every other failed publish (publishFailed), a
+// refusal or a 5xx of the listener's or a publish that did not reach it, waits the same way, since
+// a later attempt can go through. Each wait is logged by its wait rather than by its attempts,
+// never as an Error at every attempt; controllerHolds says how.
 //
 // The topic the daemon published controller notices to before dispatch://INFRA-1585,
 // notifications.legion.<project>.controller, is still readable at the listener for the daemons of
@@ -2929,14 +2932,12 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 		// attempt through.
 		return r.roleWait(topic, gate.view, err,
 			wait.Errorf("the controller notice for %s waits for a live holder of %s: %w", row.Issue, role, err))
-	case listenerRefused(err):
-		// The listener's other refusals of the publish wait the same way, whether a claim of this
+	case err != nil:
+		// Every other failed publish (publishFailed) waits the same way, whether a claim of this
 		// daemon holds the topic (`controller: daemon`) or not (`controller: operator`), since a
 		// later attempt can go through (dispatch://INFRA-4131/spec#b-r-capped).
 		return r.roleWait(topic, gate.view, err,
 			wait.Errorf("the controller notice for %s waits for the controller to take it: %w", row.Issue, err))
-	case err != nil:
-		return fmt.Errorf("publish the controller notice for %s to %s: %w", row.Issue, topic, err)
 	}
 	return nil
 }

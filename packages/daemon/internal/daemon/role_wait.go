@@ -53,12 +53,12 @@ const (
 
 // roleWaiting is the wait of a row that publishes to one role's topic, the controller's among
 // them, and waits for that role to take it (dispatch://INFRA-4131/spec#b-r-wait-ready and
-// #b-r-capped): what the row's run read of the role's claim and what the listener answered, which
+// #b-r-capped): what the row's run read of the role's claim and what its publish answered, which
 // decide when the row runs again (roleWaitNext), what it waits for (record.OutboxWait.WaitFor) and
 // how its wait is logged (logWait). Every executor of a kind that waits for its role
-// (record.OutboxKind.WaitsForRole) returns one, through roleWait, for each answer of the listener
-// that keeps its row, and controllerNotice for each wait of its read of the role's holder
-// (controllerHolds), which publishes nothing.
+// (record.OutboxKind.WaitsForRole) returns one, through roleWait, for each failed publish that
+// keeps its row (publishFailed), and controllerNotice for each wait of its read of the role's
+// holder (controllerHolds), which publishes nothing.
 type roleWaiting struct {
 	// topic is the topic the row publishes to, and token the claim it is held to
 	// (outbox.heldTopic): the claim the role topic names, the project's controller claim for the
@@ -72,16 +72,15 @@ type roleWaiting struct {
 	// view is the role's claim as the run read it (outbox.supervisedClaim), the zero view where
 	// this daemon supervises none.
 	view supervise.ClaimView
-	// published is whether this run's publish reached the listener, and answer the listener's
-	// refusal of it, nil where it did not refuse or the run did not publish. The gate's own
-	// refusal of a claim that records a session it does not hold (unheldSession) reached no
-	// listener, so it is neither. launch is the claim's Generation when this run made the one
-	// publish a not-ready launch or a non-release suspension allows (roleWaitGate), stored into
-	// record.OutboxWait.WaitLaunch by roleWaitNext so a later run of the same launch publishes
-	// nothing; 0 keeps the row's stored WaitLaunch as it is.
-	published bool
-	answer    error
-	launch    uint64
+	// answer is this run's failed publish (publishFailed), the listener's last answer: its refusal,
+	// its 5xx, or the failure to reach it or to read its answer; nil where the listener took the
+	// publish or the run made none. The gate's own refusal of a claim that records a session it
+	// does not hold (unheldSession) published nothing, so it is no answer. launch is the claim's
+	// Generation when this run made the one publish a not-ready launch or a non-release suspension
+	// allows (roleWaitGate), stored into record.OutboxWait.WaitLaunch by roleWaitNext so a later
+	// run of the same launch publishes nothing; 0 keeps the row's stored WaitLaunch as it is.
+	answer error
+	launch uint64
 	// err is the wait itself, a wait.ErrWaiting, as the executor words it.
 	err error
 }
@@ -191,15 +190,16 @@ func (r *outbox) roleWaitGate(row record.OutboxRow, topic string) roleGate {
 
 // roleWait is the role wait (roleWaiting) of a row that publishes to topic, whose role's claim the
 // run read as view, and whose publish answered answer: the publish's error, nil where the run made
-// no publish. waiting is the wait itself (a wait.ErrWaiting) as the executor words it, which the
-// role wait unwraps to, so settle and every reader of the error still read it as that wait. When
-// the run published to a not-ready registered launch or non-release suspension, launch records
-// view.Generation so roleWaitNext stores it into record.OutboxWait.WaitLaunch (the gate allows
-// no such publish at Generation 0, so launch is never 0 for one).
+// no publish. A failed publish (publishFailed) is marked as this run's publish, answer being the
+// listener's last answer; the gate's own refusal (unheldSession) is not. waiting is the wait itself
+// (a wait.ErrWaiting) as the executor words it, which the role wait unwraps to, so settle and every
+// reader of the error still read it as that wait. When the run published to a not-ready registered
+// launch or non-release suspension, launch records view.Generation so roleWaitNext stores it into
+// record.OutboxWait.WaitLaunch (the gate allows no such publish at Generation 0, so launch is never
+// 0 for one).
 func (r *outbox) roleWait(topic string, view supervise.ClaimView, answer, waiting error) error {
 	w := r.newRoleWaiting(topic, view, waiting)
-	var unheld unheldSession
-	if answer != nil && !errors.As(answer, &unheld) {
+	if publishFailed(answer) {
 		w.markPublished(answer)
 	}
 	return w
@@ -224,19 +224,21 @@ func (r *outbox) newRoleWaiting(topic string, view supervise.ClaimView, waiting 
 	return roleWaiting{topic: topic, token: token, held: held, view: view, err: waiting}
 }
 
-// markPublished marks w's run as one whose publish reached the listener, answer being the
-// listener's refusal of it or nil, and records the claim's Generation as the launch published to
-// where the claim is held to this daemon in a once-per-launch state (publishesOncePerLaunch).
+// markPublished marks w's run as one that made its publish, answer being the publish's failure
+// (publishFailed) or nil where the listener took it, and records the claim's Generation as the
+// launch published to where the claim is held to this daemon in a once-per-launch state
+// (publishesOncePerLaunch). A failed publish is that launch's one: a 5xx or a connection the
+// listener dropped can have stored it, and the claim's ready makes the row due at once.
 func (w *roleWaiting) markPublished(answer error) {
-	w.published, w.answer = true, answer
+	w.answer = answer
 	if w.held && publishesOncePerLaunch(w.view) {
 		w.launch = w.view.Generation
 	}
 }
 
-// refusedReady is whether this run's publish was refused while the role's claim said it was ready
-// (supervise.SaidReady), the claim being one of this daemon's.
-func (w roleWaiting) refusedReady() bool {
+// failedReady is whether this run's publish failed (publishFailed) while the role's claim said it
+// was ready (supervise.SaidReady), the claim being one of this daemon's.
+func (w roleWaiting) failedReady() bool {
 	return w.held && w.answer != nil && supervise.SaidReady(w.view.State)
 }
 
@@ -252,30 +254,31 @@ func (w roleWaiting) turnSinceReady() bool {
 // row runs again at the bound's end, its step not raised, and waits for any change of the claim, a
 // turn start among them (dispatch://INFRA-4131/spec#b-r-wait-ready).
 func (w roleWaiting) awaitsName(now time.Time) bool {
-	return w.refusedReady() && errors.Is(w.answer, notify.ErrNoHolder) && !w.turnSinceReady() &&
+	return w.failedReady() && errors.Is(w.answer, notify.ErrNoHolder) && !w.turnSinceReady() &&
 		now.Before(w.view.LastReady.Add(roleNameBound))
 }
 
-// tookNothing is whether the refusal is a ready role taking nothing, the fault the 30-minute line
-// logs at Error (dispatch://INFRA-4131/spec#b-r-logged-once): this run's publish was refused while
-// the claim said it was ready, and either a turn has started since that ready, or now is at or past
-// roleNameBound after it, when even a session given no turn has taken its role's name.
+// tookNothing is whether the failed publish is a ready role taking nothing, the fault the
+// 30-minute line logs at Error (dispatch://INFRA-4131/spec#b-r-logged-once): this run's publish
+// failed while the claim said it was ready (failedReady), whatever the listener's last answer was,
+// and either a turn has started since that ready, or now is at or past roleNameBound after it, when
+// even a session given no turn has taken its role's name.
 func (w roleWaiting) tookNothing(now time.Time) bool {
-	return w.refusedReady() && (w.turnSinceReady() || !now.Before(w.view.LastReady.Add(roleNameBound)))
+	return w.failedReady() && (w.turnSinceReady() || !now.Before(w.view.LastReady.Add(roleNameBound)))
 }
 
 // waitsFor is the key of what the row waits for (record.OutboxWait.WaitFor), whose event makes it
-// due at once (record.Store.ExpediteWaits): the claim's ready alone for a refusal while the claim
-// said it was ready, so a turn start or another change of a busy session does not cut the row's
-// backoff short (record.WaitForReady); any change of the claim, its ready among them, while the
-// claim has not said it is ready, the run published nothing, or the ready session has not taken its
-// role's name yet (record.WaitForClaim); and nothing for a topic held to no claim of this daemon,
-// whose wait no event of this daemon ends.
+// due at once (record.Store.ExpediteWaits): the claim's ready alone for a failed publish while the
+// claim said it was ready, so a turn start or another change of a busy session does not cut the
+// row's backoff short (record.WaitForReady); any change of the claim, its ready among them, while
+// the claim has not said it is ready, the run made no publish that failed, or the ready session has
+// not taken its role's name yet (record.WaitForClaim); and nothing for a topic held to no claim of
+// this daemon, whose wait no event of this daemon ends.
 func (w roleWaiting) waitsFor(now time.Time) string {
 	switch {
 	case !w.held:
 		return ""
-	case w.refusedReady() && !w.awaitsName(now):
+	case w.failedReady() && !w.awaitsName(now):
 		return record.WaitForReady(w.token)
 	default:
 		return record.WaitForClaim(w.token)
@@ -462,38 +465,38 @@ func (r *outbox) expediteWaits(ctx context.Context, keys []string, released func
 	return nil
 }
 
-// listenerRefused is whether err is the listener's refusal of a role publish that can keep its row:
-// no session holds the role (notify.ErrNoHolder) or its holder is unresponsive
-// (notify.ErrHolderUnresponsive), the holder did not confirm it (notify.ErrNotDelivered), does not
-// advertise its delivery mode (notify.ErrRefusedByHolder), or the listener's own NATS grant denied
-// the forward (notify.ErrPublishDenied). The gate's own refusal (unheldSession) is no answer of the
-// listener's, and nor is a failure to reach the listener or to read its answer, a store read or a
-// Dispatch read: those stay the row's failures.
-func listenerRefused(err error) bool {
+// publishFailed is whether err, what a role publish answered (outbox.publish, publishTo and
+// publishKept), is a failed publish: every error the publish answers but the gate's own refusal of
+// a claim that records a session it does not hold (unheldSession), which publishes nothing. So it
+// is the listener's refusal whatever its status, a 5xx other than its 504 among them, and a publish
+// that did not reach the listener or could not read its answer. Each executor of a kind that waits
+// for its role ends its row on the refusals its kind ends on (a role message's no holder, holder
+// capability and grant denial, a notice's capability and grant denial, an update ask's no holder),
+// and makes every other failed publish a role wait (roleWait) on the capped backoff, logged by its
+// wait with the failure as the listener's last answer (dispatch://INFRA-4131/spec#b-r-capped and
+// #b-r-logged-once; the architect's ruling,
+// dispatch://INFRA-4131/comment/19e7d9e9-97a3-42a1-b0eb-38aaa8e2f502): whether the next publish
+// meets the same failure, the claim record cannot show. A failure that is no publish, a store read
+// or a Dispatch read the executor makes before or after the publish, stays the row's failure.
+func publishFailed(err error) bool {
 	var unheld unheldSession
-	if err == nil || errors.As(err, &unheld) {
-		return false
-	}
-	var notDelivered notify.ErrNotDelivered
-	var refused notify.ErrRefusedByHolder
-	var denied notify.ErrPublishDenied
-	return errors.Is(err, notify.ErrNoHolder) || errors.Is(err, notify.ErrHolderUnresponsive) ||
-		errors.As(err, &notDelivered) || errors.As(err, &refused) || errors.As(err, &denied)
+	return err != nil && !errors.As(err, &unheld)
 }
 
 // roleWaitRun is whether the run of a row of kind that ended in err is a wait of R1, R2 or R6
 // (dispatch://INFRA-4131/spec#b-r-wait-ready, #b-r-capped and #b-r-wait-event): its run returned a
 // role wait or an event wait, or its kind waits for its role (record.OutboxKind.WaitsForRole) and
-// its run waited or met the listener's refusal. Such a row runs again on the capped backoff of its
-// own wait (roleWaitNext), and is logged by its wait rather than by its attempts (logWait). Every
-// other run keeps the outbox's backoff (record.RetryBackoff) and its lines.
+// its run waited. Such a row runs again on the capped backoff of its own wait (roleWaitNext), and
+// is logged by its wait rather than by its attempts (logWait). A failed publish that keeps its row
+// is a role wait already (publishFailed), so what such a kind's run returns as a plain error is no
+// publish's failure. Every other run keeps the outbox's backoff (record.RetryBackoff) and its lines.
 func roleWaitRun(kind record.OutboxKind, err error) bool {
 	var role roleWaiting
 	var event eventWaiting
 	if errors.As(err, &role) || errors.As(err, &event) {
 		return true
 	}
-	return kind.WaitsForRole() && (errors.Is(err, wait.ErrWaiting) || listenerRefused(err))
+	return kind.WaitsForRole() && errors.Is(err, wait.ErrWaiting)
 }
 
 // roleWaitNext is when row runs again after a run that ended in cause, a wait of roleWaitRun's, at
@@ -540,14 +543,14 @@ func roleWaitNext(row record.OutboxRow, cause error, now time.Time) (time.Time, 
 // keeps from this run on. The first run that waits writes one Info line, `outbox row waits`, and
 // starts the wait (record.OutboxWait.WaitSince). The first run at or after waitLoggedAfter from
 // that start writes one line more and marks it written (WaitLogged): at Error, roleTookNothingLine,
-// where this run's publish was refused while the claim said it was ready and the role has had its
+// where this run's publish failed while the claim said it was ready and the role has had its
 // chance to take it (roleWaiting.tookNothing), and at WARN, waitedLongLine, for every other wait: a
 // claim that has not said it is ready, a ready session that has not taken its role's name yet, a
 // topic held to no claim of this daemon, an event. The level is read at that run, since the line is
 // written once. Every other run writes `outbox row waits` at Debug. Each line names the row's
-// issue, its kind, its attempts, the role or the event it waits for, and the listener's answer to
-// this run's publish where there is one. Both marks are on the row, so a daemon restarted in the
-// wait writes neither line again.
+// issue, its kind, its attempts, the role or the event it waits for, and the listener's last
+// answer, the failure of this run's publish, where there is one. Both marks are on the row, so a
+// daemon restarted in the wait writes neither line again.
 func (r *outbox) logWait(ctx context.Context, row record.OutboxRow, err error, kept string) record.OutboxWait {
 	now := r.now().UTC()
 	next := row.Wait
@@ -573,9 +576,9 @@ func (r *outbox) logWait(ctx context.Context, row record.OutboxRow, err error, k
 }
 
 // waitFields is what a wait's lines name of what err waits for: the claim of a role wait, or its
-// topic where that is held to no claim of this daemon, with the listener's answer to the run's
-// publish where there is one, kept as the row keeps a far side's text; the key of an event wait;
-// and nothing for any other wait, whose error says what it waits for.
+// topic where that is held to no claim of this daemon, with the listener's last answer, the failure
+// of the run's publish, where there is one, kept as the row keeps a far side's text; the key of an
+// event wait; and nothing for any other wait, whose error says what it waits for.
 func waitFields(err error) []any {
 	var role roleWaiting
 	var event eventWaiting

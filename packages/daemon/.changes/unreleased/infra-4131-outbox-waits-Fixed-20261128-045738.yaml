@@ -11,7 +11,8 @@ body: |-
   released role, or that waits for a launch the wake pacing holds, among them. A new session takes
   its role's name only at its first turn, or 30 seconds after its ready, so a publish refused
   because no session holds the role yet runs again at that turn, or 30 seconds after the ready.
-  Each refusal that the claim record cannot explain runs again on a backoff that doubles from 1
+  Each failed publish that the claim record cannot explain, a refusal of the listener's, a 5xx, or
+  a publish that does not reach the listener, runs again on a backoff that doubles from 1
   second and stops at 5 minutes, so a row runs at most 12 times an hour. Every publish of a row
   carries the row's own key. A notice and a role message that no pause holds end with no publish
   when their role has no claim, where before they ended after one publish. An update ask ends
@@ -36,9 +37,10 @@ body: |-
   has waited 30 minutes, and once when it ends (`outbox row's wait ended`, at Info, with how long it
   waited and its attempts). The 30-minute line is `outbox row's role is ready and took nothing for
   30 minutes` at Error where the role's claim said it was ready and the listener did not take the
-  row, and `outbox row has waited 30 minutes` at WARN for every other wait. Every other attempt
-  logs at Debug, and a refusal that keeps such a row no longer logs `outbox row failed` at Error at
-  each attempt. Each ready of a claim is logged at Info as `supervise: ready`, with the claim and
+  row, and `outbox row has waited 30 minutes` at WARN for every other wait. Each line names the
+  listener's last answer, the failure of the row's publish. Every other attempt logs at Debug, and
+  a failed publish that keeps such a row no longer logs `outbox row failed` at Error at each
+  attempt. Each ready of a claim is logged at Info as `supervise: ready`, with the claim and
   the generation of its launch, so the log shows each ready beside each launch (`supervise:
   launched`).
 
