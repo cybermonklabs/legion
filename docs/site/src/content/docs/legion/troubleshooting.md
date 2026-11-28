@@ -1419,12 +1419,11 @@ Next the shim waits until jj's own working-copy lock, `.jj/working_copy/working_
 A wait writes `the adoption waits for jj's working-copy lock` to the shim's log, and a wait that lasts the whole budget refuses the adoption, naming that lock and the wait.
 Then the shim reads whether the working copy is stale, without snapshotting it.
 It compares the operation and the tree that the working copy recorded (`jj debug working-copy`) with the repository's head operation and the tree of `@`, as jj's own check does.
-On a working copy that this check reads as stale, it runs `jj workspace update-stale`, which snapshots the working copy.
-The check also reads as stale two working copies that jj may find fresh:
-a fresh working copy whose recorded operation is not the head and is not among the head's last 1,000 operations,
-and a working copy whose check could not be read, because one of the check's jj commands failed or printed what the shim does not parse, which the shim's log names in a line that starts `warning: the freshness check`.
-The shim runs the update on these too, and on a working copy that is fresh the update snapshots it and then finds nothing to update.
-So the shim's line `the working copy is stale; bringing it up to date with jj workspace update-stale` says only that the check did not find the working copy fresh.
+The working copy is fresh where the recorded operation is the head, or where the recorded tree is the tree of `@`, however far the head has moved past the recorded operation; it is stale where the two trees differ.
+Only on a working copy that this check reads as stale does the shim run `jj workspace update-stale`, which snapshots the working copy.
+Where the check cannot be read, because one of its jj commands failed or printed what the shim does not parse, the shim runs no update and refuses the adoption, and the daemon sends the task again at its next sweep.
+The refusal names the check, before or after the adoption's change, and the jj command, and the shim's log says the same in one line that starts `warning: the freshness check`.
+An update there could take the edits off the disk: after an adoption's change, and until the role's next jj command, `@` was rewritten after the operation that the working copy recorded, and jj finds that working copy fresh while its tree is kept.
 On a stale working copy, the update leaves the edits that no jj command recorded in a commit of `@`'s change that is not checked out: `@`'s change is then divergent, and those edits are no longer on disk.
 The shim names each such commit in its answer (`editsCommits`) and in one line of its log.
 The daemon records the commit on the role's claim, and every prompt it sends that role names the commit and says that the edits are there, until a turn takes one of those prompts.
@@ -1532,7 +1531,7 @@ A search that finds no line for a time before the first line does not show that 
 - `supervise: the shim refused to adopt the working copy; the prompt was never sent` is an adoption that failed, with the shim's own words.
   The task stays queued and is sent again at the next sweep.
   The refusal costs the claim no prompt budget, because the shim answered, and the pending task counts it in `sendFailures`.
-  The shim's words name the workspace lock or jj's working-copy lock where its wait for that lock lasted the whole budget, and they say that the adoption ran its change three times where jj commands kept writing while it ran.
+  The shim's words name the workspace lock or jj's working-copy lock where its wait for that lock lasted the whole budget, they say that the adoption ran its change three times where jj commands kept writing while it ran, and they name the freshness check and its jj command where that check could not be read.
 
 - `supervise: the prompt was lost to the transport; the delivery waits` is a send that got no answer.
   When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon asked over the claim's connection, and the call did not succeed.
@@ -1562,9 +1561,9 @@ grep -e 'waits for the workspace lock' -e "waits for jj's working-copy lock" \
 
 - `[worker-shim] the adoption waits for jj's working-copy lock <path>, which a jj command that snapshots the workspace holds, <where>: …` is an adoption that waited for a snapshot to commit, before its first jj command or before its check after its change.
 
-- `[worker-shim] warning: the freshness check …` is a check that could not read what jj printed, or one of whose jj commands failed, so the working copy is taken as stale.
+- `[worker-shim] warning: the freshness check …` is a check, before or after the adoption's change, that could not read what jj printed, or one of whose jj commands failed: the adoption runs no `jj workspace update-stale` and refuses, and the daemon sends the task again at its next sweep.
 
-- `[worker-shim] the working copy is stale; bringing it up to date with jj workspace update-stale` is an update that the check asked for, on a working copy that is stale or that the check could not show fresh.
+- `[worker-shim] the working copy is stale; bringing it up to date with jj workspace update-stale` is an update that the check asked for, on a working copy that it read as stale.
 
 - `[worker-shim] bringing the stale working copy up to date left the edits that no jj command had recorded in commit <commit>: they are there, and no longer on disk` names each commit of the answer's `editsCommits`.
 

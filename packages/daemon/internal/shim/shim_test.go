@@ -1203,21 +1203,23 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 			ran: []string{"working copy", "head", "read", "metaedit", "working copy", "head"},
 		},
 		{
-			// Every command fails: the freshness check's failure reads the working copy as stale,
-			// and the read of @'s change that the update starts with refuses the adoption.
-			name:     "jj fails",
-			mode:     "fail",
-			request:  shimwire.AdoptWorkingCopy{ID: "a2", JJUser: "u", JJEmail: "u@example.test", TimeoutMs: 5000},
-			errorHas: []string{"Command failed (exit 3)", "jj --ignore-working-copy log -r @ --no-graph -T change_id", "the working copy is stale"},
-			ran:      []string{"working copy", "change"},
+			// Every command fails: the freshness check's first command fails, so the adoption
+			// cannot read whether the working copy is stale, and refuses, naming that check and
+			// the command, with nothing run after it.
+			name:    "jj fails",
+			mode:    "fail",
+			request: shimwire.AdoptWorkingCopy{ID: "a2", JJUser: "u", JJEmail: "u@example.test", TimeoutMs: 5000},
+			errorHas: []string{"the freshness check before the adoption's change could not read the working copy",
+				"Command failed (exit 3)", "jj --ignore-working-copy debug working-copy", "the working copy is stale"},
+			ran: []string{"working copy"},
 		},
 		{
-			// The freshness check's first command spends the whole budget, and the read of @'s
-			// change after it never starts.
+			// The freshness check's first command spends the whole budget, and the adoption
+			// refuses with its timeout.
 			name:     "jj outlives the budget",
 			mode:     "hang",
 			request:  shimwire.AdoptWorkingCopy{ID: "a3", JJUser: "u", JJEmail: "u@example.test", TimeoutMs: 200},
-			errorHas: []string{"Command timed out after 0.2 s", "jj --ignore-working-copy log -r @ --no-graph -T change_id"},
+			errorHas: []string{"Command timed out after 0.2 s", "jj --ignore-working-copy debug working-copy"},
 			ran:      []string{"working copy"},
 		},
 		{
@@ -1291,14 +1293,12 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 
 // adoptionCommands is each jj command the adoption runs on workspace with a fake jj, by name,
 // with the arguments the fake records: the freshness check's read of the working copy's record
-// and of the head operation, the read of @'s change that bringing a stale working copy up to date
-// starts with, the describe read (describedArgs), the metaedit (adoptionArgs), and the `jj new`
-// over a described working copy.
+// and of the head operation, the describe read (describedArgs), the metaedit (adoptionArgs), and
+// the `jj new` over a described working copy.
 func adoptionCommands(workspace string) map[string][]string {
 	return map[string][]string{
 		"working copy": {"--ignore-working-copy", "debug", "working-copy", "--color=never", "-R", workspace},
 		"head":         {"--ignore-working-copy", "op", "log", "-n1", "--no-graph", "-T", "id", "--color=never", "-R", workspace},
-		"change":       {"--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", "change_id", "--color=never", "-R", workspace},
 		"read":         {"--ignore-working-copy", "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", workspace},
 		"metaedit":     {"--ignore-working-copy", "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", workspace},
 		"new":          {"--ignore-working-copy", "new", "-R", workspace},
@@ -1491,12 +1491,12 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 	jj := fixturegit.PinnedJJ(t)
 	// The freshness check finds the working copy fresh on its first two reads, the recorded
 	// operation being the head; after the change it finds that operation behind the head, and
-	// reads @'s commit, its dump and the head's operations to find the tree and labels kept. The
-	// head having moved, it then reads whether @ is undescribed and authored by the requested
-	// identity, which the change made it, and the head operation's parents, which are the one the
-	// change loaded: no other jj command wrote beside it, so the adoption writes nothing more.
+	// reads @'s commit and its dump to find the tree and labels kept. The head having moved, it
+	// then reads whether @ is undescribed and authored by the requested identity, which the change
+	// made it, and the head operation's parents, which are the one the change loaded: no other jj
+	// command wrote beside it, so the adoption writes nothing more.
 	const check, checkAfter = "--ignore-working-copy debug\n--ignore-working-copy op\n",
-		"--ignore-working-copy debug\n--ignore-working-copy op\n--ignore-working-copy log\n--ignore-working-copy debug\n--ignore-working-copy op\n--ignore-working-copy log\n--ignore-working-copy op\n"
+		"--ignore-working-copy debug\n--ignore-working-copy op\n--ignore-working-copy log\n--ignore-working-copy debug\n--ignore-working-copy log\n--ignore-working-copy op\n"
 	for _, tc := range []struct {
 		name       string
 		leave      []string // what the previous role ran once README.md was written, nil for nothing

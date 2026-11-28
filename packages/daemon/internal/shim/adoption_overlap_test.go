@@ -52,7 +52,7 @@ func overlappedChange(marker string, order overlapOrder) string {
 }
 
 // snapshotHeldAcrossTheChange is the case of a recording jj in which a jj command that snapshots
-// the workspace (`jj status`, over the many files manyFiles writes) loads the repository before
+// the workspace (`jj status`, over the many files writeMany writes) loads the repository before
 // the adoption's metaedit and still holds jj's working-copy lock after it: the first time the
 // metaedit runs, the snapshot starts in the background, and the metaedit runs once the snapshot
 // holds the lock (lock exists), which jj takes only once it has loaded the repository. The
@@ -65,7 +65,7 @@ func snapshotHeldAcrossTheChange(lock, done, marker string, order overlapOrder) 
 		"JJ_OP_TIMESTAMP=" + order.change + " exec \"$REAL\" \"$@\"\nfi ;;\n"
 }
 
-// manyFiles is how many new files manyFiles writes: enough that a snapshot of them holds jj's
+// manyFiles is how many new files writeMany writes: enough that a snapshot of them holds jj's
 // working-copy lock for seconds on a pod's volume (2,000 took 1.9 s, measured on 2026-11-28).
 const manyFiles = 5000
 

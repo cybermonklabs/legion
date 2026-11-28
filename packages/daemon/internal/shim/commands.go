@@ -213,8 +213,9 @@ func plural(n int, one, many string) string {
 // rewrites the author alone, and `jj new` starts an empty commit on @, so both keep the tree, and
 // so does exportHeadArgs's rewrite. The freshness check around them reads with the same flag
 // (readFreshness); the one command of the adoption that writes the working copy, `jj workspace
-// update-stale`, runs only on a working copy that check read as stale (bringUpToDate). With the
-// flag jj takes no working-copy lock either, so the adoption takes the workspace's locks itself
+// update-stale`, runs only on a working copy that check read as stale (bringUpToDate), and a
+// check that cannot read the working copy refuses the adoption instead. With the flag jj takes no
+// working-copy lock either, so the adoption takes the workspace's locks itself
 // (workspace_lock.go).
 
 // adoptionArgs is the adoption's change of an undescribed working copy, in the one adoption the
@@ -270,7 +271,12 @@ const adoptionRounds = 3
 // the freshness check reads it with no snapshot (readFreshness), and only a working copy it reads
 // as stale runs `jj workspace update-stale` (bringUpToDate), which leaves the edits that no jj
 // command had recorded in a commit that is no longer checked out; the answer names each such
-// commit, whatever the outcome. The adoption's own change keeps @'s tree and labels, so where
+// commit, whatever the outcome. A check that cannot read the working copy, one of its jj commands
+// having failed or printed what does not parse, writes one warning line and refuses the adoption,
+// naming that check, with no update, and the daemon sends the task again at its next sweep: after
+// an adoption's change and until the role's next jj command, @ was rewritten after the operation
+// the working copy recorded, which jj finds fresh where the tree is kept, and an update would
+// take the edits off the disk. The adoption's own change keeps @'s tree and labels, so where
 // nothing else wrote, the check after it reads fresh. Something else can write all the same: a
 // jj command another workspace runs, which can leave the working copy stale, and a jj command
 // that snapshots this workspace, loaded the repository before the change and commits after it,
@@ -294,11 +300,11 @@ const adoptionRounds = 3
 // HEAD can name the described commit as it was before the snapshot rewrote it, not @'s parent;
 // the jj this was measured with (0.46.0-sami.20261127-111037) names git's HEAD in no revset or
 // template. So once the change is done, the adoption reads whether an operation other than the
-// change's came in on top of the round's first head (overlapped): the head is a merge, or its one
-// parent is not that head. Where one did, the round's change is done but the adoption is not: the
-// next round's change is exportHeadArgs's rewrite, which writes nothing in @ and has jj point
-// git's HEAD at @'s parent, and the check runs once more, within the same bound of rounds. A
-// round no other command wrote beside writes nothing more.
+// change's came in on top of the head the round's change loaded (overlapped): the head is a
+// merge, or its one parent is not that head. Where one did, the round's change is done but the
+// adoption is not: the next round's change is exportHeadArgs's rewrite, which writes nothing in
+// @ and has jj point git's HEAD at @'s parent, and the check runs once more, within the same
+// bound of rounds. A round no other command wrote beside writes nothing more.
 //
 // The checks see an overlap only where the snapshot commits before the check after the change
 // reads: a jj command of the role's own that loaded the repository before the change and takes
@@ -327,14 +333,22 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (edits []string, e
 		return nil, err
 	}
 	defer unlock()
-	// check waits for jj's working-copy lock and then reads whether the working copy is fresh.
-	check := func(when string) (freshness, error) {
+	// check waits for jj's working-copy lock (when is where the wait's line says it waits) and
+	// then reads whether the working copy is fresh. A check that cannot read that (readFreshness)
+	// writes one warning line and refuses the adoption, both naming which check it is.
+	check := func(when, which string) (freshness, error) {
 		if err := s.awaitWorkingCopy(opened, when); err != nil {
 			return freshness{}, err
 		}
-		return readFreshness(opened.read, func(line string) { s.log.Printf("[worker-shim] %s", line) }), nil
+		state, err := readFreshness(opened.read)
+		if err != nil {
+			why := "the freshness check " + which + " could not read the working copy, so the adoption runs no jj workspace update-stale and refuses"
+			s.log.Printf("[worker-shim] warning: %s: %q", why, shimwire.CutAnswerError(err.Error()))
+			return freshness{}, fmt.Errorf("worker-shim: %s: %w", why, err)
+		}
+		return state, nil
 	}
-	state, err := check("before its first jj command")
+	state, err := check("before its first jj command", "before the adoption's change")
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +386,7 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (edits []string, e
 		if _, err := run(nil, change...); err != nil {
 			return edits, err
 		}
-		if state, err = check("before it checks the working copy after its change"); err != nil {
+		if state, err = check("before it checks the working copy after its change", "after the adoption's change"); err != nil {
 			return edits, err
 		}
 		exportHead = false

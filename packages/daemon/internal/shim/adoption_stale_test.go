@@ -125,9 +125,8 @@ func countLines(lines []string, substr string) int {
 // status` finds the working copy fresh. The same holds where the rewrite lands during the
 // adoption, after its change, and where the other role abandoned the working-copy commit, whose
 // change the update writes the edits into. A refusal after the update, or an update cut off at
-// its bound once it wrote, still names the commit. And a freshness check that cannot read jj's
-// answer, or whose command fails, reads the working copy as stale, says so in one warning line,
-// and the update then finds nothing to do.
+// its bound once it wrote, still names the commit. A freshness check that cannot read the working
+// copy runs no update (TestAnAdoptionTakesNoEditOffTheDiskOfAWorkingCopyItDoesNotReadStale).
 //
 // The jj is the pinned one (fixturegit.PinnedJJ): the check reads jj's debug output, which no
 // release holds stable, so a bump that changes its shape fails here by name. The shim runs it
@@ -135,7 +134,7 @@ func countLines(lines []string, substr string) int {
 func TestAdoptWorkingCopyBringsAStaleWorkspaceUpToDateAndNamesTheCommitThatHoldsItsEdits(t *testing.T) {
 	jj := fixturegit.PinnedJJ(t)
 	edits := map[string]string{"README.md": "smoke, edited by a role\n", "new.txt": "a file no jj command recorded\n"}
-	staleByRebase := func(w podWorkspace, _ string) string {
+	staleByRebase := func(w podWorkspace) string {
 		o := newOtherRole(w)
 		o.rebase(o.change("other.txt", "another role's file\n", "another role's change"))
 		if status, err := w.try("tester", "jj", "status"); err == nil || !strings.Contains(status, "The working copy is stale") {
@@ -145,15 +144,14 @@ func TestAdoptWorkingCopyBringsAStaleWorkspaceUpToDateAndNamesTheCommitThatHolds
 	}
 	// The other role rebases the working-copy commit once the adoption's metaedit has run, so the
 	// freshness check before the change reads fresh and the one after it reads stale.
-	staleDuringTheAdoption := func(w podWorkspace, _ string) string {
+	staleDuringTheAdoption := func(w podWorkspace) string {
 		o := newOtherRole(w)
 		return rewriteAfterMetaedit(o, o.change("other.txt", "another role's file\n", "another role's change"))
 	}
 	for _, tc := range []struct {
 		name string
-		// arrange sets the workspace up and answers the cases of the shim's recording jj; marker
-		// is a file of the test's own a case may use.
-		arrange func(w podWorkspace, marker string) string
+		// arrange sets the workspace up and answers the cases of the shim's recording jj.
+		arrange func(w podWorkspace) string
 		// edits is whether a tracked file is changed and a new file written after arrange, with
 		// no jj command between.
 		edits    bool
@@ -166,21 +164,19 @@ func TestAdoptWorkingCopyBringsAStaleWorkspaceUpToDateAndNamesTheCommitThatHolds
 		// ran after the adoption's change, at the freshness check that follows it.
 		updates     int
 		afterChange bool
-		// warned is what the one warning line of the freshness check says, "" for no such line.
-		warned string
 	}{
 		{name: "stale with edits", arrange: staleByRebase, edits: true, ok: true, held: true, updates: 1},
 		{name: "stale, clean", arrange: staleByRebase, ok: true, updates: 1},
 		{name: "stale, update cut off after it wrote",
-			arrange: func(w podWorkspace, marker string) string {
-				staleByRebase(w, marker)
+			arrange: func(w podWorkspace) string {
+				staleByRebase(w)
 				return "*' workspace update-stale '*) \"$REAL\" \"$@\"; exec sleep 60 ;;\n"
 			},
 			// The update's bound is the budget less its reserve, the smaller of 5 s and a quarter.
 			edits: true, budget: 6_000, errorHas: []string{"Command timed out after 4.5 s", "workspace update-stale"}, held: true, updates: 1},
 		{name: "stale, refused after the update",
-			arrange: func(w podWorkspace, marker string) string {
-				staleByRebase(w, marker)
+			arrange: func(w podWorkspace) string {
+				staleByRebase(w)
 				return "*' metaedit '*) echo \"Error: the author could not be set\" >&2; exit 1 ;;\n"
 			},
 			edits: true, errorHas: []string{"Command failed (exit 1)", "metaedit", "the author could not be set"}, held: true, updates: 1},
@@ -190,7 +186,7 @@ func TestAdoptWorkingCopyBringsAStaleWorkspaceUpToDateAndNamesTheCommitThatHolds
 		{name: "stale during the adoption, with edits", arrange: staleDuringTheAdoption,
 			edits: true, ok: true, held: true, updates: 1, afterChange: true},
 		{name: "an operation lands while a metaedit writes none",
-			arrange: func(w podWorkspace, _ string) string {
+			arrange: func(w podWorkspace) string {
 				// @ already carries the adoption's identity, so its metaedit writes no operation.
 				w.as("tester", "jj", "metaedit", "--update-author")
 				o := newOtherRole(w)
@@ -198,7 +194,7 @@ func TestAdoptWorkingCopyBringsAStaleWorkspaceUpToDateAndNamesTheCommitThatHolds
 			},
 			ok: true, updates: 1, afterChange: true},
 		{name: "stale, ws@ abandoned",
-			arrange: func(w podWorkspace, _ string) string {
+			arrange: func(w podWorkspace) string {
 				w.write(map[string]string{"recorded.txt": "a change jj recorded\n"})
 				w.as("implementer", "jj", "status")
 				o := newOtherRole(w)
@@ -206,20 +202,10 @@ func TestAdoptWorkingCopyBringsAStaleWorkspaceUpToDateAndNamesTheCommitThatHolds
 				return ""
 			},
 			edits: true, ok: true, held: true, updates: 1},
-		{name: "output that does not parse",
-			arrange: func(_ podWorkspace, marker string) string {
-				return firstWorkingCopyRead(marker, "echo 'Current operation: of another shape'; exit 0")
-			},
-			ok: true, updates: 1, warned: `its first line: "Current operation: of another shape"`},
-		{name: "a command of the check fails",
-			arrange: func(_ podWorkspace, marker string) string {
-				return firstWorkingCopyRead(marker, "echo 'Error: an injected failure of the check' >&2; exit 1")
-			},
-			ok: true, updates: 1, warned: "Error: an injected failure of the check"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newPodWorkspace(t, jj)
-			cases := tc.arrange(w, filepath.Join(t.TempDir(), "answered"))
+			cases := tc.arrange(w)
 			if tc.edits {
 				w.write(edits)
 			}
@@ -250,10 +236,8 @@ func TestAdoptWorkingCopyBringsAStaleWorkspaceUpToDateAndNamesTheCommitThatHolds
 						update, change, strings.Join(ran, "\n"))
 				}
 			}
-			warnings := shim.log.count("warning: the freshness check")
-			if tc.warned == "" && warnings != 0 || tc.warned != "" && (warnings != 1 || shim.log.count(tc.warned) != 1) {
-				t.Errorf("the shim wrote %d warning line(s) of the freshness check, want %d saying %q; log:\n%s",
-					warnings, min(len(tc.warned), 1), tc.warned, shim.log)
+			if warnings := shim.log.count("warning: the freshness check"); warnings != 0 {
+				t.Errorf("the shim wrote %d warning line(s) of the freshness check, want none; log:\n%s", warnings, shim.log)
 			}
 			if tc.ok {
 				// Read before the commit's content, so a working copy the adoption left stale is
