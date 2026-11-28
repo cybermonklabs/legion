@@ -806,9 +806,18 @@ describe("dispatch spec-form names each text that Dispatch read", () => {
 
   test("a covered document lists its texts after its findings and its unread lines, before the reviewer line", async () => {
     forms["ACME-2-spec"] = {
-      ...formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 2 }, [
-        finding("ACME-2-spec", "spec.md", 2, "door-close", "statement", THREE_SENTENCES),
-      ]),
+      ...formRead(
+        "ACME-2-spec",
+        "spec.md",
+        2,
+        "covered",
+        { statement: 2 },
+        [finding("ACME-2-spec", "spec.md", 2, "door-close", "statement", THREE_SENTENCES)],
+        [
+          "Dispatch refuses an approval request of spec.md version 2, because 1 text breaks the form of The Spec.",
+          `- statement door-close in spec.md version 2: ${THREE_SENTENCES}.`,
+        ]
+      ),
       unread: [UNREAD],
       ...DOORS,
     };
@@ -818,7 +827,7 @@ describe("dispatch spec-form names each text that Dispatch read", () => {
     expect(code).toBe(0);
     expect(stdout.split("\n")).toEqual([
       "Dispatch refuses an approval request of spec.md version 2, because 1 text breaks the form of The Spec.",
-      `- statement door-close: ${THREE_SENTENCES}.`,
+      `- statement door-close in spec.md version 2: ${THREE_SENTENCES}.`,
       UNREAD.line,
       ...DOOR_LINES,
       REVIEWER_LINE,
@@ -837,7 +846,7 @@ describe("dispatch spec-form names each text that Dispatch read", () => {
     expect(code).toBe(0);
     expect(stdout.split("\n")).toEqual([
       "spec.md is not under a root of The Spec, so Dispatch refuses no approval request of it for its form.",
-      "Dispatch read the form of 2 statements, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it.",
+      "Dispatch read the form of 2 statements, 0 claims, 0 purposes and 0 definitions: no text breaks it.",
       ...DOOR_LINES,
       "",
     ]);
@@ -858,10 +867,10 @@ describe("dispatch spec-form names each text that Dispatch read", () => {
     expect(code).toBe(0);
     expect(stdout.split("\n")).toEqual([
       "spec.md version 2:",
-      "Dispatch read the form of 2 statements, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it.",
+      "Dispatch read the form of 2 statements, 0 claims, 0 purposes and 0 definitions: no text breaks it.",
       ...DOOR_LINES,
       "verification.md version 1:",
-      "Dispatch read the form of 0 statements, 1 claim, 0 purposes and 0 definitions against 0 terms: no text breaks it.",
+      "Dispatch read the form of 0 statements, 1 claim, 0 purposes and 0 definitions: no text breaks it.",
       "Dispatch read these texts in verification.md version 1, each by its kind and its node:",
       "claim v-door-open",
       REVIEWER_LINE,
