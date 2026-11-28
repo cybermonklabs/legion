@@ -189,6 +189,22 @@ func storedWaitOn(t *testing.T, h *harness, issue string) record.StoredWait {
 	return wait
 }
 
+// closeWaitRequestsOn is the id of each request for new work the close of issue waits on: the
+// close's own rule (record.CloseWaitOf) over the open defects the record holds of issue, which is
+// what the workflow hands it.
+func closeWaitRequestsOn(t *testing.T, h *harness, issue string) []string {
+	t.Helper()
+	var open []record.Defect
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		open, err = record.NewStore().OpenDefects(ctx, tx, issue)
+		return err
+	}); err != nil {
+		t.Fatalf("read the open defects of %s: %v", issue, err)
+	}
+	return record.CloseWaitOf(record.CloseFacts{Defects: open}).Requests
+}
+
 // report_defect answers each case of the shared contract (dispatch://INFRA-5580/artifact/plan-md,
 // "Shared contract with the texts piece"): before the last step of the task it is refused, and
 // after it the call records the defect and moves no phase. Two reports of one text are one defect,
@@ -438,9 +454,10 @@ func TestReportDefectAnswersEachCase(t *testing.T) {
 }
 
 // withdraw_defect answers each case of the shared contract: the owning architect withdraws a
-// reported defect with a reason, which close-wait.md's next version names; anyone else, an id the
-// issue does not hold, a check's or a production check's reason, a defect a merged change
-// carried, and a request a person made are refused, and every refusal changes nothing.
+// reported defect, or a request the controller or an architect made, with a reason, which
+// close-wait.md's next version names; anyone else, an id the issue does not hold, a check's or a
+// production check's reason, a defect a merged change carried, and a request a person made are
+// refused, and every refusal changes nothing.
 func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 	t.Parallel()
 
@@ -473,6 +490,37 @@ func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 		}
 		if at := issuePhaseOf(t, h, statusRoot); at != phase.Retro {
 			t.Fatalf("%s after the withdrawal stands in %s, want retro", statusRoot, at)
+		}
+	})
+
+	// A request for new work that the controller or an architect made is the owning architect's
+	// to withdraw, as a reported defect is, and its withdrawal ends the close's wait on it.
+	t.Run("the owning architect withdraws a request the controller made with its reason", func(t *testing.T) {
+		t.Parallel()
+		h, _, _ := statusHarness(t)
+		setIssueColumns(t, h, statusRoot, "phase = 'verifying', status = 'testing'")
+		id := seedDefect(t, h, record.Defect{Issue: statusRoot, Generation: 1, Kind: record.DefectKindRequest, Text: "issue.updated: todo",
+			Role: claim.RoleController, ReportedAt: time.Date(2026, 11, 27, 5, 0, 0, 0, time.UTC)})
+		request := strconv.FormatInt(id, 10)
+		if requests := closeWaitRequestsOn(t, h, statusRoot); len(requests) != 1 || requests[0] != request {
+			t.Fatalf("the close of %s waits on the requests %v before the withdrawal, want request %s", statusRoot, requests, request)
+		}
+		const reason = "the restart asked for no new work"
+		architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+		answer := answeredDefect(t, withdrawDefectAs(h, architect.grant(t), statusRoot, request, reason))
+		if answer.State != "withdrawn" || answer.Defect != request {
+			t.Fatalf("answer = %+v, want request %s withdrawn", answer, request)
+		}
+		rows := defectRows(t, h, statusRoot)
+		if len(rows) != 1 || rows[0].kind != string(record.DefectKindRequest) || !rows[0].withdrawn || rows[0].reason != reason {
+			t.Fatalf("defects = %+v, want the one request withdrawn with its reason", rows)
+		}
+		if requests := closeWaitRequestsOn(t, h, statusRoot); len(requests) != 0 {
+			t.Fatalf("the close of %s waits on the requests %v after the withdrawal, want none", statusRoot, requests)
+		}
+		wait := storedWaitOn(t, h, statusRoot)
+		if len(wait.Withdrawn) != 1 || wait.Withdrawn[0].ID != id || wait.Withdrawn[0].Kind != record.DefectKindRequest || wait.Withdrawn[0].Reason != reason {
+			t.Fatalf("the stored wait's withdrawals = %+v, want request %s with its reason", wait.Withdrawn, request)
 		}
 	})
 
