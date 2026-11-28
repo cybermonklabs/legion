@@ -5,7 +5,7 @@
 each committed patch and each drop text was read from. A path in a manifest is relative to the
 label's tree; a patch or a text file is relative to `packages/pi-legion/scripts/skill-scenarios/`.
 
-## `owner-walk-D.patch` (`controls/owner-walk-D.txt`, `controls/owner-walk-D-strict.txt`)
+## `owner-walk-D.patch` (`controls/owner-walk-D.txt`)
 
 The plan guidance change's own change of `packages/daemon/internal/prompts/go/architect-common.md`:
 the paragraph that names the read of earlier plans (`dispatch plans`), and its blank line. Form D
@@ -35,8 +35,10 @@ it, and the patch and the fixtures below were read at the change's head there:
 - `git apply --cached -R --check` of the patch passes on an index of the change's head, and fails
   on an index of `main` (`patch does not apply`), which holds no such paragraph.
 
-The rig holds the patch against the label's own commit when it builds D's tree (scored-job.sh runs
-`rig.sh unpatch-holds` on it): D differs from that commit in the change's lines alone.
+The rig holds D's tree against form A's (`head`, the tree of `controls/owner-walk-head.txt`) of the
+same commit when it builds D's (scored-job.sh builds both and runs `rig.sh unpatch-holds ctl-d head`
+on them): D differs from A in the change's lines alone. Both take out the plans-read lines below,
+so D's tree differs from its commit in those lines too.
 
 ## The change's head's two files (`controls/pr-4902-head/`)
 
@@ -46,12 +48,13 @@ and `skills/legion-architect/references/plan.md` at the change's head
 `815a575fe91e47d3bf1d4f23dea5e890e4c02df4` and `d29ab7a6a895a01c7ab054d8904cb176a9be1045`, and
 their sha256 are `45a2ae2f4087bbcee83a068d7fff0caf9e92267fe3dcb09e30ad7ca9993bc61e` and
 `3751d0f77c40c6ce163eecd20f950b3cc905eb54a04d86fc2e9f5db823d0dee0`. The directory keeps the name
-of #4902, whose change the files hold. They are the only files the three control manifests change,
-and no manifest names a commit (no `file` or `reverse` line), so rig.test.ts's rows of the
-manifests ("the owner-walk manifests apply to #4902's head's two files, committed as fixtures",
-and the D row after it) build a repository of one commit from them and hold each to its blob
-(`PR_4902_FILES`): the rows read no network and no ref that moves. The command, in a checkout
-that holds the commit:
+of #4902, whose change the files hold. They are the only files the three manifests
+(`owner-walk-head.txt`, `owner-walk-D.txt` and `owner-walk-E.txt`) change, and no manifest names a
+commit (no `file` or `reverse` line), so rig.test.ts's rows of the manifests ("the owner-walk
+manifests apply to #4902's head's two files, committed as fixtures", and "D's tree differs from
+form A's tree in the patch's lines alone, at #4902's head's two files") build a repository of one
+commit from them and hold each to its blob (`PR_4902_FILES`): the rows read no network and no ref
+that moves. The command, in a checkout that holds the commit:
 
 ```bash
 git archive --format=tar 64d99a04992535295b81d43cdf976359b1bf80a9 \
@@ -68,10 +71,10 @@ text was read with `git show <commit>:<path>` and occurs once in its file at the
 `64d99a04992535295b81d43cdf976359b1bf80a9`. Each count below was read there and at `main`
 `1a37a9ffe738c7e7053ce2f4e1c13ef78dd14d66`, and each line number is the text's line at the head.
 
-| Drop text | Its file | What it takes out | Count at the change's head `64d99a04992` | Count at `main` `1a37a9ffe738` |
-| --- | --- | --- | --- | --- |
-| `owner-walk-E-choice-paragraph.txt` | `packages/daemon/internal/prompts/go/architect-common.md` | the paragraph "For each step, decide whether a fresh agent works it or the agent of an earlier step, …" (line 6) | 1 | 1 |
-| `owner-walk-E-choice-sentence.txt` | `skills/legion-architect/references/plan.md` | the sentence "For each step, a fresh agent or the agent of an earlier step, and why." of the task block's example (line 18) | 1 | 1 |
+| Drop text | Its file | What it takes out | Forms that take it | Count at the change's head `64d99a04992` | Count at `main` `1a37a9ffe738` |
+| --- | --- | --- | --- | --- | --- |
+| `owner-walk-E-choice-paragraph.txt` | `packages/daemon/internal/prompts/go/architect-common.md` | the paragraph "For each step, decide whether a fresh agent works it or the agent of an earlier step, …" (line 6) | E | 1 | 1 |
+| `owner-walk-E-choice-sentence.txt` | `skills/legion-architect/references/plan.md` | the sentence "For each step, a fresh agent or the agent of an earlier step, and why." of the task block's example (line 18) | E | 1 | 1 |
 
 E took out a third text until the skills trim (#5564): the bullet of `plan.md` that said this
 release cannot carry out the choice of a fresh or an earlier agent, "write the choice all the same"
@@ -84,11 +87,16 @@ label without the trim, E's tree keeps the bullet. `rig.test.ts`'s row "E's mani
 checkout's own two files" holds E to the texts a label of this checkout carries, so a change that
 deletes one of E's two texts fails that row before it reaches a Job.
 
-| Drop text | Its file | What it takes out | Count at the change's head `64d99a04992` | Count at `main` `1a37a9ffe738` |
-| --- | --- | --- | --- | --- |
-| `owner-walk-D-strict-plans-read.txt` | `skills/legion-architect/references/plan.md` | the three lines of "Reading how plans went" that name `dispatch plans` and ask for its read (lines 80-82) | 1 | 0 |
+| Drop text | Its file | What it takes out | Forms that take it | Count at the change's head `64d99a04992` | Count at `main` `1a37a9ffe738` |
+| --- | --- | --- | --- | --- | --- |
+| `owner-walk-plans-read.txt` | `skills/legion-architect/references/plan.md` | the three lines of "Reading how plans went" that name `dispatch plans --project` and ask for its read (lines 80-82) | every form: A, B and C (`owner-walk-head.txt`), D and E | 1 | 0 |
 
-D strict removes `plan.md:80-82` at the change's pinned head, three lines the change wrote in place
-of two of `main`'s, so it does not apply to the older main version. The manifests leave the
-Dispatch CLI's `plans` help unchanged. `../pr-4902-head/README.md` names what else must change
-with these lines.
+Every form takes `plan.md:80-82` out, so the architect skill an owner loads names the read of
+earlier plans in no form, and only the owner's prompt part can name it: D, whose prompt part names
+no such read, is then a control of that part alone. The lines are three the change wrote in place
+of two of `main`'s, so the text occurs 0 times at the older `main`, and no form's tree builds there.
+The manifests leave the Dispatch CLI's `plans` help unchanged. `rig.test.ts`'s row "no form's tree
+of this checkout's own two files holds a line of plan.md that names `dispatch plans --project`"
+holds each form's tree of this checkout's own two files to no such line, and this checkout's own
+`plan.md` to one at least, so the drop is no no-op. `../pr-4902-head/README.md` names what else
+must change with these lines.

@@ -21,8 +21,9 @@
 #                                                  <commit> of this checkout's repository under
 #                                                  <work>/label-trees/<name>/tree, each line of the
 #                                                  manifest applied (cmd_label_tree)
-#   rig.sh unpatch-holds <name> <patch>            the label tree <name> differs from its commit in
-#                                                  the patch's lines alone (unpatch_holds)
+#   rig.sh unpatch-holds <name> <base> <patch>     the label tree <name> differs from the label
+#                                                  tree <base> in the patch's lines alone
+#                                                  (cmd_unpatch_holds)
 #   rig.sh plans-capture <checkout> <out dir>      the recorded answer of a real plans read at the
 #                                                  checkout, and its source (cmd_plans_capture)
 #   rig.sh batch-scored <scenario> <count> <label>...
@@ -2443,24 +2444,28 @@ label_tree_text() {
   ' "$1" "$2" "$3"
 }
 
-# cmd_unpatch_holds NAME PATCH succeeds when the label tree NAME differs from its commit in the
-# lines PATCH adds alone (a manifest of one `unpatch` line, as form D's): its diff.numstat is the
-# patch's own numstat reversed, and the lines it takes out are the patch's added lines, in order.
-# A difference fails, naming both.
+# cmd_unpatch_holds NAME BASE PATCH succeeds when the label tree NAME differs from the label tree
+# BASE in the lines PATCH adds alone (form D's tree, whose manifest is form A's and one `unpatch`
+# line, against form A's): the numstat of NAME's tree against BASE's is the patch's own numstat
+# reversed, and the lines it takes out are the patch's added lines, in order. A difference fails,
+# naming both. A BASE of another commit than NAME's differs in more than the patch, so it fails.
 cmd_unpatch_holds() {
-  [ $# = 2 ] || fail "usage: rig.sh unpatch-holds <name> <patch>"
-  local dir=$work/label-trees/$1 patch want got removed added
-  patch=$(realpath -e -- "$2") || fail "the patch $2 does not exist"
+  [ $# = 3 ] || fail "usage: rig.sh unpatch-holds <name> <base> <patch>"
+  local dir=$work/label-trees/$1 base=$work/label-trees/$2 patch from want got removed added
+  patch=$(realpath -e -- "$3") || fail "the patch $3 does not exist"
   [ -f "$dir/label-tree" ] || fail "no label tree $1 under $work/label-trees"
+  [ -f "$base/label-tree" ] || fail "no label tree $2 under $work/label-trees"
+  # BASE's tree as cmd_label_tree staged it, written to the object store both worktrees share.
+  from=$(git -C "$base/tree" write-tree)
   want=$(git -C "$dir/tree" apply --numstat "$patch" | awk -F'\t' '{ print $2 "\t" $1 "\t" $3 }')
-  got=$(<"$dir/diff.numstat")
+  got=$(git -C "$dir/tree" diff --cached --numstat "$from")
   [ "$got" = "$want" ] ||
-    fail "the label tree $1 differs from its commit in more than the lines of $patch: its numstat reads '${got//$'\t'/ }', and the patch's own, reversed, reads '${want//$'\t'/ }'"
-  removed=$(git -C "$dir/tree" diff --cached "$(sed -n 's/^commit //p' "$dir/label-tree")" | awk '/^-/ && !/^---/ { print substr($0, 2) }')
+    fail "the label tree $1 differs from the label tree $2 in more than the lines of $patch: its numstat against $2 reads '${got//$'\t'/ }', and the patch's own, reversed, reads '${want//$'\t'/ }'"
+  removed=$(git -C "$dir/tree" diff --cached "$from" | awk '/^-/ && !/^---/ { print substr($0, 2) }')
   added=$(awk '/^\+/ && !/^\+\+\+/ { print substr($0, 2) }' "$patch")
   [ "$removed" = "$added" ] ||
     fail "the label tree $1 takes out other lines than $patch adds: it takes out '$removed', and the patch adds '$added'"
-  printf 'the label tree %s differs from its commit in the lines of %s alone: %s\n' "$1" "${patch##*/}" "${got//$'\t'/ }"
+  printf 'the label tree %s differs from the label tree %s in the lines of %s alone: %s\n' "$1" "$2" "${patch##*/}" "${got//$'\t'/ }"
 }
 
 # plans_source ANSWER COMMIT prints the source of the recorded plans answer ANSWER

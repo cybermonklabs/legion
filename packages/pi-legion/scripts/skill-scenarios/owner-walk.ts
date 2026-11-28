@@ -30,6 +30,13 @@
  * A run's directory is `owner-walk-<kind>-<form>-<family>-<label>-<n>`: the case, the label and the
  * run's number. The case is `<kind>-<form>-<family>`, as SKILL_SCENARIOS_OWNER_WALK_CASE names it.
  *
+ * Each form runs at a label tree of the label checkout that scored-job.sh builds (rig.sh
+ * label-tree): A, B and C at `head` (controls/owner-walk-head.txt), D at `ctl-d` and E at `ctl-e`.
+ * Every form's manifest takes out the lines of the architect's plan reference that name
+ * `dispatch plans --project`, so the owner's prompt part is the one text of a form that can name
+ * the read of earlier plans. D's tree is A's with that part as it was before #4902, which names no
+ * such read; E's is B's with the owner's sentences on the choice of an agent taken out.
+ *
  *   owner-walk.ts cases [<stage>]
  *     Prints each case of the stage (default guidance) and the scored runs it takes, `<case> <n>`,
  *     one a line: each form's runs for each kind of owner and each family.
@@ -351,7 +358,7 @@ function familiesRule(evidence: OwnerWalkEvidence): ClauseResult {
 }
 
 /** The stages of owner-walk. `guidance` is `v-guidance-judge` at the piece dispatch://INFRA-4115,
- * version 9 of the Verification document; each clause's sentence is the check's. */
+ * version 15 of the Verification document; each clause's sentence is the check's. */
 export const OWNER_WALK_STAGES: Record<string, OwnerWalkStage> = {
   guidance: {
     check: "v-guidance-judge",

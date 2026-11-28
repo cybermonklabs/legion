@@ -714,7 +714,7 @@ export function cells(
     const ran = counts?.[`${named.label}\t${caseName(world)}`];
     if (ran !== undefined && empty.control === undefined) empty.count = ran;
     // A group's label and cell, a tab between them, are its own; a tab sorts before any character
-    // of a name, so `ctl-D` comes before `ctl-D-strict`.
+    // of a name, so `ctl-D` comes before `ctl-D-two`.
     const id = `${named.label}\t${empty.cell}`;
     const group = groups.get(id) ?? empty;
     group.rows.push({ n: named.n, row });

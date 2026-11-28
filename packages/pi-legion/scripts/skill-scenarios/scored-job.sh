@@ -7,20 +7,23 @@
 #
 #   scored-job.sh <scenario> <label group> [--case <case>] [--count <n>]
 #
-# Its one scenario is owner-walk. Its label groups, each on the commit of the label
-# checkout (SKILL_SCENARIOS_LABEL_CHECKOUT, default this checkout). A control group's label tree
-# is a worktree of THIS checkout at that commit (rig.sh label-tree), so a label checkout must be
-# this checkout or a worktree of it: one whose objects this checkout does not hold runs the `head`
-# group and stops `controls` and `strict` with "<commit> not in this checkout".
-#   head      the label `head`, the checkout itself: forms A, B and C
-#   controls  ctl-d, the tree of controls/owner-walk-D.txt, and ctl-e, of controls/owner-walk-E.txt
-#             (rig.sh label-tree): forms D and E. ctl-d's tree must differ from its commit in the
-#             lines of D's patch alone (rig.sh unpatch-holds), or the Job stops before any run.
-#             ctl-e is the control of form E only at a label that carries #5564's skills trim
-#             (controls/owner-walk-E.txt)
-#   strict    ctl-d-strict, the tree of controls/owner-walk-D-strict.txt: form D
-# A Job builds the trees and profiles of its cases' labels alone: a Job of form E's cases builds no
-# ctl-d, so it runs at a label checkout where D's patch does not apply.
+# Its one scenario is owner-walk. Its label groups, each on the commit of the label checkout
+# (SKILL_SCENARIOS_LABEL_CHECKOUT, default this checkout). Each label is a label tree, a worktree of
+# THIS checkout at that commit with its manifest applied (rig.sh label-tree), so a label checkout
+# must be this checkout or a worktree of it: one whose objects this checkout does not hold stops
+# every group with "<commit> not in this checkout". Every form's manifest takes out the lines of the
+# architect's plan reference that name `dispatch plans --project`
+# (controls/drops/owner-walk-plans-read.txt), so in no form does the architect skill an owner loads
+# name the read of earlier plans, and only the owner's prompt part can (v-guidance-judge).
+#   head      head, the tree of controls/owner-walk-head.txt: forms A, B and C
+#   controls  ctl-d, the tree of controls/owner-walk-D.txt, and ctl-e, of controls/owner-walk-E.txt:
+#             forms D and E. ctl-d's tree must differ from head's tree, which the Job builds for
+#             that check alone, in the lines of D's patch alone (rig.sh unpatch-holds), or the Job
+#             stops before any run. ctl-e is the control of form E only at a label that carries
+#             #5564's skills trim (controls/owner-walk-E.txt)
+# A Job builds the trees and profiles of its cases' labels alone, and head's tree beside ctl-d's: a
+# Job of form E's cases builds no ctl-d, so it runs at a label checkout where D's patch does not
+# apply.
 # --case <kind>-<form>-<family> runs one case, of a form of the group; without it, every case of
 # the group's forms of the family SKILL_SCENARIOS_FAMILY names (claude or gpt). --count is each
 # case's scored runs, by default its form's runs (owner-walk.ts cases). Each case runs as rig.sh
@@ -35,8 +38,8 @@
 # the batch starts no container, and its Oh My Pi (LEGION_TEST_OMP) as SKILL_SCENARIOS_OMP, each
 # unless the variable of the rig's own is set; the capture of a real plans read at the label
 # checkout (rig.sh plans-capture), whose answer every run's proxy serves, its keys mapped to the
-# run's; each label's tree, a control tree's `bun install --frozen-lockfile`, and its profile; each
-# case's batch; then the rows, the reach lines and the cells.
+# run's; each label's tree, its `bun install --frozen-lockfile`, and its profile; each case's
+# batch; then the rows, the reach lines and the cells.
 #
 # The model: SKILL_SCENARIOS_MODEL=standin runs every turn on the model stand-in (model-standin.ts).
 # Without it, the gateway, on the family's block of a provider file the Job writes: `gateway`
@@ -98,24 +101,22 @@ done
 case $group in
 head) labels=(head) forms=(A B C) ;;
 controls) labels=(ctl-d ctl-e) forms=(D E) ;;
-strict) labels=(ctl-d-strict) forms=(D) ;;
-*) refuse "the label group '$group' is none of head, controls and strict" ;;
+*) refuse "the label group '$group' is none of head and controls" ;;
 esac
 
-# label_of FORM is the group's label of FORM; manifest_of LABEL the manifest of a control label.
+# label_of FORM is the group's label of FORM; manifest_of LABEL the manifest of a label.
 label_of() {
   case $group:$1 in
   head:*) echo head ;;
   controls:D) echo ctl-d ;;
   controls:E) echo ctl-e ;;
-  strict:D) echo ctl-d-strict ;;
   esac
 }
 manifest_of() {
   case $1 in
+  head) echo "$here/controls/owner-walk-head.txt" ;;
   ctl-d) echo "$here/controls/owner-walk-D.txt" ;;
   ctl-e) echo "$here/controls/owner-walk-E.txt" ;;
-  ctl-d-strict) echo "$here/controls/owner-walk-D-strict.txt" ;;
   esac
 }
 
@@ -186,9 +187,9 @@ say "bun install --frozen-lockfile"
 bash "$rig" plans-capture "$checkout" "$SKILL_SCENARIOS_WORK/plans"
 export SKILL_SCENARIOS_PLANS_ANSWER=$SKILL_SCENARIOS_WORK/plans
 
-# Each label of the Job's cases, in the group's order: its tree (a control's), and its profile.
-# The profile packs the label's plugins from that tree, and a pack builds through the tree's own
-# node_modules (scripts/e2e/lib/pack-plugin.sh), which a new control tree has none of.
+# Each label of the Job's cases, in the group's order: its tree, and its profile. The profile packs
+# the label's plugins from that tree, and a pack builds through the tree's own node_modules
+# (scripts/e2e/lib/pack-plugin.sh), which a new label tree has none of.
 used=()
 for label in "${labels[@]}"; do
   for name in "${selected[@]}"; do
@@ -200,14 +201,16 @@ for label in "${labels[@]}"; do
   done
 done
 for label in "${used[@]}"; do
-  tree=$checkout
-  if [ "$label" != head ]; then
-    bash "$rig" label-tree "$label" "$commit" "$(manifest_of "$label")"
-    tree=$SKILL_SCENARIOS_WORK/label-trees/$label/tree
-    [ "$label" != ctl-d ] || bash "$rig" unpatch-holds ctl-d "$here/controls/patches/owner-walk-D.patch"
-    (cd "$tree" && bun install --frozen-lockfile) >>"$SKILL_SCENARIOS_WORK/bun-install.log" 2>&1 ||
-      refuse "bun install --frozen-lockfile in the label tree $label failed; see $SKILL_SCENARIOS_WORK/bun-install.log"
+  bash "$rig" label-tree "$label" "$commit" "$(manifest_of "$label")"
+  tree=$SKILL_SCENARIOS_WORK/label-trees/$label/tree
+  if [ "$label" = ctl-d ]; then
+    # D's tree against form A's, both with the plan reference's plans-read lines taken out: never
+    # against the commit, from which every form's tree differs in those lines too.
+    bash "$rig" label-tree head "$commit" "$(manifest_of head)"
+    bash "$rig" unpatch-holds ctl-d head "$here/controls/patches/owner-walk-D.patch"
   fi
+  (cd "$tree" && bun install --frozen-lockfile) >>"$SKILL_SCENARIOS_WORK/bun-install.log" 2>&1 ||
+    refuse "bun install --frozen-lockfile in the label tree $label failed; see $SKILL_SCENARIOS_WORK/bun-install.log"
   bash "$rig" profile "$label" "$tree"
 done
 

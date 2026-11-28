@@ -636,7 +636,7 @@ describe("cells", () => {
     // child-gpt: owner 9. Five of twelve.
     plantControl(runs, "D", "ctl-D", (owner) => [0, 1, 3, 6, 9].includes(owner));
     // Six of twelve: the control does not pass.
-    plantControl(runs, "D", "ctl-D-strict", (owner) => [0, 1, 3, 6, 9, 10].includes(owner));
+    plantControl(runs, "D", "ctl-D-two", (owner) => [0, 1, 3, 6, 9, 10].includes(owner));
     expect(cells(runs, "owner-walk")).toEqual([
       {
         scenario: "owner-walk",
@@ -650,7 +650,7 @@ describe("cells", () => {
       },
       {
         scenario: "owner-walk",
-        label: "ctl-D-strict",
+        label: "ctl-D-two",
         cell: "guidance/D",
         count: 12,
         scored: 12,

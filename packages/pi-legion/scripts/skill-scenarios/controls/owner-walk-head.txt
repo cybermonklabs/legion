@@ -1,0 +1,5 @@
+# owner-walk, forms A, B and C (head): the label's commit with the three lines of the architect's
+# plan reference that name the read of earlier plans (`dispatch plans --project`) taken out. Every
+# form's manifest takes them out, so the architect skill an owner loads names that read in no
+# form, and only the owner's prompt part can name it (v-guidance-judge, as v-guidance-walk runs it).
+drop skills/legion-architect/references/plan.md controls/drops/owner-walk-plans-read.txt
