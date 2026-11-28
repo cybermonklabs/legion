@@ -1763,12 +1763,7 @@ func runListener(credentialWait time.Duration) {
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery, err := startSessionDelivery(cfg, inactiveThreshold, client, logger, edge, start)
-	if err != nil {
-		start.stepFailed(logger, "session consumer connection failed: every session is delivered through a consumer of its own", err, os.LookupEnv)
-		client.Conn.Close()
-		os.Exit(1)
-	}
+	delivery, _ := openSessionDelivery(cfg, inactiveThreshold, client, logger, edge, start, os.LookupEnv, os.Exit)
 	// The answer to whether a takeover pass may run here is the session delivery's, which
 	// remembers a refusal for its episode (sessionDelivery.holdsConsumerGrant). The configuration
 	// and each copy made of it already hold the answer this sets.
@@ -2108,6 +2103,19 @@ func runListener(credentialWait time.Duration) {
 		monitorDone: monitorDone,
 		kvLoopsDone: kvLoopsDone,
 	})
+}
+
+// openSessionDelivery opens the session-consumer connection. If it fails, it logs the error,
+// closes the main connection, and calls exit(1). An error returns only if exit returns,
+// so a test can drive the start clock and check the whole failure path without exiting.
+func openSessionDelivery(cfg config.Service, inactiveThreshold time.Duration, client *bus.Client, logger *logging.Logger, edge *edgeGrant, start *natsStart, lookup func(string) (string, bool), exit func(int)) (*sessionDelivery, error) {
+	delivery, err := startSessionDelivery(cfg, inactiveThreshold, client, logger, edge, start)
+	if err != nil {
+		start.stepFailed(logger, "session consumer connection failed: every session is delivered through a consumer of its own", err, lookup)
+		client.Conn.Close()
+		exit(1)
+	}
+	return delivery, err
 }
 
 // startSweep runs pass at each instant whose time since the epoch, less phase, is a whole number
