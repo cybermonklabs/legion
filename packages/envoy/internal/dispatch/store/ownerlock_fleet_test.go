@@ -42,11 +42,8 @@ func (f fleetOwners) all() []Owner { return []Owner{f.project, f.issueA, f.issue
 // project document: the owners of fleetOwners.
 func openFleetStore(t *testing.T) (*Store, fleetOwners) {
 	t.Helper()
-	s := openEmptyTestStore(t)
+	s := openMigratedTestStore(t, latestVersion)
 	ctx := context.Background()
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	if _, err := s.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('FLT', 'Fleet', 'alice@example.com');
 		insert into issues (key, number, project_key, rank, title, created_by) values

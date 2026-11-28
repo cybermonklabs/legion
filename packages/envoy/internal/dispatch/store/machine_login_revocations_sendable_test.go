@@ -14,8 +14,9 @@ import (
 //
 // Control: Sendable without its claim's age, and the row with the old claim reads sendable, named.
 func TestAClaimedMachineLoginRevocationIsSendableWithinItsWindow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	revocations := NewMachineLoginRevocations(database.Pool)
 	record := func(email string) { recordedMachineLoginRevocation(t, database, email) }
 	const email = "erin@other.example"

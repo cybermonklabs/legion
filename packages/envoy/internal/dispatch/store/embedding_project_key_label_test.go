@@ -12,10 +12,7 @@ import (
 func openLabelTestStore(t *testing.T) *Store {
 	t.Helper()
 	ctx := context.Background()
-	database := openEmptyTestStore(t)
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	database := openMigratedTestStore(t, latestVersion)
 	for _, statement := range []struct {
 		why string
 		sql string

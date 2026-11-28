@@ -211,6 +211,7 @@ func TestMigrateTransactionalFailureStillRollsBackTheWholeMigration(t *testing.T
 // it and says so instead. The records are read by the key they carry rather than by their level
 // alone, because an unrelated ERROR somewhere else on a boot's path says nothing about this one.
 func TestACancelledMigrationEndsTheKeyWithItsSessionAndLogsNoError(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault) to read what the runner logs about the migration key.
 	store := openEmptyTestStore(t)
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
@@ -380,6 +381,7 @@ func migrationKeyLockPids(t *testing.T, store *Store) []int32 {
 // session ends (FreeSessionLock hijacks and closes it), rather than going back to the pool where
 // the next caller would take and release a key this session may still hold.
 func TestAnUnlockThatDoesNotLandLogsAtErrorAndEndsItsConnection(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault) to read the ERROR the runner logs about the key.
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	records := &logtest.Recorder{}
@@ -413,6 +415,7 @@ func TestAnUnlockThatDoesNotLandLogsAtErrorAndEndsItsConnection(t *testing.T) {
 // else, which is its session ending. Nothing is logged at ERROR about the key here: this path
 // does not reach an unlock at all.
 func TestABootCancelledWaitingForTheKeyClosesItsConnectionOutOfThePool(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault) to read that the runner logs no ERROR about the key.
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	records := &logtest.Recorder{}
@@ -524,6 +527,7 @@ func TestWindowOwnerMigrationBuildsAValidPartialIndex(t *testing.T) {
 // the runner's lock_timeout leaves an INVALID index of the migration's own name, and the retry
 // drops that leftover, builds the index again and records the migration's version.
 func TestMigrateRecordsTheVersionAfterATimedOutConcurrentBuild(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the runner's attempt and INVALID-index lines, and orders the writer's commit into the runner's pause by a sleep.
 	ctx := context.Background()
 	store, _ := migratedToOne(t)
 	logs := captureLogs(t)
@@ -747,6 +751,7 @@ const migrationKeyQueueBound = 2 * migrationLockMaxPause
 // there instead, and the winner would then hold the key from that wait right through its build,
 // so the loser could never be waiting at the site this test is about.
 func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault), whose records are the only sign that each runner waits for the key.
 	ctx := context.Background()
 	// The wait is refused rather than taken once the backoff has outgrown the span the rest of
 	// this test runs in: every other wait here is bounded by pgmigrate.LockTimeout, which is

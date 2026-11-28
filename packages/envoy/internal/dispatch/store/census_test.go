@@ -1361,6 +1361,7 @@ func TestTheAnswersAndBacklogIndexMigrationsCreateNoExtension(t *testing.T) {
 // limit, so only a concurrent build's exemption admits an index on it, and so would a block table
 // that grows past it.
 func TestCensusAdmitsTheBackfillIndexes(t *testing.T) {
+	t.Parallel()
 	requireCensusAdmitsLateIndexes(t, 20261119020700, 20261119020800, 20261119020900, 20261119021000)
 }
 

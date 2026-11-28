@@ -51,6 +51,7 @@ func holdWrite(t *testing.T, store *Store) (pgx.Tx, uint32) {
 // nothing while it pauses, and tries again; once the writer commits, the next attempt applies it.
 // The timed-out attempt is logged with the lock, the writer and the writer's diagnosis.
 func TestMigrateTriesALockTimeoutAgainAndAppliesOnceTheWriterCommits(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the runner's attempt lines, and orders the writer's commit into the runner's pause by a sleep.
 	ctx := context.Background()
 	store, _ := migratedToOne(t)
 	logs := captureLogs(t)
@@ -88,6 +89,7 @@ func TestMigrateTriesALockTimeoutAgainAndAppliesOnceTheWriterCommits(t *testing.
 // pgmigrate.LockTimeoutAttempts attempts, applies nothing, and its error names the writer it was
 // queued behind with the writer's diagnosis. Each attempt is logged.
 func TestMigrateFailsNamingTheWriterOnceEveryAttemptTimesOut(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read and count the runner's attempt lines.
 	ctx := context.Background()
 	store, _ := migratedToOne(t)
 	logs := captureLogs(t)

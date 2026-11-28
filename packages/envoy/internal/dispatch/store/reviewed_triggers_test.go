@@ -33,11 +33,9 @@ const reviewedBlockSchemaChanged = "\nbegin\n  perform pg_notify('dispatch_block
 // text. The control changes the function's body in the test's own database, as a later migration
 // could, and the same comparison must then name it.
 func TestTheReviewedTriggersAreTheOnesTheStoreHolds(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	reviewed := pgmigrate.ReviewedTriggerNames("graph_nodes")
 	if len(reviewed) == 0 {
 		t.Fatal("pgmigrate reviews no trigger of graph_nodes, so this test compares nothing")

@@ -25,11 +25,9 @@ func textVersionsLiteral(cut time.Time) string {
 // A foreign key locks the table it names, and every table a keyword version names holds rows, so
 // neither of the two tables carries one.
 func TestTheKeywordTableHasNoForeignKey(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	rows, err := store.Pool.Query(ctx, `
 		select conrelid::regclass::text || ' ' || conname from pg_constraint
 		 where contype = 'f'
@@ -106,11 +104,9 @@ func TestNoMigrationWritesAKeywordVersion(t *testing.T) {
 
 // The relation's columns, their types and their order are what its readers build on.
 func TestTheKeywordRelationAnswersTheContractColumns(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	rows, err := store.Pool.Query(ctx, `select * from `+TextVersions{Cut: time.Now()}.SQL()+` v limit 0`)
 	if err != nil {
 		t.Fatalf("select from the relation: %v", err)
@@ -163,7 +159,7 @@ func TestTheKeywordRelationAnswersTheContractColumns(t *testing.T) {
 func TestTheKeywordRelationGivesOneVersionPerItemAtEachTime(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := migratedEmptyStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	base := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
 	// Starts fall on odd microseconds, so a cut written to the second, or rounded, would read
 	// the microsecond before a start as the start itself.
@@ -253,7 +249,7 @@ func TestTheKeywordRelationGivesOneVersionPerItemAtEachTime(t *testing.T) {
 func TestTheKeywordRelationAnswersEachDeletedPostsDeletedAt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := migratedEmptyStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	seedCoreWithADefaultAssignee(t, store)
 	deletedAt := time.Date(2026, 11, 1, 10, 30, 0, 123457000, time.UTC)
 	var deletedComment, standingComment, deletedMessage, standingMessage, ask string
@@ -356,7 +352,7 @@ func TestTheKeywordRelationAnswersEachDeletedPostsDeletedAt(t *testing.T) {
 func TestTheKeywordRelationUsesItsIndexes(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := migratedEmptyStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	if _, err := store.Pool.Exec(ctx, `
 		with items as (
 		  select k.kind, n.item,
@@ -412,7 +408,7 @@ func TestTextVersionsAtRefusesACutPastTheReach(t *testing.T) {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
 
-	store := migratedEmptyStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	reach := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
 	past := reach.Add(time.Microsecond)
 

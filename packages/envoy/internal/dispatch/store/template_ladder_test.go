@@ -208,3 +208,21 @@ func TestTheLadderRecordsTheCensusTablesOfEachMigrationItApplies(t *testing.T) {
 		}
 	})
 }
+
+// openTestStore answers a database of the test's own on each call: two calls in one test answer
+// stores on two databases. An openTestStore that opened the one database
+// DISPATCH_TEST_DATABASE_URL names answered both on that one, so every test that took it shared
+// its rows and ran alone.
+func TestTwoOpenTestStoresAreTwoDatabases(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	var names [2]string
+	for i := range names {
+		if err := openTestStore(t).Pool.QueryRow(ctx, `select current_database()`).Scan(&names[i]); err != nil {
+			t.Fatalf("read the database of the store of openTestStore call %d: %v", i+1, err)
+		}
+	}
+	if names[0] == names[1] {
+		t.Errorf("two openTestStore calls answered stores on one database, %s, want two", names[0])
+	}
+}

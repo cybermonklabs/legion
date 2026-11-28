@@ -10,7 +10,7 @@ import (
 // proofFixture is a migrated database of the test's own and the replay store on it.
 func proofFixture(t *testing.T) *DPoPProofs {
 	t.Helper()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	return NewDPoPProofs(database.Pool)
 }
 

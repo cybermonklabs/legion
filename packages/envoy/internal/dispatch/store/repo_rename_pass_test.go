@@ -189,7 +189,7 @@ var noneLeft = RepoRenamesLeft{Counted: true}
 func openRenamedRepositoriesStore(t *testing.T, seed string) (*Store, []RepoRename) {
 	t.Helper()
 	ctx := context.Background()
-	store := migratedEmptyStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	if _, err := store.Pool.Exec(ctx, seed); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -218,6 +218,7 @@ func readText(t *testing.T, store *Store, query string) string {
 // run writes nothing. It leaves the mapping, the event log and updated_at as they were, and
 // appends no event. A run it moves keeps every other column.
 func TestTheRenamePassWritesEveryFieldAndASecondRunWritesNothing(t *testing.T) {
+	// Not parallel: it swaps the default logger (capturePassLogs, logtest.SetDefault) to read the lines the pass logs.
 	ctx := context.Background()
 	store, pairs := openRenamedRepositoriesStore(t, renamedRepositoriesSeed)
 	untouched := readText(t, store, untouchedByThePass)
@@ -293,6 +294,7 @@ func TestTheRenamePassWritesEveryFieldAndASecondRunWritesNothing(t *testing.T) {
 // one that meets no row, and is not refused: it reports its pair, no row, no failure and none
 // left.
 func TestASecondRenamePassOnAWrittenDatabaseRunsNoLine(t *testing.T) {
+	// Not parallel: it swaps the default logger (capturePassLogs, logtest.SetDefault) to read the lines the pass logs.
 	ctx := context.Background()
 	store, pairs := openRenamedRepositoriesStore(t, renamedRepositoriesSeed)
 	if first := RewriteRenamedRepositories(ctx, store.Pool, pairs); first.Failures != 0 || first.Left != noneLeft {
@@ -391,6 +393,7 @@ const renameCollisionsSeed = `
 // is moved with its jobs. A source with a twin goes with its components. Of two rows under the
 // old name with one key, one stays and takes the new name.
 func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
+	// Not parallel: it swaps the default logger (capturePassLogs, logtest.SetDefault) to read the lines the pass logs.
 	ctx := context.Background()
 	store, pairs := openRenamedRepositoriesStore(t, renameCollisionsSeed)
 	logs := capturePassLogs(t)
@@ -447,6 +450,7 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 // counts it a failure and the rows it left, and writes every other line. The pass after the
 // table takes writes again writes that line, and nothing is left.
 func TestARenamePassLineThatFailsLeavesTheOthersWritten(t *testing.T) {
+	// Not parallel: it swaps the default logger (capturePassLogs, logtest.SetDefault) to read the lines the pass logs.
 	ctx := context.Background()
 	store, pairs := openRenamedRepositoriesStore(t, renamedRepositoriesSeed)
 	if _, err := store.Pool.Exec(ctx, `

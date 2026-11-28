@@ -17,7 +17,7 @@ import (
 func TestGitHubReadAttemptsKeepOneRowPerReadWithTheNewestValues(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	attempts := NewGitHubReadAttempts(migratedEmptyStore(t).Pool)
+	attempts := NewGitHubReadAttempts(openMigratedTestStore(t, latestVersion).Pool)
 	if rows, err := attempts.All(ctx); err != nil || len(rows) != 0 {
 		t.Fatalf("an empty record reads %v, %v; want no row", rows, err)
 	}
@@ -72,7 +72,7 @@ func readAttempts(t *testing.T, attempts *GitHubReadAttempts) map[githubreads.Re
 func TestTheGitHubReadAttemptsTableRefusesARowHealthCannotAnswer(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	cases := []struct {
 		name       string
 		read       string
@@ -128,7 +128,7 @@ func TestRecordingAGitHubReadAttemptNotifiesItsChannel(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	listener := connectForTest(t, ctx, database)
 	if _, err := listener.Exec(ctx, "listen "+githubreads.Channel); err != nil {
 		t.Fatalf("listen on %s: %v", githubreads.Channel, err)

@@ -6,11 +6,9 @@ import (
 )
 
 func TestPgSessionStoreAdvancesGenerationOnRevocation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := openTestStore(t)
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	sessions := NewPgSessionStore(database.Pool)
 	login := "session-" + randomDatabaseSuffix(t)
 

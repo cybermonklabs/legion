@@ -44,8 +44,9 @@ func recordedMachineLoginRevocation(t *testing.T, database *Store, email string)
 // settles the later removal and the row fails naming it settled. Settle without only one of them
 // leaves this row passing.
 func TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	revocations := NewMachineLoginRevocations(database.Pool)
 	const email = "erin@other.example"
 	record := func() { recordedMachineLoginRevocation(t, database, " Erin@Other.example ") }
@@ -105,8 +106,9 @@ func TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim(t *testing.T) {
 // Control: Settle without its generation, and the earlier claim settles the later removal and the
 // row fails naming it settled.
 func TestAClaimOfAnEarlierGenerationIsNotSettledAfterTheClockStepsBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	revocations := NewMachineLoginRevocations(database.Pool)
 	const email = "erin@other.example"
 
@@ -145,8 +147,9 @@ func TestAClaimOfAnEarlierGenerationIsNotSettledAfterTheClockStepsBack(t *testin
 // Control: Settle without its recorded_at bound, and the claim at once settles and the row fails
 // naming it settled.
 func TestAClaimTooSoonAfterItsRemovalIsNotSettled(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	revocations := NewMachineLoginRevocations(database.Pool)
 	const email = "erin@other.example"
 
@@ -178,8 +181,9 @@ func TestAClaimTooSoonAfterItsRemovalIsNotSettled(t *testing.T) {
 // Control: RecordMachineLoginRevocation taking no lock, and the approval made while the first
 // record's transaction is open takes the lock, named.
 func TestARecordOfAMachineLoginRevocationTakesThePersonsApprovalLock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	const email = "erin@other.example"
 	begin := func() pgx.Tx {
 		t.Helper()

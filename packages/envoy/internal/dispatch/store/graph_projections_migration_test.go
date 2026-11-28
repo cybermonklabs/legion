@@ -19,6 +19,7 @@ const graphProjectionsVersion = 20261109022248
 // runner's next attempt applies the migration. Under the runner's five-second bound that cycle
 // aborts one side with 40P01, which the runner does not retry.
 func TestMigrateGraphProjectionsGivesUpBeforeACommentWriteThatWritesBlocksDeadlocks(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the line pgmigrate logs when 20261109022248 gives up its first attempt.
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	migrateThrough(t, store, graphStoreVersion)

@@ -39,14 +39,13 @@ func testDatabaseURL(t *testing.T) string {
 	return databaseURL
 }
 
+// openTestStore returns a store on a database of the test's own at the newest schema, dropped
+// when the test ends: a copy of the newest template (openMigratedTestStore(t, latestVersion)). A
+// test that takes one needs no Migrate of its own, and no two stores it answers share a database
+// (TestTwoOpenTestStoresAreTwoDatabases), so the test runs beside the others.
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(context.Background(), testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(store.Pool.Close)
-	return store
+	return openMigratedTestStore(t, latestVersion)
 }
 
 func openEmptyTestStore(t *testing.T) *Store {
@@ -145,6 +144,7 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 // time.Local, which is never time.UTC - not even under TZ=UTC, where it is a location of its own
 // named "UTC" - so this holds the connection to the zone rather than to the host's.
 func TestScannedTimestampsCarryUTCWhateverTheHostZone(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	// Both wire formats: the pool's own (binary, the statement cache's) and the text one a
@@ -901,6 +901,7 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 // without limit; the context deadline below fires and the error is not a lock timeout. Remove the
 // retry, and the third row fails on the first attempt's timeout.
 func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
+	// Not parallel: it times prepareVersionTable's give-up against 3 attempts of pgmigrate.LockTimeout and the pauses between, and orders the holder's end into the pause by a sleep.
 	attempts := time.Duration(pgmigrate.LockTimeoutAttempts)
 	bound := attempts*pgmigrate.LockTimeout + (attempts-1)*pgmigrate.LockTimeoutRetryPause
 	for name, tc := range map[string]struct {
@@ -1357,8 +1358,8 @@ func execOnAdmin(admin url.URL, statement string) error {
 
 // storeTestParallelism is how many of this package's tests run at once when the command line names
 // no -parallel. Every test calls t.Parallel but those that change or measure something the whole
-// process or the server shares (the default logger, a package variable, openTestStore's one
-// database, a wall-clock bound), which stay serial and run before the rest. Each parallel test has
+// process or the server shares (the default logger, a package variable, the process's heap, a
+// wall-clock bound), which stay serial and run before the rest. Each parallel test has
 // a database of its own and waits on Postgres far more than on a core: alone, the package used 22%
 // of 4 CPUs. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box,
 // where every test's database and pools would open more connections than the test server allows

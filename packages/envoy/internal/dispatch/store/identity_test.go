@@ -14,6 +14,7 @@ import (
 // of that version before it applies anything, by the rule pgmigratetest.RunIdentityChecks holds it
 // to.
 func TestMigrateJudgesTheRecordedIdentityOfEveryVersion(t *testing.T) {
+	// Not parallel: pgmigratetest.RunIdentityChecks swaps the default logger (logtest.SetDefault) to count the records pgmigrate logs through it.
 	pgmigratetest.RunIdentityChecks(t, versionTable, func(t *testing.T) (pgmigratetest.Database, pgmigratetest.Migrate) {
 		store := openEmptyTestStore(t)
 		return store.Pool, store.migrate

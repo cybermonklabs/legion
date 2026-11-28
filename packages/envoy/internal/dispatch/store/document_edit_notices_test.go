@@ -12,7 +12,7 @@ import (
 func TestDocumentEditNotices(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := migratedEmptyStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	var artifactID string
 	if err := store.Pool.QueryRow(ctx, `
 		with p as (insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example') returning key),

@@ -134,10 +134,7 @@ func fillProgressEvery(t *testing.T, every time.Duration) {
 // stored and unlabelled.
 func openFillTestStore(t *testing.T, issues int) (*Store, int64) {
 	t.Helper()
-	database := openEmptyTestStore(t)
-	if err := database.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	database := openMigratedTestStore(t, latestVersion)
 	return database, seedUnlabelledEmbeddings(t, database, issues)
 }
 
@@ -183,6 +180,7 @@ func embeddingPhysicalRow(t *testing.T, database *Store, id string) string {
 // It asserts on the records and their attributes, not on a rendering of them: the count a reader
 // needs is the finish line's own rows attribute.
 func TestTheEmbeddingProjectKeyFillLogsItsStartItsProgressAndItsFinish(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault, logtest.Swap) to read the fill's lines, and sets the package variable embeddingProjectKeyProgressEvery (fillProgressEvery).
 	ctx := context.Background()
 	database, stored := openFillTestStore(t, EmbeddingProjectKeyBatch+50)
 	// Every batch but the last logs, so the line a deployment sees every half minute is here

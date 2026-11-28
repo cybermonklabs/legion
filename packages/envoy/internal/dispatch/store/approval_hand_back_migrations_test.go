@@ -172,6 +172,7 @@ func TestMigrate0064To0066RecordApprovalHandBacks(t *testing.T) {
 // before Postgres's deadlock check runs on either side: the write commits, and the runner's next
 // attempt applies 0066. Under the runner's five-second bound that cycle aborts one side with 40P01.
 func TestMigrate0066GivesUpBeforeACommentWriteThatWritesAsksDeadlocks(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the line pgmigrate logs when 0066 gives up its first attempt.
 	ctx := context.Background()
 	store := openMigratedTestStore(t, 65)
 	logs := captureLogs(t)

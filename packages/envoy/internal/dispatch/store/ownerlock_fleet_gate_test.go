@@ -185,17 +185,18 @@ func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pa
 }
 
 // dropRoleAfterTestDatabase is the cleanup of a role a test creates in s, a database of the
-// test's own (openEmptyTestStore), and is registered as soon as the role exists
-// (pauseFleetReadsAt, and the census's roles in census_test.go). It drops that database and then
-// the role, each a statement of its own on a connection of its own to the server's postgres
+// test's own (openMigratedTestStore or openEmptyTestStore), and is registered as soon as the role
+// exists (pauseFleetReadsAt, and the census's roles in census_test.go). It drops that database and
+// then the role, each a statement of its own on a connection of its own to the server's postgres
 // database, and runs the role's drop whatever the database's did. A role spans the cluster, and
 // what a test grants it or lets it own is in the test database, so once that database is gone
 // nothing depends on the role and its drop takes it, whatever the test left there: a table the
 // role owns that a view of the login depends on refuses `drop owned by` of the role (2BP01) and a
-// drop of the role, and not the database's drop. The test database's own drop (testdb.DatabaseOn)
-// was registered before the role existed, so it runs after this cleanup and finds the database
-// gone. A database whose drop fails is still there, and so are the role's grants in it, which
-// refuse the role's drop: the cleanup then drops them first (`drop owned by`, in that database).
+// drop of the role, and not the database's drop. The test database's own drop (openDatabaseCopy's
+// or testdb.DatabaseOn's) was registered before the role existed, so it runs after this cleanup
+// and finds the database gone. A database whose drop fails is still there, and so are the role's
+// grants in it, which refuse the role's drop: the cleanup then drops them first (`drop owned by`,
+// in that database).
 func dropRoleAfterTestDatabase(t *testing.T, s *Store, role string) {
 	t.Helper()
 	ctx := context.Background()

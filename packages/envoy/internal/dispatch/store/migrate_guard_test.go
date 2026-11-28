@@ -114,6 +114,7 @@ func TestMigrateRefusesTwoMigrationsSharingAVersionBeforeApplyingAny(t *testing.
 // it, and applies nothing. Unbounded, it waits for as long as the holder lives, and every read and
 // write of the table queues behind its request for that long.
 func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
+	// Not parallel: it times the runner's give-up against 3 attempts of pgmigrate.LockTimeout and the pauses between, a wall-clock bound the parallel tests' load could move.
 	lockTimeout := pgmigrate.LockTimeout
 	// Every attempt waits out the lock timeout, with the runner's pause between attempts.
 	gaveUp := pgmigrate.LockTimeoutAttempts*lockTimeout + (pgmigrate.LockTimeoutAttempts-1)*pgmigrate.LockTimeoutRetryPause

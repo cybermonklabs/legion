@@ -17,6 +17,7 @@ import (
 // `48213579/zqtail0123` inside pgx's quote of the URL, and a keyword DSN pgx cannot parse in that
 // same quote. Each DSN is built from parts, so no source line holds a URL with userinfo.
 func TestTheStorePrintsNoPartOfTheDatabasePassword(t *testing.T) {
+	t.Parallel()
 	at := "@"
 	const refused = "DATABASE_URL cannot be read: it holds an \"@\" after its user name and password"
 	rows := map[string]struct{ dsn, want string }{

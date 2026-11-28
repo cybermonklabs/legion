@@ -9,8 +9,9 @@ import (
 // foreign key (so a session's write takes no lock on projects), and a project's delete sweeps the
 // rows that name it instead, leaving every other project's rows as they were.
 func TestADeletedProjectTakesItsSessionRowsWithIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openMigratedProjectStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('GONE', 'Gone', 'carol@example.com'), ('KEPT', 'Kept', 'carol@example.com')
 	`); err != nil {
