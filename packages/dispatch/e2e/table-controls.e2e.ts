@@ -11727,8 +11727,13 @@ test("Take out of epic with the row now at the place of the row marked last cut 
       };
     });
   /** Where the focus is against the edge `edge` names: the checkbox of the row `key` names
-   *  shown whole with that edge of it at most 2 px from the same edge of the box's visible part
-   *  under its header (`ok`), and in words what holds the focus, its rect and that part. */
+   *  shown whole with that edge of it at most 2 px from the same edge of the part of the box a
+   *  landing brings a control into (`ok`), and in words what holds the focus, its rect and that
+   *  part. By the architect's ruling w12 of 2026-11-27 11:1xZ (open-items.md), a landing that
+   *  scrolls a box brings its control below the larger of the sticky head's bottom and the box's
+   *  own top edge plus its border and its computed scroll-padding-top (main's 64 px in
+   *  DataTable.tsx, #3709), the place the browser's own j/k focus scroll keeps; the window's
+   *  scroll padding is never read. */
   const landingOn = (key: string, edge: "bottom" | "header") =>
     page.evaluate(
       ([key, edge]) => {
@@ -11742,7 +11747,11 @@ test("Take out of epic with the row now at the place of the row marked last cut 
         const frame = scroller.getBoundingClientRect();
         const head =
           scroller.querySelector("thead th")?.getBoundingClientRect().bottom ?? frame.top;
-        const top = Math.max(0, frame.top, head);
+        const padded =
+          frame.top +
+          scroller.clientTop +
+          (Number.parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0);
+        const top = Math.max(0, head, padded);
         const bottom = Math.min(window.innerHeight, frame.bottom);
         const name = focused.getAttribute("aria-label") || focused.tagName.toLowerCase();
         const whole = own.top >= top - 0.5 && own.bottom <= bottom + 0.5;
@@ -11751,7 +11760,8 @@ test("Take out of epic with the row now at the place of the row marked last cut 
           ok: name === `Select ${key}` && whole && gap <= 2,
           text:
             `the focus is on "${name}" at top ${round(own.top)} to bottom ${round(own.bottom)}, ` +
-            `in a visible part from ${round(top)} to ${round(bottom)}`,
+            `in a visible part from ${round(top)} (the head's bottom ${round(head)}, the box's ` +
+            `padding edge ${round(padded)}) to ${round(bottom)}`,
         };
       },
       [key, edge] as const
