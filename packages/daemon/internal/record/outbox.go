@@ -1593,7 +1593,8 @@ func (GateSeed) OutboxKind() OutboxKind { return OutboxKindGateSeed }
 // Three queues of a seed go through it, each of which can repeat before the row runs: the
 // workflow's seed of a review of an older version in hash mode (dispatch://INFRA-6065 R3), the
 // read of Dispatch before a start the design gate holds, which a held start makes again at each
-// try (R4), and the boot's seed of each closed step, which a restart loop makes again (R2). It
+// try (R4), and the boot's seeds of many steps (EnqueueGateSeeds: each closed step, and every
+// registered step after an earlier release's boot), which a restart loop makes again (R2). It
 // adds no kind and no field: the row is the gate seed every queue writes.
 func EnqueueGateSeed(ctx context.Context, tx pgx.Tx, store Store, issue string, seed GateSeed, at time.Time) (bool, error) {
 	row, err := NewOutboxRow(issue, seed, at)
@@ -1609,6 +1610,36 @@ func EnqueueGateSeed(ctx context.Context, tx pgx.Tx, store Store, issue string, 
 		return false, nil
 	}
 	return true, store.Enqueue(ctx, tx, row)
+}
+
+// EnqueueGateSeeds queues, due at now, the gate seed (GateSeed) of each of gates whose step the
+// deployment takes (TakesStep, asked once for each gate) and whose issue is recorded in a tree
+// whose root is in the workflow (InWorkflow), each through EnqueueGateSeed, which queues none
+// beside a seed still pending, and answers how many it queued. issues is the records of the gates'
+// issues and of their trees' roots, by key, as ReadIssuesAndTreeRoots reads them: a gate whose
+// issue or root it lacks is one of an issue the record does not hold, and gets none. It is the one
+// rule of which steps a pass over many rows seeds: the boot's seed of each closed step (the
+// daemon's queueRecordedGatesPublish), and the seed of every registered step by the boot's reset
+// after an earlier release's boot (ResetGatesAfterEarlierRelease).
+func EnqueueGateSeeds(ctx context.Context, tx pgx.Tx, store Store, steps []DesignStep, gates []DesignGate, issues map[string]Issue,
+	now time.Time) (int, error) {
+	seeded := 0
+	for _, gate := range gates {
+		step := gate.Step.OrSpec()
+		issue, recorded := issues[gate.Issue]
+		if root, ok := issues[issue.Tree]; !TakesStep(steps, step) || !recorded || !ok || !InWorkflow(root) {
+			continue
+		}
+		added, err := EnqueueGateSeed(ctx, tx, store, gate.Issue,
+			GateSeed{ArtifactID: gate.ArtifactID, Step: step, Version: gate.LatestVersion, Generation: issue.Generation}, now)
+		if err != nil {
+			return 0, err
+		}
+		if added {
+			seeded++
+		}
+	}
+	return seeded, nil
 }
 
 // PendingBasisSeed reads, from Dispatch, the ancestor's document and issue a root's step waits on

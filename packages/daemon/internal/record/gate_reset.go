@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
-	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -52,7 +50,8 @@ const projectIssues = `issue in (select key from issues where project = $1)`
 //     out stays behind, such as a root version beside no basis.
 //   - It queues the gate seed of each registered step the deployment takes (TakesStep) of each
 //     tree in the workflow (InWorkflow), open or closed, so each row's read of Dispatch gives it
-//     its verdict again (EnqueueGateSeed, which queues none beside a seed still pending).
+//     its verdict again (EnqueueGateSeeds, the rule the boot's seed of each closed step follows,
+//     which queues none beside a seed still pending).
 //
 // A project with no boot, and one whose newest boot is one of this release, gets none of it. The
 // first boot after the migration finds the boot of the release before it and resets: the rows are
@@ -101,7 +100,15 @@ func ResetGatesAfterEarlierRelease(ctx context.Context, tx pgx.Tx, store Store, 
 		where `+projectIssues, project); err != nil {
 		return GateReset{}, fmt.Errorf("put the design gates of %s in version mode: %w", project, err)
 	}
-	if reset.Seeds, err = queueResetSeeds(ctx, tx, store, project, steps, gates, now); err != nil {
+	keys := make([]string, 0, len(gates))
+	for _, gate := range gates {
+		keys = append(keys, gate.Issue)
+	}
+	issues, err := ReadIssuesAndTreeRoots(ctx, tx, store, project, keys)
+	if err != nil {
+		return GateReset{}, err
+	}
+	if reset.Seeds, err = EnqueueGateSeeds(ctx, tx, store, steps, gates, issues, now); err != nil {
 		return GateReset{}, err
 	}
 	return reset, nil
@@ -120,49 +127,3 @@ const carriedCopies = `update design_gates set carried = true
 	  and handed_over_roots.gate_carried
 	  and exists (select 1 from design_gates other
 	              where other.artifact_id = design_gates.artifact_id and other.issue <> design_gates.issue)`
-
-// queueResetSeeds queues the gate seed of each of gates, the rows of project's issues, whose step
-// the deployment takes (TakesStep) and whose issue is recorded in a tree whose root is in the
-// workflow (InWorkflow), as the boot's seed of each closed step reads them (the daemon's
-// queueRecordedGatesPublish), and answers how many it queued.
-func queueResetSeeds(ctx context.Context, tx pgx.Tx, store Store, project string, steps []DesignStep, gates []DesignGate,
-	now time.Time) (int, error) {
-	var keys []string
-	for _, gate := range gates {
-		if TakesStep(steps, gate.Step.OrSpec()) {
-			keys = append(keys, gate.Issue)
-		}
-	}
-	if len(keys) == 0 {
-		return 0, nil
-	}
-	read, err := store.IssuesOf(ctx, tx, project, slices.Compact(keys))
-	if err != nil {
-		return 0, err
-	}
-	issues := make(map[string]Issue, len(read))
-	for _, issue := range read {
-		issues[issue.Key] = issue
-	}
-	roots, err := ReadTreeRoots(ctx, tx, store, project, read)
-	if err != nil {
-		return 0, err
-	}
-	maps.Copy(issues, roots)
-	seeded := 0
-	for _, gate := range gates {
-		issue, recorded := issues[gate.Issue]
-		if root, ok := issues[issue.Tree]; !TakesStep(steps, gate.Step.OrSpec()) || !recorded || !ok || !InWorkflow(root) {
-			continue
-		}
-		seed := GateSeed{ArtifactID: gate.ArtifactID, Step: gate.Step.OrSpec(), Version: gate.LatestVersion, Generation: issue.Generation}
-		added, err := EnqueueGateSeed(ctx, tx, store, gate.Issue, seed, now)
-		if err != nil {
-			return 0, err
-		}
-		if added {
-			seeded++
-		}
-	}
-	return seeded, nil
-}

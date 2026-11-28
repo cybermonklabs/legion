@@ -832,6 +832,29 @@ func ReadTreeRoots(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	return roots, nil
 }
 
+// ReadIssuesAndTreeRoots is the record of each of keys that is an issue of project, and of each
+// tree root those records name, by key: one query where every key is a root of its own tree, as a
+// gate's issue is, and one more otherwise (ReadTreeRoots). A key with no record has no entry, and
+// a key repeated next to itself is read once. It is the read the gate seeds of many steps make
+// (EnqueueGateSeeds), which the boot's pass over the recorded gates shares with its pending-basis
+// seeds (the daemon's queueRecordedGatesPublish).
+func ReadIssuesAndTreeRoots(ctx context.Context, tx pgx.Tx, store Store, project string, keys []string) (map[string]Issue, error) {
+	read, err := store.IssuesOf(ctx, tx, project, slices.Compact(keys))
+	if err != nil {
+		return nil, err
+	}
+	issues := make(map[string]Issue, len(read))
+	for _, issue := range read {
+		issues[issue.Key] = issue
+	}
+	roots, err := ReadTreeRoots(ctx, tx, store, project, read)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(issues, roots)
+	return issues, nil
+}
+
 // ReadTreeGates is the design gate of each tree root among issues, by root key, in one read
 // whatever the number of trees: one entry per root, so that a root with nothing registered is
 // the gate it is rather than a missing key every reader would have to answer for itself. steps

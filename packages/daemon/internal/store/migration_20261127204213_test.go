@@ -261,9 +261,10 @@ func gateSeeds(t *testing.T, st *Store) int {
 //
 // The way back ends each basis, open or pending, whose root version is below latest_version while
 // a digest is owed, so the step is closed and the earlier release cannot open a pending one at a
-// version nobody approved, and keeps one at the latest version; then it drops every column and the
-// table, and deletes the migration's version row. The release before's write still runs after it,
-// the roll forward puts every row in version mode, and the first boot after it resets.
+// version nobody approved, and keeps one at the latest version and one below it on a row that owes
+// no digest; then it drops every column and the table, and deletes the migration's version row. The
+// release before's write still runs after it, the roll forward puts every row in version mode, and
+// the first boot after it resets.
 func TestHashGateMigrationAndWayBack(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -677,7 +678,8 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 	})
 
 	t.Run("the way back", func(t *testing.T) {
-		for _, key := range []string{"LEGION-601", "LEGION-602", "LEGION-603", "LEGION-604", "LEGION-605", "LEGION-606"} {
+		wayBackRows := []string{"LEGION-601", "LEGION-602", "LEGION-603", "LEGION-604", "LEGION-605", "LEGION-606", "LEGION-607", "LEGION-608"}
+		for _, key := range wayBackRows {
 			issue(t, key, 1)
 		}
 		putGate(t, st, onBasis("LEGION-601", 3, 4, 3))
@@ -691,8 +693,13 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 		beforeMigration.Basis.RootVersion = 0
 		putGate(t, st, beforeMigration)
 		putGate(t, st, onBasis("LEGION-606", 3, 3, 3))
+		// LEGION-607 stands open on a basis and LEGION-608 waits on a request, each registered at root
+		// version 3 below the latest version 4, whose verdict Dispatch gave: neither owes its digest,
+		// so the way back, which ends only what a version owing its digest held back, keeps both.
+		putGate(t, st, onBasis("LEGION-607", 3, 4, 4))
+		putGate(t, st, pending("LEGION-608", 3, 4, 4))
 		moves := map[string]int{}
-		for _, key := range []string{"LEGION-601", "LEGION-602", "LEGION-603", "LEGION-604", "LEGION-605", "LEGION-606"} {
+		for _, key := range wayBackRows {
 			moves[key] = gatesOf(t, st, key)[record.DesignStepSpec].BasisMoves
 		}
 
@@ -711,6 +718,8 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 			{"LEGION-603", false, true, 4, "its basis, registered at version 4 inside the fill window, stands"},
 			{"LEGION-604", false, false, 2, "its wait, registered at version 4 inside the fill window, stands"},
 			{"LEGION-606", false, true, 3, "its basis at version 3 owes no digest and stands"},
+			{"LEGION-607", false, false, 3, "its basis at root version 3, below the latest version 4, owes no digest and stands: version mode reads it closed"},
+			{"LEGION-608", false, false, 2, "its wait at root version 3, below the latest version 4, owes no digest and stands"},
 		} {
 			gate := releaseBeforeGate(t, st, row.key)
 			// The release before answers the ancestor's request with a person's approval: it opens a

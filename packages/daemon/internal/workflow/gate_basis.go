@@ -871,7 +871,10 @@ func BasisChangesRequest(gate record.DesignGate, changes bool, version int, acto
 // event of the ancestor's issue. Dispatch's verdict on a version of the basis document
 // (artifact.digest, dispatch://INFRA-6065 R5) is such an event: a read made while that version
 // owed its digest decided nothing, so the digest that settles it reads again. It is the one place
-// an event is judged a cue for a particular step.
+// an event of the ancestor's is judged a cue for a particular step. A step has one cue more, as
+// readBasisLater names it: a fact that settles the root's own row while the step still waits
+// (applyArtifact), since a read made while the root's own fill window held the step decided
+// nothing either.
 func pendingBasisCue(gate record.DesignGate, fact intake.Fact) bool {
 	if !gate.PendingOnBasis() {
 		return false
