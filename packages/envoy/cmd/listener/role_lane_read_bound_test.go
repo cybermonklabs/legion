@@ -30,6 +30,7 @@ func (kv slowReadKV) Get(key string) (natsgo.KeyValueEntry, error) {
 // two together past one. The message must reach the holder, with no delivery exception and
 // nothing kept.
 func TestTheRoleLaneBoundsItsClaimReadAndItsHoldersSessionReadEachOnItsOwn(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "slow-reads"
 		holder = "ses_slow_reads"
@@ -73,7 +74,7 @@ func TestTheRoleLaneBoundsItsClaimReadAndItsHoldersSessionReadEachOnItsOwn(t *te
 
 	select {
 	case subject := <-forwards:
-		if want := contracts.AgentSubject(holder); subject != want {
+		if want := contracts.LegacyAgentSubject(holder); subject != want {
 			t.Fatalf("the role message was forwarded to %s, want %s", subject, want)
 		}
 	default:

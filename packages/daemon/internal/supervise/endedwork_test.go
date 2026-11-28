@@ -486,7 +486,7 @@ func TestARelaunchRecordsAProcessWithNoReportAsUnknown(t *testing.T) {
 }
 
 // A report read before the cut turn began is no report of that turn, as the idle rule holds
-// (pods.IdleClaim.Reported): a Claude Code worker reports only at its Stop hook, and Oh My Pi at a
+// (claim.ReadSessionWork): a Claude Code worker reports only at its Stop hook, and Oh My Pi at a
 // turn's end and otherwise only when what runs has changed (pi-legion's legion.ts), so when a turn
 // of its task is cut off, its newest report can be the turn before's, which says nothing of what
 // the cut turn started. The process ran a turn and reported — nothing running, or a subagent — and
@@ -655,7 +655,7 @@ func TestARelaunchRecordsAReportOlderThanABusyAnswersTurnAsNoReport(t *testing.T
 				h.reportActivity(row.kinds...)
 				h.advance(time.Second)
 			}
-			h.conn.RefusePrompt(busyAnswer)
+			h.conn.FailPrompt(busyRefusal())
 			h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
 			h.wantState(StateWorking)
 			answered := h.clock.Now()
@@ -1076,7 +1076,7 @@ func TestARelaunchRecordsNoTurnForAHoldThatLandsAtTheTurnsEnd(t *testing.T) {
 				Background: true, Kinds: []string{"subagent"}, Reported: true})
 			h.wantEndedLine(cause)
 			sent := len(h.prompts())
-			h.must(RequestResume{Claim: h.token})
+			h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 			h.reach(StateReady)
 			told := h.wantPrompts(sent + 1)[sent]
 			if !strings.Contains(told.Message, tc.says) {

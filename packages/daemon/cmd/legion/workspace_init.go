@@ -3,36 +3,48 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
+	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/lookpath"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-const workspaceProvisionUsage = "legion workspace-init provision --issue <KEY> --repo <owner>/<repo> --default-branch <name> [--root /legion] --credential-helper <git helper> --feed <dir>"
+const workspaceProvisionUsage = "legion workspace-init provision --issue <KEY> --repo <owner>/<repo> --default-branch <name> [--root /legion] --credential-helper <git helper>"
 
-// provisionTokenFileEnv points `workspace-init fetch` at the mounted provisioning token.
+// provisionTokenFileEnv points `workspace-init provision` at the mounted provisioning token.
 const provisionTokenFileEnv = "LEGION_PROVISION_TOKEN_FILE"
 
-// provisionBudget is the runner's slow-command budget for `provision`, workspace.CommandTimeout:
-// what the runner gives a command carrying no bound of its own, the commands that carry one being
-// the exceptions workspace.CommandTimeout names. A test shortens it to prove the issue's checkout
-// takes no part of it, holding workspace.CheckoutTimeout of its own instead (workspace.Provision,
-// Request.CheckoutBound).
-var provisionBudget = workspace.CommandTimeout
+// cacheURLEnv names the ready repository cache that provision streams before fetching its issue
+// delta from GitHub.
+const cacheURLEnv = "LEGION_REPOSITORY_CACHE_URL"
 
-// secretFileFromEnv is the secret file the environment variable name points at, once it reads
+// commandBudget is the slow-command budget of the runners workspace-init's provision and cache
+// run their commands under: workspace.CommandTimeout, 5 min. It is a variable so that this
+// package's tests can give it their own deadline (programbound): a stand-in jj that a loaded machine
+// made slower than the budget would be killed, and the row would read the kill.
+var commandBudget = workspace.CommandTimeout
+
+func init() {
+	programbound.Register(&commandBudget)
+}
+
+// secretFile is the secret file the environment variable name points at, once it reads
 // (config.ReadSecretPointer); an error when name is not set or its file does not read.
-func secretFileFromEnv(name string) (string, error) {
-	file, set := os.LookupEnv(name)
+func (p workspaceProcess) secretFile(name string) (string, error) {
+	file, set := p.lookup(name)
 	if !set {
 		return "", errors.New(name + " is not set")
 	}
@@ -42,141 +54,91 @@ func secretFileFromEnv(name string) (string, error) {
 	return file, nil
 }
 
-// workspaceInitCommands is `legion workspace-init`, the Kubernetes runtime's init containers, which
-// prepare a pod's disk before the main container's worker-shim starts, and the repository cache's
-// process, and the one list of them `legion workspace-init --help` names. An issue pod runs two of
-// them, three where the deployment names a skills repository, which prepare the issue's clone and
-// jj workspace on the pod's own disk and the skills its roles install from: `fetch` is the first,
-// one of the two processes of the pod that hold the provisioning token, in a container that mounts
-// nothing an agent of the issue can write; `skills` is the other such process, which clones the
-// deployment's skills marketplace into the pod's skills volume
-// (`runtime.kubernetes.skills_repository`), read-only in every other container, so no role's launch
-// clones anything; `provision` is the last, all the disk's work, in a container the provisioning
-// Secret is not mounted in. The controller's pod (`controller: daemon`) runs none. A
-// repository cache's pod runs `cache` as its one container, on its own volume, until it is stopped.
-// Each one's log lines go to stdout and its refusals and failures to stderr — together the init log
-// the runtime quotes — with exit 1.
-var workspaceInitCommands = map[string]command{
-	"fetch":     runWorkspaceFetch,
-	"skills":    runWorkspaceSkills,
-	"provision": runWorkspaceProvision,
-	"cache":     runWorkspaceCache,
+// newWorkspaceInitCommand is `legion workspace-init`, the Kubernetes runtime's init container and
+// repository cache process. An issue pod runs one `provision` init container, which fills its clone
+// and makes its Jujutsu workspace while it holds the provisioning Secret. A repository cache pod
+// runs `cache` as its one container, on its own volume, until it is stopped. Each one's log lines
+// go to stdout and its refusals and failures to stderr — together the init log the runtime quotes —
+// both through the URL rule (redact.Writer here for stdout, newRoot's for stderr), as Go's
+// standard logger is for the run of each when it runs as `legion` (workspaceProcess.standardLog):
+// a failure that quotes the repository cache's address (LEGION_REPOSITORY_CACHE_URL) loses its
+// query and its userinfo. No child process is handed either writer. A usage error exits 2
+// (workspace.InitExitUsage); `provision` exits 3 (workspace.InitExitOutsideVolume) for a failure
+// whose cause is outside the issue volume, and 1 for every other failure. `cache` exits 1 for every
+// failure (workspaceInitExit).
+func newWorkspaceInitCommand(stdout, stderr io.Writer, ws workspaceProcess) *cobra.Command {
+	stdout = redact.Writer(stdout)
+	return group(&cobra.Command{
+		Use:    "workspace-init",
+		Short:  "an issue pod's init container and a repository cache pod's process",
+		Hidden: true,
+	},
+		newWorkspaceProvisionCommand(stdout, stderr, ws),
+		newWorkspaceCacheCommand(stdout, stderr, ws),
+	)
 }
 
-func runWorkspaceInit(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return runSubcommand(ctx, "workspace-init", workspaceInitCommands, args, stdout, stderr)
-}
-
-func runWorkspaceFetch(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("workspace-init fetch", "usage: "+workspaceFetchUsage, stderr)
-	repo := flags.String("repo", "", "repository as <owner>/<name> (required)")
-	feed := flags.String("feed", "", "the pod's feed directory, the container's own (required)")
-	cacheURL := flags.String("cache-url", os.Getenv(cacheURLEnv), "the repository cache to fill the feed from before GitHub (default $"+cacheURLEnv+", set by the runtime while the cache is ready)")
-	if code, ok := parseWorkspaceInitFlags(flags, args, stderr); !ok {
-		return code
-	}
-	return workspaceInitExit(flags, workspaceFetch(ctx, *repo, *feed, *cacheURL, stdout), stderr)
-}
-
-func runWorkspaceSkills(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("workspace-init skills", "usage: "+workspaceSkillsUsage, stderr)
-	repo := flags.String("repo", "", "the skills marketplace repository as <owner>/<name> (required)")
-	dir := flags.String("dir", "", "the pod's skills volume root, the container's own (required)")
-	if code, ok := parseWorkspaceInitFlags(flags, args, stderr); !ok {
-		return code
-	}
-	return workspaceInitExit(flags, workspaceSkills(ctx, *repo, *dir, stdout), stderr)
-}
-
-func runWorkspaceProvision(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("workspace-init provision", "usage: "+workspaceProvisionUsage, stderr)
-	issue := flags.String("issue", "", "Dispatch issue key, e.g. LEGION-1 (required)")
-	repo := flags.String("repo", "", "repository as <owner>/<name> (required)")
-	defaultBranch := flags.String("default-branch", "", "the repository's default branch as GitHub names it, where an issue with no branch starts (required)")
-	root := flags.String("root", "/legion", "issue volume root directory")
-	credentialHelper := flags.String("credential-helper", "", "git credential helper written into the clone's config (required)")
-	feed := flags.String("feed", "", "the pod's feed directory, which workspace-init fetch filled (required)")
-	if code, ok := parseWorkspaceInitFlags(flags, args, stderr); !ok {
-		return code
-	}
-	return workspaceInitExit(flags, workspaceInit(ctx, *issue, *repo, *defaultBranch, *root, *credentialHelper, *feed, stdout), stderr)
-}
-
-// parseWorkspaceInitFlags parses one subcommand's flags, refusing a positional argument; a false
-// ok carries the exit code.
-func parseWorkspaceInitFlags(flags *flag.FlagSet, args []string, stderr io.Writer) (code int, ok bool) {
-	if code, ok := parseFlags(flags, args); !ok {
-		return code, false
-	}
-	if flags.NArg() != 0 {
-		fmt.Fprintf(stderr, "%s: unexpected argument %q\n", flags.Name(), flags.Arg(0))
-		flags.Usage()
-		return 2, false
-	}
-	return 0, true
+func newWorkspaceProvisionCommand(stdout, stderr io.Writer, ws workspaceProcess) *cobra.Command {
+	cmd := &cobra.Command{Use: strings.TrimPrefix(workspaceProvisionUsage, "legion workspace-init "), Short: "fill the issue clone and provision its jj workspace on the pod's disk", Hidden: true, Args: noArguments}
+	issue := cmd.Flags().String("issue", "", "Dispatch issue key, e.g. LEGION-1 (required)")
+	repo := cmd.Flags().String("repo", "", "repository as <owner>/<name> (required)")
+	defaultBranch := cmd.Flags().String("default-branch", "", "the repository's default branch as GitHub names it, where an issue with no branch starts (required)")
+	root := cmd.Flags().String("root", "/legion", "issue volume root directory")
+	credentialHelper := cmd.Flags().String("credential-helper", "", "git credential helper written into the clone's config (required)")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		defer ws.logs(stderr)()
+		return issuePodInitExit(cmd, workspaceInit(ctx, ws, *issue, *repo, *defaultBranch, *root, *credentialHelper, stdout), stderr)
+	})
+	return cmd
 }
 
 // workspaceInitExit is a subcommand's exit status once it has run: 0, or its failure on stderr
 // with 1.
-func workspaceInitExit(flags *flag.FlagSet, err error, stderr io.Writer) int {
+func workspaceInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 	if err == nil {
 		return 0
 	}
-	fmt.Fprintf(stderr, "%s: %v\n", flags.Name(), err)
+	fmt.Fprintf(stderr, "%s: %v\n", cmd.CommandPath(), err)
 	return 1
 }
 
-// workspaceInit validates everything before it touches the disk, --repo first, and refuses to
-// run where the provisioning token is pointed at: this is the process that runs git and jj against
-// what every agent of the issue can write. Then it removes the git locks an interrupted git or jj
-// left and provisions from the feed, an issue with no branch at defaultBranch. It makes no other
-// directory: the disk is the pod's own and starts empty, and the workspace this provisions is the
-// only thing on it a role reads. No lock guards the clone: it is the issue's own, on the pod's own
-// disk, and no other pod mounts it. For the same reason, and because the pod's launcher container
-// has not started, no process holds a git lock on the disk while this runs, so every one there is
-// stale and would fail each later write of what it locks (LEGION-731) — the kubelet restarts a
-// failed init container on the same pod, and so on the same disk, so a first attempt killed
-// mid-fetch leaves exactly those locks for the retry to clear.
-func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, credentialHelper, feed string, stdout io.Writer) error {
-	repository, err := ghrepo.Parse("--repo", repo)
+// issuePodInitExit is the exit status of an issue pod's init container, `provision`,
+// once it has run: workspaceInitExit's, except workspace.InitExitOutsideVolume for a failure whose
+// cause is outside the issue's volume (workspace.ErrOutsideVolume). A new volume does not cure such
+// a cause, so the runtime keeps a kept volume for this exit.
+func issuePodInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
+	code := workspaceInitExit(cmd, err, stderr)
+	if code != 0 && errors.Is(err, workspace.ErrOutsideVolume) {
+		return workspace.InitExitOutsideVolume
+	}
+	return code
+}
+
+// workspaceInit validates everything before it touches the disk (provisionInputs), then removes
+// stale locks and fills the issue clone and workspace. The one init container has the provisioning
+// Secret mounted and creates its one-shot credential under TMPDIR, which it removes before the
+// launcher starts. A kept volume reuses its clone and workspace; every provision updates the clone
+// from GitHub under its narrow refspecs. What it reads of its process — each variable, the PATH,
+// TMPDIR, the clock and the bound of its fill, and the runner — it reads from ws.
+func workspaceInit(ctx context.Context, ws workspaceProcess, issue, repo, defaultBranch, root, credentialHelper string, stdout io.Writer) error {
+	inputs, err := provisionInputs(ws, issue, repo, defaultBranch, root, credentialHelper)
 	if err != nil {
-		return err
-	}
-	if !legionclaim.IsIssueKey(issue) {
-		return fmt.Errorf("--issue must be a Dispatch issue key like LEGION-1 (got %q)", issue)
-	}
-	if !filepath.IsAbs(root) {
-		return fmt.Errorf("--root must be an absolute path (got %q)", root)
-	}
-	if credentialHelper == "" {
-		return fmt.Errorf("--credential-helper is required: %s", workspaceProvisionUsage)
-	}
-	if !filepath.IsAbs(feed) {
-		return fmt.Errorf("--feed must be an absolute path (got %q)", feed)
-	}
-	if defaultBranch == "" {
-		return fmt.Errorf("--default-branch is required: %s", workspaceProvisionUsage)
-	}
-	if _, set := os.LookupEnv(provisionTokenFileEnv); set {
-		return errors.New(provisionTokenFileEnv + " is set: provisioning runs without the provisioning token, which `workspace-init fetch` alone holds")
-	}
-	tools, err := provisioningTools("git", "jj")
-	if err != nil {
-		return err
-	}
-	located, err := workspace.Location(root, repository, issue)
-	if err != nil {
-		return err
+		// Every check before the first write to the volume is provisionInputs', so this one mark
+		// covers each of them, and a check added there later too (issuePodInitExit).
+		return workspace.OutsideVolume(err)
 	}
 
 	log := func(line string) { fmt.Fprintln(stdout, "workspace-init: "+line) }
-	if err := workspace.RemoveStaleGitLocks(located, time.Now(), log); err != nil {
+	if err := workspace.RemoveStaleGitLocks(inputs.located, time.Now(), log); err != nil {
 		return err
 	}
-	run := workspace.NewRunner(provisionBudget, tools)
+	// commandBudget is the slow-command budget of every command carrying no bound of its own, the
+	// commands that carry one being the exceptions workspace.CommandTimeout names, the issue's
+	// checkout among them (workspace.Provision, Request.CheckoutBound).
+	run := ws.runner(programbound.Of(&commandBudget), inputs.tools)
 	provisioned, err := workspace.Provision(ctx, run, workspace.Request{
-		StateDir: root, Repo: repository, Issue: issue, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
-		Source: workspace.FromFeed(feed), Log: log,
+		StateDir: root, Repo: inputs.repository, Issue: issue, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
+		Source: workspace.ForIssuePod(inputs.token, ws.tempDir(), inputs.cacheURL, inputs.cacheToken, ws.clock, ws.fetchBound, log), Log: log,
 	})
 	if err != nil {
 		return err
@@ -185,15 +147,75 @@ func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, creden
 	return nil
 }
 
-// provisioningTools resolves the named tools a provisioning step runs from PATH — in an init
-// container the image's, with no operator rc ahead of them — where the
-// TypeScript runner found them (processEnvRunner, workspace-init.ts).
-func provisioningTools(names ...string) (map[string]string, error) {
+// provisionInput is what `provision` reads before it touches the volume: the repository, the
+// credentials, the tools it runs and the issue's workspace on the volume.
+type provisionInput struct {
+	repository ghrepo.Repository
+	tools      map[string]string
+	located    workspace.Workspace
+	token      func() (string, error)
+	cacheURL   string
+	cacheToken string
+}
+
+// provisionInputs is every check `provision` makes before it touches the volume, --repo first,
+// then the cache inputs, the readable provisioning token and the provisioner's tools. It writes
+// nothing, so no refusal of it has a cause on the volume.
+func provisionInputs(ws workspaceProcess, issue, repo, defaultBranch, root, credentialHelper string) (provisionInput, error) {
+	repository, err := ghrepo.Parse("--repo", repo)
+	if err != nil {
+		return provisionInput{}, err
+	}
+	if !legionclaim.IsIssueKey(issue) {
+		return provisionInput{}, fmt.Errorf("--issue must be a Dispatch issue key like LEGION-1 (got %q)", issue)
+	}
+	if !filepath.IsAbs(root) {
+		return provisionInput{}, fmt.Errorf("--root must be an absolute path (got %q)", root)
+	}
+	if credentialHelper == "" {
+		return provisionInput{}, fmt.Errorf("--credential-helper is required: %s", workspaceProvisionUsage)
+	}
+	if defaultBranch == "" {
+		return provisionInput{}, fmt.Errorf("--default-branch is required: %s", workspaceProvisionUsage)
+	}
+	inputs := provisionInput{repository: repository, cacheURL: ws.getenv(cacheURLEnv)}
+	if inputs.cacheURL != "" {
+		if parsed, err := url.Parse(inputs.cacheURL); err != nil || parsed.Scheme != "http" || parsed.Host == "" {
+			return provisionInput{}, fmt.Errorf("%s must be an http:// URL (got %q)", cacheURLEnv, inputs.cacheURL)
+		}
+		tokenFile, set := ws.lookup(repocache.CacheTokenFileEnv)
+		if !set {
+			return provisionInput{}, errors.New(repocache.CacheTokenFileEnv + " is not set: a repository cache needs its token")
+		}
+		if inputs.cacheToken, err = config.ReadSecretPointer(repocache.CacheTokenFileEnv, tokenFile); err != nil {
+			return provisionInput{}, err
+		}
+	}
+	tokenFile, err := ws.secretFile(provisionTokenFileEnv)
+	if err != nil {
+		return provisionInput{}, err
+	}
+	inputs.token = func() (string, error) { return config.ReadSecretPointer(provisionTokenFileEnv, tokenFile) }
+	if inputs.tools, err = ws.tools("git", "jj"); err != nil {
+		return provisionInput{}, err
+	}
+	located, err := workspace.Location(root, repository, issue)
+	if err != nil {
+		return provisionInput{}, err
+	}
+	inputs.located = located
+	return inputs, nil
+}
+
+// tools resolves the named tools a provisioning step runs on the environment's PATH — in an init
+// container the image's, with no operator rc ahead of them — where the TypeScript runner found
+// them (processEnvRunner, workspace-init.ts).
+func (p workspaceProcess) tools(names ...string) (map[string]string, error) {
 	tools := map[string]string{}
 	for _, tool := range names {
-		path, err := exec.LookPath(tool)
-		if err != nil {
-			return nil, fmt.Errorf("%s is not on PATH: %w", tool, err)
+		path, ok := lookpath.On(p.getenv("PATH"), tool)
+		if !ok {
+			return nil, fmt.Errorf("%s is not on PATH", tool)
 		}
 		tools[tool] = path
 	}

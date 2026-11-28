@@ -25,6 +25,16 @@ import type { CommentReply, DispatchEvent } from "./dispatch-read";
  * released by the owner of the next round in writing (that document's "Version 1 released"):
  * version 2's item 6 takes no case that version 1 alone held, so those cases are development data.
  *
+ * Version 3 holds only the trees the final test can take. From `RESERVE_LIST_CUT` an ask is held
+ * when its tree's root, at its first opening or at the build, is not in a list registered with it:
+ * every issue of each tree that held an ask through event `RESERVE_LIST_THROUGH`, except the trees
+ * version 2 held whole (`TreeLog.reserveListOf`). The build takes that list from the log and
+ * refuses one whose sha256 is not `RESERVE_LIST_SHA256`, and records for each case whether each
+ * root is in it (`askRootListed`, `issueRootListed`). Version 2's hash picks nothing from that cut,
+ * and its cases whose root at their ask's opening is in the list are released: such a tree had an
+ * ask before version 2's cut or an ask whose root version 2 did not pick, so item 6 takes none of
+ * them.
+ *
  * A reserved tree, by its root's key, that a read has already spent is in `MOVED_TO_DEVELOPMENT`,
  * with the record of that read, and is held no more.
  *
@@ -37,6 +47,11 @@ import type { CommentReply, DispatchEvent } from "./dispatch-read";
  * (`claimRunOf`), and every later command names the same reply (`reserveAccessOf`, and `readCorpus`
  * against the build's `snapshot.json`). Once `claim.ts` records that the reserve ended, no case is
  * held.
+ *
+ * The rule itself is written once, in `reserveRuleOf`: a build reads it over the two roots it
+ * records for each case (`reserveOf`), and a scorer that meets an ask live reads it over the root
+ * Dispatch gives now (`reserve-ask.ts`), which refuses while the registration names a rule
+ * version above `RESERVE_RULE_VERSION`.
  */
 
 /** The cut: an ask that opened at or after it can be reserved by its tree. */
@@ -44,6 +59,34 @@ export const RESERVE_TREE_CUT = "2026-11-16T00:00:00Z";
 
 /** The text the rule appends the key of a tree's root to before it hashes it, as registered. */
 export const RESERVE_TREE_TEXT = "superfan-experiments INFRA-2897 reserve v2 2026-11-16:";
+
+/** Version 3's cut: from it, an ask is held when its tree's root is not in version 3's list. */
+export const RESERVE_LIST_CUT = "2026-11-18T00:00:00Z";
+
+/** The last event of the log whose trees and asks version 3's list is taken from. */
+export const RESERVE_LIST_THROUGH = 640951;
+
+/** The sha256 of version 3's list as registered: its keys in order, each line ending in `\n`. */
+export const RESERVE_LIST_SHA256 =
+  "5f2b4e13fa8e8fc1f20ede4eab62f770504d292564eb8bffaf855472d8ff0a79";
+
+/**
+ * The highest rule version of the registration this code implements. A rule version is a
+ * `## Version N` heading of the registration document (`RESERVE_DOCUMENT`). A live decision
+ * (`reserve-ask.ts`) refuses while that document names a higher one, so a scorer running older
+ * code holds the ask rather than applies a rule that no longer stands.
+ */
+export const RESERVE_RULE_VERSION = 3;
+
+/** The registration document, as a project document of Dispatch: its project and its slug. */
+export const RESERVE_DOCUMENT = { project: "INFRA", slug: "infra-2897-final-test-reserve-md" };
+
+/** Version 3's list as registered: a project file at one version, whose sha256 is fixed above. */
+export const RESERVE_LIST_FILE = {
+  project: "INFRA",
+  slug: "infra-2897-reserve-v3-list-txt",
+  version: 1,
+};
 
 /** The environment variable that lets a command read the reserved cases. */
 export const RESERVE_VARIABLE = "APPROVAL_EVAL_RESERVE";
@@ -60,6 +103,7 @@ export const MOVED_TO_DEVELOPMENT: Readonly<Record<string, string>> = {
 };
 
 const TREE_CUT_TIME = Date.parse(RESERVE_TREE_CUT);
+const LIST_CUT_TIME = Date.parse(RESERVE_LIST_CUT);
 
 /** The hexadecimal digits that pick a key: half of the sixteen. */
 const PICKING_DIGITS = "01234567";
@@ -73,27 +117,83 @@ export function pickedRoot(rootKey: string): boolean {
 }
 
 /**
- * Whether a case is held by the reserve. An ask on no issue, or one that opened before the cut,
- * is kept; one whose opening time is missing or does not parse is placed by its answer, which
- * comes after the opening, so it may be held. On or after the cut, `unknown` is a case from a
- * corpus built before `build-corpus.ts` recorded its tree's roots, which a caller refuses;
- * otherwise the case is held when the rule picks its root at the opening or at the build (a root
- * the build could not follow is null and picks nothing), unless a read spent that tree. Once
- * `ended` names the record that ended the reserve (`claim.ts`), every case is kept.
+ * An ask's time, which every cut is read against: its first opening, or, where that is missing or
+ * does not parse, its answer, which comes after the opening.
+ */
+export function askTimeOf(row: Pick<CaseSeed, "askCreatedAt" | "answeredAt">): number {
+  const opened = Date.parse(row.askCreatedAt ?? "");
+  return Number.isNaN(opened) ? Date.parse(row.answeredAt) : opened;
+}
+
+/** The rule versions a registration document names: the N of each `## Version N` heading. */
+export function ruleVersionsOf(markdown: string): number[] {
+  return [...markdown.matchAll(/^## Version (\d+)\b/gm)].map((match) => Number(match[1]));
+}
+
+/** What the rule reads of one ask. A build reads it from the log, a live decision from Dispatch. */
+export interface ReserveFacts {
+  /** The ask's first opening, as `askTimeOf` reads it. */
+  askTime: number;
+  /** Whether the ask opened on an issue. */
+  onIssue: boolean;
+  /** Each root of the ask's tree the case is read under; null where a walk could not name one. */
+  roots: readonly (string | null)[];
+  /** Whether the root at the ask's first opening is in version 3's list. */
+  openingRootListed: boolean;
+  /** Whether every root in `roots` is in version 3's list. */
+  everyRootListed: boolean;
+}
+
+/**
+ * The registered rule over the facts of one ask, the one place it is written for every reader of
+ * this directory. An ask on no issue, or one that opened before version 2's cut, is kept, and a
+ * case is kept when a read spent its tree. Before version 3's cut a case is held when version 2's
+ * rule picks one of its roots (a root no walk could name picks nothing), unless its root at the
+ * opening is in version 3's list, which released it. From version 3's cut a case is held unless
+ * every root is in that list. Once `ended` names the record that ended the reserve (`claim.ts`),
+ * every case is kept.
+ */
+export function reserveRuleOf(
+  facts: ReserveFacts,
+  ended: string | null = RESERVE_ENDED
+): "held" | "kept" {
+  if (ended !== null || !facts.onIssue || facts.askTime < TREE_CUT_TIME) return "kept";
+  const roots = facts.roots.filter((root): root is string => root !== null);
+  if (roots.some((root) => Object.hasOwn(MOVED_TO_DEVELOPMENT, root))) return "kept";
+  if (facts.askTime >= LIST_CUT_TIME) return facts.everyRootListed ? "kept" : "held";
+  if (facts.openingRootListed) return "kept";
+  return roots.some(pickedRoot) ? "held" : "kept";
+}
+
+/**
+ * Whether a built case is held by the reserve (`reserveRuleOf`). The case is read under two
+ * roots, its tree's root at its ask's first opening and at the build's pinned event: an issue
+ * moves between trees, and a case a scorer may have skipped under either root stays out of every
+ * development read. The root at the build releases nothing: it moves with each parent change, so
+ * a tree moved under a listed issue for one build would put its cases in a development corpus and
+ * could then move back. From version 2's cut, `unknown` is a case from a corpus built before
+ * `build-corpus.ts` recorded its tree's roots, which a caller refuses. A root the build did not
+ * look up in version 3's list (an older build, or one pinned before the list's event) counts as
+ * not in it, so such a build releases nothing and holds every case from version 3's cut.
  */
 export function reserveOf(
   row: CaseSeed,
   ended: string | null = RESERVE_ENDED
 ): "held" | "kept" | "unknown" {
   if (ended !== null || row.issueKey === null) return "kept";
-  const opened = Date.parse(row.askCreatedAt ?? "");
-  if ((Number.isNaN(opened) ? Date.parse(row.answeredAt) : opened) < TREE_CUT_TIME) return "kept";
+  const askTime = askTimeOf(row);
+  if (askTime < TREE_CUT_TIME) return "kept";
   if (row.askTreeRoot === undefined || row.issueTreeRoot === undefined) return "unknown";
-  const roots = [row.askTreeRoot, row.issueTreeRoot].filter(
-    (root): root is string => root !== null
+  return reserveRuleOf(
+    {
+      askTime,
+      onIssue: true,
+      roots: [row.askTreeRoot, row.issueTreeRoot],
+      openingRootListed: row.askRootListed === true,
+      everyRootListed: row.askRootListed === true && row.issueRootListed === true,
+    },
+    ended
   );
-  if (roots.some((root) => Object.hasOwn(MOVED_TO_DEVELOPMENT, root))) return "kept";
-  return roots.some(pickedRoot) ? "held" : "kept";
 }
 
 /**
@@ -118,7 +218,13 @@ export const BUNDLE_DIRECTORIES = ["scripts/approval-eval", "skills/approval-rev
 /** What under those directories is outside the bundle: the registration itself, and the tests. */
 const OUTSIDE_BUNDLE = ["scripts/approval-eval/claim.ts", "scripts/approval-eval/__tests__"];
 
-/** Options whose value names a directory a run reads or writes: the digest takes it as a path. */
+/**
+ * Options whose value names a directory a run reads or writes: the digest takes it as a path.
+ * `--draw` is the draw directory `s10-inputs.ts` and the claim's analysis read, `--inputs` the
+ * inputs directory `s10_judge.py` reads, and `--claim-s10` the judged directory the claim's
+ * analysis (`analyze.ts --claim-s10`) reads, whose files the claim run's stage records pin by
+ * their sha256 instead.
+ */
 const PATH_OPTIONS: readonly string[] = [
   "--corpus",
   "--out",
@@ -126,6 +232,9 @@ const PATH_OPTIONS: readonly string[] = [
   "--run",
   "--slices",
   "--cache",
+  "--draw",
+  "--inputs",
+  "--claim-s10",
 ];
 
 /**
@@ -141,6 +250,7 @@ const FILE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   "fresh-agent.ts": ["--omp"],
   "refusals.ts": ["--fixtures", "--distillation"],
   "run-round.ts": ["--arms", "--distillation"],
+  "s10_judge.py": ["--code", "--skill", "--never-decide"],
 };
 
 /**
@@ -346,12 +456,15 @@ export function microsecondsOf(time: string): number | null {
  * comment whose body starts with `CLAIM_RUN_START`, and the first such reply, by the time Dispatch
  * recorded it, is the claim run: a run reads only when `APPROVAL_EVAL_CLAIM_RUN` names that reply's
  * id. A second claim run starts with a later reply, so it is refused, and the refusal names the
- * first, whose read spent the final test. Dispatch's API has no route that deletes a comment; a
- * reply edited after it was written is refused whole, since an edit can change which start came
- * first. A run that resumes the claim run names the same reply, so the code cannot tell a resume
- * from a second run made under that id: the start reply is the record of which run read the
- * final test. A thread Dispatch does not serve is refused too, and so are two starts at the
- * earliest time Dispatch recorded: no order of theirs is on record.
+ * first, whose read spent the final test. A reply its author deleted keeps its place and loses its
+ * words, so it may have been a start: it counts as one where it stands in the order, and when it
+ * is the first, every run is refused, since the run it may have started is the claim run and its
+ * start, the record of that run, is gone. A reply edited after it was written is refused whole,
+ * since an edit can change which start came first. A run that resumes the claim run names the
+ * same reply, so the code cannot tell a resume from a second run made under that id: the start
+ * reply is the record of which run read the final test. A thread Dispatch does not serve is
+ * refused too, and so are two starts at the earliest time Dispatch recorded: no order of theirs
+ * is on record.
  *
  * The claim run's build asks it (`build-corpus.ts`) and records the reply in `snapshot.json`;
  * every later command of the run reads only that build's corpus, and only while
@@ -392,14 +505,15 @@ export async function claimRunOf(
         "registration: claim.ts registers the read anew",
     };
   }
+  const deleted = (reply: CommentReply) => typeof reply.deleted_at === "string";
   const starts = replies
-    .filter((reply) => reply.body.trimStart().startsWith(CLAIM_RUN_START))
+    .filter((reply) => deleted(reply) || reply.body.trimStart().startsWith(CLAIM_RUN_START))
     .map((reply) => ({ reply, at: microsecondsOf(reply.created_at) }));
   const untimed = starts.find((start) => start.at === null);
   if (untimed !== undefined) {
     return {
       kind: "refused",
-      reason: `start reply ${untimed.reply.id} to ${reference} has no time Dispatch recorded, so no start can be shown first`,
+      reason: `${deleted(untimed.reply) ? "deleted" : "start"} reply ${untimed.reply.id} to ${reference} has no time Dispatch recorded, so no start can be shown first`,
     };
   }
   starts.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
@@ -413,28 +527,42 @@ export async function claimRunOf(
     };
   }
   if (next !== undefined && next.at === first.at) {
+    const both = deleted(first.reply) || deleted(next.reply) ? "replies" : "start replies";
     return {
       kind: "refused",
       reason:
-        `start replies ${first.reply.id} and ${next.reply.id} to ${reference} have the same ` +
+        `${both} ${first.reply.id} and ${next.reply.id} to ${reference} have the same ` +
         `time, ${first.reply.created_at}, so no start can be shown first: claim.ts registers the ` +
         "read anew",
+    };
+  }
+  if (deleted(first.reply)) {
+    return {
+      kind: "refused",
+      reason:
+        `reply ${first.reply.id} to ${reference}, written at ${first.reply.created_at}, before ` +
+        `any start reply that is not deleted, was deleted at ${first.reply.deleted_at}: its words ` +
+        "are gone, so it may have started the claim run, whose read spent the final test, and no " +
+        "run reads the reserve under this registration: claim.ts registers the read anew",
     };
   }
   const id = named?.trim() ?? "";
   if (id === first.reply.id) return { kind: "claim", id };
   const second = starts.find((start) => start.reply.id === id);
+  let why = `${CLAIM_RUN_VARIABLE} names ${id}, which is no start reply to it`;
+  if (id === "") why = `${CLAIM_RUN_VARIABLE} is not set`;
+  else if (second !== undefined && deleted(second.reply)) {
+    why = `${CLAIM_RUN_VARIABLE} names ${id}, a later reply deleted at ${second.reply.deleted_at}`;
+  } else if (second !== undefined) {
+    why = `${CLAIM_RUN_VARIABLE} names ${id}, a later start, at ${second.reply.created_at}`;
+  }
   return {
     kind: "refused",
     reason:
       `the claim run under ${reference} is reply ${first.reply.id}, started at ` +
       `${first.reply.created_at}, and its read spent the final test: a second claim run makes it ` +
       'development data (dispatch://INFRA-3189, "Data sets"). ' +
-      (id === ""
-        ? `${CLAIM_RUN_VARIABLE} is not set`
-        : second === undefined
-          ? `${CLAIM_RUN_VARIABLE} names ${id}, which is no start reply to it`
-          : `${CLAIM_RUN_VARIABLE} names ${id}, a later start, at ${second.reply.created_at}`),
+      why,
   };
 }
 

@@ -1,8 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useContext, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 
-import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
-import { usersQuery } from "../../api/queries";
+import type { DeclineAskInput, WriteBounds } from "../../api/client";
 import type {
   AnswerAskInput,
   Ask,
@@ -13,9 +11,7 @@ import type {
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
-import { QueryError } from "../../components/QueryError";
-import { TruncatedText } from "../../components/TruncatedText";
-import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
+import { useTooltips } from "../../components/tooltips";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   askUrgencyAccent,
@@ -23,71 +19,33 @@ import {
   badgeHigh,
   badgeLow,
   badgeMed,
-  badgePrimary,
-  borderDefault,
   card,
-  cardHoverBorder,
-  growingField,
-  inlineWarningText,
-  inputClasses,
-  linkHoverText,
-  linkText,
-  primaryButtonBg,
-  primaryButtonDisabled,
-  primaryButtonEnabledHoverBg,
+  pageFailedText,
+  pageHairBorder,
+  pagePaperBg,
+  pageQuietText,
+  pageStateText,
   surfaceBg,
   textMutedHoverToSecondary,
   textMutedOnSurface,
-  textPrimaryOnSurface,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
-import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
-import { AgentName, useAgentText } from "../refs/AgentName";
+import { AskBody, askUploadOwner } from "../ask-body/AskBody";
+import { AskEditHistory, type AskFrame } from "../ask-body/AskCompletionCard";
+import { ASK_CARD_WORDS, ASK_SHARED_WORDS } from "../ask-body/ask-body-words";
+import { markdownText } from "../ask-body/ask-text";
+import { answerAsk, createReply, declineAsk, getAskThread } from "../ask-body/ask-writes";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { MarkdownBody } from "../refs/MarkdownBody";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, itemRoute } from "../refs/routes";
-import { Timestamp } from "../refs/Timestamp";
-import { textSourceOf } from "../refs/text-references";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
-import { AskAnchorHeader } from "./AskAnchorLink";
-import { AskApprovalLink } from "./AskApprovalLink";
-import { AskBlockLink } from "./AskBlockLink";
-import {
-  AskCompletionCard,
-  AskEditHistory,
-  type AskFrame,
-  OrphanedAnchorNotice,
-} from "./AskCompletionCard";
-import { AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
 import { AskThread } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import type { OwnedAsk } from "./ask-name";
-import { askTurnHolder } from "./ask-turn";
-import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
-import { DeclineControl } from "./DeclineControl";
-import { EarlierApproval } from "./EarlierApproval";
-import { AskHandOnLiveContext } from "./hand-on-live";
-import { askWaitingOnPerson } from "./list-row";
-import { clearReplyDraft } from "./reply-drafts";
-import { useAnswerFormFocus } from "./useAnswerFormFocus";
+import { askUrgency } from "./ask-urgency";
 import { useAskAnswerForm } from "./useAskAnswerForm";
-import { useAskHandOn } from "./useAskHandOn";
-
-const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
-  api.answerAsk(id, input, bounds);
-const declineAsk = (id: string, input: DeclineAskInput, bounds: WriteBounds): Promise<Ask> =>
-  api.declineAsk(id, input, bounds);
-const getAskThread = (id: string): Promise<AskRead> => api.getAsk(id);
-const createReply = (
-  issueKey: string,
-  input: CreateCommentInput,
-  bounds: WriteBounds
-): Promise<Comment> => api.createComment(issueKey, input, bounds);
 
 export interface AskCardProps {
   artifactSlug?: string;
@@ -96,18 +54,16 @@ export interface AskCardProps {
    *  it), so the card can still name the ask's `dispatch://` reference. */
   owner?: { project: string; slug: string };
   thread?: "inline" | "collapsed";
-  /** `compact` (the margin and the review sheet) renders the same option rows as `full`, but
-   *  folds the free-text field and its Answer / Ask back actions behind an **Add a note or answer
-   *  in your own words** disclosure, showing a lone Answer button once an option is picked; the
-   *  disclosure opens itself when the pick needs words (Other, or an option requiring a reason).
-   *  The article also takes tighter padding (`px-3 pt-4 pb-3` against `px-4 pt-5 pb-4`). Nothing
-   *  else depends on the variant. */
+  /** `compact` (the margin, a decision block and the Conversation) takes tighter padding
+   *  (`px-3 pt-4 pb-3` against `px-4 pt-5 pb-4`). Nothing else depends on the variant: the
+   *  answer box stands in place in both. */
   variant?: "compact" | "full";
   /** `card` (the default) draws the card: frame, urgency accent and notch, the question, and the
    *  link to a block ask's document. `block` is the card hosted inside its own decision block
    *  (`features/doc/AskBlockCard.tsx`): the block shell already draws the frame and accent, the
-   *  editor shows the question, and the block is the link's target, so the card renders only
-   *  what the block lacks — who asked and when, the exchange, and the composer or the record. */
+   *  editor shows the question, the block names its kind, and the block is the link's target,
+   *  so the card renders only what the block lacks — who asked and when, the exchange, and the
+   *  composer or the record. */
   frame?: AskFrame;
   answerAsk?: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
   declineAsk?: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
@@ -154,135 +110,52 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
 };
 
 /**
- * Who an open ask waits on, and the one control that hands it to somebody else. It sits in the
- * card rather than in the Inbox, so every surface that draws an open ask has it: the Inbox row
- * and its reading pane, the issue page, a document's margin, a document's ask block and
- * `ThreadBody`.
+ * Each colour the card's own elements draw inside `NoTooltips`, the new issue page's, by the
+ * role `main`'s colour has: the card is the page's paper inside its hairline rule, the line of
+ * its copy handles is the quiet grey, and the asker's control, which opens the copy handles, is
+ * the quiet grey a reader acts on. What the card's children draw - the ask body, the recipients,
+ * the thread - is theirs.
  *
- * The badge is the server's own answer (`waiting_on_person`: whoever the ask was handed to,
- * else the assignee of its issue, else the default assignee of its project, which every project
- * names), and the picker over it is the same
- * invisible native `<select>` the assignee and priority pickers use, so the menu is one tap on
- * a phone and one keyboard interaction on a desktop. Its people are everyone who has signed in
- * (`usersQuery`, read only once the reader reaches for the control and then kept for the
- * session), with the assignee of the ask's own issue offered first where the card has it -
- * `assignee` is the Inbox row's `issue.assignee`, the one read that hydrates the issue, and
- * null on every other surface - since handing the ask back to them is what empties the stored
- * field and lets the ask follow its issue again. Where it is null that person is still in the
- * people list, under their own login: the named choice is a label, not the only way to pick
- * them, and the control's own value comes from the ask itself.
- *
- * Under it, where somebody has already handed the ask on, who did it and when
- * (`asked_of_by`, `asked_of_at`). A refusal shows the server's reason with Retry where the
- * reader pressed it, as `AssignToMe` and `SnoozeControl` do - and, as those two do, it asks
- * the list drawing it to hold the ask while that write is live (pending or failed), because
- * the optimistic `waiting_on_person` takes the row out of the Inbox's own list the moment the
- * write starts (`isMine`, `inAssigneeFilter`): without the hold this card would be unmounted
- * before the server answered, and a refusal would put the row back with a fresh card that
- * never failed, so the reader would see it return and no reason. The hold comes from the list
- * itself, through the context it provides (`hand-on-live.ts`), rather than from a prop every
- * host passes down: the card the reader pressed can be one the Inbox never rendered itself -
- * the decision block its reading column draws through the document page - and a prop that
- * path does not carry is a hold that path does not get. What the list does with the request
- * is the list's own: it holds an ask it already listed a row for and ignores one it did not,
- * since a card can be drawn inside a list that lists no row for its ask - a Reply-thread
- * card, a sibling ask block - and holding that ask would pull it into the reader's list. A
- * card drawn where no list can drop it registers with nobody.
+ * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
+ * pairs each text class with the nearest enclosing ground of the same file across both branches
+ * of a ternary: a page colour written beside `main`'s would pair `main`'s words with the page's
+ * paper and the page's words with `main`'s card. Each pair here is one `theme/classes.ts`
+ * registers for the page.
  */
-function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
-  const [wanted, setWanted] = useState(false);
-  const people = useQuery({ ...usersQuery(), enabled: wanted });
-  const want = () => setWanted(true);
-  const write = useAskHandOn(ask);
-  const onLive = useContext(AskHandOnLiveContext);
-  const live = write.pending || write.failed;
-  useEffect(() => {
-    if (!live) return;
-    onLive(ask.id, true);
-    return () => onLive(ask.id, false);
-  }, [ask.id, live, onLive]);
-  const waitingOn = askWaitingOnPerson(ask) ?? "";
-  // The list is drawn only once the reader reaches for the control, as it is read: the query
-  // keeps its people for the session, so a card that built its options from whatever another
-  // control had already fetched would draw one `<option>` per signed-in person for every open
-  // ask on the page.
-  const logins = (wanted ? (people.data ?? []) : [])
-    .map((user) => user.login)
-    .filter((login) => login !== assignee);
-  // Whoever holds the ask stays selectable even where the people list does not carry them (it
-  // is unread until the reader reaches for the control), so the select never shows a value its
-  // options lack.
-  const others =
-    waitingOn === "" || waitingOn === assignee || logins.includes(waitingOn)
-      ? logins
-      : [waitingOn, ...logins];
-  const handedOnBy = ask.asked_of_by ?? "";
-  const handedOnAt = ask.asked_of_at ?? null;
-  const tone = waitingOn === "" ? badgeLow : badgePrimary;
-  return (
-    <div
-      className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${textMutedOnSurface}`}
-    >
-      <span className={badgeSelectWrapper}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
-          {write.pending
-            ? "Handing on…"
-            : waitingOn === ""
-              ? "Asked of nobody"
-              : `Asked of ${waitingOn}`}
-        </span>
-        <select
-          aria-label="Hand this question to"
-          className={badgeSelectOverlay}
-          data-ask-hand-on={ask.id}
-          onChange={(event) => {
-            const { value } = event.target;
-            if (value !== "") write.submit(value);
-          }}
-          onFocus={want}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          onPointerEnter={want}
-          onTouchStart={(event) => {
-            event.stopPropagation();
-            want();
-          }}
-          value={waitingOn}
-        >
-          {/* Selected only where the server names no person, which only a Dispatch older than
-              every project naming a default answers. Nobody is not a pick: the route takes a
-              person's email and refuses anything else. */}
-          <option disabled value="">
-            Nobody
-          </option>
-          {assignee === null ? null : (
-            <option value={assignee}>{assignee} (the issue's assignee)</option>
-          )}
-          {others.map((login) => (
-            <option key={login} value={login}>
-              {login}
-            </option>
-          ))}
-        </select>
-      </span>
-      {handedOnBy === "" || handedOnAt === null ? null : (
-        <span>
-          handed on by {handedOnBy} <Timestamp at={handedOnAt} />
-        </span>
-      )}
-      {write.failed ? (
-        <span className="basis-full">
-          <QueryError
-            message={write.error ?? "Could not hand this question on."}
-            onRetry={write.retry}
-            retrying={write.pending}
-          />
-        </span>
-      ) : null}
-    </div>
-  );
-}
+const ON_PAGE = {
+  frame: `${pageHairBorder} ${pagePaperBg}`,
+  line: pageQuietText,
+  notch: pagePaperBg,
+  quietAct: `${pageQuietText} hover:text-page-muted`,
+} as const;
 
+/** The card's urgency accent inside `NoTooltips`, in the new issue page's colours: blocking
+ *  the failed red, high the waiting orange, med the questions' blue, low the hairline grey. */
+const PAGE_URGENCY_ACCENT: Record<AskUrgency, string> = {
+  blocking: "border-l-page-failed",
+  high: "border-l-page-waiting",
+  low: "border-l-page-hair",
+  med: "border-l-page-question",
+};
+
+/** The urgency notch's words inside `NoTooltips`, matching `PAGE_URGENCY_ACCENT` on the page's
+ *  paper. */
+const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
+  blocking: pageFailedText,
+  high: pageStateText.waiting,
+  low: pageQuietText,
+  med: "text-page-question",
+};
+
+/**
+ * One ask on every surface: the ask body (`ask-body/AskBody.tsx`), which draws the ask's
+ * question, options and answer parts and its settled record, inside the card's own frame. The
+ * card holds what its surfaces alone draw - the urgency notch, the recipients, the copy handles,
+ * the edit history, the references and the ask's thread - and draws each above the body or
+ * below it, never between its parts: the thread above it where the reader's thread order puts
+ * the answer box at the foot (Oldest first), else below it. It also holds the form that holds
+ * the ask's state (`useAskAnswerForm`), which reads the ask's thread.
+ */
 export function AskCard({
   artifactSlug,
   ask,
@@ -303,45 +176,7 @@ export function AskCard({
   unread,
   currentReplyId,
 }: AskCardProps): ReactNode {
-  const {
-    answerFailure,
-    answerFieldId,
-    answerPlaceholder,
-    answers,
-    answerText,
-    askChanged,
-    canAnswer,
-    canChangeAnswer,
-    cancelChanging,
-    changing,
-    clarification,
-    completed,
-    displayedAsk,
-    edits,
-    formRefusal,
-    isApproval,
-    isSubmitting,
-    mutation,
-    otherSelected,
-    questionChoice,
-    reasonRequired,
-    requiresReason,
-    selectRealOption,
-    selected,
-    sendAnswer,
-    sendClarification,
-    setAnswerText,
-    setQuestionChoice,
-    startChanging,
-    submit,
-    submitHint,
-    toggleOther,
-    submitGuard,
-    takeFormRefusalFocus,
-    threadQuery,
-    trimmedAnswer,
-    unsentAnswer,
-  } = useAskAnswerForm({
+  const form = useAskAnswerForm({
     answer,
     ask,
     createReply: reply,
@@ -351,99 +186,20 @@ export function AskCard({
     initiallyChanging: mode === "change",
     onAnswered,
   });
-  const [ownWordsOpen, setOwnWordsOpen] = useState(false);
+  const { completed, displayedAsk, edits, questionReads, threadQuery } = form;
   const [handlesOpen, setHandlesOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
-  // A change seeds the current answer's note; a compact card shows it rather than folding text
-  // the save would send behind its disclosure. Set while rendering the first changing render,
-  // React's pattern for state derived from a prop change, so the field is never hidden a frame.
-  const [seededFor, setSeededFor] = useState(false);
-  if (changing !== seededFor) {
-    setSeededFor(changing);
-    if (changing && variant === "compact" && answerText.trim() !== "") setOwnWordsOpen(true);
-  }
-  // A refusal of the form fills the reason of Request changes with what Dispatch wrote for the
-  // author (`useAskAnswerForm`); a compact card shows that reason too rather than folding the
-  // text the next press sends behind its disclosure. The same pattern as the change above, from
-  // no refusal, so a card drawn again with a kept refusal opens it too.
-  const [shownFormRefusal, setShownFormRefusal] = useState<typeof formRefusal>(null);
-  if (formRefusal !== shownFormRefusal) {
-    setShownFormRefusal(formRefusal);
-    if (formRefusal !== null && variant === "compact") setOwnWordsOpen(true);
-  }
   // One page can host the same ask twice (a decision block and the margin sheet), so the
   // panel each control names is this instance's.
   const referencesPanelId = useId();
-  const isCompact = variant === "compact";
   const inBlock = frame === "block";
   // `document` is the Inbox row's: the ask read carries no owner, so the fresher `displayedAsk`
   // cannot name it and this card's own row is where it is read.
   const reference = itemRoute("ask", displayedAsk, ask.document ?? owner);
-  // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
-  // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
-  const source = textSourceOf("ask", displayedAsk.id);
-  // Where a file pasted or dropped into the answer, or into a reply under the ask, goes: the
-  // ask's issue, or the project of the document it was asked on.
-  const documentProject = (ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
-  const uploadOwner: ArtifactOwner | undefined =
-    displayedAsk.issue_key !== null
-      ? { issue: displayedAsk.issue_key }
-      : documentProject === undefined
-        ? undefined
-        : { project: documentProject };
-  const upload = useDraftUpload((text) => {
-    setAnswerText((current) => appendToDraft(current, text));
-    setQuestionChoice(false);
-  });
-  const uploading = upload.pending > 0;
-  const answerFieldRef = useRef<HTMLTextAreaElement>(null);
-  // Picking Request changes moves the person straight to the field the server insists on. Keyed
-  // on the field actually being mounted, not just on the option: the compact variant mounts the
-  // field when its disclosure opens (reopening it is the disclosure's own move, below). Only the
-  // person's own pick moves the focus, so the intent is recorded as the option is picked: a
-  // refusal of the form also picks Request changes, in each card of the ask, and leaves the focus
-  // where the person pressed (`useAnswerFormFocus`).
-  const reasonFieldShown = reasonRequired && (!isCompact || ownWordsOpen);
-  const focusReasonOnShow = useRef(false);
-  useEffect(() => {
-    if (!reasonFieldShown) return;
-    if (focusReasonOnShow.current) answerFieldRef.current?.focus();
-    focusReasonOnShow.current = false;
-  }, [reasonFieldShown]);
-  // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
-  // own click, and the Inbox's Enter, which presses this same control (`Inbox.tsx`). The field
-  // is drawn by the render the press schedules, so the focus can only be this effect's - the
-  // opener runs before React has committed the box and would focus nothing. Only an open by the
-  // disclosure itself focuses, which is why the intent is recorded as the control is pressed: an
-  // option that opens the disclosure for its own words, and a change that seeds the note, leave
-  // the reader where they are.
-  const focusNoteOnOpen = useRef(false);
-  useEffect(() => {
-    if (!focusNoteOnOpen.current) return;
-    focusNoteOnOpen.current = false;
-    if (ownWordsOpen) {
-      answerFieldRef.current?.focus();
-    }
-  }, [ownWordsOpen]);
-  const trackForm = useAnswerFormFocus({
-    formRefusal,
-    pending: mutation.isPending,
-    takeFormRefusalFocus,
-  });
-  const submitHintId = `${answerFieldId}-hint`;
-  const agentText = useAgentText();
-  // The asker as its button's tooltip: a block ask the server indexed with no pending author
-  // has an empty label and reads as "asked". A session's tooltip also carries its full id, since
-  // the innermost title is the one a browser shows, and an untitled session's name is the short
-  // form `session:<8>…` that sessions started in the same minute share.
-  const sessionAuthor = displayedAsk.author.kind === "session" ? displayedAsk.author : undefined;
-  const askerTitle =
-    displayedAsk.author.id === ""
-      ? "asked"
-      : sessionAuthor === undefined
-        ? agentText.label(displayedAsk.author)
-        : `${agentText.label(sessionAuthor)} · ${sessionAuthor.id}`;
+  const uploadOwner = askUploadOwner(ask, displayedAsk, owner);
+  const tooltips = useTooltips();
   // The copy handles' values: the title the session stamped, as the clipboard has always had it.
+  const sessionAuthor = displayedAsk.author.kind === "session" ? displayedAsk.author : undefined;
   const sessionTitle = sessionAuthor?.origin?.session_title?.trim();
   const tmuxTarget = sessionAuthor?.origin?.tmux;
   const urgency = askUrgency(displayedAsk.urgency);
@@ -452,15 +208,9 @@ export function AskCard({
   // stale prop passed to this instance: `completed` renders before an invalidated `ask` prop
   // round-trips down from the parent.
   const currentAsk = completed ?? displayedAsk;
-  // A resolved ask takes no more replies, so an unsent one has nowhere to go.
-  const resolved = displayedAsk.state === "resolved" || currentAsk.state === "resolved";
-  useEffect(() => {
-    if (resolved) clearReplyDraft(displayedAsk.id);
-  }, [displayedAsk.id, resolved]);
   // The count comes from `displayedAsk`, never from `completed`: answering an ask does not move
   // a backlink count, and the answer response is the one ask shape that carries no count.
   const referencedByCount = displayedAsk.referenced_by_count ?? 0;
-  const turnHolder = askTurnHolder(currentAsk, (threadQuery.data?.replies ?? []).at(-1));
   // The thread's newest write the card shows, which the shared thread read mark watches and
   // reads through: the newest reply, unless the record's answer came after it (an answer is a
   // write like a reply).
@@ -530,144 +280,70 @@ export function AskCard({
         uploadOwner={uploadOwner}
       />
     );
-
-  const answerField = (
-    <>
-      <label className="block" htmlFor={answerFieldId}>
-        <span
-          className={
-            reasonRequired ? `mb-1 block text-sm font-medium ${textSecondaryOnSurface}` : "sr-only"
-          }
-        >
-          {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
-        </span>
-        {/* It grows with its text up to half the window (`growingField`). So a reason that
-            Dispatch wrote after a form refusal shows whole, and Answer stays on the screen.
-            `min-h-16!` keeps an empty field two lines tall over styles.css's unlayered touch floor. */}
-        <textarea
-          className={`block min-h-16! w-full rounded-lg px-3 py-2 font-normal outline-none ${growingField} ${inputClasses(true)}`}
-          data-ask-answer=""
-          disabled={isSubmitting}
-          id={answerFieldId}
-          onChange={(event) => {
-            setAnswerText(event.target.value);
-            setQuestionChoice(false);
-          }}
-          onDrop={
-            uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)
-          }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
-          onPaste={
-            uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
-          }
-          placeholder={answerPlaceholder}
-          ref={answerFieldRef}
-          rows={2}
-          value={answerText}
-        />
-      </label>
-      <DraftUploadStatus upload={upload} />
-    </>
-  );
-  const submitButton = (
-    <button
-      aria-describedby={submitHint === undefined ? undefined : submitHintId}
-      className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-      disabled={!canAnswer || isSubmitting || uploading}
-      title={submitHint}
-      type="submit"
-    >
-      {mutation.isPending
-        ? changing
-          ? "Saving…"
-          : "Answering…"
-        : changing
-          ? "Save answer"
-          : "Answer"}
-    </button>
-  );
-  const submitHintNode =
-    submitHint === undefined ? null : (
-      <p className={`text-xs ${textMutedOnSurface}`} id={submitHintId}>
-        {submitHint}
-      </p>
-    );
-  const answerActions = questionChoice ? (
-    <fieldset aria-label="Question-shaped answer" className="flex gap-2">
-      <button
-        className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-        disabled={isSubmitting}
-        onClick={sendClarification}
-        ref={(node) => node?.focus()}
-        type="button"
+  // The ask's own reference, and the session's handles - its ID, its title, its tmux target -
+  // folded behind the asker's control, which opens them onto their own row: one line under the
+  // body.
+  const handlesNode =
+    reference === undefined && !handlesOpen ? null : (
+      <div
+        className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.line}`}
       >
-        {clarification.isPending ? "Sending…" : "Ask back instead"}
-      </button>
-      <button
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-        disabled={isSubmitting}
-        onClick={() => sendAnswer(answerText)}
-        type="button"
-      >
-        Answer with it anyway
-      </button>
-    </fieldset>
-  ) : (
-    <div className="space-y-2">
-      <div className="flex gap-2">
-        {submitButton}
-        {changing ? (
-          <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-            disabled={isSubmitting}
-            onClick={cancelChanging}
-            type="button"
-          >
-            Cancel
-          </button>
-        ) : (
-          <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-            disabled={trimmedAnswer === "" || isSubmitting || uploading}
-            onClick={sendClarification}
-            type="button"
-          >
-            {clarification.isPending ? "Sending…" : "Ask back"}
-          </button>
+        {reference === undefined ? null : <CopyRefButton route={reference} />}
+        {!handlesOpen ? null : (
+          <span className="flex basis-full flex-wrap items-center gap-x-1.5">
+            {sessionAuthor === undefined ? null : (
+              <CopyButton value={sessionAuthor.id} what={ASK_CARD_WORDS.copy_id_what}>
+                {ASK_CARD_WORDS.copy_id}
+              </CopyButton>
+            )}
+            {sessionTitle === undefined || sessionTitle === "" ? null : (
+              <CopyButton value={sessionTitle} what={ASK_CARD_WORDS.copy_title_what}>
+                {ASK_CARD_WORDS.copy_title}
+              </CopyButton>
+            )}
+            {tmuxTarget === undefined ? null : (
+              <CopyButton value={tmuxTarget} what={ASK_CARD_WORDS.copy_tmux_what}>
+                {tmuxTarget}
+              </CopyButton>
+            )}
+          </span>
         )}
       </div>
-      {submitHintNode}
-    </div>
+    );
+  const body = (
+    <AskBody
+      agentNames="live"
+      artifactSlug={artifactSlug}
+      ask={ask}
+      askerControl={(name) => (
+        <button
+          aria-expanded={handlesOpen}
+          className={`flex min-w-0 items-center gap-1 ${tooltips ? textMutedHoverToSecondary : ON_PAGE.quietAct}`}
+          onClick={() => setHandlesOpen((open) => !open)}
+          type="button"
+        >
+          {name}
+          <ChevronIcon expanded={handlesOpen} />
+        </button>
+      )}
+      decline={decline}
+      documentLink={documentLink}
+      form={form}
+      frame={frame}
+      markRecord={answerIsNewest ? markNewest : undefined}
+      onAnswered={onAnswered}
+      owner={owner}
+      renderText={markdownText}
+      urgencyWord={false}
+    />
   );
 
+  // A settled ask's record, then its references and its thread under it.
   if (completed !== null) {
     return (
       <>
-        <AskCompletionCard
-          answers={answers}
-          artifactSlug={artifactSlug}
-          ask={completed}
-          documentLink={documentLink}
-          edits={edits}
-          frame={frame}
-          markRef={answerIsNewest ? markNewest : undefined}
-          onChangeAnswer={canChangeAnswer ? startChanging : undefined}
-        />
-        {unsentAnswer === "" ? null : (
-          <div
-            className={`mt-3 rounded-xl border p-3 ${borderDefault}`}
-            data-testid="ask-unsent-answer"
-          >
-            <p className={`text-xs ${textMutedOnSurface}`}>
-              This question closed before you sent your answer, so it was not sent. Your text is
-              here to copy.
-            </p>
-            <p className={`mt-1 text-sm whitespace-pre-wrap ${textPrimaryOnSurface}`}>
-              {unsentAnswer}
-            </p>
-          </div>
-        )}
-        {answerFailure === null ? null : <QueryError message={answerFailure.message} />}
+        {questionReads}
+        {body}
         {referencedByNode}
         {threadNode}
       </>
@@ -676,11 +352,11 @@ export function AskCard({
 
   return (
     <article
-      aria-label={`Urgency: ${URGENCY_LABELS[urgency]}`}
+      aria-label={`${ASK_CARD_WORDS.urgency} ${ASK_SHARED_WORDS.urgency[urgency]}`}
       className={
         inBlock
           ? "relative mt-3"
-          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${card} ${askUrgencyAccent[urgency]}`
+          : `relative rounded-xl border-l-4 shadow-sm ${variant === "compact" ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${tooltips ? `${card} ${askUrgencyAccent[urgency]}` : `${ON_PAGE.frame} ${PAGE_URGENCY_ACCENT[urgency]}`}`
       }
       // The one handle on a card as a whole, carrying the question the card draws: a page-level
       // key that must not fire while the reader is answering an ask (the issue page's priority
@@ -690,257 +366,20 @@ export function AskCard({
       data-ask-card={displayedAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
+      {questionReads}
       {hasUrgencyNotch ? (
         <span
           aria-hidden="true"
-          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${surfaceBg} ${URGENCY_NOTCH_TEXT[urgency]}`}
+          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${tooltips ? `${surfaceBg} ${URGENCY_NOTCH_TEXT[urgency]}` : `${ON_PAGE.notch} ${PAGE_URGENCY_NOTCH_TEXT[urgency]}`}`}
         >
-          {URGENCY_LABELS[urgency].toUpperCase()}
+          {ASK_SHARED_WORDS.urgency[urgency].toUpperCase()}
         </span>
       ) : null}
-      <AskAnchorHeader ask={displayedAsk} inBlock={inBlock} quoteSpacing="roomy" tone="surface" />
-      <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={displayedAsk} />
-      {inBlock ||
-      displayedAsk.block_id === undefined ||
-      displayedAsk.block_id === null ||
-      displayedAsk.block_artifact === undefined ? null : (
-        <p className={`mt-2 text-sm ${linkText} ${linkHoverText}`}>
-          <AskBlockLink ask={displayedAsk} />
-        </p>
-      )}
-      <div>
-        {isApproval ? (
-          <p className={`text-[10px] font-semibold uppercase tracking-wide ${textMutedOnSurface}`}>
-            Approval requested
-          </p>
-        ) : null}
-        {isApproval && documentLink ? (
-          <p className={`mt-1 text-sm ${linkText} ${linkHoverText}`}>
-            <AskApprovalLink ask={displayedAsk} />
-          </p>
-        ) : null}
-        {inBlock ? null : (
-          <div className={`text-[15px] leading-relaxed font-medium ${textPrimaryOnSurface}`}>
-            <MarkdownBody
-              markdown={displayedAsk.question}
-              source={source}
-              tree={displayedAsk.question_tree}
-            />
-          </div>
-        )}
-        {/* A request to approve again names the approval it follows, under the question (the
-            spec's own placement), with the diff from that version behind Show diff; a first
-            request carries no earlier approval, and EarlierApproval renders nothing for it. */}
-        {displayedAsk.approval === undefined ? null : (
-          <EarlierApproval approval={displayedAsk.approval} />
-        )}
-        {/* One provenance line under the question, in the spec's decided conversation grammar:
-            whose turn it is (the only part a reader acts on), who asked, when, and the ask's
-            own reference. The session's own handles - its ID, its title, its tmux target - are
-            chrome a reader wants perhaps once a week, so they fold behind the author chip and
-            open onto their own row. That keeps the line inside the card at 390 px and in a
-            280 px margin, where a single row could not hold five copy controls without pushing
-            the reference out of reach. */}
-        <div
-          className={`@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${textMutedOnSurface}`}
-        >
-          {/* Turn, author and time are one group whose names truncate: a separator that wrapped
-              left a line opening - or ending - on a bare "·", and the agents are the only parts
-              that can give up width ("Waiting on you" never does). Below 24rem of line (a phone,
-              a margin) the turn takes a line of its own with no separator after it, and the
-              asker and time share the next: beside the turn and the live link's 44 px touch box
-              the asker's name kept only two letters. A block ask the server indexed with no
-              pending author has an empty label and still says when it was asked. */}
-          <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap">
-            {turnHolder === null ? null : (
-              <span
-                className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate"} font-semibold @max-sm:basis-full ${textSecondaryOnSurface}`}
-                data-testid={`turn-${displayedAsk.id}`}
-              >
-                Waiting on {turnHolder === "you" ? "you" : <AgentName actor={turnHolder} inline />}
-              </span>
-            )}
-            {turnHolder === null ? null : (
-              <span className="shrink-0 @max-sm:hidden" aria-hidden="true">
-                ·
-              </span>
-            )}
-            <span className="flex min-w-0 items-center gap-x-1.5">
-              {sessionAuthor === undefined ? (
-                <TruncatedText className="min-w-0" title={askerTitle}>
-                  {displayedAsk.author.id === "" ? (
-                    "asked"
-                  ) : (
-                    <AgentName actor={displayedAsk.author} />
-                  )}
-                </TruncatedText>
-              ) : (
-                // The asker's button keeps its name and opens the session's copy handles; the
-                // component's live link sits beside it, outside the button. `whitespace-pre`
-                // keeps the space before an attribution suffix, which a flex item would drop.
-                <AgentName
-                  actor={sessionAuthor}
-                  className="flex min-w-0 items-center whitespace-pre"
-                  control={(name) => (
-                    <button
-                      aria-expanded={handlesOpen}
-                      className={`flex min-w-0 items-center gap-1 ${textMutedHoverToSecondary}`}
-                      onClick={() => setHandlesOpen((open) => !open)}
-                      type="button"
-                    >
-                      <TruncatedText className="min-w-0" title={askerTitle}>
-                        {name}
-                      </TruncatedText>
-                      <ChevronIcon expanded={handlesOpen} />
-                    </button>
-                  )}
-                  kind="control"
-                />
-              )}
-              <span className="shrink-0" aria-hidden="true">
-                ·
-              </span>
-              <Timestamp at={displayedAsk.created_at} />
-            </span>
-          </span>
-          {reference === undefined ? null : <CopyRefButton route={reference} />}
-          {!handlesOpen ? null : (
-            <span className="flex basis-full flex-wrap items-center gap-x-1.5">
-              {sessionAuthor === undefined ? null : (
-                <CopyButton value={sessionAuthor.id} what="session ID">
-                  ID
-                </CopyButton>
-              )}
-              {sessionTitle === undefined || sessionTitle === "" ? null : (
-                <CopyButton value={sessionTitle} what="session title">
-                  title
-                </CopyButton>
-              )}
-              {tmuxTarget === undefined ? null : (
-                <CopyButton value={tmuxTarget} what="tmux target">
-                  {tmuxTarget}
-                </CopyButton>
-              )}
-            </span>
-          )}
-        </div>
-        {/* Whose question it is now, and the one control that hands it to somebody else. An
-            ask that is not open waits on nobody, so it has none: a card whose ask is answered,
-            resolved or withdrawn draws its record instead, and the one case that reaches here
-            is a reader changing the answer of a closed ask. The ask is the fresher read and
-            the issue is the card's own prop: only an Inbox row carries one, and the ask reads
-            do not. */}
-        {displayedAsk.state === "open" ? (
-          <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} />
-        ) : null}
-        <AskEditHistory ask={displayedAsk} edits={edits} />
-        {referencedByNode}
-      </div>
-      {askChanged ? (
-        <p className={`mt-3 text-sm font-medium ${inlineWarningText}`}>
-          This question changed while you were answering. Review the latest wording and confirm your
-          answer again; your draft text is still here.
-        </p>
-      ) : null}
-      {/* The options and the answer box sit where the order puts a thread's reply box: under
-          the question in Newest first, at the foot of the card in Oldest first. */}
       {answerFirst ? null : threadNode}
-      <form className="mt-3 space-y-3" onSubmit={submit} ref={trackForm}>
-        {(displayedAsk.options ?? []).length === 0 ? null : (
-          <fieldset className="min-w-0 space-y-2">
-            <legend className="sr-only">Answer options</legend>
-            {(displayedAsk.options ?? []).map((option) => (
-              <AskChoiceRow
-                checked={selected.includes(option.label)}
-                disabled={isSubmitting}
-                hotkey
-                key={option.label}
-                multiple={displayedAsk.multiple}
-                name={`ask-${displayedAsk.id}`}
-                onChange={() => {
-                  focusReasonOnShow.current = requiresReason(option.label);
-                  selectRealOption(option.label);
-                  if (isCompact)
-                    setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
-                }}
-                option={option}
-              />
-            ))}
-            {isApproval ? null : (
-              <AskChoiceRow
-                checked={otherSelected}
-                disabled={isSubmitting}
-                multiple={displayedAsk.multiple}
-                name={`ask-${displayedAsk.id}`}
-                onChange={() => {
-                  toggleOther();
-                  if (isCompact && !otherSelected) setOwnWordsOpen(true);
-                }}
-                option={{ label: "Other" }}
-              />
-            )}
-          </fieldset>
-        )}
-        {isCompact ? (
-          <>
-            {selected.length === 0 || ownWordsOpen ? null : (
-              <div className="space-y-2">
-                {submitButton}
-                {submitHintNode}
-              </div>
-            )}
-            <div>
-              <button
-                aria-controls={`${answerFieldId}-disclosure`}
-                aria-expanded={ownWordsOpen}
-                className={`min-h-11 text-sm font-medium ${textSecondaryOnSurface}`}
-                // The Inbox's Enter opens this disclosure to reach the answer box behind it,
-                // and finds the control by this handle, as it finds the box by
-                // `data-ask-answer` and an option by `data-ask-option` (`Inbox.tsx`).
-                data-ask-note-disclosure=""
-                onClick={() => {
-                  // Opening it is a move into the field behind it; closing it moves nowhere.
-                  focusNoteOnOpen.current = !ownWordsOpen;
-                  setOwnWordsOpen(!ownWordsOpen);
-                }}
-                type="button"
-              >
-                Add a note or answer in your own words
-              </button>
-              {ownWordsOpen ? (
-                <div className="space-y-3 pt-3" id={`${answerFieldId}-disclosure`}>
-                  {answerField}
-                  {answerActions}
-                </div>
-              ) : null}
-            </div>
-          </>
-        ) : (
-          <>
-            {answerField}
-            {answerActions}
-          </>
-        )}
-        {answerFailure === null ? null : (
-          <QueryError
-            message={answerFailure.message}
-            onRetry={answerFailure.retryable ? () => submitGuard.retryLast(mutation) : undefined}
-            retrying={mutation.isPending}
-          />
-        )}
-        {clarification.isError ? (
-          <QueryError
-            message="Could not send your clarification."
-            onRetry={() => submitGuard.retryLast(clarification)}
-            retrying={clarification.isPending}
-          />
-        ) : null}
-      </form>
-      {/* The person's way out of a question they will not answer, under the form that answers
-          it. An approval request draws none: it is answered with Approve or Request changes. */}
-      {displayedAsk.state === "open" && displayedAsk.kind === "question" ? (
-        <DeclineControl ask={displayedAsk} decline={decline} onDeclined={onAnswered} />
-      ) : null}
+      {body}
+      {handlesNode}
+      <AskEditHistory ask={displayedAsk} edits={edits} renderText={markdownText} />
+      {referencedByNode}
       {answerFirst ? threadNode : null}
       <AskRecipients
         askId={displayedAsk.id}

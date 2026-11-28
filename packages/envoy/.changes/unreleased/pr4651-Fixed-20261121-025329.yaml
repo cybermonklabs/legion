@@ -1,0 +1,5 @@
+kind: Fixed
+body: An issue's references read lists the nodes one hop away in each direction, reads only the links of the issue and its own content, and no longer holds the database
+time: 2026-11-21T02:53:29.31808661Z
+custom:
+    Issue: pr4651

@@ -1,11 +1,13 @@
 //go:build e2e
 
 // The runtime a live proof uses when it needs a real Oh My Pi pane and the host has no tmux. A
-// Legion pod carries no tmux and may not have one added for a test (a sixth client in the worker
-// image is an image change, skill://legion-worker/references/tools.md), so
+// Legion pod on a worker image from before dispatch://INFRA-3257 carries no tmux and may not have
+// one added for a test (a tool the worker image lacks is an image change,
+// skill://legion-worker/references/tools.md), and LINUX's worker-lean image, which copies the
+// worker image's /usr/local/bin and not its /usr/bin, carries none either. So
 // provider_error_retry_live_test.go — the one proof that must watch a real agent's turns fail —
 // starts each worker as a child process group of the test process instead of as a pane on the
-// daemon's private tmux server.
+// daemon's private tmux server, wherever it runs.
 //
 // Everything below the pane is the real thing: the command is the one a pane runs,
 // `legion worker-shim --connect unix://<the daemon's stream socket> --boot-token-file <file> --
@@ -60,10 +62,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 )
 
 // localStopGrace is how long a stop waits for a child to end after the shutdown frame and then
@@ -109,8 +115,11 @@ type localRuntime struct {
 	// (role_config_files) in production; this proof routes each claim to a stand-in of its own, and
 	// two claims of the proof share a role, so the choice is per claim here.
 	overlays func(claim.Token) []string
-	conns    runtime.Conns
-	stream   string
+	// environment is what a proof gives its panes beyond what a pane is told: the model key of a
+	// proof whose panes call a real model, which reaches the pane's process and nothing else.
+	environment []string
+	conns       runtime.Conns
+	stream      string
 	// paneLogs is the directory each worker's stdout and stderr is written under, one file per
 	// launch, kept for the run's evidence.
 	paneLogs string
@@ -148,6 +157,25 @@ func newLocalRuntime(t *testing.T, stateDir, legion, omp, home, profile string) 
 	}
 	t.Cleanup(r.killEverything)
 	return r
+}
+
+// daemonOverrides is the daemon a proof boots over this runtime, and the one place that wiring is
+// written. Its runtime factory hands the daemon's worker stream to this runtime and answers rt,
+// which is this runtime or a proof's wrapper around it (sessionsRuntime). The API listener is the
+// one the fixture holds (heldListen). The scripts of the panes' launcher directory exec this
+// runtime's legion (paneLegion). Without it the boot writes its own executable there, this test
+// binary. A pane's `jj`, where the boot writes one, then runs the package's tests. A proof adds
+// what else its daemon needs to the overrides this answers.
+func (r *localRuntime) daemonOverrides(rt runtime.Runtime) overrides {
+	return overrides{
+		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
+			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
+			r.conns, r.stream = listener, address
+			return rt, nil
+		},
+		listen:     heldListen,
+		paneLegion: r.legion,
+	}
 }
 
 // localHoldDetail is what this runtime answers a read of a claim a step holds: a detail of its
@@ -362,6 +390,10 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workDir
 	cmd.Env = r.paneEnvironment(variables, workDir)
+	// A resume is held to its session as every runtime holds it (runtime.SessionExclusiveVariable).
+	if spec.ResumeSessionFile != "" {
+		cmd.Env = append(cmd.Env, runtime.SessionExclusiveVariable+"="+runtime.SessionExclusiveValue)
+	}
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	// Its own process group: one signal ends the shim, Oh My Pi and whatever Oh My Pi started.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -409,10 +441,10 @@ func (r *localRuntime) workDir(issue string) string {
 // paneEnvironment is the child's whole environment: the variables a pane is told, the PATH a pane
 // is told (the daemon's launcher directory first, as workerbin.Path puts it), the HOME and
 // OMP_PROFILE that select the run's own Oh My Pi profile — which under tmux reach a pane from the
-// daemon's own environment through the tmux server — and TMPDIR. Nothing of the test process's own
-// environment rides through: this test runs inside a Legion pod, whose environment names that
-// pod's workspace, daemon and credentials, and a pane that inherited them would register with the
-// wrong daemon.
+// daemon's own environment through the tmux server — TMPDIR, and what the proof gives its panes
+// itself (environment). Nothing of the test process's own environment rides through: this test
+// runs inside a Legion pod, whose environment names that pod's workspace, daemon and credentials,
+// and a pane that inherited them would register with the wrong daemon.
 func (r *localRuntime) paneEnvironment(variables []string, workDir string) []string {
 	env := []string{
 		"PATH=" + workerbin.Path(os.Getenv("PATH"), r.stateDir),
@@ -422,7 +454,7 @@ func (r *localRuntime) paneEnvironment(variables []string, workDir string) []str
 		"LANG=C.UTF-8",
 	}
 	_ = os.MkdirAll(filepath.Join(workDir, "tmp"), 0o700)
-	return append(env, variables...)
+	return append(append(env, r.environment...), variables...)
 }
 
 func (r *localRuntime) Suspend(ctx context.Context, loc runtime.Locator) error {
@@ -652,6 +684,12 @@ func (r *localRuntime) LaunchBound() time.Duration { return 0 }
 
 // PodDrift answers nothing: a child process group shares no place fixed at its creation.
 func (r *localRuntime) PodDrift(context.Context, runtime.Known) ([]string, error) { return nil, nil }
+
+// PodRepository answers "": a child process group was built from no repository, and the
+// workspace it works is the daemon's own host directory.
+func (r *localRuntime) PodRepository(context.Context, runtime.Known) (string, error) {
+	return "", nil
+}
 
 // ReplacePod has no place to replace.
 func (r *localRuntime) ReplacePod(context.Context, runtime.Known, func(context.Context) error) error {

@@ -67,7 +67,7 @@ func TestTheStateRouteServesAPodItsPluginContractsTrees(t *testing.T) {
 		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(treeContract - 1)},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(treeContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), trees: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), trees: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), trees: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(treeContract - 1), trees: true},
 	} {
@@ -118,8 +118,8 @@ func TestTheTreeContractIsTheContractThatAddedTheKeys(t *testing.T) {
 		t.Fatalf("treeContract = %d, want %d, the contract whose entry in version.go added `admission.trees` and the issues' `tree`",
 			treeContract, addedTrees)
 	}
-	if treeContract > DaemonAPIVersion {
+	if treeContract > DaemonAPIVersion() {
 		t.Fatalf("treeContract = %d, above DaemonAPIVersion %d: no caller could be served the keys",
-			treeContract, DaemonAPIVersion)
+			treeContract, DaemonAPIVersion())
 	}
 }

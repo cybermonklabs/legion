@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A stored-message read returns the first message at or after its sequence on a subject its filter
@@ -36,8 +37,8 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	publish("notifications.dispatch.issue.KEY-1.ask.opened", `{"n":1}`)
 	publish("notifications.agent.ses_a", `{"n":2}`)
 	third := publish("notifications.dispatch.issue.KEY-1.ask.answered", `{"n":3}`)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 
 	stored, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", 2)
 	if err != nil {
@@ -84,11 +85,12 @@ func requestCoreClient(t *testing.T) (*Client, *nats.Conn) {
 }
 
 // The connection probe's request (RequestCore) carries its header and no body to the subject's
-// subscriber and returns that subscriber's reply; a subject nobody subscribes is
-// nats.ErrNoResponders, and one whose subscriber keeps silent waits out the caller's deadline and
-// returns ctx's error. These are the three answers the send route reads a session's connection
-// from: connected, stopped and connected.
+// subscriber, on the reply subject its caller names, and returns that subscriber's reply; a
+// subject nobody subscribes is nats.ErrNoResponders, and one whose subscriber keeps silent waits
+// out the caller's deadline and returns ctx's error. These are the three answers the send route
+// reads a session's connection from: connected, stopped and connected.
 func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
+	t.Parallel()
 	client, responder := requestCoreClient(t)
 	heard := make(chan *nats.Msg, 1)
 	if _, err := responder.Subscribe(DeliverSubject("ses_answers"), func(msg *nats.Msg) {
@@ -104,27 +106,30 @@ func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := client.RequestCore(ctx, DeliverSubject("ses_answers"), probeHeader); err != nil {
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
+	reply := SessionReplySubject(nats.NewInbox(), "ses_answers")
+	if _, err := client.RequestCore(ctx, DeliverSubject("ses_answers"), reply, probeHeader); err != nil {
 		t.Fatalf("request to a subscriber that answers = %v, want its reply", err)
 	}
 	select {
 	case msg := <-heard:
-		if msg.Header.Get("Envoy-Probe") != "1" || len(msg.Data) != 0 {
-			t.Fatalf("the subscriber heard header %v and %d body bytes, want Envoy-Probe: 1 and no body", msg.Header, len(msg.Data))
+		if msg.Header.Get("Envoy-Probe") != "1" || len(msg.Data) != 0 || msg.Reply != reply {
+			t.Fatalf("the subscriber heard header %v, %d body bytes and reply %q, want Envoy-Probe: 1, no body and reply %q", msg.Header, len(msg.Data), msg.Reply, reply)
 		}
 	default:
 		t.Fatal("the request was answered without reaching the subscriber")
 	}
 
-	if _, err := client.RequestCore(ctx, DeliverSubject("ses_nobody"), probeHeader); !errors.Is(err, nats.ErrNoResponders) {
+	if _, err := client.RequestCore(ctx, DeliverSubject("ses_nobody"), SessionReplySubject(nats.NewInbox(), "ses_nobody"), probeHeader); !errors.Is(err, nats.ErrNoResponders) {
 		t.Fatalf("request to a subject nobody subscribes = %v, want nats.ErrNoResponders", err)
 	}
 
+	// A window, not a wait: the silent subscriber must not answer, and 300 ms is how long the
+	// request waits for it before its context ends it.
 	silentCtx, silentCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer silentCancel()
-	if _, err := client.RequestCore(silentCtx, DeliverSubject("ses_silent"), probeHeader); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := client.RequestCore(silentCtx, DeliverSubject("ses_silent"), SessionReplySubject(nats.NewInbox(), "ses_silent"), probeHeader); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("request to a subscriber that keeps silent = %v, want context.DeadlineExceeded", err)
 	}
 }
@@ -147,8 +152,8 @@ func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T
 	const requests = 64
 	perRequest := func(request func(ctx context.Context) error) uint64 {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		if err := request(ctx); err != nil {
 			t.Fatalf("warm-up request: %v", err)
 		}
@@ -164,7 +169,7 @@ func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T
 		return (after.TotalAlloc - before.TotalAlloc) / requests
 	}
 	probe := perRequest(func(ctx context.Context) error {
-		_, err := client.RequestCore(ctx, subject, probeHeader)
+		_, err := client.RequestCore(ctx, subject, SessionReplySubject(nats.NewInbox(), "ses_allocation"), probeHeader)
 		return err
 	})
 	confirmed := perRequest(func(ctx context.Context) error {
@@ -181,6 +186,7 @@ func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T
 }
 
 func TestSubjectContainsFollowsNATSWildcards(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		pattern, subject string
 		want             bool
@@ -209,6 +215,7 @@ func TestSubjectContainsFollowsNATSWildcards(t *testing.T) {
 }
 
 func TestCheckFilterSubjectRefusesWhatNATSCannotFilterOn(t *testing.T) {
+	t.Parallel()
 	for subject, refused := range map[string]bool{
 		"notifications.dispatch.issue.KEY-1.>": false,
 		"notifications.*.ses_a":                false,
@@ -233,6 +240,7 @@ func TestCheckFilterSubjectRefusesWhatNATSCannotFilterOn(t *testing.T) {
 // side by side. Only a literal lane of the family pairs: a wildcard, a bare prefix, an issue
 // notice and a longer subject name no role.
 func TestControllerNoticeRolePairsALaneWithItsRoleToken(t *testing.T) {
+	t.Parallel()
 	for topic, want := range map[string]string{
 		"notifications.legion.ACME.controller":      "legion-ACME-controller",
 		"notifications.legion.omp.controller":       "legion-omp-controller",
@@ -266,6 +274,7 @@ func TestControllerNoticeRolePairsALaneWithItsRoleToken(t *testing.T) {
 // by both on the next test run and neither can drift from a hand copy. Each case is a session id,
 // a topic, the roles that session holds and the answer.
 func TestReachesPrivateStreamSubjectBoundsInterests(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("testdata", "private-stream-subjects.json"))
 	if err != nil {
 		t.Fatalf("read the shared cases: %v", err)

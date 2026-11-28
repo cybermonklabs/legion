@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -63,7 +64,7 @@ func releaseHarness(t *testing.T, open bool) (*harness, *statusRecorder) {
 		approved := 1
 		gate.ApprovedVersion = &approved
 	}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: releaseRoot, Index: 0,
 			AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)}); err != nil {
 			return err
@@ -109,7 +110,7 @@ func deliverEcho(t *testing.T, h *harness, written dispatch.Issue) {
 func outboxRows(t *testing.T, h *harness, issue string) map[string]int {
 	t.Helper()
 	rows := map[string]int{}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		found, err := tx.Query(context.Background(), `select kind, count(*) from outbox where issue = $1 group by kind`, issue)
 		if err != nil {
 			return err
@@ -149,9 +150,9 @@ func backlogChild(key string, waits ...string) dispatch.Issue {
 // mirror handler writes one from that issue's event.
 func seedMirrorRow(t *testing.T, h *harness, key, status string) {
 	t.Helper()
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(context.Background(), tx,
-			record.DispatchIssueRow{Key: key, Project: testDispatchProject, Status: status, Seq: 1})
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: testDispatchProject, Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
 		t.Fatalf("seed the mirror row of %s: %v", key, err)
 	}
@@ -443,7 +444,7 @@ func TestWaveReleaseNamesAFailedReadTheListingDoesNotCover(t *testing.T) {
 	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{child}}, nil)
 
 	body := recorder.Body.String()
-	assertFailure(t, recorder, http.StatusBadGateway, "DISPATCH_FAILED")
+	refused(t, recorder, http.StatusBadGateway, "DISPATCH_FAILED")
 	if !strings.Contains(body, "detail read timed out") || !strings.Contains(body, "listing read timed out") {
 		t.Fatalf("answer = %s, want it to name both Dispatch failures", body)
 	}
@@ -502,7 +503,7 @@ func TestWaveReleaseWritesAndRecordsTheWaveBeforeAStuckTodoChildAnswers(t *testi
 
 	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{stuck, free}}, nil)
 
-	assertFailure(t, recorder, http.StatusConflict, "CHILD_NOT_RECORDED")
+	refused(t, recorder, http.StatusConflict, "CHILD_NOT_RECORDED")
 	if wantWrites := []statusWrite{{free, "todo"}}; !reflect.DeepEqual(statuses.writes, wantWrites) {
 		t.Fatalf("Dispatch writes = %#v, want %s released whatever %s answered", statuses.writes, free, stuck)
 	}
@@ -532,7 +533,7 @@ func TestWaveReleaseWritesNoChildUnderATodoChildItCannotRecord(t *testing.T) {
 
 	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{under, stuck}}, nil)
 
-	assertFailure(t, recorder, http.StatusConflict, "CHILD_NOT_RECORDED")
+	refused(t, recorder, http.StatusConflict, "CHILD_NOT_RECORDED")
 	if len(statuses.writes) != 0 {
 		t.Fatalf("Dispatch writes = %#v, want none: %s waits for %s to be recorded", statuses.writes, under, stuck)
 	}
@@ -658,10 +659,12 @@ func TestWaveReleaseDoesNotRecordAChildFromAWriteALaterEventOvertook(t *testing.
 	h, statuses := releaseHarness(t, true)
 	child := "LEGION-209"
 	statuses.issues[child] = backlogChild(child)
-	// The person's backlog, one event after the release's write (sequence 8), already applied:
-	// the mirror holds it, and the workflow recorded nothing for a child in backlog.
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{Key: child, Project: testDispatchProject, Status: "backlog", Seq: 9})
+	// The person's backlog, one event after the release's write (sequence 8), already applied: the
+	// copy holds it as an issue fact the daemon applied (record.DispatchReading.Applied, as
+	// blockers.Mirror writes an event), and the workflow recorded nothing for a child in backlog.
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: child, Project: testDispatchProject, Seq: 9,
+			Status: record.Carry("backlog"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil), Applied: true})
 	}); err != nil {
 		t.Fatalf("seed the mirror row of %s: %v", child, err)
 	}
@@ -693,7 +696,7 @@ func TestWaveReleaseRetryRecordsATodoChildOnceItsParentIsRecorded(t *testing.T) 
 		return h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{child}}, nil)
 	}
 
-	assertFailure(t, release(), http.StatusConflict, "CHILD_NOT_RECORDED")
+	refused(t, release(), http.StatusConflict, "CHILD_NOT_RECORDED")
 	if got := recordedChild(t, h, child); got != nil {
 		t.Fatalf("the child before its parent is recorded = %#v, want none", got)
 	}

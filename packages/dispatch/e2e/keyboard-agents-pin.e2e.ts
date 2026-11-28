@@ -25,6 +25,10 @@ const DWELL_MS = 1_000;
 // and the unread set it opened with - and that while a closed group hides it, it marks nothing
 // read.
 
+/** What the issue channel seeds into Silent's draft: the mention that names the party, which is
+ *  the whole record of who the comment addresses. */
+const silentMention = "[@Silent](dispatch://agent/silent-session)";
+
 /** `seedAgents`, plus `Quiet` and `Silent`: live sessions with no Dispatch activity, which the
  *  page lists under `Idle` - the rows a pin moves within - and any `others` a row needs beside
  *  them. */
@@ -55,9 +59,21 @@ async function roveToSilent(page: Page): Promise<Locator> {
   const row = agentRow(page, "silent-session");
   await expect(row).toBeVisible();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  // Each `j` moves focus to the next row in a render after the key, so each turn waits for focus
+  // to leave the row it was on before it reads which row it reached.
+  let focused = "";
   for (const _ of [1, 2, 3, 4]) {
+    const before = focused;
     await page.keyboard.press("j");
-    if (await row.evaluate((node) => node === document.activeElement)) break;
+    await expect
+      .poll(async () => {
+        focused = await page.evaluate(
+          () => document.activeElement?.getAttribute("data-agent-row") ?? ""
+        );
+        return focused;
+      })
+      .not.toBe(before);
+    if (focused === "silent-session") break;
   }
   await expect(row).toBeFocused();
   return row;
@@ -189,15 +205,15 @@ test.describe("agents page pins", () => {
       await silentRow.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
       await field.click();
       await page.keyboard.press("End");
-      await page.keyboard.type(" can you take this");
-      await expect(field).toHaveValue("@Silent can you take this");
+      await page.keyboard.type("can you take this");
+      await expect(field).toHaveValue(`${silentMention} can you take this`);
 
       await pinFromRow(silentRow, "Silent");
       await expect(rows.nth(2)).toHaveAttribute("data-agent-row", "silent-session");
       await expect(silentRow).toBeFocused();
       await expect(opener).toHaveAttribute("aria-expanded", "true");
       await expect(toggle).toContainText("CORE-1");
-      await expect(field).toHaveValue("@Silent can you take this");
+      await expect(field).toHaveValue(`${silentMention} can you take this`);
 
       // The mention travelled as a record, not just as text: it is on the wire.
       const posted = page.waitForRequest(
@@ -209,8 +225,7 @@ test.describe("agents page pins", () => {
       const request = await posted;
       expect(new URL(request.url()).pathname).toBe("/api/v1/issues/CORE-1/comments");
       expect(request.postDataJSON()).toMatchObject({
-        body: "@Silent can you take this",
-        mentions: [{ target: "session:silent-session" }],
+        body: `${silentMention} can you take this`,
       });
     } finally {
       await context.close();
@@ -373,7 +388,7 @@ test.describe("agents page pins", () => {
       await page.keyboard.press("Enter");
       await silentRow.getByRole("button", { name: "Choose issue" }).click();
       await silentRow.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
-      await expect(field).toHaveValue("@Silent");
+      await expect(field).toHaveValue(`${silentMention} `);
       await pasteFile(field, "notes.md", "# Notes\n");
       const uploading = silentRow.getByRole("button", { name: "Uploading file…" });
       await expect(uploading).toBeDisabled();
@@ -382,7 +397,9 @@ test.describe("agents page pins", () => {
       await expect(shownAgentRows(page).nth(2)).toHaveAttribute("data-agent-row", "silent-session");
       await expect(uploading).toBeDisabled();
       upload.release();
-      await expect(field).toHaveValue(/^@Silent\s+dispatch:\/\/\S*notes/);
+      await expect(field).toHaveValue(
+        /^\[@Silent\]\(dispatch:\/\/agent\/silent-session\)\s+dispatch:\/\/\S*notes/
+      );
       await expect(silentRow.getByRole("button", { name: "Send" })).toBeEnabled();
       expect(upload.posts()).toBe(1);
     } finally {

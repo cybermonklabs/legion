@@ -7,6 +7,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // AuthCallout is a NATS server's authorization callout: every client that is not one of the
@@ -67,7 +68,7 @@ type AuthCallout struct {
 // callout's 1.5 s answer budget is unchanged.
 //
 // It does not catch a replica whose request handler deadlocks while its process runs: nats.go
-// answers a PING from its read loop (nats.go v1.53.1 processPing, called at parser.go:324), not
+// answers a PING from its read loop (nats.go v1.55.0 processPing at nats.go:4278, called at parser.go:324), not
 // from a handler, so the replica keeps its place in the group. Only the service can leave the
 // group then, by unsubscribing or closing its connection; that is INFRA-840's to provide.
 //
@@ -77,6 +78,33 @@ type AuthCallout struct {
 const calloutPingLines = "# a replica of the auth service that answers nothing is dropped from the callout's queue group within 80 s\n" +
 	"ping_interval: \"20s\"\n" +
 	"ping_max: 2\n"
+
+// privateProjectsTagLines are the lines a callout adds after the ping lines beside
+// PrivateProjects: the server tag natsgrant.PrivateProjectsServerTag. nats-server v2.15.1 reads
+// server_tags (server/opts.go:1803) and copies the server's tags into each authorization request
+// it sends the auth service (claim.Server.Tags = s.getOpts().Tags, server/auth_callout.go:377). The
+// request's server claim also carries the server's name, host, id, version, cluster and xkey
+// (auth_callout.go:367-373, :383), and none of those says how the hub was rendered, so the tag is
+// how a request can show that its hub was rendered with PrivateProjects. The auth service does not
+// read it yet: its private-hub admission, which is to admit Dispatch's hub-admission proof and hold
+// every listener to required privacy mode only on a request that carries the tag
+// (natsgrant.HubAdmissionAudience, natsgrant.PrivacyRequiredSuffix), is later work (natsgrant's
+// package comment). A hub rendered without PrivateProjects carries no tag. The comment line says
+// only what the tag is, so it stays true once the auth service reads the tag, and that change
+// rolls no hub.
+//
+// The lines are part of CalloutLines, so the clustered hub rolls its pods when the tag comes or
+// goes (CalloutLines says why). nats-server also reloads server_tags (server/reload.go:360-366,
+// :1698-1699), so a change of the tag alone reaches a running server whose file is reloaded, as
+// the clustered hub's reloader does, before any restart. Each reload, whatever it changes, decides
+// every callout connection again: it always reloads the users (reload.go:1651-1654, :1706-1707,
+// :2091-2093). A client the auth service named carries that name and no nkey
+// (auth_callout.go:326-333), so it names no configured user, and the reload closes it; it
+// reconnects through the callout (reload.go:2291-2299, :2349-2352, :2398-2432). Envoy's auth
+// service names each client it admits. An unnamed client that presented no user name or nkey goes
+// through the callout again on its live connection (reload.go:2354-2358).
+const privateProjectsTagLines = "# this hub is rendered with privateProjects: nats-server names this tag in each authorization request it sends the auth service\n" +
+	"server_tags: [\"" + natsgrant.PrivateProjectsServerTag + "\"]\n"
 
 // The auth service's grant as NATS defines it: the service subscribes to the authorization
 // requests (server/auth_callout.go AuthCalloutSubject) and publishes only its answers, to the
@@ -187,31 +215,40 @@ func serviceGrantRefusal(u User) (field, entry string, wide bool) {
 
 // CalloutLines is every line Render's text holds because of the callout, "" without one, for an
 // authorization Validate accepts: the auth_callout block inside the authorization block, then the
-// ping lines that end the text (calloutParts, which Render writes from too). nats-server v2.15.1
-// refuses a whole reload that changes its callout ("config reload not supported for AuthCallout":
-// server/reload.go diffOptions has no case for it), so a server takes a changed block only when it
-// restarts. The ping lines come and go only with that block, so the one reload of them the server
-// would take is an edit of calloutPingLines itself (reload.go:1751-1754), which each connection
-// applies when its timer next re-arms, within one interval of 20 s (reload.go:670-672 only logs;
-// client.go:6037-6050). A component that reloads its servers rolls them when this text changes,
-// so every server takes a change at one known moment, its restart, with each connection's timer
-// started fresh; the clustered hub's pin of its routes' ping (gcp clusteredHubCluster) appears and
-// goes with the callout, so it always arrives with such a roll. auth_users is in it, so a keyed user
-// added or removed changes it.
+// ping lines and, beside PrivateProjects, the server tag's lines that end the text (calloutParts,
+// which Render writes from too). nats-server v2.15.1 refuses a whole reload that changes its
+// callout ("config reload not supported for AuthCallout": server/reload.go diffOptions has no case
+// for it), so a server takes a changed block only when it restarts. The ping lines come and go
+// only with that block, so the one reload of them the server would take is an edit of
+// calloutPingLines itself (reload.go:1751-1754), which each connection applies when its timer next
+// re-arms, within one interval of 20 s (reload.go:670-672 only logs; client.go:6037-6050). A change
+// of the server tag alone does reload, and each reload decides every callout connection again
+// (privateProjectsTagLines). A component that reloads its servers rolls them when this text
+// changes, so every server takes a change at one known moment, its restart, after the component
+// has written the new text (the clustered hub's ConfigMap), with each connection's timer started
+// fresh; a reload of the tag comes whenever the file on a server changes (the kubelet's update of
+// a mounted ConfigMap), which nothing orders. The clustered hub's pin of its routes' ping (gcp
+// clusteredHubCluster) appears and goes with the callout, so it always arrives with such a roll.
+// auth_users is in it, so a keyed user added or removed changes it.
 func (a Authorization) CalloutLines() string {
 	block, tail := a.calloutParts()
 	return block + tail
 }
 
 // calloutParts are the callout's lines of Render's text, both "" without a callout: block, the
-// auth_callout block inside the authorization block, after its users, and tail, the ping lines that
-// end the text. Render and CalloutLines both write them from here, so a line one writes the other
-// holds.
+// auth_callout block inside the authorization block, after its users, and tail, the ping lines
+// and, beside PrivateProjects, the server tag's lines, which end the text. Render and CalloutLines
+// both write them from here, so a line one writes the other holds. Validate refuses PrivateProjects
+// without a callout, so no other text carries the tag.
 func (a Authorization) calloutParts() (block, tail string) {
 	if a.Callout == nil {
 		return "", ""
 	}
-	return a.Callout.block(a.Users), calloutPingLines
+	tail = calloutPingLines
+	if a.PrivateProjects {
+		tail += privateProjectsTagLines
+	}
+	return a.Callout.block(a.Users), tail
 }
 
 // block is the callout's lines of the authorization block, which follow its users: auth_callout

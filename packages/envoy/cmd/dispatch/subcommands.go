@@ -19,6 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -35,10 +37,13 @@ type subcommand struct {
 // dispatches on this table and names it, in this order, when it refuses an argument.
 var subcommands = []subcommand{
 	{"backfill-block-ids", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
-		return backfillBlockIDs(ctx, env.get("DATABASE_URL"), stdout)
+		return backfillBlockIDs(ctx, env.get("DATABASE_URL"), specRootsSetting(env), loadServerURL(env), stdout)
 	}},
 	{"backfill-anchor-blocks", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
-		return backfillAnchorBlocks(ctx, env.get("DATABASE_URL"), stdout)
+		return backfillAnchorBlocks(ctx, env.get("DATABASE_URL"), specRootsSetting(env), loadServerURL(env), stdout)
+	}},
+	{"backfill-graph-store", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
+		return backfillGraphStore(ctx, env.get("DATABASE_URL"), stdout)
 	}},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
@@ -46,14 +51,20 @@ var subcommands = []subcommand{
 	{"redeliver-webhooks", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return redeliverWebhooks(ctx, args, env, stdout)
 	}},
-	{"census", func(ctx context.Context, _ []string, env settingValues, stdout, stderr io.Writer) int {
-		return census(ctx, env.get("DATABASE_URL"), stdout, stderr)
+	{"census", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return census(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
+	}},
+	{"versions", func(ctx context.Context, _ []string, env settingValues, stdout, stderr io.Writer) int {
+		return versions(ctx, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"backfill-files", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillFiles(ctx, args, env.get("DATABASE_URL"), strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")), stdout)
 	}},
 	{"stored-order", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return storedOrder(ctx, args, env.get("DATABASE_URL"), stdout)
+	}},
+	{"project-owner", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return giveProject(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"settings", func(_ context.Context, _ []string, _ settingValues, stdout, stderr io.Writer) int {
 		if err := writeSettings(stdout); err != nil {
@@ -183,10 +194,31 @@ func committedOpenAPIPath() (string, error) {
 	}
 }
 
-// openMigrated opens the database a DB subcommand works on and brings it to the current
-// schema, reporting each failure on out under the subcommand's label. The caller closes the
-// returned store's pool.
+// openMigrated opens the database a document subcommand works on, brings it to the current
+// schema (openMigratedWithoutBlockSchema) and installs the block schema the store's type nodes
+// build (schemanodes.InstallFromStore), as the server's boot does beside its own migration run,
+// so a subcommand that parses, renders or writes a document holds it to the store's types rather
+// than to the file this binary embeds. It reports each failure on out under the subcommand's
+// label. The caller closes the returned store's pool.
 func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
+	database, ok := openMigratedWithoutBlockSchema(ctx, label, databaseURL, out)
+	if !ok {
+		return nil, false
+	}
+	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
+		database.Pool.Close()
+		return nil, false
+	}
+	return database, true
+}
+
+// openMigratedWithoutBlockSchema opens the database a DB subcommand works on and brings it to the
+// current schema, and installs no block schema. backfill-files opens its database here: it moves
+// file bytes and parses no document, so the store's types are nothing it reads, and a store whose
+// types this build cannot install is no reason for it to refuse. It reports each failure on out
+// under the subcommand's label. The caller closes the returned store's pool.
+func openMigratedWithoutBlockSchema(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
 	if strings.TrimSpace(databaseURL) == "" {
 		fmt.Fprintln(out, label+": DATABASE_URL is required")
 		return nil, false
@@ -204,15 +236,32 @@ func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer)
 	return database, true
 }
 
-func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) int {
+// gatedDocumentService is the document service a backfill command writes through: a store and a
+// broker, the server's address, and the form gate of The Spec that specRoots names
+// (api.NewSpecForm), the same gate the server sets on its own. A settlement the command runs, of a
+// document a server left owing one, so carries a person's approval as the server's settlement
+// would, and carries none over a text that breaks the form. A value of specRoots that is no list
+// of issue keys is reported on out under label, and the service is shut down.
+func gatedDocumentService(database *store.Store, specRoots, serverURL, label string, out io.Writer) (*docs.Service, bool) {
+	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker(), ServerURL: serverURL})
+	if _, err := api.NewSpecForm(specRoots, serverURL, service); err != nil {
+		fmt.Fprintf(out, "%s: %v\n", label, err)
+		_ = service.Shutdown(context.Background())
+		return nil, false
+	}
+	return service, true
+}
+
+func backfillBlockIDs(ctx context.Context, databaseURL, specRoots, serverURL string, out io.Writer) int {
 	database, ok := openMigrated(ctx, "backfill-block-ids", databaseURL, out)
 	if !ok {
 		return 1
 	}
 	defer database.Pool.Close()
-	// The service has no form gate, so no version it writes carries an approval in a person's name
-	// (docs.Service.SetFormGate).
-	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
+	service, ok := gatedDocumentService(database, specRoots, serverURL, "backfill-block-ids", out)
+	if !ok {
+		return 1
+	}
 	defer service.Shutdown(context.Background())
 	reports, err := service.BackfillBlockIDs(ctx)
 	if err != nil {
@@ -228,14 +277,48 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 	return exitCode
 }
 
-func backfillAnchorBlocks(ctx context.Context, databaseURL string, out io.Writer) int {
+// backfillGraphStore runs `envoy-dispatch backfill-graph-store`: it writes the nodes and
+// tuples of every comment, document block and block reference written before the node and
+// tuple store existed, the node of every issue, document, ask and message written before its
+// kind's writer wrote one, and the project of every comment and block node written before a node
+// named its project, in batches, one transaction each (graphcensus.Backfill). It appends no
+// event of its own: a fact whose row's own event cannot be found carries the store's sentinel
+// as its cause. It is safe to run again: a row that already names its node is left alone, so a
+// run interrupted anywhere carries on from where it stopped.
+//
+// A block's parent is left to the block index: the run marks each document it touched owed
+// one, and `census --store` reads a difference on every backfilled block until that
+// reconciliation has drained the mark, since the reconciliation is the one writer of
+// document_blocks.parent_block_id.
+func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) int {
+	database, ok := openMigrated(ctx, "backfill-graph-store", databaseURL, out)
+	if !ok {
+		return 1
+	}
+	defer database.Pool.Close()
+	report, err := graphcensus.Backfill(ctx, database, out)
+	if err != nil {
+		fmt.Fprintf(out, "backfill-graph-store: %v\n", err)
+		return 1
+	}
+	for _, kind := range report.Kinds {
+		if kind.Skipped > 0 || kind.Remaining > 0 {
+			return 1
+		}
+	}
+	return 0
+}
+
+func backfillAnchorBlocks(ctx context.Context, databaseURL, specRoots, serverURL string, out io.Writer) int {
 	database, ok := openMigrated(ctx, "backfill-anchor-blocks", databaseURL, out)
 	if !ok {
 		return 1
 	}
 	defer database.Pool.Close()
-	// No form gate either, so this service carries no approval (docs.Service.SetFormGate).
-	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
+	service, ok := gatedDocumentService(database, specRoots, serverURL, "backfill-anchor-blocks", out)
+	if !ok {
+		return 1
+	}
 	defer service.Shutdown(context.Background())
 	reports, err := service.BackfillBlockIDs(ctx)
 	if err != nil {
@@ -266,6 +349,8 @@ func backfillAnchorBlocks(ctx context.Context, databaseURL string, out io.Writer
 // when any failed, and can be run again at any time; the server serves a row from its bytes
 // whenever it holds them. The move refuses, with exit 1 and before it touches a row, while a live
 // server process has no bucket (bucketlessProcesses): that process serves a file only from its row.
+// It reads and writes file versions alone, never a document's, so it installs no block schema
+// (openMigratedWithoutBlockSchema).
 func backfillFiles(ctx context.Context, args []string, databaseURL, bucket string, out io.Writer) int {
 	flags := flag.NewFlagSet("backfill-files", flag.ContinueOnError)
 	flags.SetOutput(out)
@@ -286,7 +371,7 @@ func backfillFiles(ctx context.Context, args []string, databaseURL, bucket strin
 		fmt.Fprintln(out, "backfill-files: DISPATCH_FILE_STORE_BUCKET is required")
 		return 1
 	}
-	database, ok := openMigrated(ctx, "backfill-files", databaseURL, out)
+	database, ok := openMigratedWithoutBlockSchema(ctx, "backfill-files", databaseURL, out)
 	if !ok {
 		return 1
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/session"
 )
 
 // bucketConfig is the config the listener creates each bucket with when it finds none
@@ -19,7 +21,7 @@ import (
 func bucketConfig(kind string) (*nats.KeyValueConfig, error) {
 	switch kind {
 	case "sessions":
-		return &nats.KeyValueConfig{Bucket: bus.SessionBucket, TTL: 5 * time.Minute, Replicas: 1, Storage: nats.FileStorage}, nil
+		return &nats.KeyValueConfig{Bucket: bus.SessionBucket, TTL: session.BucketMaxAge, Replicas: 1, Storage: nats.FileStorage}, nil
 	case "interests":
 		return &nats.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: 1, Storage: nats.FileStorage}, nil
 	}
@@ -163,7 +165,7 @@ func runSeed(args []string) error {
 	spec := flags.String("sets", "", "record sets, name=count[:variant],...")
 	role := flags.String("role", "", "role the first session of each set holds")
 	create := flags.Bool("create", false, "create a missing bucket with the listener's config")
-	ttl := flags.Duration("ttl", 0, "with -create, the session bucket's MaxAge in place of the listener's 5 minutes")
+	ttl := flags.Duration("ttl", 0, "with -create, the session bucket's MaxAge in place of the listener's "+session.BucketMaxAge.String())
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -189,7 +191,8 @@ func runSeed(args []string) error {
 			config.TTL = *ttl
 		}
 		if *create {
-			_, err = bus.EnsureKeyValue(conn, js, config)
+			// A rig command, run by hand until it ends: it runs under no context of its own.
+			_, err = bus.EnsureKeyValue(context.Background(), conn, js, config)
 		} else {
 			_, err = js.KeyValue(config.Bucket)
 		}

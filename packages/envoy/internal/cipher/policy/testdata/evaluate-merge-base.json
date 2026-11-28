@@ -1,0 +1,2922 @@
+{
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=none service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=other service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=owner service=none withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=owner service=other withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_APP operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-app"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=none service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=other service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=owner service=none withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=owner service=other withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored"
+  },
+  "GRID_PERSON_AGENT_LISTPERSON_STORED operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listperson-stored"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=none service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=other service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_APP operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=none service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=other service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_LISTSERVICE_STORED operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=none service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=none service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=none service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=none service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=none service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=other service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=other service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=other service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=other service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=other service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=owner service=none withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=owner service=other withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_APP operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-app"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=none service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=none service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=none service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=none service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=none service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=other service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=other service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=other service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=other service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=other service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=owner service=none withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=owner service=other withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_AGENT_NOLIST_STORED operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-agent-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=none service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=other service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=owner service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=owner service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=owner service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_APP operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-app"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=none service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=other service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=owner service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=owner service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=owner service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTPERSON_STORED operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listperson-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=none service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=other service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=owner service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_APP operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=none service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=other service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=owner service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_LISTSERVICE_STORED operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=none service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=none service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=none service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=none service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=none service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=other service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=other service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=other service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=other service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=other service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=owner service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=owner service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=owner service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_APP operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-app"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=none service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=none service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=none service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=none service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=none service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=other service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=other service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=other service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=other service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=other service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=owner service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=owner service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=owner service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_PERSON_HUMAN_NOLIST_STORED operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "ada@example.com",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-person-human-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=none service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=other service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=owner service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_APP operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-app"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=none service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=other service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTPERSON_STORED operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listperson-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=none service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=other service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=owner service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_APP operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=none service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=other service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_LISTSERVICE_STORED operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=none service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=other service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=owner service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_APP operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-app"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=none service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=other service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_AGENT_NOLIST_STORED operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-service-agent-nolist-stored"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=none service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=none service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=none service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=none service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=none service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=none service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=other service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=other service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=other service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=other service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=other service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=other service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=owner service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=owner service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=owner service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=owner service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=owner service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_APP operator=owner service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=none service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=none service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=none service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=none service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=none service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=none service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=other service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=other service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=other service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=other service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=other service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=other service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=owner service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=owner service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=owner service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=owner service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=owner service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTPERSON_STORED operator=owner service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=none service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=none service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=none service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=none service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=none service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=none service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=other service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=other service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=other service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=other service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=other service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=other service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=owner service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=owner service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=owner service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=owner service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=owner service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_APP operator=owner service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=none service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=none service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=none service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=none service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=none service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=none service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=other service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=other service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=other service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=other service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=other service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=other service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=owner service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=owner service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=owner service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=owner service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=owner service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_LISTSERVICE_STORED operator=owner service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=none service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=none service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=none service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=none service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=none service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=none service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=other service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=other service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=other service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=other service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=other service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=other service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=owner service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=owner service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=owner service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=owner service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=owner service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_APP operator=owner service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=none service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=none service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=none service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=none service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=none service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=none service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=other service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=other service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=other service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=other service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=other service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=other service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=owner service=listed withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=owner service=listed withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=owner service=none withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=owner service=none withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=owner service=other withheld=no": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SERVICE_HUMAN_NOLIST_STORED operator=owner service=other withheld=yes": {
+    "error": "no agent secret has this name"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=none service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=other service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=owner service=none withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=owner service=other withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_APP operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-app"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=none service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=other service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=owner service=none withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=owner service=other withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored"
+  },
+  "GRID_SHARED_AGENT_LISTPERSON_STORED operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listperson-stored"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=none service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=other service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_APP operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=none service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=other service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_LISTSERVICE_STORED operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=none service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=none service=none withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=none service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=none service=other withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=none service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=other service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=other service=none withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=other service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=other service=other withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=other service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=owner service=none withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=owner service=other withheld=no": {
+    "outcome": "automatic",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_APP operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-app"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=none service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=none service=none withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=none service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=none service=other withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=none service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=other service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=other service=none withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=other service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=other service=other withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=other service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=owner service=listed withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=owner service=none withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=owner service=other withheld=no": {
+    "outcome": "automatic",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_AGENT_NOLIST_STORED operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-agent-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=none service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=other service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=owner service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=owner service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=owner service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_APP operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-app"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=none service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=none service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=other service=listed withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=other service=listed withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=owner service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=owner service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=owner service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTPERSON_STORED operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listperson-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=none service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=other service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=owner service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_APP operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-app",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=none service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=none service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=none service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=none service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=none service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=other service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=other service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=other service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=other service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=other service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=owner service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=owner service=none withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=owner service=none withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=owner service=other withheld=no": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_LISTSERVICE_STORED operator=owner service=other withheld=yes": {
+    "outcome": "deny",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-listservice-stored",
+    "reason": "requester-not-listed"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=none service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=none service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=none service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=none service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=none service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=other service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=other service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=other service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=other service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=other service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=owner service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=owner service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=owner service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_APP operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "mint:github-app:arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-app"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=none service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=none service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=none service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=none service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=none service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=none service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=other service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=other service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=other service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=other service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=other service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=other service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=owner service=listed withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=owner service=listed withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=owner service=none withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=owner service=none withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=owner service=other withheld=no": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  },
+  "GRID_SHARED_HUMAN_NOLIST_STORED operator=owner service=other withheld=yes": {
+    "outcome": "approval",
+    "approver": "anyone",
+    "source": "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/grid-shared-human-nolist-stored"
+  }
+}

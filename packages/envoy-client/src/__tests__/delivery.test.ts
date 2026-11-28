@@ -1,18 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { dispatchIssueSubject, type Envelope } from "@legion/contracts";
+import { type Envelope, legacyDispatchIssueSubject } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { decode } from "@toon-format/toon";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import {
   type DispatchDelivery,
+  INBOUND_CARD_MAX_BYTES,
   postDeliveryReply,
   renderInbound,
   replyWith,
   senderLabel,
 } from "../delivery";
+import { objectChainPastTheEncoder } from "./deep-json";
 
 const reader = "01a01111-2222-7333-4444-555555555555";
 const actor = { kind: "session", id: "session-1" };
+
+/** The Dispatch bearer a delivery reply is posted under. */
+const REPLY_TOKEN = fixtureSecret("dsp");
 
 const targetedDispatchPayload = readFileSync(
   new URL("../../../contracts/fixtures/dispatch-targeted-delivery.json", import.meta.url),
@@ -42,7 +49,7 @@ function envelope(overrides: Partial<Envelope> = {}): Envelope {
 function dispatchEvent(
   type: string,
   payload: object,
-  eventActor = actor,
+  eventActor: Readonly<Record<string, unknown>> = actor,
   { notify = true, quiet }: { notify?: boolean; quiet?: boolean } = {}
 ): string {
   return JSON.stringify(
@@ -50,7 +57,7 @@ function dispatchEvent(
       event_id: "dispatch-1",
       source: "dispatch",
       source_event_id: "1",
-      topic: dispatchIssueSubject("DSP-1", ">"),
+      topic: legacyDispatchIssueSubject("DSP-1", ">"),
       payload_summary: "Dispatch update",
       payload: JSON.stringify({
         id: 1,
@@ -380,10 +387,10 @@ describe("renderInbound dispatch events", () => {
     const replies: Array<{ readonly path: string; readonly body: unknown }> = [];
     const server = Bun.serve({
       port: 0,
-      fetch: async (request) => {
+      fetch: keyedLayer(async (request: Request) => {
         replies.push({ path: new URL(request.url).pathname, body: await request.json() });
         return Response.json({});
-      },
+      }),
     });
     const { created_at: _createdAt, ...malformedPayload } = targetedComment;
 
@@ -404,7 +411,7 @@ describe("renderInbound dispatch events", () => {
       if (rejected === undefined) throw new Error("missing recoverable rejected delivery");
 
       await postDeliveryReply(
-        { url: `http://127.0.0.1:${server.port}`, credential: bearerCredential("reply-token") },
+        { url: `http://127.0.0.1:${server.port}`, credential: bearerCredential(REPLY_TOKEN) },
         reader,
         rejected,
         { error: "Invalid Dispatch targeted delivery frame" }
@@ -430,10 +437,10 @@ describe("renderInbound dispatch events", () => {
     const paths: string[] = [];
     const server = Bun.serve({
       port: 0,
-      fetch: (request) => {
+      fetch: keyedLayer((request: Request) => {
         paths.push(new URL(request.url).pathname);
         return Response.json({});
-      },
+      }),
     });
     const message = JSON.parse(targetedDispatchPayload) as {
       event: { payload: { id: string } };
@@ -454,7 +461,7 @@ describe("renderInbound dispatch events", () => {
           await postDeliveryReply(
             {
               url: `http://127.0.0.1:${server.port}`,
-              credential: bearerCredential("reply-token"),
+              credential: bearerCredential(REPLY_TOKEN),
             },
             reader,
             rendered.delivery,
@@ -473,10 +480,10 @@ describe("renderInbound dispatch events", () => {
     const paths: string[] = [];
     const server = Bun.serve({
       port: 0,
-      fetch: (request) => {
+      fetch: keyedLayer((request: Request) => {
         paths.push(new URL(request.url).pathname);
         return Response.json({});
-      },
+      }),
     });
     const deliveries: DispatchDelivery[] = [
       {
@@ -506,7 +513,7 @@ describe("renderInbound dispatch events", () => {
         await postDeliveryReply(
           {
             url: `http://127.0.0.1:${server.port}`,
-            credential: bearerCredential("reply-token"),
+            credential: bearerCredential(REPLY_TOKEN),
           },
           reader,
           delivery,
@@ -529,23 +536,25 @@ describe("renderInbound dispatch events", () => {
   test("posts a delivery reply as one keyed write, asked again under its key", async () => {
     const keys: Array<string | null> = [];
     let answers = 0;
+    // The stand-in names the key back on every answer, its refusals too, as Dispatch's keyed layer
+    // does. The client asks again under the same key whatever the answer carries, and reads the
+    // echo only to settle: a 2xx or a refusal that names no key back settles nothing.
     const server = Bun.serve({
       port: 0,
-      fetch: (request) => {
-        const key = request.headers.get("Idempotency-Key");
-        keys.push(key);
-        answers += 1;
-        // Dispatch's keyed layer echoes the key on every answer to a keyed request, which is what
-        // tells the client a repeat is answered from the key rather than run again.
-        const headers: Record<string, string> = key === null ? {} : { "Idempotency-Key": key };
-        if (answers === 1)
-          return Response.json({ code: "UNAVAILABLE", error: "down" }, { status: 503, headers });
-        if (answers === 2) return Response.json({ reply: { id: "reply-1" } }, { headers });
-        return Response.json(
-          { code: "ATTEMPT_ANSWERED", error: "already answered" },
-          { status: 409, headers }
-        );
-      },
+      fetch: keyedLayer(
+        (request: Request) => {
+          keys.push(request.headers.get("Idempotency-Key"));
+          answers += 1;
+          if (answers === 1)
+            return Response.json({ code: "UNAVAILABLE", error: "down" }, { status: 503 });
+          if (answers === 2) return Response.json({ reply: { id: "reply-1" } });
+          return Response.json(
+            { code: "ATTEMPT_ANSWERED", error: "already answered" },
+            { status: 409 }
+          );
+        },
+        { judged: () => true }
+      ),
     });
     const delivery: DispatchDelivery = {
       resource: "message",
@@ -559,7 +568,7 @@ describe("renderInbound dispatch events", () => {
     };
     const config = {
       url: `http://127.0.0.1:${server.port}`,
-      credential: bearerCredential("reply-token"),
+      credential: bearerCredential(REPLY_TOKEN),
     };
 
     try {
@@ -630,21 +639,61 @@ describe("renderInbound dispatch events", () => {
       })
     );
 
+    type Card = {
+      envoy: { to?: string; dispatch: { owner?: string; payload: { target?: string } } };
+    };
     const intended = decode(
       renderInbound(raw, reader, `notifications.agent.${reader}`).content
-    ) as { envoy: { to?: string; dispatch: { payload: { target: string } } } };
+    ) as Card;
     const other = decode(
       renderInbound(raw, otherSession, `notifications.agent.${reader}`).content
-    ) as { envoy: { to?: string; dispatch: { payload: { target: string } } } };
+    ) as Card;
+    // The same frame, read by this session on a topic that is not its inbox, prints no `to:`.
+    const elsewhere = decode(
+      renderInbound(
+        JSON.stringify({ ...JSON.parse(raw), topic: `notifications.agent.${otherSession}` }),
+        reader,
+        `notifications.agent.${otherSession}`
+      ).content
+    ) as Card;
 
+    // `to:` names this session, so neither a `target` naming it nor an owner the message has not
+    // repeats it.
     expect(intended.envoy.to).toBe("you (01a01111-2222-7333-4444-555555555555)");
-    expect(intended.envoy.dispatch.payload.target).toBe(
-      "you (session:01a01111-2222-7333-4444-555555555555)"
-    );
+    expect(intended.envoy.dispatch.payload.target).toBeUndefined();
+    expect(intended.envoy.dispatch.owner).toBeUndefined();
     expect(other.envoy.to).toBeUndefined();
     expect(other.envoy.dispatch.payload.target).toBe(
       "session:01a01111-2222-7333-4444-555555555555"
     );
+    expect(elsewhere.envoy.to).toBeUndefined();
+    expect(elsewhere.envoy.dispatch.payload.target).toBe(
+      "you (session:01a01111-2222-7333-4444-555555555555)"
+    );
+  });
+
+  // A session's inbox has two forms while every reader takes both (dispatch://INFRA-3862): the
+  // session alone, and the session under a project (`_` for none). A message on either form is
+  // this session's own, so its card names it the recipient; another session's inbox is not, in
+  // either form.
+  test("names the session the recipient of a message on its inbox in either form", () => {
+    const otherSession = "01a02222-3333-7444-8555-666666666666";
+    for (const topic of [
+      `notifications.agent.${reader}`,
+      `notifications.agent._.${reader}`,
+      `notifications.agent.PRIV.${reader}`,
+    ]) {
+      const raw = JSON.stringify(envelope({ source: "agent", topic, payload: "hello" }));
+      const intended = decode(renderInbound(raw, reader, topic).content) as {
+        envoy: { to?: string };
+      };
+      const other = decode(renderInbound(raw, otherSession, topic).content) as {
+        envoy: { to?: string };
+      };
+
+      expect(intended.envoy.to, topic).toBe(`you (${reader})`);
+      expect(other.envoy.to, topic).toBeUndefined();
+    }
   });
 
   test("keeps rendering a targeted Dispatch message when its payload grows", () => {
@@ -1194,6 +1243,238 @@ describe("renderInbound dispatch events", () => {
     });
   });
 
+  // Whose ask a reply in an ask's thread is on, as the session reading it decides from the
+  // sessions the payload names as the ask's own (`ask_sessions`). ask-reply-recipients.test.ts
+  // renders the copies a real outbox published; these are the cases those copies do not hold.
+  describe("a reply in an ask's thread, by the session that reads it", () => {
+    const asker = "01a02222-3333-7444-8555-666666666666";
+    const askReply = {
+      id: targetedCommentID,
+      issue_key: "CORE-1",
+      artifact_id: null,
+      author: { kind: "user", id: "alice" },
+      body: "Which pool size do you need?",
+      anchor: null,
+      reply_to: null,
+      ask_id: "ask-1",
+      ask_question: apiQuestion,
+      ask_state: "open",
+      ask_waiting_on: "agent",
+      ask_sessions: [asker],
+      turn: "agent",
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-12T00:00:00Z",
+      mentions: [],
+      deliveries: [],
+      artifact_name: "",
+    };
+    const replyToAsk = {
+      command: "dispatch comment --issue CORE-1 --body ... --reply-to-ask ask-1",
+    };
+    type Card = { envoy: Record<string, unknown> & { dispatch: Record<string, unknown> } };
+    const card = (raw: string, session: string) =>
+      decode(renderInbound(raw, session).content) as Card;
+    /** The reply's event as the outbox publishes it on a session's own topic, correlated to the
+     *  ask; `event` overrides the event's own fields. */
+    const copy = (payload: Record<string, unknown>, event: Record<string, unknown> = {}) =>
+      JSON.stringify(
+        envelope({
+          event_id: "dispatch-ask-reply",
+          source: "dispatch",
+          source_event_id: "8",
+          topic: "notifications.agent.session-reader",
+          payload_summary: "CORE-1 comment created",
+          in_reply_to: "ask-1",
+          payload: JSON.stringify({
+            id: 8,
+            issue_key: "CORE-1",
+            seq: 8,
+            type: "comment.created",
+            actor: { kind: "user", id: "alice" },
+            notify: true,
+            created_at: "2026-09-12T00:00:00Z",
+            ...event,
+            payload,
+          }),
+        })
+      );
+    /** The same reply as the delivery a mention of the reader sent: a targeted frame. */
+    const mention = (payload: Record<string, unknown>) =>
+      JSON.stringify(
+        envelope({
+          event_id: "dispatch-ask-mention",
+          source: "dispatch",
+          payload: targetedCommentFrame(payload),
+        })
+      );
+
+    test("a mention of a session that does not own the ask says so and keeps the mention's reply command, with no turn", () => {
+      const decoded = card(mention(askReply), reader);
+
+      expect(decoded.envoy.dispatch.relation).toBe("mentioned you");
+      expect(decoded.envoy.reply_with).toEqual(replyToAsk);
+      expect(decoded.envoy.dispatch.waiting_on).toBeUndefined();
+      expect(decoded.envoy.dispatch.state).toBe("open");
+    });
+
+    test("a mention of a session that owns the ask is a reply on its own ask, with its turn", () => {
+      const decoded = card(mention(askReply), asker);
+
+      expect(decoded.envoy.dispatch.relation).toBe("replied on your ask");
+      expect(decoded.envoy.reply_with).toEqual(replyToAsk);
+      expect(decoded.envoy.dispatch.waiting_on).toBe("agent");
+    });
+
+    test("a reply on a project document's ask that reached another session is a comment on a document, with no reply command", () => {
+      const document = "a4cf7999-cab2-4326-939d-cb1e76733cc3";
+      const decoded = card(
+        copy(
+          {
+            ...askReply,
+            issue_key: null,
+            artifact_id: document,
+            project_key: "CORE",
+            artifact_slug: "design-notes",
+          },
+          { issue_key: null, artifact_id: document, project: "CORE" }
+        ),
+        reader
+      );
+
+      expect(decoded.envoy.dispatch.relation).toBe("commented on a document");
+      expect(decoded.envoy.reply_with).toBeUndefined();
+      expect(decoded.envoy.dispatch.waiting_on).toBeUndefined();
+      // Which ask the reply is on, and what it says, stay on the card.
+      expect(decoded.envoy.re).toBe("dispatch://CORE/artifact/design-notes/ask/ask-1");
+      expect(decoded.envoy.dispatch.question).toBe(apiQuestion);
+      expect(decoded.envoy.dispatch.reply).toBe("Which pool size do you need?");
+      expect(decoded.envoy.dispatch.state).toBe("open");
+    });
+
+    // The outbox's stand-in for an event the bus refused keeps ask_sessions whole, whatever its
+    // size, so the session reading it decides from it as it does from the whole event, and a host
+    // that reads the body whole and renders again changes nothing of that.
+    test("a stand-in that carries ask_sessions is the owner's own ask and no other session's, before and after its body is read whole", () => {
+      const { body: _body, ...kept } = askReply;
+      const raw = copy({ ...kept, payload_omitted: true });
+
+      for (const wholeBody of [undefined, askReply.body]) {
+        const owner = decode(renderInbound(raw, asker, undefined, wholeBody).content) as Card;
+        expect(owner.envoy.dispatch.relation).toBe("replied on your ask");
+        expect(owner.envoy.reply_with).toEqual(replyToAsk);
+        expect(owner.envoy.dispatch.waiting_on).toBe("agent");
+
+        const other = decode(renderInbound(raw, reader, undefined, wholeBody).content) as Card;
+        expect(other.envoy.dispatch.relation).toBe("commented on an issue");
+        expect(other.envoy.reply_with).toBeUndefined();
+        expect(other.envoy.dispatch.waiting_on).toBeUndefined();
+      }
+    });
+
+    // A reply on a project document's ask names that document only in project_key and
+    // artifact_slug, since the owner's own topic names none, and the command that answers the ask
+    // posts into it. The stand-in keeps both whole however long the document's slug, so the
+    // owner's card still carries that command.
+    test("a stand-in of a reply on a project document's ask gives its owner, on its own topic, the command that answers the ask, whatever the slug's length", () => {
+      const document = "a4cf7999-cab2-4326-939d-cb1e76733cc3";
+      const slug = Array.from({ length: 11 }, () => "design-notes-for-the-queue").join("-");
+      expect(JSON.stringify(slug).length).toBeGreaterThan(256);
+      const { body: _body, ...kept } = askReply;
+      const raw = copy(
+        {
+          ...kept,
+          issue_key: null,
+          artifact_id: document,
+          project_key: "CORE",
+          artifact_slug: slug,
+          payload_omitted: true,
+        },
+        { issue_key: null, artifact_id: document, project: "CORE" }
+      );
+
+      const decoded = card(raw, asker);
+
+      expect(decoded.envoy.dispatch.relation).toBe("replied on your ask");
+      expect(decoded.envoy.reply_with).toEqual({
+        command: `dispatch comment --project CORE --artifact ${slug} --body ... --reply-to-ask ask-1`,
+      });
+      expect(decoded.envoy.dispatch.waiting_on).toBe("agent");
+    });
+
+    // A stand-in with no list is one a Dispatch older than ask_sessions sent: the card is the one
+    // this renderer gave a stand-in before it read the field, byte for byte.
+    test("a stand-in that carries no ask_sessions shows the card it showed before, with no relation", () => {
+      const { body: _body, ask_sessions: _sessions, ...older } = askReply;
+
+      expect(renderInbound(copy({ ...older, payload_omitted: true }), reader).content).toBe(
+        [
+          "envoy:",
+          "  from: dispatch",
+          '  at: "1970-01-01T00:00:00Z"',
+          "  id: dispatch-ask-reply",
+          '  re: "dispatch://CORE-1/ask/ask-1"',
+          "  reply_with:",
+          "    command: dispatch comment --issue CORE-1 --body ... --reply-to-ask ask-1",
+          "  dispatch:",
+          "    owner: CORE-1",
+          "    type: comment.created",
+          "    actor:",
+          "      kind: user",
+          "      id: alice",
+          "    question: The service needs a public API. Which approach should we use?",
+          '    reply: ""',
+          "    state: open",
+          "    waiting_on: agent",
+          `  body_note: "this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${targetedCommentID}"`,
+        ].join("\n")
+      );
+    });
+
+    // A Dispatch older than `ask_sessions` wrote this reply, or a resend replayed one stored
+    // before it: the card is the one this renderer gave before it read the field, byte for byte.
+    test("a reply that carries no ask_sessions shows the card it showed before, with no relation", () => {
+      const { ask_sessions: _sessions, ...older } = askReply;
+
+      expect(renderInbound(copy(older), reader).content).toBe(
+        [
+          "envoy:",
+          "  from: dispatch",
+          '  at: "1970-01-01T00:00:00Z"',
+          "  id: dispatch-ask-reply",
+          '  re: "dispatch://CORE-1/ask/ask-1"',
+          "  reply_with:",
+          "    command: dispatch comment --issue CORE-1 --body ... --reply-to-ask ask-1",
+          "  dispatch:",
+          "    owner: CORE-1",
+          "    type: comment.created",
+          "    actor:",
+          "      kind: user",
+          "      id: alice",
+          "    question: The service needs a public API. Which approach should we use?",
+          "    reply: Which pool size do you need?",
+          "    state: open",
+          "    waiting_on: agent",
+        ].join("\n")
+      );
+    });
+
+    test("the ask's own sessions the payload names are no foreign session to note", () => {
+      const follower = "01a03333-4444-7555-8666-777777777777";
+      const owned = { ...askReply, ask_sessions: [asker, follower] };
+
+      expect(card(copy(owned), reader).envoy.note).toBeUndefined();
+      // Another session the body names is still noted.
+      const foreign = "01a04444-5555-7666-8777-888888888888";
+      expect(card(copy({ ...owned, body: `Ask ${foreign} first.` }), reader).envoy.note).toBe(
+        `body names session ${foreign}; the sender is unknown`
+      );
+    });
+  });
+
   test("renders a message.created reply as 're: <message ref>', not the parent's text", () => {
     const rootID = "message-1";
     const raw = JSON.stringify(
@@ -1271,8 +1552,6 @@ describe("renderInbound dispatch events", () => {
           body: "Please update this.",
           reply_to: "comment-0",
           anchor: { quote: "old line" },
-          suggestion: null,
-          author: actor,
           created_at: "2026-09-09T00:00:00Z",
         },
       },
@@ -1285,8 +1564,6 @@ describe("renderInbound dispatch events", () => {
           body: "Please update this.",
           reply_to: "comment-0",
           anchor: { quote: "old line" },
-          suggestion: null,
-          author: actor,
           created_at: "2026-09-09T00:00:00Z",
         },
       },
@@ -1299,8 +1576,6 @@ describe("renderInbound dispatch events", () => {
           body: "Please update this.",
           reply_to: "comment-0",
           anchor: { quote: "old line" },
-          suggestion: null,
-          author: actor,
           created_at: "2026-09-09T00:00:00Z",
         },
       },
@@ -1313,8 +1588,6 @@ describe("renderInbound dispatch events", () => {
           body: "Please update this.",
           reply_to: "comment-0",
           anchor: { artifact_id: "artifact-1", mark_id: "m-1", orphaned: true },
-          suggestion: null,
-          author: actor,
           created_at: "2026-09-09T00:00:00Z",
         },
       },
@@ -1328,7 +1601,6 @@ describe("renderInbound dispatch events", () => {
           reply_to: "comment-0",
           anchor: { quote: "old line" },
           suggestion: { replace_with: "new line" },
-          author: actor,
           created_at: "2026-09-09T00:00:00Z",
         },
       },
@@ -1341,7 +1613,7 @@ describe("renderInbound dispatch events", () => {
           body: "The build is green.",
           created_at: "2026-09-09T00:00:00Z",
         },
-        expectedPayload: { id: "message-1", author: actor, body: "The build is green." },
+        expectedPayload: { id: "message-1", body: "The build is green." },
       },
       {
         type: "message.created",
@@ -1356,7 +1628,6 @@ describe("renderInbound dispatch events", () => {
         },
         expectedPayload: {
           id: "message-2",
-          author: actor,
           body: "Sounds good.",
           in_reply_to: "message-1",
           reply_body: "The build is green.",
@@ -1382,6 +1653,290 @@ describe("renderInbound dispatch events", () => {
     }
   });
 
+  describe("a payload's fields that state nothing, repeat the card or are Dispatch's bookkeeping", () => {
+    const person = { kind: "user", id: "alice@example.com" };
+    const createdAt = "2026-11-25T17:06:11.314211Z";
+    // A person's reply in a comment thread, every field as Dispatch writes it, with the
+    // bookkeeping of its routes, its mentions' deliveries and the references its body moved.
+    const reply = {
+      id: "comment-2",
+      artifact_id: null,
+      artifact_name: "",
+      body: "What is going on here?",
+      reply_to: "comment-1",
+      ask_id: null,
+      turn: null,
+      anchor: null,
+      suggestion: null,
+      author: person,
+      created_at: createdAt,
+      mentions: [],
+      deliveries: [
+        {
+          comment_id: "comment-2",
+          target: "role:reviewer",
+          attempt: 1,
+          delivery: "aside",
+          session_id: reader,
+          envelope_id: "dispatch-2",
+          state: "sent",
+          error: null,
+          resolve_error: null,
+          reply_id: null,
+          created_at: createdAt,
+        },
+      ],
+      reply_block: null,
+      thread_logins: ["alice@example.com"],
+      answers: "comment-1",
+      edited_at: null,
+      issue_key: "DSP-1",
+      resolved: false,
+      resolved_at: null,
+      resolved_by: null,
+      // The route's copy was left out because a mention delivered the comment to this session.
+      suppress_route: true,
+      suppressed_route: `session:${reader}`,
+      suppressed_route_session_id: reader,
+      suppressed_authors: [reader],
+      mentions_decide_routes: true,
+      references_changed: [{ kind: "issue", id: "DSP-2" }],
+      references_changed_truncated: true,
+      references_changed_truncated_kinds: ["artifact"],
+      thread_root_id: "comment-1",
+    };
+    const replyEvent = (payload: object, issuedAt = Date.parse(createdAt)) =>
+      JSON.stringify({
+        ...JSON.parse(dispatchEvent("comment.created", payload, { ...person, proven: true })),
+        issued_at: issuedAt,
+        in_reply_to: "comment-1",
+      });
+
+    test("a reply's card leaves them out of its payload", () => {
+      expect(renderInbound(replyEvent(reply), reader).content).toBe(
+        [
+          "envoy:",
+          "  from: dispatch",
+          '  at: "2026-11-25T17:06:11Z"',
+          "  id: dispatch-1",
+          "  re: comment-1",
+          "  reply_with:",
+          "    command: dispatch comment --issue DSP-1 --body ... --reply-to comment-2",
+          "  dispatch:",
+          "    owner: DSP-1",
+          "    type: comment.created",
+          "    actor:",
+          "      kind: user",
+          "      id: alice@example.com",
+          "      proven: true",
+          "    payload:",
+          "      id: comment-2",
+          "      body: What is going on here?",
+          "      reply_to: comment-1",
+        ].join("\n")
+      );
+    });
+
+    test("a field that states something, or says what the card does not, stays", () => {
+      const rendered = renderInbound(
+        replyEvent(
+          {
+            ...reply,
+            // The same id as the actor's, of another kind, is another author.
+            author: { kind: "session", id: "alice@example.com" },
+            issue_key: "DSP-9",
+            answers: "comment-9",
+            thread_root_id: "comment-0",
+            resolved: true,
+            turn: 0,
+            anchor: { quote: "", orphaned: false, version: 0 },
+            mentions: [null, { target: "", kind: "session" }],
+            suggestion: { replace_with: "", accepted: null },
+          },
+          Date.parse(createdAt) + 1_000
+        ),
+        reader
+      ).content;
+      const decoded = decode(rendered) as { envoy: { dispatch: { payload: unknown } } };
+
+      expect(decoded.envoy.dispatch.payload).toEqual({
+        id: "comment-2",
+        body: "What is going on here?",
+        reply_to: "comment-1",
+        turn: 0,
+        anchor: { version: 0 },
+        // A suggestion stays as Dispatch wrote it: an empty replacement proposes deleting the
+        // quoted text, and `accepted: null` says nobody decided it yet.
+        suggestion: { replace_with: "", accepted: null },
+        // A list keeps each item in its place; an object in it still loses its empty fields.
+        mentions: [null, { kind: "session" }],
+        author: { kind: "session", id: "alice@example.com" },
+        created_at: createdAt,
+        issue_key: "DSP-9",
+        answers: "comment-9",
+        resolved: true,
+        thread_root_id: "comment-0",
+      });
+    });
+
+    test("an invalid created_at is not a repetition of an unknown card time", () => {
+      const raw = JSON.stringify({
+        ...JSON.parse(replyEvent({ ...reply, created_at: "not-a-time" })),
+        issued_at: undefined,
+      });
+      const decoded = decode(renderInbound(raw, reader).content) as {
+        envoy: { at: string; dispatch: { payload: Record<string, unknown> } };
+      };
+
+      expect(decoded.envoy.at).toBe("unknown");
+      expect(decoded.envoy.dispatch.payload.created_at).toBe("not-a-time");
+    });
+
+    test("a created_at less than a second from the card's time repeats it across a second's edge", () => {
+      const payloadOf = (issuedAt: number) =>
+        (
+          decode(
+            renderInbound(
+              replyEvent({ ...reply, created_at: "2026-11-25T17:06:11.005Z" }, issuedAt),
+              reader
+            ).content
+          ) as { envoy: { dispatch: { payload: Record<string, unknown> } } }
+        ).envoy.dispatch.payload;
+
+      expect(payloadOf(Date.parse("2026-11-25T17:06:10.995Z")).created_at).toBeUndefined();
+      expect(payloadOf(Date.parse("2026-11-25T17:06:10.005Z")).created_at).toBe(
+        "2026-11-25T17:06:11.005Z"
+      );
+    });
+
+    test("a session actor keeps its title of all it says about where it runs", () => {
+      const session = {
+        kind: "session",
+        id: "01a06666-7777-7888-8999-aaaaaaaaaaaa",
+        origin: {
+          host: "omp",
+          machine: "example-host-devbox",
+          cwd: "/home/example/src/widgets",
+          tmux: "agents:1.16",
+          pane: "%67",
+          session_title: "Fix the widget build",
+        },
+        owner: "alice@example.com",
+        proven: true,
+      };
+      const render = (eventActor: Readonly<Record<string, unknown>>) =>
+        renderInbound(dispatchEvent("issue.updated", issue, eventActor), reader);
+      const actorOf = (eventActor: Readonly<Record<string, unknown>>) =>
+        (decode(render(eventActor).content) as { envoy: { dispatch: { actor: unknown } } }).envoy
+          .dispatch.actor;
+
+      expect(actorOf(session)).toEqual({
+        kind: "session",
+        id: "01a06666-7777-7888-8999-aaaaaaaaaaaa",
+        owner: "alice@example.com",
+        proven: true,
+        origin: { session_title: "Fix the widget build" },
+      });
+      // The host still gets the whole actor.
+      expect(render(session).dispatchActor).toEqual(session);
+      // An origin with no title, an empty one, or an origin that is no object leaves nothing of
+      // it on the card.
+      const { session_title: _title, ...untitled } = session.origin;
+      for (const origin of [untitled, { ...untitled, session_title: "" }, "x"]) {
+        expect(actorOf({ ...session, origin })).toEqual({
+          kind: "session",
+          id: "01a06666-7777-7888-8999-aaaaaaaaaaaa",
+          owner: "alice@example.com",
+          proven: true,
+        });
+      }
+    });
+
+    // A payload no schema reads keeps every field of its author, or of an actor it names (as a
+    // review event does); a schema that reads a comment's author keeps only its kind and id.
+    test("an author or actor that says more than the card's actor stays", () => {
+      for (const field of ["author", "actor"]) {
+        const payloadOf = (who: object) =>
+          (
+            decode(
+              renderInbound(dispatchEvent("widget.noted", { id: "widget-1", [field]: who }), reader)
+                .content
+            ) as { envoy: { dispatch: { payload: Record<string, unknown> } } }
+          ).envoy.dispatch.payload;
+
+        expect(payloadOf(actor)[field]).toBeUndefined();
+        const proven = { ...actor, proven: true };
+        expect(payloadOf(proven)[field]).toEqual(proven);
+        const acting = { ...actor, act: { kind: "delegated", by: "session:01a07777" } };
+        expect(payloadOf(acting)[field]).toEqual(acting);
+      }
+    });
+
+    test("an object left with nothing goes at any depth, and a list keeps its items' places", () => {
+      const decoded = decode(
+        renderInbound(
+          dispatchEvent("widget.updated", {
+            anchor: { quote: "", orphaned: false },
+            a: { b: { c: null } },
+            items: [{}, { x: "" }, 2],
+            kept: 1,
+          }),
+          reader
+        ).content
+      ) as { envoy: { dispatch: { payload: unknown } } };
+
+      expect(decoded.envoy.dispatch.payload).toEqual({ items: [{}, {}, 2], kept: 1 });
+    });
+
+    test("a field an update names in changed, and a create's forced, stay however empty", () => {
+      const payloadOf = (type: string, payload: object) =>
+        (
+          decode(renderInbound(dispatchEvent(type, payload), reader).content) as {
+            envoy: { dispatch: { payload: Record<string, unknown> } };
+          }
+        ).envoy.dispatch.payload;
+
+      const rank = "zzzz".repeat(40);
+      const cleared = payloadOf("issue.updated", {
+        ...issue,
+        changed: ["route", "labels"],
+        route: null,
+        labels: [],
+        priority: null,
+        rank,
+      });
+      expect(cleared).toMatchObject({ changed: ["route", "labels"], route: null, labels: [] });
+      expect(cleared.priority).toBeUndefined();
+      // The board's sort key is bookkeeping, until an update moves it.
+      expect(cleared.rank).toBeUndefined();
+      expect(payloadOf("issue.updated", { ...issue, changed: ["rank"], rank }).rank).toBe(rank);
+      // A create's `changed` names every field it set, so its empty fields still go.
+      const created = payloadOf("issue.created", { ...issue, changed: ["route"], route: null });
+      expect(created.route).toBeUndefined();
+      // `past: []` says the near-copy check did not answer; no `forced` says the create was not
+      // forced.
+      expect(payloadOf("issue.created", { ...issue, forced: { past: [] } }).forced).toEqual({
+        past: [],
+      });
+      expect(payloadOf("issue.created", { ...issue, forced: null }).forced).toBeUndefined();
+    });
+
+    test("a payload left with no field prints no payload", () => {
+      const decoded = decode(
+        renderInbound(
+          dispatchEvent("issue.updated", { title: "", labels: [], route: null }),
+          reader
+        ).content
+      ) as { envoy: { dispatch: Record<string, unknown> } };
+
+      expect(decoded.envoy.dispatch).toEqual({
+        owner: "DSP-1",
+        type: "issue.updated",
+        actor: { kind: "session", id: "session-1" },
+      });
+    });
+  });
+
   test("surfaces the comment id before the body, and the message id, in rendered dispatch payloads", () => {
     const commentContent = renderInbound(
       dispatchEvent("comment.created", { ...comment }),
@@ -1403,25 +1958,49 @@ describe("renderInbound dispatch events", () => {
     expect(messageContent).toContain("message-1");
   });
 
-  test("renders an unrecognized-shape dispatch payload as its raw structured object", () => {
-    const rendered = renderInbound(
-      JSON.stringify(
-        envelope({
-          source: "dispatch",
-          payload: JSON.stringify({
-            secret: "now visible as data, not prose",
-            unexpected: { nested: true },
-          }),
-        })
-      ),
-      reader
-    );
-    const decoded = decode(rendered.content) as { envoy: { dispatch: unknown } };
+  test("shows none of a dispatch payload it reads no event of, and says the payload was unrecognised", () => {
+    // The edge listener passes a Dispatch frame only by the event readDispatchPayload reads, the
+    // reader this plugin calls, so text around an event no reader judged is no card's to show:
+    // another project's event nested beside the token's own project is the case it closes.
+    const nested = {
+      event: {
+        issue_key: "PUB-1",
+        type: "comment.created",
+        actor,
+        payload: { id: "c-1", body: "PUB's comment" },
+      },
+      project: "PRIV",
+      issue_key: "PRIV-1",
+    };
+    for (const payload of [
+      JSON.stringify({
+        secret: "never shown", // fixture-secret: a field of an unrecognized Dispatch payload, never rendered; not a credential, never held
+        unexpected: { nested: true },
+      }),
+      JSON.stringify(nested),
+      "PUB's comment, no JSON",
+    ]) {
+      const rendered = renderInbound(
+        JSON.stringify(envelope({ source: "dispatch", payload })),
+        reader
+      );
+      const decoded = decode(rendered.content) as { envoy: Record<string, unknown> };
 
-    expect(decoded.envoy.dispatch).toEqual({
-      secret: "now visible as data, not prose",
-      unexpected: { nested: true },
-    });
+      expect(decoded.envoy.dispatch).toBeUndefined();
+      expect(decoded.envoy.unrecognised).toBe("payload");
+      expect(rendered.content).not.toContain("never shown");
+      expect(rendered.content).not.toContain("PUB");
+    }
+  });
+
+  test("a dispatch event whose type names a member of Object.prototype renders its payload", () => {
+    for (const type of ["constructor", "toString"]) {
+      const decoded = decode(
+        renderInbound(dispatchEvent(type, { id: "comment-1", body: "hi" }), reader).content
+      ) as { envoy: { dispatch: { payload: unknown } } };
+
+      expect(decoded.envoy.dispatch.payload).toEqual({ id: "comment-1", body: "hi" });
+    }
   });
 
   test("falls back to the generic summary path when a dispatch envelope has no payload", () => {
@@ -1501,7 +2080,7 @@ describe("renderInbound dispatch events", () => {
         quiet: false,
       }),
       reader,
-      dispatchIssueSubject("DSP-1", "comment.created")
+      legacyDispatchIssueSubject("DSP-1", "comment.created")
     );
 
     expect(rendered.skip).toBe(false);
@@ -1520,7 +2099,7 @@ describe("renderInbound dispatch events", () => {
           quiet: true,
         }),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.delivery")
+        legacyDispatchIssueSubject("DSP-1", "comment.delivery")
       )
     ).toMatchObject({ skip: true, content: "" });
     expect(
@@ -1532,7 +2111,7 @@ describe("renderInbound dispatch events", () => {
           { notify: false, quiet: true }
         ),
         reader,
-        dispatchIssueSubject("DSP-1", "artifact.version")
+        legacyDispatchIssueSubject("DSP-1", "artifact.version")
       )
     ).toMatchObject({ skip: true, content: "" });
   });
@@ -1546,7 +2125,7 @@ describe("renderInbound dispatch events", () => {
           notify: false,
         }),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.created")
+        legacyDispatchIssueSubject("DSP-1", "comment.created")
       )
     ).toMatchObject({ skip: true, content: "" });
     expect(
@@ -1558,7 +2137,7 @@ describe("renderInbound dispatch events", () => {
           { notify: true }
         ),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.created")
+        legacyDispatchIssueSubject("DSP-1", "comment.created")
       ).skip
     ).toBe(false);
   });
@@ -1605,6 +2184,476 @@ describe("renderInbound non-dispatch envelopes", () => {
         "    number: 42",
       ].join("\n")
     );
+  });
+
+  // The card's TOON encoder recurses once per level of a value, so a payload nested some
+  // thousands of levels deep overflowed the stack and threw out of `renderInbound`, in every host
+  // and on every delivery, or laid out in a card far larger than the payload. Such a payload is
+  // the text its sender sent, and the card shows it so.
+  describe("a payload the card cannot lay out", () => {
+    const nested = `${'{"a":'.repeat(9_999)}1${"}".repeat(9_999)}`;
+    // An object chain 100,000 deep, past the encoder's recursion and JSON.stringify's: one depth
+    // for every row here, and the Bun measurement it rests on, in `objectChainPastTheEncoder`.
+    const deeper = objectChainPastTheEncoder;
+    // The card stops laying a value out once its lines pass the bound, so an object chain 9,999
+    // deep is refused by the bound before the encoder's recursion reaches its bottom.
+    const BOUND = "its layout is larger than the 1048576 bytes a card holds";
+    // The bound a card's reason names (`payloadShownAsText`), or NaN where the reason names none,
+    // which no byte count is within.
+    const boundNamed = (reason: string | undefined) =>
+      Number(/^its layout is larger than the (\d+) bytes a card holds$/.exec(reason ?? "")?.[1]);
+
+    test("a message whose JSON payload is nested 9,999 deep is shown as the text its sender sent", () => {
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({ event_id: "evt-deep", payload_summary: "deep", payload: nested })
+        ),
+        reader
+      );
+
+      // The card is TOON this renderer wrote, read back as the other rows read theirs.
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toBe(BOUND);
+      expect(card.envoy).toMatchObject({ id: "evt-deep", summary: "deep", message: nested });
+    });
+
+    // A Dispatch card the layout cannot hold shows its own `dispatch` block as JSON text - the
+    // owner (`PRIV-1` from the event's `issue_key`), type, actor and payload - never the frame's
+    // payload.
+    test("a Dispatch event whose payload is nested 9,999 deep is shown as its text", () => {
+      const deepEvent = `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice"},"payload":${nested}}`;
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({ event_id: "dispatch-deep", source: "dispatch", payload: deepEvent })
+        ),
+        reader
+      );
+
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toBe(BOUND);
+      expect(card.envoy).toMatchObject({
+        id: "dispatch-deep",
+        dispatch: `{"owner":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice"},"payload":${nested}}`,
+      });
+    });
+
+    // readDispatchPayload reads an event by the keys its schema names and drops the rest, so a key
+    // beside the event's own reaches no card, the one shown as text among them.
+    test("a Dispatch event the card cannot lay out shows no key its reader dropped", () => {
+      const sibling = `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice"},"event":{"project":"PUB","body":"PUB's comment"},"payload":{"body":"PRIV's comment","deep":${nested}}}`;
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({ event_id: "dispatch-sibling", source: "dispatch", payload: sibling })
+        ),
+        reader
+      );
+
+      expect(rendered.payloadShownAsText).toBe(BOUND);
+      expect(rendered.content).toContain("PRIV's comment");
+      expect(rendered.content).not.toContain("PUB");
+    });
+
+    // A Dispatch card shown as text writes the card's own `dispatch` block, so it leaves out what
+    // that block leaves out: a payload's fields that state nothing, repeat the card or are
+    // Dispatch's bookkeeping, and all of a session actor's `origin` but its title.
+    test("a Dispatch card shown as text holds only the fields its block prints", () => {
+      const session = {
+        kind: "session",
+        id: "ses_a",
+        origin: {
+          host: "omp",
+          machine: "example-host-devbox",
+          cwd: "/home/example/src/widgets",
+          session_title: "Fix the widget build",
+        },
+      };
+      const payload = {
+        id: "widget-1",
+        note: "PRIV's note",
+        suggestion: null,
+        turn: null,
+        issue_key: "PRIV-1",
+        actor: session,
+        target: `session:${reader}`,
+        deliveries: [{ comment_id: "comment-1", state: "sent" }],
+        thread_logins: ["alice@example.com"],
+        deep: JSON.parse(nested),
+      };
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({
+            event_id: "dispatch-deep-fields",
+            source: "dispatch",
+            topic: `notifications.agent.${reader}`,
+            payload: `{"issue_key":"PRIV-1","type":"widget.noted","actor":${JSON.stringify(session)},"payload":${JSON.stringify(payload)}}`,
+          })
+        ),
+        reader
+      );
+
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toBe(BOUND);
+      // `to:` names this session, and the card names its actor, so neither repeated payload field
+      // appears in the text form.
+      expect(card.envoy.dispatch).toBe(
+        JSON.stringify({
+          owner: "PRIV-1",
+          type: "widget.noted",
+          actor: {
+            kind: "session",
+            id: "ses_a",
+            origin: { session_title: "Fix the widget build" },
+          },
+          payload: { id: "widget-1", note: "PRIV's note", deep: JSON.parse(nested) },
+        })
+      );
+    });
+
+    // A cut comment whose payload the card cannot lay out, rendered again with its body read
+    // whole, as a host renders it after reading that body (`cutItem`).
+    const end = "the last words of the whole body.";
+    const renderDeepCutComment = (eventId: string, wholeBody: string) =>
+      renderInbound(
+        JSON.stringify(
+          envelope({
+            event_id: eventId,
+            source: "dispatch",
+            payload: targetedCommentFrame({
+              ...targetedComment,
+              body: "The first paragraph.",
+              body_truncated: true,
+              deep: JSON.parse(nested),
+            }),
+          })
+        ),
+        reader,
+        undefined,
+        wholeBody
+      );
+
+    // A body read whole is never cut to the part the frame carried, in a card shown as text too.
+    test("a cut Dispatch comment the card cannot lay out shows its body read whole", () => {
+      const rendered = renderDeepCutComment("dispatch-deep-cut", `${"word ".repeat(2_000)}${end}`);
+
+      expect(rendered.payloadShownAsText).toBe(BOUND);
+      expect(rendered.content).toContain(end);
+      expect(rendered.content).not.toContain("The first paragraph.");
+    });
+
+    // The text of an event holds a body read whole escaped twice, once by JSON and once by the
+    // card: a quotation mark is four bytes there, as many as the bound gives it (twice TOON's two),
+    // so a body of them brings such a card near its bound, and it stays within it.
+    test("a cut Dispatch comment shown as text with a 1,048,300-byte body read whole stays within the bound", () => {
+      const rendered = renderDeepCutComment(
+        "dispatch-deep-cut-whole",
+        `${'"'.repeat(1_048_300 - end.length)}${end}`
+      );
+
+      const bound = boundNamed(rendered.payloadShownAsText);
+      const cardBytes = Buffer.byteLength(rendered.content);
+      console.log(
+        `a card shown as text with a body read whole: ${cardBytes} bytes, bound ${bound}`
+      );
+      expect(bound).toBeGreaterThan(INBOUND_CARD_MAX_BYTES);
+      expect(cardBytes).toBeGreaterThan(4 * (1_048_300 - end.length));
+      expect(cardBytes).toBeLessThanOrEqual(bound);
+      expect(rendered.content).toContain(end);
+    });
+
+    // A Dispatch event JSON.stringify cannot write (a payload 100,000 deep) is shown by its owner,
+    // its type and its actor's `kind` and `id` (and `act`, which this actor has none of): the
+    // actor's other keys pass the schema, and an array chain 9,999 deep among them lays out in
+    // about 100 MB, so the card writes none of them.
+    test("a Dispatch event with an actor 9,999 deep beside a payload 100,000 deep is shown within the bound", () => {
+      const arrays = `${"[".repeat(9_999)}${"]".repeat(9_999)}`;
+      const raw = JSON.stringify(
+        envelope({
+          event_id: "dispatch-deep-actor",
+          source: "dispatch",
+          payload: `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice","x":${arrays}},"payload":{"deep":${deeper}}}`,
+        })
+      );
+      const rendered = renderInbound(raw, reader);
+
+      const bound = Math.max(INBOUND_CARD_MAX_BYTES, 2 * Buffer.byteLength(raw));
+      const cardBytes = Buffer.byteLength(rendered.content);
+      console.log(
+        `a card of an actor 9,999 deep beside a payload 100,000 deep: ${cardBytes} bytes, bound ${bound}`
+      );
+      expect(cardBytes).toBeLessThanOrEqual(bound);
+      const card = decode(rendered.content) as { envoy: { dispatch: Record<string, unknown> } };
+      expect(card.envoy.dispatch).toEqual({
+        owner: "PRIV-1",
+        type: "comment.created",
+        actor: { kind: "user", id: "alice" },
+        payload: `not shown: ${rendered.payloadShownAsText}`,
+      });
+    });
+
+    // An actor's `act` is the agent or the personal token that acted for its person
+    // (`ActorActSchema`), and a reader takes a user with no `act` for the person acting alone
+    // (`actorActText`). A session actor's `service` is the subject of the verified service token
+    // that made the write, which only named the session, and a reader takes a session with no
+    // `service` for the session writing as itself (`actorText`). So a card that cannot write its
+    // event as text keeps the act and the service beside the actor's `kind` and `id`, and says one
+    // it cannot read is not shown; a session writing as itself is the control.
+    test.each([
+      [
+        "a person's act an agent made shows that agent",
+        {
+          kind: "user",
+          id: "alice",
+          act: { session: "ses_x", session_proven: true, scopes: ["person"] },
+        },
+        {
+          kind: "user",
+          id: "alice",
+          act: { session: "ses_x", session_proven: true, scopes: ["person"] },
+        },
+      ],
+      [
+        "an act its reader cannot read says it is not shown",
+        { kind: "user", id: "alice", act: { session: "ses_x", origin: "broker" } },
+        { kind: "user", id: "alice", act: "not shown" },
+      ],
+      [
+        "a session's write a service token made shows that service",
+        { kind: "session", id: "ses_y", service: "system:serviceaccount:legion:legion-worker" },
+        { kind: "session", id: "ses_y", service: "system:serviceaccount:legion:legion-worker" },
+      ],
+      [
+        "a service its reader cannot read says it is not shown",
+        { kind: "session", id: "ses_y", service: { namespace: "legion" } },
+        { kind: "session", id: "ses_y", service: "not shown" },
+      ],
+      [
+        "an agent's own act shows the agent",
+        { kind: "session", id: "ses_y" },
+        { kind: "session", id: "ses_y" },
+      ],
+    ])("a Dispatch event the card cannot write as text: %s", (_name, eventActor, shownActor) => {
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({
+            event_id: "dispatch-deep-act",
+            source: "dispatch",
+            payload: `{"issue_key":"PRIV-1","type":"comment.created","actor":${JSON.stringify(eventActor)},"payload":{"deep":${deeper}}}`,
+          })
+        ),
+        reader
+      );
+
+      const card = decode(rendered.content) as { envoy: { dispatch: Record<string, unknown> } };
+      expect(card.envoy.dispatch).toEqual({
+        owner: "PRIV-1",
+        type: "comment.created",
+        actor: shownActor,
+        payload: `not shown: ${rendered.payloadShownAsText}`,
+      });
+    });
+
+    // The card's other fields repeat the event's issue key, and its reply command quotes the key
+    // for a shell (each `'` written `'\''`, whose backslash the card escapes again), so a key of
+    // quotes lays out in several times the frame's bytes, header and all. Such a card drops those
+    // fields and keeps the owner (here the issue key), the type, the actor and the reason, within
+    // the bound `payloadShownAsText` names.
+    test("a Dispatch card whose header the bound cannot hold keeps its owner, type, actor and reason within the bound", () => {
+      const key = "'".repeat(1_000_000);
+      const raw = JSON.stringify(
+        envelope({
+          event_id: "dispatch-quoted-key",
+          source: "dispatch",
+          payload: JSON.stringify({
+            issue_key: key,
+            type: "comment.created",
+            actor: { kind: "user", id: "alice" },
+            payload: { id: "comment-9", body: "Slice 3 is pushed." },
+          }),
+        })
+      );
+      const rendered = renderInbound(raw, reader);
+
+      const bound = boundNamed(rendered.payloadShownAsText);
+      const cardBytes = Buffer.byteLength(rendered.content);
+      console.log(
+        `a card of a ${Buffer.byteLength(raw)}-byte frame whose issue key is quotes: ${cardBytes} bytes, bound ${bound}`
+      );
+      expect(cardBytes).toBeLessThanOrEqual(bound);
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(card.envoy).toEqual({
+        dispatch: {
+          owner: key,
+          type: "comment.created",
+          actor: { kind: "user", id: "alice" },
+          payload: `not shown: ${rendered.payloadShownAsText}`,
+        },
+      });
+    });
+
+    // The owner of a document's event is read from a topic - here the one the host names, which
+    // the frame does not bound - so a card may not hold even the owner; it then keeps the type, the
+    // actor and the reason: the type and the actor are bytes of the frame, the reason is short, and
+    // the bound is at least twice the frame.
+    test("a Dispatch card that cannot hold even its owner keeps its type, actor and reason within the bound", () => {
+      const slug = "s".repeat(2 * INBOUND_CARD_MAX_BYTES);
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({
+            event_id: "dispatch-long-slug",
+            source: "dispatch",
+            payload: JSON.stringify({
+              issue_key: null,
+              type: "comment.created",
+              actor: { kind: "user", id: "alice" },
+              payload: { id: "comment-9", body: "Slice 3 is pushed." },
+            }),
+          })
+        ),
+        reader,
+        `notifications.dispatch.document.PUB.${slug}.comment.created`
+      );
+
+      expect(rendered.payloadShownAsText).toBe(BOUND);
+      expect(Buffer.byteLength(rendered.content)).toBeLessThanOrEqual(INBOUND_CARD_MAX_BYTES);
+      expect(decode(rendered.content)).toEqual({
+        envoy: {
+          dispatch: {
+            type: "comment.created",
+            actor: { kind: "user", id: "alice" },
+            payload: `not shown: ${BOUND}`,
+          },
+        },
+      });
+    });
+
+    // A Dispatch payload readDispatchPayload reads no event of is shown as unrecognised and
+    // none of its text, however deep: the edge passes a Dispatch frame only by the event it reads.
+    test("a Dispatch payload nested 9,999 deep that is no event shows none of its text", () => {
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({ event_id: "dispatch-deep-raw", source: "dispatch", payload: nested })
+        ),
+        reader
+      );
+
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toBeUndefined();
+      expect(card.envoy).toMatchObject({ id: "dispatch-deep-raw", unrecognised: "payload" });
+      expect(card.envoy.dispatch).toBeUndefined();
+    });
+
+    // The encoder reads the whole value before it lays out a line, with a recursion of its own:
+    // an object chain 100,000 deep overflows the stack there, and the card shows it as its text.
+    test("a message whose JSON payload is an object chain 100,000 deep, past the encoder's recursion, is shown as its text", () => {
+      const rendered = renderInbound(
+        JSON.stringify(envelope({ event_id: "evt-deeper", payload: deeper })),
+        reader
+      );
+
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toBe("Maximum call stack size exceeded.");
+      expect(card.envoy).toMatchObject({ id: "evt-deeper", message: deeper });
+    });
+
+    // The payload's fields are left out by a walk of its own before the encoder lays it out, so a
+    // walk that recursed would throw out of `renderInbound` before the encoder's own fallback.
+    // JSON.stringify cannot write the card's block either, so the card shows the event by its
+    // owner, type and actor (`dispatchCardAsText`), and never the frame's text.
+    test("a Dispatch event whose payload is an object chain 100,000 deep is shown by its owner, type and actor", () => {
+      const deeper = `${'{"a":'.repeat(100_000)}1${"}".repeat(100_000)}`;
+      const event = `{"id":1,"issue_key":"DSP-1","seq":7,"type":"comment.edited","actor":{"kind":"user","id":"alice"},"notify":true,"payload":${deeper}}`;
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({ event_id: "dispatch-deeper", source: "dispatch", payload: event })
+        ),
+        reader
+      );
+
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toBe("Maximum call stack size exceeded.");
+      expect(card.envoy).toMatchObject({ id: "dispatch-deeper" });
+      expect(card.envoy.dispatch).toEqual({
+        owner: "DSP-1",
+        type: "comment.edited",
+        actor: { kind: "user", id: "alice" },
+        payload: "not shown: Maximum call stack size exceeded.",
+      });
+    });
+
+    // A card that names no issue, document, or artifact has no owner. Its text fallback's first
+    // header rung must therefore omit `owner`, rather than rendering an undefined or invented one.
+    test("an ownerless Dispatch event whose text falls back to a header keeps no owner", () => {
+      const event = `{"id":1,"issue_key":null,"seq":7,"type":"widget.noted","actor":{"kind":"user","id":"alice"},"notify":true,"payload":${deeper}}`;
+      const topic = `notifications.agent.${reader}`;
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({
+            event_id: "dispatch-deeper-direct",
+            source: "dispatch",
+            topic,
+            payload: event,
+          })
+        ),
+        reader,
+        topic
+      );
+
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toBe("Maximum call stack size exceeded.");
+      expect(card.envoy).toMatchObject({ id: "dispatch-deeper-direct", to: `you (${reader})` });
+      expect(card.envoy.dispatch).toEqual({
+        type: "widget.noted",
+        actor: { kind: "user", id: "alice" },
+        payload: "not shown: Maximum call stack size exceeded.",
+      });
+    });
+
+    // Each level indents every line below it, so an array chain the encoder reaches the bottom
+    // of lays out in bytes that grow with the square of its depth: 9,999 levels, a 20 KB frame,
+    // made a card of 100,060,107 bytes.
+    test("a message whose JSON payload is an array chain 9,999 deep is shown as its text, in a card under the bound", () => {
+      const arrays = `${"[".repeat(9_999)}${"]".repeat(9_999)}`;
+      const rendered = renderInbound(
+        JSON.stringify(envelope({ event_id: "evt-wide", payload: arrays })),
+        reader
+      );
+
+      expect(Buffer.byteLength(rendered.content)).toBeLessThanOrEqual(INBOUND_CARD_MAX_BYTES);
+      expect(rendered.payloadShownAsText).toBe(
+        "its layout is larger than the 1048576 bytes a card holds"
+      );
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(card.envoy).toMatchObject({ id: "evt-wide", message: arrays });
+    });
+
+    // The control: a layout under the bound is the card as before, an array chain 1,000 deep
+    // (1,008,114 bytes) as much as any.
+    test("a message whose JSON payload is an array chain 1,000 deep lays out under the bound as before", () => {
+      const arrays = `${"[".repeat(1_000)}${"]".repeat(1_000)}`;
+      const rendered = renderInbound(JSON.stringify(envelope({ payload: arrays })), reader);
+
+      expect(rendered.payloadShownAsText).toBeUndefined();
+      expect(rendered.content).toContain("\n  message[1]:\n    - [1]:\n      - [1]:\n");
+      expect(rendered.content).not.toContain('message: "[');
+    });
+
+    // A payload that is text already is bounded by its frame, and the bound never touches it: a
+    // card over it from a long summary beside a long text says nothing of a layout.
+    test("a text payload is shown as text however large its card", () => {
+      const words = "A line of a long review, with words and a full stop.\n";
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({
+            payload_summary: words.repeat(11_000),
+            payload: `Body.\n${words.repeat(11_000)}`,
+          })
+        ),
+        reader
+      );
+
+      expect(Buffer.byteLength(rendered.content)).toBeGreaterThan(INBOUND_CARD_MAX_BYTES);
+      expect(rendered.payloadShownAsText).toBeUndefined();
+    });
   });
 
   test("renders direct agent metadata with a one-line summary and no payload", () => {
@@ -2150,5 +3199,75 @@ describe("a body an event carried only in part", () => {
     expect(rendered.delivery?.bodyTruncated).toBeUndefined();
     const decoded = decode(rendered.content) as { envoy: Record<string, unknown> };
     expect(decoded.envoy.body_note).toBeUndefined();
+  });
+
+  // A host renders a cut comment again with the body Dispatch's API gave whole. That body comes
+  // from no frame: one near Dispatch's 1 MiB request limit brings the card past 1 MiB, and the
+  // card must still show it, not the part the frame carried.
+  test("a comment rendered again with a 1,048,300-byte body read whole shows that body", () => {
+    const end = "the last words of the whole body.";
+    const wholeBody = `${"word ".repeat(209_700).slice(0, 1_048_300 - end.length)}${end}`;
+    const rendered = renderInbound(
+      JSON.stringify(
+        envelope({
+          source: "dispatch",
+          payload: targetedCommentFrame({
+            ...targetedComment,
+            body: "The first paragraph.",
+            body_truncated: true,
+          }),
+        })
+      ),
+      reader,
+      undefined,
+      wholeBody
+    );
+
+    expect(Buffer.byteLength(wholeBody)).toBe(1_048_300);
+    expect({
+      cardBytes: Buffer.byteLength(rendered.content),
+      holdsTheWholeBody: rendered.content.includes(end),
+      payloadShownAsText: rendered.payloadShownAsText,
+    }).toEqual({
+      cardBytes: expect.any(Number),
+      holdsTheWholeBody: true,
+      payloadShownAsText: undefined,
+    });
+    expect(Buffer.byteLength(rendered.content)).toBeGreaterThan(INBOUND_CARD_MAX_BYTES);
+  });
+
+  // TOON writes a control character as six bytes (`\u0001`), so a body read whole that is mostly
+  // control characters lays out in about six times its bytes. The bound counts the body as the
+  // card writes it, so such a body is still shown whole, not the part the frame carried.
+  test("a 1,048,300-byte body read whole that is mostly control characters shows that body", () => {
+    const end = "the last words of the whole body.";
+    const wholeBody = `${"\u0001".repeat(1_048_300 - end.length)}${end}`;
+    const rendered = renderInbound(
+      JSON.stringify(
+        envelope({
+          source: "dispatch",
+          payload: targetedCommentFrame({
+            ...targetedComment,
+            body: "The first paragraph.",
+            body_truncated: true,
+          }),
+        })
+      ),
+      reader,
+      undefined,
+      wholeBody
+    );
+
+    expect(Buffer.byteLength(wholeBody)).toBe(1_048_300);
+    expect({
+      cardBytes: Buffer.byteLength(rendered.content),
+      holdsTheWholeBody: rendered.content.includes(end),
+      payloadShownAsText: rendered.payloadShownAsText,
+    }).toEqual({
+      cardBytes: expect.any(Number),
+      holdsTheWholeBody: true,
+      payloadShownAsText: undefined,
+    });
+    expect(Buffer.byteLength(rendered.content)).toBeGreaterThan(6 * (1_048_300 - end.length));
   });
 });

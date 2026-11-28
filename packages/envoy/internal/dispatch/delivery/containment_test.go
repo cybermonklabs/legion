@@ -10,6 +10,7 @@ import (
 )
 
 func TestProductionApplies(t *testing.T) {
+	t.Parallel()
 	const jobName = "widgets-release / widgets-release"
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
@@ -46,6 +47,7 @@ func TestProductionApplies(t *testing.T) {
 // beside a skipped `staging-apply`. It is decoded and mapped exactly as reconcileRun stores a run's
 // jobs.
 func TestProductionAppliesSetsApartOnlyARunWithNoProductionJob(t *testing.T) {
+	t.Parallel()
 	const jobName = "production-apply / production-apply"
 	data, err := os.ReadFile("testdata/dev-only-run-jobs.json")
 	if err != nil {
@@ -130,6 +132,7 @@ func TestProductionAppliesSetsApartOnlyARunWithNoProductionJob(t *testing.T) {
 // TestProductionAppliesMatchesEveryListedName proves a renamed production job's old and new
 // names both count while an unmatched run and a skipped caller keep their existing safeguards.
 func TestProductionAppliesMatchesEveryListedName(t *testing.T) {
+	t.Parallel()
 	const oldName, newName = "production-apply / production-apply", "production / production-apply"
 	production := Production{JobNames: []string{newName, oldName}}
 	base := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
@@ -165,6 +168,7 @@ func TestProductionAppliesMatchesEveryListedName(t *testing.T) {
 // successful listed job demonstrates its name is real, even when Production.Job selects another
 // listed job as the run's deploy.
 func TestProductionAppliesDoesNotSetApartASkippedCallerOfEverySuccessfulListedName(t *testing.T) {
+	t.Parallel()
 	const selectedName, otherName = "production / deploy", "production-apply / deploy"
 	base := time.Date(2026, 10, 15, 3, 0, 0, 0, time.UTC)
 	success := DeliveryRunConclusionSuccess
@@ -194,6 +198,7 @@ func TestProductionAppliesDoesNotSetApartASkippedCallerOfEverySuccessfulListedNa
 // TestProductionAppliesCountsOnlyAJobThatApplied proves the optional apply-step rule distinguishes
 // a stored historical job from a stood-down job and names a configured step that is absent.
 func TestProductionAppliesCountsOnlyAJobThatApplied(t *testing.T) {
+	t.Parallel()
 	const name, step = "production / production-apply", "Run ./.github/actions/apply"
 	production := Production{JobNames: []string{name}, ApplyStep: new(step)}
 	base := time.Date(2026, 10, 15, 2, 0, 0, 0, time.UTC)
@@ -236,6 +241,7 @@ func TestProductionAppliesCountsOnlyAJobThatApplied(t *testing.T) {
 // back to its first listed job by when each started (a job that never started last, then by name),
 // in every order its jobs are listed in.
 func TestARunsProductionJobIsTheSameInEveryListingOrder(t *testing.T) {
+	t.Parallel()
 	const first, second = "production / deploy", "production-apply / deploy"
 	production := Production{JobNames: []string{second, first}}
 	base := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
@@ -282,6 +288,7 @@ func TestARunsProductionJobIsTheSameInEveryListingOrder(t *testing.T) {
 }
 
 func TestFirstShippingApply(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	mergedAt := base
 
@@ -333,6 +340,7 @@ func TestFirstShippingApply(t *testing.T) {
 // hub narrows the runs it read as a preset window slides, so the input changes length and order
 // with no stored row changed; a pull request's deploy_run and a run's prs must not change with it.
 func TestAppliesCompletingTogetherShipTheSameInEveryOrder(t *testing.T) {
+	t.Parallel()
 	const jobName = "production / production-apply"
 	merged := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
 	completed := merged.Add(30 * time.Minute)
@@ -387,6 +395,7 @@ func TestAppliesCompletingTogetherShipTheSameInEveryOrder(t *testing.T) {
 // it ships the pull request the old head-commit rule handed to run 2. Run 3 is a re-run whose
 // start moved past the merge while its creation, and its head, came before it.
 func TestProductionAppliesReadsTheRunsCreation(t *testing.T) {
+	t.Parallel()
 	const jobName = "widgets-release / widgets-release"
 	merged := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	success := DeliveryRunConclusionSuccess
@@ -413,6 +422,7 @@ func TestProductionAppliesReadsTheRunsCreation(t *testing.T) {
 }
 
 func TestContainingRun(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	mergedAt := base
 	applies := []Apply{
@@ -437,6 +447,7 @@ func TestContainingRun(t *testing.T) {
 }
 
 func TestComputeDeployedStatus(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	apply := &Apply{RunID: 1, CompletedAt: base, CreatedAt: base}
 
@@ -460,4 +471,110 @@ func TestComputeDeployedStatus(t *testing.T) {
 			t.Errorf("got %q, want not_tracked (repo check independent of apply nilness)", got)
 		}
 	})
+}
+
+// TestTheJudgedJobNamesJudgeARunAsItsEveryJobDoes: given only a run's jobs that
+// Production.JudgedJobNames names, which is what every read but the timeline's hands it,
+// ProductionApplies answers the deploys, the runs missing their apply step and the unmatched runs
+// it answers given every job, over runs that exercise each rule: a deploy among other jobs (for
+// both listed job names), a run whose production job applied nothing, one whose job lists no
+// apply step, a dev-only run that skipped the production call under its caller's name, runs that
+// skipped a nested call one and two levels up, and a run holding no listed name at all. Each
+// listing's verdict is also checked against its expected applies, missing-step and unmatched runs
+// so the fixture is proved to exercise every rule.
+func TestTheJudgedJobNamesJudgeARunAsItsEveryJobDoes(t *testing.T) {
+	const deploy, nested, step = "production / production-apply", "dispatch-apply / staging-e2e / staging-e2e", "Run ./.github/actions/apply"
+	production := Production{JobNames: []string{deploy, nested}, ApplyStep: new(step)}
+	if got, want := production.JudgedJobNames(), []string{deploy, nested, "production", "dispatch-apply", "dispatch-apply / staging-e2e"}; !slices.Equal(got, want) {
+		t.Fatalf("JudgedJobNames = %q, want %q: each listed name and each caller a skipped call of it is listed under", got, want)
+	}
+	base := time.Date(2026, 10, 16, 8, 0, 0, 0, time.UTC)
+	success := DeliveryRunConclusionSuccess
+	ran := func(name string, conclusion DeliveryJobConclusion, applyStep *string, stepConclusion *DeliveryJobConclusion) DeliveryRunJob {
+		return DeliveryRunJob{Name: name, Conclusion: new(conclusion), CompletedAt: new(base), ApplyStep: applyStep, ApplyStepConclusion: stepConclusion}
+	}
+	other := []DeliveryRunJob{
+		ran("build", DeliveryJobConclusionSuccess, nil, nil),
+		ran("production-apply", DeliveryJobConclusionSkipped, nil, nil),
+		ran("dispatch-apply / dispatch-apply", DeliveryJobConclusionSuccess, nil, nil),
+	}
+	every := map[int64][]DeliveryRunJob{
+		1: append(slices.Clone(other), ran(deploy, DeliveryJobConclusionSuccess, new(step), new(DeliveryJobConclusionSuccess))),
+		2: append(slices.Clone(other), ran(deploy, DeliveryJobConclusionSuccess, new(step), new(DeliveryJobConclusionSkipped))),
+		3: append(slices.Clone(other), ran(deploy, DeliveryJobConclusionSuccess, new(step), nil)),
+		4: append(slices.Clone(other), ran(nested, DeliveryJobConclusionSuccess, new(step), new(DeliveryJobConclusionSuccess))),
+		5: append(slices.Clone(other), ran("production", DeliveryJobConclusionSkipped, nil, nil)),
+		6: append(slices.Clone(other), ran("dispatch-apply / staging-e2e", DeliveryJobConclusionSkipped, nil, nil)),
+		7: append(slices.Clone(other), ran("dispatch-apply", DeliveryJobConclusionSkipped, nil, nil)),
+		8: slices.Clone(other),
+	}
+	runs := make([]DeliveryRun, len(every))
+	for i := range runs {
+		runs[i] = DeliveryRun{Repo: "acme/widgets", RunID: int64(i + 1), HeadCommitAt: base, Conclusion: &success}
+	}
+	judgedNames := production.JudgedJobNames()
+	named := map[int64][]DeliveryRunJob{}
+	for id, jobs := range every {
+		for _, job := range jobs {
+			if slices.Contains(judgedNames, job.Name) {
+				named[id] = append(named[id], job)
+			}
+		}
+	}
+	runIDs := func(listed []DeliveryRun) []int64 {
+		ids := make([]int64, len(listed))
+		for i, run := range listed {
+			ids[i] = run.RunID
+		}
+		return ids
+	}
+	applyIDs := func(applies []Apply) []int64 {
+		ids := make([]int64, len(applies))
+		for i, apply := range applies {
+			ids[i] = apply.RunID
+		}
+		return ids
+	}
+	unmatchedIDs := func(unmatched []UnmatchedRun) []int64 {
+		ids := make([]int64, len(unmatched))
+		for i, run := range unmatched {
+			ids[i] = run.Run.RunID
+		}
+		return ids
+	}
+	withoutNested := append(slices.Clone(runs[:3]), runs[4:]...)
+	cases := []struct {
+		name          string
+		listing       []DeliveryRun
+		wantApplies   []int64
+		wantMissing   []int64
+		wantUnmatched []int64
+	}{
+		{"all rules exercised with both real listed names", runs, []int64{1, 4}, []int64{3}, []int64{8}},
+		{"only deploy real so nested callers stay unmatched", withoutNested, []int64{1}, []int64{3}, []int64{6, 7, 8}},
+		{"no real listed name so every skipped caller is unmatched", runs[4:], nil, nil, []int64{5, 6, 7, 8}},
+		{"single skipped caller alone", []DeliveryRun{runs[4]}, nil, nil, []int64{5}},
+		{"single unmatched run alone", []DeliveryRun{runs[7]}, nil, nil, []int64{8}},
+	}
+	for _, tc := range cases {
+		want, got := ProductionApplies(tc.listing, every, production), ProductionApplies(tc.listing, named, production)
+		if gotIDs := applyIDs(want.Applies); !slices.Equal(gotIDs, tc.wantApplies) {
+			t.Errorf("%s: every-job applies = %v, want %v", tc.name, gotIDs, tc.wantApplies)
+		}
+		if gotIDs := runIDs(want.StepMissing); !slices.Equal(gotIDs, tc.wantMissing) {
+			t.Errorf("%s: every-job step_missing = %v, want %v", tc.name, gotIDs, tc.wantMissing)
+		}
+		if gotIDs := unmatchedIDs(want.Unmatched); !slices.Equal(gotIDs, tc.wantUnmatched) {
+			t.Errorf("%s: every-job unmatched = %v, want %v", tc.name, gotIDs, tc.wantUnmatched)
+		}
+		if !slices.Equal(got.Applies, want.Applies) {
+			t.Errorf("%s: over runs %v, the deploys judged by name = %+v, want %+v", tc.name, runIDs(tc.listing), got.Applies, want.Applies)
+		}
+		if !slices.Equal(runIDs(got.StepMissing), runIDs(want.StepMissing)) {
+			t.Errorf("%s: over runs %v, the runs missing their step judged by name = %v, want %v", tc.name, runIDs(tc.listing), runIDs(got.StepMissing), runIDs(want.StepMissing))
+		}
+		if gotUnmatched, wantUnmatched := unmatchedIDs(got.Unmatched), unmatchedIDs(want.Unmatched); !slices.Equal(gotUnmatched, wantUnmatched) {
+			t.Errorf("%s: over runs %v, the unmatched runs judged by name = %v, want %v", tc.name, runIDs(tc.listing), gotUnmatched, wantUnmatched)
+		}
+	}
 }

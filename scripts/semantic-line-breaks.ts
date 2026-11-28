@@ -2,9 +2,12 @@
 // touch different lines: one sentence per line (R1), a blank line before each list item (R2), and
 // no list item or table row longer than one screen (R3, which counts a nested item's lines toward
 // that item, not toward its parent). The guides that
-// scripts/semantic-line-breaks.guides.test.ts checks keep this layout, and ci.yaml's test job
-// runs that test behind the guide_layout filter, which names those guides and this script;
-// `--write` fixes the layout by changing only whitespace.
+// scripts/semantic-line-breaks.guides.test.ts checks keep this layout, and ci.yaml's tooling-checks
+// job runs that test behind the guide_layout filter, which names those guides and this script;
+// `--write` fixes the layout by changing only whitespace, and only where the check finds a fault:
+// it re-lays out a paragraph in which R1 finds two sentences on one line, and adds the blank lines
+// R2 asks for. A paragraph the check accepts keeps its line breaks, so a file the check accepts
+// stays byte for byte.
 //
 // `--write` is conservative by rule. It leaves a leading YAML front matter block (closed by `---`
 // or by YAML's `...`) and the text of a setext heading byte for byte, and R1 does not read them.
@@ -21,13 +24,15 @@
 // `--write` then writes a file only when three guards hold: the text is the same once whitespace
 // is folded; the file renders the same, parsed before and after with micromark and its GFM and
 // front matter extensions (CommonMark, GitHub's tables, footnotes, task lists and strikethrough,
-// and YAML front matter, which must stay exactly the same); and a second re-layout of the result
-// changes nothing. A construct this script misreads therefore leaves the file as it was and fails
-// loudly, naming the first block whose rendering would change or the first line a second
-// re-layout would change. The rendering comparison ignores only what a re-layout must change:
-// where a line breaks inside text (not inside a code span, nor in the block whose HTML holds one of
-// the opens above or any block after it), and whether a list is loose (the blank lines R2 puts
-// between items). Only `--write` loads the parser, so check mode runs without `bun install`.
+// and YAML front matter, which must stay exactly the same); and the check accepts the result, so a
+// second `--write` changes nothing. A construct this script misreads therefore leaves the file as
+// it was and fails loudly, naming the first block whose rendering would change. So does a fault
+// the re-layout cannot fix or would make, such as two sentences in a heading or a list item over
+// one screen: each is named with its rule and its line in the file as it is on disk. The
+// rendering comparison ignores only what a re-layout must change: where a line breaks inside text
+// (not inside a code span, nor in the block whose HTML holds one of the opens above or any block
+// after it), and whether a list is loose (the blank lines R2 puts between items). Only `--write`
+// loads the parser, so check mode runs without `bun install`.
 // `--write` also refuses, before anything else, a file that is not valid UTF-8, and a file holding a
 // vertical tab, a form feed, a carriage return (CRLF line endings included) or a byte order mark
 // past the first, which GitHub's cmark-gfm reads where these rules do not (ODD_WHITESPACE).
@@ -45,7 +50,10 @@ const USAGE = "usage: bun scripts/semantic-line-breaks.ts [--write] <file.md>...
 /** A list item's own lines, or a table row, longer than this many screen rows fails R3. */
 const MAX_SCREEN_ROWS = 50;
 const SCREEN_WIDTH = 100;
-/** `--write` breaks a line longer than this after `; ` or `: `, or before ` —`. */
+/**
+ * In a paragraph it re-lays out, `--write` breaks a line longer than this after `; ` or `: `, or
+ * before ` —`. The check has no such limit, so a paragraph it accepts keeps its long lines.
+ */
 const MAX_LINE = 160;
 /** Neither part of such a break may be shorter than this, indentation excluded. */
 const MIN_PART = 40;
@@ -173,6 +181,8 @@ const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
 const LIST_MARKER_PREFIX = /^[ \t]*(?:#{1,6}[ \t]+)?(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*\d{1,9}\.$/;
 /** The whitespace `tr -s '[:space:]' ' '` folds. */
 const WHITESPACE_RUN = /[ \t\n\v\f\r]+/g;
+/** One character of that whitespace. */
+const WHITESPACE_CHAR = /[ \t\n\v\f\r]/;
 
 type LineKind = "blank" | "fence" | "code" | "table" | "heading" | "html" | "text" | "other";
 
@@ -242,6 +252,12 @@ type BlockStart =
 
 interface Finding {
   line: number;
+  /**
+   * The column of the character the finding is about: the last character of the sentence before
+   * the break for R1, the line's first column for R2 and R3. `--write` follows that character back
+   * to its line in the file on disk.
+   */
+  column: number;
   rule: 1 | 2 | 3;
   message: string;
 }
@@ -870,9 +886,37 @@ function needsBlankBefore(
   );
 }
 
+/** A paragraph R1 reads, its lines, those lines joined with `\n`, and sentenceBreaks over them. */
+interface ParagraphBreaks {
+  paragraph: Paragraph;
+  source: string[];
+  joined: string;
+  breaks: number[];
+}
+
 /**
- * The document with each paragraph re-laid out and a blank line before each list item; verbatim
- * lines stay byte for byte.
+ * R1 in the paragraph that starts on line `index`, which it reads whole; undefined where no
+ * paragraph starts or where its first line is verbatim. The check reports each break, and
+ * `--write` re-lays out a paragraph only where this finds one, as it adds only the blank lines
+ * needsBlankBefore finds.
+ */
+function paragraphBreaks(
+  lines: readonly string[],
+  info: LineInfo | undefined,
+  index: number
+): ParagraphBreaks | undefined {
+  const paragraph = info?.paragraph;
+  if (paragraph?.first !== index || info?.verbatim === true) return undefined;
+  const source = lines.slice(paragraph.first, paragraph.last + 1);
+  const joined = source.join("\n");
+  return { paragraph, source, joined, breaks: sentenceBreaks(joined) };
+}
+
+/**
+ * The document with a blank line before each list item, and each paragraph the check reports R1
+ * in re-laid out, both found as the check finds them (needsBlankBefore, paragraphBreaks), so a
+ * paragraph the check accepts keeps its line breaks. Every other line, verbatim lines included,
+ * stays byte for byte.
  */
 function relayout(text: string, blocks: Blocks): string {
   const { lines, trailingNewline } = splitLines(text);
@@ -880,9 +924,9 @@ function relayout(text: string, blocks: Blocks): string {
   for (let index = 0; index < lines.length; index++) {
     const info = blocks.lines[index];
     if (needsBlankBefore(lines, info, index)) out.push("");
-    const paragraph = info?.paragraph;
-    if (paragraph?.first === index && info?.verbatim !== true) {
-      const source = lines.slice(paragraph.first, paragraph.last + 1);
+    const r1 = paragraphBreaks(lines, info, index);
+    if (r1 !== undefined && r1.breaks.length > 0) {
+      const { paragraph, source } = r1;
       const indent = paragraph.continuationIndent;
       const margin = new Array<boolean>(indent.length).fill(true);
       for (const logical of joinParagraph(source)) {
@@ -896,9 +940,9 @@ function relayout(text: string, blocks: Blocks): string {
         }
       }
       index = paragraph.last;
-    } else {
-      out.push(lines[index] ?? "");
+      continue;
     }
+    out.push(lines[index] ?? "");
   }
   return out.join("\n") + (trailingNewline ? "\n" : "");
 }
@@ -1052,18 +1096,51 @@ function renderDifference(parse: Parse, before: string, after: string): string |
 }
 
 /**
- * Where a second re-layout would change the re-laid-out text again, or undefined when it is a
- * fixed point. Its rules are meant to leave their own output as it is: a change here means the
- * first pass misread a construct, so the file is not written.
+ * The line of `before` that holds the character standing at `at` in `after`, or, where that one is
+ * whitespace, the next one that is not. `after` differs from `before` in whitespace alone
+ * (foldedDifference found nothing else), so both hold their other characters in the same order,
+ * and counting those before `at` finds it.
  */
-function secondRelayoutDifference(text: string): string | undefined {
-  const again = relayout(text, scanBlocks(splitLines(text).lines));
-  if (again === text) return undefined;
-  const lines = text.split("\n");
-  const changed = again.split("\n");
+function lineBefore(before: string, after: string, at: number): number {
+  let skip = 0;
+  for (let n = 0; n < at; n++) if (!WHITESPACE_CHAR.test(after.charAt(n))) skip++;
   let line = 0;
-  while (lines[line] === changed[line]) line++;
-  return `a second re-layout would change it again (first difference at line ${line + 1} of the re-laid-out text)`;
+  for (let n = 0; n < before.length; n++) {
+    const char = before.charAt(n);
+    if (char === "\n") line++;
+    else if (!WHITESPACE_CHAR.test(char) && skip-- === 0) break;
+  }
+  return line;
+}
+
+/**
+ * Why `--write` must not write `next`, the re-layout of `text`: it would differ in more than
+ * whitespace, it would render differently, or the check would still report a finding in it, each
+ * named by its rule and its line in `text`. A rendering refusal still lists the findings, so one
+ * run names every fault. Empty when `next` may be written. A result the check accepts is one a
+ * second `--write` leaves as it is.
+ */
+function writeRefusals(parse: Parse, text: string, blocks: Blocks, next: string): string[] {
+  const refusals: string[] = [];
+  if (next !== text) {
+    const difference = foldedDifference(text, next);
+    if (difference !== undefined) {
+      return [`the re-layout would change more than whitespace (${difference})`];
+    }
+    const rendering = renderDifference(parse, text, next);
+    if (rendering !== undefined) refusals.push(rendering);
+  }
+  const { lines } = splitLines(next);
+  const starts = [0];
+  for (const line of lines) starts.push((starts.at(-1) ?? 0) + line.length + 1);
+  for (const { line, column, rule, message } of check(
+    next,
+    next === text ? blocks : scanBlocks(lines)
+  )) {
+    const onDisk = next === text ? line : lineBefore(text, next, (starts[line] ?? 0) + column);
+    refusals.push(`line ${onDisk + 1} would fail R${rule}: ${message}`);
+  }
+  return refusals;
 }
 
 function screenRows(lines: readonly string[]): number {
@@ -1084,7 +1161,7 @@ function check(text: string, blocks: Blocks): Finding[] {
     if (info === undefined) continue;
     // R2 first: an item may open with a fence or indented code.
     if (needsBlankBefore(lines, info, index)) {
-      findings.push({ line: index, rule: 2, message: excerpt(line, 0) });
+      findings.push({ line: index, column: 0, rule: 2, message: excerpt(line, 0) });
     }
     if (info.kind === "fence" || info.kind === "code") continue;
     // R1 reads a paragraph whole, so a code span a line break cuts in two still masks its text.
@@ -1093,19 +1170,19 @@ function check(text: string, blocks: Blocks): Finding[] {
     // setext headings.
     const paragraph = info.paragraph;
     const read = info.verbatim !== true;
+    const r1 = paragraphBreaks(lines, info, index);
     if (paragraph === undefined) {
       const prose = read && (info.kind === "heading" || info.kind === "table");
       for (const space of prose ? sentenceBreaks(line) : []) {
-        findings.push({ line: index, rule: 1, message: excerpt(line, space) });
+        findings.push({ line: index, column: space - 1, rule: 1, message: excerpt(line, space) });
       }
-    } else if (read && paragraph.first === index) {
-      const source = lines.slice(paragraph.first, paragraph.last + 1);
-      const joined = source.join("\n");
-      for (const space of sentenceBreaks(joined)) {
-        const offset = joined.slice(0, space).split("\n").length - 1;
+    } else if (r1 !== undefined) {
+      const { source, joined, breaks } = r1;
+      for (const space of breaks) {
+        const row = joined.slice(0, space).split("\n").length - 1;
         const column = space - (joined.lastIndexOf("\n", space) + 1);
-        const message = excerpt(source[offset] ?? "", column);
-        findings.push({ line: paragraph.first + offset, rule: 1, message });
+        const message = excerpt(source[row] ?? "", column);
+        findings.push({ line: index + row, column: column - 1, rule: 1, message });
       }
     }
     if (info.kind === "table") {
@@ -1113,6 +1190,7 @@ function check(text: string, blocks: Blocks): Finding[] {
       if (rows > MAX_SCREEN_ROWS) {
         findings.push({
           line: index,
+          column: 0,
           rule: 3,
           message: `${rows} screen rows: ${excerpt(line, 0)}`,
         });
@@ -1143,7 +1221,7 @@ function check(text: string, blocks: Blocks): Finding[] {
   for (const [item, rows] of own) {
     if (rows > MAX_SCREEN_ROWS) {
       const message = `${rows} screen rows: ${excerpt(lines[item.first] ?? "", 0)}`;
-      findings.push({ line: item.first, rule: 3, message });
+      findings.push({ line: item.first, column: 0, rule: 3, message });
     }
   }
   return findings.sort((a, b) => a.line - b.line || a.rule - b.rule);
@@ -1177,16 +1255,20 @@ async function readText(path: string): Promise<string | undefined> {
   return bytes === undefined ? undefined : LENIENT_UTF8.decode(bytes);
 }
 
+/** Exit 1 when a file has a finding, and 2, which wins, when a file cannot be read. */
 async function checkFiles(paths: readonly string[]): Promise<number> {
   let status = 0;
   for (const path of paths) {
     const text = await readText(path);
-    if (text === undefined) return 2;
+    if (text === undefined) {
+      status = 2;
+      continue;
+    }
     const blocks = scanBlocks(splitLines(text).lines);
     warnVerbatim(path, blocks.verbatimFrom);
     for (const finding of check(text, blocks)) {
       process.stdout.write(`${path}:${finding.line + 1}: R${finding.rule}: ${finding.message}\n`);
-      status = 1;
+      status = Math.max(status, 1);
     }
   }
   return status;
@@ -1206,7 +1288,10 @@ async function writeFiles(paths: readonly string[]): Promise<number> {
   let status = 0;
   for (const path of paths) {
     const bytes = await readBytes(path);
-    if (bytes === undefined) return 2;
+    if (bytes === undefined) {
+      status = 2;
+      continue;
+    }
     let text: string;
     try {
       text = STRICT_UTF8.decode(bytes);
@@ -1227,17 +1312,13 @@ async function writeFiles(paths: readonly string[]): Promise<number> {
     const blocks = scanBlocks(splitLines(text).lines);
     const next = relayout(text, blocks);
     warnVerbatim(path, blocks.verbatimFrom);
-    if (next === text) continue;
-    const difference = foldedDifference(text, next);
-    const refusal =
-      difference === undefined
-        ? (renderDifference(parse, text, next) ?? secondRelayoutDifference(next))
-        : `the re-layout would change more than whitespace (${difference})`;
-    if (refusal === undefined) {
-      await writeFile(path, hasByteOrderMark(bytes) ? BYTE_ORDER_MARK + next : next);
-    } else {
+    const refusals = writeRefusals(parse, text, blocks, next);
+    for (const refusal of refusals) {
       process.stderr.write(`${path}: refusing to write: ${refusal}\n`);
       status = 2;
+    }
+    if (refusals.length === 0 && next !== text) {
+      await writeFile(path, hasByteOrderMark(bytes) ? BYTE_ORDER_MARK + next : next);
     }
   }
   return status;
@@ -1245,11 +1326,14 @@ async function writeFiles(paths: readonly string[]): Promise<number> {
 
 // `bun scripts/semantic-line-breaks.ts [--write] <file.md>...` prints `file:line: R<n>: <excerpt>`
 // for each finding and exits 1 when there is one; with `--write` it re-lays out each file in place
-// and exits 2, writing nothing for that file, when the result would differ in more than whitespace,
-// would render differently, or would change again under a second re-layout. In both modes, a file
-// whose verbatim element (`<pre>`, `<code>` and the like, outside code) turns the checks off for
-// the rest of the file gets one `file:line: warning: <tag> opens a verbatim element; ...` line on
-// stderr; it does not change the exit code.
+// and exits 2, writing nothing for that file, when the result would differ in more than whitespace
+// or would render differently, or when the check would still report a finding in it, which it
+// names as `file: refusing to write: line <n> would fail R<n>: <excerpt>`, the line being the
+// file's own. In both modes, a file whose verbatim element (`<pre>`, `<code>` and the like,
+// outside code) turns the checks off for the rest of the file gets one
+// `file:line: warning: <tag> opens a verbatim element; ...` line on stderr; it does not change the
+// exit code. A path that cannot be read is named on stderr and makes the exit 2 in both modes; the
+// files after it are still checked or written.
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const write = args[0] === "--write";

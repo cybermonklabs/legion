@@ -111,6 +111,7 @@ func waitForWaitingRunners(t *testing.T, records *logtest.Recorder, want int, bo
 }
 
 func TestMigrateConcurrentIndexHoldsMigrationLockAndRetriesAnUnrecordedBuild(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	set := fstest.MapFS{
@@ -179,6 +180,7 @@ func TestMigrateConcurrentIndexHoldsMigrationLockAndRetriesAnUnrecordedBuild(t *
 }
 
 func TestMigrateTransactionalFailureStillRollsBackTheWholeMigration(t *testing.T) {
+	t.Parallel()
 	store := openEmptyTestStore(t)
 	set := fstest.MapFS{"migrations/0001_fail.up.sql": {Data: []byte("create table rolled_back (id integer); select 1 / 0;")}}
 	if err := store.migrate(context.Background(), set); err == nil {
@@ -481,8 +483,8 @@ func waitForRunningStatement(t *testing.T, store *Store, substring string) {
 }
 
 func TestWindowOwnerMigrationKeepsAnExistingValidPartialIndex(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261102233625)
+	t.Parallel()
+	store := openMigratedTestStore(t, 20261102233625)
 	ctx := context.Background()
 	// This is the index already present where the original form of 20261102233625 ran.
 	if _, err := store.Pool.Exec(ctx, `create index embeddings_window_owner on embeddings
@@ -493,7 +495,7 @@ func TestWindowOwnerMigrationKeepsAnExistingValidPartialIndex(t *testing.T) {
 	if err := store.Pool.QueryRow(ctx, "select 'embeddings_window_owner'::regclass::oid").Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	migrateThrough(t, store, 20261102233630)
+	migrateAbove(t, store, 20261102233625, 20261102233630)
 	var after uint32
 	var valid, partial bool
 	if err := store.Pool.QueryRow(ctx, `select indexrelid, indisvalid, indpred is not null
@@ -506,8 +508,8 @@ func TestWindowOwnerMigrationKeepsAnExistingValidPartialIndex(t *testing.T) {
 }
 
 func TestWindowOwnerMigrationBuildsAValidPartialIndex(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261102233630)
+	t.Parallel()
+	store := openMigratedTestStore(t, 20261102233630)
 	var valid, partial bool
 	if err := store.Pool.QueryRow(context.Background(), `select indisvalid, indpred is not null
 		from pg_index where indexrelid = 'embeddings_window_owner'::regclass`).Scan(&valid, &partial); err != nil {
@@ -627,10 +629,10 @@ func checkRebuiltWindowOwner(t *testing.T, store *Store, leftover uint32) {
 // INVALID embeddings_window_owner behind, and 20261102233630 must drop it, build the index again
 // and record its version instead of refusing on every later boot.
 func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261102233625)
+	t.Parallel()
+	store := openMigratedTestStore(t, 20261102233625)
 	leftover := leaveInvalidWindowOwner(t, store)
-	migrateThrough(t, store, 20261102233630)
+	migrateAbove(t, store, 20261102233625, 20261102233630)
 	checkRebuiltWindowOwner(t, store, leftover)
 	if got := schemaVersion(t, store); got != 20261102233630 {
 		t.Errorf("schema version = %d, want 20261102233630", got)
@@ -668,13 +670,13 @@ const bootRaces = 20
 // The second runner is a Store of its own on the same database, not a goroutine on the first
 // one's pool, because two booting processes are what this is about.
 func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
+	t.Parallel()
 	started := time.Now()
 	t.Cleanup(func() { t.Logf("%d boot races took %s", bootRaces, time.Since(started).Round(time.Millisecond)) })
 	for attempt := 1; attempt <= bootRaces; attempt++ {
 		t.Run(fmt.Sprintf("boot-race-%d", attempt), func(t *testing.T) {
 			ctx := context.Background()
-			first := openEmptyTestStore(t)
-			migrateThrough(t, first, 20261102233625)
+			first := openMigratedTestStore(t, 20261102233625)
 			leftover := leaveInvalidWindowOwner(t, first)
 			second, err := Open(ctx, first.Pool.Config().ConnString())
 			if err != nil {
@@ -741,7 +743,7 @@ const migrationKeyQueueBound = 2 * migrationLockMaxPause
 // so both runners finish.
 //
 // The two runners call applyMigration rather than migrate because migrate's first wait for the
-// key is createVersionTable's: with a third session holding the key both boots would queue
+// key is prepareVersionTable's: with a third session holding the key both boots would queue
 // there instead, and the winner would then hold the key from that wait right through its build,
 // so the loser could never be waiting at the site this test is about.
 func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testing.T) {
@@ -793,7 +795,7 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 	t.Cleanup(second.Pool.Close)
 	applied := make(chan error, 2)
 	for _, booting := range []*Store{first, second} {
-		go func(booting *Store) { applied <- booting.applyMigration(ctx, pending) }(booting)
+		go func(booting *Store) { applied <- booting.applyMigration(ctx, migrations, pending) }(booting)
 	}
 	waiting := waitForWaitingRunners(t, records, 2, migrationKeyQueueBound)
 	if _, err := holder.Exec(ctx, "select pg_advisory_unlock($1)", migrationLockKey); err != nil {

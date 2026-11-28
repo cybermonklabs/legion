@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "../../../packages/contracts/src/dispatch-api";
+import { bodyForText } from "../../../packages/envoy-client/src/excerpt";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-live-events.ts --url <dispatch> [--bearer-file <file> | --cookie-file <file> | --user <email>] [--since <id> | --from-whoami [--subscribe-after <s>]] [--until <substring>] [--timeout <s>]";
@@ -140,7 +141,7 @@ async function optionsFrom(argv: readonly string[]): Promise<Options> {
     );
   }
 
-  const authorization =
+  const authorization: Record<string, string> =
     bearerFile !== undefined
       ? { Authorization: `Bearer ${await secretFrom(bearerFile, "--bearer-file", "token")}` }
       : cookieFile !== undefined
@@ -172,12 +173,20 @@ async function secretFrom(file: string, flag: string, what: string): Promise<str
 }
 
 /** The newest event id as of the sign-in check, `GET /auth/whoami`'s `event_head`: where a page's
- *  first events subscription resumes from, so what commits after it reaches the page. */
+ *  first events subscription resumes from, so what commits after it reaches the page. An answer
+ *  without one is named through `bodyForText`, one line with the credential sent redacted, since
+ *  whatever answered can echo it back. */
 async function whoamiHead(options: Options): Promise<string> {
   const response = await fetch(new URL("/auth/whoami", options.url), {
     headers: options.authorization,
   });
-  const body: unknown = await response.json().catch(() => null);
+  const text = await response.text();
+  let body: unknown = null;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    // Not JSON: named below with the rest.
+  }
   if (
     !response.ok ||
     typeof body !== "object" ||
@@ -185,8 +194,9 @@ async function whoamiHead(options: Options): Promise<string> {
     !("event_head" in body) ||
     typeof body.event_head !== "string"
   ) {
+    const sent = Object.values(options.authorization)[0] ?? "";
     throw new Error(
-      `GET /auth/whoami answered ${response.status} ${JSON.stringify(body)}, with no event_head`
+      `GET /auth/whoami answered ${response.status} with ${bodyForText(text, sent, "a sign-in answer naming its event_head")}`
     );
   }
   write({

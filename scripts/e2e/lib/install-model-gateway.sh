@@ -41,6 +41,8 @@ set -euo pipefail
 
 me=install-model-gateway
 model=anthropic/claude-opus-4-8
+# shellcheck source=lib/omp-home.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/omp-home.sh"
 
 # refuse is for arguments (exit 2); fail is for the box the run is on (exit 1).
 refuse() {
@@ -376,17 +378,13 @@ modelRoles:
   review: $model
   oracle: $model
   deep: $model
-# AskGate (pi-envoy, in every pane) reviews each Dispatch write inside one tool_call handler and
-# holds its deadline 5 s under this limit. At Oh My Pi's 30 s default the deadline is 25 s, a review
-# of a long session often times out, and a write whose review times out posts unreviewed
+# AskGate (pi-envoy, in every pane) reviews each gated Dispatch write inside one tool_call handler
+# and holds its deadline 5 s under this limit. At Oh My Pi's 30 s default the deadline is 25 s, a
+# review of a long session often times out, and a write whose review times out posts unreviewed
 # (packages/pi-envoy/README.md, "The time limit").
 extensionHandlers:
   toolCallTimeoutMs: 120000
-# Oh My Pi opens its setup wizard ("Setup step 1 of 5") in a fresh profile, and a pane waiting on
-# the wizard never starts its session. startup.setupWizard: false turns the wizard off, whatever
-# setup version the build counts to.
-startup:
-  setupWizard: false
 EOF
+omp_setup_wizard_off "$agent/config.yml"
 echo "$me: OMP profile $profile routes $model through LEGION_E2E_MODEL_GATEWAY_URL, keyed by $key_command" >&2
 printf '%s\n' "$key_command"

@@ -18,8 +18,8 @@ import (
 // The join is after VerifyMark because that call waits for a mark whose append may still be in
 // flight and re-reads the document on each of the room's updates (marks.go): a write joined
 // before it would have the first of those reads take and freeze the fork under the document's
-// advisory lock (readFork, lockedHead), and the wait would re-read one frozen tree while
-// holding the lock the awaited append waits on.
+// advisory lock (readFork, headUnderDocumentLock), and the wait would re-read one frozen tree
+// while holding the lock the awaited append waits on.
 //
 // The join is before SnapshotVersion because that is the first call that takes the lock, and
 // the join is what has every other process store its room of the document (flushOtherRooms):
@@ -101,6 +101,7 @@ func markedPair(t *testing.T, markID string) processPair {
 // before it takes any lock of the document's, so task B's held append is durable before the
 // version is captured, and the version the anchor pins holds both the mark and task B's text.
 func TestAMarkAnchorFlushesTheOtherProcessesRoomBeforeTheDocumentsLock(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings).
 	logs := captureWarnings(t)
 	pair := markedPair(t, "c1")
 	bob := model.Actor{Kind: "user", ID: "bob"}
@@ -151,6 +152,7 @@ func TestAMarkAnchorFlushesTheOtherProcessesRoomBeforeTheDocumentsLock(t *testin
 // updates, but the write it joins still asks the other process for its room's flush - and asks it
 // before the lock, not under it.
 func TestAMarkAnchorOnAClosedIssueAsksItsFlushBeforeTheDocumentsLock(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings).
 	logs := captureWarnings(t)
 	pair := markedPair(t, "c1")
 	closeIssueAgo(t, pair.database, "DOC-1", closeMargin+30*time.Second)
@@ -187,6 +189,7 @@ func TestAMarkAnchorOnAClosedIssueAsksItsFlushBeforeTheDocumentsLock(t *testing.
 // what the ERROR says. This is the test above's control: it fails if asking a flush under the
 // lock ever stops being a mistake, and the two together pin the order.
 func TestAMarkAnchorThatJoinsItsWriteOnlyAfterTheVersionSkipsTheFlush(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings).
 	logs := captureWarnings(t)
 	pair := markedPair(t, "c1")
 

@@ -1,0 +1,26 @@
+kind: Changed
+body: |-
+  A session that presents its broker token (`NATS_AUTH=broker`) redials a server it lost, or one
+  that refuses it, on a jittered backoff rather than every 2 s: at once when it loses a connection
+  that lived a minute or more past its last dial, then after waits drawn anew between half and all
+  of 4 s, 8 s, 16 s and then 20 s for good (`brokerRedialDelays`, `brokerRedialWaitBounds`,
+  `brokerRedialWaitMs`, `nats-connection`). A connection lost less than a minute after its last
+  dial keeps its place in the backoff: its first redial waits out the rest of the wait drawn at
+  that dial. A token the connection has yet to present (a renewal, a session switch) goes out
+  within about a second (`BROKER_REDIAL_POLL_MS`), in the middle of a wait too, between the planned
+  redials, whose schedule it does not move: a switch's whatever the wait, and a renewal's at most
+  once between two of them while the hub refuses, and once more after each admission
+  (`BrokerNatsCredential.admitted`, `admissions`). Under a broker token
+  (`NatsDialHooks.credential`), a first dial the hub refuses (`connectNats`) waits on the same
+  backoff, and a token it refuses twice is dropped and another trade started at once, once for the
+  session until a dial is admitted, on the count the credential keeps and its keeper shares
+  (`BrokerNatsCredential.refused`); `NatsDialHooks.onTokenDropped` is told of each drop as it is
+  made, whether or not another dial follows (`NATS_DIAL_TOKEN_DROPPED`). A broker session's
+  options set no
+  `reconnectTimeWait`. 1,100 sessions a hub refuses together then ask its auth service about 73
+  times a second once at the cap, rather than 550, under the 1,200 refusals a second one replica
+  of the service decided at its 0.5 CPU; and each one's next redial comes within 20 s of the hub
+  admitting again. A seed or no credential keeps the flat 2 s.
+time: 2026-11-17T03:56:08Z
+custom:
+  Issue: pr4268

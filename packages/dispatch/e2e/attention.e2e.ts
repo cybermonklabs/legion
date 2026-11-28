@@ -71,6 +71,51 @@ test("a reader scrolled up keeps their Conversation viewport when a new card arr
   }
 });
 
+// A newest card taller than the screen stays the card the reader is at while any of it is on the
+// screen: `Jump to latest` shows only once all of it has scrolled away, so the pill never covers
+// that card's Reply and Pin at its foot (dispatch://INFRA-5200). Read at the card's middle, where
+// its head is far above the screen and its foot far below.
+test("Jump to latest stays away while any part of a tall newest card is on the screen", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "A tall newest card" });
+  // Enough older cards under it that the page can scroll the tall card wholly off the screen.
+  for (let index = 0; index < 30; index += 1) {
+    await createMessage(issue.key, { body: `Older message ${index}` }, session);
+  }
+  const tall = Array.from({ length: 90 }, (_, line) => `Line ${line} of the tall card.`).join(
+    "\n\n"
+  );
+  await createMessage(issue.key, { body: tall }, session);
+
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    await expect(page.getByText("Line 89 of the tall card.")).toBeVisible();
+    const pill = page.getByTestId("jump-to-latest");
+    const card = page.locator("[data-turn]").first();
+    const box = await card.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return { bottom: rect.bottom + window.scrollY, top: rect.top + window.scrollY };
+    });
+    const height = await page.evaluate(() => window.innerHeight);
+    expect(box.bottom - box.top).toBeGreaterThan(2 * height);
+
+    // Past the card's foot, with the older cards on the screen: the pill shows.
+    await page.evaluate((y) => window.scrollTo(0, y), box.bottom + 40);
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(box.bottom);
+    await expect(pill).toBeVisible();
+    // At the card's middle its head is off the screen and its foot below it: the card is the
+    // reader's, and the pill goes.
+    await page.evaluate((y) => window.scrollTo(0, y), (box.top + box.bottom - height) / 2);
+    await expect(pill).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
 test("a reader at the Conversation top follows a new card", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Attention test" });
@@ -180,7 +225,11 @@ async function verifyGapDetection(
     await expect(page.getByText("Gap comment 19")).toBeVisible();
     const turns = page.getByRole("list", { name: "Conversation turns" });
     await expect(turns.getByText("New", { exact: true })).toHaveCount(0);
+    await expect(turns.locator(":scope > li").filter({ hasText: /Gap comment \d+/ })).toHaveCount(
+      20
+    );
 
+    // The count above drew all twenty cards, so the gaps measured here are the whole list's.
     const gap = await page.evaluate(() => {
       const conversation = document.querySelector('[aria-label="Conversation"]');
       if (conversation === null) {
@@ -217,6 +266,8 @@ async function verifyGapDetection(
       (midPage) => window.scrollTo(0, midPage - window.innerHeight / 2),
       gap.gapMidPage
     );
+    // The column holds the cards waited for above, and the scroll above ran in the page before
+    // this read, so the box read here is the column's as it now stands.
     const conversationCenter = await page.evaluate(() => {
       const conversation = document.querySelector('[aria-label="Conversation"]');
       if (conversation === null) {

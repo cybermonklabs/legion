@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -51,25 +51,13 @@ func loggedLines(t *testing.T, logs, text string) []map[string]any {
 	return lines
 }
 
-// recordControllerSession registers session as the project's controller in the store before the
-// daemon boots, as a registration an earlier boot took leaves the record.
-func recordControllerSession(t *testing.T, cfg config.Config, project, session string) {
+// loggedMessages is every line of the daemon's JSON log whose message starts with msg, decoded.
+func loggedMessages(t *testing.T, logs, msg string) []map[string]any {
 	t.Helper()
-	st, err := store.Open(context.Background(), cfg.PostgresDSN)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	if _, err := st.Migrate(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	generation, err := st.MintController(context.Background(), project, []byte("capability"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok, err := st.RegisterController(context.Background(), project, generation, session, []byte("secret"), time.Now(), 0); err != nil || !ok {
-		t.Fatalf("register the controller: %v %v", ok, err)
-	}
+	return slices.DeleteFunc(loggedLines(t, logs, msg), func(entry map[string]any) bool {
+		text, _ := entry["msg"].(string)
+		return !strings.HasPrefix(text, msg)
+	})
 }
 
 // envoyRoleRegistry answers the controller role lookup: session holds the role, seen now, when
@@ -79,7 +67,9 @@ func envoyRoleRegistry(t *testing.T, session string, alive bool) (*httptest.Serv
 	t.Helper()
 	var lookups atomic.Int64
 	envoy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		code, body := http.StatusNotFound, any(map[string]any{})
+		// The listener's own refusal of a role nobody holds (listenerwire.RoleRefusal): only that
+		// body reads as gone (controller.Prober, dispatch://INFRA-2045 R5).
+		code, body := http.StatusNotFound, any(map[string]any{"error": "no holder for role " + strings.TrimPrefix(r.URL.Path, "/v1/roles/"), "reason": "unclaimed"})
 		if alive {
 			code, body = http.StatusOK, map[string]any{"holder": session, "last_seen": time.Now().UnixMilli()}
 		}
@@ -96,6 +86,7 @@ func envoyRoleRegistry(t *testing.T, session string, alive bool) (*httptest.Serv
 // to start one — once per worker boot timeout, and never about a controller the registry holds
 // alive. The line names the mode.
 func TestTheDaemonSaysWhenNoControllerIsRegistered(t *testing.T) {
+	t.Parallel()
 	const session = "ses_controller"
 	for _, tc := range []struct {
 		name     string
@@ -116,7 +107,7 @@ func TestTheDaemonSaysWhenNoControllerIsRegistered(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.register {
-				recordControllerSession(t, cfg, project, session)
+				registerProjectControllerAs(t, cfg.PostgresDSN, project, session)
 			}
 			logs := &syncBuffer{}
 			o := fakeRuntime(fake.NewRuntime(), &built{})
@@ -174,6 +165,7 @@ func checkDaemonModeLine(t *testing.T, line map[string]any) {
 // reader tells a launch in flight or a backoff from a death. A controller that holds the role is
 // not reported, neither the session recorded before its launch registers nor the launch once it has.
 func TestTheDaemonSaysWhenItsOwnControllerIsNotRegistered(t *testing.T) {
+	t.Parallel()
 	const session = "ses_controller"
 	for _, tc := range []struct {
 		name string
@@ -201,7 +193,7 @@ func TestTheDaemonSaysWhenItsOwnControllerIsNotRegistered(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.recorded {
-				recordControllerSession(t, cfg, project, session)
+				registerProjectControllerAs(t, cfg.PostgresDSN, project, session)
 			}
 			logs := &syncBuffer{}
 			rt := fake.NewRuntime()
@@ -284,6 +276,7 @@ func (r stalledLaunches) Spawn(ctx context.Context, spec runtime.SpawnSpec) (run
 // The machines' timers never fire here (stillClock), so a short worker boot timeout spaces the line
 // a few sweeps apart and nothing else; one line after the launch began shows the sweep did not wait.
 func TestTheDaemonSaysItsControllerIsNotRegisteredWhileItsLaunchHangs(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	cfg.WorkerBootTimeout = 100 * time.Millisecond

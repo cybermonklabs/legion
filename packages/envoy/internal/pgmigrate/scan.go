@@ -1,6 +1,7 @@
 package pgmigrate
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -9,7 +10,29 @@ import (
 // function body or a later comment. The loader validates the statement before accepting it.
 func nonTransactionalHeader(sql string) bool {
 	line, _, _ := strings.Cut(sql, "\n")
-	return strings.TrimSuffix(line, "\r") == "-- pgmigrate:non-transactional"
+	return strings.TrimSuffix(line, "\r") == nonTransactionalMarker
+}
+
+// nonTransactionalMarker is the first-line marker nonTransactionalHeader reads.
+const nonTransactionalMarker = "-- pgmigrate:non-transactional"
+
+// misplacedMarker refuses a migration name of text sql that holds the non-transactional marker as
+// a comment of its own anywhere but its first line, naming the line: the author meant the marker,
+// and nonTransactionalHeader reads the first line alone, so the file would run in a transaction,
+// which a CREATE INDEX CONCURRENTLY it holds then fails on a fresh database with an error that
+// names neither the marker nor the line above it. A replaces line written above the marker is the
+// usual way to get there. The marker's words inside a literal, or as part of a longer comment, are
+// text and declare nothing.
+func misplacedMarker(name, sql string) error {
+	return scanSQL(sql, func(token sqlToken) error {
+		if token.kind != sqlComment || token.start == 0 ||
+			strings.TrimSuffix(sql[token.start:token.end], "\r") != nonTransactionalMarker {
+			return nil
+		}
+		return fmt.Errorf(
+			"migration %s line %d: the %s marker is read on the first line alone, so this file would run in a transaction: put the marker on its first line, and any replaces line after it",
+			name, 1+strings.Count(sql[:token.start], "\n"), nonTransactionalMarker)
+	})
 }
 
 // The scanner here reads SQL text as Postgres 18 reads it. It does not reason about the grammar:
@@ -59,8 +82,78 @@ func scanSQL(text string, visit func(sqlToken) error) error {
 		if failure == nil {
 			failure = visit(token)
 		}
-	})
+	}, nil)
 	return failure
+}
+
+// WithoutComments is text with each comment blanked: every byte of it becomes a space but a line
+// break, which stays, so an offset into the answer is the same offset into text, a line is the
+// same line, and a comment between two words still parts them, as it does for Postgres. Comments
+// are found as Postgres reads text with standard_conforming_strings on, the setting a pgx
+// statement and a migration are sent under: a -- comment runs to a newline or a carriage return,
+// a /* */ comment nests, and none starts inside a string, a quoted identifier or a dollar quote,
+// whose tag takes bytes 0x80-0xff as scan.l's ident_start does. A dollar quote's body is read the
+// same way, since a function's or a DO block's body is SQL or PL/pgSQL, whose comments these are;
+// its own strings and dollar quotes stay whole, as PL/pgSQL reads them: a dollar quote inside a
+// body is a string, even one the body EXECUTEs as SQL, so a -- in it is string text and a word in
+// it stays visible. Every other byte is kept. A reader that matches words in a statement reads it
+// through this, so a comment hides no word and a comment's text is none.
+func WithoutComments(text string) string {
+	out := []byte(text)
+	blankComments(text, out, 0, false)
+	return string(out)
+}
+
+// blankComments blanks, in out at offset at, each comment of text, and when text is not a body
+// itself, each comment of the body of each dollar quote in it, as WithoutComments says.
+func blankComments(text string, out []byte, at int, body bool) {
+	lexSQL(text, true, func(token sqlToken) {
+		switch token.kind {
+		case sqlComment:
+			for i := token.start; i < token.end; i++ {
+				if c := text[i]; c != '\n' && c != '\r' {
+					out[at+i] = ' '
+				}
+			}
+		case sqlDollarString:
+			if body {
+				// A dollar quote inside a body is a string to PL/pgSQL, kept whole.
+				return
+			}
+			quoted := text[token.start:token.end]
+			tag := quoted[:strings.IndexByte(quoted[1:], '$')+2]
+			inner := quoted[len(tag):]
+			// An unterminated quote runs to the end of text, with no closing tag to leave out.
+			if len(inner) >= len(tag) && strings.HasSuffix(inner, tag) {
+				inner = inner[:len(inner)-len(tag)]
+			}
+			blankComments(inner, out, at+token.start+len(tag), true)
+		}
+	}, nil)
+}
+
+// Statements is text split at each semicolon that stands outside a string, a quoted identifier, a
+// dollar quote and a comment, as scan.l reads them with standard_conforming_strings on. It knows
+// no grammar, so the semicolons inside a BEGIN ATOMIC body split it too. Each statement is trimmed,
+// with its comments blanked as WithoutComments blanks them, and one that holds nothing else is
+// left out.
+func Statements(text string) []string {
+	blanked := WithoutComments(text)
+	var statements []string
+	from := 0
+	cut := func(to int) {
+		if statement := strings.TrimSpace(blanked[from:to]); statement != "" {
+			statements = append(statements, statement)
+		}
+	}
+	lexSQL(text, true, func(token sqlToken) {
+		if token.kind == sqlOther && text[token.start:token.end] == ";" {
+			cut(token.start)
+			from = token.end
+		}
+	}, nil)
+	cut(len(text))
+	return statements
 }
 
 // isDigit is scan.l's decdigit, [0-9].
@@ -86,15 +179,15 @@ func isIdentCont(c byte) bool { return isIdentStart(c) || isDigit(c) || c == '$'
 // scan.l raised its error on to the end of the text. Postgres read no further, so there are no
 // tokens of its there to call structure, and the text that follows is whatever the session was
 // about to have read - which is why it is covered rather than printed. onFailure is where the
-// default reading was refused, or -1.
-func hiddenSpans(text string, onFailure int) []sqlToken {
+// default reading was refused, or -1. hooks are told the reading's work (lexSQL).
+func hiddenSpans(text string, onFailure int, hooks *lexHooks) []sqlToken {
 	var spans []sqlToken
 	offFailure := lexSQL(text, false, func(token sqlToken) {
 		switch token.kind {
 		case sqlString, sqlDollarString, sqlUnicodeEscape, sqlComment:
 			spans = append(spans, token)
 		}
-	})
+	}, hooks)
 	for _, failure := range [2]int{onFailure, offFailure} {
 		if failure >= 0 {
 			spans = append(spans, sqlToken{kind: sqlString, start: failure, end: len(text)})
@@ -180,10 +273,14 @@ func hiddenSpans(text string, onFailure int) []sqlToken {
 // one can lose shape - a comma, a whole literal, or a comment's one space, swallowed into the
 // single ? that covers the other reading's longer literal or the comment that literal's end
 // opens - and loses no value.
-func redactedQuery(text string) string {
+func redactedQuery(text string) string { return redactedQueryWith(text, nil) }
+
+// redactedQueryWith is redactedQuery with hooks told the work of both its readings (lexHooks),
+// nil but in the lexing tests.
+func redactedQueryWith(text string, hooks *lexHooks) string {
 	var tokens []sqlToken
-	onFailure := lexSQL(text, true, func(token sqlToken) { tokens = append(tokens, token) })
-	spans := hiddenSpans(text, onFailure)
+	onFailure := lexSQL(text, true, func(token sqlToken) { tokens = append(tokens, token) }, hooks)
+	spans := hiddenSpans(text, onFailure, hooks)
 	var out strings.Builder
 	space := false
 	covered := 0 // the end of the text the ? last written stands for

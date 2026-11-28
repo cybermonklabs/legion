@@ -36,7 +36,7 @@
 -- 20261113182000_architect_entry_upgrade says what each statement prints and why the block runs
 -- first.
 --
---   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
 --   alter table phases drop column if exists entry_verbatim;
 --   delete from schema_version where version = 20261114061900;

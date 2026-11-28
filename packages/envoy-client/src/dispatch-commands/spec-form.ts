@@ -1,9 +1,4 @@
-import type {
-  ApprovalRequestResponse,
-  Artifact,
-  SpecFormFinding,
-  SpecFormRead,
-} from "@legion/contracts";
+import type { ApprovalRequestResponse, Artifact, SpecFormRead } from "@legion/contracts";
 import type { DispatchClient } from "../dispatch-http";
 import {
   type CommandContext,
@@ -34,14 +29,15 @@ function textCounts(texts: TextCounts): string {
 }
 
 /**
- * What Dispatch read of a form no text breaks: the count of each kind of text against the terms,
- * or, when it read no text of any kind, that it decided nothing about the form of `name`.
+ * What Dispatch read of a form no text breaks: the count of each kind of text, or, when it read no
+ * text of any kind, that it decided nothing about the form of `name`. Dispatch reads no list of
+ * terms yet (form slice 2 reads it), so the line names no terms.
  */
-function readLine(texts: TextCounts, terms: number, name: string, version: number): string {
+function readLine(texts: TextCounts, name: string, version: number): string {
   const read = Object.values(texts ?? {}).reduce((sum, count) => sum + count, 0);
   return read === 0
     ? `Dispatch found no text of The Spec in ${name} version ${version}, so it decided nothing about its form.`
-    : `Dispatch read the form of ${textCounts(texts)} against ${counted(terms, "term")}: no text breaks it.`;
+    : `Dispatch read the form of ${textCounts(texts)}: no text breaks it.`;
 }
 
 /**
@@ -64,7 +60,7 @@ export function approvalFormLines(result: ApprovalRequestResponse, name: string)
   const form = result.spec_form;
   return form === undefined
     ? []
-    : [readLine(form.texts, form.terms, name, result.version), ...unreadLines(form.unread)];
+    : [readLine(form.texts, name, result.version), ...unreadLines(form.unread)];
 }
 
 /** Why Dispatch refuses no approval request of a document out of scope, by its `scope`. */
@@ -84,41 +80,26 @@ function scopeLine(form: SpecFormRead): string {
 }
 
 /**
- * How many texts hold one of `findings`, which the read route answers whole. The findings of one
- * text name its node, its kind, its place and its excerpt, as in the head of the server's refusal
- * (`textsOf` in packages/envoy/internal/dispatch/specform/message.go).
- */
-function textsBreaking(findings: readonly SpecFormFinding[]): number {
-  return new Set(
-    findings.map(({ excerpt, kind, node, where }) => JSON.stringify([where, kind, node, excerpt]))
-  ).size;
-}
-
-/**
  * The form of one document as Dispatch read it. A document an approval request is judged on
- * (`in_scope`) gets the line that says Dispatch refuses its approval and each finding, or the
- * line of what Dispatch read. One out of scope first says why Dispatch refuses nothing for it,
- * and still lists its findings, which are then for the reader alone. Each approved document under
- * the root that Dispatch could not read has a line after them.
+ * (`in_scope`) gets the lines that list its findings, or the line of what Dispatch read. One out
+ * of scope first says why Dispatch refuses nothing for it, and still lists its findings, which are
+ * then for the reader alone. The server writes the lines that list the findings
+ * (`finding_lines`, from `specform.Listing` in
+ * packages/envoy/internal/dispatch/specform/message.go): the head when it refuses the approval,
+ * the line of each finding as its refusal writes it, and how many it lists when it lists fewer
+ * than it counts. This module prints them as they are. Each approved document under the root
+ * that Dispatch could not read has a line after them.
  */
 function documentLines(form: SpecFormRead): string[] {
-  const findings = form.findings ?? [];
-  const listed = findings.map((finding) => `- ${finding.kind} ${finding.node}: ${finding.detail}.`);
-  const read = readLine(form.texts, (form.terms ?? []).length, form.name, form.version);
+  const listed = form.finding_lines ?? [];
+  const read = readLine(form.texts, form.name, form.version);
   const unread = unreadLines(form.unread);
   if (!form.in_scope) {
-    return findings.length === 0
+    return form.findings_total === 0
       ? [scopeLine(form), read, ...unread]
       : [scopeLine(form), "The findings below are for you to read.", ...listed, ...unread];
   }
-  if (findings.length === 0) return [read, ...unread];
-  const texts = textsBreaking(findings);
-  const breaks = texts === 1 ? "1 text breaks" : `${texts} texts break`;
-  return [
-    `Dispatch refuses an approval request of ${form.name} version ${form.version}, because ${breaks} the form of The Spec.`,
-    ...listed,
-    ...unread,
-  ];
+  return form.findings_total === 0 ? [read, ...unread] : [...listed, ...unread];
 }
 
 /** What a listing prints for a document that has no settled version yet (409 NO_VERSION). */

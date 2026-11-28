@@ -1,20 +1,103 @@
 package notify
 
+//ci:reads packages/contracts/fixtures/subject-project.json holds notify.StateTopic to its legionStateSubject row
+
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// The controller topic is the one the plugin's controller subscribes to
-// (legionControllerNoticeSubject, packages/contracts/src/subject.ts), byte for byte.
-func TestControllerTopicIsTheControllersNoticeSubject(t *testing.T) {
-	if got := ControllerTopic("legion"); got != "notifications.legion.legion.controller" {
-		t.Fatalf("ControllerTopic = %q, want the controller's notice subject", got)
+// The state topic is the subject the contract builds for a project token (legionStateSubject,
+// packages/contracts/src/subject.ts), byte for byte: every row of the shared fixture that the
+// contract's own test and Envoy's Go test run for that builder is held here too, so the daemon
+// publishes on the subject Dispatch's durable filters on.
+func TestStateTopicIsTheContractsStateSubject(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "subject-project.json"))
+	if err != nil {
+		t.Fatalf("read the subject fixture: %v", err)
+	}
+	var fixture struct {
+		Builders []struct {
+			Fn   string   `json:"fn"`
+			Args []string `json:"args"`
+			Want string   `json:"want"`
+		} `json:"builders"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode the subject fixture: %v", err)
+	}
+	rows := 0
+	for _, row := range fixture.Builders {
+		if row.Fn != "legionStateSubject" {
+			continue
+		}
+		rows++
+		if len(row.Args) != 1 {
+			t.Fatalf("the fixture's legionStateSubject row takes %d arguments %q, want the one project token", len(row.Args), row.Args)
+		}
+		if got := StateTopic(row.Args[0]); got != row.Want {
+			t.Errorf("StateTopic(%q) = %q, want the contract's %q", row.Args[0], got, row.Want)
+		}
+	}
+	if rows == 0 {
+		t.Fatal("the subject fixture has no legionStateSubject row to hold StateTopic to")
+	}
+}
+
+// A publish the listener refuses for the message itself, 400 for a field or a topic it does not
+// take and 413 for a message larger than NATS takes whole, each with its own JSON error
+// (writeJSONError, writeNATSError, packages/envoy/cmd/listener/api.go), is told apart from every
+// other failure: the listener answers the same message the same way however often it is sent. A
+// 400 or a 413 with no such error, as a proxy in front of the listener could write, stays an
+// ordinary failure, and so does every other status.
+func TestHTTPPublisherTellsARefusalOfTheMessageItselfApart(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		body    string
+		refused *ErrMessageRefused
+	}{
+		{"a topic no stream subject captures", http.StatusBadRequest,
+			`{"error":"no stream subject captures notifications.legion.demo.state, so no session would receive it; publish to a notifications.team.<name> topic instead","expected":["topic"]}`,
+			&ErrMessageRefused{Status: http.StatusBadRequest, Message: "no stream subject captures notifications.legion.demo.state, so no session would receive it; publish to a notifications.team.<name> topic instead"}},
+		{"a message NATS does not take whole", http.StatusRequestEntityTooLarge,
+			`{"error":"bus: the message is too large: nats: maximum payload exceeded"}`,
+			&ErrMessageRefused{Status: http.StatusRequestEntityTooLarge, Message: "bus: the message is too large: nats: maximum payload exceeded"}},
+		{"a 413 that is not JSON", http.StatusRequestEntityTooLarge, `<html>413 Request Entity Too Large</html>`, nil},
+		{"a 400 with no error", http.StatusBadRequest, `{}`, nil},
+		{"the stream is down", http.StatusServiceUnavailable, `{"error":"envoy: the message bus did not answer: nats: timeout"}`, nil},
+		{"a bearer the listener does not take", http.StatusUnauthorized, `{"error":"unauthorized"}`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			_, err := New(server.URL, "").Publish(context.Background(), StateTopic("demo"), "DEMO state 1-1", map[string]string{"project": "DEMO"}, "legion-outbox:9")
+			if err == nil || !strings.Contains(err.Error(), tc.body) {
+				t.Fatalf("publish error = %v, want the listener's answer %s", err, tc.body)
+			}
+			var refused ErrMessageRefused
+			if got := errors.As(err, &refused); got != (tc.refused != nil) || got && refused != *tc.refused {
+				t.Fatalf("errors.As(%v, ErrMessageRefused) = %t with %+v, want %+v", err, got, refused, tc.refused)
+			}
+			var denied ErrPublishDenied
+			if errors.As(err, &denied) || errors.Is(err, ErrNoHolder) {
+				t.Fatalf("publish error = %v, want no denial and no missing holder", err)
+			}
+		})
 	}
 }
 
@@ -28,16 +111,11 @@ func TestHTTPPublisherSendsPayloadAndOutboxDedupeKey(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/publish" {
 			t.Fatalf("request = %s %s, want POST /v1/messages/publish", r.Method, r.URL.Path)
 		}
-		var body struct {
-			Topic     string  `json:"topic"`
-			Message   string  `json:"message"`
-			Payload   *string `json:"payload"` // the listener's messageBody (packages/envoy/cmd/listener/api.go:68-80)
-			DedupeKey string  `json:"dedupe_key"`
-			// The daemon keeps its own queue of notices, so it asks the listener to keep
-			// nothing and to answer a role nobody holds with its 404 (ErrNoHolder). A missing
-			// field would read as the listener's default, which is to keep.
-			Keep *bool `json:"keep"`
-		}
+		// The body is read as the listener's publish route reads it. The daemon keeps its own
+		// queue of notices, so it asks the listener to keep nothing and to answer a role nobody
+		// holds with its 404 (ErrNoHolder). A missing keep would read as the listener's default,
+		// which is to keep.
+		var body listenerwire.PublishRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			w.WriteHeader(http.StatusBadRequest) // the listener answers "invalid json"
 			return
@@ -62,8 +140,40 @@ func TestHTTPPublisherSendsPayloadAndOutboxDedupeKey(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := New(server.URL, "envoy-bearer").Publish(context.Background(), "notifications.legion.LEGION.LEGION-208", "worker-died on LEGION-208", map[string]string{"kind": "worker-died"}, "legion-outbox:42"); err != nil {
+	if _, err := New(server.URL, "envoy-bearer").Publish(context.Background(), "notifications.legion.LEGION.LEGION-208", "worker-died on LEGION-208", map[string]string{"kind": "worker-died"}, "legion-outbox:42"); err != nil {
 		t.Fatalf("publish: %v", err)
+	}
+}
+
+// A role publish the listener took answers the session it stored the message for: the holder its
+// 200 names (listenerwire.PublishResponse.Holder), which is the one evidence a sender has of who
+// was told at the write (the listener's roleSend.delivered). An answer that names no holder, a
+// 200 with no body, and one whose body is not the listener's JSON are a publish taken for a
+// recipient nobody named: no error, and no holder.
+func TestHTTPPublisherAnswersTheHolderTheListenerStoredTheMessageFor(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		body   string
+		holder string
+	}{
+		{"the listener names the holder", `{"event_id":"evt-1","topic":"notifications.role.legion-demo-tester","holder":"ses_fresh","holder_state":"live"}`, "ses_fresh"},
+		{"the listener names no holder", `{"event_id":"evt-1","topic":"notifications.legion.LEGION.LEGION-208"}`, ""},
+		{"a 200 with no body", ``, ""},
+		{"a 200 whose body is not the listener's JSON", `stored`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			holder, err := New(server.URL, "").Publish(context.Background(), "notifications.role.legion-demo-tester", "hold on DEMO-1", map[string]string{"step": "hold"}, "legion-outbox:9")
+			if err != nil || holder != tc.holder {
+				t.Fatalf("publish answered by %q = holder %q, %v; want holder %q and no error", tc.body, holder, err, tc.holder)
+			}
+		})
 	}
 }
 
@@ -77,7 +187,7 @@ func TestHTTPPublisherRefusalNamesTheListenerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := New(server.URL, "").Publish(context.Background(), "notifications.legion.LEGION.LEGION-208", "pr-blocked on LEGION-208", map[string]string{"kind": "pr-blocked"}, "legion-outbox:7")
+	_, err := New(server.URL, "").Publish(context.Background(), "notifications.legion.LEGION.LEGION-208", "pr-blocked on LEGION-208", map[string]string{"kind": "pr-blocked"}, "legion-outbox:7")
 	if err == nil || !strings.Contains(err.Error(), "nats: no response from stream") {
 		t.Fatalf("publish error = %v, want the listener's error body", err)
 	}
@@ -108,12 +218,89 @@ func TestHTTPPublisherTellsANoHolderRefusalFromAnyOther(t *testing.T) {
 			}))
 			defer server.Close()
 
-			err := New(server.URL, "").Publish(context.Background(), "notifications.role.legion-demo-controller", "held on DEMO-1", map[string]string{"kind": "held"}, "legion-outbox:9")
+			_, err := New(server.URL, "").Publish(context.Background(), "notifications.role.legion-demo-controller", "held on DEMO-1", map[string]string{"kind": "held"}, "legion-outbox:9")
 			if err == nil || !strings.Contains(err.Error(), tc.body) {
 				t.Fatalf("publish error = %v, want the listener's refusal %s", err, tc.body)
 			}
 			if got := errors.Is(err, ErrNoHolder); got != tc.noHolder {
 				t.Fatalf("errors.Is(%v, ErrNoHolder) = %t, want %t", err, got, tc.noHolder)
+			}
+		})
+	}
+}
+
+// A kept publish asks the listener to keep a role message no live session holds the role for
+// (keep: true), and the listener's answers are told apart by status alone: 200, a live holder
+// took it; 202 kept, for a claim whose holder is not live (holder_lapsed) or a role nobody claims
+// (unclaimed), the listener of cybermonklabs/legion#4079 keeping the copy on the role's kept lane
+// for an hour; and the 404 holder_lapsed a listener before #4079 answers a claim whose holder is
+// not live, keeping nothing, which is ErrNoHolder for a holder that is gone and
+// ErrHolderUnresponsive for one that is unresponsive. A 202's body is not read, so the envelope a
+// kept answer carries, however long, changes nothing.
+func TestHTTPPublisherPublishKeptTellsAKeptMessageFromADeliveredOne(t *testing.T) {
+	long := strings.Repeat("x", refusalBodyLimit+1)
+	for _, tc := range []struct {
+		name         string
+		status       int
+		body         string
+		kept         bool
+		noHolder     bool
+		unresponsive bool
+		refused      bool
+	}{
+		{"a live holder took it", http.StatusOK,
+			`{"event_id":"evt-1","topic":"notifications.role.legion-demo-implementer","holder":"ses_a","holder_state":"live"}`, false, false, false, false},
+		{"kept for a holder that lapsed", http.StatusAccepted,
+			`{"event_id":"evt-2","topic":"notifications.role.legion-demo-implementer","holder":"ses_a","holder_state":"gone","kept":true,"kept_reason":"holder_lapsed","kept_until":1900000000000,"last_seen":1}`, true, false, false, false},
+		{"kept for a role nobody claims", http.StatusAccepted,
+			`{"event_id":"evt-3","topic":"notifications.role.legion-demo-implementer","kept":true,"kept_reason":"unclaimed","kept_until":1900000000000}`, true, false, false, false},
+		{"kept with an envelope past the refusal bound", http.StatusAccepted,
+			`{"event_id":"evt-4","message":"` + long + `","kept":true,"kept_reason":"unclaimed","kept_until":1900000000000}`, true, false, false, false},
+		{"a listener before #4079 keeps nothing for a holder that is gone", http.StatusNotFound,
+			`{"error":"role legion-demo-implementer holder ses_a lapsed","reason":"holder_lapsed","holder":"ses_a","holder_state":"gone","last_seen":1,"claim_released":false}`, false, true, false, true},
+		{"a listener before #4079 keeps nothing for a holder that is unresponsive", http.StatusNotFound,
+			`{"error":"role legion-demo-implementer holder ses_a lapsed; claim retained (last seen 1)","reason":"holder_lapsed","holder":"ses_a","holder_state":"unresponsive","last_seen":1,"claim_released":false}`, false, false, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Topic     string `json:"topic"`
+					Message   string `json:"message"`
+					DedupeKey string `json:"dedupe_key"`
+					Keep      *bool  `json:"keep"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if body.Topic != "notifications.role.legion-demo-implementer" || body.Message != "the end of DEMO-1's testing phase" || body.DedupeKey != "legion-outbox:11" {
+					t.Errorf("kept publish body = %#v", body)
+				}
+				if body.Keep == nil || !*body.Keep {
+					t.Errorf("kept publish keep = %v, want true: the listener is to keep the message for the role's next holder", body.Keep)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			kept, err := New(server.URL, "").PublishKept(context.Background(), "notifications.role.legion-demo-implementer",
+				"the end of DEMO-1's testing phase", "the end of DEMO-1's testing phase", "legion-outbox:11")
+			if kept != tc.kept {
+				t.Fatalf("kept publish kept = %t with %v, want %t", kept, err, tc.kept)
+			}
+			if (err != nil) != tc.refused {
+				t.Fatalf("kept publish error = %v, want an error %t", err, tc.refused)
+			}
+			if tc.refused && !strings.Contains(err.Error(), tc.body) {
+				t.Fatalf("kept publish error = %v, want the listener's answer %s", err, tc.body)
+			}
+			if got := errors.Is(err, ErrNoHolder); got != tc.noHolder {
+				t.Fatalf("errors.Is(%v, ErrNoHolder) = %t, want %t", err, got, tc.noHolder)
+			}
+			if got := errors.Is(err, ErrHolderUnresponsive); got != tc.unresponsive {
+				t.Fatalf("errors.Is(%v, ErrHolderUnresponsive) = %t, want %t", err, got, tc.unresponsive)
 			}
 		})
 	}
@@ -144,7 +331,7 @@ func TestHTTPPublisherTellsAnUnresponsiveHolderFromNoHolder(t *testing.T) {
 			}))
 			defer server.Close()
 
-			err := New(server.URL, "").Publish(context.Background(), "notifications.role.legion-demo-controller", "held on DEMO-1", map[string]string{"kind": "held"}, "legion-outbox:9")
+			_, err := New(server.URL, "").Publish(context.Background(), "notifications.role.legion-demo-controller", "held on DEMO-1", map[string]string{"kind": "held"}, "legion-outbox:9")
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("publish error = %v, want %v", err, tc.want)
 			}
@@ -157,8 +344,8 @@ func TestHTTPPublisherTellsAnUnresponsiveHolderFromNoHolder(t *testing.T) {
 
 // A listener that confirms a role message before it answers says why it did not deliver one:
 // 504 with receipt_timeout or delivery_failed, naming the holder and the envelope it forwarded
-// (roleSendFailure, packages/envoy/cmd/listener/confirmed.go), 403 with capability when the
-// holder cannot take the payload's delivery mode (capabilityRefusal), or 403 with no reason when
+// (listenerwire.RoleSendFailure), 403 with capability when the holder cannot take the payload's
+// delivery mode (listenerwire.CapabilityRefusal), or 403 with no reason when
 // the NATS server denied the forward under the listener's own grant (writeBusUnavailable,
 // packages/envoy/cmd/listener/api.go). Each is told apart from every other failure, and a 504 or
 // 403 whose body is not that JSON — a proxy's gateway timeout, a reason this daemon does not
@@ -197,7 +384,7 @@ func TestHTTPPublisherTellsTheConfirmedSendAnswersApart(t *testing.T) {
 			}))
 			defer server.Close()
 
-			err := New(server.URL, "").Publish(context.Background(), "notifications.role.legion-demo-architect", "held on DEMO-1", map[string]string{"kind": "held"}, "legion-outbox:9")
+			_, err := New(server.URL, "").Publish(context.Background(), "notifications.role.legion-demo-architect", "held on DEMO-1", map[string]string{"kind": "held"}, "legion-outbox:9")
 			if err == nil || !strings.Contains(err.Error(), tc.body) {
 				t.Fatalf("publish error = %v, want the listener's answer %s", err, tc.body)
 			}

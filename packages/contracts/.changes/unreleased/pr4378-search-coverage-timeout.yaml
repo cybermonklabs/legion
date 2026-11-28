@@ -1,0 +1,6 @@
+kind: Changed
+custom:
+  Issue: pr4378
+body: |-
+  The OpenAPI description of `GET /api/v1/search/coverage` names its 10 s `statement_timeout` and
+  the `503 SEARCH_COVERAGE_TIMEOUT` answer past it.

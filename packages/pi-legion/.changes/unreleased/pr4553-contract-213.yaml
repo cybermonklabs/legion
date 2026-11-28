@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  Declares daemon API contract 213, which adds the capability row `repository-cache-room` with the
+  source `caches` to `GET /legion/v1/state`, which `read_state` reads.
+time: 2026-11-20T10:48:15Z
+custom:
+    Issue: pr4553

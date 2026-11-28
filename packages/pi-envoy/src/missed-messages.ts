@@ -11,6 +11,7 @@ import {
   LedgerStateSchema,
 } from "@legion/envoy-client/delivery-ledger";
 import { rememberedTopics } from "@legion/envoy-client/stream-topics";
+import { customEntries } from "./custom-entries";
 
 /** The custom type of every card the extension shows the session. */
 const ENVOY_MESSAGE = "envoy-message";
@@ -56,19 +57,6 @@ export const CONSUMER_STATE_ENTRY = "envoy-consumer-state";
 export interface HeldReplayNotice {
   readonly id: string;
   readonly content: string;
-}
-
-/** The data of every `customType` entry among a session's entries, in the order written. */
-function customEntries(entries: readonly unknown[], customType: string): unknown[] {
-  const found: unknown[] = [];
-  for (const entry of entries) {
-    if (typeof entry !== "object" || entry === null) continue;
-    if (!("type" in entry) || entry.type !== "custom") continue;
-    if (!("customType" in entry) || entry.customType !== customType) continue;
-    if (!("data" in entry)) continue;
-    found.push(entry.data);
-  }
-  return found;
 }
 
 /** The newest `REPLAY_STATE_ENTRY` that parses, at any age. */

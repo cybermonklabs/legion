@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+    The `legion-worker` and `legion-architect` skills say that a head that conflicts with its base
+    keeps the issue in its phase: the daemon reads the conflict twice and asks the implementer, in a
+    merge-forward message, to merge the base forward in the shared workspace with no handoff and no
+    completion, tells the phase's worker to stop writing the workspace and then the new head, and
+    past review asks the reviewer to approve the new head. A completion of the phase the issue
+    stands in that names the replaced head, or names no head once a merge forward landed, is
+    refused `HANDOFF_HEAD_MERGED_FORWARD`. A completion of a phase the issue has already left is
+    recorded as before. The unchanged-diff fingerprint is gone: a merge of the base is read with
+    `git show --remerge-diff <merge>` for its resolution and
+    `git diff --stat <merge>^1 <merge>` for the files the base brought in.
+time: 2026-11-19T01:57:34Z
+custom:
+    Issue: pr4464

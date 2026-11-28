@@ -1,4 +1,4 @@
-> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." The rig this entry describes no longer exists; keep the learning, not the procedure.
+> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." (relayed verbatim in https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554) The rig this entry describes no longer exists; keep the learning, not the procedure.
 
 ---
 title: "Smoke rig from a worker pane: historical environment, boot-probe, actor, and event-isolation findings"
@@ -83,14 +83,15 @@ and state. The old restart commands are suspended.
 
 `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` with only a bearer token now answer
 `400 {"code":"ACTOR_KIND","error":"bearer callers require actor.kind session"}`. The retired
-rig's `ensure_root_issue` sent this shape on every write:
+rig's `ensure_root_issue` sent this shape on every write, written here with the bearer on standard
+input so it is in no command line:
 
 ```sh
 ACTOR="$(jq -nc --arg id "legion-<issue>-implementer-smoke" \
   '{kind: "session", id: $id, origin: {session_title: "LEGION-<issue> implementer smoke"}}')"
-curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -X POST "$URL/api/v1/issues" \
+printf 'Authorization: Bearer %s' "$TOKEN" | curl -fsS -H @- -H 'Content-Type: application/json' -X POST "$URL/api/v1/issues" \
   -d "$(jq -nc --argjson actor "$ACTOR" '{project: "LEGSMOKE", title: "…", force: true, actor: $actor}')"
-curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -X PATCH "$URL/api/v1/issues/$KEY" \
+printf 'Authorization: Bearer %s' "$TOKEN" | curl -fsS -H @- -H 'Content-Type: application/json' -X PATCH "$URL/api/v1/issues/$KEY" \
   -d "$(jq -nc --argjson actor "$ACTOR" '{status: "todo", actor: $actor}')"
 ```
 

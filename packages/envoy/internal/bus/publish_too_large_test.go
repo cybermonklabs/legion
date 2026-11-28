@@ -18,6 +18,7 @@ import (
 // a caller answers as a refusal rather than a failure to retry, and none may close the connection
 // every subscription and watcher of the client runs on.
 func TestPublishRefusesAnEnvelopeNATSCannotTakeWhole(t *testing.T) {
+	t.Parallel()
 	client, err := ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -49,7 +50,7 @@ func TestPublishRefusesAnEnvelopeNATSCannotTakeWhole(t *testing.T) {
 		{"a payload past the server's max payload", envelope(push+"main", strings.Repeat("p", 1<<20)), ErrTooLarge, "max payload of 1048576 bytes"},
 		{"a core subject past the server's protocol line", envelope(contracts.RoleTopicPrefix+strings.Repeat("r", 5000), "{}"), ErrTooLarge, "a subject of 5019 bytes"},
 		{"a subject holding a space", envelope(push+"ci yml", "{}"), ErrInvalidSubject, `"notifications.github.acme.widgets.push.branch.ci yml"`},
-		{"a subject holding an empty token", envelope(contracts.AgentSubject("sess..x"), "{}"), ErrInvalidSubject, `"notifications.agent.sess..x"`},
+		{"a subject holding an empty token", envelope(contracts.LegacyAgentSubject("sess..x"), "{}"), ErrInvalidSubject, `"notifications.agent.sess..x"`},
 		{"a subject ending in an empty token", envelope(push+"main.", "{}"), ErrInvalidSubject, `"notifications.github.acme.widgets.push.branch.main."`},
 		{"a core subject holding an empty token", envelope(contracts.RoleTopicPrefix+"a..b", "{}"), ErrInvalidSubject, `"notifications.role.a..b"`},
 	} {

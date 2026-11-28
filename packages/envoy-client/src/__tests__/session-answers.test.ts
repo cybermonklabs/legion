@@ -10,6 +10,8 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { SessionAnswer } from "@legion/contracts";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { type FakeDispatchCall, fakeDispatchFetch } from "../../test/fake-dispatch";
 import { bearerCredential } from "../bearer";
@@ -35,6 +37,8 @@ const hoursAgo = (hours: number) => new Date(NOW - hours * 3_600_000).toISOStrin
 /** Where a read at `NOW` starts its window: 72 hours before it. */
 const SINCE = hoursAgo(72);
 const stateDir = temporaryDirectories("session-answers");
+/** The Dispatch bearer each test's Dispatch is reached with. */
+const TOKEN = fixtureSecret("dsp");
 
 function message(id: string, at: string, text: string): SessionAnswer {
   return {
@@ -153,6 +157,54 @@ describe("renderSessionAnswers", () => {
         `Question: ${"q".repeat(199)}r…`,
         "Selected: none",
         "Use JSON lines, one per item.",
+      ].join("\n")
+    );
+  });
+
+  // No read of a deleted post gives any part of its body: the server sends a deleted reply's text
+  // empty, with the delete's mark beside it (`sessionanswers.go`), so the head line ends with the
+  // deleted line and no words line follows it, for a comment's reply and a message's alike.
+  test("a deleted reply prints the deleted line and no words", () => {
+    const issue = { issue: { key: "CORE-7", title: "People's answers on every request" } };
+    const deletedComment: SessionAnswer = {
+      kind: "comment",
+      relation: "replied_on_your_ask",
+      id: "c-2",
+      at: "2026-10-27T10:30:00Z",
+      deleted_at: "2026-10-27T11:15:00Z",
+      deleted_by: { kind: "user", id: "ben@example.com" },
+      author: { kind: "user", id: "ben@example.com" },
+      text: "",
+      ask: { id: "ask-1", question: "Which format should the list use?" },
+      owner: issue,
+      ref: "dispatch://CORE-7/comment/c-2",
+      href: "/issues/CORE-7#comment-c-2",
+    };
+    const deletedMessage: SessionAnswer = {
+      kind: "message",
+      relation: "replied_to_your_message",
+      id: "m-2",
+      at: "2026-10-27T10:00:00Z",
+      deleted_at: "2026-10-27T10:20:00Z",
+      deleted_by: { kind: "user", id: "cy@example.com" },
+      author: { kind: "user", id: "cy@example.com" },
+      text: "",
+      owner: issue,
+      ref: "dispatch://CORE-7/message/m-2",
+      href: "/issues/CORE-7#message-m-2",
+    };
+
+    expect(renderSessionAnswerItem(deletedComment)).toBe(
+      [
+        "2026-10-27T10:30:00Z · user ben@example.com · replied on your ask · Deleted by user ben@example.com at 2026-10-27T11:15:00Z",
+        "dispatch://CORE-7/comment/c-2 · CORE-7: People's answers on every request",
+        "Question: Which format should the list use?",
+      ].join("\n")
+    );
+    expect(renderSessionAnswerItem(deletedMessage)).toBe(
+      [
+        "2026-10-27T10:00:00Z · user cy@example.com · replied to your message · Deleted by user cy@example.com at 2026-10-27T10:20:00Z",
+        "dispatch://CORE-7/message/m-2 · CORE-7: People's answers on every request",
       ].join("\n")
     );
   });
@@ -307,6 +359,16 @@ describe("sessionAnswersWords and sessionAnswersChanged", () => {
       ask: { id: "ask-1", question: "Which format, now?" },
     };
     expect(changed([answer], [retitled])).toBe(false);
+  });
+
+  // Dispatch names an item's relation at each read, from who asks and follows its ask then: an
+  // answer on an ask the session has since followed becomes an answer on its own ask, though
+  // nobody wrote anything.
+  test("the same item under another relation is a change", () => {
+    const another = { ...answer, relation: "answered_an_ask" };
+
+    expect(changed([another, comment, direct], [answer, comment, direct])).toBe(true);
+    expect(changed([answer], [another])).toBe(true);
   });
 
   // An item a read no longer holds: its time tells one the window left behind from one a person
@@ -476,7 +538,7 @@ function dispatchAt(): ActiveDispatchConfig {
   return {
     enabled: true,
     url: `http://answers-${dispatchCount}.test`,
-    credential: bearerCredential("test-token"),
+    credential: bearerCredential(TOKEN),
   };
 }
 let sessionCount = 0;
@@ -569,7 +631,8 @@ const failedReads: readonly {
   },
   {
     kind: "a 200 HTML sign-in page",
-    reason: "Dispatch answered with something that is not an answers list",
+    reason:
+      /^HTTP_200: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 200 with a body that is not JSON \("Sign in"\), which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may succeed\.$/,
     deadlineMs: 2_000,
     respond: () => page(200, "<!doctype html><html><title>Sign in</title><form></form></html>"),
   },
@@ -587,7 +650,8 @@ const failedReads: readonly {
   },
   {
     kind: "a 200 with an empty body",
-    reason: "Dispatch answered with something that is not an answers list",
+    reason:
+      /^HTTP_200: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 200 with an empty body, which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may succeed\.$/,
     deadlineMs: 2_000,
     respond: () => new Response("", { status: 200 }),
   },
@@ -788,8 +852,9 @@ describe("readSessionAnswers", () => {
   });
 
   // The notice is a line the host shows the session, so it names a Dispatch URL that carries a
-  // user and a password without them; the read itself goes to the URL as configured.
-  test("the no-route notice names the Dispatch URL without its user and password", async () => {
+  // user and a password by its fixed phrase alone, no part of it; the read itself goes to the URL
+  // as configured.
+  test("the no-route notice names a Dispatch URL with user info by its fixed phrase", async () => {
     const user = "user-7f2a";
     const secret = "pw-4c7e19";
     const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
@@ -805,10 +870,48 @@ describe("readSessionAnswers", () => {
       now: () => NOW,
     });
     expect(calls.map((call) => call.url.username)).toEqual([user]);
-    expect(read.notice).toBe(noRouteNotice(`http://answers-userinfo-${dispatchCount}.test`));
+    expect(read.notice).toBe(noRouteNotice(`the configured Dispatch URL ${URL_NOT_PRINTED}`));
     expect(read.notice).not.toContain(user);
     expect(read.notice).not.toContain(secret);
   });
+
+  // A password holding an unencoded '@' names no host, and the URL parser reads the password's
+  // tail as one. Resolving it fails, and the runtime's error names the host it was handed; the line
+  // both plugins add to every model request names the failure by its class and the URL by its
+  // fixed phrase (#4140, B1). The fetch is a stand-in that throws what Bun's own fetch throws for a
+  // name that does not resolve (measured on Bun 1.4.4: a TypeError `getaddrinfo ENOTFOUND <host>`,
+  // with that code and syscall), for the host the URL parser read, so the row asks no DNS server
+  // and does not wait on how fast the machine's DNS answers. The read waits 10 s, not the 800 ms a
+  // model request waits, so a loaded machine's slow turn of the event loop is not a read that ran
+  // out and names no failure at all.
+  test("a failed read of a Dispatch whose password holds an '@' names no part of the password", async () => {
+    const tail = `Tail${crypto.randomUUID().slice(0, 8)}`;
+    const dispatch = { ...dispatchAt(), url: `https://user-7f2a:p@ssword${tail}.invalid` };
+    const { calls, fetchImpl } = fakeDispatchFetch({
+      handler: ({ url: { hostname } }) => {
+        throw Object.assign(new TypeError(`getaddrinfo ENOTFOUND ${hostname}`), {
+          code: "ENOTFOUND",
+          syscall: "getaddrinfo",
+          hostname,
+          errno: 4,
+        });
+      },
+    });
+    const read = await readSessionAnswers({
+      session: newSession(),
+      dispatch,
+      env: envAt(stateDir()),
+      fetchImpl,
+      now: () => NOW,
+      deadlineMs: 10_000,
+    });
+    // The error the read was given named the password's tail, so the check below can fail.
+    expect(calls.map((call) => call.url.hostname)).toEqual([`ssword${tail}.invalid`.toLowerCase()]);
+    expect(read.text).toContain(
+      `Dispatch at the configured Dispatch URL ${URL_NOT_PRINTED} is unreachable: `
+    );
+    expect(JSON.stringify(read).toLowerCase()).not.toContain(tail.toLowerCase());
+  }, 30_000);
 
   test("a cached list carried after Dispatch's no-route 404 never names `dispatch answers`, its left-out line included", async () => {
     // Twelve items of about 1,000 characters each: the cap leaves the oldest out.
@@ -893,7 +996,10 @@ describe("readSessionAnswers", () => {
     expect(read.text).toBe(
       renderSessionAnswers(recent, {
         now: NOW,
-        cached: { readAt, reason: "Unable to connect" },
+        cached: {
+          readAt,
+          reason: `Dispatch at ${dispatch.url} is unreachable: TypeError (message withheld). If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`,
+        },
       })
     );
   });

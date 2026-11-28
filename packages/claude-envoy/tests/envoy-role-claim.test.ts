@@ -65,6 +65,11 @@ class IdleNats implements ChannelConnection {
   }
 
   async *status(): AsyncGenerator<ChannelConnectionStatus> {}
+
+  /** Never closed for good. */
+  closed(): Promise<Error | undefined> {
+    return new Promise(() => undefined)
+  }
 }
 
 const notifier: ChannelNotifier = {
@@ -106,7 +111,7 @@ test("reasserts a role claimed after channel startup on the next heartbeat", asy
     setRole: async (input) => {
       setRoles.push(input)
       reasserted.resolve()
-      return { claimed: true, interest: interest() }
+      return { claimed: true, interest: interest(), warnings: [] }
     },
     getRole: async () => ({ role: "reviewer", holder: "ses_lost", last_seen: 1, state: "live" }),
   }
@@ -123,6 +128,7 @@ test("reasserts a role claimed after channel startup on the next heartbeat", asy
       configFile: { path: join(stateDirectory, "envoy.json"), error: null },
       stateDirectory,
       clientInstanceID: INSTANCE,
+      pluginName: "@sjawhar/claude-envoy",
       pluginVersion: "source",
     })
 
@@ -146,7 +152,7 @@ test("the record a remembered role writes names this process, so another one tel
     getInterest: async () => interest(),
     unsubscribe: async () => undefined,
     unregisterSession: async () => undefined,
-    setRole: async () => ({ claimed: true, interest: interest() }),
+    setRole: async () => ({ claimed: true, interest: interest(), warnings: [] }),
     getRole: async () => ({
       role: "reviewer",
       holder: "ses_current",
@@ -165,6 +171,7 @@ test("the record a remembered role writes names this process, so another one tel
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
 
@@ -203,7 +210,7 @@ test("a record another process wrote is left where it is while this process hold
     },
     setRole: async (input) => {
       claimedRoles.push(input.role)
-      return { claimed: true, interest: noInterest() }
+      return { claimed: true, interest: noInterest(), warnings: [] }
     },
     getRole: async (role) => ({ role, holder: identity.id, last_seen: 1, state: "live" }),
   })
@@ -249,7 +256,7 @@ test("a record another process wrote is pressed while this process holds no role
   const client = recordingClient([], {
     setRole: async (input) => {
       setRoles.push(input)
-      return { claimed: true, interest: noInterest() }
+      return { claimed: true, interest: noInterest(), warnings: [] }
     },
     getRole: async (role) => ({ role, holder: identity.id, last_seen: 1, state: "live" }),
   })
@@ -315,7 +322,7 @@ test("every role claim and every release carries that same instance id, not one 
     },
     setRole: async (input) => {
       claims.push(input)
-      return { claimed: true, interest: noInterest() }
+      return { claimed: true, interest: noInterest(), warnings: [] }
     },
     unsubscribe: async (input) => {
       releases.push(input)
@@ -369,7 +376,7 @@ test("a refused claim naming the predecessor itself as holder keeps that record 
     setRole: async (input) => {
       setRoles.push(input)
       if (standingClaim) return { claimed: false, holder: "ses_claude" }
-      return { claimed: true, interest: noInterest() }
+      return { claimed: true, interest: noInterest(), warnings: [] }
     },
     getRole: async (role) => ({ role, holder: identity.id, last_seen: 1, state: "live" }),
   })

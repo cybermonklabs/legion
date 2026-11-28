@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  These signatures changed. `DispatchWriteUnsettledError`'s constructor
+  takes the write's `Idempotency-Key` as its third argument, which the error carries as `key`.
+  `EnvoyApiError` takes a second, optional argument, `{ tokens, redirectTo }`, the tokens its
+  message redacts and the origin a redirect pointed at. `DispatchClient` throws the new
+  `DispatchUnreachableError` (its `reachedNothing` says the request reached no server) where it
+  threw a plain `Error` for a request that got no answer, with the same message.
+  `formatOpenAsksSummary(response, linkBase)` takes the base its links are made on
+  (`linkBaseOf(...)`, `string | undefined`) where it took the Dispatch URL. broker-client's
+  `projectedToken(path, variable)` takes the variable that named the file, which its errors name.
+  `BrokerRefusedError` keeps no `description`: `said` is what a text may print of it, `code` is ""
+  for an OAuth code none of the clients handle, `shownCode` is the code as a text shows it, and
+  `podSessionUnregistered` is read from the description before it is dropped.
+time: 2026-11-18T18:58:54Z
+custom:
+    Issue: pr4140

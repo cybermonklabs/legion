@@ -5,7 +5,7 @@ import { api } from "../../api/client";
 import type { ApproverGrantResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { credentialGrantsQuery } from "./grants";
+import { credentialGrantsQuery } from "./logic/grants";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 
 /**
@@ -31,11 +31,21 @@ function grantedBy(grant: ApproverGrantResp): string {
 /**
  * Why nobody may revoke this grant, or null where somebody may. This is the broker's `mayRevoke`
  * condition, which is why it reads the two fields that decide it rather than `granted`: the
- * broker allows the grant's approver or its session's operator, and refuses a grant that names
- * neither — one the policy gave without asking, on a session nobody operates — to every
- * signed-in person, `NOT_APPROVER`. Such a grant is listed to everyone so that what a pod took
- * is on somebody's page, and it ends when the service's machine login that enrolled that session
- * is revoked, which ends every session under it, or when it expires.
+ * broker allows the grant's approver or the person its session acts for, and refuses a grant that
+ * names neither — one the policy gave without asking, on a session that acts for nobody — to every
+ * signed-in person, `NOT_APPROVER`. Such a grant is listed to everyone who may see it, so that
+ * what a pod took is on somebody's page, and it ends when the machine login that enrolled that
+ * session is revoked, which ends every session under it, or when it expires: anyone signed in may
+ * revoke a service's login, and only the person `BROKER_POD_OPERATORS` now maps a pod's account
+ * to may revoke that pod's login.
+ *
+ * `enrollment.operator` is the person the session acts for as the broker decides it
+ * (`operatorOf`), not the enrollment's record. A person's pod that the broker's
+ * `BROKER_POD_OPERATORS` stops mapping to its person acts for nobody, so its grants arrive with an
+ * empty operator, though their former person still finds them on their own list, which the broker
+ * selects by the record. A grant the policy gave such a pod without asking then names nobody: it
+ * is listed to everyone who may see it, as a service's pod's is, and reads as one that ends with
+ * its machine login, which is how it ends.
  *
  * The wire says "nobody" two ways and both arrive here: an absent approver is `null`
  * (`approverGrantResp.Approver` is a `*string`), and an enrollment with no operator is `""`
@@ -76,18 +86,20 @@ const columns: readonly RevocableColumn<ApproverGrantResp>[] = [
 /**
  * The viewer's live credential grants: every grant of a session the viewer operates, whether the
  * policy gave it without asking or someone approved it, and every grant the viewer approved on
- * anyone's session. Each row names how it was granted and is revocable with one click: Dispatch
- * sends the broker the viewer's own login, and the broker allows the revoke only when that login
- * is the grant's approver or its enrollment's operator. Only the operator sees an automatic grant,
- * and revoking one also ends that session's other automatic grants of those secrets and makes it
- * ask before it gets them again. A pod enrollment's slot shows under its enrollment, so the grants
- * of two roles in one pod read apart.
+ * anyone's session. Each row names how it was granted, and a row somebody may revoke is revocable
+ * with one click: Dispatch sends the broker the viewer's own login, and the broker allows the
+ * revoke only when that login is the grant's approver or the person its session acts for, or, for
+ * a grant the model judge approved in anyone's stead, anyone who may see it. An automatic grant
+ * of a session that acts for a person is on that person's page alone, and revoking one also ends
+ * that session's other automatic grants of those secrets and makes it ask before it gets them
+ * again. A pod enrollment's slot shows under its enrollment, so the grants of two roles in one
+ * pod read apart.
  *
- * It also lists, to every signed-in person, every live grant that belongs to no person: one the
- * policy gave a session a service's machine login enrolled, which has neither an approver nor an
- * operator. Nobody may revoke one of those (`unrevocable`), so each is read-only and says what
- * ends it: revoking that machine login, which ends every session under it. Rendered on the
- * Settings page.
+ * It also lists, to every signed-in person who may see it, every live grant that belongs to no
+ * person: one the policy gave a session a service's machine login enrolled, or a person's pod the
+ * broker's `BROKER_POD_OPERATORS` no longer maps, which has neither an approver nor an operator.
+ * Nobody may revoke one of those (`unrevocable`), so each is read-only and says what ends it:
+ * revoking that machine login, which ends every session under it. Rendered on the Settings page.
  */
 export function GrantsSection(): ReactNode {
   const queryClient = useQueryClient();
@@ -97,7 +109,7 @@ export function GrantsSection(): ReactNode {
     <RevocableList
       className="mt-10"
       columns={columns}
-      description="Every live grant of your sessions, given automatically or on approval, and the grants you approved. Revoking one ends its access immediately; after you revoke an automatic grant, that session asks before it gets those secrets again. Grants that belong to no person — the ones a service's machine login took without asking — are listed here to everyone and cannot be revoked one at a time: revoke that machine login to end every session under it."
+      description="Every live grant of your sessions, given automatically or on approval, and the grants you approved. Revoking one ends its access immediately; after you revoke an automatic grant, that session asks before it gets those secrets again. Grants that belong to no person — the ones a service's machine login, or a person's pod the broker no longer maps, took without asking — are listed here to everyone who may see them and cannot be revoked one at a time: revoke that machine login to end every session under it."
       empty="No live grants."
       heading="Live grants"
       headingId="credential-grants-heading"
@@ -107,8 +119,12 @@ export function GrantsSection(): ReactNode {
       }
       query={grants}
       revoke={(grant, bounds) => api.revokeCredentialGrant(grant.grant_id, bounds)}
-      revokeError="Could not revoke this grant."
       rowKey={(grant) => grant.grant_id}
+      rowName={({ enrollment, names }) => {
+        // As the row's Enrollment and Names read.
+        const to = [enrollment.kind, enrollment.runtime_id, enrollment.operator || "—"].join(" · ");
+        return `the grant of ${(names ?? []).join(", ")} to ${to}`;
+      }}
       unrevocable={unrevocable}
     />
   );

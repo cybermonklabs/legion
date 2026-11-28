@@ -1,0 +1,15 @@
+{
+  "source": "the measurement user's grant as the deployment renders it once its stream calls and envoy-measure.> are removed and its cutover inbox is added (not yet deployed)",
+  "publish": [
+    "$JS.API.INFO",
+    "$JS.API.STREAM.NAMES",
+    "$JS.API.STREAM.LIST",
+    "$JS.API.STREAM.INFO.*",
+    "$JS.API.CONSUMER.NAMES.*",
+    "$JS.API.CONSUMER.LIST.*",
+    "$JS.API.CONSUMER.INFO.*.*",
+    "$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.>",
+    "_INBOX_envoy_measure.cutover.>"
+  ],
+  "subscribe": ["_INBOX_envoy_measure.>"]
+}

@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `scripts/daemon-release-gate.sh` now takes the deployment repository as a required
+  `--deployment <owner/repo>`; without it, the gate exits 2 and reads nothing. It reads each
+  stack's config keys under the project name that stack's own `Pulumi.yaml` declares, and a
+  `Pulumi.yaml` that is missing or declares no name is `UNKNOWN`, by name. It reads the
+  deployment's Legion projects from `legion/projects/`, one file per project, as the deployment's
+  legion program does, and from the old list in `legion/Pulumi.prod.yaml` only when that directory
+  does not exist. Daemon mode no longer prints `UNKNOWN` about a deployment that keeps its projects
+  in files, and `--listeners` no longer shuts the gate on a pin built under the repository's old
+  name when the rename is recorded in a project's file.

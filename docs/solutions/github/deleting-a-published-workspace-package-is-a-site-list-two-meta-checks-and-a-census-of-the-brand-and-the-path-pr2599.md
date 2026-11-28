@@ -18,8 +18,8 @@ related_issues:
 # Deleting a published workspace package: the site list, the two meta-checks that prove it, and a census of the brand and the path
 
 The inverse of `docs/solutions/github/join-a-job-to-the-ci-router.md`: that document joins a job
-to the router, this one takes a published package out of it. `skills/legion-worker/references/cleanup-deletion.md`
-gives the deletion chain for a command; a published workspace package has more sites than that,
+to the router, this one takes a published package out of it. A published workspace package has
+more sites than a command's deletion chain (its implementation, script entry, docs and wrappers),
 and two of them no check covers.
 
 ## Delete every site in one commit, then let the meta-checks fail if you missed one

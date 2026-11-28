@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Writes Legion's configuration reference, <content dir>/legion/reference/config.md, in two
 // halves. The keys of `legion.yaml`: the loader's key table (packages/daemon/internal/config/
-// keytable.go), read through `legion config-reference --json`, which prints it from the binary
+// keytable.go), read through `legion config reference --json`, which prints it from the binary
 // scripts/build-binaries.sh built and reads no file and no daemon. The example files: every
 // example the repository tracks under deploy/kubernetes - the daemon's legion.yaml, the
 // operator-side controller.yaml, the operator's model route - rendered whole, comments included,
@@ -17,7 +17,7 @@ import { capitalized, REQUIRED, readTable } from "./lib/reference.ts";
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
 const EXAMPLES_DIR = "deploy/kubernetes";
 
-/** One nested key of a top-level key, as `legion config-reference --json` prints it: `path` is the
+/** One nested key of a top-level key, as `legion config reference --json` prints it: `path` is the
  *  mapping an operator writes it under, with `<KEY>`, `<APP>`, `<POD>` and `<NAME>` for a name the
  *  operator chooses and `[]` for a sequence entry, so `path` and `name` joined with a dot are the
  *  key as it is written. */
@@ -62,11 +62,11 @@ function checkRow(row: Record<string, unknown>, where: string): void {
   }
 }
 
-/** Runs `legion config-reference --json` and returns the key table it prints, every row checked
+/** Runs `legion config reference --json` and returns the key table it prints, every row checked
  *  here: the helper checks no field, because every row of this table, nested rows included, must
  *  answer checkRow. */
 function readKeys(): ConfigKey[] {
-  const keys = readTable("legion", ["config-reference", "--json"], "keys", []);
+  const keys = readTable("legion", ["config", "reference", "--json"], "keys", []);
   for (const key of keys) {
     checkRow(key, written(key, ""));
     if (!Array.isArray(key.nested)) {

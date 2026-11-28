@@ -11,7 +11,7 @@ import (
 
 // leakCheckSentence is a cause the sandbox runtime refuses a start with when the shared public
 // leak check could not be put in place in the role's pod (leakguard.Cause).
-const leakCheckSentence = "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found"
+const leakCheckSentence = "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found"
 
 // leakCheckRefused is a start the runtime refused on the leak check, wrapped as the sandbox
 // runtime's relaunch wraps every start error.
@@ -20,7 +20,7 @@ func leakCheckRefused(h *harness) error {
 		h.token, runtime.LeakCheckRefusal{Cause: leakCheckSentence})
 }
 
-// launchingWrites is every write of the claim that recorded a launch try: the write launchNow
+// launchingWrites is every write of the claim that recorded a launch try: the write launchTries
 // makes before it asks the runtime for the process, in order.
 func launchingWrites(h *harness) []Claim {
 	var tries []Claim
@@ -145,7 +145,7 @@ func TestALaunchTheLeakCheckRefusedCarriesItsCause(t *testing.T) {
 
 	// A death relaunches the same session through relaunchAfterFailure, which records the death
 	// as the cause the claim fails under. A relaunch whose every try the leak check refuses runs
-	// out in launchNow, under that cause, with the sentence beside it.
+	// out in launchTries, under that cause, with the sentence beside it.
 	t.Run("a relaunch after a death whose refused tries run out", func(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateReady)
@@ -222,7 +222,7 @@ func TestAStartCutShortByItsContextLeavesNoLeakCheckCause(t *testing.T) {
 		<-ctx.Done() // the push of the check waits in the runtime until something ends its context
 		cut <- ctx.Err()
 		return fmt.Errorf("launch %s: start through its authenticated launcher: %w", h.token, runtime.LeakCheckRefusal{
-			Cause: "the shared public leak check could not be installed: the start stopped waiting for the daemon's read of theorem-labs/agent-infra at leak-check-v3: " + ctx.Err().Error(),
+			Cause: "the shared public leak check could not be installed: the start stopped waiting for the daemon's read of example-org/deployment at leak-check-v3: " + ctx.Err().Error(),
 		})
 	}
 

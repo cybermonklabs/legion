@@ -6,10 +6,12 @@ import {
   censusReport,
   classify,
   type Group,
+  get,
   isSubsequence,
   MIN_STORED_PARAGRAPH,
   type PmNode,
   paragraphs,
+  Rate,
   readingMode,
   type StoredText,
   storedParagraphs,
@@ -18,6 +20,7 @@ import {
   versionOrder,
   visibleText,
 } from "../display-read-census.ts";
+import { holdDeadlines } from "./held-deadlines.ts";
 
 /** One fixture case: the two readings of one text and the class the census puts it in. */
 interface FixtureCase {
@@ -255,5 +258,53 @@ describe("--check-no-stored-text", () => {
     expect(storedTextIn("wrapped.md", wrapped, index).map((hit) => hit.id)).toEqual([
       "version/guard-2/1",
     ]);
+  });
+});
+
+describe("reading production", () => {
+  test("display-read-census's read hands its credential the request's deadline", async () => {
+    const held = holdDeadlines(() => Response.json([]));
+    try {
+      const config = { url: "http://dispatch.test", credential: held.credential };
+      await get(config, "/api/v1/projects", new Rate(1000), { requests: 0 });
+      held.expectEachRequestBoundByItsDeadline("display-read-census's read");
+    } finally {
+      held.restore();
+    }
+  });
+
+  // An outage (`outage`: a 5xx, a 408 or a 429) is the server's weather and is read again; any
+  // other refusal is this run's own answer, thrown at once. Each read again waits a second.
+  test.each([408, 429, 503])("a read answered %i is read again, as an outage", async (status) => {
+    let calls = 0;
+    const held = holdDeadlines(() => {
+      calls += 1;
+      return calls === 1
+        ? Response.json({ code: "BUSY", error: "busy" }, { status })
+        : Response.json(["read"]);
+    });
+    try {
+      const config = { url: "http://dispatch.test", credential: held.credential };
+      const spend = { requests: 0 };
+      const read = await get<string[]>(config, "/api/v1/projects", new Rate(1000), spend);
+      expect(read).toEqual(["read"]);
+      expect(spend.requests).toBe(2);
+    } finally {
+      held.restore();
+    }
+  });
+
+  test("a read answered 404 is this run's own answer, thrown at once", async () => {
+    const held = holdDeadlines(() =>
+      Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 })
+    );
+    try {
+      const config = { url: "http://dispatch.test", credential: held.credential };
+      const spend = { requests: 0 };
+      await expect(get(config, "/api/v1/projects", new Rate(1000), spend)).rejects.toThrow("404");
+      expect(spend.requests).toBe(1);
+    } finally {
+      held.restore();
+    }
   });
 });

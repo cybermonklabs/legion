@@ -1,6 +1,6 @@
 /** An indented code block's whitespace-only lines, read in a past version of the spec: the tree
  *  the server read that version's markdown into, drawn by the engine from one fixed answer, so it
- *  runs against a recording (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  runs against a recording (packages/dispatch/README.md, "The stubbed layer").
  */
 import { expect, type Locator } from "@playwright/test";
 
@@ -29,7 +29,7 @@ import { stubbed } from "./stub/stub-test";
 // test's, shared from `web/src/__tests__/pmdoc-leaf-readings.ts`.
 //
 // What the row reads is the version the server already stored, so it runs against a recording
-// rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+// rather than against a harness (packages/dispatch/README.md, "The stubbed layer").
 
 const agentSession = {
   actor: { kind: "session" as const, id: "e2e-indented-code-whitespace-lines" },

@@ -141,14 +141,14 @@ session, and why (sjawhar/legion#2366). The run has three steps. Every step only
    wrote in the window, one row for each session or role that the comment was owed or sent to (a
    pair). `trace.sql` writes Dispatch's whole record of one comment. Both are in
    `packages/envoy/internal/dispatch/deliveryaudit/`. Its `README.md` gives their columns.
-2. `tq receipts` (in theorem-labs/agent-infra `transcript-store/`) reads
+2. `tq receipts` (in example-org/deployment `transcript-store/`) reads
    `comments.csv` and the transcript store. It writes `receipts.tsv`, one status for each pair,
    and `receipts-counts.txt`, its counts. It owns the transcript rules: which transcript row is a
    receipt of a comment, which sessions count as the pair's session, and each pair's status.
 3. `report.ts` reads the three files and writes one markdown document and one TSV file of the
    document's pairs.
 
-theorem-labs/agent-infra's `transcript-store/comment-delivery/run.sh` does steps 1 and 2 on a dev box, which
+example-org/deployment's `transcript-store/comment-delivery/run.sh` does steps 1 and 2 on a dev box, which
 reaches both Dispatch's database and the transcript store.
 
 ### The run
@@ -173,7 +173,7 @@ psql "$DATABASE_URL" --single-transaction -q -X -v ON_ERROR_STOP=1 --csv \
   -v comment=03207432-749f-4211-9607-e378dc636807 \
   -f packages/envoy/internal/dispatch/deliveryaudit/trace.sql > trace-03207432.csv
 
-# 2. The transcript store (theorem-labs/agent-infra transcript-store/): receipts.tsv on stdout, the counts on stderr.
+# 2. The transcript store (example-org/deployment transcript-store/): receipts.tsv on stdout, the counts on stderr.
 tq receipts --comments comments.csv --from "$FROM" > receipts.tsv 2> receipts-counts.txt
 
 # 3. The document, and the TSV file of its pairs.
@@ -506,7 +506,9 @@ The steps print one line each, in this order:
   `gh api repos/cybermonklabs/legion/compare/<merge>...<commit> --jq .status` (`ahead` or
   `identical`). An unreadable `/healthz` makes the run unavailable.
 - **Scratch**: the issue and its three documents, `scratch issue=<KEY>
-  documents=spec.md,verification.md,notes.md pass`.
+  documents=spec.md,verification.md,notes.md pass`. Its status write must leave the issue
+  `in_progress`: an issue that stands in any other status prints `status issue=<KEY>
+  status=other fail` in place of that line.
 - **Request**: `POST /api/v1/artifacts/{id}/approval-requests` with `include_verification`,
   `request ask=<uuid> include-verification=yes pass`.
 - **Moved**, an assertion: `POST /api/v1/artifacts/{id}/edits` writes a new version of
@@ -531,15 +533,28 @@ The steps print one line each, in this order:
   is not reported, and costs the issue its closing words alone.
 
 A step that could not be carried out prints `<step> unavailable: <category>`
-(`auth|refused|transport|malformed|not-found`) instead of its verdict and is never a pass; the
-close, the one step that names a value before `unavailable:`, prints
+(`auth|refused|transport|malformed|not-found|landed`) instead of its verdict and is never a pass;
+the close, the one step that names a value before `unavailable:`, prints
 `close issue=<KEY> unavailable: <category>`. A failed scratch or request stops the steps after
 it, and the close still runs for an issue the run made.
+
+A write that landed with no answer to give (`409 KEY_COMMITTED`, or a replayed 2xx reading
+`ANSWER_NOT_KEPT`) made what it was sent to make, so the step reads it back and goes on from it,
+printing `scratch|status|upload|request|close landed: read back` first: the scratch issue is the
+newest open issue of the project holding the scratch title (`GET /api/v1/issues?project=`), an
+upload the issue's document of that name (`GET /api/v1/issues/{key}/artifacts`), the request the
+issue's open approval ask on the spec (`GET /api/v1/issues/{key}/asks?state=open`), and a status
+write or the close the issue as it stands (`GET /api/v1/issues/{key}`), whose status is checked
+as the write's own answer would be. Where the read finds nothing, the step prints `unavailable:
+landed`. An edit that landed is `moved unavailable: landed` or `control unavailable: landed`: the
+report it is judged by was in the answer Dispatch no longer has.
 
 The last two lines are `result pass|fail|unavailable exit=<code>` and the count of the
 assertions, `all 3 assertions passed` or `assertions passed <n> of 3`, so a reader can tell a
 whole run from a cut one. Exit 0: every assertion passed. Exit 1: an assertion failed and no step
-was unavailable. Exit 2: a step was unavailable, or a usage error.
+was unavailable. Exit 2: a step was unavailable, or the scratch issue stood in another status
+(`status issue=<KEY> status=other fail`, no assertion, which stops the run as an unavailable
+step does), or a usage error.
 
 Output is allowlisted on stdout and stderr alike: the issue key the run made (checked against
 the key pattern and the project the flag named), the names of the documents it uploaded, version

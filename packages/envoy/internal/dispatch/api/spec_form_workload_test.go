@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -48,16 +46,19 @@ const levelTwoWorkGrowth = 6
 // judgment (specFormOf) of a document of four times as many statements sends as many statements to
 // the database, so it reads the database once for the document and not once for each text, and
 // its work grows less than levelTwoWorkGrowth times, so it does no work for each pair of texts.
-// The work is the CPU time of the thread that judges (cputest.OfCall), as the form's own table
-// measures it (specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText): a wait for a core is
-// not in it, and work that allocates nothing is. Each size is judged three times, the two sizes
-// in turn, and the least of each is its work. All the documents stand under the root before any is
-// judged, since the judgment reads each other covered document under it. Through the request
-// route, the broken document of 301 statements is refused, and the clean one opens.
+// The work is the CPU time, user and system, of the thread that judges, measured as the form's own
+// table measures it (cputest.Growth, on cputest's thread clock, as
+// specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText does): a wait for a core is not in it,
+// nor the work of Postgres, which the count of statements bounds; the kernel's work for the
+// thread, its sends to the server among it, is in it, and so is work that allocates nothing. All
+// the documents stand under the root before any is judged, since the judgment reads each other
+// covered document under it. Through the request route, the broken document of 301 statements is
+// refused, and the clean one opens.
 func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
-	served := &server{deps: tree.deps}
-	sizes := []int{301, 4 * 301}
+	served := tree.deps.SpecForm
+	const scale = 4
+	sizes := []int{301, scale * 301}
 	for _, test := range []struct {
 		name, body string
 		broken     bool
@@ -76,34 +77,25 @@ func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *test
 				issues[count] = createFormIssue(t, tree.handler, tree.root, fmt.Sprintf("Level two sized, %d statements: %s", count, test.name), spec.String())
 				awaitSettled(t, tree.database, issues[count].PrimaryArtifactID)
 			}
-			least := map[int]time.Duration{}
 			statements := map[int]int{}
-			for sample := range 3 {
-				for _, count := range sizes {
+			judge := func(count int) func() {
+				return func() {
 					documents := []model.AskApprovalDocument{{ArtifactID: issues[count].PrimaryArtifactID, Name: "spec.md", Version: 1}}
 					counter := &countingQueryer{q: tree.database.Pool}
-					var result specFormResult
-					var err error
-					runtime.GC()
-					took := cputest.OfCall(func() {
-						result, err = served.specFormOf(context.Background(), counter, documents, specform.ActRequest)
-					})
+					result, err := served.specFormOf(context.Background(), counter, documents, specform.ActRequest)
 					if err != nil {
 						t.Fatalf("judge %d statements: %v", count, err)
 					}
 					if found, want := len(result.refusing()), map[bool]int{true: count, false: 0}[test.broken]; found != want {
 						t.Fatalf("the judgment of %d statements has %d findings, want %d", count, found, want)
 					}
-					if sample == 0 || took < least[count] {
-						least[count] = took
-					}
 					statements[count] = counter.statements
 				}
 			}
 			small, large := sizes[0], sizes[1]
-			grows := float64(least[large]) / float64(least[small])
-			t.Logf("%d statements: %d sent, %v; %d statements: %d sent, %v; %.1f times",
-				small, statements[small], least[small], large, statements[large], least[large], grows)
+			grows, smallWork, largeWork := cputest.Growth(3, scale, cputest.Again(judge(small)), cputest.Again(judge(large)))
+			t.Logf("%d statements %d times: %d sent each, %v; %d statements once: %d sent, %v; %.1f times",
+				small, scale, statements[small], smallWork, large, statements[large], largeWork, grows)
 			if statements[small] == 0 {
 				t.Fatal("the judgment sent no statement to the database, so this test counts nothing")
 			}
@@ -112,8 +104,8 @@ func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *test
 					statements[large], large, statements[small], small)
 			}
 			if grows >= levelTwoWorkGrowth {
-				t.Errorf("the work of the judgment grew %.1f times, from %v for %d statements to %v for %d, want less than %d times",
-					grows, least[small], small, least[large], large, levelTwoWorkGrowth)
+				t.Errorf("the work of the judgment grew %.1f times, from %v for %d runs of %d statements to %v for one run of %d, want less than %d times",
+					grows, smallWork, scale, small, largeWork, large, levelTwoWorkGrowth)
 			}
 			want := map[bool]int{true: http.StatusConflict, false: http.StatusCreated}[test.broken]
 			if response := requestFormApproval(t, tree.handler, issues[small].PrimaryArtifactID, nil); response.Code != want {
@@ -130,7 +122,7 @@ func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *test
 // judgment reads the name of each.
 func TestAJudgmentReadsTheApprovedDocumentsUnderItsRootInOneStatement(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
-	served := &server{deps: tree.deps}
+	served := tree.deps.SpecForm
 	approved := 0
 	approve := func(count int) {
 		for ; approved < count; approved++ {

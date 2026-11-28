@@ -1,0 +1,77 @@
+-- pgmigrate:non-transactional
+-- 20261118011258_embeddings_window_unembedded.up.sql — the second of the two indexes the search
+-- coverage statement reads the window kinds through, built concurrently.
+--
+-- Why it exists. The search coverage statement (internal/dispatch/embedqueue/coverage.go,
+-- coverageQuery) counts every row of a window kind whose text has something to embed, and reads
+-- those rows in two halves that are each other's negation over them, content_hash being NOT
+-- NULL: embedded at its current text (20261118011208_embeddings_window_embedded, which says why
+-- the statement before them took 10 to 30 s in production) and not, this index. A row of this
+-- half has no vector of its current text, so it is never current. The statement reads this half
+-- by a bitmap index scan of this index, ORed with the other half's (a BitmapOr of both indexes),
+-- and one bitmap heap scan over the two then visits each heap page holding window rows once,
+-- whatever the visibility map holds, testing no window's text (embedqueue's planCoverage says why
+-- that is the plan always). It holds the rows still waiting for a vector of their current text,
+-- the dead ones among them, a small share of the table.
+--
+-- Why the key is kind alone and nothing is included. The bitmap heap scan reads every column the
+-- statement reads of a row (dead and pending_since) from the heap anyway, so a column carried
+-- here would save no read. kind is the smallest key there is, and btree deduplication stores each
+-- kind once for a run of row pointers: at 0.3 x production's size this index was 40 kB, where the
+-- covering shape an earlier version of this migration built, including dead and pending_since,
+-- was 136 kB. And with no column included, an update of pending_since alone, a column no other
+-- index of embeddings holds, changes no column of this index, so the index does not keep that
+-- update from being HOT.
+--
+-- The predicate must stay the coverage statement's word for word. The statement repeats it
+-- (embedqueue's windowUnembedded, built from windowCoverageKinds and somethingToEmbed, the
+-- negation of nothingToEmbed, the one test of a text with nothing to embed) so that the planner
+-- can prove this index applies and drop those conditions from the scan. The kind is tested by a
+-- regex anchored at both ends, not by kind in (...): other indexes of embeddings read a list of
+-- kinds, and it proves their predicates, so the planner chose among those indexes by its
+-- estimates; no btree reads this regex and it proves no other index's predicate, so this index
+-- and 20261118011208_embeddings_window_embedded are the statement's one way to the window rows
+-- (embedqueue's windowItems and planCoverage). A predicate that drifts from the statement's -
+-- another kind list, another regex, or a half that is no longer the other's negation - leaves the
+-- answer right and the statement reading every window's text again. Postgres evaluates the
+-- regexes at each insert and update of a row, not at each read, so the blank test stays exact.
+--
+-- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
+-- runs one replica under a Kubernetes Deployment's `strategy: Recreate`
+-- (packages/envoy/infra/README.md), so the old pod has stopped before this build starts and the
+-- build's time is downtime. TestCoverageStatementScale (embedqueue) drops both indexes and builds
+-- them again with these files' own statements at each scale it measures, and logs each build's
+-- time: in two runs of the builds Job scripts/coverage-scale.sh runs (8 CPUs, 16 GiB each, on
+-- 2026-11-18), this build took 7.5 to 10.6 s and 20261118011208's 3.9 to 5.8 s on a synthetic
+-- corpus of production's size (about 1,000,000 window rows), and 15.2 to 17.6 s and 7.3 to 8.4 s
+-- on one of twice it. The time depends on the machine.
+--
+-- Why it is exempt from the census's size limit. A migration whose first line is
+-- `-- pgmigrate:non-transactional` holding exactly one non-unique
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS - this one - runs outside the runner's transaction and
+-- is exempt from the size limit (pgmigrate/nontransactional.go, concurrentIndex, and
+-- pgmigrate/census.go, Census). What the build takes on embeddings is SHARE UPDATE EXCLUSIVE,
+-- which no ordinary read or write of the table waits on; what it costs instead is two passes
+-- over the table and a wait for every older snapshot between them.
+--
+-- What a failed build leaves, which a transactional one cannot leave at all. CREATE INDEX
+-- CONCURRENTLY commits its catalog rows before it scans, so a build that fails, is cancelled or
+-- is killed leaves an index of this name marked invalid: the planner ignores an invalid index
+-- for every query, while Postgres goes on maintaining it on each write once the build has
+-- reached its second phase, so it costs the writes and buys no read. The coverage statement
+-- loses no row over that: its conditions stand on the row itself, so it answers the same counts
+-- by reading this half's rows from the heap and running the regex over their text again, the cost
+-- this index exists to save, and may reach its own statement_timeout and answer 503 until the
+-- index is built.
+--
+-- Nothing has to be repaired by hand. The version is recorded only after a build that finished,
+-- so the next boot runs this migration again, and the runner drops an invalid index of this
+-- name on this table with DROP INDEX CONCURRENTLY and builds it again
+-- (pgmigrate/nontransactional.go, ExecNonTransactional and dropOwnLeftover). IF NOT EXISTS alone
+-- would not cure it: Postgres skips the statement for any relation of that name, an invalid
+-- index included, and a boot that skipped it that way would record the version over a
+-- half-built index for good. A build that keeps failing is a lock or an old snapshot the boot's
+-- log names, not an index to drop by hand.
+create index concurrently if not exists embeddings_window_unembedded
+    on embeddings (kind)
+    where kind ~ '^(document_block|comment_block|message_block|ask_part)$' and text_snapshot ~ '[^[:space:]]' and (embedding is null or embedded_hash is distinct from content_hash);

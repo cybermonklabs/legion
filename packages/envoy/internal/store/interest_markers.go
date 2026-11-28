@@ -123,7 +123,7 @@ func (c *interestMarkerCollector) run(ctx context.Context, js func() nats.JetStr
 func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(*interestPass)) (uint64, error) {
 	kv := c.registry.interests()
 	var pass interestPass
-	read1, err := kv.ReadStreamState()
+	read1, err := kv.ReadStreamState(context.Background())
 	if err != nil {
 		c.refuse(slog.LevelWarn, "its first read of the bucket's stream failed", &pass, slog.String("error", err.Error()))
 		return 0, fmt.Errorf("interest markers: read the bucket's stream: %w", err)
@@ -145,7 +145,7 @@ func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(
 	if afterScan != nil {
 		afterScan(&pass)
 	}
-	read2, err := kv.ReadStreamState()
+	read2, err := kv.ReadStreamState(context.Background())
 	if err != nil {
 		c.refuse(slog.LevelWarn, "its second read of the bucket's stream failed", &pass, slog.String("error", err.Error()))
 		return 0, fmt.Errorf("interest markers: read the bucket's stream again: %w", err)
@@ -173,7 +173,9 @@ func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(
 	if err := js.PurgeStream(pass.read2.Name, &nats.StreamPurgeRequest{Sequence: pass.floor}); err != nil {
 		// A purge the server refuses -- a NATS user without STREAM.PURGE on this stream -- leaves
 		// every marker where it was and the listener serving. It says so once rather than every
-		// five minutes, since the grant does not change on its own.
+		// five minutes, since the grant does not change on its own. js is the client's own
+		// context (bus.Client.JS), so a purge sent while nats.go reconnects is already named
+		// bus.ErrReconnecting.
 		if !c.purgeRefused {
 			c.purgeRefused = true
 			c.logPass(slog.LevelWarn, "interest marker collection could not purge the bucket", &pass,
@@ -187,7 +189,7 @@ func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(
 	// ways: a put landing in between under-reports it, and a peer listener's purge landing in
 	// between is counted as this pass's too, so a sum of purged across the fleet overstates what
 	// was removed.
-	purgedStream, err := kv.ReadStreamState()
+	purgedStream, err := kv.ReadStreamState(context.Background())
 	if err != nil {
 		// The purge is done; only its count is unknown.
 		c.logPass(slog.LevelWarn, "interest markers collected", &pass,

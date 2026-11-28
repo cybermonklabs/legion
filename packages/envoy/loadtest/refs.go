@@ -211,7 +211,9 @@ func runSeedRefs(args []string) error {
 	fs := flag.NewFlagSet("seed-refs", flag.ExitOnError)
 	var f refsFlags
 	f.register(fs)
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
@@ -268,15 +270,45 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 	for _, t := range order {
 		g.Go(func() error {
 			name := fmt.Sprintf("%s%d.md", refTargetPrefix, t.n)
+			// The id of the document version 1 created, which every later version reads its base
+			// from: an upload replacing a document names the text it believes it is replacing.
+			// Every version writes that same document, so a later version that landed with no
+			// answer to give keeps the id an earlier version gave.
+			var artifactID string
 			for v := range t.versions {
 				body := map[string]any{
 					"name":    name,
 					"content": fmt.Sprintf("# Reference target %d\n\nRevision %d of a document other issues cite.\n", t.n, v+1),
 					"actor":   refWriter(t.order[v]),
 				}
+				if v > 0 {
+					token, err := refDocumentToken(gctx, a, artifactID)
+					if err != nil {
+						return err
+					}
+					body["precondition"] = map[string]any{"document": token}
+				}
 				res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+t.issue+"/artifacts", who{}, body, refTargetKey(t.n, v+1))
-				if res.err != nil || res.status != http.StatusCreated {
+				// A write that landed with no answer to give made the version: the seed goes on to
+				// the next version as after a 201.
+				landed := res.landed()
+				if !landed && (res.err != nil || res.status != http.StatusCreated) {
 					return fmt.Errorf("write %s version %d on %s: %d %s %v, want 201", name, v+1, t.issue, res.status, trunc(res.body), res.err)
+				}
+				switch {
+				case !landed:
+					artifactID = idOf(res.body)
+				case v == 0:
+					// A first version that landed has no earlier id to keep: the document it
+					// made is read back by its name, which no other document of the issue has.
+					id, err := refReadBack(gctx, a, t.issue, name)
+					if err != nil {
+						return err
+					}
+					artifactID = id
+				}
+				if artifactID == "" {
+					return fmt.Errorf("write %s version %d on %s: no artifact id in %s", name, v+1, t.issue, trunc(res.body))
 				}
 				if n := written.Add(1); n%refProgressEvery == 0 {
 					log.Printf("seed-refs: %d/%d versions, %d targets done, %s", n, total, done.Load(), time.Since(start).Round(time.Second))
@@ -291,6 +323,46 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 	}
 	log.Printf("seed-refs: wrote %d targets, %d versions in %s", len(p.targets), written.Load(), time.Since(start).Round(time.Second))
 	return int(written.Load()), nil
+}
+
+// refDocumentToken is the document token of a target about to take another version: the base the
+// upload writing that version names, read as `dispatch doc-read` reads it.
+func refDocumentToken(ctx context.Context, a *api, artifactID string) (string, error) {
+	res := a.callRetry(ctx, "GET", "/api/v1/artifacts/"+artifactID+"/text", who{}, nil)
+	if res.err != nil || res.status != http.StatusOK {
+		return "", fmt.Errorf("read %s before its next version: %d %s %v, want 200", artifactID, res.status, trunc(res.body), res.err)
+	}
+	var doc struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(res.body, &doc); err != nil || doc.Token == "" {
+		return "", fmt.Errorf("read %s before its next version: no document token in %s (%v)", artifactID, trunc(res.body), err)
+	}
+	return doc.Token, nil
+}
+
+// refReadBack is the id of the document named name on issue, which a first version that landed
+// with no answer to give made: the element of the issue's documents whose name is name, as
+// loopWriter.readBack finds what a landed write made. A target's name is its own on its issue, so
+// at most one element has it; none is an error, since the write made it.
+func refReadBack(ctx context.Context, a *api, issue, name string) (string, error) {
+	res := a.callRetry(ctx, "GET", "/api/v1/issues/"+issue+"/artifacts", who{}, nil)
+	if !res.ok() {
+		return "", fmt.Errorf("read back %s on %s: %d %s %v, want 200", name, issue, res.status, trunc(res.body), res.err)
+	}
+	var rows []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(res.body, &rows); err != nil {
+		return "", fmt.Errorf("read back %s on %s: %w", name, issue, err)
+	}
+	for _, row := range rows {
+		if row.Name == name && row.ID != "" {
+			return row.ID, nil
+		}
+	}
+	return "", fmt.Errorf("read back %s on %s: the landed write made no document of that name in %s", name, issue, trunc(res.body))
 }
 
 // writeRefSources writes one references.md per LGA issue that cites at least one target. Each
@@ -315,7 +387,7 @@ func writeRefSources(ctx context.Context, a *api, p refPlan) (issues, cites int,
 			}
 			body := map[string]any{"name": refSourceName, "content": b.String(), "actor": refWriter(0)}
 			res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+key+"/artifacts", who{}, body, refSourceKey(key))
-			if res.err != nil || res.status != http.StatusCreated {
+			if !res.landed() && (res.err != nil || res.status != http.StatusCreated) {
 				return fmt.Errorf("write %s on %s: %d %s %v, want 201", refSourceName, key, res.status, trunc(res.body), res.err)
 			}
 			return nil
@@ -344,7 +416,9 @@ func runRefsShape(args []string) error {
 	fs := flag.NewFlagSet("refs-shape", flag.ExitOnError)
 	var f refsFlags
 	f.register(fs)
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
@@ -424,7 +498,9 @@ func runRefsFetch(args []string) error {
 	var f refsFlags
 	f.register(fs)
 	out := fs.String("out", "", "output TSV: key, status, ETag, body sha256, bytes")
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}

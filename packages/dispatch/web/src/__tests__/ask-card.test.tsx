@@ -1,4 +1,4 @@
-import { afterAll, expect, jest, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, a form's own submit, the same-task pair of presses, a press on a control the send holds disabled, and a key that must not press the button it reaches
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -24,12 +24,19 @@ import { AskCard } from "../features/inbox/AskCard";
 import { AskReplyComposer } from "../features/inbox/AskThread";
 import type { OwnedAsk } from "../features/inbox/ask-name";
 import { Inbox } from "../features/inbox/Inbox";
+import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
 import { keyedAttempt } from "./keyed-attempt";
 import { specFormRefusal, specFormRefusalBody } from "./spec-form-fixture";
 import { userOnFakeClock } from "./user";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
   edges: [],
@@ -132,6 +139,32 @@ function renderCard(node: ReactNode) {
     </MemoryRouter>
   );
   return { queryClient, view };
+}
+
+/** One document of CORE-1 as a header reads it, with the approval the row gives it: its slug and
+ *  its reference key come from its name, and `spec.md` is the issue's primary document. The rows
+ *  below differ in the approval alone, so the rest of a document stands here once. */
+function reviewedDocument(document: {
+  id: string;
+  name: string;
+  approval: ArtifactApproval;
+}): Artifact {
+  const slug = document.name.replaceAll(".", "-");
+  return {
+    approval: document.approval,
+    created_at: "2026-09-09T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    id: document.id,
+    issue_key: "CORE-1",
+    kind: "doc",
+    name: document.name,
+    primary: document.name === "spec.md",
+    project: "CORE",
+    ref_key: `CORE-1/${slug}`,
+    session_id: null,
+    slug,
+    versions: [],
+  };
 }
 
 /** The element a forward Tab reaches from `from`: the next enabled, unhidden focusable element in
@@ -589,7 +622,9 @@ test("two AskCard instances for the same ask keep independently labeled answer f
     const fields = view.getAllByLabelText("Your answer");
     expect(fields).toHaveLength(2);
     expect(fields[0]).not.toBe(fields[1]);
-    expect(fields[0].id).not.toBe(fields[1].id);
+    // Each box is named by the label it sits inside (the shared text field's), so two cards on
+    // one page cannot share a name or a box, whatever ids the page holds.
+    expect(fields[0]?.closest("label")).not.toBe(fields[1]?.closest("label"));
   } finally {
     view.unmount();
   }
@@ -694,17 +729,19 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const submitted: AnswerAskInput[] = [];
+  const answerHeld = Promise.withResolvers<void>();
   const { promise: landed, resolve: land } = Promise.withResolvers<void>();
   const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
     await landed;
     return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
   });
   const input = ask();
-  const { view } = renderCard(
+  const { queryClient, view } = renderCard(
     <AskCard
       ask={input}
       answerAsk={async (_id, submission) => {
         submitted.push(submission);
+        await answerHeld.promise;
         return answered(input, submission.selected, submission.text ?? null);
       }}
       getAskThread={emptyThread(input)}
@@ -712,6 +749,9 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
   );
 
   try {
+    // The who-am-I read (a 401, as `network.ts` answers it) settles here, before the first press,
+    // rather than during a press, where its answer would update the card outside `act`.
+    await waitFor(() => expect(queryClient.getQueryState(["whoami"])?.status).toBe("error"));
     const answer = view.getByLabelText("Your answer") as HTMLTextAreaElement;
     await user.click(answer);
     await user.paste("This one");
@@ -731,6 +771,9 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
       expect(answer.value).toBe("This one ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
     );
     await user.click(view.getByRole("button", { name: "Answer" }));
+    await act(async () => {
+      answerHeld.resolve();
+    });
     await waitFor(() =>
       expect(submitted).toEqual([
         {
@@ -925,7 +968,7 @@ test("AskCard offers to ask back for a question-shaped answer without closing th
     await user.paste("How does this fit our release plan?");
     await user.click(view.getByRole("button", { name: "Answer" }));
 
-    const choice = await view.findByRole("group", { name: "Question-shaped answer" });
+    const choice = await view.findByRole("group", { name: "Your answer reads as a question" });
     const clarification = within(choice).getByRole("button", { name: "Ask back instead" });
     expect(answerCalls).toEqual([]);
     expect(clarification).toHaveFocus();
@@ -1409,13 +1452,16 @@ test("a card of the request that the person did not press shows Dispatch's form 
     act(() =>
       setFormRefusal("ask:ask-1", {
         error: specFormRefusal(),
-        press: { at: Number.MAX_SAFE_INTEGER, surface: 0, version: undefined },
+        press: { at: Number.MAX_SAFE_INTEGER, surface: 0, versions: undefined },
       })
     );
 
     expect((await within(card).findByRole("alert")).textContent).toBe(cardRefusal);
+    // The options are drawn through the Markdown engine, a module loaded on first use, so the
+    // refusal can show before them in a run that reaches this row first.
     expect(
-      (within(card).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+      ((await within(card).findByRole("radio", { name: "Request changes" })) as HTMLInputElement)
+        .checked
     ).toBe(true);
     expect(elsewhere).toHaveFocus();
   } finally {
@@ -1444,21 +1490,11 @@ for (const pressed of ["header", "card"] as const) {
       kind: "approval",
       options: [{ label: "Approve" }, { label: "Request changes" }],
     });
-    const document: Artifact = {
-      approval: { latest_version: 12, state: "awaiting" } as ArtifactApproval,
-      created_at: "2026-09-09T00:00:00Z",
-      created_by: { id: "alice", kind: "user" },
+    const document = reviewedDocument({
+      approval: { ask_id: "ask-1", latest_version: 12, state: "awaiting" } as ArtifactApproval,
       id: "artifact-1",
-      issue_key: "CORE-1",
-      kind: "doc",
       name: "spec.md",
-      primary: true,
-      project: "CORE",
-      ref_key: "CORE-1/spec-md",
-      session_id: null,
-      slug: "spec-md",
-      versions: [],
-    };
+    });
     const { view } = renderCard(
       <>
         <div data-testid="header">
@@ -1508,6 +1544,229 @@ for (const pressed of ["header", "card"] as const) {
   });
 }
 
+/** A request of two documents, the spec at version 12 and the Verification document at
+ *  `verification`, as Legion's architect requests them (`--include-verification`), and the
+ *  Verification document's page that reads that request. */
+function twoDocumentRequest(verification: number): { input: OwnedAsk; document: Artifact } {
+  const documents = [
+    { artifact_id: "artifact-1", name: "spec.md", requested_version: 12, version: 12 },
+    {
+      artifact_id: "artifact-2",
+      name: "verification.md",
+      requested_version: 4,
+      version: verification,
+    },
+  ];
+  return {
+    input: ask({
+      approval: {
+        artifact_id: "artifact-1",
+        documents,
+        name: "spec.md",
+        requested_version: 12,
+        version: 12,
+      },
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    }),
+    document: reviewedDocument({
+      approval: {
+        ask_id: "ask-1",
+        documents,
+        latest_version: verification,
+        state: "awaiting",
+      } as ArtifactApproval,
+      id: "artifact-2",
+      name: "verification.md",
+    }),
+  };
+}
+
+// The gate judges every document a request names, so a refusal belongs to the request: a refused
+// Approve on the card of a request of the spec and the Verification document shows in the
+// Verification document's header too.
+test("a form refusal of a request of two documents shows in the header of its second document", async () => {
+  const user = userEvent.setup();
+  const { input, document } = twoDocumentRequest(4);
+  const { view } = renderCard(
+    <>
+      <div data-testid="header">
+        <ApprovalChip artifact={document} variant="header" />
+      </div>
+      <AskCard
+        answerAsk={async () => {
+          throw specFormRefusal();
+        }}
+        ask={input}
+        getAskThread={emptyThread(input)}
+        variant="compact"
+      />
+    </>
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
+
+    expect((await within(card).findByRole("alert")).textContent).toBe(cardRefusal);
+    expect((await within(view.getByTestId("header")).findByRole("alert")).textContent).toBe(
+      specFormRefusalBody.error
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// The findings are of the texts the request's versions hold, so a new version of any document of
+// the request hides its refusal, the second document's as much as the first's.
+test("a new version of the second document of a request hides the request's form refusal", async () => {
+  const user = userEvent.setup();
+  const before = twoDocumentRequest(4);
+  const { queryClient, view } = renderCard(
+    <AskCard
+      answerAsk={async () => {
+        throw specFormRefusal();
+      }}
+      ask={before.input}
+      getAskThread={emptyThread(before.input)}
+      variant="compact"
+    />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
+    expect((await within(card).findByRole("alert")).textContent).toBe(cardRefusal);
+
+    const after = twoDocumentRequest(5);
+    view.rerender(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <AskCard ask={after.input} getAskThread={emptyThread(after.input)} variant="compact" />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(within(card).queryByRole("alert")).toBeNull());
+  } finally {
+    view.unmount();
+  }
+});
+
+// Another request of the same document at the same version, such as one that the author opens
+// again after a request for changes with no new version, is not the request that Dispatch refused,
+// so its card shows no refusal.
+test("a card of another request of the same document and version shows no form refusal", async () => {
+  const user = userEvent.setup();
+  const approval = {
+    artifact_id: "artifact-1",
+    documents: null,
+    name: "spec.md",
+    requested_version: 12,
+    version: 12,
+  };
+  const open = ask({
+    approval,
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const other = ask({
+    approval,
+    id: "ask-0",
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const { view } = renderCard(
+    <>
+      <AskCard
+        answerAsk={async () => {
+          throw specFormRefusal();
+        }}
+        ask={open}
+        getAskThread={emptyThread(open)}
+        variant="compact"
+      />
+      <AskCard ask={other} getAskThread={emptyThread(other)} variant="compact" />
+    </>
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
+    expect((await within(card).findByRole("alert")).textContent).toBe(cardRefusal);
+    expect(within(view.getByTestId("ask-ask-0")).queryByRole("alert")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// With no request open, the document's approval names the ask of its latest review, here a request
+// that the person answered with Request changes. A refusal of the header's Approve then is the
+// document's own and not that answered request's, so the request's completed card, at the same
+// version, shows no refusal and keeps no reason in its draft.
+test("a form refusal of the header's Approve with no request open does not reach the card of a request answered before", async () => {
+  const user = userEvent.setup();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    specFormRefusal()
+  );
+  const input = answered(
+    ask({
+      approval: {
+        artifact_id: "artifact-1",
+        documents: null,
+        name: "spec.md",
+        requested_version: 12,
+        version: 12,
+      },
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    }),
+    ["Request changes"],
+    "Name each term."
+  );
+  const document = reviewedDocument({
+    approval: {
+      ask_id: "ask-1",
+      latest_version: 12,
+      state: "changes_requested",
+      version: 12,
+    } as ArtifactApproval,
+    id: "artifact-1",
+    name: "spec.md",
+  });
+  const { view } = renderCard(
+    <>
+      <div data-testid="header">
+        <ApprovalChip artifact={document} variant="header" />
+      </div>
+      {/* The completed card draws its refusal and its unsent draft beside its record, not inside
+          it, so the row reads the whole card through a box of its own. */}
+      <div data-testid="card">
+        <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+      </div>
+    </>
+  );
+
+  try {
+    const header = view.getByTestId("header");
+    const card = view.getByTestId("card");
+    const approve = within(header).getByRole("button", { name: "Approve" });
+    await user.click(approve);
+
+    expect((await within(header).findByRole("alert")).textContent).toBe(specFormRefusalBody.error);
+    // The press's focus comes back to Approve in an effect of the same draw as the card's effect
+    // that would put the reason in the request's draft, so both have run once it is there.
+    await waitFor(() => expect(approve).toHaveFocus());
+    expect(within(card).queryByRole("alert")).toBeNull();
+    expect(within(card).queryByTestId("ask-unsent-answer")).toBeNull();
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
 // Nothing that the person typed is lost (plan decision 14): after a refused Approve the field holds
 // Dispatch's reason, then one empty line, then the person's note as it was. The draft belongs to
 // the request, so each card of the request shows the same text: the note is typed in the first
@@ -1556,6 +1815,90 @@ test("a form refusal of Approve puts Dispatch's reason before the note that the 
   }
 });
 
+// A refusal of Approve is the request's that the person pressed on, whichever ask the card shows by
+// the time it lands: each press carries its ask, and a host may draw the card for the next request
+// while the answer is out. The refusal is kept for the first request, and its reason goes into the
+// first ask's draft, so the card drawn for the next request keeps its own field and shows no
+// refusal, and the card drawn for the first request again shows the refusal and the reason.
+test("a form refusal of Approve that lands after the card moves to another request stays with the request it was pressed on", async () => {
+  const user = userEvent.setup();
+  const first = ask({
+    approval: {
+      artifact_id: "artifact-1",
+      documents: null,
+      name: "first.md",
+      requested_version: 12,
+      version: 12,
+    },
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+    question: "Approve the first spec?",
+  });
+  const next: OwnedAsk = {
+    ...first,
+    approval: {
+      artifact_id: "artifact-2",
+      documents: null,
+      name: "second.md",
+      requested_version: 3,
+      version: 3,
+    },
+    id: "ask-2",
+    question: "Approve the second spec?",
+  };
+  const answered: string[] = [];
+  const refusal = Promise.withResolvers<Ask>();
+  const answerAsk = (id: string): Promise<Ask> => {
+    answered.push(id);
+    return refusal.promise;
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const draw = (input: OwnedAsk) => (
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <AskCard answerAsk={answerAsk} ask={input} getAskThread={emptyThread(input)} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(draw(first));
+
+  try {
+    await user.click(
+      await within(view.getByTestId("ask-ask-1")).findByRole("radio", { name: "Approve" })
+    );
+    await user.click(within(view.getByTestId("ask-ask-1")).getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(answered).toEqual(["ask-1"]));
+
+    view.rerender(draw(next));
+    const shown = await view.findByTestId("ask-ask-2");
+    await act(async () => {
+      refusal.reject(specFormRefusal());
+    });
+
+    expect(within(shown).queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      (within(shown).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+    ).toBe(false);
+    expect((shown.querySelector("textarea[data-ask-answer]") as HTMLTextAreaElement).value).toBe(
+      ""
+    );
+
+    view.rerender(draw(first));
+    const again = await view.findByTestId("ask-ask-1");
+    expect((await within(again).findByRole("alert")).textContent).toBe(cardRefusal);
+    expect(
+      (within(again).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+    ).toBe(true);
+    expect((within(again).getByLabelText("Reason (required)") as HTMLTextAreaElement).value).toBe(
+      specFormRefusalBody.changes_reason
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 test("a Done / Can't question is an ordinary question: Other stays, Can't needs no reason", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
@@ -1592,7 +1935,7 @@ test("a Done / Can't question is an ordinary question: Other stays, Can't needs 
   }
 });
 
-test("the compact card opens and focuses the reason field when Request changes is picked, again when the disclosure reopens", async () => {
+test("the compact card focuses the reason field when Request changes is picked, again when it is picked again", async () => {
   const user = userEvent.setup();
   const input = ask({
     kind: "approval",
@@ -1605,7 +1948,8 @@ test("the compact card opens and focuses the reason field when Request changes i
   try {
     const card = view.getByTestId("ask-ask-1");
     await user.click(await within(card).findByRole("radio", { name: "Approve" }));
-    expect(within(card).queryByLabelText(/Reason|Your answer/)).not.toBeInTheDocument();
+    // The answer box stands in place, and picking Approve leaves the reader on the option.
+    expect(within(card).getByLabelText("Reason")).not.toHaveFocus();
     expect(within(card).getByRole("button", { name: "Answer" })).not.toHaveAttribute("disabled");
 
     await user.click(within(card).getByRole("radio", { name: "Request changes" }));
@@ -1618,15 +1962,11 @@ test("the compact card opens and focuses the reason field when Request changes i
     await user.paste("Needs another pass.");
     expect(answer).not.toHaveAttribute("disabled");
 
-    // Closing the disclosure unmounts the field; Request changes is still the picked radio, so
-    // reopening the disclosure is what brings the field back, and it must take focus again.
-    await user.click(
-      within(card).getByRole("button", { name: "Add a note or answer in your own words" })
-    );
+    // The field stands in place under the options: picking Approve makes it a note again, and
+    // picking Request changes again makes it the reason, which must take the focus again.
+    await user.click(within(card).getByRole("radio", { name: "Approve" }));
     expect(within(card).queryByLabelText("Reason (required)")).not.toBeInTheDocument();
-    await user.click(
-      within(card).getByRole("button", { name: "Add a note or answer in your own words" })
-    );
+    await user.click(within(card).getByRole("radio", { name: "Request changes" }));
     const reopened = within(card).getByLabelText("Reason (required)");
     expect(reopened).toHaveFocus();
   } finally {
@@ -1906,7 +2246,8 @@ test("an answered ask records a chosen Other answer under an Other label, not as
   try {
     const card = view.getByTestId("ask-ask-1");
     expect(await within(card).findByText("Other")).toBeTruthy();
-    expect(within(card).getByText("Neither, let's wait a week")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(card).findByText("Neither, let's wait a week")).toBeTruthy();
   } finally {
     view.unmount();
   }
@@ -2031,7 +2372,7 @@ test("AskCard keeps the thread and reply composer visible after the ask is answe
   }
 });
 
-test("the thread composer only appears after an ask is answered", async () => {
+test("the thread composer appears only once an ask is no longer open", async () => {
   const openAsk = ask();
   const { view: openView } = renderCard(
     <AskCard ask={openAsk} getAskThread={emptyThread(openAsk)} />
@@ -2041,10 +2382,24 @@ test("the thread composer only appears after an ask is answered", async () => {
   const { view: answeredView } = renderCard(
     <AskCard ask={answeredAsk} getAskThread={emptyThread(answeredAsk)} />
   );
+  const resolvedAsk: OwnedAsk = {
+    ...ask({ id: "ask-resolved" }),
+    resolution: {
+      actor: { id: "session-1", kind: "session" },
+      at: "2026-09-09T00:05:00Z",
+      kind: "retracted",
+      reason: "Superseded.",
+    },
+    state: "resolved",
+  };
+  const { view: resolvedView } = renderCard(
+    <AskCard ask={resolvedAsk} getAskThread={emptyThread(resolvedAsk)} />
+  );
 
   try {
     const openScope = within(openView.container);
     const answeredScope = within(answeredView.container);
+    const resolvedScope = within(resolvedView.container);
     expect(await openScope.findByLabelText("Your answer")).toBeTruthy();
     expect(openScope.queryByLabelText("Reply")).not.toBeInTheDocument();
 
@@ -2053,9 +2408,14 @@ test("the thread composer only appears after an ask is answered", async () => {
     expect(
       answeredScope.queryByText("Replying does not answer the question.")
     ).not.toBeInTheDocument();
+
+    // A resolved ask is not open either, however it was resolved.
+    expect(await resolvedScope.findByLabelText("Reply")).toBeTruthy();
+    expect(resolvedScope.getByRole("button", { name: "Reply" })).toBeTruthy();
   } finally {
     openView.unmount();
     answeredView.unmount();
+    resolvedView.unmount();
   }
 });
 
@@ -2128,7 +2488,7 @@ test("AskCard surfaces a retryable error when asking back fails", async () => {
   }
 });
 
-test("a resolved ask keeps its question and options and carries a resolution badge", async () => {
+test("a resolved ask keeps its question and options, carries a resolution badge, and still takes a reply", async () => {
   const input = {
     ...ask({
       options: [{ label: "Ship" }, { label: "Hold" }],
@@ -2154,7 +2514,8 @@ test("a resolved ask keeps its question and options and carries a resolution bad
       throw new Error("resolved Ask fixture is missing its resolution");
     }
     await waitFor(() => expect(view.getAllByText(resolution.reason)).toHaveLength(1));
-    expect(view.queryByRole("button", { name: "Reply" })).not.toBeInTheDocument();
+    // The conversation under a settled question goes on: the thread keeps its reply composer.
+    expect(view.getByRole("textbox", { name: "Reply" })).toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -2275,7 +2636,9 @@ test("a compact answered ask's Write a reply reveals its composer as the next ke
     expect(replyToggle).toHaveFocus();
 
     const field = view.getByLabelText("Reply");
-    nextTabStop(replyToggle)?.focus();
+    act(() => {
+      nextTabStop(replyToggle)?.focus();
+    });
     expect(field).toHaveFocus();
     expect(controlledBy(replyToggle)?.contains(field)).toBe(true);
     // The toggle and the form's submit button have distinct names.
@@ -2403,7 +2766,7 @@ test("a link to a folded reply opens the fold and still lets the reader collapse
   }
 });
 
-test("AskCard with no replies offers Write a reply only after an answer, and retries a failed thread fetch", async () => {
+test("AskCard with no replies offers Write a reply only once the ask is not open, and retries a failed thread fetch", async () => {
   const user = userEvent.setup();
   const openInput = ask();
   const { view: open } = renderCard(
@@ -2416,6 +2779,19 @@ test("AskCard with no replies offers Write a reply only after an answer, and ret
   });
   const { view: answered } = renderCard(
     <AskCard ask={answeredInput} getAskThread={emptyThread(answeredInput)} thread="collapsed" />
+  );
+  const resolvedInput: OwnedAsk = {
+    ...ask({ id: "ask-resolved" }),
+    resolution: {
+      actor: { id: "session-1", kind: "session" },
+      at: "2026-09-09T00:05:00Z",
+      kind: "declined",
+      reason: "Not mine to say.",
+    },
+    state: "resolved",
+  };
+  const { view: resolved } = renderCard(
+    <AskCard ask={resolvedInput} getAskThread={emptyThread(resolvedInput)} thread="collapsed" />
   );
   let attempts = 0;
   const failedInput = ask({ id: "ask-2" });
@@ -2445,8 +2821,11 @@ test("AskCard with no replies offers Write a reply only after an answer, and ret
   try {
     const openCard = within(open.container);
     const answeredCard = within(answered.container);
+    const resolvedCard = within(resolved.container);
     const failedCard = within(failed.container);
     await answeredCard.findByRole("button", { name: "Write a reply" });
+    // A resolved ask is not open either, however it was resolved.
+    await resolvedCard.findByRole("button", { name: "Write a reply" });
     // The open ask's only composer is the card's own Answer / Ask back row.
     await openCard.findByRole("button", { name: "Ask back" });
     expect(openCard.queryByRole("button", { name: "Write a reply" })).not.toBeInTheDocument();
@@ -2463,6 +2842,7 @@ test("AskCard with no replies offers Write a reply only after an answer, and ret
   } finally {
     open.unmount();
     answered.unmount();
+    resolved.unmount();
     failed.unmount();
   }
 });
@@ -2729,7 +3109,7 @@ test("asking back from a document ask posts an artifact comment and keeps the se
   }
 });
 
-test("AskCard compact variant keeps its note disclosure available after selecting an option", async () => {
+test("AskCard compact variant keeps its answer box in place after selecting an option", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const { view } = renderCard(
@@ -2744,16 +3124,13 @@ test("AskCard compact variant keeps its note disclosure available after selectin
     expect((within(card).getByRole("radio", { name: "Hold" }) as HTMLInputElement).checked).toBe(
       false
     );
-    await user.click(
-      within(card).getByRole("button", { name: "Add a note or answer in your own words" })
-    );
-    expect(await within(card).findByLabelText("Your answer")).toBeTruthy();
+    expect(within(card).getByLabelText("Your answer")).toBeTruthy();
   } finally {
     view.unmount();
   }
 });
 
-test("the compact card's note disclosure leaves the reader in the field it reveals, and a close moves nowhere", async () => {
+test("the compact card's answer box stands in place, and picking an option leaves the reader on it", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const { view } = renderCard(
@@ -2762,25 +3139,16 @@ test("the compact card's note disclosure leaves the reader in the field it revea
 
   try {
     const card = view.getByTestId("ask-ask-1");
-    const disclosure = await within(card).findByRole("button", {
-      name: "Add a note or answer in your own words",
-    });
-    // Whoever opens it - the reader's press here, the Inbox's Enter, which presses this same
-    // control - is moved into the box behind it.
-    await user.click(disclosure);
-    const answer = within(card).getByLabelText("Your answer");
-    expect(answer).toHaveFocus();
+    // The box stands in place with nothing pressed, and takes no focus of its own.
+    const answer = await within(card).findByLabelText("Your answer");
+    expect(answer).not.toHaveFocus();
 
-    // Picking an option that needs no words neither opens the disclosure nor takes the reader
-    // off the option they just picked.
-    await user.click(disclosure);
-    expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
-    // The close moves nobody: the reader is left on the control they pressed, which a press
-    // focuses.
-    expect(disclosure).toHaveFocus();
-    const ship = within(card).getByRole("radio", { name: "Ship" });
+    // Picking an option that needs no words takes the reader off neither the option they just
+    // picked nor the box.
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    const ship = await within(card).findByRole("radio", { name: "Ship" });
     await user.click(ship);
-    expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
+    expect(within(card).getByLabelText("Your answer")).toBeInTheDocument();
     expect(ship).toHaveFocus();
   } finally {
     view.unmount();
@@ -2816,12 +3184,15 @@ test("AskCard compact variant renders long options as the same wrapping choice r
     expect(
       options.querySelectorAll('[class*="whitespace-nowrap"], [class*="rounded-full"]')
     ).toHaveLength(0);
-    expect(within(card).queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
+    // The answer box and Answer stand in place, and Answer has nothing to send until a pick.
+    expect(within(card).getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(
+      true
+    );
 
     await user.click(first);
     expect((first as HTMLInputElement).checked).toBe(true);
     expect(within(card).getByRole("button", { name: "Answer" })).not.toHaveAttribute("disabled");
-    expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
+    expect(within(card).getByLabelText("Your answer")).toBeInTheDocument();
 
     await user.click(within(options).getByRole("radio", { name: "Other" }));
     expect(await within(card).findByLabelText("Your answer")).toBeTruthy();

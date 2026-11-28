@@ -1,4 +1,4 @@
-import type { ArchitectureSource, CreatedProject } from "@legion/contracts";
+import type { ArchitectureSource, CreatedProject, Project } from "@legion/contracts";
 import {
   type CommandContext,
   type DispatchToolResult,
@@ -7,6 +7,7 @@ import {
   stringArg,
 } from "./context";
 import { refusalWithCode } from "./failures";
+import { linkFor } from "./links";
 import { namedPerson } from "./render-item";
 
 /** One source's answer to `dispatch architecture-sync`: its imported commit, or the recorded
@@ -47,7 +48,7 @@ export async function projectCommand(context: CommandContext): Promise<DispatchT
     // carry, so the server's own words reach the agent unchanged.
     throw refusalWithCode(error);
   }
-  const href = new URL(`/projects/${encodeURIComponent(project.key)}`, linkBase).toString();
+  const href = linkFor(`/projects/${encodeURIComponent(project.key)}`, linkBase);
   // Every project names a default assignee and the create answers it, so it is absent only from
   // a Dispatch older than that answer, and the output then names nobody rather than a person it
   // was not given.
@@ -70,16 +71,46 @@ export async function projectCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
-/** `dispatch projects`: every project Dispatch holds, by key. */
+/** `dispatch projects`: every project Dispatch holds, by key. A project whose proven-sessions
+ *  setting is on says so on its line. */
 export async function projectsCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { client } = context;
-  const projects = (await client.listProjects()).map(({ key, name }) => ({ key, name }));
+  const rows = await client.listProjects();
+  const projects = rows.map(({ key, name }) => ({ key, name }));
   return {
     text:
-      projects.length === 0
+      rows.length === 0
         ? "No projects."
-        : projects.map(({ key, name }) => `${key} ${name}`).join("\n"),
+        : rows
+            .map(
+              ({ key, name, proven_sessions }) =>
+                `${key} ${name}${proven_sessions ? " proven sessions on" : ""}`
+            )
+            .join("\n"),
     details: { projects },
+  };
+}
+
+/** `dispatch project-update`: turn a project's proven-sessions setting on or off. */
+export async function projectUpdateCommand(context: CommandContext): Promise<DispatchToolResult> {
+  const { args, client, actor } = context;
+  const key = stringArg(args, "project");
+  let project: Project;
+  try {
+    project =
+      stringArg(args, "proven_sessions") === "on"
+        ? await client.turnOnProvenSessions(key, { actor })
+        : await client.turnOffProvenSessions(key);
+  } catch (error) {
+    // OAUTH_SCOPE_REQUIRED (an off without the person scope) and PROJECT_SCOPE (a token scoped
+    // to one project, for a project that does not exist or a private project that it does not
+    // name) ask for different things, and the description names both by code.
+    throw refusalWithCode(error);
+  }
+  const setting = project.proven_sessions ? "on" : "off";
+  return {
+    text: `Project ${project.key} (${project.name}): proven sessions ${setting}.`,
+    details: { project: project.key, proven_sessions: project.proven_sessions },
   };
 }
 

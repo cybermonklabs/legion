@@ -1,8 +1,12 @@
 import {
+  type AskThreadPage,
+  type AskThreadRow,
   AUTH_NO_IDENTITY,
   answerNotKept,
+  type CommentThreadPage,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
+  ID_AMBIGUOUS,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -10,8 +14,10 @@ import {
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
   type InboxThreadKind,
+  type MessageThreadPage,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  REFERENCE_TARGETS_MAX,
   retryNoRoute,
   type Sleep,
   sleep,
@@ -37,13 +43,19 @@ import type {
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
+  CommentWithTrees,
   CreateArtifactInput,
   DispatchEvent,
   DispatchUser,
   DuplicateCandidate,
   IDCandidate,
+  IssueAskRow,
   IssueAskThreadRow,
+  IssueReferencesAnswer,
+  MessageRead,
   NewIssueSettings,
+  ParentStatusConflictIssue,
+  StatusChangeEntry,
   TargetCandidate,
   UserIssueState,
 } from "./types";
@@ -77,6 +89,30 @@ export interface UploadProgress {
 const maxKeepaliveBodyBytes = 30 * 1024;
 const utf8 = new TextEncoder();
 
+/** Whether the page is going: from its `pagehide` until the browser shows it again (`pageshow`,
+ *  a page it kept and brings back). A small write that starts then, its body under
+ *  `maxKeepaliveBodyBytes`, is let finish as the page goes (`keepalive`), under its key or not:
+ *  the write a field makes as the tab closes (`InPlaceField`, `PriorityDescription`) has no
+ *  reload after it to make it again. A larger one is not, and one that waits then behind a write
+ *  of the same target still out (`write-store.ts`'s `#advance`) does not start before the page is
+ *  gone. This module listens as it loads, before any field adds its own `pagehide` listener, so
+ *  a field's write finds the page going. */
+let pageGoing = false;
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", () => {
+    pageGoing = true;
+  });
+  window.addEventListener("pageshow", () => {
+    pageGoing = false;
+  });
+}
+
+/** Forgets that the page went: the unit-test preload, between tests, whose `pagehide` ends no
+ *  page. */
+export function resetPageGoing(): void {
+  pageGoing = false;
+}
+
 /** One item a refusal lists for the caller to choose between: the items an ambiguous id prefix
  *  names (`ID_AMBIGUOUS`), the issues a duplicate check found, or the positions an anchored
  *  quote resolved at. Each refusal's own `code` says which of the three its list holds. */
@@ -89,6 +125,8 @@ interface ErrorPayload {
   candidates?: readonly ErrorCandidate[];
   changes_reason?: string;
   refusal?: string;
+  issues?: readonly ParentStatusConflictIssue[] | null;
+  changed?: readonly StatusChangeEntry[] | null;
 }
 
 export class ApiError extends Error {
@@ -99,6 +137,14 @@ export class ApiError extends Error {
    *  choice; the shape of each entry follows `code` (`ErrorCandidate`). Undefined for a refusal
    *  that listed nothing, which is almost all of them. */
   readonly candidates: readonly ErrorCandidate[] | undefined;
+  /** The issues a `409 PARENT_STATUS_CONFLICT` names: each one whose status the write would put
+   *  out of line with its parent's or its children's, with its status and whether it is the
+   *  parent or a child. Undefined for every other refusal. */
+  readonly issues: readonly ParentStatusConflictIssue[] | undefined;
+  /** What a refused `POST /api/v1/issues/{key}/status-change` changed before the refusal: the
+   *  entry of each step that committed, in the order the steps ran. Empty when no step did, and
+   *  undefined for a refusal of any other route. */
+  readonly changed: readonly StatusChangeEntry[] | undefined;
   /** How long the server asked the caller to wait before trying again (`Retry-After` in
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
@@ -118,10 +164,27 @@ export class ApiError extends Error {
     this.status = status;
     this.state = payload.state;
     this.candidates = payload.candidates;
+    this.issues = payload.issues ?? undefined;
+    this.changed = payload.changed ?? undefined;
     this.retryAfterMs = retryAfterMs;
     this.changesReason = payload.changes_reason;
     this.refusal = payload.refusal;
   }
+}
+
+/** The items an `ID_AMBIGUOUS` refusal listed, or undefined for any other failure and for a
+ *  refusal that listed none, which there is no list to show for. The code is what says the
+ *  entries are these and not a duplicate check's issues (`ErrorCandidate`). */
+export function ambiguousItems(error: unknown): readonly IDCandidate[] | undefined {
+  if (!(error instanceof ApiError) || error.code !== ID_AMBIGUOUS) {
+    return undefined;
+  }
+  const items = error.candidates?.filter(isIDCandidate) ?? [];
+  return items.length === 0 ? undefined : items;
+}
+
+function isIDCandidate(candidate: ErrorCandidate): candidate is IDCandidate {
+  return "id" in candidate && "kind" in candidate;
 }
 
 /** A request the browser could not get an answer to at all: the connection failed or dropped
@@ -164,6 +227,26 @@ export type ReferenceSourceKind = NonNullable<
  *  it takes: the deadline is on the silence, not the transfer. */
 export const REQUEST_DEADLINE_MS = 30_000;
 
+/** How many references one `getReferenceTargets` may name: `REFERENCE_TARGETS_MAX`, the literal in
+ *  `@legion/contracts` that is generated into Go and that the server reads as its own cap
+ *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`). Past
+ *  it the read is refused `400 CAP_EXCEEDED`, so a caller holding more reads them in batches. */
+export { REFERENCE_TARGETS_MAX };
+
+/** The budget, in characters of query string, that the batches of `referenceTargetsQuery` keep
+ *  each `getReferenceTargets` call inside (`referenceTargetBatches` in `queries.ts`), except a
+ *  batch of one address longer than the budget, which goes alone and passes it: a batch of no
+ *  address would name nothing. `getReferenceTargets` itself writes every reference it is given
+ *  and applies no budget. The server bounds a batch by the count alone and says so
+ *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`): it
+ *  sets no limit on the request line itself, but a proxy in front of it can set one, and 16 KB is
+ *  one known such limit (an AWS load balancer's). A full batch of comment or message references
+ *  encodes to more than that, so a caller splits by the length it writes as well as by the
+ *  count, which is the two-request read that comment describes. The budget is the query alone,
+ *  which leaves the route, the verb and the version of the request line room of their own inside
+ *  16 KB. It is set under that one known limit, not measured against the deployed Dispatch. */
+export const REFERENCE_TARGETS_MAX_QUERY_CHARS = 12_000;
+
 /** A request Dispatch went silent on for its deadline, which the page then aborted. It is no
  *  refusal: the request may still have reached Dispatch, so only a read, or a write made again
  *  under its key (`writeUnderKey`), is asked again. */
@@ -193,9 +276,9 @@ export type WriteMethod = (typeof WRITE_METHODS)[number];
  *  or a `PATCH`, each of which Dispatch would do a second time when a dropped answer has the page
  *  ask again. A `PUT` or a `DELETE` is the same change however often it is made, so it sends no
  *  key and Dispatch keeps nothing under one for it. The one place that rule is written: `send`
- *  reads it as it builds the headers, and `keySpent` reads it to decide whether a key's age
- *  stops a write, which is how both the retry loop (`writeUnderKey`) and a kept refusal
- *  (`refusalFrom`) reach it.
+ *  reads it as it builds the headers, the write store as it records each write (`Write.keyed`),
+ *  and `keySpent` reads it to decide whether a key's age stops a write, which is how both the
+ *  retry loop (`writeUnderKey`) and a kept refusal (`refusalFrom`) reach it.
  */
 export function goesUnderKey(method: WriteMethod): boolean {
   return method === "POST" || method === "PATCH";
@@ -232,11 +315,13 @@ export interface WriteBounds extends RequestBounds {
   readonly progress?: (loaded: number, total: number) => void;
 }
 
-/** A write Dispatch had already made, with no answer it can give for it (`code`): the first
- *  answer was too large for it to keep, so the repeat came back with the first one's status and
- *  no resource (`IDEMPOTENCY_ANSWER_NOT_KEPT`), or the answer was lost before Dispatch stored it,
- *  so the repeat came back `409 KEY_COMMITTED` (`isKeyCommitted`). The write landed; its caller
- *  reads what it wrote again, and shows no refusal. */
+/** A write Dispatch had already made, with no answer it can give for it (`code`): Dispatch gives
+ *  no copy of the first answer, which was too large for it to keep or holds a comment or an issue
+ *  message that was deleted, or a document version name a delete replaced, so the repeat came
+ *  back with the first one's status and no resource
+ *  (`IDEMPOTENCY_ANSWER_NOT_KEPT`), or the answer was lost before Dispatch stored it, so the repeat
+ *  came back `409 KEY_COMMITTED` (`isKeyCommitted`). The write landed; its caller reads what it
+ *  wrote again, and shows no refusal. */
 export class AnswerNotKeptError extends Error {
   readonly code: IdempotencyLandedCode;
   readonly status: number;
@@ -307,6 +392,37 @@ export function isArtifactNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.code === "ARTIFACT_NOT_FOUND";
 }
 
+// An unsubscribe of a session the owner's subscriptions no longer name: removed already - by an
+// earlier unsubscribe whose answer the page never had, or by someone else - which is the state
+// the unsubscribe asks for.
+export function isSubscriberNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "SUBSCRIBER_NOT_FOUND";
+}
+
+// An unfollow of a session that does not follow the ask: taken off already, which is the state
+// the unfollow asks for.
+export function isFollowerNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "FOLLOWER_NOT_FOUND";
+}
+
+/**
+ * A removal - a `DELETE` - that lands on finding the thing gone already. A `DELETE` sends no key,
+ * so Dispatch keeps no answer for one: made again after one that landed - stopped, or its answer
+ * lost - it finds nothing to remove, and Dispatch answers the `404` that `gone` names. That is the
+ * removal done, which is what the person asked, so it resolves as a `204` does; any other error
+ * rejects as `removal` did.
+ */
+export async function removedEvenIfGone(
+  removal: Promise<unknown>,
+  gone: (error: unknown) => boolean
+): Promise<void> {
+  try {
+    await removal;
+  } catch (error) {
+    if (!gone(error)) throw error;
+  }
+}
+
 // A Dispatch with no secrets broker configured (no DISPATCH_AGENT_SECRETS_URL) answers every
 // credential route but the pending list with this 404 — the same class as the architecture-source
 // 404 above it: retrying changes nothing. The pending list, which every page reads, answers `null`
@@ -363,6 +479,14 @@ export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
 }
 
+// An issue's references read, one hop each way, cut at the server's 2 s bound (`503
+// REFERENCES_TIMEOUT`): a read that reaches the bound costs the database the whole of it, so an
+// automatic retry only multiplies that cost and shows nothing more. The page offers its own Retry
+// instead.
+export function isReferencesTimeout(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 503 && error.code === "REFERENCES_TIMEOUT";
+}
+
 // A stored document holding an element this Dispatch process's build cannot read: a newer build
 // wrote it while two builds serve one database during a release. It is not a repairable state, and
 // a replacement would delete the element. A later read can reach a build that reads it, so the read
@@ -385,6 +509,25 @@ export function isNoRoute(error: unknown): boolean {
   );
 }
 
+/** What a page read of an issue's comments, messages or asks rejects with where the build that
+ *  answered serves no page: a build from before the pages answers `order=activity` with the
+ *  route's bare list, as one does while a release rolls out, so the read says what a route no
+ *  build answering it serves says once its attempts are spent (`answered`): the read is not
+ *  offered yet. */
+function threadPageNotOffered(): ApiError {
+  return new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE });
+}
+
+/** The query a page read of one of an issue's three thread lists takes: the route's own, from
+ *  the document, but `order`, which the read sends itself as `activity`. */
+type ThreadPageQuery<P extends PathsOf<"get">> = Omit<Query<P, "get">, "order">;
+
+/** The ask page as `thread=1` answers it: each row carries its ask's thread, which the document
+ *  leaves optional since asking for it is what makes it present (`IssueAskThreadRow`). */
+type AskThreadPageWithThreads = Omit<AskThreadPage, "threads"> & {
+  threads: (AskThreadRow & IssueAskThreadRow)[] | null;
+};
+
 /** What every view says while Envoy's agent list refills: the server's own `ENVOY_REFILLING`
  *  message, shown wherever a view would otherwise say an agent is absent. */
 export const AGENT_LIST_REFILLING = "The agent list is refilling. Try again in a moment.";
@@ -398,10 +541,10 @@ export function isAgentListRefilling(error: unknown): boolean {
 
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
 // source, an unconfigured credential broker or delivery timeline, a stored document outside
-// Proof's schema, or a stored history that cannot load is definitive and retrying it changes
-// nothing; any other failure (dropped connection, a read past its deadline, 5xx, a document
-// holding content this build cannot read yet) is worth a couple of automatic attempts before
-// surfacing a Retry affordance to the user.
+// Proof's schema, a stored history that cannot load, or a reference closure cut at its bound is
+// definitive or too costly to send again at once; any other failure (dropped connection, a read
+// past its deadline, 5xx, a document holding content this build cannot read yet) is worth a
+// couple of automatic attempts before surfacing a Retry affordance to the user.
 export function isRetryableQueryError(error: unknown): boolean {
   return (
     !isUnauthorized(error) &&
@@ -409,7 +552,8 @@ export function isRetryableQueryError(error: unknown): boolean {
     !isCredentialFeatureOff(error) &&
     !isDeliveryNotConfigured(error) &&
     !isDocumentSchemaError(error) &&
-    !isDocumentUnloadable(error)
+    !isDocumentUnloadable(error) &&
+    !isReferencesTimeout(error)
   );
 }
 
@@ -488,6 +632,28 @@ function readUrl<P extends PathsOf<"get">>(pattern: P, params: PathParams<Op<P, 
 /** `PATCH /api/v1/issues/{key}`: one change of an issue's fields (`patchIssue`). */
 export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}", "patch">) {
   return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
+}
+
+/** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place in
+ *  the one order (`rank: {before, after}`, the priorities it lands between, as the issue board's
+ *  own drag names them). Each field left out is left alone. `expected` names the title or
+ *  description the write goes over: the newest of the page's own writes of it still out or not
+ *  yet drawn by a read, and else the text the field took in from a read (`usePriorityWrites`).
+ *  One the priority no longer stores refuses the write `409 PRIORITY_CHANGED`, and nothing is
+ *  written. */
+export function priorityPatchRequest(id: string, input: Body<"/api/v1/priorities/{id}", "patch">) {
+  return writeRequest("patch", "/api/v1/priorities/{id}", { id }, input);
+}
+
+/** `POST /api/v1/issues/{key}/status-change`: an issue's status with what happens to the issues
+ *  under it or above it (`include_children`, `unlink_children`, `include_parent`), so that each
+ *  parent's status stays in line with its children's. With `dry_run` it writes nothing and
+ *  answers what the call would change, or the refusal the call would get. */
+export function statusChangeRequest(
+  key: string,
+  input: Body<"/api/v1/issues/{key}/status-change", "post">
+) {
+  return writeRequest("post", "/api/v1/issues/{key}/status-change", { key }, input);
 }
 
 /** `POST /api/v1/agents/{session_id}/messages`: a person's message to one session
@@ -597,17 +763,27 @@ export function artifactVersionPath(owner: ArtifactOwner, slug: string, version:
  *  written in the browser and for a title typed with nothing under it, and a multipart form - the
  *  body those same routes take as `multipart/form-data` - for a file picked, pasted or dropped.
  *  A create carrying neither a file nor content makes an empty document, so it goes as JSON with
- *  the name alone. */
+ *  the name alone. An upload that names the base it replaces carries it either way, as the field
+ *  `precondition`, which the form sends as the object's JSON text. */
 function artifactUploadBody(
   input: CreateArtifactInput
 ): Body<"/api/v1/issues/{key}/artifacts", "post"> | FormData {
   if (input.file === undefined) {
-    return { actor: input.actor, content: input.content, name: input.name, summary: input.summary };
+    return {
+      actor: input.actor,
+      content: input.content,
+      name: input.name,
+      precondition: input.precondition,
+      summary: input.summary,
+    };
   }
   const form = new FormData();
   form.set("name", input.name);
   if (input.summary !== undefined) {
     form.set("summary", input.summary);
+  }
+  if (input.precondition !== undefined) {
+    form.set("precondition", JSON.stringify(input.precondition));
   }
   if (input.actor !== undefined) {
     form.set("actor", JSON.stringify(input.actor));
@@ -857,15 +1033,19 @@ export class DispatchApiClient {
    * The one path every write to Dispatch takes. A `POST` or a `PATCH` goes under `bounds.key`, the
    * `Idempotency-Key` that names the person's action, so a repeat of it - a retry after a dropped
    * answer, a reload resuming it - is answered with what the first did rather than done twice; a
-   * `PUT` or a `DELETE` is the same however often it is made, so it carries none, and one with a
-   * small body is let finish as the page goes (`keepalive`). The key is the caller's, minted when
-   * the person acts (`Writes.run`), never here; so is `bounds.login` (`Dispatch-Login`), the
-   * person who pressed it. A JSON body goes as JSON and a multipart form as itself, through the
-   * upload transport; `bounds.sent` is told the request as it goes out. Answers what Dispatch
-   * answered (nothing for an empty body), as the request's builder names it (`WriteRequest`), or
-   * rejects with its refusal; a 2xx whose body is not JSON rejects with `UnreadableAnswerError`, a
-   * 2xx whose body stops part way with `NetworkError`, and a replay of an answer Dispatch did not
-   * keep with `AnswerNotKeptError`.
+   * `PUT` or a `DELETE` is the same however often it is made, so it carries none. A write that
+   * carries no body, or a JSON body under `maxKeepaliveBodyBytes`, is let finish as the page goes
+   * (`keepalive`): a `PUT` or a `DELETE` whenever it is sent, and a `POST` or a `PATCH`, key and
+   * all, only when it starts as the page goes (`pageGoing`). A larger one is not, and one that
+   * waits behind a write of the same target still out (`write-store.ts`'s `#advance`) does not
+   * start before the page is gone. A keyed write the page did not let finish is made again under
+   * its key by a reload. The key is the caller's, minted when the person acts (`Writes.run`),
+   * never here; so is `bounds.login` (`Dispatch-Login`), the person who pressed it. A JSON body
+   * goes as JSON and a multipart form as itself, through the upload transport; `bounds.sent` is
+   * told the request as it goes out. Answers what Dispatch answered (nothing for an empty body),
+   * as the request's builder names it (`WriteRequest`), or rejects with its refusal; a 2xx whose
+   * body is not JSON rejects with `UnreadableAnswerError`, a 2xx whose body stops part way with
+   * `NetworkError`, and a replay of an answer Dispatch did not keep with `AnswerNotKeptError`.
    */
   send<T>(
     request: WriteRequest<T>,
@@ -876,7 +1056,8 @@ export class DispatchApiClient {
     const form = body instanceof FormData ? body : undefined;
     const json = body === undefined || form !== undefined ? undefined : JSON.stringify(body);
     const keepalive =
-      !keyed && (json === undefined || utf8.encode(json).byteLength < maxKeepaliveBodyBytes);
+      (!keyed || pageGoing) &&
+      (json === undefined || utf8.encode(json).byteLength < maxKeepaliveBodyBytes);
     const init: RequestInit = {
       ...(form !== undefined ? { body: form } : json !== undefined ? { body: json } : {}),
       headers: {
@@ -923,9 +1104,9 @@ export class DispatchApiClient {
    *  `200` body for that route, the display trees Dispatch adds to every stored text it answers
    *  this client with (`Dispatch-Trees`, in `answered`) included: the route table names each
    *  shaped read, so the trees are part of the body the document holds. A read states a response
-   *  shape of its own only where the document cannot hold it - `getIssueEvents` and
-   *  `listIssueAskThreads`, each saying beside it what that is - and those two go through `json`
-   *  with `routeUrl`. */
+   *  shape of its own only where the document cannot hold it, each saying beside it what that
+   *  is: `getIssueEvents` and `listIssueAskThreads`, which go through `json` with `routeUrl`, and
+   *  `getIssueReferences`, which a build older than the document answers with less. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -982,27 +1163,6 @@ export class DispatchApiClient {
     return this.post("/api/v1/projects", {}, input, bounds);
   }
 
-  listRepoProjects() {
-    return this.read("/api/v1/settings/repo-projects", {});
-  }
-
-  async putRepoProject(
-    repo: string,
-    input: Body<"/api/v1/settings/repo-projects/{owner}/{repo}", "put">,
-    bounds: WriteBounds
-  ) {
-    return this.put(
-      "/api/v1/settings/repo-projects/{owner}/{repo}",
-      repoParams(repo),
-      input,
-      bounds
-    );
-  }
-
-  async deleteRepoProject(repo: string, bounds: WriteBounds): Promise<void> {
-    await this.remove("/api/v1/settings/repo-projects/{owner}/{repo}", repoParams(repo), bounds);
-  }
-
   /** Every project with the person it defaults to: each one names somebody, so none is left out.
    *  Needs the `person` scope. */
   listProjectDefaultAssignees() {
@@ -1019,6 +1179,19 @@ export class DispatchApiClient {
     bounds: WriteBounds
   ) {
     return this.put("/api/v1/projects/{key}/default-assignee", { key: project }, input, bounds);
+  }
+
+  /** Sets the repository an issue of the project resolves to when neither the issue nor an issue
+   *  above it names one, `owner/name`. `{ repo: null }` clears it. The server stores the name in
+   *  lower case with no `.git`, and its answer holds the stored value. A name GitHub could hold no
+   *  repository at is refused `400 INVALID_PROJECT`. The write belongs to the deployment: it needs
+   *  no `person` scope, and a credential of one project is refused. */
+  putProjectDefaultRepository(
+    project: string,
+    input: Body<"/api/v1/projects/{key}/default-repository", "put">,
+    bounds: WriteBounds
+  ) {
+    return this.put("/api/v1/projects/{key}/default-repository", { key: project }, input, bounds);
   }
 
   /** Every project's architecture sources, by project and then in the order each was added. */
@@ -1112,7 +1285,9 @@ export class DispatchApiClient {
     return Array.isArray(answer) ? answer : (answer.issues ?? []);
   }
   /** `GET /api/v1/search/results`, or `GET /api/v1/search` for a request `everyBuildReadsSearch`
-   *  keeps there: the same search either way, from the same handler. `project`, `status`,
+   *  keeps there: the same search either way, from the same handler. `kind` names the kinds to
+   *  rank, count and page, one `kind=` per entry; with none named every kind the index holds is
+   *  searched. `project`, `status`,
    *  `author` (an actor id: a person's login or a session id) and `updated_since` (RFC 3339)
    *  each narrow every leg of the search rather than striking rows out of the page it answers.
    *  `number_project` narrows nothing: it is the project of the page the search was made from,
@@ -1121,13 +1296,15 @@ export class DispatchApiClient {
    *  makes no embedding call, whatever embedder the deployment configured, which is what the
    *  bar sends behind a keystroke; a request leaving it out searches by meaning too wherever an
    *  embedder is configured. The route refuses a value it cannot read under its own code
-   *  (`INVALID_PROJECT`, `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`,
-   *  `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`). The bar searches while a person types,
+   *  (`INVALID_QUERY`, `INVALID_PROJECT`, `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`,
+   *  `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`). The bar searches
+   *  while a person types,
    *  so it passes the `signal` of the search it is still interested in: an aborted request ends
    *  the route's own work with it, the embedding a search by meaning had asked for included.
    *  The path is `everyBuildReadsSearch`'s to pick, because a Dispatch released before the
    *  results route refuses that path outright rather than answering `GET /api/v1/search` with
-   *  the member dropped, which is unnarrowed rows under the filters a person chose. */
+   *  the member dropped, which is unnarrowed rows under the filters a person chose. A request
+   *  naming a `kind` is such a request, so it goes to the results route like the other five. */
   search(
     query: string,
     options: Omit<Query<"/api/v1/search/results", "get">, "q"> = {},
@@ -1213,16 +1390,14 @@ export class DispatchApiClient {
   }
 
   /** `POST /api/v1/priorities`: one new priority, which takes the last place of the order. Its
-   *  id defaults to its title as a slug. */
+   *  id defaults to its title as a slug, cut to `PRIORITY_ID_MAX` (200) characters at the end of
+   *  a word when it is longer, so a long title is written whole under a cut id. A title the slug
+   *  cannot name - one with no ASCII letter or digit, or one whose cut is `none` or `any`, which
+   *  the issue listing reads as the work under no priority and under any - takes `priority-` and
+   *  the first 12 hex characters of the title's SHA-256 instead (`priority-<12 hex>`), so every
+   *  title gives an id. */
   createPriority(input: Body<"/api/v1/priorities", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/priorities", {}, input, bounds);
-  }
-
-  /** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place
-   *  in the one order (`rank: {before, after}`, the priorities it lands between, as the issue
-   *  board's own drag names them). Each field left out is left alone. */
-  patchPriority(id: string, input: Body<"/api/v1/priorities/{id}", "patch">, bounds: WriteBounds) {
-    return this.patch("/api/v1/priorities/{id}", { id }, input, bounds);
   }
 
   /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each
@@ -1262,14 +1437,29 @@ export class DispatchApiClient {
     return this.read("/api/v1/agents", {});
   }
 
+  /** `GET /api/v1/agents/known`: which of `sessions` Dispatch holds any record of - listed in its
+   *  registry copy, or named by an event, a message, a delivery, an artifact or an ask it follows
+   *  - each with its registry title when listed, one `id=` per session. At most
+   *  `KNOWN_SESSIONS_MAX` ids per call, none longer than a `dispatch://agent/<session id>`
+   *  reference's target may be (`MAX_REFERENCE_TARGET_BYTES`); `known-sessions.ts` batches a
+   *  page's ids into one. */
+  getKnownSessions(sessions: readonly string[]) {
+    return this.read("/api/v1/agents/known", {}, { id: [...sessions] });
+  }
+
   createAsk(key: string, input: Body<"/api/v1/issues/{key}/asks", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/issues/{key}/asks", { key }, input, bounds);
   }
 
   /** `GET /api/v1/issues/{key}/asks`: the issue's asks with their newest reply and no thread,
    *  for a reader that renders the ask itself. */
-  listIssueAsks(key: string, state: "all" | "open" | "answered" = "all") {
-    return this.read("/api/v1/issues/{key}/asks", { key }, { state });
+  async listIssueAsks(
+    key: string,
+    state: "all" | "open" | "answered" = "all"
+  ): Promise<IssueAskRow[]> {
+    const answer = await this.read("/api/v1/issues/{key}/asks", { key }, { state });
+    // The route pages only under `order=activity`, never sent here; a page reads as its rows.
+    return Array.isArray(answer) ? answer : (answer.threads ?? []);
   }
 
   /** `GET /api/v1/issues/{key}/asks?thread=1`: the same rows carrying each ask's thread. The
@@ -1283,6 +1473,33 @@ export class DispatchApiClient {
     return this.json<IssueAskThreadRow[]>(
       routeUrl("/api/v1/issues/{key}/asks", { key }, { state, thread: "1" })
     );
+  }
+
+  /** `GET /api/v1/issues/{key}/asks?order=activity`: one page of the issue's ask threads, the
+   *  newest last activity first, from `query.before` when it names the last page's position;
+   *  `state`, `thread`, `limit`, `before` and `author` as the route takes them. Under
+   *  `thread: "1"` each row carries its thread, typed as `listIssueAskThreads` types its rows. A
+   *  build from before the page answers the bare list, and the read rejects
+   *  (`threadPageNotOffered`). */
+  listAskThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/asks"> & { thread: "1" }
+  ): Promise<AskThreadPageWithThreads>;
+  listAskThreads(
+    key: string,
+    query?: ThreadPageQuery<"/api/v1/issues/{key}/asks">
+  ): Promise<AskThreadPage>;
+  async listAskThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/asks"> = {}
+  ): Promise<AskThreadPage> {
+    const answer = await this.read(
+      "/api/v1/issues/{key}/asks",
+      { key },
+      { ...query, order: "activity" }
+    );
+    if (Array.isArray(answer)) throw threadPageNotOffered();
+    return answer;
   }
 
   answerAsk(id: string, input: Body<"/api/v1/asks/{id}/answer", "post">, bounds: WriteBounds) {
@@ -1304,6 +1521,12 @@ export class DispatchApiClient {
    *  one page at a time. Needs the `person` scope. */
   listMyAnswers(page: Query<"/api/v1/me/answers", "get">) {
     return this.read("/api/v1/me/answers", {}, page);
+  }
+
+  /** `GET /api/v1/people/{login}/nodes`: one person's page — what they wrote and what reached
+   *  them, newest first, one page at a time. Needs the `person` scope. */
+  listPersonNodes(login: string, page: Query<"/api/v1/people/{login}/nodes", "get">) {
+    return this.read("/api/v1/people/{login}/nodes", { login }, page);
   }
 
   /** `GET /api/v1/me/replies`: the threads the signed-in person is reading, newest write first.
@@ -1342,8 +1565,30 @@ export class DispatchApiClient {
     );
   }
 
-  listComments(key: string, artifact?: string) {
-    return this.read("/api/v1/issues/{key}/comments", { key }, { artifact });
+  async listComments(key: string, artifact?: string): Promise<CommentWithTrees[]> {
+    const answer = await this.read("/api/v1/issues/{key}/comments", { key }, { artifact });
+    // The route pages only under `order=activity`, never sent here; a page reads as its rows.
+    return Array.isArray(answer)
+      ? answer
+      : (answer.threads ?? []).flatMap(({ comment, replies }) => [comment, ...(replies ?? [])]);
+  }
+
+  /** `GET /api/v1/issues/{key}/comments?order=activity`: one page of the issue's comment threads,
+   *  the newest last activity first, from `query.before` when it names the last page's position;
+   *  `artifact`, `limit`, `before`, `author` and `person` (`in` alone) as the route takes them.
+   *  A build from before the page answers the bare list, and the read rejects
+   *  (`threadPageNotOffered`). */
+  async listCommentThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/comments"> = {}
+  ): Promise<CommentThreadPage> {
+    const answer = await this.read(
+      "/api/v1/issues/{key}/comments",
+      { key },
+      { ...query, order: "activity" }
+    );
+    if (Array.isArray(answer)) throw threadPageNotOffered();
+    return answer;
   }
 
   createComment(
@@ -1444,14 +1689,40 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/issues/{key}/messages`: every root message of the issue, oldest first, each
    *  with its deliveries and its replies. */
-  listIssueMessages(key: string) {
-    return this.read("/api/v1/issues/{key}/messages", { key });
+  async listIssueMessages(key: string): Promise<MessageRead[]> {
+    const answer = await this.read("/api/v1/issues/{key}/messages", { key });
+    // The route pages only under `order=activity`, never sent here; a page reads as its rows.
+    return Array.isArray(answer) ? answer : (answer.threads ?? []);
+  }
+
+  /** `GET /api/v1/issues/{key}/messages?order=activity`: one page of the issue's message threads,
+   *  the newest last activity first, from `query.before` when it names the last page's position;
+   *  `limit`, `before`, `author` and `person` (`in` or `none`) as the route takes them. A build
+   *  from before the page answers the bare list, and the read rejects (`threadPageNotOffered`). */
+  async listMessageThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/messages"> = {}
+  ): Promise<MessageThreadPage> {
+    const answer = await this.read(
+      "/api/v1/issues/{key}/messages",
+      { key },
+      { ...query, order: "activity" }
+    );
+    if (Array.isArray(answer)) throw threadPageNotOffered();
+    return answer;
   }
 
   /** `GET /api/v1/issues/{key}/handoffs`: every phase handoff of the issue, newest first, without
    *  its body. */
   listHandoffs(key: string) {
     return this.read("/api/v1/issues/{key}/handoffs", { key });
+  }
+
+  /** `GET /api/v1/issues/{key}/steps`: the tasks of the issue's newest plan, each with its needs
+   *  and its planned steps, then each other task that ran, by its first run, each with every run of
+   *  its steps Legion recorded. An issue with no plan and no run answers no task. */
+  listSteps(key: string) {
+    return this.read("/api/v1/issues/{key}/steps", { key });
   }
 
   /** `GET /api/v1/handoffs/{id}`: one handoff with the body its session wrote. */
@@ -1517,8 +1788,27 @@ export class DispatchApiClient {
     });
   }
 
+  /** `GET /api/v1/agents/{session_id}/artifacts`: the newest 100 files and images of an agent's
+   *  conversation, newest first, each with its versions. It needs the `person` scope, as the
+   *  conversation it belongs to does. */
+  listAgentArtifacts(sessionId: string) {
+    return this.read("/api/v1/agents/{session_id}/artifacts", { session_id: sessionId });
+  }
+
   getArtifactText(id: string) {
     return this.read("/api/v1/artifacts/{id}/text", { id });
+  }
+
+  /** `GET …/artifacts/{slug}/text`: the markdown, version and whole-document token of the
+   *  document `owner` holds under `slug`, which may be its slug or its filename. `404
+   *  ARTIFACT_NOT_FOUND` when the owner holds no such document, which is what the first upload
+   *  of a name reads. A conversation holds files and pictures and no document at all, and
+   *  serves no such route, which is why its owner is not one this takes. */
+  ownerArtifactText(owner: { issue: string } | { project: string }, slug: string) {
+    if ("issue" in owner) {
+      return this.read("/api/v1/issues/{key}/artifacts/{slug}/text", { key: owner.issue, slug });
+    }
+    return this.read("/api/v1/projects/{key}/artifacts/{slug}/text", { key: owner.project, slug });
   }
 
   rebuildArtifact(id: string, markdown: string | undefined, bounds: WriteBounds) {
@@ -1636,14 +1926,29 @@ export class DispatchApiClient {
     );
   }
 
-  getIssueReferences(key: string) {
-    return this.read("/api/v1/issues/{key}/references", { key });
+  /** The issue's references read, each member carrying its latest version alone
+   *  (`versions=latest`): the Artifacts tab, its one reader, draws no member's older versions.
+   *  The document's body holds `links` and `linked_from`, which a Dispatch from before the
+   *  one-hop read does not send, so this read answers `IssueReferencesAnswer`, where both may be
+   *  absent. */
+  getIssueReferences(key: string): Promise<IssueReferencesAnswer> {
+    return this.read("/api/v1/issues/{key}/references", { key }, { versions: "latest" });
   }
 
   /** Everyone who worked the issue, running or not: people, and agent sessions merged with the
    *  listener's Legion agent registry - `legion_registry: "unavailable"` when it did not answer. */
   getIssueCollaborators(key: string) {
     return this.read("/api/v1/issues/{key}/collaborators", { key });
+  }
+
+  /** What many `dispatch://` references point at, in one read: one member per `ref` in the
+   *  request's order, each `{ref, kind, name, gone}`. A page that names many references can read
+   *  all their names through this, in as few requests as both bounds allow
+   *  (`referenceTargetsQuery`), rather than one `getReferences` per reference, so a page's first
+   *  load makes no request for each reference. At most `REFERENCE_TARGETS_MAX` references:
+   *  past that the server answers `400 CAP_EXCEEDED`. */
+  getReferenceTargets(refs: readonly string[]) {
+    return this.read("/api/v1/reference-targets", {}, { ref: [...refs] });
   }
 
   /** The edges at a node; `kind` keeps those of one kind - `part_of` lists a document's blocks,
@@ -1674,6 +1979,36 @@ export class DispatchApiClient {
    *  the GitHub App can read `deploy_repo`, answering `409 DELIVERY_SETTINGS_ACCESS` when not. */
   putDeliverySettings(input: Body<"/api/v1/settings/delivery", "put">, bounds: WriteBounds) {
     return this.put("/api/v1/settings/delivery", {}, input, bounds);
+  }
+
+  /** One project's Legion daemon: the base URL its state is read from, the actor that first named
+   *  it and when it last changed, or `null` for a project that names none. There is no list of
+   *  every project's daemon, so the Settings page's daemon section reads this once per project
+   *  (`useLegionDaemons`): `null` is an ordinary answer rather than a failure. A key that is not a
+   *  project key is `400 INVALID_PROJECT`, and an unknown project `404 PROJECT_NOT_FOUND`. */
+  getLegionDaemon(project: string) {
+    return this.read("/api/v1/projects/{key}/legion/daemon", { key: project });
+  }
+
+  /** Names the daemon a project's state is read from, and answers the row as it was stored.
+   *  Deployment-scoped (`scopeDeployment`), so a credential naming one project is refused it; a
+   *  `state_url` that is not an absolute http(s) URL with a host and no path, carrying no user,
+   *  password, query or fragment, is `400 LEGION_SETTING_INPUT` with the server's own reason
+   *  (`legionStateURL` in packages/envoy/internal/dispatch/api/settings_legion.go), and an
+   *  unknown project is `404 PROJECT_NOT_FOUND`. */
+  putLegionDaemon(project: string, stateUrl: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v1/projects/{key}/legion/daemon",
+      { key: project },
+      { state_url: stateUrl },
+      bounds
+    );
+  }
+
+  /** Stops reading a project's daemon: what was read stays, and nothing re-reads it. Scoped as
+   *  the PUT is; a project with no daemon is `404 NOT_FOUND`. */
+  async deleteLegionDaemon(project: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/projects/{key}/legion/daemon", { key: project }, bounds);
   }
 
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.
@@ -1746,6 +2081,15 @@ export class DispatchApiClient {
     return this.json<AuthenticatedUser>("/auth/whoami");
   }
 
+  /** The scopes the caller's own credential holds, as `GET /api/v1/whoami` names them: for a
+   *  person at a browser, every scope of a person's own credential. `/auth/whoami` names none.
+   *  Settings offers Set P0 only where they name `p0`, which a build before it never does. A
+   *  list the answer leaves null holds none. */
+  async whoAmIScopes(): Promise<string[]> {
+    const whoami = await this.read("/api/v1/whoami", {});
+    return whoami.scopes ?? [];
+  }
+
   /** Ends this browser's session. `/auth/logout` sits outside Dispatch's keyed layer and is the
    *  same however often it is made, so it goes with no key. */
   logout(): Promise<{ ok: true }> {
@@ -1761,7 +2105,9 @@ export class DispatchApiClient {
   /** `GET /api/v1/credential-requests?approver=me`: every request the viewer may decide - the
    *  ones naming the viewer, and the ones any signed-in person may decide - as the Inbox's
    *  credential-requests section lists them, each secret request with the secrets broker's page
-   *  where it is decided, or `null` when this Dispatch has no secrets broker. */
+   *  where it is decided, or `null` when this Dispatch has no secrets broker. The pending requests
+   *  come first, then the expired ones nobody has dismissed (`state: "expired"`), which nobody can
+   *  decide any more; a row with no `state`, from an older broker, is pending. */
   getCredentialPending() {
     return this.read("/api/v1/credential-requests", {}, { approver: "me" });
   }
@@ -1800,23 +2146,45 @@ export class DispatchApiClient {
     return this.read("/api/v1/credential-grants", {}, { approver: "me" });
   }
 
-  /** Revoke a grant as the signed-in viewer, its approver or its enrollment's operator. The
-   *  operator's revoke of an automatic grant also ends that session's other automatic grants of
-   *  those secrets and makes it ask before it gets them again. */
+  /** Revoke a grant as the signed-in viewer: its approver, or the person its enrollment acts for,
+   *  ends it whatever project it touches. The operator's revoke of an automatic grant also ends that
+   *  session's other automatic grants of those secrets and makes it ask before it gets them again.
+   *  A grant revoked by a viewer it does not name is 404 when it belongs to a private project the
+   *  viewer may not see, and 503 `PROJECT_ACCESS_UNAVAILABLE` while the broker cannot ask Dispatch;
+   *  of the grants the viewer may see, they end one whose approver is anyone, and any other is 403
+   *  `NOT_APPROVER`. A grant the broker saw move to another box each time it read it is 409
+   *  `GRANT_MOVING`, revoking nothing; the same revoke succeeds once it stays put. */
   async revokeCredentialGrant(grantId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/credential-grants/{id}/revoke", { id: grantId }, undefined, bounds);
   }
 
-  /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines'
-   *  and every service's, whoever approved it, that are unexpired or expired with a session still
-   *  running. */
+  /** Dismiss an expired credential request as the signed-in viewer: one whose deadline passed
+   *  before anybody decided it, which the list keeps until somebody dismisses it. Dispatch names
+   *  the viewer as the person dismissing, and the request then leaves every list for good, a
+   *  shared one's included. The broker refuses one the viewer's list does not hold (403
+   *  `NOT_APPROVER`), one of a private project the viewer may not see (404, as an id no request
+   *  has, and 503 `PROJECT_ACCESS_UNAVAILABLE` while it cannot ask Dispatch), one that can still
+   *  be decided (409 `RECORD_PENDING`) and one that was decided, or cancelled before its deadline
+   *  (409 `RECORD_TERMINAL`); a second dismissal answers the first one's values. */
+  async dismissCredentialRequest(recordId: string, bounds: WriteBounds): Promise<void> {
+    await this.post(
+      "/api/v1/credential-requests/{id}/dismiss",
+      { id: recordId },
+      undefined,
+      bounds
+    );
+  }
+
+  /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines',
+   *  their own pods' (`person` set) and every service's, whoever approved it, that are unexpired
+   *  or expired with a session still running. */
   getMachineLogins() {
     return this.read("/api/v1/machine-logins", {});
   }
 
-  /** Revoke a machine login, expired or not: a service's, or one of the viewer's machines'.
-   *  Dispatch names the viewer as the person revoking, and every session the login enrolled ends
-   *  with it. */
+  /** Revoke a machine login, expired or not: a service's, one of the viewer's machines', or one
+   *  of the viewer's pods'. Dispatch names the viewer as the person revoking, and every session
+   *  the login enrolled ends with it. */
   async revokeMachineLogin(credentialId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/machine-logins/{id}/revoke", { id: credentialId }, undefined, bounds);
   }

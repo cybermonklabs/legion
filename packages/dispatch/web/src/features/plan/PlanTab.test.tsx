@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -6,7 +6,14 @@ import { MemoryRouter } from "react-router-dom";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { Artifact, ArtifactApproval, ArtifactBlock, GraphReferences } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PlanTab } from "./PlanTab";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** The words a block reference resolves to, which is what a pointer's link shows. */
 const BLOCK_TEXT: Record<string, string> = {
@@ -140,6 +147,79 @@ test("a task that serves and needs nothing says so", async () => {
   expect(task.getByTestId("plan-task-needs").textContent).toBe("Needsnone");
 });
 
+// A pointer's link reads as the block's words through the label every reference link reads its
+// text through (`useReferenceLabel`), and a block whose text is empty has no words: its link
+// reads as the reference's short form, where an empty headline drew it as a link with no text
+// and no size, which a reader could neither see nor click.
+test("a pointer to a block whose text is empty reads as the reference's short form", async () => {
+  const empty = "dispatch://CORE-1/artifact/plan-md#b-t8";
+  const { getArtifactBlocks, getReferences, view } = renderTab(plan(), [
+    {
+      attributes: [
+        { kind: "block[]", name: "serves", value: "dispatch://CORE-1/spec#b-r1" },
+        { kind: "block[]", name: "needs", value: empty },
+      ],
+      from: 0,
+      id: "t1",
+      references: { asks: 0, comments: 0 },
+      to: 4,
+      token: "sha256:t1",
+      type: "plan_task",
+    },
+  ]);
+  restore = () => {
+    getArtifactBlocks.mockRestore();
+    getReferences.mockRestore();
+    view.unmount();
+  };
+
+  const task = within(await screen.findByTestId("plan-task"));
+  // The serving block's words are drawn once its read lands, and the empty block's read lands
+  // beside it.
+  await within(task.getByTestId("plan-task-serves")).findByRole("link", {
+    name: "Every issue page shows a Plan tab.",
+  });
+  expect(getReferences).toHaveBeenCalledWith(empty);
+  const needs = within(task.getByTestId("plan-task-needs"));
+  expect(needs.getByRole("link").textContent).toBe("CORE-1 plan-md block");
+});
+
+// A pointer names a block of a document, never a block of a comment or an issue message
+// (`parseBlockPointerValue`, after Go's `pmdoc.validateBlockPointerValues`): a value naming one is
+// no pointer at all, so the tab reads no post's block and prints none of its words. An edited or
+// deleted post has nothing here to mark or to withhold.
+test("a value naming a block of a comment or a message is no pointer, and the tab reads and prints no post", async () => {
+  const comment = "dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111#b-b1";
+  const message = "dispatch://CORE-1/message/22222222-2222-4222-8222-222222222222#b-b1";
+  const { getArtifactBlocks, getReferences, view } = renderTab(plan(), [
+    {
+      attributes: [
+        { kind: "block[]", name: "serves", value: comment },
+        { kind: "block[]", name: "needs", value: message },
+      ],
+      from: 0,
+      id: "t1",
+      references: { asks: 0, comments: 0 },
+      to: 4,
+      token: "sha256:t1",
+      type: "plan_task",
+    },
+  ]);
+  restore = () => {
+    getArtifactBlocks.mockRestore();
+    getReferences.mockRestore();
+    view.unmount();
+  };
+
+  const task = within(await screen.findByTestId("plan-task"));
+  // The task's own block is read and drawn; the two values beside it are not.
+  await task.findByRole("link", { name: "Draw the panel." });
+  expect(task.getByTestId("plan-task-serves").textContent).toBe("Servesnone");
+  expect(task.getByTestId("plan-task-needs").textContent).toBe("Needsnone");
+  expect(getReferences).not.toHaveBeenCalledWith(comment);
+  expect(getReferences).not.toHaveBeenCalledWith(message);
+});
+
 // A plan is approved by its plan review, never by a person, and the chip beside it says so.
 test("the plan review's approval shows on the tab", async () => {
   const { getArtifactBlocks, getReferences, view } = renderTab(
@@ -188,5 +268,8 @@ test("an issue with no plan document shows the command that makes one", () => {
   const empty = screen.getByTestId("plan-empty");
   expect(empty.textContent).toContain("CORE-1 has no plan document.");
   expect(empty.textContent).toContain("dispatch artifact --issue CORE-1 --name plan.md");
+  // The note's words are asserted once, in `ArtifactUpload.test.tsx`, where they live: this
+  // case asks only that the tab shows the note.
+  expect(within(empty).getByTestId("replacing-upload-note")).not.toBeNull();
   expect(getArtifactBlocks).not.toHaveBeenCalled();
 });

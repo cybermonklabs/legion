@@ -12,10 +12,16 @@ import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { textSourceOf } from "../refs/text-references";
 import { AskCard } from "./AskCard";
 import { isDecisionAsk } from "./ask-decision";
 import type { InboxListRow } from "./list-row";
-import { artifactQueryOptions, DocumentPane, PaneFrame, useSettled } from "./PaneDocument";
+import {
+  artifactQueryOptions,
+  DocumentPane,
+  PaneFrame,
+  useSettledOnDocument,
+} from "./PaneDocument";
 import { holdSection, type SectionHold } from "./pane-placement";
 import { ReadingPaneHead } from "./ReadingPaneHead";
 import { ThreadPane } from "./ThreadPane";
@@ -42,6 +48,9 @@ function subjectOf(ask: InboxRow): PaneSubject {
 export interface ReadingPaneProps {
   /** The reader's own answer landed; the list selects the next row. */
   onAnswered: (askId: string) => void;
+  /** The reader's own Assign to me from the head started, or has stopped being in flight or
+   *  refused (`ReadingPaneHead`). */
+  onAssignWrite: (askId: string, live: boolean) => void;
   /** The head's Snooze write is in flight or refused, or has stopped being either: the Inbox
    *  keeps a live row listed, which is what keeps this column on it long enough for a refusal
    *  to be read. */
@@ -55,6 +64,7 @@ export interface ReadingPaneProps {
 interface PaneFlowProps {
   ask: InboxRow;
   onAnswered: (askId: string) => void;
+  onAssignWrite: (askId: string, live: boolean) => void;
   onSnoozeLive: (askId: string, live: boolean) => void;
   viewer: string | undefined;
 }
@@ -77,14 +87,22 @@ function QuestionCard({ ask, onAnswered }: Pick<PaneFlowProps, "ask" | "onAnswer
 
 /** An anchored question, and a question in no document: the card the Inbox has always drawn,
  *  under the head's own controls. */
-function CardBody({ ask, onAnswered, onSnoozeLive, viewer }: PaneFlowProps): ReactNode {
+function CardBody({
+  ask,
+  onAnswered,
+  onAssignWrite,
+  onSnoozeLive,
+  viewer,
+}: PaneFlowProps): ReactNode {
   return (
     <PaneFrame
       head={
         <ReadingPaneHead
           artifact={undefined}
           ask={ask}
+          key={ask.id}
           onAnswered={onAnswered}
+          onAssignWrite={onAssignWrite}
           onNextChange={undefined}
           onSkipToAnswer={undefined}
           onSnoozeLive={onSnoozeLive}
@@ -134,6 +152,7 @@ function ApprovalBody({
   artifactId,
   ask,
   onAnswered,
+  onAssignWrite,
   onSnoozeLive,
   viewer,
 }: PaneFlowProps & { approval: AskApproval; artifactId: string }): ReactNode {
@@ -150,7 +169,7 @@ function ApprovalBody({
    *  starts: it holds until the reader presses, scrolls, touches or types in the column, or
    *  until the write below lets it go. */
   const hold = useRef<SectionHold | undefined>(undefined);
-  const settled = useSettled(artifactId);
+  const settled = useSettledOnDocument(artifactId);
   const approvedVersion = approval.approved?.version;
 
   const user = useQuery(whoAmIQuery()).data;
@@ -274,7 +293,12 @@ function ApprovalBody({
      *  reads as it was written, and a rule tells it from the document's first paragraph. */
     const question = (
       <div className={`mb-3 border-b pb-3 ${borderDefault}`} data-testid="pane-approval-question">
-        <MarkdownBody markdown={ask.question} tree={ask.question_tree} />
+        <MarkdownBody
+          markdown={ask.question}
+          source={textSourceOf("ask", ask.id, ask.issue_key)}
+          surface="approval-ask-question"
+          tree={ask.question_tree}
+        />
       </div>
     );
     /** Whether the document below the question is still opening: every read `VersionView` needs
@@ -305,6 +329,7 @@ function ApprovalBody({
                 ?.created_at
             }
             highlight={undefined}
+            issueKey={artifact.issue_key}
             owner={
               artifact.issue_key === null
                 ? { project: artifact.project, slug: artifact.slug }
@@ -324,7 +349,9 @@ function ApprovalBody({
         <ReadingPaneHead
           artifact={artifact}
           ask={ask}
+          key={ask.id}
           onAnswered={onAnswered}
+          onAssignWrite={onAssignWrite}
           onNextChange={marked ? nextChange : undefined}
           onSkipToAnswer={undefined}
           onSnoozeLive={onSnoozeLive}
@@ -347,6 +374,7 @@ function DecisionBody({
   ask,
   blockId,
   onAnswered,
+  onAssignWrite,
   onSnoozeLive,
   viewer,
 }: PaneFlowProps & { artifactId: string; blockId: string }): ReactNode {
@@ -360,7 +388,9 @@ function DecisionBody({
         <ReadingPaneHead
           artifact={document.artifact}
           ask={ask}
+          key={ask.id}
           onAnswered={onAnswered}
+          onAssignWrite={onAssignWrite}
           onNextChange={undefined}
           onSkipToAnswer={document.showsDocument ? document.skipToBlock : undefined}
           onSnoozeLive={onSnoozeLive}
@@ -385,9 +415,14 @@ function DecisionBody({
  * document could not be opened falls back to as well — the column never shows the document
  * page's rebuild or repair prompts. A Reply or an Agent row is one of four thread bodies
  * (`ThreadPane.tsx`), which fall back the same way.
+ *
+ * Each flow keys its head by the ask: the head's controls hold the writes they made -
+ * `Snoozing…`, a refusal and its Retry - so the next question selected is drawn under a head of
+ * its own, never under this one still showing the last question's.
  */
 export function ReadingPane({
   onAnswered,
+  onAssignWrite,
   onSnoozeLive,
   row,
   viewer,
@@ -397,7 +432,7 @@ export function ReadingPane({
   }
   const ask = row.ask;
   const subject = subjectOf(ask);
-  const flow = { ask, onAnswered, onSnoozeLive, viewer };
+  const flow = { ask, onAnswered, onAssignWrite, onSnoozeLive, viewer };
   if (subject.kind === "approval") {
     return <ApprovalBody {...flow} approval={subject.approval} artifactId={subject.artifactId} />;
   }

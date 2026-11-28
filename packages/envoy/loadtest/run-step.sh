@@ -3,9 +3,9 @@
 #
 #   run-step.sh <name> --events <per s> --sessions <n> --requests <per s>
 #     [--duration 180s] [--warmup 30s] [--grace 20s] [--event-mix <preset or kind=w,...>]
-#     [--route-mix <file>] [--human 0.1] [--live <n>] [--rng-seed <n>] [--heap-samples]
-#     [--out <dir>] [--live-resume 0|1] [--live-stale <n>] [--restart-at <duration>]
-#     [--mention-frac <0..1>] [--mentions <n>] [--envoy-rtt <duration>]
+#     [--route-mix <file>] [--human 0.1] [--live <n>] [--rng-seed <n>] [--xact-interval 10ms]
+#     [--heap-samples] [--out <dir>] [--live-resume 0|1] [--live-stale <n>]
+#     [--restart-at <duration>] [--mention-frac <0..1>] [--mentions <n>] [--envoy-rtt <duration>]
 #     [--editors 0] [--editor-rate 2] [--editor-docs 10]
 #
 #   run-step.sh <name> --replay [--rate F] [--reads RHO] [--read-mix M] [--uploads U]
@@ -132,7 +132,7 @@ while [ $# -gt 0 ]; do
       --events) have_events=true ;;
       --sessions) have_sessions=true ;;
       --requests) have_requests=true ;;
-      --duration | --warmup | --grace | --event-mix | --human | --live | --rng-seed | --live-stale | --restart-at | --mention-frac | --mentions) ;;
+      --duration | --warmup | --grace | --event-mix | --human | --live | --rng-seed | --xact-interval | --live-stale | --restart-at | --mention-frac | --mentions) ;;
       --editors | --editor-rate | --editor-docs) ;;
       --live-resume)
         case $value in

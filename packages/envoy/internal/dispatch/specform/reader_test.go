@@ -87,7 +87,7 @@ func TestTheRulesReadTheTextThatThePersonReads(t *testing.T) {
 		if at < 0 || extracted.Texts[at].Body != test.body {
 			t.Errorf("%s: stored %q gives the texts %#v, want the %s %s with the body %q", test.name, stored, extracted.Texts, test.kind, test.node, test.body)
 		}
-		got := findingNames(Check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts, Proposed: extracted.Terms}))
+		got := findingNames(check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts, Proposed: extracted.Terms}))
 		if !slices.Equal(got, test.want) {
 			t.Errorf("%s: stored %q gives the findings %q, want %q", test.name, stored, got, test.want)
 		}

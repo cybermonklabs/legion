@@ -1,3 +1,4 @@
+import { EMPTY_STATE_LINES } from "../web/src/features/issue-page/page-words";
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
 import { openRail } from "./rail";
@@ -43,8 +44,24 @@ async function navigation(page: Page): Promise<Locator> {
 }
 
 async function openSettings(page: Page): Promise<void> {
-  const links = await navigation(page);
-  await links.getByRole("link", { exact: true, name: "Settings" }).click();
+  // Each caller has waited for the page it stands on, today's or the new one, to draw, so one
+  // count says whether it is the new one.
+  const onNewPage = (await page.locator("[data-issue-page]").count()) > 0;
+  // The shell draws the rail, which holds Open navigation, in the render that routes to the new
+  // page, from a width query read as it renders, so one count says whether this width has it.
+  const navigationControls = await page.getByRole("button", { name: "Open navigation" }).count();
+  // The new page's frame (part D) draws no navigation below 768 px until the header's menu
+  // comes, so there the reader goes to Settings with its key, `g s`, which moves with no reload
+  // as a link does.
+  const frameWithoutNavigation = onNewPage && navigationControls === 0;
+  if (frameWithoutNavigation) {
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press("g");
+    await page.keyboard.press("s");
+  } else {
+    const links = await navigation(page);
+    await links.getByRole("link", { exact: true, name: "Settings" }).click();
+  }
   await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
 }
 
@@ -82,17 +99,60 @@ function newPageHeading(page: Page): Locator {
   return page.locator("[data-issue-page]").getByRole("heading", { level: 1 });
 }
 
-/** The new page as this part draws it: the key and the title as the page's one `h1`, no tab, and
- *  nothing else. */
+/** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
+ *  header, which draws the key and the title, the view row, Dashboard at the issue's own address,
+ *  and nothing else but what the foot draws - the box to write in and the read mark - which
+ *  `e2e/issue-page-l.e2e.ts` reads. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
+  await expect(newPage.locator("h1"), "the new page draws an h1 beside its title").toHaveCount(1);
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The part that fills a slot changes these two: each slot drawn so far adds no text or control.
-  await expect(newPage).toHaveText(`${issue.key} ${issue.title}`, { useInnerText: true });
-  await expect(newPage.locator("button, a, input, select, textarea")).toHaveCount(0);
+  // A part that fills another slot adds its selector here: so far the header
+  // (`[data-issue-header]`) and the view row (`[data-filter-row]`) are filled, the issue's own
+  // address draws Dashboard (`[data-dashboard]`, dispatch://INFRA-5702/spec#b-r-new-page), which
+  // for an issue that holds nothing says that nothing waits on the reader, and each other slot
+  // drawn so far adds no text or control: a view's address (`/spec`) draws nothing in the body
+  // until that view's own slot is filled. The box at the foot (`[data-testid="issue-composer"]`)
+  // and the read mark at the outline's end (`[data-outline-end]`) are left out of both counts.
+  const header = newPage.locator("[data-issue-header]");
+  const row = newPage.locator("[data-filter-row]");
+  const dashboard = newPage.locator("[data-dashboard]");
+  await expect(header).toHaveCount(1);
+  await expect(row).toHaveCount(1);
+  const atIssue = new URL(page.url()).pathname === `/issues/${issue.key}`;
+  await expect(dashboard).toHaveCount(atIssue ? 1 : 0);
+  if (atIssue) {
+    await expect(dashboard.getByText(EMPTY_STATE_LINES.dashboard, { exact: true })).toBeVisible();
+  }
+  const footSlot = '[data-testid="issue-composer"], [data-outline-end]';
+  await expect
+    .poll(
+      () =>
+        newPage.evaluate((root, left) => {
+          let text = (root as HTMLElement).innerText;
+          for (const part of root.querySelectorAll<HTMLElement>(
+            `[data-issue-header], [data-filter-row], [data-dashboard], ${left}`
+          )) {
+            text = text.replace(part.innerText, " ");
+          }
+          return text.replace(/\s+/g, " ").trim();
+        }, footSlot),
+      { message: "the new page draws text outside its header, its view row and Dashboard" }
+    )
+    .toBe("");
+  const controls = "button, a, input, select, textarea";
+  expect(
+    (await newPage.locator(controls).count()) -
+      (await newPage.locator(`:is(${footSlot}) :is(${controls})`).count()),
+    "the new page draws a control outside its header, its view row and Dashboard"
+  ).toBe(
+    (await header.locator(controls).count()) +
+      (await row.locator(controls).count()) +
+      (await dashboard.locator(controls).count())
+  );
 }
 
 /** Every request to `/api/` or `/ws/` the page sends, with its body, and every frame it sends on

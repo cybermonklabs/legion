@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  Each `check_runs` entry of a CI check settlement now carries `conclusion`, the word GitHub gave
+  that run (`success`, `neutral`, `skipped`, `timed_out` and the others, and a word GitHub adds
+  later). A consumer can now name a skipped check `skipped`. The groups do not change, and the key
+  is left out for a run whose record holds no conclusion.

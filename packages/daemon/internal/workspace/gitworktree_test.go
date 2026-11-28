@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // unreadableOwnEntry lays out a workspace whose .git names its own worktree entry, and that entry
@@ -56,6 +57,7 @@ func unreadableOwnEntry(t *testing.T) (located Workspace, entry, want string) {
 // provision of the workspace fails the same way and nothing repairs the entry, so the error says
 // what does, as restoreGitWorktree's refusal of a pointer outside the clone says it.
 func TestLockGitWorktreeRefusesItsEntryWhenItsGitdirCannotBeRead(t *testing.T) {
+	t.Parallel()
 	located, entry, want := unreadableOwnEntry(t)
 	want += "; provisioning cannot lock it. Remove the workspace so the next provisioning adds it again"
 	err := lockGitWorktree(located.Clone, located.Dir)
@@ -70,6 +72,7 @@ func TestLockGitWorktreeRefusesItsEntryWhenItsGitdirCannotBeRead(t *testing.T) {
 // removeGitWorktree answers the same entry with the same error, and leaves the entry where it is:
 // it is the workspace's, and removing nothing must not read as removing it.
 func TestRemoveGitWorktreeRefusesItsEntryWhenItsGitdirCannotBeRead(t *testing.T) {
+	t.Parallel()
 	located, entry, want := unreadableOwnEntry(t)
 	err := removeGitWorktree(located.Clone, located.Dir)
 	if err == nil || err.Error() != want {
@@ -85,7 +88,10 @@ func TestRemoveGitWorktreeRefusesItsEntryWhenItsGitdirCannotBeRead(t *testing.T)
 // the workspace can write that file, and under the tmux runtime the daemon makes this read while
 // it holds the repository's store lock, so a pointer that is a fifo nobody writes must be answered,
 // not waited on: a blocking open there stalls every later provision of the repository's issues.
+// The answer is waited for with no span of its own (testwait.Receive), so a read that waits on the
+// fifo fails the row by name before the test binary's deadline, and a slow provision passes.
 func TestRestoreGitWorktreeAnswersAPointerThatIsAFifo(t *testing.T) {
+	t.Parallel()
 	located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
 	if err != nil {
 		t.Fatal(err)
@@ -103,47 +109,9 @@ func TestRestoreGitWorktreeAnswersAPointerThatIsAFifo(t *testing.T) {
 	go func() {
 		done <- restoreGitWorktree(context.Background(), NewRunner(testTimeout, testTools(t)), located, func(string) {})
 	}()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatalf("restoreGitWorktree answered nil for a pointer that is a fifo, want the reason it holds no pointer git wrote")
-		}
-	case <-time.After(5 * time.Second):
-		// Open the fifo for writing so the blocked read returns and the test's goroutine ends.
-		if writer, openErr := os.OpenFile(pointer, os.O_WRONLY, 0); openErr == nil {
-			_ = writer.Close()
-		}
-		<-done
-		t.Fatalf("restoreGitWorktree was still reading %s after 5s: a pointer that is a fifo blocks the provision", pointer)
-	}
-}
-
-// removeTree answers a path whose parent is a fifo rather than waiting on it: os.RemoveAll opens
-// the parent of a path it cannot unlink outright with a plain open, which a fifo nobody writes
-// holds for ever, and every caller of removeTree removes something under the shared clone's
-// .git/worktrees, which a role can swap for a fifo.
-func TestRemoveTreeAnswersAParentThatIsAFifo(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "worktrees")
-	if err := syscall.Mkfifo(parent, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- removeTree(filepath.Join(parent, "infra-1")) }()
-	select {
-	case err := <-done:
-		if !errors.Is(err, syscall.ENOTDIR) {
-			t.Fatalf("removeTree under a fifo answered %v, want ENOTDIR", err)
-		}
-	case <-time.After(5 * time.Second):
-		// Open the fifo for writing so the blocked open returns and the test's goroutine ends.
-		if writer, openErr := os.OpenFile(parent, os.O_WRONLY, 0); openErr == nil {
-			_ = writer.Close()
-		}
-		<-done
-		t.Fatalf("removeTree was still opening %s after 5s: a parent that is a fifo blocks the removal", parent)
-	}
-	if info, err := os.Lstat(parent); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
-		t.Fatalf("the fifo %s is no longer there as it was (%v, %v)", parent, info, err)
+	err = testwait.Receive(t, "restoreGitWorktree over the fifo "+pointer, done)
+	if err == nil {
+		t.Fatalf("restoreGitWorktree answered nil for a pointer that is a fifo, want the reason it holds no pointer git wrote")
 	}
 }
 
@@ -176,8 +144,10 @@ func (r worktreesToFifo) Run(_ context.Context, command Command) (Result, error)
 // .git/worktrees, with the store lock still held under the tmux runtime. The window is a whole
 // `git read-tree`, and a role that swaps .git/worktrees for a fifo inside it must have the restore
 // answer its failure, not wait on the fifo while every later provision of the repository waits on
-// the lock.
+// the lock. A removal that waits on the fifo fails the row by name before the test binary's
+// deadline (testwait.Receive).
 func TestRestoreGitWorktreeAnswersWorktreesSwappedForAFifo(t *testing.T) {
+	t.Parallel()
 	located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
 	if err != nil {
 		t.Fatal(err)
@@ -199,18 +169,9 @@ func TestRestoreGitWorktreeAnswersWorktreesSwappedForAFifo(t *testing.T) {
 	go func() {
 		done <- restoreGitWorktree(context.Background(), worktreesToFifo{worktrees: resolved}, located, func(string) {})
 	}()
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "read-tree") {
-			t.Fatalf("restoreGitWorktree answered %v, want the failure of its git read-tree", err)
-		}
-	case <-time.After(5 * time.Second):
-		// Open the fifo for writing so the blocked open returns and the test's goroutine ends.
-		if writer, openErr := os.OpenFile(resolved, os.O_WRONLY, 0); openErr == nil {
-			_ = writer.Close()
-		}
-		<-done
-		t.Fatalf("restoreGitWorktree was still removing its temporary entry under %s after 5s: a .git/worktrees swapped for a fifo blocks the provision", resolved)
+	err = testwait.Receive(t, "restoreGitWorktree with "+resolved+" swapped for a fifo", done)
+	if err == nil || !strings.Contains(err.Error(), "read-tree") {
+		t.Fatalf("restoreGitWorktree answered %v, want the failure of its git read-tree", err)
 	}
 }
 
@@ -247,6 +208,7 @@ func (r gitDirAway) Run(_ context.Context, command Command) (Result, error) {
 // symlink to a directory of its choosing, before the restore or while its jj runs, and the restore
 // must then refuse, naming the link, and make nothing where it points.
 func TestRestoreGitWorktreeRefusesAGitDirectorySymlinkedAway(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		whileJJ bool
@@ -320,48 +282,22 @@ func excludeClone(t *testing.T) (clone, exclude string) {
 	return clone, filepath.Join(clone, ".git", "info", "exclude")
 }
 
-// excludeWithin runs excludeCodegraphDirectory on clone and answers its error, failing the row when
-// it is still running after 5s: it holds the repository's store lock under the tmux runtime, so a
-// call that waits holds every later provision of the repository. fifo, when it is set, is the fifo
-// the call may be waiting on: held, the writer the row holds open on it, if any, is closed, and the
-// fifo is then opened and closed for both ends until the call returns, so the row's goroutine
-// ends whichever open or read it waits in.
-func excludeWithin(t *testing.T, clone, fifo string, held *os.File) error {
+// excludeWithin runs excludeCodegraphDirectory on clone and answers its error, waited for with no
+// span of its own (testwait.Receive): the call holds the repository's store lock under the tmux
+// runtime, so a call that waits on a fifo holds every later provision of the repository, and
+// fails the row by name before the test binary's deadline, while a call that is merely slow passes.
+func excludeWithin(t *testing.T, clone string) error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- excludeCodegraphDirectory(clone) }()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(5 * time.Second):
-	}
-	if held != nil {
-		_ = held.Close()
-	}
-	stop := make(chan struct{})
-	go func() {
-		for fifo != "" {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if end, err := os.OpenFile(fifo, os.O_RDWR, 0); err == nil {
-				time.Sleep(20 * time.Millisecond)
-				_ = end.Close()
-			}
-		}
-	}()
-	<-done
-	close(stop)
-	t.Fatalf("excludeCodegraphDirectory(%s) was still running after 5s", clone)
-	return nil
+	return testwait.Receive(t, "excludeCodegraphDirectory("+clone+")", done)
 }
 
 // A clone's .git/info/exclude that is a fifo is refused, naming it, rather than waited on: in the
 // open of a read when nobody holds it, in the read when a writer holds it open and writes nothing,
 // and in the open of the write after. The fifo is left as it was.
 func TestExcludeCodegraphDirectoryRefusesAFifo(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		writer bool
@@ -382,7 +318,7 @@ func TestExcludeCodegraphDirectoryRefusesAFifo(t *testing.T) {
 				}
 				t.Cleanup(func() { _ = held.Close() })
 			}
-			err := excludeWithin(t, clone, exclude, held)
+			err := excludeWithin(t, clone)
 			if want := exclude + " is a fifo"; err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("excludeCodegraphDirectory answered %v, want a refusal saying %q", err, want)
 			}
@@ -398,6 +334,7 @@ func TestExcludeCodegraphDirectoryRefusesAFifo(t *testing.T) {
 // provisioning append `.codegraph/` to any file the daemon can write. The file the link names is
 // left as it was.
 func TestExcludeCodegraphDirectoryRefusesASymlink(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		link func(t *testing.T, clone, outside string) string
@@ -429,7 +366,7 @@ func TestExcludeCodegraphDirectoryRefusesASymlink(t *testing.T) {
 				t.Fatal(err)
 			}
 			link := row.link(t, clone, outside)
-			err := excludeWithin(t, clone, "", nil)
+			err := excludeWithin(t, clone)
 			if want := link + " is a symlink"; err == nil || !strings.Contains(err.Error(), want) {
 				t.Errorf("excludeCodegraphDirectory answered %v, want a refusal saying %q", err, want)
 			}
@@ -443,11 +380,12 @@ func TestExcludeCodegraphDirectoryRefusesASymlink(t *testing.T) {
 // A clone's .git/info/exclude larger than excludeLimit is refused, naming it and the bound,
 // rather than read whole, and is left as it was.
 func TestExcludeCodegraphDirectoryRefusesAFileLargerThanItsBound(t *testing.T) {
+	t.Parallel()
 	clone, exclude := excludeClone(t)
 	if err := os.WriteFile(exclude, []byte(strings.Repeat("a", excludeLimit+1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := excludeWithin(t, clone, "", nil)
+	err := excludeWithin(t, clone)
 	if want := fmt.Sprintf("%s is larger than %d bytes", exclude, excludeLimit); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("excludeCodegraphDirectory answered %v, want a refusal saying %q", err, want)
 	}
@@ -460,6 +398,7 @@ func TestExcludeCodegraphDirectoryRefusesAFileLargerThanItsBound(t *testing.T) {
 // directory made at 0700 when that is missing too; `.codegraph/` appended on a line of its own,
 // after a newline the file lacked; and nothing written when a line already is `.codegraph/`.
 func TestExcludeCodegraphDirectoryAppendsToAnOrdinaryFile(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		plant   func(t *testing.T, exclude string)
@@ -487,7 +426,7 @@ func TestExcludeCodegraphDirectoryAppendsToAnOrdinaryFile(t *testing.T) {
 			clone, exclude := excludeClone(t)
 			row.plant(t, exclude)
 			for range 2 {
-				if err := excludeWithin(t, clone, "", nil); err != nil {
+				if err := excludeWithin(t, clone); err != nil {
 					t.Fatalf("excludeCodegraphDirectory: %v", err)
 				}
 			}

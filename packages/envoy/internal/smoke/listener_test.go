@@ -39,90 +39,7 @@ func capped(cpus, mib int64) testcontainers.CustomizeRequestOption {
 }
 
 func TestSmoke(t *testing.T) {
-	image := os.Getenv("ENVOY_SMOKE_IMAGE")
-	if image == "" {
-		t.Fatal("ENVOY_SMOKE_IMAGE is unset, and this test never builds the image itself.\n" +
-			"From the repository root:\n" +
-			"  img=$(docker buildx build --load -q " +
-			"-f packages/envoy/docker/Dockerfile .)\n" +
-			"then, in packages/envoy:\n" +
-			"  ENVOY_SMOKE_IMAGE=$img go test -tags smoke -v ./internal/smoke/\n" +
-			"`-q` prints the image id, and go's test cache keys on the value of this variable, " +
-			"so rebuilding re-runs the test. A fixed tag would replay a cached PASS against an " +
-			"image that had since changed. In CI the build is a step of its own; see the " +
-			"envoy-smoke job's steps in .github/workflows/ci-job-envoy-smoke.yaml.")
-	}
-
-	ctx := context.Background()
-
-	// Shared Docker network for container-to-container communication.
-	net, err := network.New(ctx)
-	if err != nil {
-		t.Fatalf("create network: %v", err)
-	}
-	t.Cleanup(func() { net.Remove(ctx) })
-
-	// Start NATS using the same module the rest of the project uses.
-	natsC, err := tcnats.Run(ctx, testnats.Image,
-		network.WithNetwork([]string{"nats"}, net),
-		capped(1, 512),
-	)
-	testcontainers.CleanupContainer(t, natsC)
-	if err != nil {
-		t.Fatalf("start NATS: %v", err)
-	}
-
-	listenerC, err := testcontainers.Run(ctx, image,
-		network.WithNetwork([]string{"listener"}, net),
-		capped(1, 512),
-		testcontainers.WithEnv(map[string]string{
-			"NATS_URLS": "nats://nats:4222",
-			// The listener owns ENVOY_NOTIFICATIONS on a NATS that is not its own container, as
-			// every deployed listener does; without this the connect refuses it
-			// (internal/bus/reach.go).
-			"ENVOY_ALLOW_REMOTE_NATS": "1",
-			"ENVOY_LISTEN_HOST":       "0.0.0.0",
-			"ENVOY_MACHINE_ID":        "smoke-test",
-			"PORT":                    "9020",
-			// A non-loopback bind refuses to start without a token; the smoke
-			// exercises the same bearer path a deployed listener requires.
-			"ENVOY_API_TOKEN": smokeAPIToken,
-		}),
-		testcontainers.WithExposedPorts("9020/tcp"),
-		// /healthz answers 200 from the moment the port binds: "starting" until the durable consumer
-		// binds, then "healthy" (a liveness answer, docs/solutions/envoy/async-health-startup-pattern.md).
-		// /v1 answers 503 "service starting" until NATS is connected and the interest and session
-		// caches are warm, so the subtests below start once the body says "healthy"; a 200 alone
-		// released them into that window.
-		testcontainers.WithWaitStrategy(
-			wait.ForHTTP("/healthz").
-				WithPort("9020/tcp").
-				WithStatusCodeMatcher(func(status int) bool {
-					return status == http.StatusOK
-				}).
-				WithResponseMatcher(func(body io.Reader) bool {
-					var health struct {
-						Status string `json:"status"`
-					}
-					return json.NewDecoder(body).Decode(&health) == nil && health.Status == "healthy"
-				}).
-				WithStartupTimeout(60*time.Second),
-		),
-	)
-	testcontainers.CleanupContainer(t, listenerC)
-	if err != nil {
-		t.Fatalf("start listener: %v", err)
-	}
-
-	host, err := listenerC.Host(ctx)
-	if err != nil {
-		t.Fatalf("get host: %v", err)
-	}
-	port, err := listenerC.MappedPort(ctx, "9020")
-	if err != nil {
-		t.Fatalf("get mapped port: %v", err)
-	}
-	baseURL := fmt.Sprintf("http://%s:%s", host, port.Port())
+	_, baseURL := startSmokeStack(t)
 
 	t.Run("healthz", func(t *testing.T) {
 		resp, err := http.Get(baseURL + "/healthz")
@@ -205,8 +122,9 @@ func TestSmoke(t *testing.T) {
 		// No port: this listener delivers nothing to a session's port and refuses a registration
 		// that names one (subscribeHandler). A session is registered only with a consumer of its
 		// own, which the delivery field asks for, and a notifications.team.<name> topic is one
-		// the stream stores: the route leaves a notifications. topic no stream subject captures
-		// out of the row, with a warning naming it, since nothing would be delivered on it.
+		// the stream stores: the route leaves out of the row a notifications. topic that neither
+		// this build nor the deployed stream captures, with a warning naming it, since nothing
+		// would be delivered on it.
 		subBody := `{"session_id":"ses_smoke_test","topics":["notifications.team.smoke"],"port":0,"self_subscribed":true,"delivery":{"consumer":true,"epoch":"smoke"}}`
 		resp, err := apiRequest(http.MethodPost, baseURL+"/v1/interests/subscribe", subBody)
 		if err != nil {
@@ -233,6 +151,99 @@ func TestSmoke(t *testing.T) {
 			t.Error("registered session not visible in /v1/sessions")
 		}
 	})
+}
+
+// startSmokeStack starts a NATS container on the server the hub runs and the listener image
+// ENVOY_SMOKE_IMAGE names beside it, on a Docker network of their own, and returns the NATS
+// container and the listener's base URL once its /healthz says healthy. An unset
+// ENVOY_SMOKE_IMAGE fails the test with the build command: this test never builds the image.
+func startSmokeStack(t *testing.T) (*tcnats.NATSContainer, string) {
+	t.Helper()
+	image := os.Getenv("ENVOY_SMOKE_IMAGE")
+	if image == "" {
+		t.Fatal("ENVOY_SMOKE_IMAGE is unset, and this test never builds the image itself.\n" +
+			"From the repository root:\n" +
+			"  img=$(docker buildx build --load -q " +
+			"-f packages/envoy/docker/Dockerfile .)\n" +
+			"then, in packages/envoy:\n" +
+			"  ENVOY_SMOKE_IMAGE=$img go test -tags smoke -v ./internal/smoke/\n" +
+			"`-q` prints the image id, and go's test cache keys on the value of this variable, " +
+			"so rebuilding re-runs the test. A fixed tag would replay a cached PASS against an " +
+			"image that had since changed. In CI the build is a step of its own; see the " +
+			"envoy-smoke job's steps in .github/workflows/ci-job-envoy-smoke.yaml.")
+	}
+
+	ctx := context.Background()
+
+	// Shared Docker network for container-to-container communication.
+	net, err := network.New(ctx)
+	if err != nil {
+		t.Fatalf("create network: %v", err)
+	}
+	t.Cleanup(func() { net.Remove(ctx) })
+
+	// Start NATS using the same module the rest of the project uses, on the server the hub runs:
+	// the listener refuses to start on nats:2.10 (natsversion.Refusal).
+	natsC, err := tcnats.Run(ctx, testnats.HubImage,
+		network.WithNetwork([]string{"nats"}, net),
+		capped(1, 512),
+	)
+	testcontainers.CleanupContainer(t, natsC)
+	if err != nil {
+		t.Fatalf("start NATS: %v", err)
+	}
+
+	listenerC, err := testcontainers.Run(ctx, image,
+		network.WithNetwork([]string{"listener"}, net),
+		capped(1, 512),
+		testcontainers.WithEnv(map[string]string{
+			"NATS_URLS": "nats://nats:4222",
+			// The listener owns ENVOY_NOTIFICATIONS on a NATS that is not its own container, as
+			// every deployed listener does; without this the connect refuses it
+			// (internal/bus/reach.go).
+			"ENVOY_ALLOW_REMOTE_NATS": "1",
+			"ENVOY_LISTEN_HOST":       "0.0.0.0",
+			"ENVOY_MACHINE_ID":        "smoke-test",
+			"PORT":                    "9020",
+			// A non-loopback bind refuses to start without a token; the smoke
+			// exercises the same bearer path a deployed listener requires.
+			"ENVOY_API_TOKEN": smokeAPIToken,
+		}),
+		testcontainers.WithExposedPorts("9020/tcp"),
+		// /healthz answers 200 from the moment the port binds: "starting" until the durable consumer
+		// binds, then "healthy" (a liveness answer, docs/solutions/envoy/async-health-startup-pattern.md).
+		// /v1 answers 503 "service starting" until NATS is connected and the interest and session
+		// caches are warm, so the subtests below start once the body says "healthy"; a 200 alone
+		// released them into that window.
+		testcontainers.WithWaitStrategy(
+			wait.ForHTTP("/healthz").
+				WithPort("9020/tcp").
+				WithStatusCodeMatcher(func(status int) bool {
+					return status == http.StatusOK
+				}).
+				WithResponseMatcher(func(body io.Reader) bool {
+					var health struct {
+						Status string `json:"status"`
+					}
+					return json.NewDecoder(body).Decode(&health) == nil && health.Status == "healthy"
+				}).
+				WithStartupTimeout(60*time.Second),
+		),
+	)
+	testcontainers.CleanupContainer(t, listenerC)
+	if err != nil {
+		t.Fatalf("start listener: %v", err)
+	}
+
+	host, err := listenerC.Host(ctx)
+	if err != nil {
+		t.Fatalf("get host: %v", err)
+	}
+	port, err := listenerC.MappedPort(ctx, "9020")
+	if err != nil {
+		t.Fatalf("get mapped port: %v", err)
+	}
+	return natsC, fmt.Sprintf("http://%s:%s", host, port.Port())
 }
 
 const smokeAPIToken = "smoke-api-token"

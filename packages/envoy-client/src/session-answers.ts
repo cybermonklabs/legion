@@ -1,12 +1,16 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { actorActText, type SessionAnswer, type SessionAnswerRelation } from "@legion/contracts";
+import { actorActText, type SessionAnswer } from "@legion/contracts";
+import { urlForText } from "@legion/contracts/log-text";
+import { deletedMark, editedMark } from "./actor-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
-import { messageFor, withoutUserinfo } from "./errors";
+import { messageFor } from "./errors";
+import { jsonLineRecord } from "./json-line-record";
+import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 
 /**
  * People's answers on every model request: what people wrote in the last 72
@@ -44,24 +48,6 @@ const FAILURE_MARKER = "[Dispatch: people's answers from the last 72 hours could
 /** The reason a read gives when Dispatch has no answers route (a build older than the route). */
 export const NO_ANSWERS_ROUTE_REASON = "this Dispatch build has no answers route";
 
-const RELATION_PHRASES: Readonly<Record<SessionAnswerRelation, string>> = {
-  answered_your_ask: "answered your ask",
-  declined_your_ask: "declined to answer your ask",
-  replied_on_your_ask: "replied on your ask",
-  replied_in_a_comment_thread: "replied in a comment thread",
-  commented_on_a_document: "commented on a document",
-  commented_on_an_issue: "commented on an issue",
-  mentioned_you: "mentioned you",
-  sent_you_a_message: "sent you a message",
-  replied_to_your_message: "replied to your message",
-};
-
-/** Whether a `relation` the server sent is one this build words; the wire type is an open
- *  string, so a relation a newer Dispatch adds is printed as it came. */
-function isSessionAnswerRelation(value: string): value is SessionAnswerRelation {
-  return Object.hasOwn(RELATION_PHRASES, value);
-}
-
 /** Whether `text` is a message `renderSessionAnswers` or the failure line wrote: what a host checks
  *  so a second copy of its extension adds no second list. */
 export function isSessionAnswersText(text: string): boolean {
@@ -84,11 +70,12 @@ export function isNoAnswersRoute(error: unknown): boolean {
  * One item as both the per-request list and `dispatch answers` print it, in this order: the time
  * the person wrote it, the person (with the agent that wrote it for them, through
  * `actorActText`) and what it is to the session (with `replaces an earlier answer` on an answer
- * that replaced one, and `edited <time>` on an edited comment); its `dispatch://` reference and
- * its issue or document, or that it is a direct message; the ask's question, cut to 200
- * characters, on an answer, on a decline and on a reply in an ask's thread; on an answer,
- * `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:` with the
- * sentences Dispatch wrote for the asking agent; then the person's words in full.
+ * that replaced one, `edited <time>` on an edited comment or message, and the mark every read
+ * prints for a post its author withdrew (`deletedMark`), whose words the server sends empty); its
+ * `dispatch://` reference and its issue or document, or that it is a direct message; the ask's
+ * question, cut to 200 characters, on an answer, on a decline and on a reply in an ask's thread;
+ * on an answer, `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:`
+ * with the sentences Dispatch wrote for the asking agent; then the person's words in full.
  *
  * The person's own words and Dispatch's stand on lines of their own, the label naming whose
  * each is, so nobody reads Dispatch's instruction as something the person wrote. The words print
@@ -96,12 +83,13 @@ export function isNoAnswersRoute(error: unknown): boolean {
  * newer Dispatch adds keeps them.
  */
 export function renderSessionAnswerItem(item: SessionAnswer): string {
-  const phrase = isSessionAnswerRelation(item.relation)
-    ? RELATION_PHRASES[item.relation]
-    : item.relation;
+  const phrase = sessionAnswerRelationPhrase(item.relation);
   const relation = `${phrase}${item.replaced === true ? " (replaces an earlier answer)" : ""}`;
   const head = [item.at, actorActText(`user ${item.author.id}`, item.author.act), relation];
-  if (item.edited_at !== undefined) head.push(`edited ${item.edited_at}`);
+  if (item.edited_at !== undefined) head.push(editedMark(item.edited_at));
+  // No read of a deleted post gives any part of its body: the server sends its text empty, so no
+  // words line prints, and the head line ends with the one mark every read prints.
+  if (item.deleted_at !== undefined) head.push(deletedMark(item.deleted_at, item.deleted_by));
   const owner = item.owner === null ? undefined : ownerTitle(item.owner);
   const where =
     item.ref === null
@@ -111,8 +99,9 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
         : `${item.ref} · ${owner}`;
   const lines = [head.join(" · "), where];
   if (item.ask !== undefined) {
-    // The question is the session's own words, not the person's, so cutting it to the length
-    // every surface quotes a question at (QUESTION_HEAD) loses nothing a person wrote.
+    // The question is the ask's, whoever asked it - the session, another session or a person -
+    // and not what the person wrote in this item, which prints whole below; it is cut to the
+    // length every surface quotes a question at (QUESTION_HEAD).
     lines.push(`Question: ${textHead(item.ask.question, QUESTION_HEAD)}`);
   }
   if (item.kind === "answer") {
@@ -144,22 +133,27 @@ function windowOf(
 }
 
 /**
- * What the people wrote in each of `items`, one string per item: its kind, id, author and times,
- * the options chosen and the words. `readSessionAnswers` gives it for every item Dispatch sent
- * inside the read's 72-hour window, the ones its list shows and the ones the character cap left
- * out, so a host comparing two reads (`sessionAnswersChanged`) tells a new item, or an answer or
- * comment a person changed, from a list that only lost items to the window or changed what the
- * session or Dispatch says around them (an issue's title, an ask's question, a cached list's
- * header). An item the cap leaves out counts too: a newest item longer than the cap, or a comment
- * an edit made too long to fit, is shown to nobody, and a host that compared only the items shown
- * would go on showing the person's old words as current. Dispatch cuts the list itself
- * (`max_chars`) after the first item that takes its count past the cap, so it sends such an item;
- * the items after its cut, which no list shows, reach the host only as `total`.
+ * What the people wrote in each of `items`, and what each is to the session, one string per item:
+ * its kind, id, author and times, the options chosen, the words and its relation.
+ * `readSessionAnswers` gives it for every item Dispatch sent inside the read's 72-hour window,
+ * the ones its list shows and the ones the character cap left out, so a host comparing two reads
+ * (`sessionAnswersChanged`) tells a new item, an answer, comment or message a person changed, or
+ * an item that became or stopped being the session's own, from a list that only lost items to the
+ * window or changed what the session or Dispatch says around them (an issue's title, an ask's
+ * question, a cached list's header). An item the cap leaves out counts too: a newest item longer
+ * than the cap, or a comment an edit made too long to fit, is shown to nobody, and a host that
+ * compared only the items shown would go on showing the person's old words as current. Dispatch
+ * cuts the list itself (`max_chars`) after the first item that takes its count past the cap, so it
+ * sends such an item; the items after its cut, which no list shows, reach the host only as
+ * `total`.
  *
  * The author is the rendered act (`actorActText`), not the person's id alone, so the same words
  * from the person themselves and from an agent acting for them are two different items: a host
- * that compared ids would carry the second as if the person had written it. The fourth field is
- * the item's time, which `sessionAnswersChanged` reads back.
+ * that compared ids would carry the second as if the person had written it. Dispatch gives the
+ * relation at each read, from who asked the item's ask and who follows it at that moment: once
+ * the session follows an ask, a reply on it that reached the session earlier reads as a reply on
+ * its own ask, and a host that kept the old list would go on telling the session the ask is
+ * another's. The fourth field is the item's time, which `sessionAnswersChanged` reads back.
  */
 export function sessionAnswersWords(items: readonly SessionAnswer[]): string[] {
   return items.map((item) =>
@@ -169,8 +163,10 @@ export function sessionAnswersWords(items: readonly SessionAnswer[]): string[] {
       actorActText(item.author.id, item.author.act),
       item.at,
       item.edited_at ?? null,
+      item.deleted_at ?? null,
       item.selected ?? null,
       item.text,
+      item.relation,
     ])
   );
 }
@@ -190,13 +186,13 @@ function wordTime(word: string): number {
 
 /**
  * Whether a read whose `words` are `next` shows something that a list with the `words` `shown`
- * did not: an item new to it, or an answer or comment a person changed (a string `shown` lacks);
- * or an item `shown` held that is gone from the read while its time is still inside the read's
- * window, at or after `since` (`SessionAnswersRead.since`), which a person retracted (an answer
- * set back to none) or Dispatch removed. An item gone because its time left the window is no
- * change: the window moved, and nothing a person wrote did. A string whose time cannot be read,
- * or a read with no `since`, counts as gone inside the window, so a host never goes on showing
- * what may have been retracted.
+ * did not: an item new to it, an answer, comment or message a person changed, or an item whose
+ * relation to the session changed (a string `shown` lacks); or an item `shown` held that is gone
+ * from the read while its time is still inside the read's window, at or after `since`
+ * (`SessionAnswersRead.since`), which a person retracted (an answer set back to none) or Dispatch
+ * removed. An item gone because its time left the window is no change: the window moved, and
+ * nothing a person wrote did. A string whose time cannot be read, or a read with no `since`,
+ * counts as gone inside the window, so a host never goes on showing what may have been retracted.
  */
 export function sessionAnswersChanged(
   shown: readonly string[],
@@ -446,8 +442,9 @@ export interface SessionAnswersRead {
   readonly readAt?: string;
   /** `sessionAnswersWords` of every item Dispatch sent inside the 72-hour window the list was
    *  rendered for (`fresh` and `cache`), the ones the character cap left out included: what the
-   *  people wrote. A `fresh` read whose window holds no item gives `[]` and no `text`, so a host
-   *  still learns that the items of a list it shows left the read (`sessionAnswersChanged`). */
+   *  people wrote, and what each item is to the session. A `fresh` read whose window holds no item
+   *  gives `[]` and no `text`, so a host still learns that the items of a list it shows left the
+   *  read (`sessionAnswersChanged`). */
   readonly words?: readonly string[];
   /** The start of that window (ISO 8601 UTC), 72 hours before the render (`fresh` and `cache`):
    *  an item `words` no longer holds whose time is at or after it left the read inside the window
@@ -461,6 +458,16 @@ export interface SessionAnswersRead {
    *  answered with a list. It names the URL. */
   readonly notice?: string;
 }
+
+/** Tests only: the file each wait below appends `{ armedMs, endedBy }` to, one JSON line each, so
+ *  a test across the process boundary reads the deadline a request's read was given and what
+ *  ended it rather than timing the request. Unset, as every deployment runs, nothing is written. */
+export const ANSWERS_WAIT_RECORD_FILE = "ENVOY_ANSWERS_WAIT_RECORD_FILE";
+
+const recordWait = jsonLineRecord<{
+  readonly armedMs: number;
+  readonly endedBy: "deadline" | "aborted" | "answered";
+}>(process.env, ANSWERS_WAIT_RECORD_FILE);
 
 /** `promise`'s value, or which came first of `ms` passing and `signal` aborting. */
 async function settleWithin<T>(
@@ -477,7 +484,12 @@ async function settleWithin<T>(
     signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
-    return await Promise.race([promise, stop]);
+    const outcome = await Promise.race([promise, stop]);
+    recordWait?.({
+      armedMs: ms,
+      endedBy: outcome === "deadline" ? "deadline" : outcome === "aborted" ? "aborted" : "answered",
+    });
+    return outcome;
   } finally {
     clearTimeout(timer);
     if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
@@ -573,7 +585,7 @@ export async function readSessionAnswers(
     current.noRouteReported = true;
     return {
       ...read,
-      notice: `Dispatch at ${withoutUserinfo(url)} has no answers route (its build is older than the route), so people's answers cannot be read from it`,
+      notice: `Dispatch at ${urlForText(url, "the configured Dispatch URL")} has no answers route (its build is older than the route), so people's answers cannot be read from it`,
     };
   };
   if ((state.noRouteUntil.get(url) ?? 0) > now()) return noRoute();
@@ -584,15 +596,16 @@ export async function readSessionAnswers(
   if (read === undefined) {
     // The client runs the read once: an answer of no route is this read's own (`isNoAnswersRoute`,
     // `NO_ROUTE_BACKOFF_MS`), and that 5-minute back-off, not the client's waits, is what carries
-    // the request past a release rolling out, within this call's deadline.
+    // the request past a release rolling out, within this call's deadline. The deadline is the
+    // client's own, so its credential is given the read less the request's reserve.
     const client = new DispatchClient(url, dispatch.credential, options.fetchImpl ?? fetch, {
       retryNoRoute: false,
+      deadlineMs: READ_TIMEOUT_MS,
     });
     const started = client
       .sessionAnswers(session, {
         since: new Date(now() - SESSION_ANSWERS_WINDOW_MS).toISOString(),
         maxChars: SESSION_ANSWERS_MAX_CHARS,
-        signal: AbortSignal.timeout(READ_TIMEOUT_MS),
       })
       .then(
         (response): ReadOutcome => {

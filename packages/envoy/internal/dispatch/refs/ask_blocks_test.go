@@ -13,7 +13,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 const askPartServer = "https://dispatch.example"
@@ -86,16 +88,27 @@ func writeAskAnswer(t *testing.T, tx pgx.Tx, ask *model.Ask, user string, select
 	ask.Answer, ask.State = &answer, "answered"
 }
 
-// indexAskPartsAt indexes the ask's parts at the index-th second of a fixed clock, so each indexing
-// of one test has a time of its own.
+// indexAskPartsAt plans the ask's parts at the index-th second of a fixed clock, so each indexing
+// of one test has a time of its own, and writes them as a batch of their own.
 func indexAskPartsAt(t *testing.T, tx pgx.Tx, ask model.Ask, index int) []Target {
 	t.Helper()
+	ctx := context.Background()
 	at := time.Date(2026, 10, 30, 12, 0, index, 0, time.UTC)
-	moved, err := IndexAskParts(context.Background(), tx, NewReader(context.Background(), tx, "ask", ask.ID, askPartServer), ask, at)
+	stored, err := ReadItemIndex(ctx, tx, ItemAsk, ask.ID)
+	if err != nil {
+		t.Fatalf("read the part index of ask %s: %v", ask.ID, err)
+	}
+	indexing, err := PlanAskParts(stored, NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer), ask, at)
 	if err != nil {
 		t.Fatalf("index the parts of ask %s: %v", ask.ID, err)
 	}
-	return moved
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		indexing.Queue(b)
+		return nil
+	}); err != nil {
+		t.Fatalf("write the parts of ask %s: %v", ask.ID, err)
+	}
+	return indexing.Moved()
 }
 
 // askPartRow is one row of ask_blocks: a removed part's position is -1 and a part the ask's
@@ -185,6 +198,7 @@ func askPartState(t *testing.T, q Queryer, askID string) (revision, next int) {
 // other is empty. Each part's identity hash is salted with its type, so an option whose text is
 // the question's is another part.
 func TestAskPartsAreTheQuestionEachOptionAndTheAnswer(t *testing.T) {
+	t.Parallel()
 	ask := model.Ask{
 		ID:       "11111111-1111-4111-8111-111111111111",
 		Question: "Which transport?",
@@ -231,6 +245,7 @@ func TestAskPartsAreTheQuestionEachOptionAndTheAnswer(t *testing.T) {
 // The first indexing of an ask writes one part row per part at revision 1, each with the node id
 // `ask/<ask uuid>#<part id>`, its type and its text, and records each text at that revision.
 func TestIndexingAnAskWritesItsPartsAtRevisionOne(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ask := insertAsk(t, tx, "CORE-1", "Which transport?",
 		model.AskOption{Label: "REST", Description: "the simple one"},
@@ -262,6 +277,7 @@ func TestIndexingAnAskWritesItsPartsAtRevisionOne(t *testing.T) {
 // Answering an ask adds a fourth part, whose maker is the answerer and not the ask's author, at
 // the next revision; the question and the options keep their ids and their revision.
 func TestAnsweringAnAskAddsAPartMadeByTheAnswerer(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ask := insertAsk(t, tx, "CORE-1", "Which transport?",
 		model.AskOption{Label: "REST", Description: "the simple one"},
@@ -289,6 +305,7 @@ func TestAnsweringAnAskAddsAPartMadeByTheAnswerer(t *testing.T) {
 
 // A reworded option keeps its part id and takes the new revision; no other part moves.
 func TestRewordingAnAskOptionKeepsItsPartID(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ask := insertAsk(t, tx, "CORE-1", "Which transport?",
 		model.AskOption{Label: "REST", Description: "the simple one"},
@@ -316,6 +333,7 @@ func TestRewordingAnAskOptionKeepsItsPartID(t *testing.T) {
 // so a reference made while it was live still resolves and reads removed, and the revision that
 // dropped it records that it holds no text.
 func TestDroppingAnAskOptionKeepsItsPartRemoved(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ask := insertAsk(t, tx, "CORE-1", "Which transport?",
 		model.AskOption{Label: "REST", Description: "the simple one"},
@@ -340,6 +358,7 @@ func TestDroppingAnAskOptionKeepsItsPartRemoved(t *testing.T) {
 // A later answer is another answer, not a rewording of the first: the answer it replaces keeps
 // its row as a removed part, and the new one takes an id of its own.
 func TestASecondAnswerReplacesTheAnswerPart(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ask := insertAsk(t, tx, "CORE-1", "Which transport?", model.AskOption{Label: "REST"})
 	indexAskPartsAt(t, tx, ask, 1)
@@ -366,6 +385,7 @@ func TestASecondAnswerReplacesTheAnswerPart(t *testing.T) {
 // maker, so the second answerer's answer is a part of its own and the first answerer's is
 // removed, and no part records a maker who did not make it.
 func TestASecondAnswererGetsAnAnswerPartOfTheirOwn(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ask := insertAsk(t, tx, "CORE-1", "Which transport?", model.AskOption{Label: "REST"})
 	indexAskPartsAt(t, tx, ask, 1)
@@ -391,6 +411,7 @@ func TestASecondAnswererGetsAnAnswerPartOfTheirOwn(t *testing.T) {
 // A part's identity hash is salted with its type, so an option whose text is the question's takes
 // a part id of its own rather than the question's.
 func TestAnOptionWhoseTextIsTheQuestionsTakesItsOwnPartID(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ask := insertAsk(t, tx, "CORE-1", "Which transport?", model.AskOption{Label: "Which transport?"})
 	indexAskPartsAt(t, tx, ask, 1)
@@ -404,6 +425,7 @@ func TestAnOptionWhoseTextIsTheQuestionsTakesItsOwnPartID(t *testing.T) {
 // A link written in an option is an edge out of that option: a part is its own text, so the
 // mention is read from the part and paired to it, with no offset into a body.
 func TestALinkInAnAskOptionStartsAtThatPart(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ask := insertAsk(t, tx, "CORE-1", "Which transport?",
 		model.AskOption{Label: "REST", Description: "as dispatch://CORE-1/spec reads it"},
@@ -432,6 +454,7 @@ func TestALinkInAnAskOptionStartsAtThatPart(t *testing.T) {
 
 // An indexing that finds the parts it last indexed writes no revision and no text row.
 func TestIndexingAnUnchangedAskWritesNoRevision(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ask := insertAsk(t, tx, "CORE-1", "Which transport?", model.AskOption{Label: "REST"})
 	indexAskPartsAt(t, tx, ask, 1)
@@ -455,6 +478,7 @@ func TestIndexingAnUnchangedAskWritesNoRevision(t *testing.T) {
 // messages owed, and indexed in a transaction of its own, which leaves the ask indexed and owing
 // nothing. A pass that finds the parts already indexed indexes nothing.
 func TestTheReconciliationIndexesAnAskOwedItsParts(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for _, statement := range []string{
@@ -531,6 +555,7 @@ func (tx *countingTx) reads(marker string) int {
 // builds (NewReader), where a reader each would read the document its `#id`s resolve against
 // and that document's question blocks twice over.
 func TestAnAskWriteReadsItsQuestionsOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	begun, err := database.Pool.Begin(ctx)
@@ -547,13 +572,32 @@ func TestAnAskWriteReadsItsQuestionsOnce(t *testing.T) {
 	ask := insertAsk(t, tx.Tx, "ACME-1", "Does #q1 still hold?", model.AskOption{Label: "Yes, as #q1 says"})
 
 	tx.queries = nil
-	reader := NewReader(ctx, tx, "ask", ask.ID, askPartServer)
-	if _, err := ReplaceCounted(ctx, tx, reader, ask.Question); err != nil {
-		t.Fatalf("index the ask's question: %v", err)
+	reader := NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer)
+	replacement, err := PlanReplace(ctx, tx, "ask", ask.ID, text.Refs(reader.Mentions(ask.Question)), nil)
+	if err != nil {
+		t.Fatalf("plan the ask's question: %v", err)
+	}
+	if _, err := CountedChanges(ctx, tx, replacement.Changed()); err != nil {
+		t.Fatalf("count what the ask's question moved: %v", err)
 	}
 	at := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
-	if _, err := IndexAskPartsCounted(ctx, tx, reader, ask, at, model.ReferenceChanges{}); err != nil {
-		t.Fatalf("index the ask's parts: %v", err)
+	stored, err := ReadItemIndex(ctx, tx, ItemAsk, ask.ID)
+	if err != nil {
+		t.Fatalf("read the part index of the ask: %v", err)
+	}
+	indexing, err := PlanAskParts(stored, reader, ask, at)
+	if err != nil {
+		t.Fatalf("plan the ask's parts: %v", err)
+	}
+	if _, err := CountedChanges(ctx, tx, indexing.Moved()); err != nil {
+		t.Fatalf("count what the ask's parts moved: %v", err)
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
+		indexing.SettlingForms().Queue(b)
+		return nil
+	}); err != nil {
+		t.Fatalf("index the ask's question and its parts: %v", err)
 	}
 
 	if got := tx.reads(askScope + "::text from asks k"); got != 1 {

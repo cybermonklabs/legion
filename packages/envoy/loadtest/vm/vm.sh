@@ -366,7 +366,7 @@ LOAD_LISTENERS=(load-listener-1 load-listener-2 load-listener-3 load-listener-4)
 # though: the sessions those containers opened outlive them, which is db_free's work.
 DB_HOLDERS=(dispatch dispatch-listener "${LOAD_LISTENERS[@]}" hub-listener)
 # Dispatch's ephemeral storage limit, the setting that exists because Autopilot's 1Gi default
-# evicted production's Dispatch (agent-infra dispatch/Pulumi.prod.yaml appEphemeralStorage, 8Gi).
+# evicted production's Dispatch (deployment dispatch/Pulumi.prod.yaml appEphemeralStorage, 8Gi).
 # It has no form on these machines and is not set: docker takes such a limit as
 # --storage-opt size=, which its own daemon refuses here -- "--storage-opt is supported only for
 # overlay over xfs with 'pquota' mount option", measured on the deployment's Container-Optimized
@@ -482,6 +482,7 @@ parse() {
   [ -n "${OPT[config]:-}" ] || die "$CMD: --config is required: name the deployment's JSON file (there is no default; the deployment is dispatch://INFRA-1051's, and nothing of it is named in this script)"
   CONFIG=$(abs_file --config "${OPT[config]}")
   jq -e . "$CONFIG" >/dev/null 2>&1 || die "$CMD: --config $CONFIG is not readable JSON"
+  cfg_load
   check_placement
   check_route_mixes
 }
@@ -493,11 +494,140 @@ positional() {
 
 # ---- the deployment file -------------------------------------------------------------------------
 
+# A value of the deployment file is answered out of a reading of the whole file: one jq takes
+# every value into CFG_TYPE and CFG_VALUE, by its path, with its type and what `jq -r` prints of
+# it, and cfg_read answers a filter out of them. Before, every value read ran a jq of its own over
+# the same file: 297 of them in one up and 408 in a step, each a process started and waited on in
+# turn. Every answer is still the file's as it is at that read: cfg_current reads the file's text
+# again first, with the shell's own mapfile, and takes a new reading when the text differs from
+# the one the reading was taken from, so an edit while a series runs reaches the next read, as it
+# did when each read ran jq. What cfg_read cannot answer exactly as jq would -- an object or an
+# array, which jq prints whole, and a step jq refuses, such as a name under a string -- still runs
+# jq, and so does every read of a shell that never ran cfg_load.
+#
+# CFG_FILE is the file the reading is of, CFG_TEXT the text it was taken from, and CFG_LOADED is 1
+# when that text gave a reading.
+CFG_FILE="" CFG_TEXT="" CFG_LOADED=""
+declare -A CFG_TYPE=() CFG_VALUE=()
+
+# CFG_DUMP: the program cfg_parse runs. For each path of the file, three fields, each ended by a
+# NUL: the path as a filter spells it (.name for a name of letters, digits and '_', ["key"] for
+# any other key, [N] for an index), the value's jq type, and what `jq -r` prints of it, empty for
+# null and false since `// empty` drops them. A string that holds a NUL is typed `nul`, which
+# cfg_read leaves to jq: no shell variable holds a NUL. The last field is `end`, so a reading cut
+# short is no reading. The file is read whole (--slurp), and only a file of exactly one document,
+# an object, gives any: a jq of its own runs once per document, so a second document after the
+# object (`{...} 123`) is one jq refuses at the read of a name, and that stays jq's to refuse.
+# shellcheck disable=SC2016 # a jq program, not a shell expansion
+CFG_DUMP='if length == 1 and (.[0] | type) == "object" then .[0] | (
+  (. as $doc
+    | paths
+    | . as $p
+    | ($doc | getpath($p)) as $v
+    | (if ($v | type) == "string" and ($v | explode | any(. == 0)) then "nul" else ($v | type) end) as $t
+    | ($p | map(if type == "number" then "[\(.)]"
+        elif test("^[A-Za-z_][A-Za-z0-9_]*$") then ".\(.)"
+        else "[\(tojson)]" end) | join("")),
+      $t,
+      (if $t == "string" then $v elif $t == "number" or $v == true then ($v | tojson) else "" end)
+    | ., "\u0000"),
+  "end", "\u0000")
+else empty end'
+
+# cfg_load: the first reading of $CONFIG, which parse takes before anything else reads the file.
+# A file this cannot read leaves no reading, and every read runs jq as it did before.
+cfg_load() {
+  CFG_FILE=$CONFIG CFG_TEXT="" CFG_LOADED=""
+  cfg_current || true
+}
+
+# cfg_current: 0 when CFG_TYPE and CFG_VALUE hold the file as it is now. It reads the file's text
+# and takes a new reading (cfg_parse) when that text is not the one the reading was taken from. A
+# file it cannot read, an empty one, or one holding a NUL anywhere, which no shell variable holds,
+# is jq's: 1. The shell's read, given NUL as its end, says which: it stops at the first NUL and
+# returns 0, or reads the whole file and returns 1 at its end. (mapfile, which this used, drops a
+# NUL that ends the file, so a file ending in one was answered from the reading where jq refuses
+# it.)
+cfg_current() {
+  local text="" status=2
+  [ -n "$CFG_FILE" ] && [ "$CFG_FILE" = "$CONFIG" ] || return 1
+  { IFS= read -r -d '' text; status=$?; } 2>/dev/null <"$CONFIG" || true
+  ((status == 1)) && [ -n "$text" ] || return 1
+  [ "$text" = "$CFG_TEXT" ] || cfg_parse "$text"
+  [ -n "$CFG_LOADED" ]
+}
+
+# cfg_parse TEXT: the reading of TEXT, the file's whole text, into CFG_TYPE and CFG_VALUE.
+cfg_parse() {
+  local fields=() i
+  CFG_TEXT=$1 CFG_LOADED="" CFG_TYPE=() CFG_VALUE=()
+  mapfile -d '' -t fields < <(jq -s -j "$CFG_DUMP" <<<"$1" 2>/dev/null)
+  ((${#fields[@]} % 3 == 1)) && [ "${fields[-1]}" = end ] || return 0
+  for ((i = 0; i + 3 < ${#fields[@]}; i += 3)); do
+    CFG_TYPE[${fields[i]}]=${fields[i + 1]}
+    CFG_VALUE[${fields[i]}]=${fields[i + 2]}
+  done
+  CFG_LOADED=1
+}
+
+# cfg_read FILTER: what `jq -r "FILTER // empty"` prints of the file as it is now, into CFG_READ,
+# when FILTER is a path -- steps of .name, ["key"] with no quote, backslash or control character in
+# the key (the dump spells those keys as jq's tojson escapes them), and [N]
+# -- and the answer is a string, a number, true or nothing; 1 for every other case, which the
+# caller hands to jq. A step under null or under nothing is nothing, as jq has it; a name under
+# anything but an object, and an index under anything but an array, are jq's to refuse.
+cfg_read() {
+  local rest=$1 path="" step kind key type=object
+  local name_re='^\.([A-Za-z_][A-Za-z0-9_]*)(.*)$' key_re='^\["([^"\\[:cntrl:]]*)"\](.*)$'
+  local index_re='^\[(0|[1-9][0-9]*)\](.*)$' ident_re='^[A-Za-z_][A-Za-z0-9_]*$'
+  CFG_READ="" CFG_OUT=""
+  # A filter that opens with [ is jq's array constructor, not a step: it is jq's to answer.
+  [[ $rest == .* ]] && cfg_current || return 1
+  while [ -n "$rest" ]; do
+    if [[ $rest =~ $name_re ]]; then
+      step=.${BASH_REMATCH[1]} kind=name rest=${BASH_REMATCH[2]}
+    elif [[ $rest =~ $key_re ]]; then
+      key=${BASH_REMATCH[1]} kind=name rest=${BASH_REMATCH[2]}
+      step="[\"$key\"]"
+      [[ ! $key =~ $ident_re ]] || step=.$key
+    elif [[ $rest =~ $index_re ]]; then
+      step="[${BASH_REMATCH[1]}]" kind=index rest=${BASH_REMATCH[2]}
+    else
+      return 1
+    fi
+    # The rest of the filter is still read through after nothing, so a filter jq cannot compile
+    # is still jq's to refuse.
+    case $type:$kind in
+      object:name | array:index)
+        path+=$step
+        type=${CFG_TYPE[$path]-absent}
+        ;;
+      null:* | absent:*) ;;
+      *) return 1 ;;
+    esac
+  done
+  # CFG_OUT is what jq itself prints, a line or nothing (null, false or nothing at all), for a
+  # caller that hands jq's output on; CFG_READ is what a command substitution of it keeps.
+  CFG_OUT=""
+  case $type in
+    string | number | boolean) CFG_READ=${CFG_VALUE[$path]} ;;
+    null | absent) ;;
+    *) return 1 ;;
+  esac
+  [ "$type" = boolean ] && [ -z "$CFG_READ" ] || [ "$type" = null ] || [ "$type" = absent ] ||
+    CFG_OUT=$CFG_READ$'\n'
+  while [[ $CFG_READ == *$'\n' ]]; do CFG_READ=${CFG_READ%$'\n'}; done
+}
+
 # cfg FILTER [DEFAULT]: one value of the deployment file. Without a DEFAULT, a missing value is
 # refused naming the filter, so no command runs half configured.
 cfg() {
   local v
-  v=$(jq -r "$1 // empty" "$CONFIG") || die "reading $1 from $CONFIG failed"
+  if cfg_read "$1"; then
+    v=$CFG_READ
+  else
+    v=$(jq -r "$1 // empty" "$CONFIG") || die "reading $1 from $CONFIG failed"
+  fi
   if [ -z "$v" ]; then
     [ $# -ge 2 ] || die "the deployment file $CONFIG names no $1"
     v=$2
@@ -532,6 +662,10 @@ vm_keys() { jq -r '.vms // {} | keys_unsorted[]' "$CONFIG"; }
 # container_vm_configured ROLE: the machine the deployment file starts ROLE on, empty when it
 # places ROLE nowhere. check_placement is what reads it; everything else takes CONTAINER_VM.
 container_vm_configured() {
+  if cfg_read ".containers[\"$1\"]"; then
+    printf '%s' "$CFG_OUT"
+    return 0
+  fi
   jq -r --arg role "$1" ".containers[\$role] // empty" "$CONFIG" ||
     die "reading .containers from $CONFIG failed"
 }
@@ -633,7 +767,11 @@ port_of() { cfg_valid port ".ports.$1"; }
 # load_listener_port N: the port of the Nth load listener (1-based), from ports.load_listeners.
 load_listener_port() {
   local v
-  v=$(jq -r ".ports.load_listeners[$(($1 - 1))] // empty" "$CONFIG")
+  if cfg_read ".ports.load_listeners[$(($1 - 1))]"; then
+    v=$CFG_READ
+  else
+    v=$(jq -r ".ports.load_listeners[$(($1 - 1))] // empty" "$CONFIG")
+  fi
   [ -n "$v" ] || die "the deployment file $CONFIG gives no ports.load_listeners[$(($1 - 1))]: name a port for each of the ${#LOAD_LISTENERS[@]} load listeners"
   valid port "$v" || die "the deployment file $CONFIG gives ports.load_listeners[$(($1 - 1))] as '$v', which is not a port"
   printf '%s\n' "$v"
@@ -776,10 +914,17 @@ google_token() {
   printf '%s\n' "$token"
 }
 
-# gapi URL: a GET of a Google API with that token, its JSON on standard output.
+# gapi URL: a GET of a Google API with that token, its JSON on standard output. The token goes in
+# over curl's standard input as a config file, as gcurl's does, and the call is judged on curl's
+# own status for the reason gcurl gives.
 gapi() {
-  curl -fsS --max-time 60 -H "Authorization: Bearer $(google_token)" "$1" ||
-    die "GET $1 failed"
+  local status
+  set +e +o pipefail
+  printf 'header = "Authorization: Bearer %s"\n' "$(google_token)" |
+    curl -fsS --max-time 60 --config - "$1"
+  status=${PIPESTATUS[1]}
+  set -e -o pipefail
+  [ "$status" = 0 ] || die "GET $1 failed"
 }
 
 # gcurl TOKEN URL ARGS...: one call of a Google API with TOKEN, its answer on standard output
@@ -967,7 +1112,11 @@ membytes() {
 }
 
 # container_env ROLE: ROLE's environment, one NAME=value a line. Empty for a container that takes
-# none.
+# none. Dispatch presents its machine's Google identity to the listener it calls (the
+# deployment's dispatch_service_account, an identity token for VM_LISTENER_AUDIENCE the metadata
+# server mints), the identity that listener takes a send's role mark from: without it Dispatch
+# refuses every send for a `role:` route, which the replay's role-routed issues make.
+VM_LISTENER_AUDIENCE=envoy-listener-loadtest
 container_env() {
   local role=$1
   case $role in
@@ -986,6 +1135,7 @@ ENVOY_MACHINE_ID=dispatch
 ENVOY_ALLOW_REMOTE_NATS=1
 ENVOY_URL=$(listener_url)
 ENVOY_TOKEN=$(cfg .secrets.listener_token)
+ENVOY_ACCOUNT_GOOGLE_AUDIENCE=$VM_LISTENER_AUDIENCE
 DISPATCH_EMBEDDER=azure
 DISPATCH_AZURE_EMBED_ENDPOINT=$(stub_embed_url)
 DISPATCH_AZURE_EMBED_KEY=$(cfg .secrets.embed_key)
@@ -1001,6 +1151,9 @@ ENVOY_MACHINE_ID=$role
 NATS_URLS=$(nats_url)
 ENVOY_ALLOW_REMOTE_NATS=1
 ENVOY_API_TOKEN=$(cfg .secrets.listener_token)
+ENVOY_OIDC_GOOGLE_AUDIENCE=$VM_LISTENER_AUDIENCE
+ENVOY_OIDC_GOOGLE_ACCOUNTS=$(cfg_valid service_account .dispatch_service_account)
+ENVOY_DISPATCH_PRINCIPAL=$(cfg_valid service_account .dispatch_service_account)
 EOF
       ;;
   esac

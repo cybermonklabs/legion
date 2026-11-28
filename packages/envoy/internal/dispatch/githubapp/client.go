@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,9 +26,12 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/githubrate"
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 )
 
@@ -131,11 +135,17 @@ const tokenExpirySlack = 5 * time.Minute
 // dispatch inspects. AccountLogin (the installation's own account -- a user or an org) is set
 // only by ListInstallations (GET /app/installations), which is account-less in its own answer
 // shape; RepositoryToken's own installation()/DeliveryPermissions() lookups never set it, since
-// they already know the account from the owner/repo they resolved.
+// they already know the account from the owner/repo they resolved. AppID is the App's numeric id
+// as the installation object names it, 0 where it names none. Permissions is the part of the
+// installation's permissions Dispatch reads; Granted is every permission GitHub named for it, with
+// its access, as GitHub named it (the rate reading logs them), and is empty, never nil, where
+// GitHub named none.
 type Installation struct {
 	ID           int64
+	AppID        int64
 	AppSlug      string
 	Permissions  auth.AppPerms
+	Granted      map[string]string
 	AccountLogin string
 }
 
@@ -149,6 +159,9 @@ type Source struct {
 type cachedToken struct {
 	token   string
 	expires time.Time
+	// permissions is what GitHub's access_tokens answer said this token holds. The client mints
+	// with no narrowing, so it is what the installation had granted the App at the mint.
+	permissions auth.AppPerms
 }
 
 // mintedToken is what the client remembers of a token it minted: the installation that scopes
@@ -303,6 +316,26 @@ func WithLimits(limits Limits) Option {
 	return func(c *Client) { c.limits = limits }
 }
 
+// WithRateCounter makes the client count its calls to GitHub on counter, for the rate reading
+// (githubrate): every request it sends goes through counter's Transport, and every installation
+// token it mints is registered with its installation, so each call made with that token is counted
+// under that installation and the caller kind its context carries (githubrate.WithCaller). A
+// transport alone could not do the second half, since only the mint knows whose token it is.
+// Every client of one process that calls with installation tokens takes the one Counter, as
+// Dispatch's two do (the API's, which the architecture importer and the delivery intakes and
+// reconcile share, and the CI reconcile's), because GitHub budgets the installation and the
+// reading reports what the process spent of it, whichever client spent it. A nil counter counts
+// nothing, which is a client built without the option.
+func WithRateCounter(counter *githubrate.Counter) Option {
+	return func(c *Client) {
+		if counter == nil {
+			return
+		}
+		c.rate = counter
+		c.http.Transport = counter.Transport(c.http.Transport)
+	}
+}
+
 // Client calls the GitHub App API as the configured App. A nil *Client is the
 // valid "no app credentials yet" state: every method returns ErrNoAppKey.
 type Client struct {
@@ -313,6 +346,9 @@ type Client struct {
 	now  func() time.Time
 	// limits is the shared rate limits request obeys and records; nil is no shared limit.
 	limits Limits
+	// rate counts this client's calls to GitHub for the rate reading (WithRateCounter); nil
+	// counts none.
+	rate *githubrate.Counter
 
 	mu sync.Mutex
 	// tokens holds each installation's token in this process alone. GitHub budgets an
@@ -468,13 +504,16 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 		return Installation{}, limited
 	}
 	if status != http.StatusOK {
-		return Installation{}, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return Installation{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	var payload installationPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return Installation{}, fmt.Errorf("decode installation: %w", err)
+		return Installation{}, fmt.Errorf("decode installation: %w", ShownErr(err))
 	}
-	return Installation{ID: payload.ID, AppSlug: payload.AppSlug, Permissions: payload.Permissions}, nil
+	return Installation{
+		ID: payload.ID, AppID: payload.AppID, AppSlug: payload.AppSlug, Permissions: payload.Permissions.read,
+		Granted: payload.Permissions.granted(),
+	}, nil
 }
 
 // installationPayload is GitHub's one object shape for an installation, shared by
@@ -483,11 +522,50 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 // repo-scoped lookup already knows the account from its own owner/repo argument.
 type installationPayload struct {
 	ID      int64  `json:"id"`
+	AppID   int64  `json:"app_id"`
 	AppSlug string `json:"app_slug"`
 	Account struct {
 		Login string `json:"login"`
 	} `json:"account"`
-	Permissions auth.AppPerms `json:"permissions"`
+	Permissions installationPermissions `json:"permissions"`
+}
+
+// installationPermissions is an installation's permissions object as GitHub answers it, decoded
+// once into the part Dispatch reads (auth.AppPerms) and once whole, every permission whose access
+// is a string with its access.
+type installationPermissions struct {
+	read  auth.AppPerms
+	named map[string]string
+}
+
+// UnmarshalJSON decodes GitHub's permissions object into both its forms. The whole form is read
+// as values of any kind and keeps the strings: GitHub documents a string for every permission
+// today, and a value of another kind, a permission GitHub adds later, must fail no decode of an
+// installation, which every path that resolves one shares (RepositoryToken, DeliveryPermissions,
+// CheckSource, Installed).
+func (p *installationPermissions) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &p.read); err != nil {
+		return err
+	}
+	var named map[string]any
+	if err := json.Unmarshal(data, &named); err != nil {
+		return err
+	}
+	p.named = make(map[string]string, len(named))
+	for permission, access := range named {
+		if access, ok := access.(string); ok {
+			p.named[permission] = access
+		}
+	}
+	return nil
+}
+
+// granted is every permission GitHub named, an empty map where it named none.
+func (p installationPermissions) granted() map[string]string {
+	if p.named == nil {
+		return map[string]string{}
+	}
+	return p.named
 }
 
 // maxInstallations bounds ListInstallations' pagination the same way maxInstallationRepositories
@@ -508,42 +586,91 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 	if c == nil {
 		return nil, ErrNoAppKey
 	}
-	return c.installations.get(ctx, installationsCacheKey, func(ctx context.Context) ([]Installation, error) {
-		jwt, err := c.appJWT()
+	return c.installations.get(ctx, installationsCacheKey, c.listInstallations)
+}
+
+// ReadInstallations is ListInstallations as GitHub answers it now, read past the cache and
+// leaving it as it was. The rate reading lists the App's installations at every pass and writes
+// one line for each installation the list held, naming how many it held: the cache's ten minutes
+// are the reading's whole interval, so through it a pass would read an installation removed since
+// and miss one added since for up to a pass, and name a count GitHub no longer answers.
+func (c *Client) ReadInstallations(ctx context.Context) ([]Installation, error) {
+	if c == nil {
+		return nil, ErrNoAppKey
+	}
+	return c.listInstallations(ctx)
+}
+
+// listInstallations reads every page of GET /app/installations under the App's JWT.
+func (c *Client) listInstallations(ctx context.Context) ([]Installation, error) {
+	jwt, err := c.appJWT()
+	if err != nil {
+		return nil, err
+	}
+	var installations []Installation
+	for page := 1; ; page++ {
+		target := fmt.Sprintf("%s/app/installations?per_page=100&page=%d", c.base, page)
+		body, status, header, err := c.request(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 		}
-		var installations []Installation
-		for page := 1; ; page++ {
-			target := fmt.Sprintf("%s/app/installations?per_page=100&page=%d", c.base, page)
-			body, status, header, err := c.request(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
-			if err != nil {
-				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
-			}
-			if err := CheckResponse(status, header, body); err != nil {
-				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
-			}
-			var payload []installationPayload
-			if err := json.Unmarshal(body, &payload); err != nil {
-				return nil, fmt.Errorf("decode installations (page %d): %w", page, err)
-			}
-			if len(payload) == 0 {
-				break
-			}
-			for _, entry := range payload {
-				installations = append(installations, Installation{
-					ID: entry.ID, AppSlug: entry.AppSlug, Permissions: entry.Permissions, AccountLogin: entry.Account.Login,
-				})
-			}
-			if len(installations) > maxInstallations {
-				return nil, fmt.Errorf("list installations: the App has more than %d installations", maxInstallations)
-			}
-			if len(payload) < 100 {
-				break
-			}
+		if err := CheckResponse(status, header, body); err != nil {
+			return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 		}
-		return installations, nil
-	})
+		var payload []installationPayload
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, fmt.Errorf("decode installations (page %d): %w", page, ShownErr(err))
+		}
+		if len(payload) == 0 {
+			break
+		}
+		for _, entry := range payload {
+			installations = append(installations, Installation{
+				ID: entry.ID, AppID: entry.AppID, AppSlug: entry.AppSlug, Permissions: entry.Permissions.read,
+				Granted: entry.Permissions.granted(), AccountLogin: entry.Account.Login,
+			})
+		}
+		if len(installations) > maxInstallations {
+			return nil, fmt.Errorf("list installations: the App has more than %d installations", maxInstallations)
+		}
+		if len(payload) < 100 {
+			break
+		}
+	}
+	return installations, nil
+}
+
+// AppIdentity is the App's numeric id and its slug as GitHub's GET /app answers them to the App's
+// JWT. The configuration's own id and slug can be absent (the JWT names the App by its client ID
+// alone, and an end-to-end App has neither), and GitHub's answer is the one each of them is a
+// copy of.
+func (c *Client) AppIdentity(ctx context.Context) (id int64, slug string, err error) {
+	if c == nil {
+		return 0, "", ErrNoAppKey
+	}
+	jwt, err := c.appJWT()
+	if err != nil {
+		return 0, "", err
+	}
+	target := c.base + "/app"
+	body, status, header, err := c.do(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt)
+	if err != nil {
+		return 0, "", err
+	}
+	if err := CheckResponse(status, header, body); err != nil {
+		return 0, "", fmt.Errorf("GET %s: %w", target, err)
+	}
+	var payload struct {
+		ID   int64  `json:"id"`
+		Slug string `json:"slug"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return 0, "", fmt.Errorf("decode the App: %w", ShownErr(err))
+	}
+	if payload.ID <= 0 || payload.Slug == "" {
+		return 0, "", fmt.Errorf("GET %s answered no App id or slug", target)
+	}
+	return payload.ID, payload.Slug, nil
 }
 
 // RepositoryToken returns an installation token of the installation covering owner/repo. The
@@ -551,8 +678,28 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 // cannot be minted for it forgets it at once, so an App moved between installations is looked up
 // again within the TTL, or sooner when the old installation is gone.
 func (c *Client) RepositoryToken(ctx context.Context, owner, repo string) (string, error) {
+	token, _, err := c.RepositoryTokenWithStatuses(ctx, owner, repo)
+	return token, err
+}
+
+// RepositoryTokenWithStatuses is RepositoryToken with whether that token holds Commit statuses at
+// read or write, which is what Dispatch's CI reconcile decides by whether it reads a head's commit
+// statuses at all. Both answers come from the one cached token: the permissions are the ones
+// GitHub's access_tokens answer named for that token, decoded and kept beside it in the one cache
+// entry (token), so a token is never answered beside another mint's permissions.
+//
+// The permission is the token's rather than the installation's, although the installation lookup
+// that resolves owner/repo names the installation's permissions too. A token lives about an hour
+// and is kept until tokenExpirySlack before its expiry, while the installation is remembered apart
+// for installationsCacheTTL. After a person accepts Commit statuses for the App, the installation
+// says the App holds it while the token in hand does not, for up to an hour, and every head the
+// reconcile read in that time would send a status read GitHub refuses, at every pass. The token's
+// own permissions are exact for each request the token makes. A grant can still be taken away
+// while a token lives, so a caller still meets a refused status read, which costs the head its
+// statuses alone.
+func (c *Client) RepositoryTokenWithStatuses(ctx context.Context, owner, repo string) (string, bool, error) {
 	if c == nil {
-		return "", ErrNoAppKey
+		return "", false, ErrNoAppKey
 	}
 	name := owner + "/" + repo
 	installationID, err := c.repositories.get(ctx, name, func(ctx context.Context) (int64, error) {
@@ -560,14 +707,15 @@ func (c *Client) RepositoryToken(ctx context.Context, owner, repo string) (strin
 		return installation.ID, err
 	})
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	token, err := c.Token(ctx, installationID)
+	minted, err := c.token(ctx, installationID)
 	if err != nil {
 		c.repositories.forget(name)
-		return "", err
+		return "", false, err
 	}
-	return token, nil
+	statuses := minted.permissions.Statuses == "read" || minted.permissions.Statuses == "write"
+	return minted.token, statuses, nil
 }
 
 // installationRepositoriesPerPage is GitHub's own page size for GET /installation/repositories.
@@ -619,7 +767,7 @@ func listInstallationRepositories(ctx context.Context, c *Client, token string) 
 			} `json:"repositories"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
-			return nil, fmt.Errorf("decode installation repositories (page %d): %w", page, err)
+			return nil, fmt.Errorf("decode installation repositories (page %d): %w", page, ShownErr(err))
 		}
 		if len(payload.Repositories) == 0 {
 			break
@@ -677,8 +825,22 @@ func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag st
 // caller therefore never has to tell a rate-limited 200 from a good one.
 //
 // Which scope that limit is recorded under is which of GitHub's two limits it is
-// (recordGraphQLLimit), and the query's answer is read for the limit here rather than by send,
-// whose REST detection would record both of them under the installation's scope.
+// (recordGraphQLLimit), so the query calls send itself rather than request, whose REST detection
+// would record both of them under the installation's scope.
+//
+// A held limit and a limit read in an answer are noted on the attempt ctx carries (githubreads),
+// here and not by send, which notes no limit GitHub answers: GitHub answers a spent GraphQL
+// budget with 200, which no reading of the status alone can see. The limit GraphQLRateLimit reads
+// is noted once recordGraphQLLimit has recorded it, so the cause carries the wait every process
+// now holds. A limit read in a 200 is worded in GitHub's own words, never its body, which is
+// the query's answer (answeredLimit, graphQLLimitWording): the envelope's entries that name the
+// limit, or, for the answer that spends the last point, which carries its data and no error, the
+// headers that name the limit. That data can be a private repository's, and GET /healthz serves
+// the cause to whoever reaches it, with no credential, so neither the note nor the error the
+// caller is given carries it, however a loop wraps and notes that error. The caller is given the
+// answer's body as the first result beside the error, and reads the data there if at all.
+// A client without Limits reads the answer as request reads a REST call's, and notes the limit
+// RateLimit reads, which is only ever a 403 or a 429: GitHub's refusal, which carries no data.
 func (c *Client) GraphQL(ctx context.Context, token string, query string, variables map[string]any) ([]byte, int, http.Header, error) {
 	if c == nil {
 		return nil, 0, nil, ErrNoAppKey
@@ -693,19 +855,31 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 		case err != nil:
 			slog.Warn("dispatch githubapp: the shared GitHub GraphQL rate limit was not read; the query is sent", "scope", GraphQLScope, "error", err)
 		case wait > 0:
-			return nil, 0, nil, &RateLimitError{Wait: wait, Scope: GraphQLScope, Held: true, Recorded: recorded}
+			held := &RateLimitError{Wait: wait, Scope: GraphQLScope, Held: true, Recorded: recorded}
+			noteFailure(ctx, held)
+			return nil, 0, nil, held
 		}
 	}
 	installation := c.TokenScope(token)
-	body, status, header, err := c.send(ctx, installation, http.MethodPost, c.base+"/graphql", "Bearer "+token, mediaTypeJSON, "", bytes.NewReader(payload), responseLimit)
-	if err != nil || c.limits == nil {
+	target := c.base + "/graphql"
+	body, status, header, err := c.send(ctx, installation, http.MethodPost, target, "Bearer "+token, mediaTypeJSON, "", bytes.NewReader(payload), responseLimit)
+	if err != nil {
 		return body, status, header, err
+	}
+	if c.limits == nil {
+		if limited := RateLimit(status, header, body); limited != nil {
+			noteFailure(ctx, limitNoted(http.MethodPost, target, limited))
+		}
+		return body, status, header, nil
 	}
 	limited, secondary := GraphQLRateLimit(status, header, body)
 	if limited == nil {
 		return body, status, header, nil
 	}
 	c.recordGraphQLLimit(ctx, installation, limited, secondary)
+	// Noted once recorded, so the cause carries the wait every process now holds, which a strike
+	// can make longer than GitHub's own.
+	noteFailure(ctx, limitNoted(http.MethodPost, target, limited))
 	return body, status, header, limited
 }
 
@@ -751,36 +925,49 @@ func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, li
 // Token returns an installation access token, minting one only when the
 // cached token is within tokenExpirySlack of GitHub's expiry.
 func (c *Client) Token(ctx context.Context, installationID int64) (string, error) {
+	minted, err := c.token(ctx, installationID)
+	return minted.token, err
+}
+
+// token is Token with the permissions GitHub's access_tokens answer named for the token, which
+// are kept in the one cache entry beside the token they came with.
+func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, error) {
 	if c == nil {
-		return "", ErrNoAppKey
+		return cachedToken{}, ErrNoAppKey
 	}
 	c.mu.Lock()
 	cached, ok := c.tokens[installationID]
 	c.mu.Unlock()
 	if ok && c.now().Before(cached.expires.Add(-tokenExpirySlack)) {
-		return cached.token, nil
+		return cached, nil
 	}
 	jwt, err := c.appJWT()
 	if err != nil {
-		return "", err
+		return cachedToken{}, err
 	}
 	target := c.base + "/app/installations/" + strconv.FormatInt(installationID, 10) + "/access_tokens"
 	body, status, header, err := c.do(ctx, AppScope, http.MethodPost, target, "Bearer "+jwt)
 	if err != nil {
-		return "", err
+		return cachedToken{}, err
 	}
 	if limited := RateLimit(status, header, body); limited != nil {
-		return "", limited
+		return cachedToken{}, limited
 	}
 	if status != http.StatusCreated {
-		return "", fmt.Errorf("POST %s: status %d: %s", target, status, body)
+		return cachedToken{}, fmt.Errorf("POST %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	var payload struct {
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expires_at"`
+		Token       string        `json:"token"`
+		ExpiresAt   time.Time     `json:"expires_at"`
+		Permissions auth.AppPerms `json:"permissions"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", fmt.Errorf("decode installation token: %w", err)
+		return cachedToken{}, fmt.Errorf("decode installation token: %w", ShownErr(err))
+	}
+	fresh := cachedToken{token: payload.Token, expires: payload.ExpiresAt, permissions: payload.Permissions}
+	// Registered before any caller holds the token, so its first call is counted too.
+	if c.rate != nil {
+		c.rate.Register(payload.Token, strconv.FormatInt(installationID, 10))
 	}
 	c.mu.Lock()
 	now := c.now()
@@ -789,10 +976,10 @@ func (c *Client) Token(ctx context.Context, installationID int64) (string, error
 			delete(c.installationOf, token)
 		}
 	}
-	c.tokens[installationID] = cachedToken{token: payload.Token, expires: payload.ExpiresAt}
+	c.tokens[installationID] = fresh
 	c.installationOf[payload.Token] = mintedToken{installation: installationID, expires: payload.ExpiresAt}
 	c.mu.Unlock()
-	return payload.Token, nil
+	return fresh, nil
 }
 
 // CheckSource proves end to end that the App can read owner/repo: the
@@ -820,7 +1007,7 @@ func (c *Client) CheckSource(ctx context.Context, owner, repo string) (Source, e
 		return Source{}, fmt.Errorf("%w: its token cannot read %s/%s", ErrNoInstallation, owner, repo)
 	}
 	if status != http.StatusOK {
-		return Source{}, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return Source{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	return Source{InstallationID: installation.ID, AppSlug: installation.AppSlug}, nil
 }
@@ -837,6 +1024,29 @@ func (c *Client) TokenScope(token string) string {
 	return ""
 }
 
+// OwnCalls is installation id's own calls on each of its two counters, REST core and GraphQL, by
+// caller kind, since each counter's last reset (githubrate.Counter.Own): the calls of every
+// client that counts on this client's Counter, which in Dispatch is the whole process's. Both are
+// empty, never nil, for a client built without one (WithRateCounter).
+func (c *Client) OwnCalls(installationID int64) (core, graphql map[string]int) {
+	if c == nil || c.rate == nil {
+		return map[string]int{}, map[string]int{}
+	}
+	return c.rate.Own(strconv.FormatInt(installationID, 10))
+}
+
+// SecondaryUntil is the end of the latest secondary limit GitHub answered one of installation
+// id's tokens with, as the client's Counter noted it from GitHub's answer
+// (githubrate.Counter.SecondaryUntil), and the zero time when none was or the client has no
+// Counter. The Counter is the process's, so the limits every client of the process that counts
+// through it met are here, and another process's are not.
+func (c *Client) SecondaryUntil(installationID int64) time.Time {
+	if c == nil || c.rate == nil {
+		return time.Time{}
+	}
+	return c.rate.SecondaryUntil(strconv.FormatInt(installationID, 10))
+}
+
 func (c *Client) do(ctx context.Context, scope, method, target, authorization string) ([]byte, int, http.Header, error) {
 	return c.doLimited(ctx, scope, method, target, authorization, responseLimit)
 }
@@ -851,17 +1061,30 @@ func (c *Client) doLimited(ctx context.Context, scope, method, target, authoriza
 // If-None-Match, so GitHub answers 304 Not Modified when its answer has not changed since the
 // caller read it, and charges the rate limit nothing for it; an empty one sends no such header.
 //
-// It is send with GitHub's own REST limit recorded: an answer RateLimit reads as a limit is
-// recorded under scope with GitHub's own wait, so no process sends GitHub anything under that
-// scope before the wait ends. Every REST call of this package goes through here. GraphQL calls
-// send itself and records what it reads from the answer, which is another detection and another
-// scope (recordGraphQLLimit).
+// It is send with GitHub's own REST limit read, once (keepAnsweredLimit). Every REST call of this
+// package goes through here but ReadPastHold's, which keeps the limit its answer names the same
+// way. GraphQL calls send itself and reads, notes and records the limit in its answer itself,
+// which is another detection and another scope (recordGraphQLLimit).
 func (c *Client) request(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
 	responseBody, status, header, err := c.send(ctx, scope, method, target, authorization, accept, ifNoneMatch, body, limit)
-	if err != nil || c.limits == nil || scope == "" {
+	if err != nil {
 		return responseBody, status, header, err
 	}
-	if limited := RateLimit(status, header, responseBody); limited != nil {
+	c.keepAnsweredLimit(ctx, scope, method, target, status, header, responseBody)
+	return responseBody, status, header, nil
+}
+
+// keepAnsweredLimit reads GitHub's answer to a REST call, method to target, for a limit: one
+// RateLimit reads in it is noted on the attempt ctx carries (githubreads), whatever the client and
+// the scope, and recorded under scope with GitHub's own wait where the client has Limits and scope
+// is named, so no process sends GitHub anything under that scope before the wait ends.
+func (c *Client) keepAnsweredLimit(ctx context.Context, scope, method, target string, status int, header http.Header, body []byte) {
+	limited := RateLimit(status, header, body)
+	if limited == nil {
+		return
+	}
+	noteFailure(ctx, limitNoted(method, target, limited))
+	if c.limits != nil && scope != "" {
 		// Recorded past the caller's own end: see limitRecordContext.
 		record, cancel := limitRecordContext(ctx)
 		err := c.limits.Record(record, scope, limited.Wait)
@@ -870,17 +1093,61 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 			slog.Error("dispatch githubapp: GitHub's rate limit was not recorded; other processes may ask GitHub inside it", "scope", scope, "wait", limited.Wait, "error", err)
 		}
 	}
-	return responseBody, status, header, nil
+}
+
+// ReadPastHold is Read for the rate reading (githubrate): GET path with an installation token,
+// sent whatever limit the shared ledger holds the token's installation to. The reading reads an
+// installation's counter, and GitHub names the counter in every answer it gives, a refusal at the
+// limit among them, so a hold would keep the reading from the hour it is most needed for: one in
+// which the installation spent its budget, whose reading before the reset would otherwise be an
+// error with no count. GitHub asks that a client send nothing while limited, and this read does
+// send past a primary limit: one core request of a held installation a pass (two at its first pass
+// and after a 404, when its repository is listed again), and a pass every ten minutes and before
+// each counter reset of every installation, so about 6 + 2N core requests of a held installation
+// an hour from each process reading, N being the App's installations. The reading sends nothing
+// while a secondary limit holds the installation (SecondaryUntil), since GitHub may ban an
+// integration that goes on through one. A limit GitHub answers it with is noted and recorded under
+// the installation's scope as Read's is (keepAnsweredLimit), so every other read of the
+// installation holds, and a refused answer is the caller's, with its status and its headers, never
+// an error.
+func (c *Client) ReadPastHold(ctx context.Context, token, path string) ([]byte, int, http.Header, error) {
+	if c == nil {
+		return nil, 0, nil, ErrNoAppKey
+	}
+	target := c.base + path
+	// A concurrent mint can prune this token after its expiry while the request is in flight.
+	// Keep the installation that sent it, so a late refusal still holds the right scope.
+	scope := c.TokenScope(token)
+	// No scope, so send obeys no shared limit; the limit the answer names is kept under the
+	// token's own scope below.
+	body, status, header, err := c.send(ctx, "", http.MethodGet, target, "Bearer "+token, mediaTypeJSON, "", nil, responseLimit)
+	if err != nil {
+		return body, status, header, err
+	}
+	c.keepAnsweredLimit(ctx, scope, http.MethodGet, target, status, header, body)
+	return body, status, header, nil
 }
 
 // send is the one function that sends anything to GitHub, so it is where the shared limit on
 // scope is obeyed: while a limit is in force on it nothing is sent and a held *RateLimitError is
 // returned. A limit that cannot be read (the database failing) is logged and the request goes
 // ahead, as embedqueue.reserveTokens goes ahead: GitHub still answers each process's own
-// requests with the limit. An empty scope, or a client without Limits, is no shared limit.
+// requests with the limit. An empty scope, or a client without Limits, is no shared limit, which
+// is how ReadPastHold is sent past it.
 //
-// What GitHub's own answer says about a limit is the caller's to record, since REST and GraphQL
-// read an answer differently and budget it under different scopes.
+// What GitHub's own answer says about a limit is the caller's to read, note and record, since
+// REST and GraphQL read an answer differently and budget it under different scopes: request
+// does it for a REST call and GraphQL for a query.
+//
+// It is also where the attempt ctx carries (githubreads) learns of every request a leased pass
+// sends: each request is marked sent, and each failure no caller takes as data, but a limit
+// GitHub answers, is noted: no answer at all, a body that could not be read or ran past limit, a
+// held limit (noted, though nothing was sent), a 5xx and a 401. A context with no attempt changes
+// nothing.
+//
+// Each error send words itself names target as ShownBody shows it. A target holds names Dispatch
+// keeps and text GitHub gave (a blob's sha from a tree answer, a next page link), so none of them
+// passes the bound in send's errors.
 func (c *Client) send(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
 	if c.limits != nil && scope != "" {
 		wait, recorded, err := c.limits.Wait(ctx, scope)
@@ -888,14 +1155,16 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 		case err != nil:
 			slog.Warn("dispatch githubapp: the shared GitHub rate limit was not read; the request is sent", "scope", scope, "error", err)
 		case wait > 0:
-			return nil, 0, nil, &RateLimitError{Wait: wait, Scope: scope, Held: true, Recorded: recorded}
+			held := &RateLimitError{Wait: wait, Scope: scope, Held: true, Recorded: recorded}
+			noteFailure(ctx, held)
+			return nil, 0, nil, held
 		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
+	bounded, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, method, target, body)
+	request, err := http.NewRequestWithContext(bounded, method, target, body)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("build %s %s: %w", method, target, err)
+		return nil, 0, nil, fmt.Errorf("build %s %s: %w", method, ShownBody(target), ShownErr(err))
 	}
 	request.Header.Set("Authorization", authorization)
 	request.Header.Set("Accept", accept)
@@ -905,19 +1174,87 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	githubreads.NoteSent(ctx)
 	response, err := c.http.Do(request)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("%s %s: %w", method, target, err)
+		err = fmt.Errorf("%s %s: %w", method, ShownBody(target), ShownErr(err))
+		noteFailure(ctx, err)
+		return nil, 0, nil, err
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("read %s %s response: %w", method, target, err)
+		err = fmt.Errorf("read %s %s response: %w", method, ShownBody(target), ShownErr(err))
+		noteFailure(ctx, err)
+		return nil, 0, nil, err
 	}
 	if int64(len(responseBody)) > limit {
-		return nil, 0, nil, fmt.Errorf("%s %s: %w", method, target, &ResponseTooLargeError{Limit: limit})
+		err := fmt.Errorf("%s %s: %w", method, ShownBody(target), &ResponseTooLargeError{Limit: limit})
+		noteFailure(ctx, err)
+		return nil, 0, nil, err
+	}
+	// An outage status (httpoutage.Is: a 408 or a 5xx) and a 401 say GitHub could not answer
+	// or did not take the App's credentials; its 429 is a limit, noted as one. Every other status, a
+	// limit aside, is left to the caller, because the same answer is data at one point and a failure
+	// at another (a 404 is a deleted repository to one caller and a wrong workflow path to the
+	// next), and only the caller can tell the two apart.
+	if status := response.StatusCode; status != http.StatusTooManyRequests && httpoutage.Is(status) || status == http.StatusUnauthorized {
+		noteFailure(ctx, &failedAnswer[[]byte]{method: method, target: target, status: status, detail: responseBody})
 	}
 	return responseBody, response.StatusCode, response.Header, nil
+}
+
+// noteFailure notes err on the attempt ctx carries (githubreads) while ctx, the caller's own
+// context, is live. A request its caller's context ended is no failure of GitHub's: the pass's
+// own bound or this process's shutdown cut it off. The client's own RequestTimeout is not the
+// caller's, so a request it ends is noted.
+func noteFailure(ctx context.Context, err error) {
+	if ctx.Err() == nil {
+		githubreads.NoteFailure(ctx, err)
+	}
+}
+
+// failedAnswer is an answer send, request or GraphQL notes as a failure, worded as the client's
+// own errors are: "<METHOD> <target>: status <n>: <body>" (StatusText) for a 408, a 5xx or a 401,
+// and "<METHOD> <target>: rate-limited by GitHub (status <n>), next request in <wait>: <body>" for
+// a limit GitHub answered (limitNoted, RateLimitError), each with target as ShownBody shows it, as
+// send shows it, and each ending at its head where there is no body (withBody). Its text is made
+// only where the note can still become a cause (githubreads.NoteFailure), so a request outside the
+// leased passes formats nothing. The target carries no token: every token travels in the
+// Authorization header.
+//
+// Its text carries a body only as StatusText and RateLimitError word one, never at a 2xx status:
+// for a 408, a 5xx or a 401 detail, the body send read, kept as the bytes it read, and for a limit
+// its Body, or at a 2xx GitHub's wording of the limit (answeredLimit) and never Body. So no
+// failedAnswer has a text that carries a 2xx answer's data.
+//
+// It is not the only note of a limit. A limit github_rate_limits already holds is noted as its own
+// held *RateLimitError (send, GraphQL), and a loop that a limit stops notes words of its own: the
+// CI reconcile's stop.ended, and the redelivery sweep's "a GitHub rate limit stopped the webhook
+// redelivery sweep" (Sweeper.sweepAndReport).
+type failedAnswer[Detail string | []byte] struct {
+	method, target string
+	status         int
+	detail         Detail
+	// limit is the limit GitHub answered, nil for a 5xx or a 401, and never a held one, which is
+	// noted as it is.
+	limit *RateLimitError
+}
+
+func (f *failedAnswer[Detail]) Error() string {
+	if f.limit != nil {
+		return f.method + " " + ShownBody(f.target) + ": " + f.limit.Error()
+	}
+	return f.method + " " + ShownBody(f.target) + ": " + StatusText(f.status, f.detail)
+}
+
+// limitNoted is the client's note of limited, a limit GitHub answered method's request to target
+// with (request, GraphQL), worded by limited's own text: GitHub's refusal, or at a 2xx GitHub's
+// wording of the limit and nothing of the answer's data (RateLimitError). It notes no held limit,
+// which is noted as its own error (send, GraphQL), and none of the limits a loop words itself
+// (failedAnswer).
+func limitNoted(method, target string, limited *RateLimitError) *failedAnswer[string] {
+	return &failedAnswer[string]{method: method, target: target, limit: limited}
 }
 
 // Ref resolves branch to its commit SHA under an installation token
@@ -946,7 +1283,7 @@ func (c *Client) Ref(ctx context.Context, token, owner, repo, branch string) (st
 		return "", fmt.Errorf("%w: %s on %s/%s", ErrNoBranch, branch, owner, repo)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return "", fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	sha := strings.TrimSpace(string(body))
 	if !commitSHA.MatchString(sha) {
@@ -980,7 +1317,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 	case http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity:
 		return "", noBranch
 	default:
-		return "", fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return "", fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	var ref struct {
 		Ref    string `json:"ref"`
@@ -989,7 +1326,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 		} `json:"object"`
 	}
 	if err := json.Unmarshal(body, &ref); err != nil {
-		return "", fmt.Errorf("decode branch %s of %s/%s: %w", branch, owner, repo, err)
+		return "", fmt.Errorf("decode branch %s of %s/%s: %w", branch, owner, repo, ShownErr(err))
 	}
 	if ref.Ref != "refs/heads/"+branch || !commitSHA.MatchString(ref.Object.SHA) {
 		return "", noBranch
@@ -999,7 +1336,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 
 // Dir is one directory listing at a commit: the directory's own tree object
 // id (identical files give an identical SHA, whatever else the commit
-// changed) and its regular markdown files.
+// changed) and the files its keep rule accepts.
 type Dir struct {
 	// SHA is the subtree object id; empty when the directory does not exist
 	// at the commit.
@@ -1007,7 +1344,8 @@ type Dir struct {
 	Files []DirFile
 }
 
-// DirFile is one `*.md` regular file directly inside the directory.
+// DirFile is one file directly inside the directory that the listing's keep
+// rule accepts.
 type DirFile struct {
 	Name string // file name inside the directory
 	Path string // repo-relative path, for error messages
@@ -1015,18 +1353,20 @@ type DirFile struct {
 	Size int64
 }
 
-// Dir lists the markdown files directly inside dir at commit sha with one
-// subtree read (`GET /repos/{owner}/{repo}/git/trees/{sha}:{dir}`): only the
-// directory's own entries come back, so a large repository elsewhere cannot
-// push the response past the read cap. GitHub's 404 for a commit without dir
-// is an empty Dir (a valid, empty model). An entry counts when notes.IsNote
-// keeps it, read with notes.GitKind from its type and mode: the rule of which
-// entries are notes is the notes package's, which keeps the regular blobs
-// (mode 100644 / 100755) named *.md and skips symlinks (120000), submodules,
-// and nested directories. A listing GitHub answers truncated is
-// ErrTreeTruncated — it cannot be trusted, so the sync fails whole. dir is a
-// plain repo-relative path, no leading slash.
-func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (Dir, error) {
+// Dir lists the files directly inside dir at commit sha that keep accepts with
+// one subtree read (`GET /repos/{owner}/{repo}/git/trees/{sha}:{dir}`): only
+// the directory's own entries come back, so a large repository elsewhere
+// cannot push the response past the read cap. GitHub's 404 for a commit
+// without dir is an empty Dir (a valid, empty model). An entry counts when
+// keep accepts its name and its kind, read with notes.GitKind from its type
+// and mode, the rule notes.ReadSet takes for a directory on disk: notes.IsNote
+// for the notes of .dispatch/architecture, which keeps the regular blobs (mode
+// 100644 / 100755) named *.md, and specgraph.IsFile for the spec files of
+// .dispatch/spec, which keeps those named *.yaml; each skips symlinks
+// (120000), submodules, and nested directories. A listing GitHub answers
+// truncated is ErrTreeTruncated — it cannot be trusted, so the sync fails
+// whole. dir is a plain repo-relative path, no leading slash.
+func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string, keep func(name string, kind notes.Kind) bool) (Dir, error) {
 	if c == nil {
 		return Dir{}, ErrNoAppKey
 	}
@@ -1041,7 +1381,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		return Dir{}, nil
 	}
 	if status != http.StatusOK {
-		return Dir{}, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return Dir{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
 	}
 	var tree struct {
 		SHA       string `json:"sha"`
@@ -1055,7 +1395,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		} `json:"tree"`
 	}
 	if err := json.Unmarshal(body, &tree); err != nil {
-		return Dir{}, fmt.Errorf("decode tree %s:%s: %w", sha, dir, err)
+		return Dir{}, fmt.Errorf("decode tree %s:%s: %w", sha, dir, ShownErr(err))
 	}
 	if tree.Truncated {
 		return Dir{}, fmt.Errorf("%w: %s/%s@%s:%s", ErrTreeTruncated, owner, repo, sha, dir)
@@ -1065,7 +1405,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 	}
 	listing := Dir{SHA: tree.SHA}
 	for _, entry := range tree.Tree {
-		if !notes.IsNote(entry.Path, notes.GitKind(entry.Type, entry.Mode)) {
+		if !keep(entry.Path, notes.GitKind(entry.Type, entry.Mode)) {
 			continue
 		}
 		listing.Files = append(listing.Files, DirFile{
@@ -1076,16 +1416,30 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 }
 
 // DirFiles reads every file of a Dir listing (one blob read each, base64),
-// keyed by file name. The bound is the notes package's: a file whose listed
-// size exceeds notes.MaxFileSize is notes.ErrFileTooLarge (notes.CheckSize)
-// before any blob is fetched, and so is a decoded blob over it; a blob that
-// vanished between the listing and the read fails the whole set.
+// keyed by file name. The bounds are the notes package's: a listing over
+// notes.MaxFiles files or notes.MaxSetSize bytes in sum is
+// notes.ErrSetTooLarge (notes.CheckSet), and a file whose listed size exceeds
+// notes.MaxFileSize is notes.ErrFileTooLarge (notes.CheckSize), each before
+// any blob is fetched, and so is a decoded blob over MaxFileSize; a blob that
+// vanished between the listing and the read fails the whole set. A path is
+// GitHub's text (Dir), so the errors of notes.CheckSet and notes.CheckSize
+// name it as ShownBody shows it.
 func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listing Dir) (map[string][]byte, error) {
 	if c == nil {
 		return nil, ErrNoAppKey
 	}
+	var listed int64
 	for _, file := range listing.Files {
-		if err := notes.CheckSize(file.Path, file.Size); err != nil {
+		listed += file.Size
+	}
+	if len(listing.Files) > 0 {
+		// Every file of a listing is directly in its directory, so the first one's names it.
+		if err := notes.CheckSet(ShownBody(path.Dir(listing.Files[0].Path)), len(listing.Files), listed); err != nil {
+			return nil, err
+		}
+	}
+	for _, file := range listing.Files {
+		if err := notes.CheckSize(ShownBody(file.Path), file.Size); err != nil {
 			return nil, err
 		}
 	}
@@ -1101,6 +1455,10 @@ func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listin
 	return files, nil
 }
 
+// blob reads the blob sha, the file at path, under token. sha and path come from GitHub's tree
+// answer (Dir), so every error blob answers shows sha, path and the target that holds sha as
+// ShownBody shows GitHub's text: blob's own errors, send's (which shows its target so), and
+// notes.CheckSize's, which blob gives the path as ShownBody shows it.
 func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([]byte, error) {
 	target := repoBase + "/git/blobs/" + url.PathEscape(sha)
 	body, status, _, err := c.doLimited(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, blobResponseLimit)
@@ -1108,24 +1466,33 @@ func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("GET %s (%s): status %d: %s", target, path, status, body)
+		return nil, fmt.Errorf("GET %s (%s): %s", ShownBody(target), ShownBody(path), StatusText(status, body))
 	}
 	var payload struct {
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("decode blob %s (%s): %w", sha, path, err)
+		return nil, fmt.Errorf("decode blob %s (%s): %w", ShownBody(sha), ShownBody(path), ShownErr(err))
 	}
-	if payload.Encoding != "base64" {
-		return nil, fmt.Errorf("blob %s (%s) has encoding %q, want base64", sha, path, payload.Encoding)
+	return decodeContent(fmt.Sprintf("blob %s (%s)", ShownBody(sha), ShownBody(path)), path, payload.Encoding, payload.Content)
+}
+
+// decodeContent is the bytes of a file GitHub answers as content in encoding, the one form a blob
+// read (blob) and a contents read (File) both answer a file in: base64, wrapped at 60 characters.
+// what names the answer in an error, written by the caller with GitHub's text as ShownBody shows
+// it, and path names the file in notes.CheckSize's, which this shows so. An encoding other than
+// base64, content that is not base64, and content that decodes past notes.MaxFileSize are errors.
+func decodeContent(what, path, encoding, content string) ([]byte, error) {
+	if encoding != "base64" {
+		return nil, fmt.Errorf("%s has encoding %q, want base64", what, ShownBody(encoding))
 	}
-	content, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(payload.Content, "\n", ""))
+	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(content, "\n", ""))
 	if err != nil {
-		return nil, fmt.Errorf("decode blob %s (%s) content: %w", sha, path, err)
+		return nil, fmt.Errorf("decode the content of %s: %w", what, err)
 	}
-	if err := notes.CheckSize(path, int64(len(content))); err != nil {
+	if err := notes.CheckSize(ShownBody(path), int64(len(decoded))); err != nil {
 		return nil, err
 	}
-	return content, nil
+	return decoded, nil
 }

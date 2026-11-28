@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -30,11 +33,36 @@ const (
 	// same silence. A pod released into that silence could sit released with a message waiting
 	// for it, so the daemon releases nothing until it has heard the listener.
 	listenerReadyWindow = 15 * time.Minute
+	// parkedWakeBound is the longest a delivery row waits for a launch the wake pacing parked
+	// before it reads the claim again (parkedWait). The turn the pacing gave that launch lives in
+	// the machine's memory alone, and the park can end before it: an operator's resume, retry,
+	// spawn or task drops the wake and launches at once (supervise's dropWakeFor), a daemon
+	// restart loses the wake, and a suspension takes it. The row hears none of these, so a park
+	// that ends early costs it up to this long before it publishes, and for as long its queued
+	// row holds the pod from idle release (pods.IdleView): five minutes is half the default idle
+	// period. Against that, a park that lasts the hour a wave can take costs the row about twelve
+	// attempts, each logged at debug, where its backoff's 64 s would make about 57 of them.
+	parkedWakeBound = 5 * time.Minute
+	// deliveryWakeInRelease is how long a delivery row waits before it reads its role again while
+	// a release of its issue's pod still stands, or while a start that brings the role back is
+	// queued (wakeForDelivery). It is the delay a listener's wake report takes to read a release
+	// again (workflow's wakeRetryInRelease), and the teardown or the start it waits for is one row
+	// of the issue's lanes.
+	deliveryWakeInRelease = 30 * time.Second
 	// A wake that has not reached the woken role's first turn within workflow.StrandedReleaseWake
 	// is the same fact two passes read: this one warns about it and marks it (R5), and the
 	// stranded report names its claim (workflow.Stranded), so the bound is that rule's and is
 	// not restated here.
 )
+
+// clockNow is the daemon's one clock as this runtime reads it (workflowRuntime.now), and the
+// wall clock in a runtime a test builds by hand with none.
+func (w *workflowRuntime) clockNow() time.Time {
+	if w.now == nil {
+		return time.Now()
+	}
+	return w.now()
+}
 
 // listenerLive is whether the Envoy listener has said it is alive and reporting within
 // listenerReadyWindow (store.Store.ListenerLive): the one gate the idle rule reads before it
@@ -44,7 +72,8 @@ func (w *workflowRuntime) listenerLive(ctx context.Context) bool {
 	if w.idleStore == nil {
 		return false
 	}
-	live, at, found, err := w.idleStore.ListenerLive(ctx, w.projectID, time.Now(), listenerReadyWindow)
+	now := w.clockNow()
+	live, at, found, err := w.idleStore.ListenerLive(ctx, w.projectID, now, listenerReadyWindow)
 	switch {
 	case err != nil:
 		w.log.Warn("idle release: could not read the listener's liveness report; releasing nothing", "error", err)
@@ -52,7 +81,7 @@ func (w *workflowRuntime) listenerLive(ctx context.Context) bool {
 		w.log.Info("idle release: the Envoy listener has not once reported itself ready to this daemon; releasing nothing")
 	case !live:
 		w.log.Warn("idle release: the Envoy listener's newest report is too old to release a pod on; a released pod would not be woken by a role or agent message",
-			"reported", at.Format(time.RFC3339), "age", time.Since(at).Truncate(time.Second).String(), "window", listenerReadyWindow.String())
+			"reported", at.Format(time.RFC3339), "age", now.Sub(at).Truncate(time.Second).String(), "window", listenerReadyWindow.String())
 	}
 	return live
 }
@@ -75,7 +104,7 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			now := time.Now().UTC()
+			now := w.clockNow().UTC()
 			w.fireDueBackstops(ctx, now)
 			w.warnStuckResumes(ctx, now)
 		}
@@ -86,7 +115,8 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 // now. The row is the durable half and the fact the acting half: a backstop that came due while
 // the daemon was down is read by the first pass after it starts, and the row's conditional fire
 // (store.PodRecords.FirePodBackstop) is what makes two passes that read the same row wake its
-// pod once.
+// pod once. The start row the fact's wake queues wakes its lane once the fact commits, through the
+// project's records (projectRecords.wakeOnCommit), so the pass wakes no lane of its own.
 func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 	due, err := w.idleStore.DuePodBackstops(ctx, w.projectID, now)
 	if err != nil {
@@ -101,17 +131,20 @@ func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 		id := fmt.Sprintf("pod-backstop:%d", backstop.ID)
 		if _, err := intake.ApplyFact(ctx, w.pool, "wake", id, fact, w.handlers...); err != nil {
 			w.log.Warn("wake: could not fire a released pod's backstop", "issue", backstop.Issue, "role", backstop.Role, "error", err)
-			continue
 		}
-		w.wakeOutbox(backstop.Issue, record.OutboxKindSupervise)
 	}
 }
 
-// warnStuckResumes warns about each resume whose wake ran out of workflow.StrandedReleaseWake
-// with the woken role still having taken no turn, and marks it, so each is warned about once.
-// The warning names the issue, the role and the step the resume is waiting on, which is what an
-// operator needs to tell "the pod never came back" from "the pod came back and the agent never
-// took its task".
+// warnStuckResumes warns about each resume whose stuck clock ran out of
+// workflow.StrandedReleaseWake with the woken role still having taken no turn, and marks it, so
+// each is warned about once. The warning names the issue, the role and the step the resume is
+// waiting on, which is what an operator needs to tell "the pod never came back" from "the pod
+// came back and the agent never took its task".
+//
+// The clock is the resume's stuck clock (store.PodResume.ClockAt), which starts at the wake and
+// moves to the moment the wake pacing let the launch out, or a project's resume ended the pause
+// that held it; the read passes over a paused project's resumes (decision 14 of
+// dispatch://INFRA-3759).
 func (w *workflowRuntime) warnStuckResumes(ctx context.Context, now time.Time) {
 	stuck, err := w.idleStore.StuckPodResumes(ctx, w.projectID, now.Add(-workflow.StrandedReleaseWake))
 	if err != nil {
@@ -125,7 +158,7 @@ func (w *workflowRuntime) warnStuckResumes(ctx context.Context, now time.Time) {
 		w.log.Warn("wake: a released pod's resume has had no first turn since its wake",
 			"issue", resume.Issue, "role", resume.Role, "kind", resume.Kind,
 			"waiting", w.stuckResumeStep(ctx, resume), "wake", resume.At.UTC().Format(time.RFC3339),
-			"after", now.Sub(resume.At).Truncate(time.Second).String())
+			"clock", resume.ClockAt.UTC().Format(time.RFC3339), "after", now.Sub(resume.ClockAt).Truncate(time.Second).String())
 		if err := w.idleStore.MarkPodResumeStuck(ctx, resume.ID); err != nil {
 			w.log.Warn("wake: could not mark a resume stuck", "issue", resume.Issue, "role", resume.Role, "error", err)
 		}
@@ -147,11 +180,15 @@ func (w *workflowRuntime) stuckResumeStep(ctx context.Context, resume store.PodR
 	return "the woken role's first turn"
 }
 
-// podResume stamps what a supervisor's durable transition says about a woken role's open resume:
-// a ready claim is the replacement pod up, the first observation the daemon has of it, and a
-// working claim is the woken role's first turn, which ends the resume R5 measures. A wake for a
-// notice or a phase-ended message gives the role no delivery to confirm, so the turn itself —
+// podResume stamps what a supervisor's durable transition says about a woken role's open resume: a
+// ready claim is the replacement pod up, the first observation the daemon has of it, and a working
+// claim is the woken role's first turn, which ends the resume R5 measures. A wake for a notice, a
+// phase-ended message or a hook prompt gives the role no delivery to confirm, so the turn itself —
 // not a confirmation — is what says the pod came back and took its work.
+//
+// A ready claim also ends a pause's hold of its pod (decision 13 of dispatch://INFRA-3759): a role
+// of the pod runs again, so the pod is in the state a released pod's wake leaves it in
+// (endPodHoldAtReady).
 //
 // It is a supervisor terminal callback, so it runs on the machine's own goroutine and must not
 // block it; a failed stamp is logged and the resume keeps its zero time.
@@ -173,7 +210,26 @@ func (w *workflowRuntime) podResume(c supervise.Claim, state supervise.ClaimStat
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		w.stampPodResume(ctx, c.Issue, c.Role, mark, what)
+		if state == supervise.StateReady {
+			w.endPodHoldAtReady(ctx, c)
+		}
 	}()
+}
+
+// endPodHoldAtReady ends the pause's hold of c's pod at c's ready (store.EndLivePausePodHold,
+// PausePodHoldReady): the first ready of a role of the pod ends it, and every later ready finds
+// none. It is ended under the issue's lock where a role of the pod is live, so a stop transaction
+// of the same pod that commits first, and opens a hold because no role runs any more, keeps its
+// hold. A failed end is logged, and the next ready of a role of the pod ends it.
+func (w *workflowRuntime) endPodHoldAtReady(ctx context.Context, c supervise.Claim) {
+	ended, err := w.idleStore.EndLivePausePodHold(ctx, w.projectID, c.Issue, store.PausePodHoldReady, w.clockNow().UTC())
+	switch {
+	case err != nil:
+		w.log.Warn("pause: could not end a pod's hold at a role's ready; the next ready of a role of the pod ends it",
+			"claim", c.Token, "issue", c.Issue, "error", err)
+	case ended:
+		w.log.Info("pause: a pod's hold ended; a role of the pod is ready", "claim", c.Token, "issue", c.Issue)
+	}
 }
 
 // stampPodResume writes one observation onto the newest resume of issue's role that has not
@@ -182,7 +238,7 @@ func (w *workflowRuntime) podResume(c supervise.Claim, state supervise.ClaimStat
 // passes here.
 func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role claim.Role,
 	mark func(context.Context, int64, time.Time) error, what string) {
-	id, found, err := w.idleStore.OpenPodResume(ctx, w.projectID, issue, role)
+	id, _, found, err := w.idleStore.OpenPodResume(ctx, w.projectID, issue, role)
 	if err != nil {
 		w.log.Warn("wake: could not read the open resume of a role", "issue", issue, "role", role, "error", err)
 		return
@@ -190,57 +246,203 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 	if !found {
 		return
 	}
-	if err := mark(ctx, id, time.Now().UTC()); err != nil {
+	if err := mark(ctx, id, w.clockNow().UTC()); err != nil {
 		w.log.Warn("wake: could not stamp a resume", "issue", issue, "role", role, "observation", what, "error", err)
 	}
 }
 
 // wakeForDelivery brings a released pod back for a delivery the daemon already has for one of its
 // roles and cannot hand over any other way: a notice whose owning architect is released, a
-// phase-ended message whose role is, a hook prompt whose role is, and the message that tells a
-// released merger its pull request left the merge queue (mergeQueueRemoval). Every other delivery
-// is an outbox `start` or a task, which the supervise machine already resumes a suspended claim
-// for (deliverResuming); these four publish to a live session instead, so the row's own retry is
-// what waits for the pod, and this is what makes the pod come back for it to find.
+// phase-ended message whose role is (phaseEnded), a hook prompt whose role is, the messages that
+// tell a released merger its pull request left the merge queue (mergeQueueRemoval) or that the
+// project's merge holds changed (mergeHoldsChanged), and a message of a merge forward whose role
+// is released (mergeForwardMessage). Every other delivery is an outbox `start` or a task, for
+// which the supervise machine already resumes a suspended agent (deliverResuming); these six
+// publish to a live session instead, so the row's own retry is what waits for the pod, and this
+// is what makes the pod come back for it to find. The phase-ended message and the hook prompt
+// reach its body, deliveryWake, through publishKeptToRole, on the claim's one read of their
+// attempt (claimWakeOf).
 //
-// It answers whether the claim was released and a resume of it is under way. The role's one open
-// resume is what makes the wake one wake however often the row retries, so a notice that backs
-// off for ten minutes resumes the claim once. A claim of an issue that has left the workflow, or
-// whose tree lingers, is not woken: that pod is a close's to stop. An outbox with no supervisor —
-// a test's, which supervises nothing — wakes nothing: there is no machine to read a claim's state
-// from.
+// It answers whether the row must wait for a launch of the claim, and when that launch runs where
+// the wake pacing holds it. The row waits for a released claim, which it resumes here, and for a
+// claim whose launch the wake pacing has parked over no process, which is what that resume leaves
+// while it waits for its turn. The pacing does not exempt the resume (supervise's exemptWake lets
+// only an operator's requests through), so over a wave it can wait more than an hour, the machine
+// holding the claim launching with no process and its view naming the waiting wake (supervise's
+// waitOnMachine, ClaimView.WakeWaiting). The row waits through that park because a phase-ended
+// message or a hook prompt published then would be kept for the listener's one hour from that
+// publish, which can end before the pod starts. So a waiting wake that starts a process
+// (supervise.StartsProcess) over a claim that records no process holds the row until the launch
+// runs, whichever launch it is. A relaunch parked over a process the claim still records holds
+// nothing: the machine keeps that claim's state, and its live session can take the publish now.
+//
+// For such a park it answers the wake's turn as well (supervise.WakeWaiting.At), and each caller
+// returns the wait parkedWait builds from it: the row runs again at the turn, or parkedWakeBound
+// on when that comes first, and reads the claim again then. The turn lives only in the machine's
+// memory, and the park can end before it — an operator's request, a restart or a suspension
+// (parkedWakeBound says how) — so a row that slept to the turn could publish long after the pod
+// came back and would hold that pod from idle release the whole time; the bound caps what such an
+// early end costs. A row that climbed its backoff instead would try again every 64 s and log a
+// Warn at every attempt from the seventh (settle), about once a minute for as long as the turn is
+// away; this wait is routine (routineWaiting), so its attempts stay at debug. A turn already past
+// when the row settles — the row ran a moment before the machine's own timer — is the backoff's
+// (retry). A released claim this call resumes answers no turn, even where the resume parks: the
+// row waits on its backoff, and its next attempt reads the park.
+//
+// A released claim is not woken while any release of its issue still stands, whether or not that
+// release has recorded this role (store.Store.TakeDeliveryWake). The resume here runs in process,
+// so it does not wait for the release's teardown as a workflow wake's `start` does (record's
+// outboxInOrder), and it would launch the role in the pod the teardown is about to take. The
+// role's record on the mark comes too late to tell: the release's stop suspends the claim as
+// `released` first and records the role after it, in a transaction of its own (store's
+// ReleaseSuspendedClaim). A wake in that gap would resume the role, and the record would then make
+// the release pass over that wake (store's releaseOvertaken) and tear the pod down under it. The
+// store reads the mark under the take's own lock, in the take's own transaction, so nothing comes
+// between the read and the take. While a mark stands, the call takes nothing and answers, as its
+// error, a routine wait of deliveryWakeInRelease (routineWaiting, wait.Until), whose text names
+// the release it waits for: the attempts stay at debug, and the text is not the wake pacing's.
+// Once the teardown has cleared the mark, the row's next attempt takes the wake against the
+// newest release recorded (store.LatestPodRelease): the release the teardown recorded, or the
+// release before it where the teardown gave up on its record (recordGivenUp,
+// store.Store.SettleUnrecordedRelease). It resumes the role in the new pod. A cancel clears the
+// mark too, but it resumes no claim itself. It queues a start for each claim it resumes
+// (store.Store.CancelIssueRelease), and the claim reads released until that start runs, though its
+// pod never went away. While such a start is queued and the role has no open resume, the call
+// takes nothing and answers the same routine wait, whose text names the start: a wake taken then
+// would record a resume of a pod that no release took, and the records would count that pod's
+// return. The start resumes the role in the same pod, and the row's next attempt finds the claim
+// live and publishes. A role with an open resume refuses the take whatever is queued, and the
+// call resumes it below. A claim the cancel did not resume is still released with no start
+// queued, and the attempt wakes it in the same pod.
+//
+// The role's one open resume is what makes the wake one wake however often the row retries, so a
+// notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
+// the workflow, or whose tree lingers, is not woken: that pod is a close's to stop. An outbox
+// with no supervisor — a test's, which supervises nothing — wakes nothing: there is no machine to
+// read a claim's state from.
+//
+// mark is the pause that held the row the wake is for (record.OutboxRow.HeldByPause), 0 for a row
+// no pause held: the resume writes it on every row its pause holds, whatever the row's kind or due
+// time. The store reads which pause holds the wake with it (store.PodRecords.PauseOfWake, decision
+// 15 of dispatch://INFRA-3759). So a row the pause held, which runs only after the resume, wakes
+// its role with a held wake of that pause, and so does a row written after the resume for a role
+// that pause stopped, as the workflow's wake of that role is.
 //
 // The claim is read from the machine's View, which never waits on the decision in flight: a
 // machine holds its lock through the runtime call its decision makes, so a read that waited
-// would hold the notice and the phase-ended message behind a Sandbox relaunch waiting on the
+// would hold the notice and the hook prompt behind a Sandbox relaunch waiting on the
 // cluster, which is the defect LEGION-650 fixed in the routing beside this read.
-func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail string) (bool, error) {
+func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail string, mark int64) (waits bool, turn time.Time, err error) {
+	wake, err := r.claimWakeOf(ctx, token)
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	return r.deliveryWake(ctx, token, wake, detail, mark)
+}
+
+// claimWake is the one read of a claim a delivery row's attempt makes, and what it decides about a
+// wake of that claim, for both the rows that wake a released claim (deliveryWake) and the kept role
+// messages that wait past their hour only while a wake is coming (keptRoleMessageEnded,
+// wakeComing). machine is nil where no claim is supervised, and then nothing else is set.
+type claimWake struct {
+	machine *supervise.Machine
+	view    supervise.ClaimView
+	// resume is a released claim of an issue a wake can still reach (wakeableIssue), whose
+	// record issue is: a delivery row resumes it.
+	resume bool
+	issue  record.Issue
+	// parked is a launch the wake pacing parked over no process (parkedLaunch), due at turn.
+	parked bool
+	turn   time.Time
+}
+
+// claimWakeOf reads the claim of token from its machine's View and decides whether a wake of it
+// is to be made or is under way: a released claim of a wakeable issue, or a launch the wake pacing
+// parked. A claim of an issue that has left the workflow, or whose tree lingers, is not woken:
+// that pod is a close's to stop. An outbox with no supervisor — a test's, which supervises
+// nothing — reads no claim: there is no machine to read a claim's state from.
+func (r *outbox) claimWakeOf(ctx context.Context, token claim.Token) (claimWake, error) {
 	if r.supervisor == nil {
-		return false, nil
+		return claimWake{}, nil
 	}
 	machine, found := r.supervisor.Machine(token)
 	if !found {
+		return claimWake{}, nil
+	}
+	wake := claimWake{machine: machine, view: machine.View()}
+	if !wake.view.Released() {
+		wake.turn, wake.parked = parkedLaunch(wake.view)
+		return wake, nil
+	}
+	issue, wakeable, err := r.wakeableIssue(ctx, wake.view.Issue)
+	if err != nil {
+		return claimWake{}, err
+	}
+	wake.resume, wake.issue = wakeable, issue
+	return wake, nil
+}
+
+// wakeComing is whether a wake of the claim wake read is coming or under way, which holds a kept
+// role message's row past its hour (keptRoleMessageEnded): a released claim of an issue a wake can
+// still reach, which the row's own attempt wakes (deliveryWake); a launch the wake pacing parked
+// over no process; or a launch under a resume of the role that has had no first turn yet
+// (store.Store.OpenPodResume), which a wake opened. The first two are claimWakeOf's, the decision
+// deliveryWake acts on, so the two cannot disagree. A released claim of an issue that has left the
+// workflow, or whose tree lingers, gets no wake, and a launch no wake opened is the role starting
+// as any role starts, so the hour holds for both: without it, a row of an issue moved out of the
+// workflow would be tried about once a minute for as long as the issue stayed out, and its end
+// would never come.
+func (r *outbox) wakeComing(ctx context.Context, issue string, wake claimWake) (bool, error) {
+	if wake.resume || wake.parked {
+		return true, nil
+	}
+	if wake.view.State != supervise.StateLaunching {
 		return false, nil
 	}
-	held := machine.View()
-	if !held.Released() {
-		return false, nil
+	_, _, open, err := r.trees.OpenPodResume(ctx, r.project, issue, wake.view.Role)
+	return open, err
+}
+
+// deliveryWake is wakeForDelivery on the claim's one read of this attempt (claimWakeOf).
+func (r *outbox) deliveryWake(ctx context.Context, token claim.Token, wake claimWake, detail string, mark int64) (waits bool, turn time.Time, err error) {
+	if wake.parked {
+		return true, wake.turn, nil
 	}
-	issue, err := r.issue(ctx, held.Issue)
-	if err != nil {
-		return false, err
+	if !wake.resume {
+		return false, time.Time{}, nil
 	}
-	root, err := r.root(ctx, issue)
-	if err != nil {
-		return false, err
+	machine, issue, held := wake.machine, wake.issue, wake.view
+	// The take's line is a hook of its commit. The resume below is not: it is order-sensitive and
+	// runs after the commit, so a take whose outcome is unknown fails the row, and the row's retry
+	// meets the open resume the take recorded and resumes the claim (the refused branch below).
+	var took store.DeliveryWake
+	if err := store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if took, err = r.trees.TakeDeliveryWake(ctx, r.project, issue.Key, token, issue.Generation, r.now().UTC(), mark); err != nil || !took.Taken {
+			return err
+		}
+		store.OnCommit(ctx, func() {
+			r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
+				"issue", issue.Key, "role", held.Role, "detail", detail)
+		})
+		return nil
+	}); err != nil {
+		return false, time.Time{}, err
 	}
-	if root == nil || !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
-		return false, nil
+	if took.InRelease {
+		return false, time.Time{}, routineWaiting{err: wait.Until(r.now().UTC().Add(deliveryWakeInRelease),
+			fmt.Sprintf("a wake for %s waits for the release of %s's pod to finish", detail, issue.Key))}
 	}
-	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, held.Role, pods.WakeDelivery, r.now().UTC())
-	if err != nil {
-		return false, err
+	if took.StartQueued {
+		return false, time.Time{}, routineWaiting{err: wait.Until(r.now().UTC().Add(deliveryWakeInRelease),
+			fmt.Sprintf("a wake for %s waits for the start queued for %s's %s, which brings the role back", detail, issue.Key, held.Role))}
 	}
+	// The record no longer holds the claim released: a start resumed it, or a path took it over,
+	// after the machine's view above. The row waits on its backoff and reads the claim again.
+	if took.NotReleased {
+		return true, time.Time{}, nil
+	}
+	taken := took.Taken
 	// A wake the role's open resume refused is a pod already on its way back — unless no resume
 	// of that claim ever ran. This take commits before the resume it leads to, and that resume is
 	// in process rather than a row of the take's own transaction (the workflow's wakes queue a
@@ -255,19 +457,105 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	reason := "a wake for " + detail
 	if !taken {
 		if !machine.View().Released() {
-			return true, nil
+			return true, time.Time{}, nil
 		}
 		reason = "a wake for " + detail + ", whose resume the record already held open"
-		r.log.Warn("wake: a released pod's resume stands open with no process behind it; this wake resumes it",
-			"issue", issue.Key, "role", held.Role, "detail", detail)
-	} else {
-		r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
-			"issue", issue.Key, "role", held.Role, "detail", detail)
+		r.logRefusedByOpenResume(issue.Key, held.Role, detail, took)
 	}
 	if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
-		return false, fmt.Errorf("wake claim %s for %s: %w", token, detail, err)
+		return false, time.Time{}, fmt.Errorf("wake claim %s for %s: %w", token, detail, err)
 	}
-	return true, nil
+	return true, time.Time{}, nil
+}
+
+// wakeableIssue is the record of issue key, and whether a released claim of it can be woken: the
+// issue is in the workflow and its tree does not linger (pods.InWorkflowNotLingering). A claim of
+// an issue that has left the workflow, or whose tree lingers, is a close's to stop, not a wake's
+// to bring back. An issue the daemon keeps no record of is an error, as outbox.issue says.
+func (r *outbox) wakeableIssue(ctx context.Context, key string) (record.Issue, bool, error) {
+	issue, err := r.issue(ctx, key)
+	if err != nil {
+		return record.Issue{}, false, err
+	}
+	root, err := r.root(ctx, issue)
+	if err != nil {
+		return record.Issue{}, false, err
+	}
+	return issue, root != nil && pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow), nil
+}
+
+// parkedLaunch is whether view's launch is parked by the wake pacing over no process, and that
+// launch's turn: the claim is launching, records no process, and its view names a waiting wake
+// that starts one (supervise.StartsProcess). wakeForDelivery says why a delivery row waits through
+// such a park and not through a relaunch parked over a process the claim still records.
+func parkedLaunch(view supervise.ClaimView) (turn time.Time, parked bool) {
+	if view.State == supervise.StateLaunching && view.Locator == nil &&
+		view.WakeWaiting != nil && supervise.StartsProcess(view.WakeWaiting.Kind) {
+		return view.WakeWaiting.At, true
+	}
+	return time.Time{}, false
+}
+
+// parkedWait is the wait of a delivery row whose role's launch the wake pacing has parked over no
+// process (wakeForDelivery's turn), with text as its message: the row runs again at turn, or
+// parkedWakeBound from now when that comes first, and reads the claim again then. A turn already
+// past is the backoff's, as every moment a wait.Until names is once it has passed (retry). The
+// wait is routine (routineWaiting): the launch's turn ends it, or an earlier end of the park the
+// row's next read finds, so nobody has to act on it, and a park of an hour would otherwise be
+// logged as a warning at every attempt from the seventh (waitWarnAttempts).
+func (r *outbox) parkedWait(turn time.Time, text string) error {
+	at := r.now().UTC().Add(parkedWakeBound)
+	if turn.Before(at) {
+		at = turn
+	}
+	return routineWaiting{err: wait.Until(at, text)}
+}
+
+// logRefusedByOpenResume says why a delivery wake whose take the role's open resume refused
+// resumes a claim that is still released (wakeForDelivery), by whose that open resume is
+// (store.DeliveryWake.OpenResumePause) and by whether a wake's own start of the role is queued
+// (WakeStartQueued), both read by the take in its own transaction, after the refusal and under
+// the lock it holds on the claim's row, so a resume another wake took while that take waited for
+// the lock is in them; this does not read either again. One a pause held (its pause, the held
+// wake of decision 15
+// of dispatch://INFRA-3759) is one of three wakes. The pause's owed launch, and the workflow's
+// wake of a role the pause stopped, which store.PodRecords.PauseOfWake gives the pause (the
+// listener's report of a role message the pause held, or of a message another session sent the
+// role, a CI settlement or a backstop), each queue a start row, and the claim reads released until
+// that start runs. A queued start holds no delivery of a role with an open resume
+// (store.Store.TakeDeliveryWake), and the resume wakes every lane at once (projectPause.Resumed),
+// so a held notice, hook prompt, merge-queue removal or merge forward's message of the same role
+// can run before that start and find the role released under the held wake. The third is the wake
+// an earlier delivery row of the role, which the pause held, took after the resume. That row
+// resumes the claim in process at once, and the claim reads launching, with no process, while its
+// launch waits for its turn in the wake pacing (supervise's parkWake). A later row finds that
+// launch and waits for it (parkedLaunch), so it comes here only between the earlier row's take
+// and its resume. Nothing is wrong in any of these, and the line says so at Info.
+//
+// An open resume that no pause holds, whose wake's start is queued, is the workflow's wake taken
+// while a release stood, after the release recorded the role (store.PodRecords.TakePodWake). Its
+// start waits until the release's teardown row leaves the outbox (record's outboxInOrder), and
+// then for its turn on the issue's lane. The delivery takes no wake while the release's mark
+// stands, and the teardown clears that mark before its row leaves, so a delivery can meet the open
+// resume before that start runs. This is a normal order of the release too, and the line says so
+// at Debug.
+//
+// Any other open resume over a released claim is one whose process never came — a resume the
+// store refused after its take committed, or a daemon that stopped between the two — and the line
+// says so at Warn: the resume goes ahead either way.
+func (r *outbox) logRefusedByOpenResume(issue string, role claim.Role, detail string, wake store.DeliveryWake) {
+	if wake.OpenResumePause != 0 {
+		r.log.Info("wake: a released role's open resume is its pause's held wake; this wake resumes the role through the wake pacing",
+			"issue", issue, "role", role, "detail", detail, "pause", wake.OpenResumePause)
+		return
+	}
+	if wake.WakeStartQueued {
+		r.log.Debug("wake: a released role's open resume is a wake whose start is still queued; this wake resumes the role",
+			"issue", issue, "role", role, "detail", detail)
+		return
+	}
+	r.log.Warn("wake: a released pod's resume stands open with no process behind it; this wake resumes it",
+		"issue", issue, "role", role, "detail", detail)
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
@@ -276,9 +564,18 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 // period — and neither does an issue whose phase no role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
-// backstop has nothing left to bring back.
+// backstop has nothing left to bring back. A backstop of an issue that waits for its admission
+// slot is armed all the same and wakes no one when it fires (the workflow's podBackstopDue): the
+// issue can give its slot back after the release, so the fire is where that is read.
+//
+// A role with an open resume gets none either: a wake of it was taken while this release still
+// ran, after the release recorded its claim (store's releaseOvertaken), and that wake's start is
+// already bringing it back in the new pod. A backstop for it could never act: it fires on a claim
+// that is running by then, or on one whose open resume refuses a second wake. The release's mark
+// closed every resume left open before it (store.CloseOpenResumes), so an open resume here is
+// such a wake.
 func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
-	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue.Key); err != nil {
+	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue.Key, ""); err != nil {
 		return err
 	}
 	if r.backstop <= 0 {
@@ -296,6 +593,13 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 		if c.Role != role || c.ServingGeneration != issue.Generation {
 			continue
 		}
+		if _, _, open, err := r.trees.OpenPodResume(ctx, r.project, issue.Key, role); err != nil || open {
+			if open {
+				r.log.Info("wake: the release of an issue's pod arms no backstop: a wake is already bringing its open phase's role back",
+					"issue", issue.Key, "role", role)
+			}
+			return err
+		}
 		due := r.now().UTC().Add(r.backstop)
 		r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",
 			"issue", issue.Key, "role", role, "due", due.Format(time.RFC3339))
@@ -306,34 +610,45 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 }
 
 // takeOverRelease is what every path that suspends, stops or closes a claim does to a pod that
-// was released: it drops the open backstops of the issue, so no later backstop acts on a claim
-// this path has taken over. The claim's own suspension source is re-stamped by
-// the machine (supervise's suspendedAgain), which is what takes it out of every released-claim
-// read; this drops what is left behind in the record.
+// was released: it drops the open backstops the path has taken over, so no later backstop acts on
+// a claim this path owns. A `suspend` row takes one role over and drops that role's backstop alone
+// (decision 17 of dispatch://INFRA-3759): another role of the pod may be waiting on a deploy with
+// nothing but its own backstop to bring it back. An issue's close and a tree's close name no role
+// (forgetIdleRelease), and drop every backstop of the issue, since the issue's work is over. The
+// claim's own suspension source is re-stamped by the machine (supervise's suspendedAgain), which
+// is what takes it out of every released-claim read; this drops what is left behind in the
+// record.
 //
 // A runner with no tree store does nothing here. Every runner the daemon builds has one
 // (newOutbox), so this is the test that builds a runner by hand for a path of its own, as the
 // zero clock and the zero design gate are; such a runner has released no pod, so there is
 // nothing of a release to take over.
-func (r *outbox) takeOverRelease(ctx context.Context, issue string) {
+func (r *outbox) takeOverRelease(ctx context.Context, issue string, role claim.Role) {
 	if r.trees == nil {
 		return
 	}
-	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue); err != nil {
-		r.log.Warn("wake: could not forget the wakes of a pod another path took over", "issue", issue, "error", err)
+	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue, role); err != nil {
+		r.log.Warn("wake: could not forget the wakes of a pod another path took over", "issue", issue, "role", role, "error", err)
 	}
 }
 
-// dropReleasedWork takes a released pod's issue over and deletes the workspace bundle its release
-// saved: the issue is done, or its tree is closing, so nothing will restore that bundle and
-// nothing should. A linger and a park keep theirs, because their issue comes back. A runner with
-// no tree store does nothing, as takeOverRelease says.
-func (r *outbox) dropReleasedWork(ctx context.Context, issue string) {
-	r.takeOverRelease(ctx, issue)
+// forgetIdleRelease takes a released pod's issue over and forgets the decline of an idle release
+// of it (store.ForgetIdleDecline): the issue is done, or its tree is closing, so no idle release of
+// its pod is coming. It deletes the record of the disks of the issue's pods too
+// (store.DeleteIssuePodDisks), which the issue's update rounds read (workOnRoundPod): no round of
+// the issue's pods is left to name a role by it. Both records expire together, at the end of the
+// issue's work, which is the one event of every caller, so a change to the idle release here must
+// keep the delete of the disks' record. A linger and a park keep both, because their issue comes
+// back. A runner with no tree store does nothing, as takeOverRelease says.
+func (r *outbox) forgetIdleRelease(ctx context.Context, issue string) {
+	r.takeOverRelease(ctx, issue, "")
 	if r.trees == nil {
 		return
 	}
-	if err := r.trees.DeleteWorkspaceBundle(ctx, issue); err != nil {
-		r.log.Warn("wake: could not delete the workspace bundle of a finished issue", "issue", issue, "error", err)
+	if err := r.trees.ForgetIdleDecline(ctx, r.project, issue); err != nil {
+		r.log.Warn("wake: could not forget the declined idle release of a finished issue", "issue", issue, "error", err)
+	}
+	if err := r.trees.DeleteIssuePodDisks(ctx, issue); err != nil {
+		r.log.Warn("wake: could not delete the record of the disks of the pods of a finished issue", "issue", issue, "error", err)
 	}
 }

@@ -1,0 +1,28 @@
+-- 20261116112354_events_refused_destinations.up.sql
+--
+-- INFRA-3589: the destinations NATS refused for good, kept apart from the ones it took.
+--
+--   refused_destinations   an object of subject to error text: each destination of the event
+--                          that NATS refused the same way however often it is sent
+--                          (bus.ErrRefused: past the server's max payload, or a subject NATS
+--                          does not take), and whose stand-in with the payload left out NATS
+--                          refused too. Null for an event with no such destination.
+--
+-- The release before this one recorded such a destination in published_destinations, as if NATS
+-- had taken it. A reader of the row could not tell a refusal from a delivery, and the session
+-- answers route (sessionanswers.List) listed the event for a session whose own topic NATS had
+-- refused. This release writes the subject and its error here instead (internal/dispatch/outbox,
+-- recordBatch), merged with what the row already holds, and never sends it again: the outbox's
+-- planner skips every subject in either column. An event whose other destinations are all
+-- reached is published, with no attempt counted. publish_error cannot hold the refusal: it is
+-- the last attempt's failure and is cleared once the event is published.
+--
+-- A plain nullable add with no default is a catalog change that rewrites no row, so it holds
+-- events ACCESS EXCLUSIVE for milliseconds. The release before this one neither reads nor writes
+-- the column (its batch read names the columns it takes), so the two roll side by side
+-- (cmd/dispatch/README.md, "Database migrations"). While they do, the old build still records a
+-- refused destination in published_destinations, as it always has. No backfill moves those
+-- rows: a census that rewrites a row refuses the deploy (cmd/dispatch/README.md, "Pre-deploy
+-- census"). Rolling back past this migration is an image rollback alone; the column left behind
+-- is read by nothing.
+alter table events add column refused_destinations jsonb;

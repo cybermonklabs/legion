@@ -796,6 +796,7 @@ test("a past version's comment link lands on its quote in a document with no dia
     // change of the version view's own scroll height - the very measurement a rebuild disturbs -
     // and a loaded machine stretches those frames, which a wall-clock window cannot do.
     await landingSettled(versionView);
+    // The landing settled above, so the frames recorded up to here are every scroll it made.
     const offsets = (await page.evaluate(() => window.__scrollEachFrame)) ?? [];
     const started = offsets.findIndex((offset) => offset > 0);
     expect(started).toBeGreaterThanOrEqual(0);
@@ -885,14 +886,18 @@ test("a resolving reference above a linked card does not end the hold", async ({
 test("the margin stops holding a landed card once the reader works the document", async ({
   browser,
 }) => {
-  // Anchored near the top: the quote is on screen from the first frame, so the landing needs no
-  // correction at all. A hold that only lets go once it has corrected something never lets go
-  // here, and the asks below drag the margin thousands of pixels while the reader reads.
+  // Anchored near the top: the quote and its whole card are on screen from the first frame, so
+  // the landing needs no correction at all. A hold that only lets go once it has corrected
+  // something never lets go here, and the asks below drag the margin thousands of pixels while
+  // the reader reads. The landed card holds its Reply box and the hint under it, which makes
+  // the margin 748 px tall, so the page is taller than the default 720 px: in
+  // 720 px the landing would correct the margin by 28 px, and the row would test a hold that did.
   const { comment, issue, markId } = await seedLongDocument("Paragraph 1: surrounding context");
   const context = await asUser(browser, "alice");
 
   try {
     const page = await context.newPage();
+    await page.setViewportSize({ height: 800, width: 1280 });
     await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
 
     const sheet = page.getByTestId("margin-sheet");

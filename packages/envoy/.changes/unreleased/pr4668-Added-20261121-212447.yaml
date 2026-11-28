@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+    A hub rendered with `privateProjects` carries the server tag `server_tags: ["envoy-private-projects"]` in its NATS configuration, after the callout's ping lines. nats-server copies its tags into every authorization request, so a request alone can show that its hub was rendered private; the auth service does not read the tag yet. Without `privateProjects` the configuration renders exactly as before.
+    The tag is one of the callout's lines (`core.Authorization.CalloutLines`), so setting or removing `privateProjects` rolls `gcp:ClusteredNatsHub`'s pods; with `privateProjects` its chart waits on the hub pods' NetworkPolicy, so no pod takes the tag, by reload or by restart, before the policy that closes port 8222 is applied. Nothing orders the removal: turn `privateProjects` off only after every project is public again, and give `monitorNamespaces` back only in a later apply. The VM hub and the AWS hub replace their server on the changed text as they do on any change.
+time: 2026-11-21T21:24:47.179832039Z
+custom:
+    Issue: pr4668

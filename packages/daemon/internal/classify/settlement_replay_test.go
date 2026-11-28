@@ -280,9 +280,9 @@ func TestPR1084HeadReplayGoesRedAtMostOnceAndNeverReturnsToRed(t *testing.T) {
 // settlement of another check on the head reports it red again - whether the settlement holds the
 // whole record or, as a record recreated after the listener's TTL does, only the other check - and
 // a late delivery of the check's own first, failing view is older than the daemon's fence, which is
-// the per-name maximum over every settlement it accepted (packages/envoy AGENTS.md, "Topic
-// shapes"). A fence replaced by each settlement would forget the passing run there and take the
-// old failure as a new name.
+// the per-name maximum over every settlement it accepted (mergeAttemptSets, attempts.go). A fence
+// replaced by each settlement would forget the passing run there and take the old failure as a
+// new name.
 func TestAPassedCheckStaysRetiredWhileAnotherCheckSettlesRepeatedly(t *testing.T) {
 	settlements := []namedSettlement{
 		{"title fails", SettlementCandidate{CheckRuns: []record.AttemptRun{{Name: "title", ID: 10}}, Failing: []string{"title"}}},

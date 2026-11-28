@@ -16,12 +16,12 @@ func mkdir(t *testing.T, path string) {
 }
 
 // The profile root is where Oh My Pi, started under the environment, keeps the profile's data:
-// the profile OMP_PROFILE (else PI_PROFILE) names under HOME's config root, unless an XDG data
-// root already holds that profile's data, and an honoured PI_CODING_AGENT_DIR elsewhere turns
-// the XDG data root off. The state root is the same rule over XDG_STATE_HOME, so each row runs
-// over both, with the data home the row names moved to the state home for the state root. The
-// gate's manifest tests (internal/daemon) hold the full resolution to Oh My Pi's; these hold the
-// root itself.
+// the profile OMP_PROFILE (else PI_PROFILE) names under the config root — OMP_CONFIG_ROOT where it
+// names an absolute directory, else HOME's PI_CONFIG_DIR or .omp — unless an XDG data root already
+// holds that profile's data, and an honoured PI_CODING_AGENT_DIR elsewhere turns the XDG data root
+// off. The state root is the same rule over XDG_STATE_HOME, so each row runs over both, with the
+// data home the row names moved to the state home for the state root. The gate's manifest tests
+// (internal/daemon) hold the full resolution to Oh My Pi's; these hold the root itself.
 func TestEachRootIsWhereOhMyPiKeepsTheProfilesDirectories(t *testing.T) {
 	passwdHome := ""
 	if u, err := user.Current(); err == nil {
@@ -95,6 +95,71 @@ func TestEachRootIsWhereOhMyPiKeepsTheProfilesDirectories(t *testing.T) {
 			},
 			want: func(home, _ string) string { return filepath.Join(home, ".omp-alt") },
 		},
+		// OMP_CONFIG_ROOT, trimmed, `~` expanded against HOME, and cleaned, is the config root in
+		// place of PI_CONFIG_DIR under HOME where it is absolute; a relative, empty or blank one is
+		// ignored (getConfigRootOverride, resolveAbsoluteDir). The root here lies outside HOME and
+		// is never made: Oh My Pi tests no config root for existence.
+		{
+			name: "an absolute OMP_CONFIG_ROOT is the config root in place of PI_CONFIG_DIR under HOME",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "PI_CONFIG_DIR": ".omp-alt",
+					"OMP_CONFIG_ROOT": " " + xdg + "/elsewhere/../root/ "}
+			},
+			want: func(_, xdg string) string { return filepath.Join(xdg, "root") },
+		},
+		{
+			name: "a named profile under an absolute OMP_CONFIG_ROOT",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "PI_CONFIG_DIR": ".omp-alt", "OMP_PROFILE": "work",
+					"OMP_CONFIG_ROOT": filepath.Join(xdg, "root")}
+			},
+			want:    func(_, xdg string) string { return filepath.Join(xdg, "root", "profiles", "work") },
+			profile: "work",
+		},
+		{
+			name: "an XDG data root that exists wins over OMP_CONFIG_ROOT",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "OMP_CONFIG_ROOT": filepath.Join(xdg, "root")}
+			},
+			layout: func(t *testing.T, _, xdg string) { mkdir(t, filepath.Join(xdg, "omp")) },
+			want:   func(_, xdg string) string { return filepath.Join(xdg, "omp") },
+		},
+		{
+			name: "an OMP_CONFIG_ROOT under ~/ is under HOME",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "PI_CONFIG_DIR": ".omp-alt", "OMP_CONFIG_ROOT": "~/omp-root"}
+			},
+			want: func(home, _ string) string { return filepath.Join(home, "omp-root") },
+		},
+		{
+			name: "an OMP_CONFIG_ROOT of ~ is HOME itself",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "OMP_PROFILE": "work", "OMP_CONFIG_ROOT": "~"}
+			},
+			want:    func(home, _ string) string { return filepath.Join(home, "profiles", "work") },
+			profile: "work",
+		},
+		{
+			name: "a relative OMP_CONFIG_ROOT is ignored",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "PI_CONFIG_DIR": ".omp-alt", "OMP_CONFIG_ROOT": "omp-root"}
+			},
+			want: func(home, _ string) string { return filepath.Join(home, ".omp-alt") },
+		},
+		{
+			name: "an empty OMP_CONFIG_ROOT is ignored",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "OMP_CONFIG_ROOT": ""}
+			},
+			want: func(home, _ string) string { return filepath.Join(home, ".omp") },
+		},
+		{
+			name: "a blank OMP_CONFIG_ROOT is ignored",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "PI_CONFIG_DIR": ".omp-alt", "OMP_CONFIG_ROOT": " \t "}
+			},
+			want: func(home, _ string) string { return filepath.Join(home, ".omp-alt") },
+		},
 		{
 			name: "an honoured PI_CODING_AGENT_DIR turns the XDG data root off",
 			env: func(home, xdg string) map[string]string {
@@ -119,6 +184,29 @@ func TestEachRootIsWhereOhMyPiKeepsTheProfilesDirectories(t *testing.T) {
 			},
 			layout: func(t *testing.T, _, xdg string) { mkdir(t, filepath.Join(xdg, "omp")) },
 			want:   func(_, xdg string) string { return filepath.Join(xdg, "omp") },
+		},
+		// Under an OMP_CONFIG_ROOT, the agent directory a profile hands down is that profile's under
+		// the override (isProfileDerivedAgentDir over getProfileAgentDir): that one keeps the XDG
+		// data root, and the same profile's under HOME is an agent directory like any other.
+		{
+			name: "the agent directory PI_PROFILE hands down under OMP_CONFIG_ROOT keeps the XDG data root",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "OMP_PROFILE": "", "PI_PROFILE": "work",
+					"OMP_CONFIG_ROOT":     filepath.Join(home, "root"),
+					"PI_CODING_AGENT_DIR": filepath.Join(home, "root", "profiles", "work", "agent")}
+			},
+			layout: func(t *testing.T, _, xdg string) { mkdir(t, filepath.Join(xdg, "omp")) },
+			want:   func(_, xdg string) string { return filepath.Join(xdg, "omp") },
+		},
+		{
+			name: "under OMP_CONFIG_ROOT, the profile's agent directory under HOME is honoured and turns the XDG data root off",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "OMP_PROFILE": "", "PI_PROFILE": "work",
+					"OMP_CONFIG_ROOT":     filepath.Join(home, "root"),
+					"PI_CODING_AGENT_DIR": filepath.Join(home, ".omp", "profiles", "work", "agent")}
+			},
+			layout: func(t *testing.T, _, xdg string) { mkdir(t, filepath.Join(xdg, "omp")) },
+			want:   func(home, _ string) string { return filepath.Join(home, "root") },
 		},
 	} {
 		for _, root := range roots {

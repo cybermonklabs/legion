@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // judgedRow is one stored document: each finding of its texts as "<kind> <node> <rule>", in
@@ -32,23 +34,47 @@ func requireJudged(t *testing.T, rows []judgedRow) {
 			var bodies []string
 			for _, text := range extracted.Texts {
 				if text.Node == row.node && text.Kind == row.kind {
-					bodies = append(bodies, text.Body)
+					bodies = append(bodies, heldWords(text.Body, text.Notes))
 				}
 			}
 			for _, term := range extracted.Terms {
 				if term.Name == row.node && row.kind == KindDefinition {
-					bodies = append(bodies, term.Definition)
+					bodies = append(bodies, heldWords(term.Definition, term.DefinitionNotes))
 				}
 			}
 			if !slices.Equal(bodies, []string{row.body}) {
 				t.Errorf("%s: stored %q gives the %s %s the bodies %q, want %q", row.name, stored, row.kind, row.node, bodies, row.body)
 			}
 		}
-		got := findingNames(Check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts, Proposed: extracted.Terms}))
+		got := findingNames(check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts, Proposed: extracted.Terms}))
 		if !slices.Equal(got, row.want) {
 			t.Errorf("%s: stored %q gives the findings %q, want %q", row.name, stored, got, row.want)
 		}
 	}
+}
+
+// heldWords is body and the words of each footnote that notes holds, directly or in turn, once
+// and in the order of the first reference, each on a line: the words of a text that a person
+// reads.
+func heldWords(body string, notes []*Footnote) string {
+	var lines []string
+	if body != "" {
+		lines = append(lines, body)
+	}
+	seen := map[*Footnote]bool{}
+	queue := slices.Clone(notes)
+	for index := 0; index < len(queue); index++ {
+		note := queue[index]
+		if seen[note] {
+			continue
+		}
+		seen[note] = true
+		if note.Body != "" {
+			lines = append(lines, note.Body)
+		}
+		queue = append(queue, note.Notes...)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // requirement is a requirement block of id that holds body.
@@ -180,7 +206,380 @@ func TestAnAutolinkIsJudgedOnceInTheWordsOfThePage(t *testing.T) {
 			[]string{"statement pull-before pull-request"}, "", "", ""},
 		{"the stated limit: a mail link after a /, judged in the words", requirement("mail-path", "Dispatch stores each comment, as x/[ada@example.com](mailto:ada@example.com) shows."),
 			nil, "", "", ""},
+		{"a mail link whose words are a reference, a word joined after it", requirement("mail-reference",
+			"Dispatch stores each comment, as [dispatch://ACME-1](mailto:dispatch://ACME-1)xyz shows."), []string{"statement mail-reference dispatch-link"}, "", "", ""},
+		{"a mail link whose words are a key, a word joined after it", requirement("mail-key",
+			"Dispatch stores each comment, as [ACME-1](mailto:ACME-1)xyz shows."), []string{"statement mail-key dispatch-link"}, "", "", ""},
+		{"a mail link whose words are an email address and more", requirement("mail-more",
+			"Legion clones [git@github.com:ACME-1](mailto:git@github.com:ACME-1) for each run."), []string{"statement mail-more dispatch-link"}, "", "", ""},
 	})
+}
+
+// One link gives one finding: where the address of a link and the words of the page name one
+// record of Dispatch, the text has one finding, the address's. The words name that record also by
+// a part of what the address names: the key of its issue, or its id. That one finding names the
+// address and, where the words name the record in another form, the words' form too. So an
+// autolink of a record beside a closing mark, a dash or a "_" gives one finding, and two links to
+// two records give two. The stated scope: a digit joined after an autolink makes the words name
+// another record, so that text names two records and gives two findings.
+func TestOneLinkGivesOneFinding(t *testing.T) {
+	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
+	requireJudged(t, []judgedRow{
+		{"an autolink of a record in curly quotes", requirement("curly", "Dispatch stores each comment, as \u201c<dispatch://ACME-1>\u201d shows."),
+			[]string{"statement curly dispatch-link"}, "", "", ""},
+		{"an autolink of a record, then a dash", requirement("dash", "Dispatch stores each comment, as <dispatch://ACME-1>\u2014 it shows."),
+			[]string{"statement dash dispatch-link"}, "", "", ""},
+		{"an autolink of a record, then a _", requirement("connector", "Dispatch stores each comment, as <dispatch://ACME-1>_ shows."),
+			[]string{"statement connector dispatch-link"}, "", "", ""},
+		{"a link of a record whose words are its key", requirement("key", "Dispatch stores each comment, as [ACME-1](dispatch://ACME-1) shows."),
+			[]string{"statement key dispatch-link"}, "", "", ""},
+		{"a link of the spec of an issue whose words are the key of the issue", requirement("spec", "Dispatch keeps [ACME-1](dispatch://ACME-1/spec)."),
+			[]string{"statement spec dispatch-link"}, "", "", ""},
+		{"a link of an ask whose words are its id", requirement("ask", "Dispatch keeps ["+id+"](dispatch://ACME-1/ask/"+id+")."),
+			[]string{"statement ask dispatch-link"}, "", "", ""},
+		{"two links to two records", requirement("two", "Dispatch stores each comment, as <dispatch://ACME-1> and <dispatch://ACME-2> show."),
+			[]string{"statement two dispatch-link", "statement two dispatch-link"}, "", "", ""},
+		{"a link of the spec of an issue, then a link of the issue", requirement("spec-issue", "Dispatch keeps [the spec](dispatch://ACME-1/spec) and [the issue](dispatch://ACME-1)."),
+			[]string{"statement spec-issue dispatch-link", "statement spec-issue dispatch-link"}, "", "", ""},
+		{"a link of an ask of an issue, then a link of the issue", requirement("ask-issue", "Dispatch keeps [the ask](dispatch://ACME-1/ask/"+id+") and [the issue](dispatch://ACME-1)."),
+			[]string{"statement ask-issue dispatch-link", "statement ask-issue dispatch-link"}, "", "", ""},
+		{"a path of the spec of an issue, then a path of the issue", requirement("paths", "Dispatch keeps [the spec](/issues/ACME-1/spec) and [the issue](/issues/ACME-1)."),
+			[]string{"statement paths dispatch-link", "statement paths dispatch-link"}, "", "", ""},
+		{"the control: a link of the issue, then a link of its spec", requirement("issue-spec", "Dispatch keeps [the issue](dispatch://ACME-1) and [the spec](dispatch://ACME-1/spec)."),
+			[]string{"statement issue-spec dispatch-link", "statement issue-spec dispatch-link"}, "", "", ""},
+		{"the control: a link of the spec of one issue whose words are the key of another", requirement("other", "Dispatch keeps [ACME-2](dispatch://ACME-1/spec)."),
+			[]string{"statement other dispatch-link", "statement other dispatch-link"}, "", "", ""},
+		{"the stated scope: a digit after an autolink names another record", requirement("digit", "Dispatch stores each comment, as <dispatch://ACME-1>5 shows."),
+			[]string{"statement digit dispatch-link", "statement digit dispatch-link"}, "", "", ""},
+	})
+	for _, test := range []struct{ name, body, want string }{
+		{"the key of the issue of the spec", "Dispatch keeps [ACME-1](dispatch://ACME-1/spec).",
+			`it links to a record of Dispatch: "dispatch://ACME-1/spec", and its words name a record of Dispatch by its key: "ACME-1"`},
+		{"the id of the ask", "Dispatch keeps [" + id + "](dispatch://ACME-1/ask/" + id + ").",
+			`it links to a record of Dispatch: "dispatch://ACME-1/ask/` + id + `", and its words name a record of Dispatch by its id: "` + id + `"`},
+		{"the control: the words are the address", "Dispatch stores each comment, as <dispatch://ACME-1> shows.",
+			`it links to a record of Dispatch: "dispatch://ACME-1"`},
+	} {
+		extracted, err := ExtractDocument("spec.md", 1, storedMarkdown(t, requirement("r", test.body)))
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		var got []string
+		for _, finding := range check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts}) {
+			got = append(got, finding.Detail)
+		}
+		if !slices.Equal(got, []string{test.want}) {
+			t.Errorf("%s: the details %q, want %q", test.name, got, []string{test.want})
+		}
+	}
+}
+
+// A link whose address is a path of a page of a record of Dispatch, on the server that shows the
+// document, links to that record, as the whole address of the page does: an issue, a document of
+// an issue, of a project or of an agent, an ask, a comment, a message and a block, as the server
+// reads the address of its pages. An address with no scheme is read against the origin of the
+// server, as the dashboard reads the address of a link in a component's prose, with each "\" read
+// as "/". So a path that starts with "/", "./" or "../" or with none of them names the same page.
+// A path of another page, and an address of another host, link to no record. A context that names
+// no server still reads a path, which names one page on each server. These rows name no page of a
+// document, which TestAnAddressIsReadAgainstThePageOfItsDocumentToo reads.
+func TestARelativeLinkToARecordLinksToTheRecord(t *testing.T) {
+	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
+	requireJudged(t, []judgedRow{
+		{"a path of a document of a project", requirement("project", "Dispatch keeps [the terms](/projects/ACME/documents/terms-md)."),
+			[]string{"statement project dispatch-link"}, "", "", ""},
+		{"a path of a document of a project on the server's host", requirement("host", "Dispatch keeps [the terms](//dispatch.example.com/projects/ACME/documents/terms-md)."),
+			[]string{"statement host dispatch-link"}, "", "", ""},
+		{"a path of the spec of an issue", requirement("spec", "Dispatch keeps [the spec](/issues/ACME-12/spec)."),
+			[]string{"statement spec dispatch-link"}, "", "", ""},
+		{"a path of an issue", requirement("issue", "Dispatch keeps [the issue](/issues/ACME-12)."),
+			[]string{"statement issue dispatch-link"}, "", "", ""},
+		{"a path of an ask", requirement("ask", "Dispatch keeps [the ask](/issues/ACME-12/asks/"+id+")."),
+			[]string{"statement ask dispatch-link"}, "", "", ""},
+		{"a path of a comment on a document", requirement("comment", "Dispatch keeps [the comment](/projects/ACME/documents/terms-md?comment="+id+")."),
+			[]string{"statement comment dispatch-link"}, "", "", ""},
+		{"a path with no / of a document of a project", requirement("bare", "Dispatch keeps [the terms](projects/ACME/documents/terms-md)."),
+			[]string{"statement bare dispatch-link"}, "", "", ""},
+		{"a path from ./ of a document of a project", requirement("dot", "Dispatch keeps [the terms](./projects/ACME/documents/terms-md)."),
+			[]string{"statement dot dispatch-link"}, "", "", ""},
+		{"a path from ../../ of a document of a project", requirement("up", "Dispatch keeps [the terms](../../projects/ACME/documents/terms-md)."),
+			[]string{"statement up dispatch-link"}, "", "", ""},
+		{"a path of \\ of a document of a project", requirement("back", `Dispatch keeps [the terms](\projects\ACME\documents\terms-md).`),
+			[]string{"statement back dispatch-link"}, "", "", ""},
+		{"a path with no / of an artifact of an agent", requirement("agent", "Dispatch keeps [the notes](agents/s-1/artifacts/notes-md)."),
+			[]string{"statement agent dispatch-link"}, "", "", ""},
+		{"a path with no / of an issue", requirement("bare-issue", "Dispatch keeps [the issue](issues/ACME-12)."),
+			[]string{"statement bare-issue dispatch-link"}, "", "", ""},
+		{"a path with no / of the spec of an issue", requirement("bare-spec", "Dispatch keeps [the spec](issues/ACME-12/spec)."),
+			[]string{"statement bare-spec dispatch-link"}, "", "", ""},
+		{"a path with no / of a document of an issue", requirement("bare-artifact", "Dispatch keeps [the notes](issues/ACME-12/artifacts/notes-md)."),
+			[]string{"statement bare-artifact dispatch-link"}, "", "", ""},
+		{"a path with no / of the decisions of an issue", requirement("bare-decisions", "Dispatch keeps [the decisions](issues/ACME-12/decisions)."),
+			[]string{"statement bare-decisions dispatch-link"}, "", "", ""},
+		{"a path with no / of an ask", requirement("bare-ask", "Dispatch keeps [the ask](issues/ACME-12/asks/"+id+")."),
+			[]string{"statement bare-ask dispatch-link"}, "", "", ""},
+		{"a path with no / of a comment", requirement("bare-comment", "Dispatch keeps [the comment](issues/ACME-12/comments/"+id+")."),
+			[]string{"statement bare-comment dispatch-link"}, "", "", ""},
+		{"a path with no / of a message", requirement("bare-message", "Dispatch keeps [the message](issues/ACME-12/messages/"+id+")."),
+			[]string{"statement bare-message dispatch-link"}, "", "", ""},
+		{"a path with no / of a comment on a document of a project", requirement("bare-project-comment",
+			"Dispatch keeps [the comment](projects/ACME/documents/terms-md?comment="+id+")."), []string{"statement bare-project-comment dispatch-link"}, "", "", ""},
+		{"a path with no / of a block of a document of a project", requirement("bare-block", "Dispatch keeps [the part](projects/ACME/documents/terms-md#b-x1)."),
+			[]string{"statement bare-block dispatch-link"}, "", "", ""},
+		{"the control: a path of a page that is no record", requirement("guide", "Dispatch keeps [the guide](/docs/guide)."),
+			nil, "", "", ""},
+		{"the control: a path with no / of a page that is no record", requirement("bare-guide", "Dispatch keeps [the guide](docs/guide)."),
+			nil, "", "", ""},
+		{"the control, with no page: a path from ../ that the origin reads as no record", requirement("near", "Dispatch keeps [the terms](../documents/terms-md)."),
+			nil, "", "", ""},
+		{"the control, with no page: a name of a document alone", requirement("slug", "Dispatch keeps [the terms](terms-md)."),
+			nil, "", "", ""},
+		{"the control: a path of a project", requirement("projects", "Dispatch keeps [the projects](/projects/ACME)."),
+			nil, "", "", ""},
+		{"the control: a path of a document on another host", requirement("other", "Dispatch keeps [the terms](//other.example.com/projects/ACME/documents/terms-md)."),
+			nil, "", "", ""},
+	})
+	for _, address := range []string{"/projects/ACME/documents/terms-md", "projects/ACME/documents/terms-md"} {
+		text := Text{Node: "planted", Kind: KindStatement, Body: "Dispatch keeps the terms.", Where: where, Held: Held{Addresses: []string{address}}}
+		want := []Finding{finding(text, "dispatch-link", fmt.Sprintf("it links to a record of Dispatch: %q", address))}
+		if got := check(Context{}, Input{Texts: []Text{text}}); !sameFindings(got, want) {
+			t.Errorf("%s with no server: Check = %#v, want %#v", address, got, want)
+		}
+	}
+}
+
+// Each page that draws a document reads an address with no scheme against itself, as the editor
+// and the browser do, and the origin reads it as the dashboard reads a component's prose. An
+// address links to a record when any reading opens the page of one. The pages of a document are
+// the dashboard's (text.DocumentPages): a spec is drawn on its issue's page, on the Spec tab and on
+// its Artifacts page, so from a spec a document of its issue, its Verification document, its
+// decisions, a tab of the issue, a block or a part of the spec itself, and the name of a document
+// of the issue alone each name a record. A Verification document is drawn on its own tab and on
+// its Artifacts page, so from it the name of another document of its issue and a path of the
+// Artifacts route each name one; from a document of a project, another document of the project. A
+// path that opens no record from any base links to none, and with no page the origin's reading
+// alone decides.
+func TestAnAddressIsReadAgainstThePageOfItsDocumentToo(t *testing.T) {
+	spec := text.DocumentPages(text.DocumentOwner{IssueKey: "ACME-1", Slug: "spec", Primary: true})
+	checks := text.DocumentPages(text.DocumentOwner{IssueKey: "ACME-1", Slug: "verification-md", Role: "verification"})
+	project := text.DocumentPages(text.DocumentOwner{Project: "ACME", Slug: "notes-md"})
+	for _, test := range []struct {
+		pages   []string
+		address string
+		want    []string
+	}{
+		{spec, "artifacts/notes-md", []string{`it links to a record of Dispatch: "artifacts/notes-md"`}},
+		{spec, "artifacts/verification-md", []string{`it links to a record of Dispatch: "artifacts/verification-md"`}},
+		{spec, "decisions", []string{`it links to a record of Dispatch: "decisions"`}},
+		{spec, "#b-x1", []string{`it links to a record of Dispatch: "#b-x1"`}},
+		{spec, "#s-form", []string{`it links to a record of Dispatch: "#s-form"`}},
+		{spec, "notes-md", []string{`it links to a record of Dispatch: "notes-md"`}},
+		{spec, "terms-md", []string{`it links to a record of Dispatch: "terms-md"`}},
+		{spec, "verification-md", []string{`it links to a record of Dispatch: "verification-md"`}},
+		{spec, "../decisions", []string{`it links to a record of Dispatch: "../decisions"`}},
+		{spec, "../spec", []string{`it links to a record of Dispatch: "../spec"`}},
+		{spec, "artifact/notes-md", []string{`it links to a record of Dispatch: "artifact/notes-md"`}},
+		{spec, "verification", []string{`it links to a record of Dispatch: "verification"`}},
+		{spec, "../activity", []string{`it links to a record of Dispatch: "../activity"`}},
+		{checks, "terms-md", []string{`it links to a record of Dispatch: "terms-md"`}},
+		{checks, "artifacts/notes-md", []string{`it links to a record of Dispatch: "artifacts/notes-md"`}},
+		{checks, "artifacts/terms-md", []string{`it links to a record of Dispatch: "artifacts/terms-md"`}},
+		{project, "../documents/terms-md", []string{`it links to a record of Dispatch: "../documents/terms-md"`}},
+		{project, "terms-md", []string{`it links to a record of Dispatch: "terms-md"`}},
+		{spec, "docs/guide", []string{}},
+		{spec, "../docs/guide", []string{}},
+		{checks, "docs/guide", []string{}},
+		{project, "docs/guide", []string{}},
+		{spec, "../documents/terms-md", []string{}},
+		{nil, "artifacts/notes-md", []string{}},
+	} {
+		context := planted()
+		context.Pages = test.pages
+		text := Text{Node: "planted", Kind: KindStatement, Body: "Dispatch keeps the record.", Where: where, Held: Held{Addresses: []string{test.address}}}
+		got := []string{}
+		for _, finding := range check(context, Input{Texts: []Text{text}}) {
+			got = append(got, finding.Detail)
+		}
+		if !slices.Equal(got, test.want) {
+			t.Errorf("%q from the pages %q: the details %q, want %q", test.address, test.pages, got, test.want)
+		}
+	}
+}
+
+// A footnote is part of each text that refers to it, directly or through another footnote, and
+// Check judges it once: each of its findings is given once, to the first text that holds it and
+// whose kind the rule judges, and its words name the footnote and how many other texts refer to
+// it. One footnote that breaks two rules gives two findings, and two footnotes that break one rule
+// give two. The sentences of a footnote count in each statement that holds it, and the finding
+// names each footnote whose sentences it counts, with how many it adds. Two verbs for one action
+// (synonym-rotation) are one finding of the one text or footnote whose words hold them both, or
+// with what it refers to holds them both where no one footnote of that holds them all: so a
+// footnote of two such verbs gives one finding however many texts refer to it, and a verb of a
+// text with its synonym in a footnote of that text gives the text's finding.
+func TestAFootnoteIsJudgedOnceAndGivesEachFindingOnce(t *testing.T) {
+	shared := requirement("first", "Dispatch stores each record.[^n]") + "\n" + requirement("second", "Dispatch shows each record.[^n]") +
+		"\n[^n]: Ada Lovelace wrote it.\n"
+	// claims is count claims that refer to the footnote [^n], and then note, its words.
+	claims := func(count int, note string) string {
+		var markdown strings.Builder
+		for index := 1; index <= count; index++ {
+			fmt.Fprintf(&markdown, ":::check{#c%d}\nDispatch keeps record %[1]d.[^n]\n:::\n\n", index)
+		}
+		return markdown.String() + "[^n]: " + note + "\n"
+	}
+	for _, test := range []struct {
+		name, markdown string
+		from           int
+		want           []string
+	}{
+		{"two statements that share a footnote", shared, 0,
+			[]string{`statement first person: in its footnote [^n] (1 other text also refers to it): it names a person: "Ada Lovelace"`}},
+		{"the second of them alone", shared, 1,
+			[]string{`statement second person: in its footnote [^n]: it names a person: "Ada Lovelace"`}},
+		{"one footnote that breaks two rules", requirement("both", "Dispatch stores each record.[^n]") +
+			"\n[^n]: Ada Lovelace performs a validation of each upload.\n", 0,
+			[]string{`statement both ste100-nominalization: in its footnote [^n]: ASD-STE100 does not permit an action frozen into a noun: "performs a validation"`,
+				`statement both person: in its footnote [^n]: it names a person: "Ada Lovelace"`}},
+		{"two footnotes that break one rule", ":::check{#claim}\nDispatch keeps each record.[^a][^b]\n:::\n\n[^a]: Dispatch keeps it; it waits.\n\n[^b]: Dispatch shows it; it waits.\n", 0,
+			[]string{`claim claim ste100-semicolon: in its footnote [^a]: ASD-STE100 does not permit a semicolon: ";"`,
+				`claim claim ste100-semicolon: in its footnote [^b]: ASD-STE100 does not permit a semicolon: ";"`}},
+		{"a footnote that a footnote refers to", requirement("chain", "Dispatch stores each record.[^a]") +
+			"\n[^a]: The note[^b].\n\n[^b]: Ada Lovelace wrote it.\n", 0,
+			[]string{`statement chain sentences: it has 3 sentences with those of its footnotes, and a statement has one or two: [^a] adds 1 and [^b] adds 1`,
+				`statement chain person: in the footnote [^b], which its footnote [^a] refers to: it names a person: "Ada Lovelace"`}},
+		{"the first text is a name that the form rules do not judge", "## Records[^n] (component `record`)\n\n" +
+			requirement("later", "Dispatch keeps each record.[^n]") + "\n[^n]: Dispatch keeps it; it waits.\n", 0,
+			[]string{`statement later ste100-semicolon: in its footnote [^n] (1 other text also refers to it): ASD-STE100 does not permit a semicolon: ";"`}},
+		{"the sentences of a shared footnote count in each statement", requirement("a", "Dispatch stores it. Dispatch shows it.[^n]") + "\n" +
+			requirement("b", "Dispatch keeps it. Dispatch reads it.[^n]") + "\n[^n]: The note says so.\n", 0,
+			[]string{"statement a sentences: it has 3 sentences with those of its footnotes, and a statement has one or two: [^n] adds 1",
+				"statement b sentences: it has 3 sentences with those of its footnotes, and a statement has one or two: [^n] adds 1"}},
+		{"a statement of one sentence and its footnote of two", requirement("year", "Dispatch keeps each record for one year.[^1]") +
+			"\n[^1]: The year starts at the first write. It ends 365 days later.\n", 0,
+			[]string{"statement year sentences: it has 3 sentences with those of its footnotes, and a statement has one or two: [^1] adds 2"}},
+		{"the sentences of a long chain of footnotes", requirement("long", "Dispatch stores it.[^1]") +
+			"\n[^1]: One.[^2]\n\n[^2]: Two.[^3]\n\n[^3]: Three.[^4]\n\n[^4]: Four.\n", 0,
+			[]string{"statement long sentences: it has at least 4 sentences with those of its footnotes, and a statement has one or two: " +
+				"[^1] adds 1, [^2] adds 1 and [^3] adds 1, and Dispatch stops the count there"}},
+		{"two footnotes that refer to each other", requirement("cycle", "Dispatch stores it.[^a]") +
+			"\n[^a]: The note[^b].\n\n[^b]: The other note[^a].\n", 0,
+			[]string{"statement cycle sentences: it has 3 sentences with those of its footnotes, and a statement has one or two: [^a] adds 1 and [^b] adds 1"}},
+		{"a verb of a claim and its synonym in its footnote", ":::check{#c}\nCheck the config file.[^1]\n:::\n\n[^1]: Then verify the output.\n", 0,
+			[]string{`claim c ste100-synonym-rotation: with the words of its footnotes: ASD-STE100 does not permit two verbs for one action: "check" and "verify"`}},
+		{"two verbs for one action in two footnotes of one claim", ":::check{#two}\nDispatch keeps each record.[^a][^b]\n:::\n\n" +
+			"[^a]: It checks the size.\n\n[^b]: It confirms the type.\n", 0,
+			[]string{`claim two ste100-synonym-rotation: with the words of its footnotes: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
+		{"a footnote of two verbs for one action, which two claims refer to", claims(2, "It checks the size and confirms the type."), 0,
+			[]string{`claim c1 ste100-synonym-rotation: in its footnote [^n] (1 other text also refers to it): ASD-STE100 does not permit two verbs for one action: "confirms"`}},
+		{"a footnote of two verbs for one action, which 2,000 claims refer to", claims(2_000, "It checks the size and confirms the type."), 0,
+			[]string{`claim c1 ste100-synonym-rotation: in its footnote [^n] (1999 other texts also refer to it): ASD-STE100 does not permit two verbs for one action: "confirms"`}},
+		{"two verbs for one action in a footnote and the footnote that it refers to", claims(2, "It checks the size.[^b]") + "\n[^b]: It confirms the type.\n", 0,
+			[]string{`claim c1 ste100-synonym-rotation: in its footnote [^n] (1 other text also refers to it): with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
+		{"two verbs for one action in two footnotes that refer to each other", claims(2, "It checks the size.[^b]") + "\n[^b]: It confirms the type.[^n]\n", 0,
+			[]string{`claim c1 ste100-synonym-rotation: in its footnote [^n] (1 other text also refers to it): with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
+		{"two verbs for one action in a loop of footnotes that a footnote with no verb refers to", ":::check{#ring}\nDispatch keeps it.[^a]\n:::\n\n" +
+			"[^a]: The note.[^n]\n\n[^n]: It checks the size.[^b]\n\n[^b]: It confirms the type.[^n]\n", 0,
+			[]string{`claim ring ste100-synonym-rotation: in the footnote [^n], which its footnote [^a] refers to: with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
+		{"two verbs for one action in a footnote that a footnote with no verb refers to", ":::check{#top}\nDispatch keeps it.[^a]\n:::\n\n" +
+			"[^a]: The note.[^b]\n\n[^b]: It checks the size.[^c]\n\n[^c]: It confirms the type.\n", 0,
+			[]string{`claim top ste100-synonym-rotation: in the footnote [^b], which its footnote [^a] refers to: with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
+		{"a claim that adds a third verb for one action to its footnote's two", ":::check{#more}\nValidate the file.[^n]\n:::\n\n[^n]: It checks the size and confirms the type.\n", 0,
+			[]string{`claim more ste100-synonym-rotation: with the words of its footnotes: ASD-STE100 does not permit two verbs for one action: "check", "confirm" and "validate"`,
+				`claim more ste100-synonym-rotation: in its footnote [^n]: ASD-STE100 does not permit two verbs for one action: "confirms"`}},
+		{"the control: a verb of a claim that its footnote's two verbs for one action hold", ":::check{#again}\nCheck the file.[^n]\n:::\n\n[^n]: It checks the size and confirms the type.\n", 0,
+			[]string{`claim again ste100-synonym-rotation: in its footnote [^n]: ASD-STE100 does not permit two verbs for one action: "confirms"`}},
+		{"the control: one verb in a claim and in its footnote", ":::check{#same}\nCheck the config file.[^1]\n:::\n\n[^1]: Then check the output.\n", 0, nil},
+		{"the control: two verbs for one action in the claim alone", ":::check{#own}\nCheck the file and verify it.[^1]\n:::\n\n[^1]: The note says so.\n", 0,
+			[]string{`claim own ste100-synonym-rotation: ASD-STE100 does not permit two verbs for one action: "verify"`}},
+		{"the control: two statements that share a clean footnote", requirement("c1", "Dispatch stores it.[^n]") + "\n" +
+			requirement("c2", "Dispatch shows it.[^n]") + "\n[^n]: The note says so.\n", 0, nil},
+	} {
+		extracted, err := ExtractDocument("spec.md", 1, storedMarkdown(t, test.markdown))
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		var got []string
+		for _, finding := range check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts[test.from:], Proposed: extracted.Terms}) {
+			got = append(got, fmt.Sprintf("%s %s %s: %s", finding.Kind, finding.Node, finding.Rule, finding.Detail))
+		}
+		if !slices.Equal(got, test.want) {
+			t.Errorf("%s: the findings\n%q\nwant\n%q", test.name, got, test.want)
+		}
+	}
+}
+
+// A reference reads the footnote that the parser links to it: the first whose label it writes, or
+// else the first whose label matches it up to case (pmdoc.FootnoteLabelKey). The browser editor's
+// parser links it to the first that matches up to case, so the reference also reads each other
+// footnote whose label matches its own up to case, a second footnote of its own label among them,
+// and no such definition goes unread: each holds the next one of its label up to case. The
+// sentences of each count in a statement that refers to it, and its findings stand under the
+// first text that refers to it. The control: a footnote that no reference reads, whatever its
+// label, is read by no text, as no other prose outside a block is.
+func TestAReferenceReadsEachFootnoteWhoseLabelMatchesItUpToCase(t *testing.T) {
+	const ada = `it names a person: "Ada Lovelace"`
+	const twelve = `it names a pull request: "#12". ` + pullRequestForms
+	for _, test := range []struct {
+		name, markdown string
+		linked         string
+		held           []string
+		want           []string
+	}{
+		{"the review's probe: [^A] under [^a] and [^A]", requirement("r", "Dispatch keeps it.[^A]") +
+			"\n[^a]: Dispatch keeps it.\n\n[^A]: Ada Lovelace approved it in #12. It runs. It stops. It ends.\n",
+			"A", []string{"A", "a"}, []string{
+				"statement r sentences: it has at least 5 sentences with those of its footnotes, and a statement has one or two: [^A] adds 4, and Dispatch stops the count there",
+				"statement r pull-request: in its footnote [^A]: " + twelve,
+				"statement r person: in its footnote [^A]: " + ada,
+			}},
+		{"[^a] under [^a] and [^A]", requirement("r", "Dispatch keeps it.[^a]") +
+			"\n[^a]: Dispatch keeps it.\n\n[^A]: Ada Lovelace approved it in #12.\n",
+			"a", []string{"a", "A"}, []string{
+				"statement r sentences: it has 3 sentences with those of its footnotes, and a statement has one or two: [^a] adds 1 and [^A] adds 1",
+				"statement r pull-request: in the footnote [^A], which has the label of its footnote [^a] up to case: " + twelve,
+				"statement r person: in the footnote [^A], which has the label of its footnote [^a] up to case: " + ada,
+			}},
+		{"[^A] under [^a] alone", requirement("r", "Dispatch keeps it.[^A]") + "\n[^a]: Ada Lovelace approved it.\n",
+			"a", []string{"a"}, []string{"statement r person: in its footnote [^a]: " + ada}},
+		{"[^a] under two definitions of [^a]", requirement("r", "Dispatch keeps it.[^a]") +
+			"\n[^a]: Dispatch keeps it.\n\n[^a]: Ada Lovelace approved it.\n",
+			"a", []string{"a", "a"}, []string{
+				"statement r sentences: it has 3 sentences with those of its footnotes, and a statement has one or two: [^a] adds 1 and [^a] adds 1",
+				"statement r person: in the footnote [^a], which has the label of its footnote [^a] up to case: " + ada,
+			}},
+		{"the control: a footnote of another label that no reference reads", requirement("r", "Dispatch keeps it.[^a]") +
+			"\n[^a]: Dispatch keeps it.\n\n[^z]: Ada Lovelace approved it.\n",
+			"a", []string{"a"}, nil},
+	} {
+		extracted, err := ExtractDocument("spec.md", 1, storedMarkdown(t, test.markdown))
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		statement := extracted.Texts[0]
+		if len(statement.Notes) != 1 || statement.Notes[0].Label != test.linked {
+			t.Errorf("%s: the reference reads %d footnotes, want the one that the parser links, [^%s]", test.name, len(statement.Notes), test.linked)
+		}
+		// held is each footnote that the statement holds, in the order of a walk from it, once.
+		var held []string
+		seen := map[*Footnote]bool{}
+		for walk := slices.Clone(statement.Notes); len(walk) > 0; walk = walk[1:] {
+			if note := walk[0]; !seen[note] {
+				seen[note] = true
+				held = append(held, note.Label)
+				walk = append(walk, note.Notes...)
+			}
+		}
+		if !slices.Equal(held, test.held) {
+			t.Errorf("%s: the statement holds the footnotes %q, want %q", test.name, held, test.held)
+		}
+		var got []string
+		for _, finding := range check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts}) {
+			got = append(got, fmt.Sprintf("%s %s %s: %s", finding.Kind, finding.Node, finding.Rule, finding.Detail))
+		}
+		if !slices.Equal(got, test.want) {
+			t.Errorf("%s: the findings\n%q\nwant\n%q", test.name, got, test.want)
+		}
+	}
 }
 
 // The red team's two inputs of a part of Terms and a container, with their controls: a heading in
@@ -317,7 +716,7 @@ func TestASectionBelongsToItsContainer(t *testing.T) {
 			for _, term := range extracted.Terms {
 				names = append(names, term.Name)
 			}
-			got := findingNames(Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms}))
+			got := findingNames(check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms}))
 			if !slices.Equal(got, test.want) || !slices.Equal(names, test.terms) ||
 				extracted.Counts[KindName] != test.names || extracted.Counts[KindPurpose] != test.purposes {
 				t.Errorf("%s, in %s: stored %q gives the findings %q, the terms %q, %d names and %d purposes; want %q, %q, %d and %d",
@@ -330,8 +729,8 @@ func TestASectionBelongsToItsContainer(t *testing.T) {
 
 // The texts of The Spec are a statement, the claim and the procedure of a check, the name and the
 // purpose of a component and the term and the definition of a term, where plan decision 3 places
-// each. Other prose of a document is no text of The Spec, and the form does not judge it: the
-// reviewer of R25 reads the page. Three of the red team's inputs pin that, beside a statement
+// each. Other prose of a document is no text of The Spec, and the form does not judge it: R49
+// leaves it to the reviewer of R25. Three of the red team's inputs pin that, beside a statement
 // that the form reads, and the control: the same link in a requirement is refused.
 func TestOtherProseOfADocumentIsNoTextOfTheSpec(t *testing.T) {
 	const control = ":::requirement{#control}\nDispatch stores each comment.\n:::\n\n"
@@ -348,7 +747,7 @@ func TestOtherProseOfADocumentIsNoTextOfTheSpec(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", test.name, err)
 		}
-		got := findingNames(Check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts}))
+		got := findingNames(check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts}))
 		if !slices.Equal(got, test.want) || !slices.ContainsFunc(extracted.Texts, func(text Text) bool { return text.Node == "control" }) {
 			t.Errorf("%s: the findings %q and the texts %s, want %q and the statement control read", test.name, got, fmt.Sprint(extracted.Texts), test.want)
 		}
@@ -429,7 +828,7 @@ func TestTheAddressOfAPullRequestHasAHostOfItsOwn(t *testing.T) {
 		for _, match := range test.named {
 			want = append(want, finding(text, rulePullRequest, pullRequestNamed(match)))
 		}
-		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+		if got := check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("the address %q: got %#v, want %#v", test.address, got, want)
 		}
 	}

@@ -69,6 +69,41 @@ export function movedApprovalDocuments<
   return documents.filter((document) => document.requested_version < document.version);
 }
 
+/**
+ * What a question says about the review its issue's specification already carries
+ * (`WriteAdvice.standing_review`): who reviewed, when, whether they approved or asked for
+ * changes, their reason, and the one thing the sender can do about it. The sender is asking
+ * about text someone has already read and judged, so the answer they need is what changed since
+ * that review. Nothing is printed when the advice carries no review.
+ *
+ * A carried review is Dispatch's own bookkeeping of an earlier approval, so its line says so and
+ * prints no reason: the stored reason is Dispatch's sentence, its time is when Dispatch recorded
+ * the carry, and the version it names is the one the carry's reason names, which is the version
+ * the person read. `carried_from_version` is set on a carried review and on no other, so it is
+ * what tells the two apart.
+ */
+export function standingReviewLines(advice: WriteAdvice | undefined): string[] {
+  const review = advice?.standing_review;
+  if (review === undefined) return [];
+  const carriedFrom = review.carried_from_version;
+  if (carriedFrom !== undefined) {
+    return [
+      `${review.by}'s approval of this issue's spec was carried forward from the approval of version ${carriedFrom}, and Dispatch recorded that carry on ${review.at}.`,
+      "Say what changed since that review in a reply on this ask.",
+    ];
+  }
+  const verb = review.state === "approved" ? "approved" : "asked for changes on";
+  const opening = `${review.by} ${verb} this issue's spec at version ${review.version} on ${review.at}`;
+  // The reason is a person's own words, up to 500 characters of them, and it goes into what an
+  // agent reads: quoted by JSON, so a quotation mark or a line feed inside it cannot end the
+  // line early or add one the reviewer did not write.
+  const reason = review.reason ?? "";
+  return [
+    reason === "" ? `${opening}, and gave no reason.` : `${opening}: ${JSON.stringify(reason)}`,
+    "Say what changed since that review in a reply on this ask.",
+  ];
+}
+
 export function renderAdvice(
   tool: string,
   key: string,
@@ -220,7 +255,7 @@ export function renderAdvice(
   // name the document just written: it names those issues, and it is silent for every other
   // document. Absent (an older Dispatch keeps no such record), empty, and anything that is not a
   // list of gates all print no clause, which is the safe direction - a reader told nothing asks
-  // the tree's architect, a reader told a gate that is not there stops working for no reason.
+  // the issue's architect, a reader told a gate that is not there stops working for no reason.
   //
   // A plan's approval comes back through its plan review, and no request for approval restores
   // it: Dispatch refuses one on every plan with 409 PLAN_APPROVED_BY_REVIEW, whoever approved it,
@@ -243,7 +278,7 @@ export function renderAdvice(
     parts.push(
       opts.isPlan === true
         ? `A plan is approved by its plan review, and Dispatch refuses a request for a person's approval of a plan. Once a plan review approves version ${superseded.version}, record it with \`dispatch plan-approve --issue ${key} --version ${superseded.version}\`.`
-        : "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan."
+        : "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the issue's architect, and keep the next one in a comment or in the plan."
     );
     lines.push(parts.join(" "));
   }

@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+  The broker now sends GitHub the revoke of a GitHub App token it minted and hands to nobody.
+  GitHub mints the token when it answers a token request `201`, so for an answer cut off part of the
+  way, past the minter's cap, undecodable or without an expiry, the broker revokes the token the
+  part that arrived names, before it sends the request again or answers, under a bound of its own
+  that the caller's deadline does not end. A release that fails after it minted a token - at a
+  later installation, at a later name of the grant, at the airlock's placeholders or at its
+  `grant.used` row - revokes the tokens it minted, and so does a session's release of a name behind
+  the airlock, which minted that name's token only to learn the slots it hands placeholders for,
+  while the proxy mints its own. This holds for the check of a narrowing before the approval
+  request and for a release alike. The check does not send again a token request that may have
+  reached GitHub and failed, so such a request leaves one token live, which nothing can name; a
+  request known to have failed before a connection (a name that did not resolve, a failed dial, a
+  proxy's refused tunnel, a certificate the broker did not trust), and every request of a release,
+  is sent again as before. The give-back of a grant's minted values, for a release that failed or a
+  name behind the airlock, runs in the background, so that release answers without waiting on
+  GitHub, and makes one attempt of each revoke, so it takes nothing from the retry budget the
+  mints a caller waits on draw from; the revoke of an unusable answer's token, and of the tokens a
+  release minted for the installations before one that failed, happens before the mint answers. A
+  token whose answer does not name it, and a revoke GitHub does not confirm, are logged at WARN,
+  and that token stays live until it lapses, within the hour GitHub gives it.

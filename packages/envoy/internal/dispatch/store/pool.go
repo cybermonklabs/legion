@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/errgroup"
 )
 
 // ErrNestedAcquire is the shared pool refusing a second connection to a caller that already
@@ -113,6 +114,26 @@ func ForConcurrentRead(ctx context.Context) (context.Context, error) {
 		return nil, ErrNestedAcquire
 	}
 	return context.WithValue(ctx, holdingKey{}, &holding{}), nil
+}
+
+// ReadSideBySide runs reads at once and answers the first error. Each runs on a hold mark of its
+// own (ForConcurrentRead), so it takes at most one connection of the pool and one read's open
+// cursor refuses no other; a read holds no lock past its own statements and waits on no other
+// read, so none waits on another: a read opens no transaction, or reads in one that only reads,
+// which its caller opened before the group on a hold mark of its own and the read commits once
+// its statements end (legion/metrics' read opens it, and readSampled reads in it and commits it).
+// A caller that holds a connection is refused (ErrNestedAcquire) before any read starts.
+func ReadSideBySide(ctx context.Context, reads ...func(ctx context.Context) error) error {
+	group, groupCtx := errgroup.WithContext(ctx)
+	for _, read := range reads {
+		readCtx, err := ForConcurrentRead(groupCtx)
+		if err != nil {
+			_ = group.Wait()
+			return err
+		}
+		group.Go(func() error { return read(readCtx) })
+	}
+	return group.Wait()
 }
 
 // ForConcurrentWorker returns a context for one of a caller's goroutines that run side by side
@@ -387,23 +408,29 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 	return conn, nil
 }
 
-// LeasePoolSize bounds the pool the once-overall leases (duty.Exclusive) and the delivery intakes'
-// holds (duty.Hold) are taken on. The requirement is one connection per caller that can be using
-// one at the same moment, and it is a caller and not a lease or a hold that needs one.
+// LeasePoolSize bounds the pool the once-overall leases (duty.Exclusive), the intakes' holds
+// (duty.Hold: the two delivery intakes' and the Legion state intake's) and the keyword fill's hold
+// are taken on, and the keyword fill's batches run on. The requirement is one connection per
+// caller that can be using one at the same moment, and it is a caller and not a lease or a hold
+// that needs one.
 //
 // Exclusive takes its connection before it learns whether the lease is held, so a pass that skips
 // because the other process holds the lease holds a connection for that round trip too. These
 // names are leased - the document compaction, the keyed writes' maintenance sweep
 // (api.RunMaintenanceSweep, which keeps the lease name suggestion-outcomes the suggestion sweep
 // carried that work under), the reference-excerpt reconciliation, the block-index reconciliation,
-// the term-statistics refresh, the GitHub webhook redelivery sweep, the CI reconcile pass
-// (cireconcile.Lease), the architecture import, the delivery reconcile, the edit-notice sweep, the
+// the reference forms drain (docs.RefsFormsLease, beside the block index on a goroutine of its
+// own), the term-statistics refresh, the GitHub webhook redelivery sweep, the CI reconcile pass
+// (cireconcile.Lease), the CI verify loop (cireconcile.VerifyLease, taken only by a pass with a
+// verify request to answer, beside a reconcile pass that holds its own for minutes), the
+// architecture import, the delivery reconcile, the edit-notice sweep, the
 // document settlement resumption (docs.Service.RunSettlementResumption), the repair of closed and
-// reopened issues' asks (api.RunIssueAskRepair), one per delivery durable for the intake's
-// take-over (delivery.consumerLease, a name each for delivery-events and delivery-jobs) and the
-// server process registry's prune (processes.RunPrune), the embeddings project_key fill
-// (api.RunEmbeddingProjectKeyFill) and the display tree fill (texttreefill.fillLease) - one
-// caller each, since each intake
+// reopened issues' asks (api.RunIssueAskRepair), one per durable for its intake's take-over
+// (delivery.consumerLease, a name each for delivery-events, delivery-jobs and the Legion state
+// intake's legion-state-events) and the server process registry's prune (processes.RunPrune), the
+// embeddings project_key fill (api.RunEmbeddingProjectKeyFill), the display tree fill
+// (texttreefill.fillLease) and R25's one-time fix of parents' statuses at boot
+// (api.RunParentStatusFixAtBoot, lease parent-status-fix) - one caller each, since each intake
 // takes its own durable's name from its own goroutine, so each of them can be inside Exclusive
 // at once. The fill is the one that is no loop of a cadence: it labels in a single pass of one
 // to two hours, holds its connection for the whole of it, tries for its lease again every five
@@ -413,12 +440,18 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // each of its pages holds for update serialises two processes by itself
 // (api/suggestion_outcomes.go).
 //
-// Each of the two intakes also holds its durable's hold, whose every statement is one statement
+// Each of the three intakes also holds its durable's hold, whose every statement is one statement
 // on a connection of this pool for that statement alone. Two can be in flight per intake at once:
 // the hold's renewal goroutine (duty.Hold's renew, every 5 s, each bounded by the renew interval),
 // and the intake's own goroutine (duty.HoldToken, duty.TryHold, SetToken, Release, one at a time),
 // whose SetToken runs inside the take-over and so needs a connection beside the one its lease is
-// held on. That is four more callers.
+// held on. That is six more callers.
+//
+// The keyword fill (textversions.Run) holds a hold of its own, search-text-versions-fill, for as
+// long as its process fills the keyword table. Its own goroutine takes and releases the hold and
+// runs the fill's batches and reads on this pool, one statement or one batch's transaction at a
+// time, and the hold's renewal goroutine renews it beside them, so a renewal never waits behind a
+// batch: that is two more callers (textversions.ReserveLeases).
 //
 // LeasePoolSize is exactly those callers: the headroom is zero. A renewal that waited
 // for a connection behind a compaction pass, which holds its lease for minutes, would see its hold
@@ -428,6 +461,16 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // compaction, and the shared pool's sharedPoolSize connections are what every request reads
 // through. The document compaction holds only its lease here: each document it compacts reads and
 // writes on the compaction pool (Pool.Compaction).
+//
+// The Legion state intake (legion.Intake) is three of those callers - its durable's consumer
+// lease, its hold's statements and its hold's renewal (legion.ReserveLeases) - the keyword fill's
+// hold two more, the CI verify loop one more, R25's boot fix one more and the reference forms
+// drain one more, and that is what they cost the instance: a serving process opens at most 120
+// (ConnectionsPerProcess), where it opened 112 without them, and the default tier's 500
+// connections less PostgreSQL's 3 reserved slots still admit four app pods holding connections at
+// once (480 of 497) and still refuse five (600), exactly as they did at 112 (448 and 560), so none
+// of them moves a replica boundary. A deployment on another tier reads SHOW max_connections
+// against its own roll, as sharedPoolSize's note says.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop
@@ -441,7 +484,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const LeasePoolSize = 21
+const LeasePoolSize = 29
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass
@@ -449,8 +492,9 @@ const LeasePoolSize = 21
 // the length of the pass and dies with it; a connection of the shared pool held that long would
 // be one fewer for every request, and a pass that then read through the shared pool - which is
 // what a pass does - would be a caller holding two of its connections (ErrNestedAcquire). The
-// delivery intakes take and renew their holds here too (duty.Hold), so a renewal never waits
-// behind a request for a shared connection.
+// intakes - the delivery intakes and the Legion state intake - and the keyword fill take and renew
+// their holds here too (duty.Hold), so a renewal never waits behind a request for a shared
+// connection, and the keyword fill writes its batches here beside its hold.
 //
 // The pool itself is not handed out: a caller reaches a connection only through the reservation
 // it takes by name (For), which is what ties LeasePoolSize to the callers the process really
@@ -502,6 +546,23 @@ func (c *LeaseCallers) For(name string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("%q has reserved a connection of the lease pool already: each caller that can hold one while another does reserves a name of its own", name)
 	}
 	c.reserved = append(c.reserved, name)
+	return c.pool, nil
+}
+
+// ForAll reserves a connection of the lease pool for each caller of names, in order (For), and
+// returns the pool they take them from: a group of callers that work together, such as a hold's
+// holder and its renewal goroutine, reserves them here at once. The error of a name For refuses
+// names that caller, and the names before it stay reserved. No name at all is refused too, since
+// a caller reaches the pool only through a reservation.
+func (c *LeaseCallers) ForAll(names ...string) (*pgxpool.Pool, error) {
+	if len(names) == 0 {
+		return nil, errors.New("reserve the lease pool: no caller named")
+	}
+	for _, name := range names {
+		if _, err := c.For(name); err != nil {
+			return nil, fmt.Errorf("reserve the lease pool for %s: %w", name, err)
+		}
+	}
 	return c.pool, nil
 }
 
@@ -671,8 +732,9 @@ func (p *Pool) healthPool() (*pgxpool.Pool, error) {
 
 // openSeparateLocked is the pool held at field, opened when there is none, sized at size and
 // copied from the shared pool's configuration. Its connections name themselves applicationName in
-// pg_stat_activity, or keep the shared pool's name when it is empty. Its caller holds mu and has
-// checked the pool is not closed for it.
+// pg_stat_activity, or keep the shared pool's name when it is empty. The copy keeps the shared
+// pool's tracer, so its connections give back a large statement's arguments on release too
+// (argumentReleaser). Its caller holds mu and has checked the pool is not closed for it.
 func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applicationName string) (*pgxpool.Pool, error) {
 	if *field != nil {
 		return *field, nil
@@ -1019,7 +1081,8 @@ type errRow struct {
 func (r errRow) Scan(...any) error { return r.err }
 
 // errBatchResults carries a refusal through the batch surface, which has no error return of
-// its own: every result the caller reads is the refusal.
+// its own: every result the caller reads is the refusal, and the refused batch begins no
+// transaction.
 type errBatchResults struct {
 	err error
 }
@@ -1028,3 +1091,4 @@ func (b errBatchResults) Exec() (pgconn.CommandTag, error) { return pgconn.Comma
 func (b errBatchResults) Query() (pgx.Rows, error)         { return nil, b.err }
 func (b errBatchResults) QueryRow() pgx.Row                { return errRow{err: b.err} }
 func (b errBatchResults) Close() error                     { return b.err }
+func (b errBatchResults) Tx() pgx.Tx                       { return nil }

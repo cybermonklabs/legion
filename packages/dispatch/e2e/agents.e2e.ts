@@ -11,9 +11,11 @@ import {
   isBroadcastInput,
   pickAgentFilter,
   postedBroadcasts,
+  QUEUED,
   refuseBroadcasts,
   setLiveSessions,
   setSessionLive,
+  setSessionRecord,
   shownAgentRows,
   toggleAgentGroup,
 } from "./agents";
@@ -28,6 +30,7 @@ import {
   getAgentStates,
   listAgentMessages,
   putAgentState,
+  queuedEnvelopesOf,
   replyToMessageDelivery,
 } from "./api";
 import { recordClipboard } from "./clipboard";
@@ -153,7 +156,11 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     const shownTitles = shownAgentRows(page).locator("h2");
     await expect(shownTitles).toHaveText(["Planner", "Reviewer", "Silent", "Archivist"]);
     // Each heading owns its own row: a group's heading starts below the row above it.
+    await expect(idleToggle).toBeVisible();
+    await expect(quietToggle).toBeVisible();
+    // The waits above drew both headings, and a drawn element has a box, so each has one.
     const idleBox = await idleToggle.boundingBox();
+    // The Quiet heading was waited for above too, so its box is there as the Idle one's is.
     const quietBox = await quietToggle.boundingBox();
     if (idleBox === null || quietBox === null) throw new Error("group headings not laid out");
     expect(quietBox.y).toBeGreaterThanOrEqual(idleBox.y + idleBox.height);
@@ -343,6 +350,84 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     await chip.click();
     await expect(page).toHaveURL(new RegExp(`/\\?${selected}assignee=everyone$`, "u"));
     await expect(inbox.getByRole("link", { name: "Clear agent filter" })).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// INFRA-3740: a person's message to an agent that neither the listener's registry nor its
+// known-session store holds any more - its session ended after the page listed it - is queued
+// rather than failed. Dispatch makes no send, since its registry read answers `no live session`,
+// and publishes on the session's own agent subject the envelope the listener's send would have
+// stored, so the listener waits once, reports the agent wake, and the session reads it when it
+// runs again. The card reads the one queued sentence a person reads for every stopped session. The
+// harness runs Dispatch with NATS disabled, so the row reads what the server published from its
+// test hook rather than from a stream.
+// SLOW(>=2s): the Agents page's load and an opened card, then a send Dispatch answers only after
+// it has read the ended session again within the harness's half-second take-over window.
+test("a message to an agent no store knows any more is queued for it, and its card says so", async ({
+  browser,
+}) => {
+  // This Planner takes Send, so a plain message to it goes as Send; the one above takes only
+  // Aside and BTW, and a plain message to it would go as Aside.
+  await setLiveSessions([{ ...planner, capabilities: ["aside", "btw", "steer"] }]);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/agents");
+    const card = agentRow(page, planner.session_id);
+    await card.getByRole("button", { exact: true, name: "Planner" }).click();
+    const composer = card.getByRole("textbox", { name: "Comment" });
+    await expect(composer).toBeVisible();
+    // The session ends after the page listed it, with no record left in the registry or the
+    // known-session store, so the page still offers it Send and the registry read Dispatch makes
+    // before it sends answers 404 `no live session`.
+    await setSessionRecord(planner.session_id, "absent");
+
+    const body = "Pick up the release notes when you are back.";
+    const sent = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/api/v1/agents/${planner.session_id}/messages`)
+    );
+    await composer.fill(body);
+    await composer.press("Control+Enter");
+    const response = await sent;
+    expect(response.status()).toBe(201);
+    expect(keyedWrite(response.request())).toEqual({
+      input: { body, delivery: "steer" },
+      key: expect.any(String),
+    });
+    const message = (await response.json()) as {
+      deliveries: { delivery: string; state: string }[];
+      id: string;
+    };
+    expect(message.deliveries).toEqual([
+      expect.objectContaining({ delivery: "steer", state: "queued" }),
+    ]);
+
+    const conversation = card.getByRole("list", { name: "Conversation with Planner" });
+    await expect(conversation).toContainText(body);
+    await expect(conversation.getByText(QUEUED("Planner"), { exact: true })).toBeVisible();
+    await expect(conversation).not.toContainText("Failed");
+    expect(
+      (await getSentMessages()).filter((send) => send.target_session === planner.session_id)
+    ).toEqual([]);
+
+    // What Dispatch published is the envelope the listener's send would have stored: on the
+    // session's own subject, under the send's dedupe key, carrying the delivery frame.
+    const queued = await queuedEnvelopesOf(message.id);
+    expect(queued).toEqual([
+      expect.objectContaining({
+        dedupe_key: `agent.${planner.session_id}.${message.id}:steer`,
+        source: "dispatch",
+        subject: `notifications.agent.${planner.session_id}`,
+      }),
+    ]);
+    expect(JSON.parse(queued[0]?.payload ?? "null")).toMatchObject({
+      delivery: { mode: "steer" },
+      event: { payload: { id: message.id }, type: "message.created" },
+    });
   } finally {
     await alice.close();
   }
@@ -608,6 +693,80 @@ test("opening a row marks read the newer of two replies written in one milliseco
   }
 });
 
+// INFRA-5200: the compact top bar's counts are one group - Peek, the Inbox and the new replies -
+// that moves under the title whole when it does not fit beside it, never one count alone; the
+// replies count is still the link that opens the Agents page. Two replies make the count.
+test("on a phone the top bar keeps its counts on one line, and New replies opens the Agents page @phone @phone-only", async ({
+  browser,
+}) => {
+  await setLiveSessions([planner]);
+  const plannerActor = { id: planner.session_id, kind: "session" as const };
+  for (const body of ["Question A", "Question B"]) {
+    const ask = await createAgentMessage(planner.session_id, { body, delivery: "aside" });
+    await replyToMessageDelivery(ask.id, { attempt: 1, body: `Answer to ${body}` }, plannerActor);
+  }
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/settings");
+    const bar = page.locator("header").first();
+    const replies = bar.getByRole("link", { exact: true, name: "New replies 2" });
+    await expect(replies).toBeVisible();
+    const counts = [
+      bar.getByRole("button", { name: "Peek at the inbox without leaving this page" }),
+      bar.getByRole("link", { name: /^Inbox/ }),
+      replies,
+    ];
+    const tops: number[] = [];
+    for (const count of counts) {
+      // The wait above drew the bar, and each count is drawn with it.
+      const box = await count.boundingBox();
+      if (box === null) throw new Error("a count of the top bar has no box");
+      tops.push(Math.round(box.y));
+    }
+    expect(new Set(tops).size, `the counts' tops: ${tops.join(", ")}`).toBe(1);
+    await assertPageFits(page);
+
+    await replies.click();
+    await expect(page).toHaveURL(/\/agents$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
+  } finally {
+    await alice.close();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 2: a role with no break in it shortens to an
+// ellipsis inside its own pill, with the whole role as its title, so it never runs past its row
+// at 360 px.
+test("a role with no break in it ends in an ellipsis inside its pill and stays inside its row at 360 px", async ({
+  browser,
+}) => {
+  const role = `legion-${"infrastructure".repeat(6)}`;
+  await setLiveSessions([{ ...planner, roles: [role] }]);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ width: 360, height: 800 });
+    await page.goto("/agents");
+    const row = page.locator(`[data-agent-row="${planner.session_id}"]`);
+    const words = row.getByText(role, { exact: true });
+    await expect(words).toBeVisible();
+    const read = await words.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const card = element.closest("[data-agent-row]")?.getBoundingClientRect();
+      return {
+        cut: element.scrollWidth > element.clientWidth,
+        inside: card !== undefined && box.right <= card.right + 0.5,
+        sideways: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      };
+    });
+    expect(read).toEqual({ cut: true, inside: true, sideways: false });
+    await expect(words).toHaveAttribute("title", role);
+  } finally {
+    await alice.close();
+  }
+});
+
 test("the header checkbox selects and clears only the rows the filters match, by pointer and by Space", async ({
   browser,
 }) => {
@@ -846,6 +1005,7 @@ function planners(count: number, capable: number): FakeSession[] {
 async function fillUntilStable(textarea: Locator): Promise<void> {
   const height = async (lines: number) => {
     await textarea.fill(Array.from({ length: lines }, (_, line) => `Line ${line + 1}`).join("\n"));
+    // The fill above waited for the box to be visible and editable, so the box is drawn.
     const box = await textarea.boundingBox();
     if (box === null) throw new Error("the message box is not on screen to measure");
     return box.height;
@@ -935,9 +1095,12 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     // one, the row clauses record intent. A third whole card is bounded by the 166 px card, not
     // by the composer. The list is windowed, so the cards on the page are the ones it drew, of
     // the forty the heading above counts and the select-all ticked.
-    const drawn = await shownAgentRows(page).count();
-    expect(drawn).toBeGreaterThan(2);
-    expect(drawn).toBeLessThanOrEqual(40);
+    // The floor is polled: the window draws its cards after the scroll above, so a count read at
+    // once can be of a window still drawing. Once that poll has seen the window draw, one read of
+    // the ceiling catches a moment with more than 40 cards, which a poll would wait out.
+    const drawn = shownAgentRows(page);
+    await expect.poll(() => drawn.count()).toBeGreaterThan(2);
+    expect(await drawn.count()).toBeLessThanOrEqual(40);
 
     // The defined offset: the first card scrolled to the top of the viewport (scrollY 431),
     // message empty. Two whole cards and the third card's checkbox are above the composer.
@@ -962,14 +1125,24 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     await scrollFirstCardToTop();
     expect(await wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(2);
 
-    // The recipients are one line that scrolls sideways to its last chip.
+    // The recipients are one line that never scrolls sideways: the first chip and a "+39" that
+    // shows the rest. Opened, they wrap inside the composer, and the last chip is reachable
+    // there, whole and still inside the list's own width.
     const chips = composer.getByRole("list", { name: "Selected agents" });
-    expect(await chips.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+    const sideways = () => chips.evaluate((element) => element.scrollWidth > element.clientWidth);
+    expect(await sideways()).toBe(false);
+    const more = chips.getByRole("button", { name: "+39, show all 40 agents" });
+    const [moreBox, firstBox] = [
+      await more.boundingBox(),
+      await chips.getByRole("button", { name: /^Planner 01/ }).boundingBox(),
+    ];
+    expect(Math.abs((moreBox?.y ?? Infinity) - (firstBox?.y ?? 0))).toBeLessThan(1);
+    await more.click();
     const last = chips.getByRole("button", { name: /^Planner 40/ });
     await last.scrollIntoViewIfNeeded();
     await expect(last).toBeInViewport();
+    expect(await sideways()).toBe(false);
     const [lastBox, lineBox] = [await last.boundingBox(), await chips.boundingBox()];
-    expect(lastBox?.y).toBe(lineBox?.y);
     expect((lastBox?.x ?? Infinity) + (lastBox?.width ?? 0)).toBeLessThanOrEqual(
       (lineBox?.x ?? 0) + (lineBox?.width ?? 0) + 0.5
     );
@@ -1089,7 +1262,9 @@ const NOTICE_SIZES = [
 /**
  * At each compact size, with the message filled until it stops growing: the composer is within
  * 45% of the viewport, exactly one notice renders, and the notice adds no grid row on a narrow
- * screen (heading, chips, message, controls: four) and at most one on a short one (three).
+ * screen (heading, chips, message, controls: four) and at most one on a short one (three). The
+ * line under the box saying what a pick does is the box's description at these sizes, not a
+ * row of its own (`AgentsPage`'s `hintClassName`), which is why the budget is the one it was.
  *
  * Every default here points at failure. `NOTICE` crosses into the page whole rather than as a
  * source string, so a pattern that matches nothing cannot collapse the count to a passing 0;
@@ -1150,7 +1325,7 @@ async function openNoticeFixture(page: Page, sessions: FakeSession[]) {
   };
 }
 
-test("with half the recipients unable to take the mode, the compact composer keeps its budget and every exclusion stays reachable on one line", async ({
+test("with half the recipients unable to take the mode, the compact composer keeps its budget, and the last exclusion and its reason can be read on a phone, in the notice and on its own chip", async ({
   browser,
 }) => {
   const alice = await asUser(browser, "alice");
@@ -1167,30 +1342,95 @@ test("with half the recipients unable to take the mode, the compact composer kee
     // element added to the compact composer has no room: the budget goes red while the composer
     // is still inside its 50vh cap and nothing on screen looks wrong.
     await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
-      // All twenty stay named on the line, and its last name scrolls into view.
+      // The notice names all twenty. It is bounded, not cut: a touch reader scrolls it, and its
+      // last name, scrolled to, stands whole inside the notice's own box, with no title to ask.
       for (let index = 21; index <= 40; index += 1) {
         await expect
           .soft(fixture.excludedLine, at)
           .toContainText(`Planner ${index} (does not advertise BTW)`);
       }
       const last = await fixture.excludedLine.evaluate((element) => {
-        const lastName = "Planner 40";
-        const scrolls = element.scrollWidth > element.clientWidth;
+        const style = getComputedStyle(element);
         // Each excluded agent is drawn by `AgentName`: its name is the text of its live link.
         const link = [...element.querySelectorAll("[data-agent-name] a")].find(
-          (node) => node.textContent === lastName
+          (node) => node.textContent === "Planner 40"
         );
-        if (link === undefined) return { scrolls, visible: false };
-        // Scroll the line so the name's left edge meets the line's, then read both again.
-        element.scrollLeft +=
-          link.getBoundingClientRect().left - element.getBoundingClientRect().left;
-        const [name, line] = [link.getBoundingClientRect(), element.getBoundingClientRect()];
+        if (link === undefined) {
+          return { boxes: "no link", clamped: true, scrollable: false, visible: false };
+        }
+        // The name's words, not the link's box: an inline link's padding runs past its line, and
+        // what a reader reads is the text. Scroll the notice so the words' top edge meets the
+        // notice's, as a reader's swipe would, then read both again.
+        const words = document.createRange();
+        words.selectNodeContents(link);
+        element.scrollTop +=
+          words.getBoundingClientRect().top - element.getBoundingClientRect().top;
+        const [name, line] = [words.getBoundingClientRect(), element.getBoundingClientRect()];
         return {
-          scrolls,
-          visible: name.left >= line.left - 0.5 && name.right <= line.right + 0.5,
+          boxes: `the name at ${name.top}-${name.bottom} in the notice at ${line.top}-${line.bottom}`,
+          clamped: style.webkitLineClamp !== "none" || style.textOverflow === "ellipsis",
+          scrollable: style.overflowY === "auto" || style.overflowY === "visible",
+          visible:
+            name.top >= line.top - 0.5 &&
+            name.bottom <= line.bottom + 0.5 &&
+            element.scrollWidth <= element.clientWidth + 1,
         };
       });
-      expect.soft(last, at).toEqual({ scrolls: true, visible: true });
+      const { boxes, ...read } = last;
+      expect.soft(read, `${at}: ${boxes}`).toEqual({
+        clamped: false,
+        scrollable: true,
+        visible: true,
+      });
+    });
+    // Each exclusion is on its excluded agent's own chip, which says its reason in words: "+39"
+    // opens the recipients, and the last excluded chip shows its whole text, nothing cut, inside
+    // the screen once it is in view.
+    await page.setViewportSize({ height: 664, width: 390 });
+    await fixture.composer.getByRole("button", { name: "+39, show all 40 agents" }).click();
+    for (let index = 21; index <= 40; index += 1) {
+      await expect(fixture.excludedChip(`Planner ${index}`)).toHaveCount(1);
+    }
+    const lastChip = fixture.excludedChip("Planner 40");
+    await lastChip.scrollIntoViewIfNeeded();
+    await expect(lastChip).toBeInViewport({ ratio: 1 });
+    const drawn = await lastChip.evaluate((chip) => {
+      const parts = [chip, ...chip.querySelectorAll("*")] as HTMLElement[];
+      return {
+        cut: parts.some(
+          (part) =>
+            part.scrollWidth > part.clientWidth + 1 ||
+            getComputedStyle(part).textOverflow === "ellipsis"
+        ),
+        text: (chip as HTMLElement).innerText.replace(/\s+/g, " ").trim(),
+      };
+    });
+    expect(drawn).toEqual({ cut: false, text: "Planner 40 · does not advertise BTW ✕" });
+  } finally {
+    await alice.close();
+  }
+});
+
+// The closed compact composer shows one chip, the first chosen agent's, and a session's real
+// title runs past seventy characters ("Legion architect · INFRA-5201 · …"), where every other
+// budget row names its sessions `Planner NN`. That chip, here an excluded one that carries its
+// reason too, stays one line, so the composer keeps its budget at every compact size.
+test("on a phone the closed composer keeps its budget and its one chip one line when the first chosen agent's title is seventy characters", async ({
+  browser,
+}) => {
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const long = "Planner 01 · Legion architect · INFRA-5201 · Dispatch layout rule and its seed";
+    const sessions = planners(40, 20).map((session, index) =>
+      index === 0 ? { ...session, capabilities: ["aside"], title: long } : session
+    );
+    const fixture = await openNoticeFixture(page, sessions);
+    const first = fixture.excludedChip(long);
+    await expect(first).toBeVisible();
+    await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
+      // One line of a chip is its 44 px touch target; a wrapped title would be two or more.
+      expect.soft((await first.boundingBox())?.height ?? Infinity, at).toBeLessThanOrEqual(44.5);
     });
   } finally {
     await alice.close();
@@ -1222,8 +1462,10 @@ test.describe("the composer's notices share one slot, highest first, within budg
       await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
         await expect.soft(fixture.limit, at).toHaveCount(1);
         await expect.soft(fixture.excludedLine, at).toHaveCount(0);
-        await expect.soft(fixture.excludedChip("Planner 111"), at).toHaveCount(1);
       });
+      // The excluded chip is behind the recipients' "+N", which opens them where they are.
+      await fixture.composer.getByRole("button", { name: "+119, show all 120 agents" }).click();
+      await expect(fixture.excludedChip("Planner 111")).toHaveCount(1);
     } finally {
       await alice.close();
     }
@@ -1244,11 +1486,15 @@ test.describe("the composer's notices share one slot, highest first, within budg
       });
       await page.setViewportSize({ height: 664, width: 390 });
       // One recipient off the selection, taken out at the chip the composer shows for it: the
-      // list is windowed, and the hundred-and-first row is not drawn at this scroll position.
+      // list is windowed, and the hundred-and-first row is not drawn at this scroll position. The
+      // chip is behind the recipients' "+N", which opens them where they are and folds them
+      // again, so the second budget reads the composer as the reader leaves it.
+      await fixture.composer.getByRole("button", { name: "+110, show all 111 agents" }).click();
       await fixture.composer.getByTitle("Remove Planner 101 from this broadcast").click();
       await expect(
         fixture.composer.getByRole("heading", { name: "Broadcast to 100 of 110 selected" })
       ).toBeVisible();
+      await fixture.composer.getByRole("button", { name: "Show fewer agents" }).click();
       await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
         await expect.soft(fixture.limit, at).toHaveCount(0);
         await expect.soft(fixture.excludedLine, at).toHaveCount(1);
@@ -1521,6 +1767,8 @@ test("a human-paced double click on one Retry sends that message once, and never
     // into the pointer and the second click lands on that row again.
     await expect(sends.getByRole("listitem").first()).toContainText("Never retried.");
     const retry = row("Retried once.").getByRole("button", { name: "Retry" });
+    await expect(retry).toBeVisible();
+    // The wait above drew Retry, and a drawn element has a box, so the box is there.
     const box = await retry.boundingBox();
     if (box === null) throw new Error("Retry has no box to click");
     const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -1583,7 +1831,8 @@ test("a selection over the broadcast limit says so and never asks the server", a
 
     // One fewer is within the limit: the reason goes and Send comes back. The row itself is not
     // drawn - the list is windowed and the hundred-and-first row is far below the window - so
-    // the recipient comes off at the chip the composer shows for it.
+    // the recipient comes off at the chip the composer shows for it, behind the recipients' "+N".
+    await composer.getByRole("button", { name: "+91, show all 101 agents" }).click();
     await composer.getByTitle("Remove Planner 101 from this broadcast").click();
     await expect(composer.getByText(/^At most 100 recipients/)).toHaveCount(0);
     await expect(composer.getByRole("button", { name: "Send to 100" })).toBeEnabled();

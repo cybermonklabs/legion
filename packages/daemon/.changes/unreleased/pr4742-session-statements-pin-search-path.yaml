@@ -1,0 +1,17 @@
+kind: Fixed
+custom:
+  Issue: pr4742
+body: |-
+  The launcher's session lookups and Claude Code saves, and `legion sessions import`, run each
+  statement on the session database in a transaction whose first statement is `SET LOCAL
+  search_path = pg_catalog, pg_temp` (the lookups read-only, and with `row_security` off), and
+  name each table `public.<table>`, as Oh My Pi runs its own. Before, they named each table bare
+  under the login's own search_path, so a login that can create in the database or in its
+  `public` schema could have a function or schema it planted resolve in those statements, as the
+  login that runs them: a `public.right(text, double precision)` took the by-id lookup's suffix
+  compare, and a schema named for the login stood in for both tables. A read now refuses a
+  row-security policy the tables' owner attached rather than run it, and every transaction
+  refuses a view or a foreign table at a table's name (`restrict_nonsystem_relation_kind`), whose
+  fixed query no search_path reaches; creating the tables refuses a relation at either name that
+  is no table. The pin is set in each transaction because a PgBouncer pool in transaction mode
+  refuses `search_path` as a startup parameter.

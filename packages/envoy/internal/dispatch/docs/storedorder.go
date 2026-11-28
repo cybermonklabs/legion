@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
+
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // The stored-order check: whether a document's stored history replays. Folding its stored updates
@@ -23,7 +26,12 @@ import (
 //  1. Classes. An update's content_changed is measured against the state its stored prefix folds
 //     to: true when either side does not render, otherwise whether the rendered markdown differs
 //     (the measure updateChangesMarkdown applies to a live update).
-//  2. Versions. A version's markdown is the render of the fold through its doc_update_version.
+//  2. Versions. A version's markdown is the render of the fold through its doc_update_version. A
+//     version another renderer version wrote, or none stamped (renderer_version), holds that
+//     render where its markdown reads as it (readsAs): a renderer change leaves every
+//     version stored before it in its renderer's spelling of the same tree. Such a version's
+//     markdown is read for that alone, and only where its md5 and length differ from the render's
+//     (judgeRespelledVersions).
 //  3. Pending. No update is stored ahead of one it depends on: a row that adds parked structs or
 //     deletions is a mismatch unless a later row carries what it parked again, which the commit
 //     that integrates a peer's stored parked edit does (storeParked, judgeParkedRows). A row
@@ -150,13 +158,15 @@ func (r StoredOrderReport) Checked() bool {
 	return r.UpdatesChecked > 0 || r.VersionsChecked > 0
 }
 
-// storedVersion is one artifact_versions row as the check reads it: its markdown by md5 and length.
+// storedVersion is one artifact_versions row as the check reads it: its markdown by md5 and
+// length, and the renderer version that wrote it (renderer_version), nil where none was stamped.
 type storedVersion struct {
 	number           int
 	docUpdateVersion int64
 	createdAt        time.Time
 	md5              string
 	length           int
+	rendererVersion  *int
 }
 
 // CheckStoredOrder checks artifactID's stored history in one repeatable-read, read-only
@@ -228,10 +238,12 @@ func checkStoredOrderTx(ctx context.Context, tx pgx.Tx, artifactID string, since
 }
 
 // readStoredVersions reads the document's versions in number order, each markdown as Postgres
-// hashes and measures it, so no document text leaves the database.
+// hashes and measures it, so no document text leaves the database here: the markdown of a version
+// another renderer version wrote is read after the fold, and only where it differs from the fold's
+// render (judgeRespelledVersions).
 func readStoredVersions(ctx context.Context, tx pgx.Tx, artifactID string) ([]storedVersion, error) {
 	rows, err := tx.Query(ctx, `
-		select number, doc_update_version, created_at, md5(coalesce(markdown, '')), octet_length(coalesce(markdown, ''))
+		select number, doc_update_version, created_at, md5(coalesce(markdown, '')), octet_length(coalesce(markdown, '')), renderer_version
 		from artifact_versions where artifact_id = $1 order by number
 	`, artifactID)
 	if err != nil {
@@ -241,7 +253,7 @@ func readStoredVersions(ctx context.Context, tx pgx.Tx, artifactID string) ([]st
 	var versions []storedVersion
 	for rows.Next() {
 		var version storedVersion
-		if err := rows.Scan(&version.number, &version.docUpdateVersion, &version.createdAt, &version.md5, &version.length); err != nil {
+		if err := rows.Scan(&version.number, &version.docUpdateVersion, &version.createdAt, &version.md5, &version.length, &version.rendererVersion); err != nil {
 			return nil, fmt.Errorf("scan a document version: %w", err)
 		}
 		versions = append(versions, version)
@@ -293,7 +305,11 @@ func renderStoredFold(doc *crdt.Doc) storedRender {
 // at a time, and checks each update after the base and each version against the fold. Each checked
 // row that adds parked content is tracked until its own inserted and deleted clocks integrate,
 // independently of unrelated parked content. Resolved rows are judged individually
-// (judgeParkedRows); unresolved rows are counted as awaiting their predecessor.
+// (judgeParkedRows); unresolved rows are counted as awaiting their predecessor. A version another
+// renderer version wrote that differs from the fold's render is judged once the fold is read
+// (judgeRespelledVersions), since the fold's read of the updates holds the transaction until then;
+// until then the fold keeps, by that version's number, the sum of the render it was compared with
+// (pmdoc.RenderingSum), not the render, which is as large as the document.
 func foldStoredOrder(ctx context.Context, tx pgx.Tx, artifactID string, since time.Time, at map[int64][]storedVersion, report *StoredOrderReport) error {
 	rows, err := tx.Query(ctx, `
 		select version, update, content_changed, created_at from doc_updates where artifact_id = $1 order by version
@@ -311,6 +327,7 @@ func foldStoredOrder(ctx context.Context, tx pgx.Tx, artifactID string, since ti
 	var parked crdt.ContentIDs
 	base := true
 	var waiting, resolved []*parkedRow
+	var respelled map[int][sha256.Size]byte
 	for rows.Next() {
 		var version int64
 		var update []byte
@@ -385,15 +402,26 @@ func foldStoredOrder(ctx context.Context, tx pgx.Tx, artifactID string, since ti
 		}
 		for _, written := range recorded {
 			report.VersionsChecked++
-			if mismatch, differs := compareStoredVersion(written, current); differs {
-				report.Mismatches = append(report.Mismatches, mismatch)
+			mismatch, differs := compareStoredVersion(written, current)
+			if !differs {
+				continue
 			}
+			if current.renders && pmdoc.OtherRenderer(written.rendererVersion) {
+				if respelled == nil {
+					respelled = make(map[int][sha256.Size]byte)
+				}
+				respelled[written.number] = pmdoc.RenderingSum(current.markdown)
+			}
+			report.Mismatches = append(report.Mismatches, mismatch)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the document's stored updates: %w", err)
 	}
 	rows.Close()
+	if err := judgeRespelledVersions(ctx, tx, artifactID, respelled, report); err != nil {
+		return err
+	}
 	report.UpdatesAwaitingPredecessor += len(waiting)
 	if len(resolved) == 0 {
 		return nil
@@ -591,6 +619,53 @@ func compareStoredVersion(version storedVersion, fold storedRender) (StoredOrder
 	sum := md5.Sum([]byte(fold.markdown))
 	mismatch.FoldMD5, mismatch.FoldLength = hex.EncodeToString(sum[:]), len(fold.markdown)
 	return mismatch, mismatch.FoldMD5 != version.md5 || mismatch.FoldLength != version.length
+}
+
+// judgeRespelledVersions reads the markdown of each version respelled names, and of no other, and
+// takes out of the report the version mismatch of each whose markdown reads as the fold's render
+// it was compared with, whose sum respelled holds by the version's number: this build renders that
+// markdown again (renderAgain, as readsAs does), and the sum of what it renders is the fold's
+// (pmdoc.RenderingSum, the sum of what pmdoc.SameRendering compares), so the markdown is its
+// renderer's spelling of the fold's tree. The fold compares each version once, at the one update
+// it records, so a version gives at most one mismatch, which its kind and its version's number
+// name. Every other mismatch keeps its place.
+func judgeRespelledVersions(ctx context.Context, tx pgx.Tx, artifactID string, respelled map[int][sha256.Size]byte, report *StoredOrderReport) error {
+	if len(respelled) == 0 {
+		return nil
+	}
+	numbers := make([]int, 0, len(respelled))
+	for number := range respelled {
+		numbers = append(numbers, number)
+	}
+	rows, err := tx.Query(ctx, `
+		select number, coalesce(markdown, '') from artifact_versions where artifact_id = $1 and number = any($2::int[])
+	`, artifactID, numbers)
+	if err != nil {
+		return fmt.Errorf("read the markdown of the document's versions another renderer wrote: %w", err)
+	}
+	defer rows.Close()
+	readsAsFold := make(map[int]bool, len(respelled))
+	for rows.Next() {
+		var number int
+		var markdown string
+		if err := rows.Scan(&number, &markdown); err != nil {
+			return fmt.Errorf("scan a document version's markdown: %w", err)
+		}
+		if again, rendered := renderAgain(markdown); rendered && pmdoc.RenderingSum(again) == respelled[number] {
+			readsAsFold[number] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the markdown of the document's versions another renderer wrote: %w", err)
+	}
+	kept := report.Mismatches[:0]
+	for _, mismatch := range report.Mismatches {
+		if mismatch.Kind != StoredOrderVersion || !readsAsFold[mismatch.Version] {
+			kept = append(kept, mismatch)
+		}
+	}
+	report.Mismatches = kept
+	return nil
 }
 
 // StoredOrderDocuments lists every document the check can read, oldest first.

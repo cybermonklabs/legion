@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -34,7 +33,7 @@ import (
 // root-ready: the root claim spawns, provisions its workspace, and registers at generation 1. The
 // root is the run's first issue pod, so its launch is also where the run's repository gets its
 // cache: there is none before (its Sandbox recorded for the teardown first), the launch makes it,
-// and the root's fetch fills its feed from that cache alone, asking GitHub only for the delta.
+// and workspace-init fills the root's clone from that cache, asking GitHub only for the delta.
 func (r *liveRig) checkRootReady() error {
 	if err := r.startRuntimeOnce(); err != nil {
 		return err
@@ -46,7 +45,7 @@ func (r *liveRig) checkRootReady() error {
 	if err := r.recordSandbox(cache); err != nil {
 		return err
 	}
-	r.mapRepository(r.env.repo)
+	r.cacheRepository(r.env.repo)
 	root := r.claim("root")
 	since := time.Now()
 	loc, err := r.spawn(root, true)
@@ -87,7 +86,7 @@ func (r *liveRig) checkRootReady() error {
 	if err := r.assertCacheFed(root); err != nil {
 		return err
 	}
-	note("runtime", "the root's launch made the repository cache %s, and the root's feed came from it alone", cache)
+	note("runtime", "the root's launch made the repository cache %s, and workspace-init filled the root's clone from it", cache)
 	return nil
 }
 
@@ -258,12 +257,13 @@ func (r *liveRig) checkResources() error {
 
 // gvisorCPUFloor is the cpu reservation a lone, small Sandbox container is admitted at on GKE,
 // never under: confirmed live, 2026-10-17, against the production GKE cluster, only for the
-// single-container probe Sandbox (its one container's 250m is the pod's whole cpu sum) — every
-// multi-container issue pod in this same cluster, already summing well past it, was admitted at
-// exactly its configured per-container cpu unchanged (checked directly against a real production
-// issue pod of the layout before one container, whose six containers summed past it), and an issue
-// pod's one container reserves more than the floor. So only checkImageProbe passes this;
-// checkResources passes a zero Quantity, asking for no floor. AWS carries no such floor either
+// single-container probe Sandbox (its one container's cpu, 250m then, was the pod's whole cpu
+// sum) — every multi-container issue pod in this same cluster, already summing well past it, was
+// admitted at exactly its configured per-container cpu unchanged (checked directly against a real
+// production issue pod of the layout before one container, whose six containers summed past it),
+// and an issue pod's one container reserves more than the floor. So only checkImageProbe passes
+// this; checkResources passes a zero Quantity, asking for no floor. The probe's own 500m is the
+// floor itself, so guaranteedPod raises nothing for it now. AWS carries no such floor either
 // way. guaranteedPod folds it into its comparison, not the daemon's own reservation
 // (config.Reservation, config.DefaultResources(), probeReservation): those stay the production values
 // on every runtime; only this live GKE check expects what the cluster will actually admit.
@@ -478,7 +478,7 @@ func (r *liveRig) checkWorkerSharesIssuePod() error {
 	}) {
 		return fmt.Errorf("starting %s reran issue-pod init containers: before %+v, after %+v", worker.role, init, pod.Status.InitContainerStatuses)
 	}
-	note("runtime", "worker role %s started in root issue pod %s (uid %s), container %s; both init-container identities stayed unchanged", worker.token, pod.Name, pod.UID, worker.loc.Sandbox.Container)
+	note("runtime", "worker role %s started in root issue pod %s (uid %s), container %s; the init container's identity stayed unchanged", worker.token, pod.Name, pod.UID, worker.loc.Sandbox.Container)
 	return nil
 }
 
@@ -788,7 +788,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 
 	old := *worker.last
 	since := time.Now()
-	loc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: legionTar, PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion})
+	loc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: legionTar, PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion()})
 	if err != nil {
 		return err
 	}
@@ -822,8 +822,8 @@ func (r *liveRig) checkStalePluginInstall() error {
 	if err != nil {
 		return err
 	}
-	if legionVersion != r.env.piLegionVersion || legionContract != strconv.Itoa(api.DaemonAPIVersion) {
-		return fmt.Errorf("%s/package.json: version %q contract %q, want version %q and contract %d", legionRoot, legionVersion, legionContract, r.env.piLegionVersion, api.DaemonAPIVersion)
+	if legionVersion != r.env.piLegionVersion || legionContract != strconv.Itoa(api.DaemonAPIVersion()) {
+		return fmt.Errorf("%s/package.json: version %q contract %q, want version %q and contract %d", legionRoot, legionVersion, legionContract, r.env.piLegionVersion, api.DaemonAPIVersion())
 	}
 	envoyVersion, _, err := r.pluginPackageInfo(worker, envoyRoot+"/package.json")
 	if err != nil {
@@ -862,7 +862,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	// .../g*` has run — but the wrapper's own check ends the child before `exec`, and the runtime
 	// observes it Gone.
 	mark := r.obs.mark()
-	negLoc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: "9.6.1", PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion})
+	negLoc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: "9.6.1", PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion()})
 	if err != nil {
 		return err
 	}
@@ -872,7 +872,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	if !ok {
 		return fmt.Errorf("no Gone for the negative control's %s within %s", negLoc.Incarnation, liveGoneLimit)
 	}
-	note("runtime", "negative control: Observe gone for %s (the published pi-legion@9.6.1 declares contract 23, not %d) — %s", short(negLoc.Incarnation), api.DaemonAPIVersion, oneLine(firstLine(gone.Detail)))
+	note("runtime", "negative control: Observe gone for %s (the published pi-legion@9.6.1 declares contract 23, not %d) — %s", short(negLoc.Incarnation), api.DaemonAPIVersion(), oneLine(firstLine(gone.Detail)))
 	worker.loc, worker.state = nil, stateDead
 
 	final, err := r.getPod(name)
@@ -1302,23 +1302,29 @@ func (r *liveRig) checkIndependentProvision() error {
 
 // second-owner: an issue on a repository of another owner (LEGION_E2E_REPO_SECOND_OWNER) gets an
 // issue pod whose workspace stands at that repository's default branch as GitHub names it, and
-// whose gh bundle holds a directory for each owner of the run's repositories: the agent is told the
-// bundle's root (LEGION_GH_OWNERS_DIR), its own owner's directory (GH_CONFIG_DIR) and the real gh
-// (LEGION_GH_PATH). Under the agent's own environment the image's gh, the `legion gh` wrapper,
-// reads LEGION_E2E_REPO from that owner's read-only directory, while the real gh with the issue
-// owner's directory cannot (404: the negative control that proves the wrapper's pick, since
-// LEGION_E2E_REPO is private to its owner); git, through the clone's `legion git-credential`
-// helper, lists LEGION_E2E_REPO's refs and is refused a push there (403: the token is read-only);
-// and GitHub, read with the operator's gh, holds no branch of that push. Nothing is pushed to the
-// second owner's repository. That repository's cache is its own: the issue's launch makes it (its
-// Sandbox recorded for the teardown first), and the issue's feed comes from it alone.
+// whose gh bundle holds a directory for every owner account its App is installed on, the run's two
+// owners among them: the agent is told the bundle's root (LEGION_GH_OWNERS_DIR), its own owner's
+// directory (GH_CONFIG_DIR) and the real gh (LEGION_GH_PATH). Under the agent's own environment
+// the image's gh, the `legion gh` wrapper, reads LEGION_E2E_REPO from that owner's directory,
+// while the real gh with the issue owner's directory cannot (404: the negative control that proves
+// the wrapper's pick, since LEGION_E2E_REPO is private to its owner); git, through the clone's
+// `legion git-credential` helper, lists LEGION_E2E_REPO's refs; and GitHub serves the credential
+// that helper hands out for LEGION_E2E_REPO the receive-pack advertisement (200), the answer it
+// gives a token that may write. What a role reaches is its App's installations: an issue of one
+// owner's repository holds a token that writes another owner's. The run's cache set holds both
+// repositories (cacheRepository, here and before the root's launch), so this proves reach across
+// owners and nothing about a repository no live record names.
+// The advertisement is the request a `git push` opens with and writes nothing, where a real push
+// would leave a branch on a repository every run shares and nothing here would delete it. That
+// repository's cache is its own: the issue's launch makes it (its Sandbox is recorded for teardown
+// first), and workspace-init fills the issue's clone from it.
 func (r *liveRig) checkSecondOwner() error {
 	c := r.claim("second-owner")
 	cache := CacheSandboxName(r.env.project, c.repo)
 	if err := r.recordSandbox(cache); err != nil {
 		return err
 	}
-	r.mapRepository(c.repo)
+	r.cacheRepository(c.repo)
 	since := time.Now()
 	if _, err := r.spawn(c, true); err != nil {
 		return err
@@ -1354,8 +1360,11 @@ func (r *liveRig) checkSecondOwner() error {
 	if err != nil {
 		return err
 	}
-	if got, want := strings.Fields(owners), []string{min(own, other), max(own, other)}; !slices.Equal(got, want) {
-		return fmt.Errorf("%s's LEGION_GH_OWNERS_DIR lists %v, want %v", c.name, got, want)
+	// The bundle holds one directory per owner account the App is installed on, which GitHub
+	// decides and this run does not: the run's own two owners must be among them, and another
+	// account the App was installed on is no failure of this proof.
+	if got := strings.Fields(owners); !slices.Contains(got, own) || !slices.Contains(got, other) {
+		return fmt.Errorf("%s's LEGION_GH_OWNERS_DIR lists %v, want %s and %s among them", c.name, got, own, other)
 	}
 	note("operator", "%s's agent: LEGION_GH_OWNERS_DIR=%s lists %v; GH_CONFIG_DIR=%s", c.name, GHConfigDir, strings.Fields(owners), agent["GH_CONFIG_DIR"])
 	read, err := r.asAgent(c, "gh api repos/"+r.env.repo.String()+" --jq .full_name")
@@ -1365,7 +1374,7 @@ func (r *liveRig) checkSecondOwner() error {
 	if read != r.env.repo.String() {
 		return fmt.Errorf("%s's gh api repos/%s answered %q, want %s", c.name, r.env.repo, read, r.env.repo)
 	}
-	note("operator", "%s's agent: gh api repos/%s --jq .full_name = %s (the wrapper picked %s's read-only directory)", c.name, r.env.repo, read, other)
+	note("operator", "%s's agent: gh api repos/%s --jq .full_name = %s (the wrapper picked %s's directory)", c.name, r.env.repo, read, other)
 	out, err := r.asAgent(c, `env GH_CONFIG_DIR="$LEGION_GH_OWNERS_DIR/`+own+`" "$LEGION_GH_PATH" api repos/`+r.env.repo.String()+` 2>&1`)
 	if err == nil || !strings.Contains(out+err.Error(), "404") {
 		return fmt.Errorf("the real gh with %s's own directory read %s (%v): %s; want a 404, or the wrapper's pick proves nothing", c.name, r.env.repo, err, oneLine(out))
@@ -1378,21 +1387,28 @@ func (r *liveRig) checkSecondOwner() error {
 		return fmt.Errorf("%s's git ls-remote %s through the clone's helper = %q, %v; want its HEAD", c.name, url, refs, err)
 	}
 	note("operator", "%s's agent: git ls-remote %s HEAD: %s", c.name, url, oneLine(refs))
-	// The run's own name: if the refusal ever broke, the push would land on the repository every run
-	// shares, and only this run's "want none" below should fail for it.
-	branch := "legion/" + strings.ToLower(c.issue) + "-must-not-land-" + r.env.claimProject
-	out, err = r.asAgent(c, "git --git-dir="+clone+"/.git push "+url+" HEAD:refs/heads/"+branch+" 2>&1")
-	if err == nil || !strings.Contains(out+err.Error(), "403") {
-		return fmt.Errorf("%s's git push to %s was not refused 403 (%v): %s", c.name, url, err, oneLine(out))
+	// The reach the App's installations give, asked for without writing: the request a `git push`
+	// opens with, sent with the credential the clone's helper hands out for LEGION_E2E_REPO, which
+	// is the token of that repository's owner's directory of the bundle. GitHub serves a token
+	// that may write the receive-pack advertisement and refuses one that may not with a 403, and
+	// the advertisement itself writes nothing: a push would land a branch on a repository every
+	// run shares, and nothing here deletes it again. The token stays in the pod, going from the
+	// helper through the image's own python3 (the one interpreter the image check requires,
+	// internal/capabilities/image.go) into curl's Authorization header over a pipe; what comes
+	// back is the status and the content type curl reports.
+	const advertisement = "application/x-git-receive-pack-advertisement"
+	answer, err := r.asAgent(c, `printf 'protocol=https\nhost=github.com\npath=`+r.env.repo.String()+`\n\n'`+
+		` | git --git-dir=`+clone+`/.git credential fill`+
+		` | python3 -c 'import base64, sys; f = dict(l.split("=", 1) for l in sys.stdin.read().splitlines() if "=" in l);`+
+		` print("Authorization: Basic " + base64.b64encode(("%s:%s" % (f.get("username", ""), f["password"])).encode()).decode())'`+
+		` | curl -sS -o /dev/null -H @- -w '%{http_code} %{content_type}' '`+url+`.git/info/refs?service=git-receive-pack'`)
+	if err != nil {
+		return fmt.Errorf("%s's receive-pack advertisement request for %s: %w", c.name, r.env.repo, err)
 	}
-	note("operator", "%s's agent: git push %s HEAD:refs/heads/%s: 403", c.name, url, branch)
-	ctx, cancel := context.WithTimeout(r.ctx, time.Minute)
-	defer cancel()
-	check := exec.CommandContext(ctx, "gh", "api", "repos/"+r.env.repo.String()+"/branches/"+branch)
-	if answer, err := check.CombinedOutput(); err == nil || !strings.Contains(string(answer), "404") {
-		return fmt.Errorf("the operator's gh reads branch %s on %s (%v): %s; want none", branch, r.env.repo, err, oneLine(string(answer)))
+	if status, contentType, _ := strings.Cut(answer, " "); status != "200" || !strings.HasPrefix(contentType, advertisement) {
+		return fmt.Errorf("%s's GET %s.git/info/refs?service=git-receive-pack, with the credential its clone's helper gives for %s, answered %q; want 200 and an %s: a role of one owner's repository writes another owner's", c.name, url, r.env.repo, oneLine(answer), advertisement)
 	}
-	note("operator", "gh api repos/%s/branches/%s (the operator's gh): 404: no branch %s on %s", r.env.repo, branch, branch, r.env.repo)
+	note("operator", "%s's agent: GET %s.git/info/refs?service=git-receive-pack with the credential the clone's helper gives for %s: %s (a read: the advertisement writes nothing)", c.name, url, r.env.repo, answer)
 	return nil
 }
 
@@ -1838,6 +1854,7 @@ func (r *liveRig) checkIssueSuspendResume() error {
 // operator's own values are GKE's to pick per pod (confirmed live, 2026-10-17: a six-role root pod
 // carried `["2500m", "X"]`, not a fixed literal), so any non-empty value list is tolerated.
 func TestIsGKEExtendedDurationAffinity(t *testing.T) {
+	t.Parallel()
 	key := "cloud.google.com/extended-duration-pods"
 	required := func(exprs ...corev1.NodeSelectorRequirement) *corev1.Affinity {
 		return &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
@@ -1882,6 +1899,7 @@ func TestIsGKEExtendedDurationAffinity(t *testing.T) {
 // extendedDurationAffinity parameter must gate on the matcher's real verdict, not merely on
 // whether the pod carries any NodeAffinity at all.
 func TestGuaranteedPodAffinity(t *testing.T) {
+	t.Parallel()
 	extended := &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{

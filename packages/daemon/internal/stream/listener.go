@@ -53,9 +53,10 @@ type HelloResolver func(bootToken string) (c claim.Token, generation uint64, sta
 // a launcher never binds a claim's child shim connection or emits an agent Event. An accepted
 // launcher's acknowledgement is the resolver's whole answer, which the listener writes as it is
 // given: every member the daemon hands a launcher on that line (the memory guard's settings,
-// shimwire.LauncherHelloAck.MemoryGuard, among them) is decided where the launcher is accepted,
-// so a change that adds a member edits the one constructor that builds the ack and never this
-// listener. A refusal returns the zero ack, which nothing writes.
+// shimwire.LauncherHelloAck.MemoryGuard, and the cache trimmer's, LauncherHelloAck.VolumeTrim,
+// among them) is decided where the launcher is accepted, so a change that adds a member edits the
+// one constructor that builds the ack and never this listener. A refusal returns the zero ack,
+// which nothing writes.
 type LauncherResolver func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string)
 
 // LauncherHandler owns one authenticated launcher connection after the listener has written its
@@ -85,6 +86,12 @@ type Options struct {
 	LauncherWait time.Duration
 	// Log receives the listener's lines; nil is slog.Default().
 	Log *slog.Logger
+	// Listen takes the listener for the address Listen was given, as net.Listen takes network and
+	// address; nil binds it (listen). It is nil in production: the daemon passes its
+	// overrides.streamListen, which Run never sets. A test that must keep a fixed port across two
+	// listeners hands over one of a socket it holds for its whole run, so no other program can take
+	// the port between them (the daemon test's controllerSandboxRig).
+	Listen func(network, address string) (net.Listener, error)
 }
 
 // Listener accepts shim connections and keeps the live one for each claim. Its life is the
@@ -127,8 +134,8 @@ type Listener struct {
 	wg sync.WaitGroup
 }
 
-// Listen binds addr — "unix:///<absolute path>" or "tcp://<host>:<port>" — and serves it until
-// ctx ends.
+// Listen binds addr — "unix:///<absolute path>" or "tcp://<host>:<port>" — or takes it from
+// opts.Listen, and serves it until ctx ends.
 //
 // A unix path whose socket a dead listener left behind (a daemon killed before it could unlink)
 // is taken over; one a live listener still serves, or a path that is not a socket, is refused.
@@ -140,7 +147,12 @@ func Listen(ctx context.Context, addr string, resolve HelloResolver, opts Option
 	if err != nil {
 		return nil, err
 	}
-	ln, err := listen(network, address, opts.RPCTimeout)
+	var ln net.Listener
+	if opts.Listen != nil {
+		ln, err = opts.Listen(network, address)
+	} else {
+		ln, err = listen(network, address, opts.RPCTimeout)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("worker stream %s is unavailable: %w", addr, err)
 	}
@@ -180,6 +192,22 @@ func (l *Listener) Addr() string { return l.addr }
 // listener has ended and every connection's Closed has been delivered. The consumer ranges over
 // it until it closes.
 func (l *Listener) Events() <-chan Event { return l.events.out }
+
+// Drain queues a Drained for token behind every event already queued, and returns what its
+// consumer closes once it has handled the events of token before the mark. An event a connection
+// queues after the call — a frame still in the socket, or read and not yet queued — comes after the
+// mark. A listener that has ended queues nothing more, so its answer is closed at once.
+func (l *Listener) Drain(token claim.Token) <-chan struct{} {
+	done := make(chan struct{})
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		close(done)
+		return done
+	}
+	l.events.push(Drained{Claim: token, Done: done})
+	return done
+}
 
 // SetLauncherResolver registers the issue-pod runtime's launcher acceptor after that runtime has
 // been constructed and its informer caches have synced. A launcher that dials before that waits
@@ -522,7 +550,7 @@ func (l *Listener) register(nc net.Conn, token claim.Token, generation uint64, i
 	}
 	conn := newConn(nc, token, l.timeout, l.log, l.events)
 	l.registrations++
-	conn.seq = l.registrations
+	conn.seq, conn.generation = l.registrations, generation
 	// The ack is written before the connection is registered, so it reaches the shim ahead of any
 	// frame a caller sends the moment Conn or Await returns it — a shim drops every line that
 	// precedes its hello_ack (worker-shim.ts:492-497). The lock is held across the write because

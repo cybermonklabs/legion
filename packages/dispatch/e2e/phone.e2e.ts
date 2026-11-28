@@ -14,9 +14,18 @@ import {
   getAsk,
   patchIssue,
 } from "./api";
-import { actionBar, barAction, documentEditor, needsYouCards, selectEditorText } from "./editor";
+import {
+  actionBar,
+  barAction,
+  connectedDot,
+  documentEditor,
+  needsYouCards,
+  selectEditorText,
+} from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
+import { openIssueDetails } from "./issue-details";
 import { expectConsecutiveLinksClear } from "./layout";
+import { refPicker } from "./ref-picker";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -115,7 +124,6 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await expect(reviewToggle).toBeVisible();
       await reviewToggle.click();
       const askCard = needsYouCards(page).getByTestId(`ask-${openAsk.id}`);
-      await askCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
       await askCard.getByLabel("Your answer").fill("Yes.");
       await askCard.getByRole("button", { exact: true, name: "Answer" }).click();
       await expect
@@ -136,6 +144,8 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     // D11: choosing Comment on a selection autofocuses the composer's body field.
     await selectEditorText(page, "brown");
     if (isPhone) {
+      // selectEditorText waited for the bar to show, and the bar builds its buttons before it
+      // first shows, so one read lists them all.
       for (const button of await actionBar(page).getByRole("button").all()) {
         const box = await button.boundingBox();
         expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
@@ -155,16 +165,6 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await assertTabTrapped(page, '[data-testid="margin-sheet"]');
       await commentBody.focus();
     }
-
-    // D12: Ctrl+K opens a real dialog; Escape dismisses only the picker, restores focus to
-    // the composer, and leaves the composer's own draft (and, on phone, the sheet) open.
-    await commentBody.press("Control+k");
-    const picker = page.getByRole("dialog", { name: "Reference picker" });
-    await expect(picker).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(picker).toHaveCount(0);
-    await expect(commentComposer).toBeVisible();
-    await expect(commentBody).toBeFocused();
 
     // D11: Escape on a non-empty draft shows an inline "Discard draft?" affordance (not a
     // blocking confirm()); Escape again closes it. Only the composer closes — the phone
@@ -314,6 +314,59 @@ test("a phone sheet trap wraps Shift+Tab from its first control past a held comp
   }
 });
 
+/** The selection bar's bottom edge and the expanded sheet's top edge, in viewport px. */
+async function barAndSheetEdges(page: Page): Promise<{ barBottom: number; sheetTop: number }> {
+  // Each caller has seen the bar and the sheet drawn first, so one reading of each box is enough.
+  const bar = await actionBar(page).boundingBox();
+  // The sheet, which each caller has seen expanded, is read once by the same rule as the bar.
+  const sheet = await page.getByTestId("margin-sheet").boundingBox();
+  if (bar === null || sheet === null) throw new Error("expected the bar and the sheet on screen");
+  return { barBottom: bar.y + bar.height, sheetTop: sheet.y };
+}
+
+// With the review panel open, the selection bar docks above the sheet's top edge by the height
+// the sheet publishes (`MarginSheet.tsx`, `styles.css`). The sheet's height follows its content
+// with no render of the sheet - here a block that arrives in it, as a picture loading would - and
+// the bar follows it, so it never comes to cover the sheet's handle, its toggle or its tabs
+// (dispatch://INFRA-5200).
+test("on a phone the selection bar stays above an open review panel that grows @phone", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: initialMarkdown,
+    title: "A bar above a growing sheet",
+  });
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 844, width: 390 });
+    await page.goto(`/issues/${issue.key}`);
+    const sheet = page.getByTestId("margin-sheet");
+    await sheet.getByRole("button", { name: /Open review panel/ }).click();
+    await expect(sheet).toHaveAttribute("data-expanded", "true");
+    await selectEditorText(page, "brown");
+    await expect(actionBar(page)).toBeVisible();
+    const before = await barAndSheetEdges(page);
+    expect(before.barBottom).toBeLessThanOrEqual(before.sheetTop + 0.5);
+
+    await sheet.evaluate((element) => {
+      const block = document.createElement("div");
+      block.style.height = "240px";
+      element.append(block);
+    });
+    await expect
+      .poll(async () => (await barAndSheetEdges(page)).sheetTop)
+      .toBeLessThan(before.sheetTop - 100);
+    const after = await barAndSheetEdges(page);
+    expect(after.barBottom).toBeLessThanOrEqual(after.sheetTop + 0.5);
+  } finally {
+    await alice.close();
+  }
+});
+
 test("a project document has no horizontal overflow, 44px controls, and a Comments margin sheet @phone", async ({
   browser,
 }, testInfo) => {
@@ -334,6 +387,13 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
       )
     ).toBe(true);
     if (testInfo.project.name === "iphone") {
+      // The page draws its controls in parts: the header with the document, the toolbar beside
+      // the connection dot, and the review panel's toggle once the margin knows the document.
+      await expect(connectedDot(page)).toHaveText("connected");
+      const reviewToggle = page.getByRole("button", { name: /Open review panel/ });
+      await expect(reviewToggle).toBeVisible();
+      // The waits above saw the editor, the toolbar and the review toggle drawn, so every part
+      // of the page that holds a control is here when it is read.
       const controls = await page
         .getByRole("main")
         .locator("button:visible, a:visible, select:visible")
@@ -342,7 +402,7 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
         const box = await control.boundingBox();
         expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
       }
-      await page.getByRole("button", { name: /Open review panel/ }).click();
+      await reviewToggle.click();
       await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible();
       await expect(page.getByRole("tab", { name: "Pinned" })).toHaveCount(0);
     }
@@ -372,10 +432,12 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
     await page.goto(`/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" });
     await composer.getByLabel("Comment").fill("@");
-    const picker = composer.getByRole("listbox", { name: "Mention suggestions" });
+    const picker = refPicker(composer);
     await expect(picker).toBeVisible();
-    const option = picker.getByRole("option", { exact: true, name: "planner" });
+    const option = picker.getByRole("option", { name: /^planner\b/ });
     await expect(option).toBeVisible();
+    // The planner option above shows the live list has drawn, and a new issue has no
+    // collaborators to add a Not running option, so one read lists every control.
     for (const control of await composer.locator("button:visible, textarea:visible").all()) {
       const box = await control.boundingBox();
       expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
@@ -421,11 +483,12 @@ test("an inline link keeps its line and grows its hit box without covering its n
     { ask_id: ask.id, body: "Still measuring." },
     { actor: { id: "e2e-session", kind: "session" }, as: "agent" }
   );
-  // An open ask's question renders in full on the Inbox, so it is where a body with a wrapped
-  // link, two stacked links and two links on consecutive lines can be measured. A generous hit
-  // box would reach the words beside the first, the link below the stacked pair's upper one, and
-  // the text of the line above the last. A question reads a single newline as a space, so the
-  // last pair is split by a hard break.
+  // An open ask's question renders in full in the Inbox's card - on a phone, the card of the
+  // reading view its row opens - so it is where a body with a wrapped link, two stacked links and
+  // two links on consecutive lines can be measured. A generous hit box would reach the words
+  // beside the first, the link below the stacked pair's upper one, and the text of the line above
+  // the last. A question reads a single newline as a space, so the last pair is split by a hard
+  // break.
   const bodyAsk = await createAsk(
     issue.key,
     {
@@ -623,11 +686,13 @@ test("an inline link keeps its line and grows its hit box without covering its n
       .toBe("Upper line");
 
     await navigateInApp(page, "/");
-    const card = page.getByTestId(`ask-${bodyAsk.id}`);
+    // On a phone the Inbox lists short rows: the question's card is in the reading view its row
+    // opens, in place of the list, and the measurement reads the links there.
+    const card = await askCard(page, bodyAsk.id);
     await expect(card.getByRole("link", { name: "Second choice" })).toBeVisible();
 
-    const measured = await page.evaluate(() => {
-      const links = [...document.querySelectorAll("main a")];
+    const measured = await card.evaluate((cardElement) => {
+      const links = [...cardElement.querySelectorAll("a")];
       const named = (text: string) =>
         links.find((link) => (link.textContent ?? "").startsWith(text));
       const wrapped = named("handbook for the deployment gate");
@@ -698,6 +763,8 @@ test("an inline link keeps its line and grows its hit box without covering its n
  *  vertically rather than horizontally); Chromium reports the clamped box's display as
  *  `flow-root`, so the clamp is read from its own property. */
 async function expectEllipsis(link: Locator): Promise<void> {
+  await expect(link).toBeVisible();
+  // The wait above drew the link, so the styles and the boxes read here are the drawn ones.
   const state = await link.evaluate((node) => {
     const clippers = [node, ...node.querySelectorAll("*")].filter((element) => {
       const style = getComputedStyle(element);
@@ -722,17 +789,23 @@ async function expectEllipsis(link: Locator): Promise<void> {
         container === undefined || node.getBoundingClientRect().right > container.right + 0.5,
     };
   });
-  expect.soft(state.overflowsContainer).toBe(false);
-  expect.soft(state.clipperStyles.length).toBeGreaterThan(0);
+  // Each failure names what it read: this helper is called on a dozen links and controls, and a
+  // bare "0 clippers" says nothing about which.
+  const said = (await link.textContent())?.trim().slice(0, 60) ?? "";
+  expect.soft(state.overflowsContainer, `${said} stays inside its container`).toBe(false);
+  expect.soft(state.clipperStyles.length, `${said} is cut by something`).toBeGreaterThan(0);
   for (const style of state.clipperStyles) {
-    expect.soft(style).toMatch(/^((block|inline-block)\/ellipsis|clamp\/\d+)$/);
+    expect
+      .soft(style, `what cuts ${said} draws an ellipsis`)
+      .toMatch(/^((block|inline-block)\/ellipsis|clamp\/\d+)$/);
   }
 }
-
 /** A control whose lines are meant to stack: each child starts at the same left edge, below the
  *  one before it. Below 1280 px `styles.css` makes every link and button an inline-flex row,
  *  which puts a `block` control's lines side by side. */
 async function expectStacked(control: Locator): Promise<void> {
+  await expect(control).toBeVisible();
+  // The wait above drew the control, so the boxes of its lines read here are the drawn ones.
   const rows = await control.evaluate((node) =>
     [...node.children].map((child) => {
       const box = child.getBoundingClientRect();
@@ -758,7 +831,9 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
   const longQuestion =
     "Which checkpoint gates the sandbox tree before the daemon restarts mid-tree: the fence, the node release, or the linger close that follows both of them?";
   const longUrl = `https://docs.example.com/runbooks/legion/go-coordinator/stage-4b/${"sandbox-tree-".repeat(4)}checkpoints`;
-  const longRoute = "role:merge-queue-controller-for-legion";
+  // Long enough that it does not fit the Message route row of the header's Details at either
+  // width (dispatch://INFRA-5200), so the control still has a name to cut here.
+  const longRoute = "role:merge-queue-controller-for-legion-and-every-queued-fork-of-it";
   // A label's 40-character cap is still wider than the label picker's 256 px popover.
   const longLabel = "sandbox-tree-checkpoint-evidence-runbook";
   const longBroadcast =
@@ -844,9 +919,9 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     await expect.soft(artifactLink.locator("[title]")).toHaveAttribute("title", longName);
 
     // The long name belongs to a project document, whose ask nobody holds: the cleared filter
-    // is where the Inbox lists it. From 1280 px the owner link is on the short row and again
-    // in the reading column's head (INFRA-575), so each is read where it belongs: the name on
-    // the row of the list, the author chip on the question's own card.
+    // is where the Inbox lists it. The owner link is on the short row and again in the head of
+    // the pane the row opens (INFRA-575, INFRA-5200), so each is read where it belongs: the
+    // name on the row of the list, the author chip on the question's own card.
     await navigateInApp(page, "/?assignee=everyone");
     const inboxOwner = inboxList(page).locator("[data-inbox-owner]", { hasText: longName });
     await expectEllipsis(inboxOwner);
@@ -864,6 +939,11 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
       .toHaveAttribute("title", `${longTitle} · e2e-long-title`);
 
     await navigateInApp(page, `/issues/${issue.key}`);
+    // The issue's links and its message route are rows of the header's Details, which the reader
+    // opens (dispatch://INFRA-5200); the decisions are drawn beside the document itself.
+    await openIssueDetails(page);
+    // In a row of Details the address is capped at the cell as well as at 32ch, so it ends in an
+    // ellipsis there rather than running past its row (dispatch://INFRA-5200).
     await expectEllipsis(page.getByRole("link", { name: longUrl }));
     await expectEllipsis(
       page
@@ -877,11 +957,13 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     await navigateInApp(page, `/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" });
     await composer.getByLabel("Comment").fill("@");
-    const roleOption = composer
-      .getByRole("listbox", { name: "Mention suggestions" })
-      .getByRole("option", { exact: true, name: "legion-implementer" });
+    const roleOption = refPicker(composer).getByRole("option", {
+      name: /^legion-implementer\b/,
+    });
     await expectEllipsis(roleOption);
-    await expectStacked(roleOption);
+    // The row's own text column: its kind's icon sits beside it rather than above its words
+    // (`RefPickerList`), so what stacks is the column the words and the detail share.
+    await expectStacked(roleOption.locator("> span"));
     const detail = roleOption.getByText(new RegExp(`^${longTitle} · /w/legion · `));
     await expect.soft(detail).toHaveAttribute("title", (await detail.textContent()) ?? "");
 

@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseKind, CaseRow } from "./build-corpus";
+import type { ClaimStartOptions } from "./claim-start";
 import {
   artifactsOf,
   CannotRunError,
@@ -25,6 +26,7 @@ import { KINDS, TARGETS } from "./draw";
 import {
   corpusDrawPath,
   corpusSlicesPath,
+  type FinalTestTree,
   readDraw,
   readSlices,
   SCORED_SLICES,
@@ -38,6 +40,14 @@ import {
   readRows,
 } from "./round-io";
 import type { RoundSummary } from "./run-round";
+import { CLAIM_THRESHOLD } from "./s10-analysis";
+import { type ClaimS10Flags, claimS10 } from "./s10-analysis-io";
+import {
+  type SendBackCase,
+  type SendBackFigures,
+  sendBackFiguresOf,
+  sendBackTables,
+} from "./send-back";
 import {
   alwaysApproveBaseline,
   type Baseline,
@@ -126,6 +136,11 @@ import {
  * corpus's own rows: it reads no judgement, and says which classes of case the person answered
  * the same way every time. An arm's number says how well a model predicts the person's answer;
  * that table says where there was anything to predict.
+ *
+ * **The claim's analysis.** With `--claim-s10` the command reads no round: it is the claim run's
+ * last stage, the analysis of the claim's one bundle, S10, over the claim run's build, draw,
+ * inputs stage and judged stage and Dispatch's event log through the build's pin
+ * (`s10-analysis.ts`, which says what it reads and writes).
  */
 
 /** The report is read across arms and models, and refuses a round holding too few of either. */
@@ -137,7 +152,9 @@ const EXIT_UNDER_FLOOR = 1;
 
 const USAGE = `usage: bun scripts/approval-eval/analyze.ts --corpus <dir> --round <dir> \\
   [--out <dir>] [--confidence-table] [--confidence-arm <name>] [--cases <file>] \\
-  [--confidence-seed <n>] [--format text|json]
+  [--confidence-seed <n>] [--claim-threshold fitted|<0 to 1>] [--format text|json]
+       bun scripts/approval-eval/analyze.ts --corpus <build> --claim-s10 <judged> \\
+  --draw <draw> --claim-threshold ${CLAIM_THRESHOLD} --out <dir> [--format text|json]
 
   --corpus            the corpus directory a build wrote, which the round scored
   --round             the round directory, holding rows.jsonl, round.json and the evidence cache
@@ -155,10 +172,28 @@ const USAGE = `usage: bun scripts/approval-eval/analyze.ts --corpus <dir> --roun
   --confidence-seed   the seed those 30 are drawn under; with none, the seed is derived from
                       the round itself, and either way it is printed in the table and in
                       report.json, so the same 30 can be drawn again
+  --claim-threshold   over a draw that recorded the final test's trees, the counted confidence
+                      at or above which a verdict is a decided request in each arm's tree
+                      measure: fitted, the arm's own threshold fitted on the fit slice (the
+                      default), or a number from 0 to 1, where 0 counts every verdict; with
+                      --claim-s10, ${CLAIM_THRESHOLD} and nothing else, as point 8 of the
+                      registered claim text fixes it
   --format            text, the report as it prints, or json, the same numbers as one object
 
+The claim's analysis of its one bundle, S10 (points 4, 6, 7, 10 and 12 of the registered claim
+text), runs under the claim run's registered read and reads no round. It reads the claim run's
+build, draw, inputs stage (the one the judged stage names) and judged stage, and Dispatch's event
+log through the build's pin. Reads DISPATCH_URL and DISPATCH_TOKEN_FILE; DISPATCH_URL is in the
+run's digest, which the registration must name.
+  --claim-s10         the claim run's judged stage, the --out of s10_judge.py
+  --corpus            the claim run's build
+  --draw              the claim run's draw, the --out of draw.ts
+  --out               where its stage record, s10-analysis.json, is written: an absolute path
+                      outside this repository's workspace, empty or holding this run's record
+
 Exit status: 0 when the report was printed, 1 when the round is under the floor the report
-needs, which is ${LEAST_ARMS} arms and ${LEAST_MODELS} models, and 2 when it could not run.`;
+needs, which is ${LEAST_ARMS} arms and ${LEAST_MODELS} models, and 2 when it could not run. The
+claim's analysis exits 0 when its record is written or kept, and 2 when it could not run.`;
 
 /** The disagreement rate the round is held to, which is the person's own 1 in 20. */
 const RATE = 0.05;
@@ -234,8 +269,9 @@ const CUT_SENTENCE =
   "the middle of the evidence: the opening of the first document and the close of the last " +
   "survive, and the body between them does not.";
 
-/** The flags, as the command reads them. */
+/** The flags of a round's report, as the command reads them. */
 interface Flags {
+  kind: "round";
   corpus: string;
   round: string;
   out?: string;
@@ -245,7 +281,78 @@ interface Flags {
   cases?: string;
   /** The seed the 30 cases are drawn under, and null where the round itself gives one. */
   confidenceSeed: number | null;
+  claimThreshold: ClaimThreshold;
   format: "text" | "json";
+}
+
+/**
+ * Where a verdict counts as a decided request in an arm's tree measure: at the arm's own threshold
+ * fitted on the fit slice, or at a counted confidence the run names. The claim's own run
+ * (`--claim-s10`) takes `0.6` alone, as point 8 of the registered claim text fixes it.
+ */
+export type ClaimThreshold = "fitted" | number;
+
+/** One eligible tree as the claim's measure reads it. */
+export interface ClaimTree {
+  group: string;
+  /** Report, where the draw put the tree, and null where it had no drawable case. */
+  slice: "report" | null;
+  /** The answered approval requests of the corpus in the tree. */
+  approvals: number;
+  /** Of those, the ones the arm decided in the final test, at the claim's threshold. */
+  decided: number;
+  /** Of the decided ones, those whose verdict differs from the person's answer. */
+  disagreements: number;
+}
+
+/**
+ * Item 8's tree measure (the reserve's version 3) applied to one arm of a round, over the
+ * eligible trees a draw recorded: the requests of one tree count once. It is the measure's
+ * arithmetic over an arm's verdicts, not the claim: the claim measures the one bundle that runs
+ * live, S10, over its judged stage (`--claim-s10`, `s10-analysis.ts`; points 1 and 12 of the
+ * registered claim text), and no arm is that bundle. The trees are every eligible tree the draw
+ * recorded: a draw under a registered read puts each in report whole, with no never-decide rule
+ * (point 9), and a tree of an earlier draw in no slice counts too. n is those in which the arm
+ * decided at least one answered approval request, a tree disagrees when any decided request in
+ * it disagrees with the person's answer, the trees with no decided request are the never-decide
+ * trees, apart and not in n, and the bound is the one-sided 90 percent Clopper-Pearson upper bound
+ * on the disagreeing trees over n, always given, 1 where n is 0. An arm missing too many
+ * judgements has lost decided requests, which can turn a disagreeing tree into a never-decide
+ * one, so its bound is printed and not read against the 1 in 20.
+ */
+export interface ClaimMeasure {
+  /** The counted confidence a verdict was read at, and null where the arm fitted none. */
+  threshold: number | null;
+  /** Whether that threshold is the arm's fitted one or one the claim named. */
+  thresholdFrom: "fitted" | "named";
+  /** Every eligible tree the draw recorded. */
+  trees: number;
+  /** Of those, the trees holding no answered approval request. */
+  withoutApproval: number;
+  /** n: the trees in which the arm decided at least one answered approval request. */
+  decided: number;
+  /** Of n, the trees in which a decided request disagrees with the person's answer. */
+  disagreeing: number;
+  /**
+   * The trees with no decided request and their share of every eligible tree, as item 8 counts
+   * them; and, to read beside the share the reviewer decides on development data, those of them
+   * holding an answered approval request and their share of the trees holding one.
+   */
+  neverDecide: {
+    count: number;
+    share: number | null;
+    withApproval: { count: number; share: number | null };
+  };
+  /** The one-sided 90 percent upper bound on the disagreeing share of n; 1 where n is 0. */
+  bound: number;
+  /** Whether that bound is at or under the person's 1 in 20; null where judgements are missing. */
+  withinRate: boolean | null;
+  /** The words that say the arm is missing too many of its judgements, and null where it is not. */
+  missing: string | null;
+  /** The send-back figures the catalog has the registration hold beside item 8. */
+  sendBack: SendBackFigures;
+  /** Every eligible tree, in the order of its group key. */
+  rows: ClaimTree[];
 }
 
 /** A share with its count, and either its bound or the words that say why it carries none. */
@@ -491,6 +598,8 @@ export interface ArmAnalysis {
   faultsByKind: Record<string, number>;
   approval: KindAnalysis;
   question: KindAnalysis;
+  /** The claim's measure over trees, and null over a draw that recorded no final-test trees. */
+  claim: ClaimMeasure | null;
 }
 
 /** One arm as the decision rule reads it. */
@@ -1417,13 +1526,124 @@ function kindAnalysisOf(
   };
 }
 
+/**
+ * An arm's tree measure over the eligible trees a draw recorded (`ClaimMeasure`): each tree's
+ * answered approval requests, the ones the arm decided in report at `threshold`, and the ones of
+ * those it got wrong, then the counts and the bound over the trees. A request decided is a
+ * report case the arm gave a verdict at a counted confidence at or above `threshold`; a held
+ * case, a case in no slice, a case the arm wrote no row for, and a case whose judgements gave no
+ * verdict are decided by no one. With no threshold, as for an arm the fit slice fitted none,
+ * nothing is decided. The send-back figures (`SendBackFigures`) are read over the same requests,
+ * with the same decisions.
+ *
+ * It throws `CorpusError` over a tree naming a case the corpus does not hold: the measure is read
+ * over the corpus the draw was made over, and a tree read over another counts the wrong requests.
+ * It throws `CorpusError` too over an approval case of a tree that carries no verdict: the
+ * send-back figures read every answered approval request's chosen option, and the measure and
+ * the figures are read over the same requests.
+ */
+export function claimMeasureOf(
+  trees: readonly FinalTestTree[],
+  cases: readonly CaseReading[],
+  byCaseId: ReadonlyMap<string, CaseRow>,
+  threshold: number | null,
+  thresholdFrom: "fitted" | "named",
+  missing: string | null
+): ClaimMeasure {
+  const inReport = new Map<string, CaseReading>();
+  for (const one of cases) {
+    if (one.slice === "report" && one.kind === "approval") inReport.set(one.caseId, one);
+  }
+  const sendBackCases: SendBackCase[] = [];
+  const rows = trees.map((tree): ClaimTree => {
+    let approvals = 0;
+    let decided = 0;
+    let disagreements = 0;
+    for (const caseId of tree.cases) {
+      const row = byCaseId.get(caseId);
+      if (row === undefined) {
+        throw new CorpusError(
+          `the draw names the case ${caseId} in the eligible tree ${tree.group}, and the ` +
+            "corpus holds no such case: the claim's measure is read over the corpus the draw " +
+            "was made over"
+        );
+      }
+      if (row.kind !== "approval") continue;
+      approvals += 1;
+      const reading =
+        tree.slice === "report" && threshold !== null ? inReport.get(caseId) : undefined;
+      const decision =
+        reading === undefined ||
+        reading.verdict === null ||
+        threshold === null ||
+        reading.confidence < threshold
+          ? null
+          : reading;
+      if (row.verdict === null) {
+        throw new CorpusError(
+          `the approval case ${caseId} in the eligible tree ${tree.group} carries no verdict: ` +
+            "the send-back figures read every answered approval request's chosen option"
+        );
+      }
+      sendBackCases.push({
+        tree: tree.group,
+        person: row.verdict,
+        arm: decision === null ? null : verdictOf(decision.verdict ?? [], row.options),
+      });
+      if (decision === null) continue;
+      decided += 1;
+      if (!decision.agreed) disagreements += 1;
+    }
+    return { group: tree.group, slice: tree.slice, approvals, decided, disagreements };
+  });
+  const decidedTrees = rows.filter((tree) => tree.decided > 0);
+  const disagreeing = decidedTrees.filter((tree) => tree.disagreements > 0).length;
+  const neverDecide = rows.length - decidedTrees.length;
+  const withApproval = rows.filter((tree) => tree.approvals > 0).length;
+  const neverDecideWithApproval = withApproval - decidedTrees.length;
+  // With no decided tree nothing rules out any rate, so the bound is 1, and it is still reported.
+  const bound =
+    decidedTrees.length === 0
+      ? 1
+      : clopperPearsonUpper(disagreeing, decidedTrees.length, DEFAULT_CONFIDENCE);
+  return {
+    threshold,
+    thresholdFrom,
+    trees: rows.length,
+    withoutApproval: rows.length - withApproval,
+    decided: decidedTrees.length,
+    disagreeing,
+    neverDecide: {
+      count: neverDecide,
+      share: rows.length === 0 ? null : neverDecide / rows.length,
+      withApproval: {
+        count: neverDecideWithApproval,
+        share: withApproval === 0 ? null : neverDecideWithApproval / withApproval,
+      },
+    },
+    bound,
+    withinRate: missing === null ? bound <= RATE : null,
+    missing,
+    sendBack: sendBackFiguresOf(sendBackCases),
+    rows,
+  };
+}
+
+/** What an arm's claim measure is read over, and null where the draw recorded no trees. */
+interface ClaimInput {
+  trees: readonly FinalTestTree[];
+  byCaseId: ReadonlyMap<string, CaseRow>;
+  threshold: ClaimThreshold;
+}
+
 /** One arm, read whole: its counts, its spend, and its numbers over each kind of case. */
 function armAnalysisOf(
   arm: ArmReading,
   planned: number,
   cutFree: ReadonlySet<string>,
   sliceSizes: Record<string, number> | null,
-  droppedFromFit: ReadonlySet<string>
+  droppedFromFit: ReadonlySet<string>,
+  claim: ClaimInput | null
 ): ArmAnalysis {
   const missingShare = planned === 0 ? 1 : Math.max(0, (planned - arm.answered) / planned);
   const bounded = missingShare <= MOST_MISSING;
@@ -1439,6 +1659,7 @@ function armAnalysisOf(
     casesBySlice[one.slice] = bySlice;
     bySlice[one.kind] = (bySlice[one.kind] ?? 0) + 1;
   }
+  const approval = kindAnalysisOf(arm, "approval", cutFree, sliceSizes, droppedFromFit, noBound);
   return {
     arm: arm.name,
     recipe: arm.recipe,
@@ -1460,8 +1681,19 @@ function armAnalysisOf(
       ...new Set(arm.cases.filter((one) => one.verdict !== null).map((one) => one.confidence)),
     ].sort((one, two) => one - two),
     faultsByKind: arm.faultsByKind,
-    approval: kindAnalysisOf(arm, "approval", cutFree, sliceSizes, droppedFromFit, noBound),
+    approval,
     question: kindAnalysisOf(arm, "question", cutFree, sliceSizes, droppedFromFit, noBound),
+    claim:
+      claim === null
+        ? null
+        : claimMeasureOf(
+            claim.trees,
+            arm.cases,
+            claim.byCaseId,
+            claim.threshold === "fitted" ? approval.fit.threshold : claim.threshold,
+            claim.threshold === "fitted" ? "fitted" : "named",
+            noBound
+          ),
   };
 }
 
@@ -1784,6 +2016,10 @@ export interface AnalysisInput {
   wantedCases: readonly string[] | null;
   /** The seed those 30 are drawn under, and null to draw them under a seed of the round. */
   seed: number | null;
+  /** The eligible trees `draw.json` recorded, and null where the draw recorded none. */
+  finalTestTrees: readonly FinalTestTree[] | null;
+  /** Where a verdict counts as decided in the claim's measure. */
+  claimThreshold: ClaimThreshold;
 }
 
 /** The whole report, computed from the rows and the corpus and reading nothing else. */
@@ -1816,8 +2052,16 @@ export function analyseRound(input: AnalysisInput): Analysis {
       : (sliceSizes.fit ?? 0) + (sliceSizes.report ?? 0) + (sliceSizes.anchor ?? 0));
   const planned = casesPlanned * judgementsPerCase;
   const faults = faultsOf(input.rows);
+  const claim: ClaimInput | null =
+    input.finalTestTrees === null
+      ? null
+      : {
+          trees: input.finalTestTrees,
+          byCaseId: input.corpus.byCaseId,
+          threshold: input.claimThreshold,
+        };
   const arms = armReadings.map((arm) =>
-    armAnalysisOf(arm, planned, cutFree, sliceSizes, droppedFromFit)
+    armAnalysisOf(arm, planned, cutFree, sliceSizes, droppedFromFit, claim)
   );
   const sliceOfCase = new Map<string, string>();
   for (const row of input.rows)
@@ -2532,6 +2776,111 @@ function decisionLines(analysis: Analysis): string[] {
   return lines;
 }
 
+/**
+ * Item 8's tree measure for each arm, over a draw that recorded the final test's trees; nothing
+ * over one that did not. Each tree's counts are in `report.json`.
+ */
+function claimLines(analysis: Analysis): string[] {
+  const measured = analysis.arms.flatMap((arm) =>
+    arm.claim === null ? [] : [{ arm: arm.arm, claim: arm.claim }]
+  );
+  if (measured.length === 0) return [];
+  const lines = ["", "## Item 8's measure for each arm, over the final test's trees", ""];
+  lines.push(
+    "Item 8's measure over trees (the reserve's version 3), applied to each arm of this round: " +
+      "the requests of one tree count once. It is not the claim's result, which is S10's " +
+      "(analyze.ts --claim-s10); no arm of a round is the bundle that runs live. The trees are " +
+      "every eligible tree the draw recorded: a draw under a registered read puts each in " +
+      "report whole, and a tree an earlier draw left in no slice counts too. n is those in " +
+      "which the arm decided at least one answered approval request; a tree disagrees when any " +
+      "request decided in it disagrees with the person's answer; the trees with no decided " +
+      "request are never-decide, apart and not in n. The never-decide column's share is of " +
+      "every eligible tree, as item 8 counts it; the next column's is of the trees holding an " +
+      "answered approval request, the one to read against the share decided on development " +
+      "data. The bound is the one-sided 90 percent Clopper-Pearson upper bound on the " +
+      "disagreeing trees over n, at any n, and 1 where n is 0."
+  );
+  lines.push("");
+  lines.push(
+    ...table(
+      [
+        "arm",
+        "decided at",
+        "eligible trees",
+        "no approval request",
+        "n",
+        "disagreeing",
+        "never-decide",
+        "of those with an approval request",
+        "bound",
+        `at or under ${num(RATE, 2)}`,
+      ],
+      measured.map(({ arm, claim }) => [
+        arm,
+        claim.threshold === null
+          ? `no threshold (${claim.thresholdFrom})`
+          : `${num(claim.threshold)} (${claim.thresholdFrom})`,
+        count(claim.trees),
+        count(claim.withoutApproval),
+        count(claim.decided),
+        count(claim.disagreeing),
+        claim.neverDecide.share === null
+          ? count(claim.neverDecide.count)
+          : `${count(claim.neverDecide.count)} (${num(claim.neverDecide.share)})`,
+        claim.neverDecide.withApproval.share === null
+          ? count(claim.neverDecide.withApproval.count)
+          : `${count(claim.neverDecide.withApproval.count)} ` +
+            `(${num(claim.neverDecide.withApproval.share)})`,
+        `at most ${num(claim.bound)}`,
+        claim.withinRate === null ? "not read" : claim.withinRate ? "yes" : "no",
+      ])
+    )
+  );
+  // An arm short of judgements has lost decided requests, so its bound is printed, as the
+  // registration asks, and the words say why it is not read against the 1 in 20.
+  for (const { arm, claim } of measured) {
+    if (claim.missing === null) continue;
+    // The report's words open with "no bound: " for its own bounds; this bound is printed.
+    const words = claim.missing.replace(/^no bound: /, "");
+    lines.push(
+      "",
+      `${arm}: ${words}. Its bound above is printed, as the registration asks, and not read ` +
+        `against ${num(RATE, 2)}: a lost judgement can turn a disagreeing tree into a ` +
+        "never-decide one, and can leave a request undecided, which the send-back figures " +
+        "below count as a wrong verdict."
+    );
+  }
+  lines.push(...sendBackLines(measured));
+  return lines;
+}
+
+/** The send-back figures of each arm's claim, and the always-approve baseline beside them. */
+function sendBackLines(measured: readonly { arm: string; claim: ClaimMeasure }[]): string[] {
+  const lines = ["", "### The send-back figures beside item 8", ""];
+  lines.push(
+    "For the catalog (version 14), over every answered approval request of the eligible trees, " +
+      "at the threshold above. A send-back is the person's chosen option, request changes; any " +
+      "other option he chose is no send-back, and the answers of an option that is neither " +
+      "approve nor request changes are counted in a column of their own. The arm sends a " +
+      "request back where it decided request changes, and does not where it decided another " +
+      "option. A request it did not decide at that threshold (under it, with no row, held, or " +
+      "in no slice) is a wrong verdict, as the registration counts a never-decide in every " +
+      "figure: a missed send-back where the person sent it back, and a false one where he did " +
+      "not, so it is in precision's denominator too; the not-decided counts in brackets say how " +
+      "many. Each interval is two-sided at 95 percent and exact over the requests; balanced " +
+      "accuracy's is the mean of recall's and specificity's intervals at 97.5 percent each, so " +
+      "both hold together at 95 percent at least."
+  );
+  lines.push("");
+  lines.push(
+    ...sendBackTables(
+      "arm",
+      measured.map(({ arm, claim }) => ({ name: arm, figures: claim.sendBack }))
+    )
+  );
+  return lines;
+}
+
 /** The three readings the plan calls the primary one and its two sensitivities. */
 function sensitivityLines(analysis: Analysis): string[] {
   const lines = ["", "## The sensitivity readings", ""];
@@ -2832,6 +3181,7 @@ export function renderReport(analysis: Analysis): string[] {
     ...kindLines(analysis, "approval"),
     ...kindLines(analysis, "question"),
     ...decisionLines(analysis),
+    ...claimLines(analysis),
     ...sensitivityLines(analysis),
     ...confoundLines(analysis),
     ...classLines(analysis),
@@ -2862,14 +3212,21 @@ async function readSummary(round: string): Promise<RoundSummary | null> {
 }
 
 /**
- * The draw's own facts the report reads: the cut the post-cut class table is read over, and the
- * key the cases were grouped by, which a draw made before that key was recorded does not carry.
+ * The draw's own facts the report reads: the cut the post-cut class table is read over, the key
+ * the cases were grouped by, which a draw made before that key was recorded does not carry, and
+ * the final test's eligible trees, which only a draw under a registered read records.
  */
-async function readDrawFacts(
-  corpus: string
-): Promise<{ cut: string | null; groupKey: string | null }> {
+async function readDrawFacts(corpus: string): Promise<{
+  cut: string | null;
+  groupKey: string | null;
+  finalTestTrees: readonly FinalTestTree[] | null;
+}> {
   const draw = await readDraw(corpusDrawPath(corpus));
-  return { cut: draw?.cut ?? null, groupKey: draw?.groupKey ?? null };
+  return {
+    cut: draw?.cut ?? null,
+    groupKey: draw?.groupKey ?? null,
+    finalTestTrees: draw?.finalTestTrees ?? null,
+  };
 }
 
 /** The case ids a `--cases` file names: one per line, or a JSON list of them. */
@@ -2897,17 +3254,23 @@ async function readCases(path: string): Promise<string[]> {
     .filter((line) => line !== "" && !line.startsWith("#"));
 }
 
-function readFlags(argv: readonly string[]): Flags {
-  let values: {
-    corpus?: string;
-    round?: string;
-    out?: string;
-    "confidence-table"?: boolean;
-    "confidence-arm"?: string;
-    cases?: string;
-    "confidence-seed"?: string;
-    format?: string;
-  };
+/** The flags as `parseArgs` reads them, before their rules are checked. */
+interface FlagValues {
+  corpus?: string;
+  round?: string;
+  out?: string;
+  "confidence-table"?: boolean;
+  "confidence-arm"?: string;
+  cases?: string;
+  "confidence-seed"?: string;
+  "claim-threshold"?: string;
+  "claim-s10"?: string;
+  draw?: string;
+  format?: string;
+}
+
+function readFlags(argv: readonly string[]): Flags | ClaimS10Flags {
+  let values: FlagValues;
   try {
     ({ values } = parseArgs({
       args: [...argv],
@@ -2919,6 +3282,9 @@ function readFlags(argv: readonly string[]): Flags {
         "confidence-arm": { type: "string" },
         cases: { type: "string" },
         "confidence-seed": { type: "string" },
+        "claim-threshold": { type: "string" },
+        "claim-s10": { type: "string" },
+        draw: { type: "string" },
         format: { type: "string" },
       },
       strict: true,
@@ -2928,13 +3294,19 @@ function readFlags(argv: readonly string[]): Flags {
     // parseArgs names what it refused, so its message is never repeated.
     throw new UsageError(USAGE);
   }
-  const corpus = values.corpus?.trim();
-  const round = values.round?.trim();
-  if (!corpus || !round) throw new UsageError(USAGE);
   const format = values.format?.trim() ?? "text";
   if (format !== "text" && format !== "json") {
     throw new UsageError(`--format takes text or json, not ${format}\n\n${USAGE}`);
   }
+  if (values["claim-s10"] !== undefined) return claimS10FlagsOf(values, format);
+  if (values.draw !== undefined) {
+    throw new UsageError(
+      `--draw names the claim run's draw, which only --claim-s10 reads\n\n${USAGE}`
+    );
+  }
+  const corpus = values.corpus?.trim();
+  const round = values.round?.trim();
+  if (!corpus || !round) throw new UsageError(USAGE);
   const confidenceTable = values["confidence-table"] === true;
   const confidenceArm = values["confidence-arm"]?.trim();
   if (confidenceArm !== undefined && !confidenceTable) {
@@ -2967,7 +3339,9 @@ function readFlags(argv: readonly string[]): Flags {
   if (confidenceSeed !== null && !Number.isInteger(confidenceSeed)) {
     throw new UsageError(`--confidence-seed takes a whole number, not ${named}\n\n${USAGE}`);
   }
+  const claimThreshold = claimThresholdOf(values["claim-threshold"]?.trim());
   return {
+    kind: "round",
     corpus,
     round,
     out: values.out?.trim(),
@@ -2975,8 +3349,68 @@ function readFlags(argv: readonly string[]): Flags {
     confidenceArm: confidenceArm === undefined || confidenceArm === "" ? null : confidenceArm,
     cases,
     confidenceSeed,
+    claimThreshold,
     format,
   };
+}
+
+/** The flags the claim's analysis takes, and no other, as `parseArgs` names them. */
+const CLAIM_S10_FLAGS: Readonly<Record<string, true>> = {
+  corpus: true,
+  "claim-s10": true,
+  draw: true,
+  "claim-threshold": true,
+  format: true,
+  out: true,
+};
+
+/**
+ * The flags of the claim's analysis (`--claim-s10`): the claim run's build, draw and judged stage
+ * and the directory its record is written to, each required, and `--claim-threshold 0.6`, which
+ * point 8 of the registered claim text fixes: a verdict of five answers has at least three behind
+ * it, so 0.6 decides every `approve` and `request_changes`, and neither `fitted` nor another number
+ * is the claim's. Any other flag is refused beside them: the claim reads no round.
+ */
+function claimS10FlagsOf(values: FlagValues, format: "text" | "json"): ClaimS10Flags {
+  const others = Object.keys(values).filter((name) => CLAIM_S10_FLAGS[name] !== true);
+  if (others.length > 0) {
+    throw new UsageError(
+      `--claim-s10 takes only --${Object.keys(CLAIM_S10_FLAGS).join(", --")}, and no ` +
+        `--${others.join(", --")}: the claim reads no round\n\n${USAGE}`
+    );
+  }
+  const corpus = values.corpus?.trim();
+  const draw = values.draw?.trim();
+  const judged = values["claim-s10"]?.trim();
+  const out = values.out?.trim();
+  if (!corpus || !draw || !judged || !out) {
+    throw new UsageError(`--claim-s10 takes --corpus, --draw and --out beside it\n\n${USAGE}`);
+  }
+  const named = values["claim-threshold"]?.trim();
+  if (named === undefined || named === "" || Number(named) !== CLAIM_THRESHOLD) {
+    throw new UsageError(
+      `--claim-s10 takes --claim-threshold ${CLAIM_THRESHOLD}, the threshold point 8 of the ` +
+        "registered claim text fixes: a verdict of five answers has at least three behind it, " +
+        `so ${CLAIM_THRESHOLD} decides every approve and request_changes, and neither fitted ` +
+        `nor another number is the claim's\n\n${USAGE}`
+    );
+  }
+  return { kind: "claim-s10", corpus, draw, judged, out, format };
+}
+
+/**
+ * The claim's threshold as the flag names it: `fitted` where it names none, else a number from 0
+ * to 1. Anything else is refused, since a threshold read wrongly is a decision rule changed.
+ */
+function claimThresholdOf(named: string | undefined): ClaimThreshold {
+  if (named === undefined || named === "fitted") return "fitted";
+  const value = named === "" ? Number.NaN : Number(named);
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new UsageError(
+      `--claim-threshold takes fitted or a number from 0 to 1, not ${named}\n\n${USAGE}`
+    );
+  }
+  return value;
 }
 
 /**
@@ -3005,7 +3439,7 @@ async function analyze(flags: Flags): Promise<number> {
   const { rows, read, unreadable } = await readRows(flags.round);
   const summary = await readSummary(flags.round);
   const slices = await readSlices(corpusSlicesPath(corpus.directory));
-  const { cut, groupKey } = await readDrawFacts(corpus.directory);
+  const { cut, groupKey, finalTestTrees } = await readDrawFacts(corpus.directory);
   const evidence = await readEvidenceNeighbours(flags.round);
   const wantedCases = flags.cases === undefined ? null : await readCases(flags.cases);
   const seed = wantedCases === null ? flags.confidenceSeed : null;
@@ -3024,6 +3458,8 @@ async function analyze(flags: Flags): Promise<number> {
     confidenceArm: flags.confidenceArm,
     wantedCases,
     seed,
+    finalTestTrees,
+    claimThreshold: flags.claimThreshold,
   });
   const text = renderReport(analysis).join("\n");
   console.log(flags.format === "json" ? JSON.stringify(analysis, null, 2) : text);
@@ -3046,9 +3482,15 @@ async function analyze(flags: Flags): Promise<number> {
   return underFloor(analysis);
 }
 
-/** The command: the flags, the report, and the exit status it takes. */
-export async function main(argv: readonly string[]): Promise<number> {
-  let flags: Flags;
+/**
+ * The command: the flags, the report or the claim's analysis, and the exit status it takes.
+ * `options` is a test's own registration and bundle root for the claim's analysis.
+ */
+export async function main(
+  argv: readonly string[],
+  options: ClaimStartOptions = {}
+): Promise<number> {
+  let flags: Flags | ClaimS10Flags;
   try {
     flags = readFlags(argv);
   } catch (error) {
@@ -3057,7 +3499,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 2;
   }
   try {
-    return await analyze(flags);
+    return flags.kind === "claim-s10" ? await claimS10(flags, options) : await analyze(flags);
   } catch (error) {
     if (error instanceof CannotRunError) {
       console.error(`${error.name}: ${error.message}`);

@@ -27,8 +27,8 @@ var handoffPhasePattern = regexp.MustCompile(contracts.HandoffPhasePattern)
 const handoffRequestLimit = 6*contracts.DispatchHandoffBodyMax + 4<<10
 
 // handoffWritePattern is the handoff write's route pattern, and handoffWriteRoute that route:
-// with the markdown round trip, one of the two JSON routes whose body limit is its own rather
-// than maxJSONRequestBytes (routeBody), with errHandoffTooLarge the refusal past it, so the
+// with the two markdown round trips, one of the three JSON routes whose body limit is its own
+// rather than maxJSONRequestBytes (routeBody), with errHandoffTooLarge the refusal past it, so the
 // drain, the keyed layer and createHandoff answer a body too large for it alike.
 const (
 	handoffWritePattern = "/api/v1/issues/{key}/handoffs/{phase}"
@@ -49,7 +49,7 @@ type createHandoffInput struct {
 // createHandoff records one phase handoff: POST /api/v1/issues/{key}/handoffs/{phase}. Only a
 // bearer naming its session writes one, since the Legion daemon accepts a handoff only from the
 // session that holds the phase's claim. The version is the next of the issue's phase, taken under
-// the issue's row lock, and handoff.recorded is appended in the same transaction. A handoff gets
+// the issue's owner lock, and handoff.recorded is appended in the same transaction. A handoff gets
 // no write advice and no reference edges, and its event notifies no one (events.Broker.Notify
 // wakes on a person's writes only).
 func (s *server) createHandoff(w http.ResponseWriter, r *http.Request) {
@@ -198,10 +198,12 @@ func (s *server) getHandoff(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeHandoff answers the one handoff query selects (handoffColumns, then body), or 404
-// HANDOFF_NOT_FOUND with missing when it selects none.
+// HANDOFF_NOT_FOUND with missing when it selects none. A caller that asked for the trees is given
+// the tree of each text the body's card draws (handoffRead), each read where it stands
+// (shapeBuilt): they are values inside the body, which no writer stores a tree of.
 func (s *server) writeHandoff(w http.ResponseWriter, r *http.Request, missing, query string, args ...any) {
-	var handoff model.Handoff
-	summary, err := scanHandoff(s.deps.Store.Pool.QueryRow(r.Context(), query, args...), &handoff.Body)
+	var read handoffRead
+	summary, err := scanHandoff(s.deps.Store.Pool.QueryRow(r.Context(), query, args...), &read.Body)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, "HANDOFF_NOT_FOUND", http.StatusNotFound, missing)
 		return
@@ -210,8 +212,9 @@ func (s *server) writeHandoff(w http.ResponseWriter, r *http.Request, missing, q
 		s.writeHandlerError(w, err)
 		return
 	}
-	handoff.HandoffSummary = summary
-	WriteJSON(w, http.StatusOK, handoff)
+	read.HandoffSummary = summary
+	shapeBuilt(wantsDisplayTrees(r), read.shape)
+	WriteJSON(w, http.StatusOK, read)
 }
 
 // writeHandoffPhaseError refuses a phase that is not a handoff phase with the rule, worded once in

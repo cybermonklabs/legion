@@ -206,10 +206,7 @@ func TestAnUnreadableApprovedDocumentRefusesEachRequestThatHoldsADefinition(t *t
 				unreadable[0].Where != "terms.md version 1 of ACME-1" || !strings.Contains(unreadable[0].Detail, wayOut) {
 				t.Fatalf("request: status=%d body=%s, want 409 with one unreadable finding of terms.md version 1 of ACME-1", response.Code, response.Body.String())
 			}
-			gate, err := FormGate("ACME-1", "")
-			if err != nil {
-				t.Fatal(err)
-			}
+			gate := tree.deps.SpecForm.carryBreaksForm
 			tx, err := tree.database.Pool.Begin(context.Background())
 			if err != nil {
 				t.Fatal(err)

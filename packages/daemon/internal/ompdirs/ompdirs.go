@@ -1,13 +1,13 @@
 // Package ompdirs is where Oh My Pi, started under a given environment, keeps a profile's
 // directories: the data root its plugins, their lock and its agent directory live under
 // (ProfileRoot), and the state root its logs and its browser broker's lock live under (StateRoot),
-// each ported from Oh My Pi's own resolution (@oh-my-pi/pi-utils 18.1.21, src/dirs.ts; the Oh My
-// Pi that .omp-pin names keeps the rule, as internal/podsafety's test on that binary holds for the
-// state root) over that environment alone. The daemon's plugin gate reads the installed pi-legion
-// manifest under the data root (internal/daemon), the image's capability check the plugin lock
-// (internal/capabilities), and the pod's shim makes the state root's directory before Oh My Pi
-// starts (internal/podsafety), so each names the directory the pod's or the pane's Oh My Pi
-// actually uses.
+// each ported from Oh My Pi's own resolution (src/dirs.ts of cybermonklabs/oh-my-pi, read at
+// v18.18.6-sami.20261118-101239; the Oh My Pi that .omp-pin names keeps the rule, as
+// internal/podsafety's test on that binary holds for the state root) over that environment alone.
+// The daemon's plugin gate reads the installed pi-legion manifest under the data root
+// (internal/daemon), the image's capability check the plugin lock (internal/capabilities), and the
+// pod's shim makes the state root's directory before Oh My Pi starts (internal/podsafety), so each
+// names the directory the pod's or the pane's Oh My Pi actually uses.
 package ompdirs
 
 import (
@@ -21,6 +21,11 @@ import (
 	"strings"
 )
 
+// ConfigRootVariable is the variable that, from the pinned Oh My Pi on, names its config root in
+// place of PI_CONFIG_DIR under the home directory (getConfigRootOverride): every profile, the
+// default agent directory, and the file sessions under it move with it.
+const ConfigRootVariable = "OMP_CONFIG_ROOT"
+
 var (
 	// profileName and windowsReservedProfile are the profile names Oh My Pi accepts and the device
 	// names it refuses among them (PROFILE_NAME_RE and WINDOWS_RESERVED_BASENAME_RE,
@@ -32,19 +37,25 @@ var (
 // ProfileRoot is the root under which Oh My Pi, started under env in workDir, keeps the profile's
 // data-class directories — its plugins under `plugins/` there; its state-class ones are
 // StateRoot's — and the profile that decided it ("" for the default profile). It ports Oh My Pi's
-// resolution (@oh-my-pi/pi-utils 18.1.21, src/dirs.ts) over env alone:
+// resolution (src/dirs.ts of cybermonklabs/oh-my-pi at v18.18.6-sami.20261118-101239) over env
+// alone:
 //
 //   - the profile is OMP_PROFILE when it is set at all, even empty, else PI_PROFILE; trimmed, an
 //     empty name or "default" is the default profile, and a name Oh My Pi would refuse is refused
 //     here in its words (resolveProfileEnv, normalizeProfileName);
-//   - the config root is PI_CONFIG_DIR, else `.omp`, under the home directory — HOME, else the
-//     account's, as `os.homedir()` answers — with `profiles/<name>` under it for a named profile
-//     (getConfigDirName, getBaseConfigRoot, getProfileConfigRoot);
+//   - the config root is OMP_CONFIG_ROOT when, trimmed and with a leading `~` expanded against the
+//     home directory, it is an absolute path, cleaned; a relative, empty or blank one is ignored
+//     (getConfigRootOverride, and resolveAbsoluteDir, which @oh-my-pi/pi-natives'
+//     native/natives-dir.js holds at the pinned tag, its rule unchanged). Else it is PI_CONFIG_DIR,
+//     else `.omp`, under the home directory — HOME, else the account's, as `os.homedir()` answers
+//     (getConfigDirName, getBaseConfigRoot). A named profile's is `profiles/<name>` under it
+//     (getProfileConfigRoot);
 //   - the agent directory is PI_CODING_AGENT_DIR, resolved against workDir as `path.resolve`
 //     resolves it against Oh My Pi's own, under the default profile only, and
 //     only when it is not the agent directory of the profile PI_PROFILE names, which an Oh My Pi
 //     running under that profile hands its children (resolveActiveAgentDirOverride,
-//     resolvePreProfileAgentDir, isProfileDerivedAgentDir); else it is the config root's own
+//     resolvePreProfileAgentDir, isProfileDerivedAgentDir: that directory is the profile's under
+//     the config root, OMP_CONFIG_ROOT's where it is set); else it is the config root's own
 //     `agent`. That is the one way the variable reaches the plugins: an agent directory other than
 //     the config root's own turns the XDG data root off (DirResolver's constructor);
 //   - the data root is `$XDG_DATA_HOME/omp` for the default profile, or
@@ -53,11 +64,11 @@ var (
 //     root is the profile root answered.
 //
 // env is all it reads. Before it resolves its directories, Oh My Pi fills XDG_DATA_HOME,
-// PI_CONFIG_DIR and PI_CODING_AGENT_DIR from dotenv files it reads itself (~/.env, the config root's
-// .env, the agent directory's .env, its working directory's .env; env.ts, then refreshDirsFromEnv),
-// where parseEnvFile also mirrors OMP_CONFIG_DIR and OMP_CODING_AGENT_DIR onto the PI_ names, and a
-// launch prefix can set any variable; neither reaches env. Where either moves the root, this names
-// another than the one Oh My Pi uses, which is the caller's to notice.
+// OMP_CONFIG_ROOT, PI_CONFIG_DIR and PI_CODING_AGENT_DIR from dotenv files it reads itself (~/.env,
+// the config root's .env, the agent directory's .env, its working directory's .env; env.ts, then
+// refreshDirsFromEnv), where parseEnvFile also mirrors OMP_CONFIG_DIR and OMP_CODING_AGENT_DIR onto
+// the PI_ names, and a launch prefix can set any variable; neither reaches env. Where either moves
+// the root, this names another than the one Oh My Pi uses, which is the caller's to notice.
 func ProfileRoot(env map[string]string, workDir string) (root, profile string, err error) {
 	return xdgRoot(env, workDir, "XDG_DATA_HOME")
 }
@@ -98,11 +109,10 @@ func xdgRoot(env map[string]string, workDir, variable string) (root, profile str
 	if err != nil {
 		return "", "", err
 	}
-	home, err := ompHome(env)
+	base, err := configRoot(env)
 	if err != nil {
 		return "", "", err
 	}
-	base := filepath.Join(home, cmp.Or(env["PI_CONFIG_DIR"], ".omp"))
 	root = base
 	if profile != "" {
 		root = filepath.Join(root, "profiles", profile)
@@ -167,6 +177,25 @@ func NormalizeProfile(requested string) (string, bool) {
 		return "", false
 	}
 	return profile, true
+}
+
+// configRoot is the profile-independent config root Oh My Pi started under env reads, as
+// ProfileRoot's config-root bullet sets it out (getBaseConfigRoot).
+func configRoot(env map[string]string) (string, error) {
+	override := strings.TrimSpace(env[ConfigRootVariable])
+	if filepath.IsAbs(override) {
+		return filepath.Clean(override), nil
+	}
+	home, err := ompHome(env)
+	if err != nil {
+		return "", err
+	}
+	if override == "~" || strings.HasPrefix(override, "~/") || strings.HasPrefix(override, `~\`) {
+		if expanded := home + override[1:]; filepath.IsAbs(expanded) {
+			return filepath.Clean(expanded), nil
+		}
+	}
+	return filepath.Join(home, cmp.Or(env["PI_CONFIG_DIR"], ".omp")), nil
 }
 
 // ompHome is the home directory Oh My Pi started under env reads its roots under: HOME, else the

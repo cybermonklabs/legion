@@ -150,10 +150,11 @@ func (e *Engine) Ancestry(ctx context.Context, tx pgx.Tx, issue record.Issue, ch
 }
 
 // tellReparented tells a root that ran as a tree of its own, and that a person has since made a
-// child of a live tree, that it stays its own tree: one message on the issue and one notice to
-// that tree's architect. Neither a release of children nor the admission sweep can take such a
-// root in (AdoptionRefusal), so without this the architect releases it, is refused by name once,
-// and the person who moved it is told nothing at all.
+// child of a live tree, that it stays its own tree: one message on the issue and one notice to the
+// architect of that tree's root. Neither a release of children nor the admission sweep can take
+// such a root in (AdoptionRefusal), so without this the person who moved it is told nothing at
+// all. The architect of a child that owns the new parent is not told: it learns of the refusal
+// only when its release is refused by name.
 //
 // It is told once per parent value: the parent it was told under is kept on the record
 // (record.Issue.ToldParent), so every later event of the issue under that same parent repeats
@@ -161,6 +162,11 @@ func (e *Engine) Ancestry(ctx context.Context, tx pgx.Tx, issue record.Issue, ch
 // a move under another live tree is told anew. Nothing else is told: a root that never ran is
 // adopted rather than refused, a parent inside the root's own tree is no move out of it, and a
 // parent whose tree is not live has no architect to tell.
+//
+// The words depend on the parent's Dispatch state: where R1's path is open on the parent
+// (dispatch://INFRA-3320, R1 and R2), they name that path. The engine does no I/O, so this queues
+// the re-parent seed (record.ReparentSeed), whose read of the parent comes back as a fact
+// (intake.ReparentRead) that posts the message and the notice (reparentRead).
 func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Issue, fact intake.DispatchIssue) error {
 	if fact.Parent == "" || fact.Parent == issue.ToldParent || !claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return nil
@@ -182,35 +188,79 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 		return err
 	}
 	issue.ToldParent = fact.Parent
-	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+	if err := e.WriteIssue(ctx, tx, *issue); err != nil {
 		return err
 	}
-	told := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and its architect cannot release it. It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.",
-		issue.Key, fact.Parent, ran, root.Key, root.Key)
-	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: told}); err != nil {
-		return err
-	}
-	e.logOnCommit(ctx, "workflow: a root that ran was re-parented under a live tree and stays its own tree", "issue", issue.Key,
+	e.logOnCommit(ctx, "workflow: a root that ran was re-parented under a live tree and stays its own tree; the parent is read before it is told", "issue", issue.Key,
 		"parent", fact.Parent, "tree", root.Key, "reason", ran)
-	return e.notice(ctx, tx, root.Key, record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: told})
+	return e.enqueue(ctx, tx, issue.Key, record.ReparentSeed{Parent: fact.Parent, Tree: root.Key, Ran: ran})
+}
+
+// reparentRead tells what the re-parent seed read of a re-parented root's new parent
+// (intake.ReparentRead): one message on the root and the same words to the architect of the
+// parent's tree, as a child-status notice. Only a root still told under that parent is told: a
+// move under another parent since queued a seed of its own. The words name R1's path where the
+// read found it open on the parent and the record does not show the parent accepted
+// (record.Accepted), and are today's words otherwise (reparentedWords).
+func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.ReparentRead) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil || issue.ToldParent != fact.Parent {
+		return intake.Result{}, err
+	}
+	version := fact.BasisVersion
+	parent, err := e.store.Issue(ctx, tx, fact.Parent)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if parent != nil && record.Accepted(*parent) {
+		version = 0
+	}
+	told := reparentedWords(fact.Issue, fact.Parent, fact.Tree, fact.Ran, version)
+	if err := e.enqueue(ctx, tx, fact.Issue, record.MessagePost{Body: told}); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, "workflow: a re-parented root that ran is told it stays its own tree", "issue", fact.Issue,
+		"parent", fact.Parent, "tree", fact.Tree, "basis_version", version)
+	return intake.Result{}, e.notice(ctx, tx, fact.Tree, record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: told})
+}
+
+// reparentedWords is what a root that ran is told when a person makes it a child of parent, in
+// the live tree of tree, and what that tree's architect is told: it stays a tree of its own, for
+// the reason ran. Where version is set, R1's path is open on parent at that version of its
+// primary document, and the words name that path: the root can be written as a view on parent and
+// register its design gate on that approval. Otherwise the root's work reaches the tree only
+// through that tree's own issues.
+func reparentedWords(issue, parent, tree, ran string, version int) string {
+	stays := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and no architect of that tree can release it.",
+		issue, parent, ran, tree)
+	if version == 0 {
+		return stays + fmt.Sprintf(" It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.", tree)
+	}
+	return stays + fmt.Sprintf(" It runs under its own architect. %s carries the legion label and marks requirement blocks in its primary document. "+
+		"A person approved version %d of that document, which is its latest version. So the architect of %s can write it as a view on %s. "+
+		"Then that architect can register the design gate of %s on that approval, with no approval of its own, "+
+		"with register_gate's basis.", parent, version, issue, parent, issue)
 }
 
 // Adopt moves issue, a recorded root AdoptionRefusal found adoptable into root's live tree, into
 // that tree with every record of its own tree; each member keeps its own parent but the issue
 // itself, which is recorded under the Dispatch parent and held on the blockers child names
 // (intake.AdoptedChild, the release's own read of Dispatch). Each record is written as every
-// adopted record is (moveIntoTree): it takes its next generation, the fence every row of the old
-// tree already checks (its linger's close, its supervise rows, its issue suspend), with no
-// linger, hold or Dispatch chain (record.Issue.Ancestry: a member waits in no line), no
-// hand-over fence and its generation's facts cleared. A todo record enters the tree's run
-// admitted, as an unrecorded todo child does (enterChild), so it starts its first phase at the
+// adopted record is (moveIntoTree): it takes its next generation, with no linger, hold or Dispatch
+// chain (record.Issue.Ancestry: a member waits in no line), no hand-over fence and its generation's
+// facts cleared. That generation fences each row of the old tree that compares the issue's
+// generation, but for the old tree's suspend and tree-close rows, which still stop a claim standing
+// in that tree (the daemon outbox's stopInLeftTree); the old tree's workspace removal is fenced by
+// its tree and linger instead (record.WorkspaceRemove). A todo record enters the tree's run
+// admitted, as an unrecorded todo child does
+// (enterChild), so it starts its first phase at the
 // slot the waiting line gives it, unless it waits on an unfinished Dispatch issue: it is held at
 // phase.Admitted on the mirror's row, which the release's own read wrote before the adoption ran
 // (the mirror's intake.ChildAdoption arm), and StartUnblockedChildren starts it once nothing
 // holds it. Only the adopted root itself carries that read: a member of its tree was named by no
 // release, and waits on what the mirror says. Any other status keeps it as a parked child at
-// done, which a todo runs again (ReenterChild). The tree's architect is told with a child-status
-// notice. Everything is written in the caller's transaction.
+// done, which a todo runs again (ReenterChild). The architect that owns its parent is told with a
+// child-status notice. Everything is written in the caller's transaction.
 func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue, child intake.AdoptedChild) error {
 	members, err := e.store.TreeIssues(ctx, tx, issue.Key)
 	if err != nil {
@@ -236,12 +286,17 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 // (Adopt), and the closed tree's member's, for the one issue a release names (AdoptMember). It
 // is written once here, so that the two routes cannot come to record one issue differently.
 //
-// The record takes its next generation, the fence every row of the old tree already checks (its
-// linger's close, its supervise rows, its issue suspend), with its hand-over fence deleted and
-// its generation's facts cleared. A todo record enters the tree admitted on the repository it
-// was first recorded with (enterChild, RecordedFact, recordedResolution), as an unrecorded todo
-// child does, so it starts its first phase at the slot the waiting line gives it, or is held at
-// admitted while an unfinished Dispatch issue holds it. Any other status is written as a parked
+// The record takes its next generation, with its hand-over fence deleted and its generation's facts
+// cleared. That generation fences each row of the old tree that compares the issue's generation,
+// but for the old tree's suspend and tree-close rows, which still stop a claim standing in that tree
+// (the daemon outbox's stopInLeftTree); the old tree's workspace removal is fenced by its tree and
+// linger instead (record.WorkspaceRemove). Before
+// that generation is written, StopLeftTree queues the old tree's suspend for every role. A prior
+// old-tree stop can finish without acting, and the new generation can fence an old issue close.
+// A todo record enters the tree admitted on the repository it was first recorded with (enterChild,
+// RecordedFact, recordedResolution), as an unrecorded todo child does. It starts its first phase at
+// the slot the waiting line gives it, or is held at admitted while an unfinished Dispatch issue
+// holds it. Any other status is written as a parked
 // child at done, which a todo runs again (ReenterChild), with no linger, hold or Dispatch chain
 // (record.Issue.Ancestry: a member waits in no line).
 //
@@ -261,25 +316,44 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 		fact.Parent, fact.Blockers = child.Parent, child.BlockedBy
 	}
 	next := member.Generation + 1
+	if member.Tree != root.Tree {
+		if err := e.StopLeftTree(ctx, tx, member); err != nil {
+			return err
+		}
+	}
 	if err := e.store.DeleteHandover(ctx, tx, member.Key); err != nil {
 		return err
 	}
-	if err := e.store.ClearGeneration(ctx, tx, member.Key, e.now()); err != nil {
+	if err := e.ClearGeneration(ctx, tx, member, e.now()); err != nil {
 		return err
 	}
 	if member.Status == "todo" {
 		return e.enterChild(ctx, tx, root, fact, next, recordedResolution(member))
 	}
+	// The member is parked at done at its next run, and no task moves (moveTask): the write takes it
+	// out of the workflow without ending a task. The run it leaves keeps its task where it stood,
+	// with that run's step ended above, and the run it enters has started none. A todo runs it
+	// again at a run of its own (ReenterChild).
 	member.Tree, member.Project, member.Generation, member.Phase = root.Tree, root.Project, next, phase.Done
 	member.LingerUntil, member.Hold, member.Ancestry = nil, nil, nil
-	return e.store.PutIssue(ctx, tx, member)
+	return e.WriteIssue(ctx, tx, member)
 }
 
-// joinedTheTree is the child-status notice an adoption sends the architect of the tree that
-// takes an issue, so that architect reads that the issue joined and where it came from. Both
-// routes send it, each naming its own from: a queued root with its own tree's members (Adopt)
-// comes from the admission queue, and the one member of a closed tree a release takes
-// (AdoptMember, C4 of dispatch://INFRA-3107) comes from the closed tree of its old root.
+// StopLeftTree queues the old tree's suspend of every role left can hold. Every request names
+// left's tree and generation, so a run of the tree it enters does not read it. The rows remain
+// necessary because the new tree can be held before its first start while a prior old-tree stop
+// already finished without acting. The outbox decides whether a claim still stands in the old tree
+// when it executes the request.
+func (e *Engine) StopLeftTree(ctx context.Context, tx pgx.Tx, left record.Issue) error {
+	return e.everyClaim(ctx, tx, left, "suspend", fmt.Sprintf("%s left tree %s", left.Key, left.Tree), "")
+}
+
+// joinedTheTree is the child-status notice an adoption sends about an issue a tree takes: the owner
+// walk starts at that issue's parent, so the architect that owns the parent reads that the issue
+// joined and where it came from. Both routes send it, each naming its own from: a queued root with
+// its own tree's members (Adopt) comes from the admission queue, and the one member of a closed
+// tree a release takes (AdoptMember, C4 of dispatch://INFRA-3107) comes from the closed tree of its
+// old root.
 func joinedTheTree(issue, root, from string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("%s joined the tree of %s from %s", issue, root, from)}
@@ -322,9 +396,10 @@ func (e *Engine) catchUpOnWhatTheTreeIsOwed(ctx context.Context, tx pgx.Tx, root
 // (ReenterChild). That branch is what a member a person took out of the workflow needs: a
 // release may name a child Dispatch shows in triage, backlog or icebox (api's releasableChild),
 // and a record at admitted carrying such a status would be an issue in the live tree that no
-// list of the state names and nothing starts. The tree's architect is told with a child-status
-// notice (joinedTheTree), and with a catch-up where a person's decision on the member is kept
-// for it (catchUpOnWhatTheTreeIsOwed). Everything is written in the caller's transaction.
+// list of the state names and nothing starts. The architect that owns its parent is told with a
+// child-status notice (joinedTheTree), and the tree root's architect is written a catch-up where a
+// person's decision on the member is kept for it (catchUpOnWhatTheTreeIsOwed). Everything is
+// written in the caller's transaction.
 func (e *Engine) AdoptMember(ctx context.Context, tx pgx.Tx, member record.Issue, root record.Issue, child intake.AdoptedChild) error {
 	if err := e.moveIntoTree(ctx, tx, member, root, child); err != nil {
 		return err

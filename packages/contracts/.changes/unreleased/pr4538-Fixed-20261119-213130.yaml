@@ -1,0 +1,5 @@
+kind: Fixed
+body: '`bun run build` writes each entry point at the `dist/` path the `exports` map names (`dist/index.js` and the rest), so Node and Playwright load `@legion/contracts` after that build again. With nine entry points Bun had made the package directory its output root and written them under `dist/src/`. Both build scripts pin `--root src`, and the top-level `types` names `src/index.ts`, as every `types` condition does, in place of a `dist/index.d.ts` no script writes.'
+time: 2026-11-19T21:31:30.613456844Z
+custom:
+    Issue: pr4538

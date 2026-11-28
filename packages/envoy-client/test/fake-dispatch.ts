@@ -79,7 +79,7 @@ export interface FakeDispatchFetch {
 
 /** What `fetch` takes as its first argument, named without the DOM lib's `RequestInfo`: a
  *  package that compiles this file need not hold it. */
-type FetchInput = string | URL | Request;
+export type FetchInput = string | URL | Request;
 
 /** `body` as text: the string bodies these fakes are given, and "" for anything else. */
 function bodyText(body: RequestInit["body"]): string {
@@ -88,8 +88,9 @@ function bodyText(body: RequestInit["body"]): string {
   return "";
 }
 
-/** What `fetch(input, init)` asked for, as this module records it. */
-function callOf(input: FetchInput, init?: RequestInit): FakeDispatchCall {
+/** What `fetch(input, init)` asked for, as this module records it: the fake Dispatch here, and
+ *  pi-envoy's listener stand-in, which reads a call's URL and method by it. */
+export function callOf(input: FetchInput, init?: RequestInit): FakeDispatchCall {
   const request = input instanceof Request ? input : undefined;
   return {
     body: bodyText(init?.body),
@@ -270,15 +271,17 @@ export function recordNotFound(name: string): DispatchServiceError {
 }
 
 /** What the client throws when a write of its own ended with no definitive answer while Dispatch
- *  may still be running it: its keyed retry window ran out, or the call's deadline did. */
-function unsettled(): DispatchWriteUnsettledError {
+ *  may still be running it: its keyed retry window ran out, or the call's deadline did. `key` is
+ *  the write's `Idempotency-Key`. */
+function unsettled(key: string): DispatchWriteUnsettledError {
   return new DispatchWriteUnsettledError(
     new DispatchServiceError(
       IDEMPOTENCY_KEY_IN_FLIGHT,
       409,
       "an earlier request with this key is still running"
     ),
-    5
+    5,
+    key
   );
 }
 
@@ -423,7 +426,7 @@ export function fakeRecordClient(options: FakeRecordClientOptions = {}): FakeRec
       mine.committed = answerLost;
       finish();
     });
-    throw unsettled();
+    throw unsettled(key ?? "unkeyed");
   };
 
   const client: FakeRecordClient = {

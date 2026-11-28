@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/specform"
 )
 
 // withdrawnDecision is a decision block whose ask the close withdraws and the reopen writes open
@@ -20,9 +22,10 @@ const withdrawnDecision = "\n:::ask{#close-decision urgency=\"med\" multiple=\"f
 // move it to the latest version of each document that a settlement wrote while the issue was
 // closed (docs.Service.FollowClosedIssueVersions). Each judges the versions that the request
 // names once it has moved. A request opened at a clean version 1, whose spec a browser edit
-// breaks while the issue is closed, at version 2, is left resolved with the finding of version 2
-// as its reason, and the read route refuses version 2 too. The control: an edit that keeps the
-// text clean leaves the request open at version 2.
+// breaks while the issue is closed, at version 2, is left resolved with the findings of version 2
+// as its reason, and the read route refuses version 2 too: each of the seven fixture texts of
+// v-form, one at a time, on each of the two paths. The control, the control of v-form: an edit to
+// a statement of two sentences of 25 words each leaves the request open at version 2.
 //
 // The other order: a document that the reopen leaves owed, because it holds a block ask that the
 // close withdrew or a browser edit of the closed period that no settlement saved yet, is judged
@@ -32,13 +35,25 @@ const withdrawnDecision = "\n:::ask{#close-decision urgency=\"med\" multiple=\"f
 // person's approval of a version that breaks the form is refused. The control: a clean edit is
 // approved.
 func TestAReopenJudgesTheVersionsThatTheRequestNamesOnceItMoves(t *testing.T) {
-	fault := formFaults[0]
+	// edited sets the text of the first paragraph of the first requirement or check block to edit.
+	edited := func(edit string) func(document *pmdoc.Node) error {
+		return func(document *pmdoc.Node) error {
+			pmdoc.Walk(document, func(node *pmdoc.Node) bool {
+				if node.Type != "requirement" && node.Type != "check" {
+					return true
+				}
+				node.Children[0].Children[0].Text = edit
+				return false
+			})
+			return nil
+		}
+	}
+	control := formFault{name: "the control of v-form, two sentences of 25 words each", node: "show-person", kind: specform.KindStatement,
+		clean: "Dispatch shows the person each question.", broken: twentyFiveWords}
 	for _, path := range []string{"the reopen", "the repair pass"} {
-		for _, broken := range []bool{false, true} {
-			name, edit := path+", the control: a clean edit while the issue is closed", "Dispatch indexes each comment."
-			if broken {
-				name, edit = path+", a broken edit while the issue is closed", fault.broken
-			}
+		for _, fault := range append(slices.Clone(formFaults), control) {
+			broken := fault.node != control.node
+			name := path + ", " + fault.name + ", in an edit while the issue is closed"
 			t.Run(name, func(t *testing.T) {
 				tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", documentSocket: true, settle: 20 * time.Millisecond})
 				documents := tree.deps.Docs.(*docs.Service)
@@ -47,16 +62,7 @@ func TestAReopenJudgesTheVersionsThatTheRequestNamesOnceItMoves(t *testing.T) {
 				peer := connectBrowserPeer(t, documents, issue.PrimaryArtifactID)
 				closeIssueThroughPatch(t, tree.handler, tree.database, issue.Key)
 				closed := closedEditFixture{handler: tree.handler, database: tree.database, documents: documents, spec: issue.PrimaryArtifactID, peer: peer}
-				version := settleClosedEdit(t, closed, func(document *pmdoc.Node) error {
-					pmdoc.Walk(document, func(node *pmdoc.Node) bool {
-						if node.Type != "requirement" {
-							return true
-						}
-						node.Children[0].Children[0].Text = edit
-						return false
-					})
-					return nil
-				})
+				version := settleClosedEdit(t, closed, edited(fault.broken))
 				if named := readCarriedAsk(t, tree.handler, request).Approval.Version; version != 2 || named != 1 {
 					t.Fatalf("the closed issue's settlement wrote version %d, and the request names version %d; want version 2 and a request at version 1", version, named)
 				}
@@ -65,6 +71,7 @@ func TestAReopenJudgesTheVersionsThatTheRequestNamesOnceItMoves(t *testing.T) {
 				}
 
 				seq := lastIssueSeq(t, tree.database, issue.Key)
+				reviews := readFormState(t, tree.database, issue.Key).reviews
 				actor := model.Actor{Kind: "user", ID: "alice"}
 				if path == "the reopen" {
 					if response := dispatchRequest(t, tree.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); response.Code != http.StatusOK {
@@ -84,6 +91,9 @@ func TestAReopenJudgesTheVersionsThatTheRequestNamesOnceItMoves(t *testing.T) {
 				}
 				if broken {
 					requireLeftResolved(t, tree.handler, tree.database, issue.Key, seq, request, strings.Join(fault.lines(2), "\n"), actor)
+					if after := readFormState(t, tree.database, issue.Key).reviews; after != reviews {
+						t.Fatalf("the restore that left the request resolved wrote %d reviews", after-reviews)
+					}
 					return
 				}
 				requireRestoredOpen(t, tree, issue.Key, seq, request)
@@ -93,6 +103,7 @@ func TestAReopenJudgesTheVersionsThatTheRequestNamesOnceItMoves(t *testing.T) {
 			})
 		}
 	}
+	fault := formFaults[0]
 	for _, owed := range []string{"a withdrawn block ask", "an edit not yet settled"} {
 		for _, broken := range []bool{false, true} {
 			name, edit := "a reopen that leaves "+owed+", the control: a clean edit while the issue is closed", "Dispatch indexes each comment."
@@ -123,16 +134,7 @@ func TestAReopenJudgesTheVersionsThatTheRequestNamesOnceItMoves(t *testing.T) {
 				request := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)).Ask.ID
 				peer := connectBrowserPeer(t, documents, issue.PrimaryArtifactID)
 				closeIssueThroughPatch(t, tree.handler, tree.database, issue.Key)
-				change := func(document *pmdoc.Node) error {
-					pmdoc.Walk(document, func(node *pmdoc.Node) bool {
-						if node.Type != "requirement" {
-							return true
-						}
-						node.Children[0].Children[0].Text = edit
-						return false
-					})
-					return nil
-				}
+				change := edited(edit)
 				if unsettled {
 					stored := storedUpdateCount(t, tree.database, issue.PrimaryArtifactID)
 					peer.edit(t, change)

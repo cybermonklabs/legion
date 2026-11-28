@@ -35,6 +35,7 @@ import (
 // settled the attempt and pinned its session the copy goes under that mention's own key, which
 // the host drops (roleFallbackKey).
 func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-the-holder-of-the-mentioned-role"
 	const mentioned = "mentioned-with-no-session-pinned-yet"
 	const holder = "ses_holds_the_routed_role_and_the_mentioned_one"
@@ -68,7 +69,9 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	// because only the sender's own resolution learns which session holds the role.
 	seedDelivery(t, rig.database, commentID, target, "", "pending")
 
+	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	after := time.Now()
 
 	if forwards := recv.received(); len(forwards) > 0 {
 		t.Fatalf("the batch forwarded %s %d copies of the comment, the first under %q, while the mention of %s was live and pinned to no session yet, want none: that mention is on its way to the same host, so this copy shows it the comment twice",
@@ -86,8 +89,8 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on a mention, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+	if !waitsFromScan(due, before, after) {
+		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 	}
 
 	// The sender's own resolution lands: it pins the session on the row and settles the attempt
@@ -107,7 +110,7 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	forwards := recv.received()
+	forwards := recv.receivedNow(t, rig.client)
 	if len(forwards) != 1 {
 		t.Fatalf("%s was sent %+v once its mention settled, want the route's one forward", holder, forwards)
 	}
@@ -136,6 +139,7 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 // author is a session nothing of the comment names. One scan leaves the claimant's copy to the
 // mention and sends the author's.
 func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
+	t.Parallel()
 	const mentioned = "mentioned-while-another-session-is-owed-its-copy"
 	const holder = "ses_claims_the_issue_and_holds_the_mentioned_role"
 	const author = "ses_wrote_the_thread_root"
@@ -165,20 +169,20 @@ func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
 	_, _, reached := eventState(t, rig.database, comment.ID)
-	authorSubject := contracts.AgentSubject(author)
+	authorSubject := contracts.LegacyAgentSubject(author)
 	if !slices.Contains(reached, authorSubject) {
 		t.Fatalf("the comment reached %v, want %s among them: no mention of this comment names the thread root's author, and the hold an unpinned mention puts on the role's holder delays no other session's copy",
 			reached, authorSubject)
 	}
-	waitFor(t, 10*time.Second, "the author's copy", func() bool { return len(wrote.received()) > 0 })
+	waitFor(t, "the author's copy", func() bool { return len(wrote.received()) > 0 })
 	copies := wrote.received()
 	if len(copies) != 1 || copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", comment.ID) {
 		t.Fatalf("%s was sent %+v, want the author copy of event %d alone, under the event's own key",
 			author, copies, comment.ID)
 	}
-	if slices.Contains(reached, contracts.AgentSubject(holder)) {
+	if slices.Contains(reached, contracts.LegacyAgentSubject(holder)) {
 		t.Fatalf("the comment reached %v, want %s not among them: that session holds the role the comment mentions, and its mention is on its way to the same host",
-			reached, contracts.AgentSubject(holder))
+			reached, contracts.LegacyAgentSubject(holder))
 	}
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while its own mention of %s was live and unpinned, want nothing", holder, got, target)

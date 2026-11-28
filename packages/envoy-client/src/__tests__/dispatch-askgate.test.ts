@@ -10,7 +10,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -23,6 +27,14 @@ import { pruneSessions } from "../dispatch-session-state";
 // form ran it. These tests write the record and the markers by hand, in the format the gate
 // writes, so they hold the CLI to that format and to nothing of the gate's.
 
+// The programs themselves, never a mise shim of them, read here at module scope as docs/testing.md
+// says: the row below gives each child a HOME of its own, where a shim reads the real home's
+// config as untrusted, or finds no version, and exits 1 before the program runs. That row calls
+// requireHostTools first, which fails it by name on a host that lacks either program, so the bare
+// name each fallback holds is never what runs.
+const node = hostTool("node") ?? "node";
+const python3 = hostTool("python3") ?? "python3";
+
 interface Recorded {
   readonly method: string;
   readonly path: string;
@@ -33,9 +45,10 @@ interface Recorded {
 }
 
 const posts: Recorded[] = [];
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
+  fetch: keyedLayer(async (request: Request) => {
     const { pathname } = new URL(request.url);
     const ledgerFile = join(stateDir, "sessions", "ses-1", "results.jsonl");
     const ledgerText = existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf-8") : "";
@@ -54,11 +67,15 @@ const server = Bun.serve({
     if (request.method === "GET" && pathname === ARTIFACTS) {
       return Response.json([]);
     }
-    // The markdown the store would hold for inline text: this stub stores it as it stands, so
-    // no upload below is refused for its spelling.
+    // The markdown the store would hold for inline text, and for a file's bytes: this stub stores
+    // each as it stands, so no upload below is refused for its spelling or its text.
     if (request.method === "POST" && pathname === "/api/v1/markdown/round-trip") {
       const asked: { markdown?: string } = await request.json();
       return Response.json({ markdown: asked.markdown });
+    }
+    if (request.method === "POST" && pathname === "/api/v1/markdown/file-round-trip") {
+      const asked: { file: string } = await request.json();
+      return Response.json({ markdown: Buffer.from(asked.file, "base64").toString("utf8") });
     }
     if (request.method === "POST" && (pathname === MESSAGES || pathname === COMMENTS)) {
       record(await request.json());
@@ -68,9 +85,10 @@ const server = Bun.serve({
         advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
       });
     }
+    // A refusal, so a write this stub has no route for is answered once and never asked again.
     record();
-    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 400 });
+  }),
 });
 afterAll(() => server.stop(true));
 
@@ -81,6 +99,8 @@ const postsTo = (route: string) => posts.filter((p) => p.method === "POST" && p.
 const messagePosts = () => postsTo(MESSAGES);
 
 const makeDirectory = temporaryDirectories("dispatch-askgate");
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
 let stateDir = "";
 beforeEach(() => {
   posts.length = 0;
@@ -163,9 +183,10 @@ function environment(
   extra: Record<string, string | undefined>
 ): Record<string, string | undefined> {
   return {
+    ...bunCacheOff,
     HOME: stateDir,
     DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-    DISPATCH_TOKEN: "test-token",
+    DISPATCH_TOKEN: TOKEN,
     DISPATCH_STATE_DIR: stateDir,
     ...extra,
   };
@@ -540,10 +561,13 @@ describe("AskGate at the dispatch CLI", () => {
     expect(messagePosts()).toHaveLength(0);
   });
 
+  // The post is Dispatch's own answer, which names the call's key back: the command prints the
+  // message Dispatch stored.
   test("with no record the write posts and nothing is required", async () => {
-    const { code } = await run(MESSAGE);
+    const { code, stdout } = await run(MESSAGE);
     expect(code).toBe(0);
     expect(messagePosts()).toHaveLength(1);
+    expect(stdout).toContain("message-1");
   });
 
   test("a record of a dead process, of a reused pid, of another session or of another host is inert", async () => {
@@ -596,6 +620,25 @@ describe("AskGate at the dispatch CLI", () => {
       [["issue", "--project", "DSP", "--title", "t", "--spec", "# Spec"], "issue"],
       [["artifact", "--issue", "DSP-1", "--name", "brief.md", "--content", "# Brief"], "artifact"],
       [["artifact", "--issue", "DSP-1", "--name", "notes", "--path", "notes.markdown"], "artifact"],
+    ] as const) {
+      const { code, stdout } = await run(argv);
+      expect(code).toBe(1);
+      expect(stdout).toStartWith(`dispatch ${command} was not called: AskGate is on`);
+    }
+    expect(posts).toHaveLength(0);
+  });
+
+  // A correction writes or takes down the text of a post the gate reviewed when it was posted,
+  // so the CLI asks for a marker for each of the four, as it does for a comment or a message.
+  test("the four post corrections are gated, each refused before any request", async () => {
+    writeRecord();
+    const comment = "cccccccc-0000-4000-8000-000000000050";
+    const message = "dddddddd-0000-4000-8000-000000000050";
+    for (const [argv, command] of [
+      [["edit-comment", "--comment", comment, "--body", "Corrected: 72 hours."], "edit-comment"],
+      [["delete-comment", "--comment", comment], "delete-comment"],
+      [["edit-message", "--message", message, "--body", "Corrected: 02:00 UTC."], "edit-message"],
+      [["delete-message", "--message", message], "delete-message"],
     ] as const) {
       const { code, stdout } = await run(argv);
       expect(code).toBe(1);
@@ -743,6 +786,17 @@ describe("AskGate at the dispatch CLI", () => {
 
 describe("AskGate at the dispatch entry, across processes", () => {
   const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
+  /**
+   * Each child's environment: the session's, `path` as its PATH, and no transpiler cache. Its HOME
+   * is the row's folder (`makeDirectory`), where Bun keeps that cache, about 156 files, and the
+   * folder is removed by an afterEach hook under Bun's 5 s hook limit, which no row's own limit
+   * covers. With the cache off the hook removes what the children themselves wrote.
+   */
+  const childEnvironment = (path = process.env.PATH ?? ""): Record<string, string> => ({
+    ...(environment(omp) as Record<string, string>),
+    PATH: path,
+    BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+  });
   // The 30 s limit is a hang guard, not a budget: the row spawns two child processes that each
   // start the dispatch entry, and bun's unwritten 5,000 ms per-test default is a limit on that
   // work rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod it timed out,
@@ -754,10 +808,7 @@ describe("AskGate at the dispatch entry, across processes", () => {
     mint(MESSAGE, null);
     const spawnOne = () =>
       Bun.spawn([process.execPath, ENTRY, ...MESSAGE], {
-        env: {
-          PATH: process.env.PATH,
-          ...(environment(omp) as Record<string, string>),
-        },
+        env: childEnvironment(),
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -774,6 +825,20 @@ describe("AskGate at the dispatch entry, across processes", () => {
     expect(readdirSync(markers())).toEqual([]);
   }, 30_000);
 
+  // The row's folder is each child's HOME, and the file's afterEach removes it under Bun's 5 s hook
+  // limit, which no row's own limit covers: what the children leave there is all that removal reads.
+  test("a child leaves no Bun cache in the row's folder, which is its HOME", async () => {
+    const child = Bun.spawn([process.execPath, ENTRY, ...MESSAGE], {
+      env: childEnvironment(),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect({ code: await child.exited, cache: existsSync(join(stateDir, ".bun")) }).toEqual({
+      code: 0,
+      cache: false,
+    });
+  }, 30_000);
+
   // Every form AskGate's gate does not read, run as an agent would run it: each reaches the CLI as
   // the session, finds the live record and no marker, and is refused before any request. With no
   // record the same form posts: the check is inert outside a gated Oh My Pi session.
@@ -786,6 +851,7 @@ describe("AskGate at the dispatch entry, across processes", () => {
   // whole-suite run and 56.71 s with this file alone, which left its old 60 s limit 1.03x in hand.
   // It fires only if a child never exits.
   test("a gated write from xargs, python3 -c, node -e, bun -e, an alias or a script is refused; with no record it posts", async () => {
+    requireHostTools("node", "python3");
     const bin = join(stateDir, "bin");
     mkdirSync(bin);
     writeFileSync(
@@ -798,11 +864,11 @@ describe("AskGate at the dispatch entry, across processes", () => {
     const argv = '"message", "--issue", "DSP-1", "--body", "hi"';
     const forms: Array<[string, string[]]> = [
       ["xargs", ["bash", "-c", "printf '%s\\n' message --issue DSP-1 --body hi | xargs dispatch"]],
-      ["python3 -c", ["python3", "-c", `import subprocess; subprocess.run(["dispatch", ${argv}])`]],
+      ["python3 -c", [python3, "-c", `import subprocess; subprocess.run(["dispatch", ${argv}])`]],
       [
         "node -e",
         [
-          "node",
+          node,
           "-e",
           `require("node:child_process").spawnSync("dispatch", [${argv}], { stdio: "inherit" })`,
         ],
@@ -824,10 +890,7 @@ describe("AskGate at the dispatch entry, across processes", () => {
     const runForm = async (command: string[]) => {
       const child = Bun.spawn(command, {
         cwd: stateDir,
-        env: {
-          ...(environment(omp) as Record<string, string>),
-          PATH: `${bin}:${process.env.PATH ?? ""}`,
-        },
+        env: childEnvironment(`${bin}:${process.env.PATH ?? ""}`),
         stdout: "pipe",
         stderr: "pipe",
       });

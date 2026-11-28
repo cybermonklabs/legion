@@ -243,27 +243,37 @@ func natsStartScript(args []string, stdout, stderr io.Writer) int {
 
 func webhookListenerEnv(args []string, stdout, stderr io.Writer) int {
 	s := newSubcommand("webhook-listener-env",
-		"--machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--mention-trigger <t>] "+
-			"--listen-host <h> --nats-replicas <n>", stderr,
+		"--machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--verdict-app-id <id>] [--mention-trigger <t>] "+
+			"--listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]", stderr,
 		map[string]string{
-			"machineId":      "machine-id",
-			"natsUrls":       "nats-url",
-			"webhooks":       "webhook",
-			"reviewerAppId":  "reviewer-app-id",
-			"mentionTrigger": "mention-trigger",
-			"listenHost":     "listen-host",
-			"natsReplicas":   "nats-replicas",
+			"machineId":               "machine-id",
+			"natsUrls":                "nats-url",
+			"webhooks":                "webhook",
+			"reviewerAppId":           "reviewer-app-id",
+			"verdictAppId":            "verdict-app-id",
+			"mentionTrigger":          "mention-trigger",
+			"listenHost":              "listen-host",
+			"natsReplicas":            "nats-replicas",
+			"senderMessagesPerMinute": "sender-messages-per-minute",
+			"senderMessageBurst":      "sender-message-burst",
 		})
-	var machineID, reviewerAppID, mentionTrigger, listenHost string
+	var machineID, reviewerAppID, verdictAppID, mentionTrigger, listenHost string
 	var natsURLs, webhooks stringList
-	var natsReplicas int
+	var natsReplicas, senderMessagesPerMinute, senderMessageBurst int
 	s.fs.StringVar(&machineID, "machine-id", "", "machineId: the listener's name, ENVOY_MACHINE_ID")
 	s.fs.Var(&natsURLs, "nats-url", "natsUrls: one NATS server's URL; give it once per URL, in order")
 	s.fs.Var(&webhooks, "webhook", "webhooks: one webhook the listener serves; this version takes none, or exactly github, then slack")
 	s.fs.StringVar(&reviewerAppID, "reviewer-app-id", "", "reviewerAppId: ENVOY_REVIEWER_APP_ID, required with --webhook github and refused without it")
+	s.fs.StringVar(&verdictAppID, "verdict-app-id", "", "verdictAppId: ENVOY_VERDICT_APP_ID, the App whose own check suites the listener leaves out of the CI record; optional with --webhook github and refused without it")
 	s.fs.StringVar(&mentionTrigger, "mention-trigger", "", "mentionTrigger: ENVOY_GITHUB_MENTION_TRIGGER, required with --webhook github and refused without it")
 	s.fs.StringVar(&listenHost, "listen-host", "", "listenHost: ENVOY_LISTEN_HOST")
 	s.fs.IntVar(&natsReplicas, "nats-replicas", 0, fmt.Sprintf("natsReplicas: ENVOY_NATS_REPLICAS, the deployment's replica count, 1 to %d", bus.MaxReplicas))
+	s.fs.IntVar(&senderMessagesPerMinute, "sender-messages-per-minute", 0, fmt.Sprintf(
+		"senderMessagesPerMinute: %s, the messages each agent session may send a minute, 1 to %d; leave it out for no limit",
+		bus.SenderMessagesPerMinuteEnvVar, bus.MaxSenderMessagesPerMinute))
+	s.fs.IntVar(&senderMessageBurst, "sender-message-burst", 0, fmt.Sprintf(
+		"senderMessageBurst: %s, the messages each agent session may send at once, at least 1 and only with --sender-messages-per-minute; leave it out for a burst of the rate",
+		bus.SenderMessageBurstEnvVar))
 	given, code, stop := s.parse(args, "machine-id", "listen-host", "nats-replicas")
 	if stop {
 		return code
@@ -279,8 +289,17 @@ func webhookListenerEnv(args []string, stdout, stderr io.Writer) int {
 	if given["reviewer-app-id"] {
 		env.ReviewerAppId = &reviewerAppID
 	}
+	if given["verdict-app-id"] {
+		env.VerdictAppId = &verdictAppID
+	}
 	if given["mention-trigger"] {
 		env.MentionTrigger = &mentionTrigger
+	}
+	if given["sender-messages-per-minute"] {
+		env.SenderMessagesPerMinute = &senderMessagesPerMinute
+	}
+	if given["sender-message-burst"] {
+		env.SenderMessageBurst = &senderMessageBurst
 	}
 	if err := env.Check(); err != nil {
 		return s.refusedInput(err)
@@ -296,6 +315,7 @@ func webhookListenerEnv(args []string, stdout, stderr io.Writer) int {
 	for _, value := range []struct{ flag, value string }{
 		{"mention-trigger", mentionTrigger},
 		{"reviewer-app-id", reviewerAppID},
+		{"verdict-app-id", verdictAppID},
 	} {
 		if strings.ContainsAny(value.value, "\r\n") {
 			return s.refused(value.flag, errors.New("holds a line break, which a KEY=value line cannot carry"))

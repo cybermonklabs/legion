@@ -74,6 +74,7 @@ function Deploys({
   layoutKey = "deploys",
   pageSize = 25,
   rows = DEPLOYS,
+  stackedHeader,
 }: {
   columns?: ColumnDef<Deploy>[];
   grouping?: GroupingState;
@@ -82,6 +83,7 @@ function Deploys({
   layoutKey?: string;
   pageSize?: number;
   rows?: Deploy[];
+  stackedHeader?: string;
 }): ReactNode {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [grouping, setGrouping] = useState<GroupingState>(initialGrouping);
@@ -143,6 +145,7 @@ function Deploys({
           </tr>
         )}
         scrollTestId={`${layoutKey}-scroll`}
+        stackedHeader={stackedHeader}
       />
     </section>
   );
@@ -165,10 +168,13 @@ function draw(tree: ReactNode, boxWidth?: number) {
     },
   });
   if (boxWidth !== undefined) {
-    const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-      this: HTMLElement
+    // Stubbed on Element, the prototype that owns the method: patching HTMLElement would leave an
+    // own property behind that shadows every later spy on Element.
+    const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element
     ) {
-      return new DOMRect(0, 0, this.dataset.testid?.endsWith("-scroll") ? boxWidth : 100, 40);
+      const box = this.getAttribute("data-testid")?.endsWith("-scroll") === true;
+      return new DOMRect(0, 0, box ? boxWidth : 100, 40);
     });
     restores.push(() => rect.mockRestore());
   }
@@ -204,6 +210,20 @@ test("sorts by a column's value when its header is pressed", async () => {
   expect(within(table).getByRole("columnheader", { name: /Minutes/ })).toHaveAttribute(
     "aria-sort",
     "ascending"
+  );
+});
+
+// A pointer reader hovers a sortable header's name and reads the title of the innermost element
+// that has one: it opens with "Sort", names the column, which the name's ellipsis may have cut,
+// and keeps the hint that shift-click adds a second sort and that the header drags.
+test("hovering a sortable header's name shows its name and the sort and drag hint", async () => {
+  draw(<Deploys />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const name = within(table).getByText("Minutes");
+  expect(name.closest("[title]")).toHaveAttribute(
+    "title",
+    "Sort by Minutes (shift-click to add a second sort); drag to move the column"
   );
 });
 
@@ -333,6 +353,29 @@ for (const boxWidth of [1400, 390]) {
     expect(JSON.parse(localStorage.getItem(tableStorageKey("namesakes")) ?? "{}")).toEqual(stored);
   });
 }
+
+// A phone stands a header's filter under its words only in the column its caller names, as the
+// issues table names its title: another table's `title` stands on one line there.
+test("a phone stacks the header its caller names, and no other table's title", async () => {
+  draw(
+    <>
+      <Deploys
+        columns={NAMESAKE_COLUMNS}
+        layoutColumns={NAMESAKE_LAYOUT}
+        layoutKey="stacked"
+        stackedHeader="title"
+      />
+      <Deploys columns={NAMESAKE_COLUMNS} layoutColumns={NAMESAKE_LAYOUT} layoutKey="unstacked" />
+    </>,
+    390
+  );
+  await screen.findByRole("table", { name: "Deploys stacked" });
+  const stacked = (name: string) =>
+    within(screen.getByRole("table", { name }))
+      .getByRole("columnheader", { name: /^Service/ })
+      .firstElementChild?.classList.contains("flex-col");
+  expect([stacked("Deploys stacked"), stacked("Deploys unstacked")]).toEqual([true, false]);
+});
 
 // The reader moving the view - a sort, a filter, a page - starts the box at its top; the rows
 // changing under a view the reader kept leaves the box where the reader scrolled it.

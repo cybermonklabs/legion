@@ -74,6 +74,7 @@ function project(overrides: Partial<Project> = {}): Project {
     name: "Core",
     open_asks: 3,
     gated_steps: [],
+    proven_sessions: false,
     ...overrides,
   };
 }
@@ -293,6 +294,43 @@ test("sidebar counts a pending credential request in the Inbox count, beside the
   }
 });
 
+// INFRA-3921: an expired credential request stays listed until somebody dismisses it, but nobody
+// can decide it any more, so the rail's count leaves it out: only the pending request is counted
+// beside the asks.
+test("sidebar leaves an expired credential request out of the Inbox count", async () => {
+  const sidebar = renderSidebar("/", [
+    {
+      identifiers: ["DEMO_API_KEY"],
+      kind: "agent_secret",
+      record_id: "record-1",
+      requested_at: "2026-09-10T00:00:00Z",
+      session: { enrollment: null, request: null },
+      state: "pending",
+    },
+    {
+      expires_at: "2026-09-10T01:00:00Z",
+      identifiers: ["DEEL_API_KEY"],
+      kind: "agent_secret",
+      record_id: "record-2",
+      requested_at: "2026-09-09T00:00:00Z",
+      session: { enrollment: null, request: null },
+      state: "expired",
+    },
+  ]);
+
+  try {
+    expect(await screen.findByRole("link", { name: "Inbox 3" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Inbox 4" })).not.toBeInTheDocument();
+  } finally {
+    sidebar.view.unmount();
+    sidebar.getCredentialPending.mockRestore();
+    sidebar.getInbox.mockRestore();
+    sidebar.getIssue.mockRestore();
+    sidebar.listIssues.mockRestore();
+    sidebar.listProjects.mockRestore();
+  }
+});
+
 test("sidebar marks the current project", async () => {
   const sidebar = renderSidebar("/projects/CORE/documents");
 
@@ -435,7 +473,7 @@ test("the rail's Priorities entry carries no number where no priority exists", a
   try {
     const entry = await screen.findByRole("link", { name: /^Priorities/ });
     await waitFor(() => expect(sidebar.listPriorities).toHaveBeenCalledWith({ summary: true }));
-    expect(entry.textContent).toBe("PrioritiesEvery project's priorities, and the work on none");
+    expect(entry.textContent).toBe("PrioritiesPriorities and the work under them");
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();

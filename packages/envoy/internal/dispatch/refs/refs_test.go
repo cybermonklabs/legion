@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -18,7 +20,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
+func TestMain(m *testing.M) {
+	storetest.SetDefaultParallel()
+	os.Exit(storetest.Main(m))
+}
 
 func createReferenceProject(t *testing.T, tx pgx.Tx, key string) {
 	t.Helper()
@@ -83,6 +90,7 @@ func insertReference(t *testing.T, tx pgx.Tx, fromKind, fromID, toKind, toID str
 }
 
 func TestReplaceWritesRefKeysAndSkipsExternalURLs(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -92,7 +100,7 @@ func TestReplaceWritesRefKeysAndSkipsExternalURLs(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	body := "see dispatch://CORE/artifact/design-notes and dispatch://OPS-2/artifact/spec and https://example.com"
-	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract(body, "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract(body, "https://dispatch.example"), nil, true); err != nil {
 		t.Fatalf("replace references: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -139,7 +147,7 @@ func TestReplaceWritesRefKeysAndSkipsExternalURLs(t *testing.T) {
 		t.Fatalf("begin clear transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract("", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", "c1", text.Extract("", "https://dispatch.example"), nil, true); err != nil {
 		t.Fatalf("clear references: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -160,6 +168,7 @@ func TestReplaceWritesRefKeysAndSkipsExternalURLs(t *testing.T) {
 // text.MaxBlockIDBytes long, the widest key either table has, each to_id exactly the bound. The
 // slug and the citing block's id are incompressible, so no index holds them by compressing them.
 func TestABlockTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	random := func(t *testing.T, length int) string {
@@ -186,14 +195,14 @@ func TestABlockTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback(ctx)
-			if _, err := replaceRefs(ctx, tx, "comment", "00000000-0000-4000-8000-000000000000", text.Extract(markdown, server), nil); err != nil {
+			if _, err := replaceRefs(ctx, tx, "comment", "00000000-0000-4000-8000-000000000000", text.Extract(markdown, server), nil, true); err != nil {
 				t.Fatalf("write the reference at the bound from a comment: %v", err)
 			}
 			createReferenceProject(t, tx, "ACME")
 			citer, _ := createReferenceArtifact(t, tx, "", "ACME", "citer")
 			citingBlock := random(t, text.MaxBlockIDBytes)
 			blocks := []model.ArtifactBlock{{ID: citingBlock, Type: "paragraph", From: 0, To: len(markdown)}}
-			if _, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil); err != nil {
+			if _, _, _, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil, ""); err != nil {
 				t.Fatalf("write the reference at the bound from a block of %d bytes: %v", text.MaxBlockIDBytes, err)
 			}
 			var fromComment, fromBlock int
@@ -214,6 +223,7 @@ func TestABlockTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 // uuid) beside the widest target kind, `component`, and to block_refs from a block whose id is
 // text.MaxBlockIDBytes long. Each run is incompressible, so no index holds it by compressing it.
 func TestEveryTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	random := func(t *testing.T, length int) string {
@@ -267,12 +277,12 @@ func TestEveryTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 	defer tx.Rollback(ctx)
 	createReferenceProject(t, tx, "ACME")
 	citer, _ := createReferenceArtifact(t, tx, "", "ACME", "citer")
-	if _, err := replaceRefs(ctx, tx, "artifact", citer, text.Extract(markdown, server), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", citer, text.Extract(markdown, server), nil, true); err != nil {
 		t.Fatalf("write the references at the bound from a document: %v", err)
 	}
 	citingBlock := random(t, text.MaxBlockIDBytes)
 	blocks := []model.ArtifactBlock{{ID: citingBlock, Type: "paragraph", From: 0, To: len(markdown)}}
-	if _, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil, ""); err != nil {
 		t.Fatalf("write the references at the bound from a block of %d bytes: %v", text.MaxBlockIDBytes, err)
 	}
 	for _, table := range []string{"refs", "block_refs"} {
@@ -293,6 +303,7 @@ func TestEveryTargetAtTheGrammarsBoundIsStoredWhole(t *testing.T) {
 // node id), a pin making none; a component's `<project>/<id>` as graph_edges spells it; and an
 // ask's, a comment's or a message's id, decoded.
 func TestEveryTargetIDIsTheNodeIDTheGraphStores(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -320,6 +331,10 @@ func TestEveryTargetIDIsTheNodeIDTheGraphStores(t *testing.T) {
 	const server, from = "https://dispatch.example", "00000000-0000-4000-8000-000000000000"
 	for _, test := range []struct{ reference, kind, node string }{
 		{"dispatch://CORE-1", "issue", "CORE-1"},
+		{"dispatch://CORE-1/", "issue", "CORE-1"},
+		{"dispatch://CORE-1/plan", "issue", "CORE-1"},
+		{"https://dispatch.example/issues/CORE-1/conversation", "issue", "CORE-1"},
+		{"https://dispatch.example/issues/CORE-1/artifact/notes-md?v=2", "artifact", notes},
 		{"dispatch://CORE-1/spec", "artifact", spec},
 		{"dispatch://CORE-1/artifact/notes-md@v2", "artifact", notes},
 		{"dispatch://CORE/artifact/handbook-md", "artifact", handbook},
@@ -343,7 +358,7 @@ func TestEveryTargetIDIsTheNodeIDTheGraphStores(t *testing.T) {
 			if !ok || target.Kind != test.kind || target.ID != test.node {
 				t.Fatalf("%s parsed as %#v (%t), whose target is %#v; want a %s at %q", test.reference, ref, ok, target, test.kind, test.node)
 			}
-			if _, err := replaceRefs(ctx, tx, "comment", from, text.Extract("See "+test.reference+".", server), nil); err != nil {
+			if _, err := replaceRefs(ctx, tx, "comment", from, text.Extract("See "+test.reference+".", server), nil, true); err != nil {
 				t.Fatalf("write the reference: %v", err)
 			}
 			var stored []string
@@ -397,7 +412,7 @@ func replaceAndStamp(t *testing.T, database *store.Store, fromKind, fromID, body
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Extract(body, "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Extract(body, "https://dispatch.example"), nil, true); err != nil {
 		t.Fatalf("replace references: %v", err)
 	}
 	if err := Stamp(ctx, tx, fromKind, fromID, eventID); err != nil {
@@ -412,6 +427,7 @@ func replaceAndStamp(t *testing.T, database *store.Store, fromKind, fromID, body
 // the moment the pair first appeared and source_seq the event that introduced it, while a
 // dropped target is deleted and a new one is stamped with the current event only.
 func TestReplaceReconcilesAndStampPreservesSurvivingProvenance(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	replaceAndStamp(t, database, "comment", "c1", "see dispatch://CORE-1 and dispatch://CORE-1/ask/keep and dispatch://CORE-1/ask/keep", 7)
 	first := readProvenance(t, database, "comment", "c1")
@@ -447,6 +463,7 @@ func TestReplaceReconcilesAndStampPreservesSurvivingProvenance(t *testing.T) {
 // same sources during a release. A rewrite here reconciles the targets of the kinds this build
 // knows and keeps the newer build's edge, which this build cannot read back out of the body.
 func TestReplaceKeepsAnEdgeOfANodeKindThisBuildDoesNotKnow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -469,7 +486,12 @@ func TestReplaceKeepsAnEdgeOfANodeKindThisBuildDoesNotKnow(t *testing.T) {
 	}
 }
 
+// A chain of ten documents, the first of which the issue's comment cites and each of which cites
+// the next, answers its first document alone, at depth 1 via the comment: the references read
+// reads one hop, so no document past the first is a member, where the eight-hop walk this test
+// was named for answered eight of them and marked the ninth hop truncated.
 func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -478,56 +500,37 @@ func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.
 	}
 	defer tx.Rollback(ctx)
 	createReferenceProject(t, tx, "CORE")
-	createReferenceProject(t, tx, "OPS")
 	createReferenceIssue(t, tx, "CORE-1", "CORE")
-	_, ownRefKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
 
 	artifactIDs := make(map[string]string)
 	artifactRefs := make(map[string]string)
-	for index := 1; index <= 9; index++ {
+	for index := 1; index <= 10; index++ {
 		slug := "d" + strconv.Itoa(index)
 		artifactIDs[slug], artifactRefs[slug] = createReferenceArtifact(t, tx, "", "CORE", slug)
 	}
-	_, diagramRefKey := createReferenceArtifact(t, tx, "", "OPS", "diagram-png")
 	commentID := createReferenceComment(t, tx, "CORE-1")
 	insertReference(t, tx, "comment", commentID, "artifact", artifactRefs["d1"])
-	insertReference(t, tx, "comment", commentID, "artifact", diagramRefKey)
-	for index := 1; index < 9; index++ {
+	for index := 1; index < 10; index++ {
 		from := "d" + strconv.Itoa(index)
 		to := "d" + strconv.Itoa(index+1)
 		insertReference(t, tx, "artifact", artifactIDs[from], "artifact", artifactRefs[to])
 	}
-	insertReference(t, tx, "artifact", artifactIDs["d1"], "artifact", ownRefKey)
-	insertReference(t, tx, "artifact", artifactIDs["d1"], "artifact", "CORE/ghost")
-	insertReference(t, tx, "artifact", artifactIDs["d3"], "artifact", artifactRefs["d1"])
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
 	}
 
-	got, truncated, err := Closure(ctx, database.Pool, "CORE-1")
+	references, err := Closure(ctx, database.Pool, model.Actor{}, "CORE-1", "")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	want := []Member{
-		{RefKey: artifactRefs["d1"], Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: commentID}},
-		{RefKey: diagramRefKey, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: commentID}},
-		{RefKey: artifactRefs["d2"], Depth: 2, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d1"]}},
-		{RefKey: artifactRefs["d3"], Depth: 3, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d2"]}},
-		{RefKey: artifactRefs["d4"], Depth: 4, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d3"]}},
-		{RefKey: artifactRefs["d5"], Depth: 5, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d4"]}},
-		{RefKey: artifactRefs["d6"], Depth: 6, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d5"]}},
-		{RefKey: artifactRefs["d7"], Depth: 7, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d6"]}},
-		{RefKey: artifactRefs["d8"], Depth: 8, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d7"]}},
-	}
-	if !reflect.DeepEqual(got, want) {
+	want := []Member{{RefKey: artifactRefs["d1"], Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: commentID}}}
+	if got := references.Members; !reflect.DeepEqual(got, want) {
 		t.Fatalf("closure = %#v; want %#v", got, want)
-	}
-	if !truncated {
-		t.Fatal("closure did not report the ninth hop as truncated")
 	}
 }
 
 func TestReferencedByIncludesArtifactSources(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -546,7 +549,7 @@ func TestReferencedByIncludesArtifactSources(t *testing.T) {
 		t.Fatalf("commit fixture: %v", err)
 	}
 
-	got, err := ReferencedBy(ctx, database.Pool, d2RefKey)
+	got, err := ReferencedBy(ctx, database.Pool, model.Actor{}, d2RefKey, "")
 	if err != nil {
 		t.Fatalf("read artifact sources: %v", err)
 	}
@@ -566,6 +569,7 @@ func TestReferencedByIncludesArtifactSources(t *testing.T) {
 // read lists it by its item as it lists a comment citing from a block. Two parts citing the
 // document list the ask once.
 func TestReferencedByListsAnAskCitingFromItsParts(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ctx := context.Background()
 	_, refKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
@@ -575,7 +579,7 @@ func TestReferencedByListsAnAskCitingFromItsParts(t *testing.T) {
 	writeAskAnswer(t, tx, &ask, "bob", []string{"gRPC"}, "Ship it, as dispatch://"+refKey+" says.")
 	indexAskPartsAt(t, tx, ask, 1)
 
-	got, err := ReferencedBy(ctx, tx, refKey)
+	got, err := ReferencedBy(ctx, tx, model.Actor{}, refKey, "")
 	if err != nil {
 		t.Fatalf("read the citers of %s: %v", refKey, err)
 	}
@@ -591,6 +595,7 @@ func TestReferencedByListsAnAskCitingFromItsParts(t *testing.T) {
 // it can address and skips the rest, a node cited only by such an edge reads as empty rather than
 // failing, and the count beside it agrees with the list behind it.
 func TestGraphReadsSkipANodeKindThisBuildCannotAddress(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -608,28 +613,28 @@ func TestGraphReadsSkipANodeKindThisBuildCannotAddress(t *testing.T) {
 	insertReference(t, tx, "comment", commentID, "future", "x#y")
 	insertReference(t, tx, "future", "x#y", "issue", "OPS-1")
 
-	incoming, err := Edges(ctx, tx, Query{Direction: "in", Kind: "issue", ID: "CORE-1", Kinds: []string{"mentions"}})
+	incoming, err := Edges(ctx, tx, model.Actor{}, Query{Direction: "in", Kind: "issue", ID: "CORE-1", Kinds: []string{"mentions"}})
 	if err != nil {
 		t.Errorf("read CORE-1 backlinks: %v", err)
 	} else if len(incoming) != 1 || incoming[0].Kind != "mentions" || incoming[0].Direction != "in" || incoming[0].Node.Kind != "comment" || incoming[0].Node.ID != commentID {
 		t.Errorf("CORE-1 backlinks = %#v; want only the mention from comment %q", incoming, commentID)
 	}
 
-	outgoing, err := Edges(ctx, tx, Query{Direction: "out", Kind: "comment", ID: commentID})
+	outgoing, err := Edges(ctx, tx, model.Actor{}, Query{Direction: "out", Kind: "comment", ID: commentID})
 	if err != nil {
 		t.Errorf("read comment links: %v", err)
 	} else if len(outgoing) != 1 || outgoing[0].Kind != "mentions" || outgoing[0].Direction != "out" || outgoing[0].Node.Kind != "issue" || outgoing[0].Node.ID != "CORE-1" {
 		t.Errorf("comment links = %#v; want only the mention of CORE-1", outgoing)
 	}
 
-	unknownOnly, err := Edges(ctx, tx, Query{Direction: "in", Kind: "issue", ID: "OPS-1"})
+	unknownOnly, err := Edges(ctx, tx, model.Actor{}, Query{Direction: "in", Kind: "issue", ID: "OPS-1"})
 	if err != nil {
 		t.Errorf("read OPS-1 backlinks: %v", err)
 	} else if unknownOnly == nil || len(unknownOnly) != 0 {
 		t.Errorf("OPS-1 backlinks = %#v; want an empty list", unknownOnly)
 	}
 
-	counts, err := BacklinkCounts(ctx, tx, "issue", []string{"CORE-1", "OPS-1"}, nil)
+	counts, err := BacklinkCounts(ctx, tx, model.Actor{}, "issue", []string{"CORE-1", "OPS-1"}, nil)
 	if err != nil {
 		t.Errorf("count issue backlinks: %v", err)
 	} else if want := map[string]int{"CORE-1": 1}; !reflect.DeepEqual(counts, want) {
@@ -637,13 +642,13 @@ func TestGraphReadsSkipANodeKindThisBuildCannotAddress(t *testing.T) {
 	}
 	// Every ask read passes AskBacklinkExclusions, so this is the count each ask card and the
 	// Inbox show: the comment's mention stays and the unknown-kind row stays out.
-	askCounts, err := BacklinkCounts(ctx, tx, "issue", []string{"CORE-1", "OPS-1"}, AskBacklinkExclusions)
+	askCounts, err := BacklinkCounts(ctx, tx, model.Actor{}, "issue", []string{"CORE-1", "OPS-1"}, AskBacklinkExclusions)
 	if err != nil {
 		t.Errorf("count issue backlinks with the ask exclusions: %v", err)
 	} else if want := map[string]int{"CORE-1": 1}; !reflect.DeepEqual(askCounts, want) {
 		t.Errorf("issue backlink counts with the ask exclusions = %v; want %v", askCounts, want)
 	}
-	excluded, err := BacklinkCounts(ctx, tx, "issue", []string{"CORE-1", "OPS-1"}, []string{"mentions"})
+	excluded, err := BacklinkCounts(ctx, tx, model.Actor{}, "issue", []string{"CORE-1", "OPS-1"}, []string{"mentions"})
 	if err != nil {
 		t.Errorf("count issue backlinks excluding mentions: %v", err)
 	} else if len(excluded) != 0 {
@@ -659,6 +664,7 @@ func TestGraphReadsSkipANodeKindThisBuildCannotAddress(t *testing.T) {
 // event names none of them, says documents were cut and still names the issue and the block,
 // with the truncated flag an older reader falls back on set.
 func TestCountedChangesNamesCitedDocumentsWithinTheCap(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -738,9 +744,133 @@ func TestCountedChangesNamesCitedDocumentsWithinTheCap(t *testing.T) {
 	}
 }
 
+// A write that adds or removes a link into an issue's own content names that issue too, so a page
+// that holds the issue's references read refreshes it (R6). Each content target of an issue X,
+// given alone, names X as a target of kind issue, once, after what it names today: a document of X
+// and a block of it name themselves, an ask of X and a part of it name the ask, and a comment, a
+// message and a block of either, which nothing counts, name X alone. A document of a project,
+// which no issue holds, names no issue. A write that moves the content of more issues than
+// CountedChangeLimit names none of them and lists issue in TruncatedKinds.
+func TestCountedChangesNameTheIssueOfAChangedContentTarget(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "CORE")
+	createReferenceIssue(t, tx, "CORE-1", "CORE")
+	specID, specKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
+	runbookID, runbookKey := createReferenceArtifact(t, tx, "", "CORE", "runbook")
+	askID, commentID, messageID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	insertItemWithID(t, tx, ItemAsk, askID, "CORE-1")
+	insertItemWithID(t, tx, ItemComment, commentID, "CORE-1")
+	insertItemWithID(t, tx, ItemMessage, messageID, "CORE-1")
+
+	issueKey := "CORE-1"
+	issue := model.ChangedReference{Kind: "issue", ID: issueKey}
+	ask := model.ChangedReference{Kind: "ask", ID: askID, IssueKey: &issueKey}
+	blockOf := func(kind ItemKind, id string) Target {
+		return Target{Kind: kind.BlockKind(), ID: itemBlockNodeID(kind, id, "b1")}
+	}
+	for _, test := range []struct {
+		name   string
+		target Target
+		want   []model.ChangedReference
+	}{
+		{"a document of the issue", Target{Kind: "artifact", ID: specKey}, []model.ChangedReference{
+			{Kind: "artifact", ID: specID, Ref: "dispatch://CORE-1/spec"}, issue,
+		}},
+		{"a block of that document", Target{Kind: "block", ID: specKey + "#b1"}, []model.ChangedReference{
+			{Kind: "block", ID: specKey + "#b1", ArtifactID: &specID, Ref: BlockRef("dispatch://CORE-1/spec", "b1")}, issue,
+		}},
+		{"an ask of the issue", Target{Kind: "ask", ID: askID}, []model.ChangedReference{ask, issue}},
+		{"a part of that ask", blockOf(ItemAsk, askID), []model.ChangedReference{ask, issue}},
+		{"a comment of the issue", Target{Kind: "comment", ID: commentID}, []model.ChangedReference{issue}},
+		{"a block of that comment", blockOf(ItemComment, commentID), []model.ChangedReference{issue}},
+		{"a message of the issue", Target{Kind: "message", ID: messageID}, []model.ChangedReference{issue}},
+		{"a block of that message", blockOf(ItemMessage, messageID), []model.ChangedReference{issue}},
+		{"a document of a project, which no issue holds", Target{Kind: "artifact", ID: runbookKey}, []model.ChangedReference{
+			{Kind: "artifact", ID: runbookID, Ref: "dispatch://CORE/artifact/runbook"},
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changes, err := CountedChanges(ctx, tx, []Target{test.target})
+			if err != nil {
+				t.Fatalf("name what a change of %s %s moved: %v", test.target.Kind, test.target.ID, err)
+			}
+			if !reflect.DeepEqual(changes.Targets, test.want) || len(changes.TruncatedKinds) > 0 {
+				t.Errorf("a change of %s %s names %q (truncated kinds %v); want %q",
+					test.target.Kind, test.target.ID, changedLines(changes.Targets), changes.TruncatedKinds, changedLines(test.want))
+			}
+		})
+	}
+
+	t.Run("the content of more issues than CountedChangeLimit", func(t *testing.T) {
+		if _, err := tx.Exec(ctx, `
+			insert into issues (key, project_key, number, title, created_by, rank)
+			select 'CORE-' || n, 'CORE', n, 'Issue ' || n, '{"kind":"user","id":"alice"}', 'U' || n
+			from generate_series(2, $1::int + 2) n
+		`, CountedChangeLimit); err != nil {
+			t.Fatalf("create %d issues: %v", CountedChangeLimit+1, err)
+		}
+		rows, err := tx.Query(ctx, `
+			insert into comments (issue_key, author, body)
+			select 'CORE-' || n, '{"kind":"user","id":"alice"}', 'reference'
+			from generate_series(2, $1::int + 2) n
+			returning id::text
+		`, CountedChangeLimit)
+		if err != nil {
+			t.Fatalf("comment on %d issues: %v", CountedChangeLimit+1, err)
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the comments' ids: %v", err)
+		}
+		targets := make([]Target, len(ids))
+		for index, id := range ids {
+			targets[index] = Target{Kind: "comment", ID: id}
+		}
+		if len(targets) != CountedChangeLimit+1 {
+			t.Fatalf("wrote %d comments; want one on each of %d issues", len(targets), CountedChangeLimit+1)
+		}
+		changes, err := CountedChanges(ctx, tx, targets)
+		if err != nil {
+			t.Fatalf("name what a change of %d comments moved: %v", len(targets), err)
+		}
+		if len(changes.Targets) > 0 || !slices.Equal(changes.TruncatedKinds, []string{"issue"}) {
+			t.Errorf("a change of a comment of each of %d issues names %q (truncated kinds %v); want no target, and the kind issue truncated",
+				len(targets), changedLines(changes.Targets), changes.TruncatedKinds)
+		}
+	})
+}
+
+// changedLines is each changed target as "<kind> <id>", with its issue, its document and its
+// reference where it carries them, so a failure prints what each pointer holds.
+func changedLines(references []model.ChangedReference) []string {
+	lines := make([]string, len(references))
+	for index, reference := range references {
+		line := reference.Kind + " " + reference.ID
+		if reference.IssueKey != nil {
+			line += " issue " + *reference.IssueKey
+		}
+		if reference.ArtifactID != nil {
+			line += " document " + *reference.ArtifactID
+		}
+		if reference.Ref != "" {
+			line += " ref " + reference.Ref
+		}
+		lines[index] = line
+	}
+	return lines
+}
+
 // Two counted parts of one write merge into what one CountedChanges over both would name: each
 // target once, a kind either part truncated named by neither, and the cap applied to the sum.
 func TestMergeChangesNamesEachTargetOnceWithinTheCap(t *testing.T) {
+	t.Parallel()
 	issue := func(key string) model.ChangedReference { return model.ChangedReference{Kind: "issue", ID: key} }
 	ask := model.ChangedReference{Kind: "ask", ID: "ask-1"}
 	merged := MergeChanges(

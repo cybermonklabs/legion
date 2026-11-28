@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  Dispatch reads an envoy.json whose `envoy` section names `inbound`, how a session takes its
+  inbound messages (`nats`, or `listener`, the Envoy listener's relay socket, which the session's
+  own client decides), holding it to a string as it holds `natsAuth`. It refused the key as
+  unrecognized.
+time: 2026-11-20T09:58:42Z
+custom:
+    Issue: feat-listener-relay-client

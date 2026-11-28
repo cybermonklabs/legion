@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -31,9 +32,9 @@ import (
 // proves the image by running the image's own `legion probe-image --daemon-api-version <N>` in a
 // Sandbox of that image, placed as every worker is placed, and reading the OK line back from the
 // pod's log.
-// Only a pod on this cluster proves the cluster can pull the image, schedule it on the Legion pool
-// under gVisor, and run its Oh My Pi and plugin there; only the image's CLI can read the image
-// plugin's contract.
+// Only a pod on this cluster proves the cluster can pull the image, schedule it under gVisor on the
+// nodes the operator's scheduling allows, and run its Oh My Pi and plugin there; only the image's
+// CLI can read the image plugin's contract.
 //
 // The Sandbox is `shutdownPolicy: Delete` with a `shutdownTime`, so the controller deletes one the
 // daemon never came back for (sandbox_controller.go:1712-1768 at v1.0.3), a crashed boot's leftover
@@ -195,9 +196,11 @@ type ImageProbe struct {
 	RoleReferences promptrefs.Names
 	// Resources are the probe container's requirements, as the daemon hands them: the probe's own
 	// fixed reservation (internal/daemon/kubernetes.go, probeReservation), its cpu and memory the
-	// request and the limit alike, so the probe pod is Guaranteed whatever the roles request. It
-	// runs Oh My Pi three times, one at a time (pi.agents, the plugin's load, the session-storage
-	// setting), and exits, so it is sized for that and not for a role's work.
+	// request and the limit alike, so the probe pod is Guaranteed whatever the roles request. The
+	// probe is the daemon's boot run (LEGION_IMAGE_PROBE_RUN=boot): it starts Oh My Pi for the
+	// plugin's load, then for the image's capability rows, for the reads of Oh My Pi's model
+	// fallback, version and help, and for the roles' overlays, one at a time, and exits, so it is
+	// sized for that and not for a role's work.
 	Resources corev1.ResourceRequirements
 }
 
@@ -233,14 +236,17 @@ func (p ImageProbe) startupBudgetDuration() time.Duration {
 // decide whether the prompt-named agents' models resolve (the LEGION-270 plan, decision 5). An
 // attempt's verdict is definitive — the API refusing what was sent (400, 401, 403, 422, or a
 // create's 404), an image the kubelet cannot use, a pod whose probe container exited on its own
-// and Failed, a log without the OK line or confirming another contract, or not resolving the
-// agents' models, or not checking the capability list, a ConfigMap or Secret the pod cannot mount,
-// or its container cannot be configured for — or waiting: a pod the pool has no room for (stuck),
-// which counts against no attempt budget, since a full pool says nothing about the image and the
-// daemon must stay up until it has room — or transient: anything else, a pod the kubelet itself
-// failed included, retried under p.Retry. The report counts the attempts that waited on capacity
-// and keeps the last one's reason, for the
-// pool-capacity row of the capability report.
+// and Failed with any exit but bootprobe.NoVerdictExit, a log without the OK line or confirming
+// another contract, or not resolving the agents' models, or not checking the capability list, a
+// ConfigMap or Secret the pod cannot mount, or its container cannot be configured for — or
+// waiting: a pod the pool has no room for (stuck), which counts against no attempt budget, since a
+// full pool says nothing about the image and the daemon must stay up until it has room — or
+// transient: anything else, a pod the kubelet itself failed included, and a probe container that
+// exited bootprobe.NoVerdictExit, having seen no failure and some check with no verdict (judge),
+// retried under p.Retry; when the retry gives up, its error carries the last attempt's detail,
+// which for that exit names each step with no verdict. The report counts the attempts
+// that waited on capacity and keeps the last one's reason, for the pool-capacity row of the
+// capability report.
 func (r *Runtime) ProbeImage(ctx context.Context, p ImageProbe) (bootprobe.ImageReport, error) {
 	if p.Contract < 1 || p.Budget <= 0 || p.Retry.Initial <= 0 || p.Retry.Max < p.Retry.Initial {
 		return bootprobe.ImageReport{}, errors.New("image probe: a contract, a positive budget, and a positive retry wait are required")
@@ -686,11 +692,13 @@ func (r *Runtime) stuck(ctx context.Context, pod *corev1.Pod, name, digest strin
 	}
 	// A pod that mounts the providers Secret (mountsProviders), the probe's included, cannot start
 	// without it, so a Secret or key the kubelet cannot mount refuses the boot here. A pod that needs
-	// none mounts no providers volume, and no event names one.
+	// none mounts no providers volume, and no event names one. The refusal names the settings by
+	// providersEntries and the missing key by the setting that names it, never the kubelet's message,
+	// which quotes the key of the Secret, a provider_keys value that can be a pasted key.
 	secret := ProvidersSecretName(r.project)
 	if failure := providersMountFailure(events, secret); failure != "" {
 		refused := bootprobe.Outcome{Refusal: fmt.Errorf("the probe pod %s cannot mount the providers Secret %s, whose keys every pod mounts (%s): %s",
-			name, secret, strings.Join(r.providersKeys(), ", "), failure)}
+			name, secret, strings.Join(r.providersEntries(), ", "), r.providersMountFault(failure))}
 		return &refused
 	}
 	if volume, message := missingVolume(events); message != "" {
@@ -715,11 +723,43 @@ func providersMountFailure(events []corev1.Event, secret string) string {
 			continue
 		}
 		if strings.Contains(event.Message, `secret "`+secret+`" not found`) || strings.Contains(event.Message, `secrets "`+secret+`" not found`) ||
-			strings.Contains(event.Message, "references non-existent secret key: ") {
+			strings.Contains(event.Message, missingSecretKey) {
 			return event.Message
 		}
 	}
 	return ""
+}
+
+// missingSecretKey is the kubelet's wording for a key of a Secret volume that the Secret does not
+// hold (pkg/volume/secret).
+const missingSecretKey = "references non-existent secret key: "
+
+// missingProvidersKey cuts message, a kubelet FailedMount message on the providers volume, at
+// missingSecretKey: the text before it, and the setting or settings that name the key it reports
+// missing (providersEntryOf), "" when no setting names it. missing is false when the message
+// reports no missing key. The key itself goes no further: it can be a provider's key pasted where
+// a provider_keys value goes. providersMountFault and the pod events (providersMountedKeyShown)
+// each word what it returns.
+func (r *Runtime) missingProvidersKey(message string) (before, setting string, missing bool) {
+	before, key, missing := strings.Cut(message, missingSecretKey)
+	if !missing {
+		return message, "", false
+	}
+	return before, r.providersEntryOf(strings.TrimSpace(key)), true
+}
+
+// providersMountFault is failure, the kubelet's message that providersMountFailure found, in the
+// refusal's own words: the Secret missing, or a key it names missing, named by the setting that
+// names that key (missingProvidersKey). Neither quotes the message.
+func (r *Runtime) providersMountFault(failure string) string {
+	_, setting, missingKey := r.missingProvidersKey(failure)
+	switch {
+	case !missingKey:
+		return "the kubelet reports the Secret is not there"
+	case setting != "":
+		return "the kubelet reports the Secret holds no key for " + setting
+	}
+	return "the kubelet reports the Secret lacks a key the pod mounts, one no setting names"
 }
 
 // mountedVolume is the volume a kubelet FailedMount event names, `MountVolume.SetUp failed for
@@ -1092,7 +1132,10 @@ func (r *Runtime) unstarted(ctx context.Context, name string, uid types.UID, bud
 }
 
 // probeLog is the probe container's last log lines, kept to probeLogBytes from the tail's end
-// (lastBytes), so a refusal's quote reaches the OK line whatever a line's length.
+// (lastBytes), so a refusal's quote reaches the OK line whatever a line's length. The read stops at
+// probeLogReadBytes, and one byte more read past it tells a read its bound stopped from one that
+// reached the log's end: such a read can stop inside a URL, before its "@", and redact.Read drops
+// the run it stopped inside, when that run holds "://", before the URL rule reads the rest.
 func (r *Runtime) probeLog(ctx context.Context, name string) (string, error) {
 	reading, cancel := call(ctx)
 	defer cancel()
@@ -1102,26 +1145,49 @@ func (r *Runtime) probeLog(ctx context.Context, name string) (string, error) {
 		return "", err
 	}
 	defer stream.Close()
+	// The read keeps its own form rather than redact.ReadBounded's, which holds the head of the
+	// read, probeLogReadBytes of it, in memory: a refusal quotes the log's end, and tailBytes holds
+	// only that end (three times probeLogBytes at most), however long the log is.
 	text, err := lastBytes(io.LimitReader(stream, probeLogReadBytes), probeLogBytes)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(text), nil
+	// Anything but the log's end after the bound is a read the bound stopped, an error included:
+	// what it stopped inside is then unknown.
+	var past [1]byte
+	_, err = io.ReadFull(stream, past[:])
+	return strings.TrimSpace(redact.Read(text, err != io.EOF)), nil
 }
 
 // lastBytes reads r to its end, keeping only the last keep bytes (tailBytes), and answers that
-// tail: with a leading … line (everything up to and including the first \n dropped, so what
-// remains starts on its own line) when anything of r was cut, unchanged when r was keep bytes or
-// shorter.
+// tail: with a leading … line when anything of r was cut, unchanged when r was keep bytes or
+// shorter. What the cut left of the line it fell inside is dropped (dropCutHead), so what remains
+// starts on its own line, or, in a tail that holds no \n, after a byte that ends a URL.
 func lastBytes(r io.Reader, keep int) (string, error) {
 	buf, dropped, err := tailBytes(r, keep)
 	if err != nil || !dropped {
 		return string(buf), err
 	}
-	if i := bytes.IndexByte(buf, '\n'); i >= 0 {
-		buf = buf[i+1:]
+	rest, _ := dropCutHead(buf)
+	return "…\n" + string(rest), nil
+}
+
+// dropCutHead is kept, the newest bytes of a read that dropped older ones (tailBytes), with the
+// head its cut fell inside dropped, and whether what is left starts on a whole line. The head is
+// everything up to and including kept's first \n where it holds one, and what is left then starts
+// on a whole line; otherwise everything up to and including its first byte that ends a URL
+// (redact.EndsURLByte), and what is left starts inside a line; and where no byte ends a URL,
+// nothing is left. The cut can fall inside a URL, after its "://" or its "?", where the URL rule
+// no longer finds the userinfo or the query the cut left part of; a \n ends a URL too, so either
+// drop reaches the end of the URL the cut fell inside.
+func dropCutHead(kept []byte) (rest []byte, atLine bool) {
+	if newline := bytes.IndexByte(kept, '\n'); newline >= 0 {
+		return kept[newline+1:], true
 	}
-	return "…\n" + string(buf), nil
+	if end := slices.IndexFunc(kept, redact.EndsURLByte); end >= 0 {
+		return kept[end+1:], false
+	}
+	return nil, false
 }
 
 // tailBytes reads r to its end and answers its last keep bytes, and whether it dropped any before
@@ -1147,15 +1213,20 @@ func tailBytes(r io.Reader, keep int) ([]byte, bool, error) {
 	}
 }
 
-// undefinedFlag is Go's flag package refusing a flag the probed CLI does not define.
-var undefinedFlag = regexp.MustCompile(`flag provided but not defined: (-\S+)`)
+// undefinedFlag is the probed CLI refusing a flag it does not define: pflag's words, which a
+// legion on cobra prints, and Go's flag package's, which an image built before that printed.
+var undefinedFlag = regexp.MustCompile(`(?:unknown flag|flag provided but not defined): (-\S+)`)
 
 // judge is the verdict on a finished probe pod and its log, logErr when the log could not be read
 // (judgeProbeLog), in this order, carrying on a pass what the OK line reported of the image, in
 // Outcome.Report. A pod the kubelet failed for
 // reasons of its own (kubeletFailure) is transient, whatever of its log could be read, and an
 // unread log is judged by the read's error. A Failed pod past those is one whose probe container
-// exited on its own: the image's refusal. The OK line must confirm this daemon's contract: an
+// exited on its own. One that exited bootprobe.NoVerdictExit is transient: the probe saw no
+// failure and some check with no verdict — a check the probe's deadline cut — which the detail
+// names from its no-verdict line (bootprobe.NoVerdict), so the retry runs a new pod. Any other
+// exit is the image's refusal, exit 1 included: a failure, or, from a CLI that predates the
+// no-verdict exit, a check its deadline cut. The OK line must confirm this daemon's contract: an
 // image whose CLI predates the contract check prints none, having checked no contract, and is
 // refused, not waved through; one that confirmed another contract is refused naming both. And it
 // must say the prompt-named agents' models resolved: any other mark, or none, does not prove the
@@ -1175,8 +1246,14 @@ var undefinedFlag = regexp.MustCompile(`flag provided but not defined: (-\S+)`)
 // invalid seed exits 1 (natsauth.Seed), and a key the kubelet cannot mount never starts the
 // container, so only a CLI that predates the user line succeeds without one. Naming another is the
 // providers Secret holding another seed. An image whose CLI predates a flag the probe command
-// passes stops at the flags, and its Failed pod is refused naming the flag its CLI lacks. The
-// passing outcome's Report carries the line's model-fallback mark, which the daemon keeps.
+// passes stops at the flags, and its Failed pod is refused naming the flag its CLI lacks. When the
+// runtime's agent secrets name an exchange audience, the line must also say the image's Oh My Pi
+// takes --session-id (bootprobe.SessionIDFlag: bootprobe.SessionIDFlagTaken), which every new Oh
+// My Pi role of such a deployment starts with: a help that lists no such flag, a help the probe
+// could not read, and a line from a CLI of this contract that predates the mark are each refused
+// (sessionIDRefusal); with none, the mark is never judged. The passing outcome's Report carries the
+// line's model-fallback mark, which the daemon keeps; the pass's log line carries that mark and the
+// omp-version and omp-session-id marks.
 func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, logErr error, contract int) bootprobe.Outcome {
 	if why := kubeletFailure(pod); why != "" {
 		// Whatever the container wrote before the kubelet ended it is quoted when it could be read.
@@ -1186,11 +1263,16 @@ func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, lo
 		return apiOutcome(digest, logErr, fmt.Sprintf("read probe pod %s's log", name), false)
 	}
 	if pod.Status.Phase == corev1.PodFailed {
-		ended := ""
+		ended, exit := "", int32(0)
 		for _, status := range pod.Status.ContainerStatuses {
 			if t := status.State.Terminated; status.Name == probeContainer && t != nil {
 				ended = fmt.Sprintf(" (container %s terminated: %s, exit code %d)", probeContainer, t.Reason, t.ExitCode)
+				exit = t.ExitCode
 			}
+		}
+		if exit == bootprobe.NoVerdictExit {
+			noVerdict, _ := bootprobe.NoVerdict(logTail)
+			return bootprobe.Outcome{Detail: fmt.Sprintf("pod %s exited %d with no verdict: %s — log tail: %s", name, exit, noVerdict, logTail)}
 		}
 		if flag := undefinedFlag.FindStringSubmatch(logTail); flag != nil {
 			return imageRefusal(digest, "pod %s Failed%s: its legion CLI has no %s, a flag this daemon's probe passes: build the image from this daemon's commit — log tail: %s",
@@ -1245,9 +1327,46 @@ func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, lo
 				name, got, ProvidersSecretName(r.project), r.natsUser, logTail)}
 		}
 	}
+	version, flag := bootprobe.OmpVersion(logTail), bootprobe.SessionIDFlag(logTail)
+	if r.agentSecrets != nil && r.agentSecrets.ExchangeAudience != "" && flag != bootprobe.SessionIDFlagTaken {
+		return imageRefusal(digest, "%s — log tail: %s", sessionIDRefusal(name, version, flag), logTail)
+	}
 	report := bootprobe.ImageReport{ModelFallback: bootprobe.ModelFallback(logTail)}
-	r.log.Info("sandbox runtime: the worker image passed its probe", "image", r.image, "sandbox", name, "model-fallback", report.ModelFallback, "log", logTail)
+	r.log.Info("sandbox runtime: the worker image passed its probe", "image", r.image, "sandbox", name, "model-fallback", report.ModelFallback,
+		"omp-version", version, "omp-session-id", flag, "log", logTail)
 	return bootprobe.Outcome{Passed: true, Report: report}
+}
+
+// sessionIDRefusal is why judge refuses, under runtime.kubernetes.agent_secrets.exchange_audience,
+// probe pod name's OK line when its omp-session-id mark, flag, does not say the image's Oh My Pi
+// takes --session-id: what the line says of that Oh My Pi (flag and its omp-version mark,
+// version, each "" from a legion CLI that predates them), why the setting needs the flag, and the
+// remedy. Under the setting every new Oh My Pi role of a pod that carries the exchange identity
+// starts with `--session-id <id>`, and one it resumes by its recorded file with `--resume <id>`
+// (launch.agentArgv), and an Oh My Pi that does not define the flag stops at it (`Error: unknown
+// flag: --session-id`), so no role of any pod would start. Oh My Pi's version cannot say which it
+// is — every release of the fork's 18.18.6 line prints omp/18.18.6 — so the probe reads the flag
+// off Oh My Pi's help, and a help it could not read passes no more than one that lists no flag.
+func sessionIDRefusal(name, version, flag string) string {
+	omp := "its Oh My Pi, " + version + ","
+	if version == "" || version == bootprobe.OmpVersionUnread {
+		omp = "its Oh My Pi, whose version the probe could not read,"
+	}
+	var what string
+	switch flag {
+	case bootprobe.SessionIDFlagAbsent:
+		what = omp + " does not take --session-id (omp-session-id=absent: its help lists no such flag)"
+	case bootprobe.SessionIDFlagUnread:
+		what = "the probe could not read whether " + omp + " takes --session-id (omp-session-id=unread: the log tail says why)"
+	case "":
+		what = "its legion CLI predates the omp-session-id mark and reports no Oh My Pi version, so nothing shows that its Oh My Pi takes --session-id"
+	default:
+		what = fmt.Sprintf("its OK line for %s says omp-session-id=%s, where the daemon's probe requires %s", omp, flag, bootprobe.SessionIDFlagTaken)
+	}
+	return fmt.Sprintf("pod %s Succeeded, but %s; runtime.kubernetes.agent_secrets.exchange_audience is set, so the daemon starts each new Oh My Pi role with --session-id <id> "+
+		"and resumes one by its recorded file with --resume <id>, and an Oh My Pi without the flag stops at it (unknown flag: --session-id), so no role would start: "+
+		"use a worker image built with an Oh My Pi that takes --session-id (the cybermonklabs/oh-my-pi releases from v18.18.6-sami.20261117-074351) and a legion that reports it, "+
+		"or unset runtime.kubernetes.agent_secrets.exchange_audience", name, what)
 }
 
 // unreadableMounts is gVisor's wording when the container's mounts cannot be handed to the
@@ -1299,26 +1418,39 @@ type probeSpec struct {
 	ShutdownTime   metav1.Time `json:"shutdownTime"`
 }
 
+// probeOwned are the variables the runtime sets in the image probe's container and in no worker's:
+// bootprobe.ImageProbeRunVariable, which tells `legion probe-image` that it runs as the daemon's
+// boot run. podVariables names each, so CheckPod refuses it in runtime.kubernetes.pod.env and as a
+// provider key; it stays out of runtimeOwned and specOwned, since no worker carries it.
+var probeOwned = map[string]bool{bootprobe.ImageProbeRunVariable: true}
+
 // probeManifest is the probe Sandbox: Running from the start (it holds no Secret to write first),
-// deleted by the controller at shutdown, placed exactly as every worker is placed — the Legion
-// pool, gVisor, the configured scheduling — with the workers' pod security and what the operator
-// adds to every pod (its ServiceAccount, volumes, mounts, and variables, and the providers
-// Secret's configured keys), and a single container running the image's Go `legion probe-image`
-// against p's contract as a worker runs: on the pod's baseline (--pod-safety), loading the plugins
-// from the roots a pod loads them from (--plugin-root, --envoy-plugin-root), with the providers
-// Secret's keys exported as the worker's shim exports them (--provider-env-dir) when its pod mounts
-// that Secret (mountsProviders), each providers secret's `<NAME>_FILE` pointing at its file there
-// as a worker's does (so neither exports it), and resolving the daemon's own role prompts'
-// references (--role-references), which ProbeImage requires, and, first, running one role
-// generation's namespaces as an issue pod's launcher runs every role (--role-namespaces), over a
-// disk emptyDir of its own at RoleProbeDir, as an issue pod's role homes volume is, so a runtime
-// that refuses a role's namespaces fails the probe rather than every role's start. Its command and
-// env are escaped against the kubelet's expansion as every worker container's are
-// (kubeletLiteral). It carries Karpenter's `do-not-disrupt` alone, not the Cluster Autoscaler's
-// `safe-to-evict` (podTemplate sets both): GKE Autopilot places a pod carrying that one on a node
-// of its own whenever possible, so each boot's probe would ask for a node, and a probe minutes long
-// and already retried on failure (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day
-// eviction window.
+// deleted by the controller at shutdown, placed as a gVisor worker is placed — gVisor, the
+// configured scheduling alone — whatever runtime.kubernetes.sandbox says, as a repository
+// cache pod is, where an issue pod or the controller's pod may run in a microVM (placement), with
+// the workers' pod security and what the operator adds to every pod (its ServiceAccount, volumes,
+// mounts, and variables, and the providers Secret's configured keys), and a single container
+// running the image's Go `legion probe-image` against p's contract as a worker runs: on the pod's
+// baseline (--pod-safety), loading the plugins from the roots a pod loads them from
+// (--plugin-root, --envoy-plugin-root), with the providers Secret's keys exported as the worker's
+// shim exports them (--provider-env-dir) when its pod mounts that Secret (mountsProviders), each
+// providers secret's `<NAME>_FILE` pointing at its file there as a worker's does (so neither
+// exports it), and resolving the daemon's own role prompts' references (--role-references), which
+// ProbeImage requires, and, first, running one role generation's namespaces as an issue pod's
+// launcher runs every role (--role-namespaces), over a disk emptyDir of its own at RoleProbeDir,
+// as an issue pod's role homes volume is, so a runtime that refuses a role's namespaces fails the
+// probe rather than every role's start. Its env is the operator's variables, then the pointers
+// (providersPointers, sessionDSNPointer), then, last, LEGION_IMAGE_PROBE_RUN=boot
+// (bootprobe.ImageProbeRunVariable, probeOwned): that variable tells the image's `legion
+// probe-image` that it is the daemon's boot run, so it makes no pi.agents probe, no
+// session-storage probe and no Claude lane, and its OK line says session-storage=skipped. It is a
+// variable and not a flag: a legion built before the variable ignores it and makes every launch
+// probe, but it refuses a flag it does not define (undefinedFlag). Its command and env are escaped
+// against the kubelet's expansion as every worker container's are (kubeletLiteral). It carries
+// Karpenter's `do-not-disrupt` alone, not the Cluster Autoscaler's `safe-to-evict` (podTemplate
+// sets both): GKE Autopilot places a pod carrying that one on a node of its own whenever possible,
+// so each boot's probe would ask for a node, and a probe minutes long and already retried on
+// failure (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day eviction window.
 // For each role role_config_files names (Options.RoleConfigFiles), in the workflow's order, it
 // passes that role's overlays (--role-config-files), and for every workflow role one value per
 // arm the project declares that names overlays (Options.ExperimentVariants), that arm's files
@@ -1366,7 +1498,7 @@ func (r *Runtime) probeManifest(name string, p ImageProbe, shutdown time.Time) p
 		Name:            probeContainer,
 		Image:           r.image,
 		Command:         command,
-		Env:             slices.Concat(r.operatorEnv(), r.providersPointers(), r.sessionDSNPointer()),
+		Env:             slices.Concat(r.operatorEnv(), r.providersPointers(), r.sessionDSNPointer(), []corev1.EnvVar{{Name: bootprobe.ImageProbeRunVariable, Value: bootprobe.ImageProbeRunBoot}}),
 		VolumeMounts:    slices.Concat([]corev1.VolumeMount{{Name: roleProbeVolume, MountPath: RoleProbeDir}}, providersMounts, r.pod.VolumeMounts),
 		Resources:       p.Resources,
 		SecurityContext: restrictedContainer(),

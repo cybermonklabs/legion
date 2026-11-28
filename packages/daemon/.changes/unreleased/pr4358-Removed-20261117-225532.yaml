@@ -1,0 +1,5 @@
+kind: Removed
+body: '`runtime.kubernetes.skills_repository` is removed, with its `skills-fetch` init container, `legion workspace-init skills` and `legion skills-check`. A `legion.yaml` that still names the key is refused at load; a role installs a plugin marketplace with Oh My Pi''s own commands in `runtime.kubernetes.setup` instead.'
+time: 2026-11-17T22:55:32.859451208Z
+custom:
+    Issue: pr4358

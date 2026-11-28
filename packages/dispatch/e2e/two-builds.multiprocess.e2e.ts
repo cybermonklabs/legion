@@ -1,7 +1,6 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ArtifactUploadResponse } from "../web/src/api/types";
 import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -19,7 +18,7 @@ import {
   publishAgentStreamFrame,
   putArchitectureSource,
   syncArchitectureSource,
-  userHeaders,
+  uploadAgentPicture,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor } from "./editor";
@@ -169,28 +168,6 @@ const messageAuthor = {
   as: "agent" as const,
 };
 
-/** The 1x1 PNG e2e/artifacts.e2e.ts uploads. */
-const tinyPng =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
-
-/** Uploads a picture to the session's conversation as alice, as a paste on the Agents page
- *  does, and answers its slug. */
-async function uploadAgentPicture(sessionID: string): Promise<string> {
-  const form = new FormData();
-  form.append("name", "shot.png");
-  form.append("file", new Blob([Buffer.from(tinyPng, "base64")], { type: "image/png" }));
-  const response = await fetch(
-    new URL(`/api/v1/agents/${encodeURIComponent(sessionID)}/artifacts`, baseUrl),
-    { body: form, headers: await userHeaders("alice"), method: "POST" }
-  );
-  if (!response.ok) {
-    throw new Error(`agent picture upload: ${response.status} ${await response.text()}`);
-  }
-  // The server's own upload answer, as e2e/api.ts reads every JSON answer.
-  const uploaded = (await response.json()) as ArtifactUploadResponse;
-  return uploaded.artifact.slug;
-}
-
 interface Seeded {
   readonly agentArtifact: string;
   readonly broadcast: string;
@@ -239,7 +216,7 @@ async function seedEveryRoute(): Promise<Seeded> {
   });
   // The priorities page draws its table only where a priority is written, and a priority's own
   // page draws the work advancing it, so one priority is written with an issue in flight under
-  // it; the two fault lists of the page are drawn whatever they hold.
+  // it; the page's tabs for its two fault lists are drawn whatever those hold.
   const priority = await createPriority({
     description: "Every page is served from either build while a release overlaps the two.",
     owner: "alice",
@@ -286,7 +263,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     },
     "replay"
   );
-  const agentArtifact = await uploadAgentPicture(session.session_id);
+  const agentArtifact = await uploadAgentPicture(session.session_id, "shot.png");
   await seedDeliveryFixture();
   return {
     agentArtifact,
@@ -413,6 +390,18 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/issues/:key/*", shows: (page) => [issueHeading(page, shown.issue)], url: issue },
     {
+      // The panel is already in IssuePage; the region inside it needs the DashboardTab chunk.
+      loads: ["dashboard"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page.locator("#issue-dashboard-panel").getByRole("region", {
+          exact: true,
+          name: "Waiting on you",
+        }),
+      ],
+      url: `${issue}/dashboard`,
+    },
+    {
       loads: ["editor"],
       route: "/issues/:key/*",
       shows: (page) => openDocument(page, shown.spec),
@@ -464,19 +453,19 @@ function visits(seed: Seeded): readonly Visit[] {
         heading(page, "Priorities"),
         page.locator('section[aria-label="Priorities"]'),
         page.getByRole("table", { name: "Priorities table" }),
-        page.locator('section[aria-label="In flight under no priority"]'),
-        page.locator('section[aria-label="Priority work in backlog or icebox"]'),
+        page.getByRole("tablist", { name: "Priorities page" }),
       ],
       url: "/priorities",
     },
     {
-      // Three reads, each its own request: the priority itself, which the title and the owner
-      // are written in where they are read (alice is a person, and every priority write is the
-      // deployment's), the issues advancing it under them, and the history in the margin.
+      // Three reads, each its own request: the priority itself, whose title is the header's
+      // heading and whose owner the chip under it, each a control that opens where it is read
+      // (alice is a person, and every priority write is the deployment's), the issues advancing
+      // it under them, and the history in the margin.
       route: "/priorities/:id",
       shows: (page) => [
-        page.getByRole("textbox", { name: "Title" }),
-        page.getByRole("combobox", { name: "Owner" }),
+        page.getByTestId("priority-header").getByRole("heading", { level: 1 }),
+        page.getByTestId("priority-header").getByRole("button", { name: /^Owner / }),
         page.locator('section[aria-label="Description"]'),
         page.locator('section[aria-label="Work advancing this priority"]'),
         page.getByRole("complementary", { name: "Margin" }),
@@ -541,6 +530,18 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `/delivery?${deliveryWindow}`,
     },
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
+    {
+      // The walk is signed in as alice (`signIn` below), and alice is who `seedEveryRoute`
+      // writes the issue's comment as (e2e/api.ts's default author), so her page lists that
+      // comment. Its words are what says the page drew the store's answer rather than its
+      // loading skeleton or its empty state.
+      route: "/people/:login",
+      shows: (page) => [
+        heading(page, "alice"),
+        page.getByRole("list", { name: "Person nodes" }).getByText(shown.comment),
+      ],
+      url: "/people/alice",
+    },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
     {
       // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), so
@@ -560,11 +561,6 @@ function visits(seed: Seeded): readonly Visit[] {
 
 function isAsset(url: URL): boolean {
   return url.origin === dashboardOrigin && url.pathname.startsWith("/assets/");
-}
-
-async function allVisible(locators: readonly Locator[]): Promise<boolean> {
-  for (const locator of locators) if (!(await locator.isVisible())) return false;
-  return true;
 }
 
 /** Opens every visit with the page document, API calls and sockets on `pageProcess` (the pin
@@ -653,13 +649,21 @@ async function walk(
         await page.goto(visit.url);
         // A failed asset ends the visit at once: the landmark it keeps from rendering would
         // only add a timeout.
-        await expect.poll(async () => problems.length > 0 || (await allVisible(shows))).toBe(true);
+        await expect
+          .poll(async () => {
+            if (problems.length > 0) return true;
+            for (const locator of shows) if (!(await locator.isVisible())) return false;
+            return true;
+          })
+          .toBe(true);
         if (problems.length === 0) {
           await expect(page.locator("#root")).not.toBeEmpty();
           await expect.poll(() => pending.size).toBe(0);
         }
       } catch (error) {
         for (const locator of shows) {
+          // The visit has already failed, so this reads once which landmarks are missing at the
+          // failure, for its message: a wait here would only add a timeout to a failed visit.
           if (!(await locator.isVisible())) problems.push(`${locator} is not visible`);
         }
         if (problems.length === 0) problems.push(String(error));
@@ -753,6 +757,10 @@ test("a tab of build A focused while A and B are both live shows no new-version 
       live: [builds.a.entry, builds.b.entry].sort(),
       serving: builds.a.entry,
     });
+    // The absence is read once the signed-in page has drawn, not off the shell's loading
+    // skeleton, and after the page has read the builds answer (`focusedTab`).
+    await expect(heading(page, "Inbox")).toBeVisible();
+    // The waits above settled the content this reads, so one read is enough.
     expect(await page.getByRole("status", { name: "A new version is available" }).count()).toBe(0);
   } finally {
     await page.context().close();
@@ -785,9 +793,7 @@ test("a tab of build B focused once only build A is live shows the new-version n
     const tab = await focusedTab(browser, "b");
     page = tab.page;
     expect(tab.builds).toEqual({ live: [builds.a.entry], serving: builds.b.entry });
-    expect(await page.getByRole("status", { name: "A new version is available" }).isVisible()).toBe(
-      true
-    );
+    await expect(page.getByRole("status", { name: "A new version is available" })).toBeVisible();
   } finally {
     if (moved.length > 0) {
       await sql(

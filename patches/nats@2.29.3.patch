@@ -1,8 +1,41 @@
 diff --git a/lib/nats-base-client/protocol.js b/lib/nats-base-client/protocol.js
-index 63fac09631b888081e0b2b2ab4dd24854a6ae286..fba2d5c9634eb558daa9251db39040a7002f7d0a 100644
+index 63fac09631b888081e0b2b2ab4dd24854a6ae286..2982a497c7ec1ee4e5eec07eef752b3c885680ce 100644
 --- a/lib/nats-base-client/protocol.js
 +++ b/lib/nats-base-client/protocol.js
-@@ -363,7 +363,9 @@ class ProtocolHandler {
+@@ -348,9 +348,30 @@ class ProtocolHandler {
+         this.connectError = (err) => {
+             pong.reject(err);
+         };
+-        this.transport = (0, transport_1.newTransport)();
+-        this.transport.closed()
++        const transport = (0, transport_1.newTransport)();
++        this.transport = transport;
++        // The server's -ERR recorded before this dial, so a close during the handshake names only
++        // what this dial was told.
++        const errorBefore = this.lastError;
++        transport.closed()
+             .then((_err) => __awaiter(this, void 0, void 0, function* () {
++            // A transport a later dial replaced closes nothing of the connection's (nats.js 3.x
++            // does the same).
++            if (transport !== this.transport) {
++                return;
++            }
++            // A transport that closes before its dial's handshake completed (nats-server's
++            // authentication timeout sends -ERR and then closes) fails that dial now: after the
++            // server's INFO nothing but the PONG, an authorization error or the dial's timer
++            // settles it, so it would wait out the whole timeout. The dial loop that owns the
++            // handshake dials again or gives up; a disconnect from here would only wait on it, and
++            // would report a second reconnect once that loop succeeds.
++            if (!this.connected) {
++                pong.reject(this.lastError !== errorBefore && this.lastError
++                    ? this.lastError
++                    : transport.closeError || core_1.NatsError.errorForCode(core_1.ErrorCode.Disconnect));
++                return;
++            }
+             this.connected = false;
+             if (!this.isClosed()) {
+                 // if the transport gave an error use that, otherwise
+@@ -363,7 +384,9 @@ class ProtocolHandler {
      }
      disconnect() {
          this.dispatchStatus({ type: core_1.DebugEvents.StaleConnection, data: "" });
@@ -13,8 +46,66 @@ index 63fac09631b888081e0b2b2ab4dd24854a6ae286..fba2d5c9634eb558daa9251db39040a7
      }
      reconnect() {
          if (this.connected) {
+@@ -435,7 +458,11 @@ class ProtocolHandler {
+                         }
+                     }
+                     catch (err) {
+-                        console.log("reader closed", err);
++                        // The error's name alone, and on stderr: a parse error's message holds the
++                        // bytes a peer sent, which a peer that is no nats-server can make the
++                        // CONNECT this client sent it, its credential included; and stdout is the
++                        // MCP stream in Claude Code's channel server.
++                        console.error("reader closed", err && err.name);
+                     }
+                 }))().then();
+             }
+@@ -447,6 +474,12 @@ class ProtocolHandler {
+                 if (timer) {
+                     timer.cancel();
+                 }
++                // close() was called while the handshake completed: the client is closed, and a
++                // connection marked up here would start its heartbeats on it (nats.js 3.x checks
++                // the same).
++                if (this._closed) {
++                    throw core_1.NatsError.errorForCode(core_1.ErrorCode.ConnectionClosed);
++                }
+                 this.connected = true;
+                 this.connectError = undefined;
+                 this.sendSubscriptions();
+@@ -468,6 +501,12 @@ class ProtocolHandler {
+     _doDial(srv) {
+         return __awaiter(this, void 0, void 0, function* () {
+             const { resolve } = this.options;
++            // A dial its caller gave up on looks no further server's name up either: the dial loop
++            // takes the next server after this one fails, and a lookup that never answers would
++            // keep the abandoned connect() pending.
++            if (this.options.abandonSignal && this.options.abandonSignal.aborted) {
++                throw core_1.NatsError.errorForCode(core_1.ErrorCode.Timeout);
++            }
+             const alts = yield srv.resolve({
+                 fn: (0, transport_1.getResolveFn)(),
+                 debug: this.options.debug,
+@@ -476,6 +515,18 @@ class ProtocolHandler {
+             });
+             let lastErr = null;
+             for (const a of alts) {
++                // A close() during the name lookup, or during an earlier address's handshake, ends
++                // this dial: the dial loop checks for a close only between servers, so a name with
++                // several addresses would dial the rest of them after the connection was closed.
++                if (this._closed) {
++                    throw lastErr || core_1.NatsError.errorForCode(core_1.ErrorCode.ConnectionClosed);
++                }
++                // A dial its caller gave up on at its own deadline (the `abandonSignal` option that
++                // packages/envoy-client/src/nats-connection.ts passes) tries no further address or
++                // server: its result would be closed unread, and the caller may already dial again.
++                if (this.options.abandonSignal && this.options.abandonSignal.aborted) {
++                    throw lastErr || core_1.NatsError.errorForCode(core_1.ErrorCode.Timeout);
++                }
+                 try {
+                     lastErr = null;
+                     this.dispatchStatus({ type: core_1.DebugEvents.Reconnecting, data: a.toString() });
 diff --git a/lib/src/node_transport.js b/lib/src/node_transport.js
-index 64752b9ff22603b70421170613e7cdac2b50cce2..1081995218c8a360361dbb55ae89a1465f7cf4c8 100644
+index 64752b9ff22603b70421170613e7cdac2b50cce2..818b9e802aedaa4e8c2f82934b51ead3503eed13 100644
 --- a/lib/src/node_transport.js
 +++ b/lib/src/node_transport.js
 @@ -112,6 +112,7 @@ class NodeTransport {
@@ -40,3 +131,13 @@ index 64752b9ff22603b70421170613e7cdac2b50cce2..1081995218c8a360361dbb55ae89a146
              if (this.done)
                  return;
              this.closeError = err;
+@@ -446,7 +450,8 @@ class NodeTransport {
+                 }
+             }
+             catch (err) {
+-                console.log(err);
++                // The error's name alone, and on stderr, as the reader loop's (protocol.js).
++                console.error("transport close", err && err.name);
+             }
+             this.done = true;
+             this.closedNotification.resolve(this.closeError);

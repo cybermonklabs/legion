@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+    Dispatch names browser requests' people from Identity-Aware Proxy under `DISPATCH_IDENTITY=iap`: each request's person is the `email` of the assertion IAP signs in `X-Goog-IAP-JWT-Assertion`, verified as Google documents (ES256 against IAP's published key set, issuer `https://cloud.google.com/iap`, audience `DISPATCH_IAP_AUDIENCE`, `exp` and `iat` with 30 seconds of skew), and never IAP's unsigned `X-Goog-Authenticated-User-Email`.
+    It admits an account whose verified `hd` is `DISPATCH_SIGNIN_DOMAIN`, which it requires, records the person, and refuses the other `DISPATCH_SIGNIN_*` settings, dev sign-in, and `DISPATCH_IAP_AUDIENCE` under any other identity. A refused request is `401 NO_IDENTITY`, and an unreadable key set `503 SIGNIN_UNAVAILABLE`.
+    A write from another origin that carries an assertion is refused 403, as one with a session cookie is.
+    A websocket re-checks the assertion its upgrade carried every heartbeat, and once that assertion expires (IAP gives it about ten minutes) the socket is rotated rather than cut: the live socket closes with `4001` and the document socket with `4412`, on which the page reopens each at once with a fresh assertion, judged again. Only an assertion IAP signed counts as expired: one past its `exp` whose signature IAP's key set no longer verifies, or whose person the domain no longer admits, is refused as any other is, with its WARN line, and closes the socket with `1008` or no close frame.
+time: 2026-11-18T07:28:07.772980983Z
+custom:
+    Issue: pr4393

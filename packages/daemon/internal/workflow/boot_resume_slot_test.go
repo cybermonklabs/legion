@@ -33,21 +33,23 @@ func seedRuleSuspendedOwner(t *testing.T, pool *pgxpool.Pool, project string, is
 // record.PhaseKeepsSlot).
 //
 // A start is one row since INFRA-1573, and that row carries the worker's task, so the mark now
-// decides when the worker comes back. A started issue holds a slot until its work is past its
-// review (record.KeepsSlot), except while it waits on another issue (blockers.waitsOf), so the
-// resume of a worker past that review waits for nothing: the row is runnable the moment the boot
-// writes it, and the merger is reached. What the mark buys is the other issue: one at work whose tree runs but which
-// holds no slot — a member of a re-admitted tree still waiting in the line while the cap is
-// full — whose row waits for the slot instead of putting a worker to work on an issue admission
-// has not admitted, and runs when the slot comes.
+// decides when the worker comes back. A started issue holds a slot while it stands in a phase
+// that keeps one (record.KeepsSlot), except while it waits on another issue (blockers.waitsOf),
+// and accepting, retro and merging keep none, so the resume of a worker in one of those phases
+// waits for nothing: the row is runnable the moment the boot writes it, and the merger is
+// reached. What the mark buys is the other issue: one at work whose tree runs but which holds no
+// slot — a member of a re-admitted tree still waiting in the line while the cap is full — whose
+// row waits for the slot instead of putting a worker to work on an issue admission has not
+// admitted, and runs when the slot comes.
 //
-// The worker past its review read here is the merger of an issue standing in merging: its own
-// merge is what ends the phase, and it works it on no row of the cap's, since merging stands
-// past the issue's review.
+// The worker read here that runs on no slot is the merger of an issue standing in merging: its
+// own merge is what ends the phase, and it works it on no row of the cap's, since merging keeps
+// none.
 //
 // The two issues differ in their phase and in the mark their resume carries: each is a root of
 // its own running tree whose phase owner the daemon's rule suspended.
 func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	project, err := claim.ProjectToken("LEGION")
 	if err != nil {
@@ -65,8 +67,8 @@ func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing
 	seedRuleSuspendedOwner(t, pool, project, merging, claim.RoleMerger)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	now := engine.now()
-	// The issue in merging holds no row: its work stands past its review (record.KeepsSlot), so
-	// the lifecycle of its tree is opened on its own rather than by a slot of the cap's.
+	// The issue in merging holds no row: merging keeps none (record.KeepsSlot), so the lifecycle
+	// of its tree is opened on its own rather than by a slot of the cap's.
 	seedTreeLifecycle(t, pool, merging)
 
 	if _, err := intake.ApplyFact(t.Context(), pool, "daemon", "boot:LEGION:1", intake.DaemonBooted{Boot: 1}, engine, admissionStub{}); err != nil {
@@ -78,7 +80,7 @@ func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing
 		t.Fatalf("the start rows of %s = %+v, want one row for its merger carrying its resume task", merging, slotted)
 	}
 	if slotted[0].needsSlot || !slotted[0].claimable {
-		t.Fatalf("the boot's resume of %s = %+v, want it marked for no admission slot and runnable at once: the issue stands past its review, where it holds no row a marked start could wait on",
+		t.Fatalf("the boot's resume of %s = %+v, want it marked for no admission slot and runnable at once: the issue stands in merging, which keeps no row a marked start could wait on",
 			merging, slotted[0])
 	}
 
@@ -110,6 +112,7 @@ func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing
 // no start for one whatever source suspended its claim. The control is a phase worker of a
 // running tree, which the same boot resumes.
 func TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	project, err := claim.ProjectToken("LEGION")
 	if err != nil {

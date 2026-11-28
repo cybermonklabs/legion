@@ -1,9 +1,16 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { DocumentToolbar } from "../doc/ProofDocument";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SpecToolbar } from "./SpecToolbar";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function renderToolbar(copied: boolean) {
   const toolbar: DocumentToolbar = {

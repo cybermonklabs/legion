@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 
 	gws "github.com/gorilla/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -33,9 +35,12 @@ import (
 // It closes with:
 //   - 4001 (max age, contracts.LiveSocketMaxAgeClose) once it reaches its age, drawn as it opens
 //     (liveSocketAge), or when the rotate test hook asks, so no socket holds one of the browser's
-//     connections indefinitely: the page reopens at once and resumes every subscription;
+//     connections indefinitely: the page reopens at once and resumes every subscription. It closes
+//     with 4001 too once the credential its upgrade carried expires, an Identity-Aware Proxy
+//     assertion (whileCallerResolves, errCredentialExpired), and the reopened socket's fresh one is
+//     judged again;
 //   - 1012 (service restart) when Dispatch shuts down (server.lifetime) or the disconnect test hook
-//     asks;
+//     asks, and as it opens once the shutdown waits for the open sockets (closeUnserved);
 //   - 1008 (policy violation) once its caller no longer resolves (whileCallerResolves);
 //   - 1013 (try again later) when the page falls liveSocketQueue of the hub's frames behind;
 //   - 1009 (message too big) for a frame over liveSocketReadLimit, which gorilla writes;
@@ -69,6 +74,9 @@ const (
 	liveSocketReadBuffer = 4096
 	// liveSocketMaxAgeReason is the reason a close for the socket's age carries.
 	liveSocketMaxAgeReason = "max age"
+	// liveSocketCredentialExpiredReason is the reason a 4001 close carries when the credential the
+	// socket's upgrade carried has expired rather than the socket's own age (errCredentialExpired).
+	liveSocketCredentialExpiredReason = "credential expired"
 )
 
 // liveSocket is one open GET /ws/live socket, the deliveryLiveConn the hub sends to.
@@ -100,9 +108,22 @@ type liveSocket struct {
 	// waiting.
 	closed chan struct{}
 	// deadline orders the pong handler's extension of the read deadline with the last one the
-	// writer sets once it has closed; closing stops further extensions.
+	// writer sets once it has closed, or the drain of a frame past the read limit (endReads);
+	// closing stops further extensions. readsDue is that deadline, on clock
+	// (Deps.LiveSocketClock, clock.Real() where that is nil), and readsEnd the one timer that ends
+	// the page's reads once it is due, by setting the connection's read deadline to now
+	// (endReadsNow). Each awaitPong and endReads moves readsDue and the timer and lifts
+	// any deadline the timer already set on the connection, as each SetReadDeadline replaces the
+	// one before, expired or not: a pong already in the read buffer when the deadline fell due
+	// renews it before the next network read, and that read then waits for the page. The timer's
+	// function runs on a goroutine of its own and ends the reads only once the clock has reached
+	// readsDue (endReadsIfDue), so a deadline that fell due just as a later one replaced it - a
+	// drain's, or the close wait's - does not cut the later one short. A zero readsDue ends nothing.
 	deadline sync.Mutex
 	closing  bool
+	clock    clock.Clock
+	readsEnd clock.Timer
+	readsDue time.Time
 	// subs is every subscription the socket holds, by sub. Only the handler's goroutine touches it:
 	// the read loop, then the cleanup once the loop has ended.
 	subs map[string]*liveSub
@@ -116,7 +137,7 @@ type liveSocket struct {
 	beforePick func(socket *liveSocket, takesStream bool)
 }
 
-func newLiveSocket(ctx context.Context, conn *gws.Conn, credential *model.Credential) *liveSocket {
+func newLiveSocket(ctx context.Context, conn *gws.Conn, credential *model.Credential, deadlines clock.Clock) *liveSocket {
 	ctx, cancel := context.WithCancel(ctx)
 	return &liveSocket{
 		conn:       conn,
@@ -129,6 +150,7 @@ func newLiveSocket(ctx context.Context, conn *gws.Conn, credential *model.Creden
 		shut:       make(chan struct{}),
 		closed:     make(chan struct{}),
 		subs:       map[string]*liveSub{},
+		clock:      cmp.Or[clock.Clock](deadlines, clock.Real()),
 	}
 }
 
@@ -197,17 +219,71 @@ func (socket *liveSocket) awaitPong(wait time.Duration) {
 	socket.deadline.Lock()
 	defer socket.deadline.Unlock()
 	if !socket.closing {
-		_ = socket.conn.SetReadDeadline(time.Now().Add(wait))
+		socket.endReadsInLocked(wait)
 	}
 }
 
 // endReads ends the page's reads within wait: the time its close frame has to arrive once the
-// socket sent its own, or none when the connection failed.
+// socket sent its own, or none when the connection failed, or the time the rest of a frame past
+// the read limit has to arrive (serveLiveSocket's drain). Its deadline replaces the pong
+// deadline, as a SetReadDeadline replaces the one before, so a pong deadline that falls due inside
+// the wait does not cut it short, and one the pong deadline's timer already set on the connection
+// is lifted with it (endReadsInLocked).
 func (socket *liveSocket) endReads(wait time.Duration) {
 	socket.deadline.Lock()
 	defer socket.deadline.Unlock()
 	socket.closing = true
-	_ = socket.conn.SetReadDeadline(time.Now().Add(wait))
+	socket.endReadsInLocked(wait)
+}
+
+// endReadsInLocked moves the read deadline to wait from now on the socket's clock, in place of
+// the one before; a wait of zero or less ends the reads here. A positive wait lifts the deadline
+// an earlier timer set on the connection (endReadsNow), so a renewal after the reads were ended
+// gives the page the whole wait, as SetReadDeadline does over an expired deadline.
+func (socket *liveSocket) endReadsInLocked(wait time.Duration) {
+	if wait <= 0 {
+		socket.readsDue = time.Time{}
+		if socket.readsEnd != nil {
+			socket.readsEnd.Stop()
+		}
+		socket.endReadsNow()
+		return
+	}
+	_ = socket.conn.SetReadDeadline(time.Time{})
+	socket.readsDue = socket.clock.Now().Add(wait)
+	if socket.readsEnd == nil {
+		socket.readsEnd = socket.clock.AfterFunc(wait, socket.endReadsIfDue)
+		return
+	}
+	socket.readsEnd.Reset(wait)
+}
+
+// endReadsIfDue is the read deadline's timer firing: it ends the reads once the clock has reached
+// readsDue, and does nothing when a later arm moved readsDue on, or stopReadDeadline cleared it,
+// since the timer fired.
+func (socket *liveSocket) endReadsIfDue() {
+	socket.deadline.Lock()
+	defer socket.deadline.Unlock()
+	if !socket.readsDue.IsZero() && !socket.clock.Now().Before(socket.readsDue) {
+		socket.endReadsNow()
+	}
+}
+
+// endReadsNow is the read deadline passing: a read in progress returns a timeout at once, and so
+// does every read after it. The caller holds deadline.
+func (socket *liveSocket) endReadsNow() {
+	_ = socket.conn.SetReadDeadline(time.Now())
+}
+
+// stopReadDeadline stops the read deadline's timer once the page's reads are over, so none
+// outlives its socket, and a timer that has fired already ends nothing.
+func (socket *liveSocket) stopReadDeadline() {
+	socket.deadline.Lock()
+	defer socket.deadline.Unlock()
+	socket.readsDue = time.Time{}
+	if socket.readsEnd != nil {
+		socket.readsEnd.Stop()
+	}
 }
 
 // close sends the page a close frame with code and reason, and waits for its reply.
@@ -218,6 +294,23 @@ func (socket *liveSocket) close(code int, reason string) {
 		return
 	}
 	socket.endReads(liveSocketCloseWait)
+}
+
+// closeUnserved ends a socket that opened once Dispatch's shutdown was already waiting for the
+// open ones (liveSocketSet.wait), which it does not serve: it closes with 1012, as every open
+// socket does at shutdown, so the page reconnects to a server that is not stopping. It reads off
+// whatever the page sent until the page's close arrives or liveSocketCloseWait passes, so the
+// connection ends with a FIN behind the close frame rather than a reset that can overtake it.
+func (socket *liveSocket) closeUnserved() {
+	defer socket.cancel()
+	defer socket.conn.Close()
+	defer socket.stopReadDeadline()
+	socket.close(gws.CloseServiceRestart, "")
+	for {
+		if _, _, err := socket.conn.NextReader(); err != nil {
+			return
+		}
+	}
 }
 
 // write sends the page each queued frame, the hub's queue ahead of the stream, and every heartbeat
@@ -276,7 +369,11 @@ func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, h
 			socket.close(gws.CloseServiceRestart, "")
 			return
 		case <-ctx.Done():
-			socket.close(gws.ClosePolicyViolation, "")
+			if errors.Is(context.Cause(ctx), errCredentialExpired) {
+				socket.close(contracts.LiveSocketMaxAgeClose, liveSocketCredentialExpiredReason)
+			} else {
+				socket.close(gws.ClosePolicyViolation, "")
+			}
 			return
 		case <-ticker.C:
 			if err := socket.conn.WriteControl(gws.PingMessage, nil, time.Now().Add(liveSocketWriteWait)); err != nil {
@@ -338,11 +435,15 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 		return // the upgrader has answered the request
 	}
 	age := s.liveSocketAge()
-	socket := newLiveSocket(r.Context(), conn, actor.Credential)
+	socket := newLiveSocket(r.Context(), conn, actor.Credential, s.deps.LiveSocketClock)
 	socket.beforePick = s.liveWriterBeforePick
-	s.liveSockets.add(socket)
+	if !s.liveSockets.add(socket) {
+		socket.closeUnserved()
+		return
+	}
 	defer s.liveSockets.remove(socket)
 	defer conn.Close()
+	defer socket.stopReadDeadline()
 	defer s.deliveryHub.Close(socket)
 	defer s.endLiveSubscriptions(socket)
 
@@ -379,7 +480,7 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(readErr, gws.ErrReadLimit) {
 		// The rest of the frame past the limit is still arriving. Reading it off before closing makes
 		// the close a FIN behind the 1009 gorilla wrote, not a reset that can overtake it.
-		_ = conn.NetConn().SetReadDeadline(time.Now().Add(liveSocketCloseWait))
+		socket.endReads(liveSocketCloseWait)
 		_, _ = io.Copy(io.Discard, conn.NetConn())
 	}
 }
@@ -475,22 +576,35 @@ func (s *server) shutAllLiveSockets(code int, reason string) {
 	}
 }
 
-// liveSocketSet is every open GET /ws/live socket: the test hooks close them, and a test waits for
-// every socket's handler, and so every subscription it ran, to return before its database closes.
+// liveSocketSet is every open GET /ws/live socket: the test hooks close them, and the shutdown
+// (server.waitBackground) waits for every socket's handler, and so every subscription it ran, to
+// return before the database pool closes. http.Server.Shutdown counts no hijacked connection, so an
+// upgrade still in flight at the signal can reach add after that wait has begun. The set takes no
+// socket from then on: its count is a sync.WaitGroup, whose count may not rise from zero beside its
+// Wait, and a socket taken after the wait returned would serve on while the pool closes.
 type liveSocketSet struct {
 	mu      sync.Mutex
 	open    map[*liveSocket]struct{}
 	serving sync.WaitGroup
+	// closed is set as wait begins. It is read and set under mu, the lock add counts a socket
+	// under, so every Add either comes before the Wait or does not happen.
+	closed bool
 }
 
-func (set *liveSocketSet) add(socket *liveSocket) {
+// add counts socket among the open sockets, and answers false, counting nothing, once wait has
+// begun.
+func (set *liveSocketSet) add(socket *liveSocket) bool {
 	set.mu.Lock()
 	defer set.mu.Unlock()
+	if set.closed {
+		return false
+	}
 	if set.open == nil {
 		set.open = map[*liveSocket]struct{}{}
 	}
 	set.open[socket] = struct{}{}
 	set.serving.Add(1)
+	return true
 }
 
 func (set *liveSocketSet) remove(socket *liveSocket) {
@@ -511,5 +625,10 @@ func (set *liveSocketSet) all() []*liveSocket {
 	return sockets
 }
 
-// wait returns once every socket's handler has returned.
-func (set *liveSocketSet) wait() { set.serving.Wait() }
+// wait closes the set to new sockets and returns once every socket's handler has returned.
+func (set *liveSocketSet) wait() {
+	set.mu.Lock()
+	set.closed = true
+	set.mu.Unlock()
+	set.serving.Wait()
+}

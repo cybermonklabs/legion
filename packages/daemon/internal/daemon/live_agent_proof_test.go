@@ -2,8 +2,8 @@
 
 // What the five live proofs that drive real Oh My Pi panes share below the daemon: the constants
 // each reads off the daemon, the run each one is (liveAgentProof) with its reads of a claim, of a
-// pane and of the daemon's own log, the database, the `legion` binary, the plugins and the pane
-// listener a run builds before the daemon boots, the model stand-in each pane talks to, the
+// pane and of the daemon's own log, the `legion` binary, the plugins and the pane listener a run
+// builds before the daemon boots, the model stand-in each pane talks to, the
 // provider answers those stand-ins write, the overlay writers that point a pane at one, and the
 // log handler those reads of the daemon's own decisions go through. The five are
 // provider_error_retry_live_test.go, the driver of scripts/e2e/provider-error-retry.sh,
@@ -28,6 +28,27 @@
 // late-completion and busy-relaunch proofs make (streamAnthropicToolUse).
 package daemon
 
+// The harness main's #2780 added under the e2e tag for the two agent proofs it brought
+// (claim_compaction_live_test.go and provider_error_retry_live_test.go): it builds the
+// `legion` their panes run and packs both Oh My Pi plugins into the run's own profile. No job
+// of ci.yaml applies this row today - the daemon's e2e tag is vetted (ci-job-typecheck.yaml's
+// `go vet -tags e2e ./...`) and never tested, and a vet run compiles a test file without
+// applying its rules - so it is what a `go test -tags e2e ./internal/daemon/` reads the day a
+// job runs one.
+//ci:builds packages/daemon ./cmd/legion buildProofLegion runs go build ./cmd/legion in packages/daemon
+//ci:reads scripts/e2e/lib/pack-plugin.sh installProofPlugins runs it in bash, once per plugin
+//ci:reads packages/pi-envoy/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads packages/pi-legion/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads packages/pi-shared/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads packages/envoy-client/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads packages/contracts/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads scripts/pi-plugin-prepack.sh installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads scripts/third-party-notices.ts installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads skills/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads package.json installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads bun.lock installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+//ci:reads patches/** installProofPlugins packs packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack
+
 import (
 	"context"
 	"encoding/json"
@@ -46,13 +67,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
-	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // ---- the constants every proof reads -------------------------------------------------------------
@@ -134,8 +152,8 @@ func (r *liveAgentProof) awaitReady(token claim.Token) {
 		token, held.State, held.Session, held.PluginContract, held.Locator.Label())
 }
 
-// await polls until want holds, failing with what it waited for. testwait.Eventually bounds its
-// own wait at a minute, which is shorter than the ladder's own gaps.
+// await polls until want holds, failing with what it waited for once within has passed: the
+// ladder's waits each name the span they may take.
 func (r *liveAgentProof) await(what string, within time.Duration, want func() bool) {
 	r.t.Helper()
 	deadline := time.Now().Add(within)
@@ -215,58 +233,6 @@ func indentOutput(text string) string {
 
 // ---- what the run builds before the daemon boots -------------------------------------------------
 
-// takeOwnDatabase points LEGION_TEST_PG_DSN at a database this run makes for itself on the server
-// that variable names, so the fixture migrates into a database of its own rather than into the one
-// the DSN names. The daemon's live proofs share the named database on a CI service, whose role
-// owns it; in a Legion worker pod the server's `legion_test` role may create databases and may not
-// write the `public` schema of `postgres`, which a migration answers `permission denied for schema
-// public` (SQLSTATE 42501). The database is dropped at the end of the run; that role also cannot
-// terminate another backend, so a drop a connection outlives is reported and not a failure, and the
-// database goes with the pod.
-//
-// The URL of that database is testdb.DatabaseURL's, made before the connection and the create,
-// so a DSN whose rewrite names another server is refused and the run leaves no database behind
-// either. Two frames hold this run to the server its caller named, and that helper's comment and
-// the comment above require_loopback_dsn in scripts/e2e/lib/loopback-dsn.sh are where the two
-// are written.
-func takeOwnDatabase(t *testing.T) {
-	t.Helper()
-	named := os.Getenv("LEGION_TEST_PG_DSN")
-	if named == "" {
-		return // newLiveProof's own testDSN skips the test, naming the variable.
-	}
-	database := "legion_live_proof_" + strings.ToLower(randomSuffix(t))
-	own, err := testdb.DatabaseURL(named, database)
-	if err != nil {
-		t.Fatalf("%v", err)
-	}
-	ctx := context.Background()
-	server, err := pgx.Connect(ctx, named)
-	if err != nil {
-		t.Fatalf("connect the PostgreSQL LEGION_TEST_PG_DSN names: %v", err)
-	}
-	if _, err := server.Exec(ctx, "create database "+database+" strategy file_copy"); err != nil {
-		server.Close(ctx)
-		t.Fatalf("make this run's own database %s: %v", database, err)
-	}
-	if err := server.Close(ctx); err != nil {
-		t.Fatalf("close the connection the database was made on: %v", err)
-	}
-	t.Setenv("LEGION_TEST_PG_DSN", own)
-	fmt.Printf("   this run migrates into its own database %s on the server LEGION_TEST_PG_DSN names\n", database)
-	t.Cleanup(func() {
-		drop, err := pgx.Connect(context.Background(), named)
-		if err != nil {
-			t.Logf("the run's own database %s was left behind: %v", database, err)
-			return
-		}
-		defer drop.Close(context.Background())
-		if _, err := drop.Exec(context.Background(), "drop database "+database); err != nil {
-			t.Logf("the run's own database %s was left behind: %v", database, err)
-		}
-	})
-}
-
 // proofCheckoutRoot is the repository this driver was built from, found from this file's own
 // compiled path: the driver runs from a temporary directory, so nothing about its working
 // directory names the checkout.
@@ -303,8 +269,10 @@ func buildProofLegion(t *testing.T, root, work string) string {
 // installProofPlugins packs this checkout's two Oh My Pi plugins as the release packs them
 // (scripts/e2e/lib/pack-plugin.sh) and installs each into the run's own profile under its own
 // HOME, as scripts/e2e/lib/install-plugin-profile.sh does for a stage proof — through the Oh My Pi
-// the run's panes run rather than a mise pin, since a pod has no mise. The profile's natives are
-// linked from the shared cache, so no pane downloads a native module.
+// the run's panes run rather than a mise pin, since a pod on a worker image from before
+// dispatch://INFRA-3257 has no mise, and the mise of an image since then holds no Oh My Pi until it
+// downloads one from GitHub. The profile's natives are linked from the shared cache, so no pane
+// downloads a native module.
 func installProofPlugins(t *testing.T, root, work, home, profile, omp string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(home, ".omp"), 0o700); err != nil {

@@ -8,7 +8,8 @@ body: |-
   links with them when `DISPATCH_PUBLIC_URL` was not set. Now the gateway error, the refusals of
   `listIssuePage` and `listAllIssues`, `DispatchWriteLandedError`, `DispatchWriteUnsettledError`,
   the missing-review-route refusal, the unreachable-server and missing-answers-route errors of the
-  `dispatch` command, the missing-answers-route notice, every printed link and
-  `formatOpenAsksSummary` name the URL without them (`withoutUserinfo` in `errors.ts`). The Envoy
-  listener client's errors and `EnvoyApiError.details.url` leave out a listener URL's user and
-  password the same way.
+  `dispatch` command, the missing-answers-route notice and `formatOpenAsksSummary` name such a URL
+  by its setting's fixed phrase, no part of it, and every printed link built on it is a
+  `dispatch://` reference (`urlForText`, `requestForText`, `@legion/contracts/log-text`). The Envoy
+  listener client's errors and `EnvoyApiError.details.url` name a listener URL that carries user
+  info the same way.

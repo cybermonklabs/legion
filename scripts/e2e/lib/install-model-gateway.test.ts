@@ -405,4 +405,12 @@ describe("the model gateway key command", () => {
     ) as { extensionHandlers?: { toolCallTimeoutMs?: unknown } };
     expect(config.extensionHandlers?.toolCallTimeoutMs).toBe(120_000);
   });
+
+  test("the profile's config.yml shuts Oh My Pi's first-run setup wizard, which would hold an interactive session", () => {
+    const { run } = install();
+    const config = Bun.YAML.parse(
+      readFileSync(join(run, "omp-home/.omp/profiles/legion-e2e-test/agent/config.yml"), "utf8")
+    ) as { startup?: unknown };
+    expect(config.startup).toEqual({ setupWizard: false });
+  });
 });

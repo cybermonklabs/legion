@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Request is one CONNECT a Server received: its address type (0x01 an IPv4 address, 0x03 a domain
@@ -57,7 +59,7 @@ func StartRefusing(t testing.TB, reply byte) *Server {
 
 func start(t testing.TB, server *Server) *Server {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the SOCKS5 test server: %v", err)
 	}

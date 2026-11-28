@@ -24,6 +24,11 @@
       "bun": "./src/dispatch-tools.ts",
       "default": "./dist/dispatch-tools.js"
     },
+    "./go-blank": {
+      "types": "./src/go-blank.ts",
+      "bun": "./src/go-blank.ts",
+      "default": "./dist/go-blank.js"
+    },
     "./legion-api": {
       "types": "./src/legion-api.ts",
       "bun": "./src/legion-api.ts",
@@ -33,18 +38,42 @@
       "types": "./src/trailing-slash.ts",
       "bun": "./src/trailing-slash.ts",
       "default": "./dist/trailing-slash.js"
+    },
+    "./held-secrets": {
+      "types": "./src/held-secrets.ts",
+      "bun": "./src/held-secrets.ts",
+      "default": "./dist/held-secrets.js"
+    },
+    "./log-text": {
+      "types": "./src/log-text.ts",
+      "bun": "./src/log-text.ts",
+      "default": "./dist/log-text.js"
+    },
+    "./daemon-contract": {
+      "types": "./src/daemon-contract.ts",
+      "bun": "./src/daemon-contract.ts",
+      "default": "./dist/daemon-contract.js"
+    },
+    "./daemon-api-records": {
+      "types": "./src/daemon-api-records.ts",
+      "bun": "./src/daemon-api-records.ts",
+      "default": "./dist/daemon-api-records.js"
+    },
+    "./http-status": {
+      "types": "./src/http-status.ts",
+      "bun": "./src/http-status.ts",
+      "default": "./dist/http-status.js"
     }
   },
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "types": "src/index.ts",
   "scripts": {
     "gen:go": "bun run scripts/gen-go.ts",
     "check:go": "bun run scripts/gen-go.ts --check",
     "gen:api": "bun run scripts/gen-api.ts",
-    "check:api": "bun run scripts/gen-api.ts --check",
-    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/legion-api.ts src/trailing-slash.ts --outdir dist --target bun --format esm",
-    "build:dispatch": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts --outdir dist --target bun --format esm",
-    "typecheck": "bunx tsc --noEmit",
+    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/go-blank.ts src/legion-api.ts src/trailing-slash.ts src/log-text.ts src/held-secrets.ts src/daemon-contract.ts src/daemon-api-records.ts src/http-status.ts --root src --outdir dist --target bun --format esm",
+    "build:dispatch": "bun build src/index.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/http-status.ts src/legion-api.ts --root src --outdir dist --target bun --format esm",
+    "typecheck": "bun scripts/gen-api.ts && bunx tsc --noEmit",
     "test": "bun test",
     "lint": "bunx biome check src/ schemas/"
   },
@@ -52,7 +81,7 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.14",
+    "@biomejs/biome": "2.5.15",
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
     "openapi-typescript": "7.13.0",

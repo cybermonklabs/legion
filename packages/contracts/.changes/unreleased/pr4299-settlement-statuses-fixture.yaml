@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+    The checks settlement fixture (`fixtures/checks-settlement/listener-rules.json`) holds commit
+    statuses as input and the settlement's new `statuses` field, a list of
+    `{context, state, created_at}` in context order, with GitHub's `created_at` of each status. A
+    settlement whose record holds no status leaves the field out.
+time: 2026-11-17T12:46:32Z
+custom:
+    Issue: pr4299

@@ -2,18 +2,19 @@ package specform
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
 // stopNoSpace is the detail of the rule stop-no-space for word.
 func stopNoSpace(word string) string {
-	return fmt.Sprintf("a stop in %q has no space after it, so Dispatch cannot find the end of the sentence. Put a space after the stop, or put the name in code font", word)
+	return fmt.Sprintf("a stop in %q has no space after it, so Dispatch cannot find the end of the sentence", word)
 }
 
 // checkStatement is the findings of Check for one statement of body.
 func checkStatement(body string) (Text, []Finding) {
 	text := statement(body)
-	return text, Check(planted(), Input{Texts: []Text{text}})
+	return text, check(planted(), Input{Texts: []Text{text}})
 }
 
 // TestAClosingQuoteOrBracketAfterAStopBelongsToItsSentence holds the rules of the form to a
@@ -42,8 +43,8 @@ func TestAClosingQuoteOrBracketAfterAStopBelongsToItsSentence(t *testing.T) {
 // TestANameWithAStopInsideEndsNoSentence holds the rules of the form to a stop that the text
 // does not show as an end: an initialism of single letters such as "U.S." is one word, and a stop
 // that an upper-case letter follows with no space ends no sentence and is a finding of its own,
-// which names the place and the two ways out. Control: three sentences with a space after each
-// stop are refused for their count.
+// which names the place. Control: three sentences with a space after each stop are refused for
+// their count.
 func TestANameWithAStopInsideEndsNoSentence(t *testing.T) {
 	control, got := checkStatement("Dispatch keeps each comment. Dispatch indexes each comment. Dispatch shows each comment.")
 	if want := []Finding{finding(control, "sentences", "it has 3 sentences, and a statement has one or two")}; !sameFindings(got, want) {
@@ -56,6 +57,7 @@ func TestANameWithAStopInsideEndsNoSentence(t *testing.T) {
 		{"Dispatch keeps each record in the U.S. region.", nil},
 		{"Dispatch keeps each record in the U.S. region. Dispatch copies each record each night.", nil},
 		{"Dispatch reads the file Web.Config at boot. Legion writes it.", []string{"Web.Config"}},
+		{"Dispatch reads the file Web.Config at boot.", []string{"Web.Config"}},
 		{"Dispatch ships the release v1.2.Next to each server. Legion waits for it.", []string{"v1.2.Next"}},
 		{"Dispatch keeps each comment.Dispatch indexes each comment.Dispatch shows each comment.", []string{"comment.Dispatch"}},
 		{"Dispatch stops!Dispatch starts?Dispatch waits.", []string{"stops!Dispatch", "starts?Dispatch"}},
@@ -90,16 +92,25 @@ func TestTheWordRuleReadsEachSentenceAfterTheWriterPutsTheSpaceIn(t *testing.T) 
 		}
 		return findings
 	}
-	joined := statement(w25 + w26)
-	if got, want := Check(planted(), Input{Texts: []Text{joined}}), cut(
-		finding(joined, "stop-no-space", stopNoSpace("project.Dispatch")),
-		finding(joined, "sentence-words", `a sentence has 50 words, and a sentence has at most 25: "Dispatch shows the person each question of each"`),
-		finding(joined, "ste100-long-sentence", `ASD-STE100 does not permit a sentence of more than 25 words: "50 words"`),
-	); !sameFindings(got, want) {
-		t.Errorf("joined: Check = %#v, want %#v", got, want)
+	for _, test := range []struct {
+		name, second string
+	}{
+		{"joined", w26},
+		{"joined 25 and 25", other25},
+	} {
+		// The stop joins the last word of w25 and the first of the second sentence into one word.
+		words := 24 + len(strings.Fields(test.second))
+		joined := statement(w25 + test.second)
+		if got, want := check(planted(), Input{Texts: []Text{joined}}), cut(
+			finding(joined, "stop-no-space", stopNoSpace("project.Dispatch")),
+			finding(joined, "sentence-words", fmt.Sprintf(`a sentence has %d words, and a sentence has at most 25: "Dispatch shows the person each question of each"`, words)),
+			finding(joined, "ste100-long-sentence", fmt.Sprintf(`ASD-STE100 does not permit a sentence of more than 25 words: "%d words"`, words)),
+		); !sameFindings(got, want) {
+			t.Errorf("%s: Check = %#v, want %#v", test.name, got, want)
+		}
 	}
 	spaced := statement(w25 + " " + w26)
-	if got, want := Check(planted(), Input{Texts: []Text{spaced}}), cut(
+	if got, want := check(planted(), Input{Texts: []Text{spaced}}), cut(
 		finding(spaced, "sentence-words", `a sentence has 26 words, and a sentence has at most 25: "Dispatch shows the person each open approval request"`),
 		finding(spaced, "ste100-long-sentence", `ASD-STE100 does not permit a sentence of more than 25 words: "26 words"`),
 	); !sameFindings(got, want) {
@@ -145,14 +156,18 @@ func TestTheSentenceRuleCountsTwentySentencesAsAReaderDoes(t *testing.T) {
 		{"Dispatch keeps each comment.Dispatch shows it.", 2, 0, true},
 	} {
 		line := oneLine(test.body)
+		var stops []string
+		for _, each := range sentencesOf(line) {
+			stops = append(stops, each.stopsWithNoSpace()...)
+		}
 		if test.stopNoSpace {
-			if got := stopsWithNoSpace(line); len(got) != 1 {
-				t.Errorf("%q: the words with a stop and no space are %q, want one", test.body, got)
+			if len(stops) != 1 {
+				t.Errorf("%q: the words with a stop and no space are %q, want one", test.body, stops)
 			}
 			continue
 		}
-		if got := stopsWithNoSpace(line); len(got) != 0 {
-			t.Errorf("%q: the words with a stop and no space are %q, want none", test.body, got)
+		if len(stops) != 0 {
+			t.Errorf("%q: the words with a stop and no space are %q, want none", test.body, stops)
 		}
 		if got := len(sentencesOf(line)); got != test.rule {
 			t.Errorf("%q: the rule counts %d sentences, want %d, and a reader counts %d", test.body, got, test.rule, test.reader)

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -100,6 +102,7 @@ func recordedRoot(t *testing.T, pool *pgxpool.Pool) record.Issue {
 // cannot tell its question is the tree's, and the opening, older than the reply's turn, hands
 // nothing back.
 func TestAsksOfARootAreMirroredWhateverTheirOrder(t *testing.T) {
+	t.Parallel()
 	events := []intake.Fact{
 		intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, AuthorSession: askArchitect.ID, Mark: askSeq(5)},
 		intake.DispatchAskReply{Key: "LEGION-208", Ask: "ask-q", WaitingOn: "agent", Actor: askPerson, Mark: askSeq(6)},
@@ -145,6 +148,7 @@ func TestAsksOfARootAreMirroredWhateverTheirOrder(t *testing.T) {
 // the person's when no event named one, keeping the close it reopened from. Nobody acted, so the
 // restore records no person's act.
 func TestAClosedAskKeepsItsTurnAndARestoredAskReopensOnIt(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	apply("opened", intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, AuthorSession: askArchitect.ID, Mark: askSeq(5)})
 	apply("note", intake.DispatchAskReply{Key: "LEGION-208", Ask: "ask-q", WaitingOn: "agent", Actor: askArchitect, Mark: askSeq(6)})
@@ -184,6 +188,7 @@ const gateDoc = "artifact-208"
 // root waiting on the person reads the same rule against the gate's document: the act answers the
 // wait exactly when the mirror records it.
 func TestAPersonsActIsRecordedWhereverItWouldAnswer(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		act   intake.Fact
@@ -222,6 +227,7 @@ func TestAPersonsActIsRecordedWhereverItWouldAnswer(t *testing.T) {
 // An ask event whose kind the daemon does not know is still mirrored, with no kind: a kind the
 // table refuses must never fail the event's transaction.
 func TestAnAskOfUnknownKindIsMirroredWithNoKind(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	apply("opened", intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-old", Kind: "action", Mark: askSeq(5)})
 	apply("answered", intake.DispatchAskClosed{Key: "LEGION-208", Ask: "ask-old", Kind: "action", State: "answered", Actor: askPerson, Mark: askSeq(6)})
@@ -235,6 +241,7 @@ func TestAnAskOfUnknownKindIsMirroredWithNoKind(t *testing.T) {
 // Only a root's asks are mirrored: an ask on a child of its tree, and on an issue the daemon does
 // not record, writes no row.
 func TestOnlyARootsAsksAreMirrored(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	parent := "LEGION-208"
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
@@ -254,6 +261,7 @@ func TestOnlyARootsAsksAreMirrored(t *testing.T) {
 // older than the row and changes nothing, and a later note moves it. The registration binds
 // nothing on the gate: the row is the request's own.
 func TestARegistrationMirrorsTheRequestItReadAtItsSequence(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	apply("register", intake.GateRegistered{Issue: "LEGION-208", ArtifactID: gateDoc, Version: 2, DispatchVersion: 2,
 		RequestAsk: "ask-approval", Since: askSeq(10)})
@@ -284,6 +292,7 @@ func TestARegistrationMirrorsTheRequestItReadAtItsSequence(t *testing.T) {
 // predates the review the gate holds) still mirrors the request its read found open: the row is
 // the request's, and the read's write is fenced by the read's own sequence.
 func TestARegistrationThatChangesNoGateStillMirrorsItsRequest(t *testing.T) {
+	t.Parallel()
 	want := record.RootAsk{Issue: "LEGION-208", Ask: "ask-r", Kind: record.AskApproval, Artifact: gateDoc, Open: true, Seq: 10, WaitingOn: "human", WaitingOnSeq: 10}
 	for name, first := range map[string]intake.Fact{
 		"older than the gate's version": intake.GateRegistered{Issue: "LEGION-208", ArtifactID: gateDoc, Version: 3, DispatchVersion: 3, Since: askSeq(12)},
@@ -306,6 +315,7 @@ func TestARegistrationThatChangesNoGateStillMirrorsItsRequest(t *testing.T) {
 // an older move than the turn the row holds changes nothing, and the document's artifact.version
 // event moves no ask at all.
 func TestAVersionMovesTheRequestThroughItsOwnEdit(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	apply("register", intake.GateRegistered{Issue: "LEGION-208", ArtifactID: gateDoc, Version: 2, DispatchVersion: 2, RequestAsk: "ask-approval", Since: askSeq(10)})
 	apply("old-move", intake.DispatchApprovalMoved{Key: "LEGION-208", Ask: "ask-approval", Artifact: gateDoc, Mark: askSeq(9)})
@@ -324,6 +334,7 @@ func TestAVersionMovesTheRequestThroughItsOwnEdit(t *testing.T) {
 // a person's edit moves the second request (not the first, which is closed), and a person's
 // answer of either is the same review, a person's act on neither.
 func TestASecondRequestAfterAChangesRequestIsTrackedByItsOwnEvents(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	apply("register", intake.GateRegistered{Issue: "LEGION-208", ArtifactID: gateDoc, Version: 2, DispatchVersion: 2, RequestAsk: "ask-1", Since: askSeq(10)})
 	apply("answer-1", intake.DispatchAskClosed{Key: "LEGION-208", Ask: "ask-1", Kind: record.AskApproval, Artifact: gateDoc, State: "answered", Actor: askPerson, Mark: askSeq(11)})
@@ -350,6 +361,7 @@ func TestASecondRequestAfterAChangesRequestIsTrackedByItsOwnEvents(t *testing.T)
 // registration leaves the request on its agent's turn: the registration's older read never rolls
 // the move back, whichever order the two arrive in.
 func TestAMoveAppliedBeforeTheRegistrationKeepsTheAgentsTurn(t *testing.T) {
+	t.Parallel()
 	register := intake.GateRegistered{Issue: "LEGION-208", ArtifactID: gateDoc, Version: 2, DispatchVersion: 2, RequestAsk: "ask-1", Since: askSeq(11)}
 	move := intake.DispatchApprovalMoved{Key: "LEGION-208", Ask: "ask-1", Artifact: gateDoc, Mark: askSeq(12)}
 	want := record.RootAsk{Issue: "LEGION-208", Ask: "ask-1", Kind: record.AskApproval, Artifact: gateDoc, Open: true, Seq: 11, WaitingOn: "agent", WaitingOnSeq: 12}
@@ -368,6 +380,7 @@ func TestAMoveAppliedBeforeTheRegistrationKeepsTheAgentsTurn(t *testing.T) {
 // nothing of whether the request is open: the row is a valid one, the fact applies, and a later
 // opening of the request, older than the move, still opens it and leaves the move's turn.
 func TestAMoveReachingARequestWithNoRowRecordsOnlyItsTurn(t *testing.T) {
+	t.Parallel()
 	move := intake.DispatchApprovalMoved{Key: "LEGION-208", Ask: "ask-approval", Artifact: gateDoc, Mark: askSeq(12)}
 	opened := intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: gateDoc, AuthorSession: askArchitect.ID, Mark: askSeq(10)}
 	want := record.RootAsk{Issue: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: gateDoc, Open: true, Seq: 10, WaitingOn: "agent",
@@ -390,6 +403,7 @@ func TestAMoveReachingARequestWithNoRowRecordsOnlyItsTurn(t *testing.T) {
 // Settlement restoring a retracted question moves its mirror row, and nothing else: the root keeps
 // its phase and record, and nothing is queued. The reopened row keeps the close it reopened from.
 func TestARestoredAskIsMirroredButDeclaresNothing(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutRootAsk(context.Background(), tx, record.RootAsk{Issue: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion,
@@ -410,6 +424,7 @@ func TestARestoredAskIsMirroredButDeclaresNothing(t *testing.T) {
 // is closed: the answer, delivered after it, still records who closed the ask and where, so every
 // order leaves the same row.
 func TestAReplyDeliveredBeforeItsAsksCloseLeavesTheCloseToIt(t *testing.T) {
+	t.Parallel()
 	events := []intake.Fact{
 		intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, AuthorSession: askArchitect.ID, Mark: askSeq(10)},
 		intake.DispatchAskClosed{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, State: "answered", Actor: askPerson, Mark: askSeq(11)},
@@ -436,6 +451,7 @@ func TestAReplyDeliveredBeforeItsAsksCloseLeavesTheCloseToIt(t *testing.T) {
 // and the restore arrive in: a reply older than the close but newer than the turn the row holds
 // still sets the turn.
 func TestARestoredAskReopensOnItsNewestTurnWhateverTheOrder(t *testing.T) {
+	t.Parallel()
 	events := []intake.Fact{
 		intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, AuthorSession: askArchitect.ID, Mark: askSeq(5)},
 		intake.DispatchAskReply{Key: "LEGION-208", Ask: "ask-q", WaitingOn: "agent", Actor: askPerson, Mark: askSeq(6)},
@@ -457,6 +473,7 @@ func TestARestoredAskReopensOnItsNewestTurnWhateverTheOrder(t *testing.T) {
 // shows the question waiting on the person once settlement restores it: the mirror reopens it with
 // the person too, whatever order the five events arrive in.
 func TestARestoredAskAfterAReplyOnItsCloseReopensWithThePerson(t *testing.T) {
+	t.Parallel()
 	events := []intake.Fact{
 		intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, AuthorSession: askArchitect.ID, Mark: askSeq(5)},
 		intake.DispatchAskReply{Key: "LEGION-208", Ask: "ask-q", WaitingOn: "agent", Actor: askPerson, Mark: askSeq(6)},
@@ -479,6 +496,7 @@ func TestARestoredAskAfterAReplyOnItsCloseReopensWithThePerson(t *testing.T) {
 // act on the ask, whether the registration is applied before the answer or after: a person may
 // approve before the architect registers, and the row carries its document from the answer itself.
 func TestTheGatesRequestIsNoPersonsActWhateverTheOrder(t *testing.T) {
+	t.Parallel()
 	register := intake.GateRegistered{Issue: "LEGION-208", ArtifactID: gateDoc, Version: 2, DispatchVersion: 2, RequestAsk: "ask-approval", Since: askSeq(10)}
 	answer := intake.DispatchAskClosed{Key: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: gateDoc, State: "answered", Actor: askPerson, Mark: askSeq(11)}
 	for name, facts := range map[string][]intake.Fact{"register-first": {register, answer}, "answer-first": {answer, register}} {
@@ -490,5 +508,94 @@ func TestTheGatesRequestIsNoPersonsActWhateverTheOrder(t *testing.T) {
 		if row.PersonActSeq(gate.ArtifactID) != 0 || row.PersonAnswerSeq != 11 || row.Artifact != gateDoc {
 			t.Fatalf("%s: the gate's request row = %#v, want its answer at 11 kept and no person's act on it", name, *row)
 		}
+	}
+}
+
+// parkedAskRoot is LEGION-208 as a person's park leaves a root that ran: its phase done, its tree
+// lingering, in backlog, so nobody in its tree hears a decision made on it (relayParkedDecision).
+func parkedAskRoot() record.Issue {
+	until := time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC)
+	return record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+		Project: "LEGION", Title: "root", Phase: phase.Done, Generation: 1, Status: "backlog", DispatchStatus: "backlog", Rank: "U",
+		HandedOver: true, LastDispatchSeq: 1, LingerUntil: &until}
+}
+
+// keptDecision is the decision LEGION-208 keeps under ref, nil when it keeps none.
+func keptDecision(t *testing.T, pool *pgxpool.Pool, ref string) *record.ParkedDecision {
+	t.Helper()
+	var kept *record.ParkedDecision
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		decisions, err := record.NewStore().ParkedDecisions(context.Background(), tx, "LEGION-208")
+		for _, decision := range decisions {
+			if decision.Ref == ref {
+				kept = &decision
+			}
+		}
+		return err
+	})
+	return kept
+}
+
+// parkedDecisionRefs is the decision and the ref of every parked-decision controller notice in
+// the outbox, oldest first.
+func parkedDecisionRefs(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	return outboxStrings(t, pool, "select (payload->>'decision') || ' ' || (payload->>'ref') from outbox where kind = 'controller_notice' and payload->>'kind' = $1 order by id",
+		string(record.ParkedDecisionNotice))
+}
+
+// A person's decision on a question of a parked tree is kept under the question's ref, newest
+// first, until an architect of the tree is told it: a decision that reached the daemon late, or
+// was replayed from a message the intake gave up on, however late, takes nothing from a newer one
+// kept under the same ref. Here alice answered the question at sequence 5, it was restored open at
+// 6, and she resolved it at 7; the resolution was relayed, and an architect start claimed it. The
+// answer at 5, delivered after all of that, is no newest close of the question: it is relayed to
+// nobody, and the resolution stays kept, at its own time, and claimed. A reply of hers that names
+// no comment is kept under the question's ref too, at the time Dispatch recorded it: one delivered
+// after the resolution replaces nothing kept.
+func TestALateAskCloseLeavesTheNewerParkedDecision(t *testing.T) {
+	t.Parallel()
+	at := func(seq int64) record.EventMark {
+		return record.EventMark{Seq: seq, At: time.Date(2026, 9, 22, 12, 0, int(seq), 0, time.UTC)}
+	}
+	const ref = "dispatch://LEGION-208/ask/ask-q"
+	for _, tc := range []struct {
+		name string
+		late intake.Fact
+		// relayed is every parked-decision notice the outbox holds after the late fact.
+		relayed []string
+	}{
+		{name: "an earlier close of the question",
+			late:    intake.DispatchAskClosed{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, State: "answered", Actor: askPerson, Mark: at(5)},
+			relayed: []string{"ask-resolved " + ref}},
+		{name: "an earlier reply naming no comment",
+			late:    intake.DispatchAskReply{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, WaitingOn: "agent", Actor: askPerson, Mark: at(4)},
+			relayed: []string{"ask-resolved " + ref, "ask-reply " + ref}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, parkedAskRoot())
+			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+			apply("opened", intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, Mark: at(3)})
+			apply("restored", intake.DispatchAskRestored{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, Open: true, Mark: at(6)})
+			apply("resolved", intake.DispatchAskClosed{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, State: "resolved", Actor: askPerson, Mark: at(7)})
+			// The start that names the decision claims it (record.Store.ClaimKeptDecisions).
+			if _, err := pool.Exec(context.Background(), `update parked_decisions set claimed_by = (select max(id) from outbox) where issue = 'LEGION-208'`); err != nil {
+				t.Fatalf("claim the kept resolution: %v", err)
+			}
+			newer := keptDecision(t, pool, ref)
+			if newer == nil || newer.Decision != record.DecisionAskResolved || newer.ClaimedBy == 0 {
+				t.Fatalf("the kept decision before the late fact = %+v, want the claimed resolution", newer)
+			}
+
+			apply("late", tc.late)
+
+			if got := keptDecision(t, pool, ref); got == nil || got.Decision != newer.Decision || !got.At.Equal(newer.At) || got.ClaimedBy != newer.ClaimedBy {
+				t.Fatalf("the kept decision after the late %T = %+v, want the newer %+v as it stood, claimed", tc.late, got, *newer)
+			}
+			if got := parkedDecisionRefs(t, pool); !slices.Equal(got, tc.relayed) {
+				t.Fatalf("the parked-decision notices = %q, want %q", got, tc.relayed)
+			}
+		})
 	}
 }

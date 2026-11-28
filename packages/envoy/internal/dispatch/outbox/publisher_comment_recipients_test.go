@@ -95,6 +95,7 @@ type recipientCheck struct {
 // event reached. The claim and the route come from the issue's row, as the outbox reads them. The
 // claimant's copy is #2225's (addClaimantRoute); the thread's sessions are #2366's.
 func TestAPersonsCommentReachesTheClaimantAndTheThreadsSessions(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
@@ -238,6 +239,7 @@ func TestAPersonsCommentReachesTheClaimantAndTheThreadsSessions(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			database := storetest.Open(t)
 			broker := events.NewBroker()
 			seedIssue(t, database, "T-1", tc.route)
@@ -278,7 +280,7 @@ func checkSessionRecipients(t *testing.T, database *store.Store, checks []recipi
 		}
 		want := make([]string, 0, len(check.want))
 		for _, sessionID := range check.want {
-			want = append(want, contracts.AgentSubject(sessionID))
+			want = append(want, contracts.LegacyAgentSubject(sessionID))
 		}
 		topics := row.destinations
 		if got := agentTopics(topics); !slices.Equal(got, want) {
@@ -302,6 +304,7 @@ func seedSpec(t *testing.T, database *store.Store, issueKey string, creator mode
 // credits session-spec (its creator) and session-editor, and also a person and a session credit
 // with no id, which have no topic.
 func TestAPersonsCommentOnAnIssueNobodyRoutesOrClaimsReachesItsSpecsSessions(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	specWriter := model.Actor{Kind: "session", ID: "session-spec"}
@@ -317,16 +320,18 @@ func TestAPersonsCommentOnAnIssueNobodyRoutesOrClaimsReachesItsSpecsSessions(t *
 		{
 			// A spec written without a claim: the session that wrote every version of the spec held
 			// no claim.
-			name: "a person's conversation comment and its edit reach the spec's sessions, and a reopening does not",
+			name: "a person's conversation comment, its edit and its delete reach the spec's sessions, and a reopening does not",
 			arrange: func(t *testing.T, database *store.Store, broker *events.Broker, spec string) []recipientCheck {
 				root := seedThreadComment(t, database, "T-1", "", alice, nil)
 				comment := seedThreadComment(t, database, "T-1", "", sami, nil)
 				created := appendCommentEvent(t, database, broker, "comment.created", sami, model.Comment{ID: comment})
 				edited := appendCommentEvent(t, database, broker, "comment.edited", sami, model.Comment{ID: comment})
+				deleted := appendCommentEvent(t, database, broker, "comment.deleted", sami, model.Comment{ID: comment})
 				reopened := appendCommentEvent(t, database, broker, "comment.reopened", sami, model.Comment{ID: root})
 				return []recipientCheck{
 					{event: created, want: specSessions},
 					{event: edited, want: specSessions},
+					{event: deleted, want: specSessions},
 					{event: reopened, want: []string{}},
 				}
 			},
@@ -426,6 +431,8 @@ func TestAPersonsCommentOnAnIssueNobodyRoutesOrClaimsReachesItsSpecsSessions(t *
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Each row has its own database and broker, and reads the test's actors only.
+			t.Parallel()
 			database := storetest.Open(t)
 			broker := events.NewBroker()
 			seedIssue(t, database, "T-1", tc.route)
@@ -480,6 +487,7 @@ func appendIssueMessage(t *testing.T, database *store.Store, broker *events.Brok
 // published and recorded first, so the issue's subject still gets the event in id order and the
 // retry sends only the rest. The batch's other events publish as they would have.
 func TestAFailedRecipientQueryBacksOffOnlyTheEventsThatNeededItAfterTheirOwnerTopic(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	writer := model.Actor{Kind: "session", ID: "session-writer"}
@@ -514,11 +522,12 @@ func TestAFailedRecipientQueryBacksOffOnlyTheEventsThatNeededItAfterTheirOwnerTo
 				reply := seedThreadComment(t, database, "T-1", "", sami, &root)
 				return appendCommentEvent(t, database, broker, "comment.created", sami, model.Comment{ID: reply, ReplyTo: &root})
 			},
-			wantComment:  []string{commentTopic, roleTopic, contracts.AgentSubject("session-claimant")},
-			wantMessages: []string{messageTopic, roleTopic, contracts.AgentSubject("session-claimant")},
+			wantComment:  []string{commentTopic, roleTopic, contracts.LegacyAgentSubject("session-claimant")},
+			wantMessages: []string{messageTopic, roleTopic, contracts.LegacyAgentSubject("session-claimant")},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			database := storetest.Open(t)
 			broker := events.NewBroker()
 			seedIssue(t, database, "T-1", tc.route)
@@ -550,6 +559,7 @@ func TestAFailedRecipientQueryBacksOffOnlyTheEventsThatNeededItAfterTheirOwnerTo
 // the reply is published to its owner topic, its route and its claimant, with no attempt counted,
 // and holds nothing back.
 func TestAReplyToAnIDThatIsNoUUIDReachesNoThreadSessionAndPublishes(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
 	database := storetest.Open(t)
@@ -565,7 +575,7 @@ func TestAReplyToAnIDThatIsNoUUIDReachesNoThreadSessionAndPublishes(t *testing.T
 		t.Fatalf("scan batch: %v", err)
 	}
 	got := readEventRow(t, database, replied.ID)
-	want := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, contracts.AgentSubject(claimant.ID)}
+	want := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, contracts.LegacyAgentSubject(claimant.ID)}
 	if got.publishedAt == nil || got.attempts != 0 || got.nextAttempt != nil || !slices.Equal(got.destinations, want) {
 		t.Fatalf("the reply to a non-uuid id has published_at %v, attempt_count %d, next_attempt_at %v and published_destinations %v, want it published to %v with no attempt counted",
 			got.publishedAt, got.attempts, got.nextAttempt, got.destinations, want)
@@ -610,6 +620,7 @@ func makeDue(t *testing.T, database *store.Store, events ...model.Event) {
 // (addAuthorRoutes, creditOnly), and the hold is the same - a read that failed names no session,
 // so the later event waits for the retry whatever the repaired read would have said.
 func TestALaterEventReachesNoSessionTheFailedRecipientReadOfAnEarlierOneMissedBeforeIt(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	rooter := model.Actor{Kind: "session", ID: "session-rooter"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
@@ -694,7 +705,7 @@ func TestALaterEventReachesNoSessionTheFailedRecipientReadOfAnEarlierOneMissedBe
 			}
 			want := []string{}
 			for _, sessionID := range tc.wantFirst {
-				want = append(want, contracts.AgentSubject(sessionID))
+				want = append(want, contracts.LegacyAgentSubject(sessionID))
 			}
 			if got := agentTopics(held.destinations); !slices.Equal(got, want) {
 				t.Fatalf("the later event reached sessions %v in the first batch, want %v, the ones the failed event listed", got, want)
@@ -710,7 +721,7 @@ func TestALaterEventReachesNoSessionTheFailedRecipientReadOfAnEarlierOneMissedBe
 			}
 			var order []string
 			for _, item := range publisher.all() {
-				if item.Topic == contracts.AgentSubject(rooter.ID) {
+				if item.Topic == contracts.LegacyAgentSubject(rooter.ID) {
 					order = append(order, item.SourceEventID)
 				}
 			}
@@ -734,6 +745,7 @@ func TestALaterEventReachesNoSessionTheFailedRecipientReadOfAnEarlierOneMissedBe
 // the same statement as the broken document's (loadRecipients runs that statement again in halves,
 // here each id alone, once Postgres refuses it).
 func TestABrokenCreditListBacksOffItsEventAndHoldsOnlyItsOwnersLaterSessionCopies(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	writer := model.Actor{Kind: "session", ID: "session-writer"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
@@ -769,11 +781,11 @@ func TestABrokenCreditListBacksOffItsEventAndHoldsOnlyItsOwnersLaterSessionCopie
 		t.Fatalf("the comment on the broken document has published_at %v, attempt_count %d and next_attempt_at %v, want it backed off",
 			failed.publishedAt, failed.attempts, failed.nextAttempt)
 	}
-	if want := []string{"notifications.dispatch.issue.T-1.comment.created", contracts.AgentSubject(claimant.ID)}; !slices.Equal(failed.destinations, want) {
+	if want := []string{"notifications.dispatch.issue.T-1.comment.created", contracts.LegacyAgentSubject(claimant.ID)}; !slices.Equal(failed.destinations, want) {
 		t.Fatalf("the comment on the broken document recorded published_destinations %v, want %v", failed.destinations, want)
 	}
 	held := readEventRow(t, database, resolved.ID)
-	if want := []string{"notifications.dispatch.issue.T-1.comment.resolved", contracts.AgentSubject(claimant.ID)}; !slices.Equal(held.destinations, want) {
+	if want := []string{"notifications.dispatch.issue.T-1.comment.resolved", contracts.LegacyAgentSubject(claimant.ID)}; !slices.Equal(held.destinations, want) {
 		t.Fatalf("the issue's later event recorded published_destinations %v, want %v: its owner topic and the claimant the failed event listed", held.destinations, want)
 	}
 	if held.publishedAt != nil || held.attempts != 0 || held.nextAttempt == nil || held.nextAttempt.After(*failed.nextAttempt) {
@@ -781,19 +793,19 @@ func TestABrokenCreditListBacksOffItsEventAndHoldsOnlyItsOwnersLaterSessionCopie
 			held.publishedAt, held.attempts, held.nextAttempt, *failed.nextAttempt)
 	}
 	for _, item := range publisher.all() {
-		if item.SourceEventID == fmt.Sprint(resolved.ID) && item.Topic == contracts.AgentSubject(rooter.ID) {
+		if item.SourceEventID == fmt.Sprint(resolved.ID) && item.Topic == contracts.LegacyAgentSubject(rooter.ID) {
 			t.Fatalf("the issue's later event reached %s, a session the failed event may yet reach first", rooter.ID)
 		}
 	}
 	for _, event := range []model.Event{otherReplied, otherResolved} {
 		row := readEventRow(t, database, event.ID)
-		if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), []string{contracts.AgentSubject(other.ID)}) {
+		if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), []string{contracts.LegacyAgentSubject(other.ID)}) {
 			t.Fatalf("the other issue's %s event has published_at %v, attempt_count %d and published_destinations %v, want it published to %s",
 				event.Type, row.publishedAt, row.attempts, row.destinations, other.ID)
 		}
 	}
 	row := readEventRow(t, database, anchored.ID)
-	if want := []string{"notifications.dispatch.issue.T-2.comment.created", contracts.AgentSubject(credited.ID)}; row.publishedAt == nil || row.attempts != 0 || !slices.Equal(row.destinations, want) {
+	if want := []string{"notifications.dispatch.issue.T-2.comment.created", contracts.LegacyAgentSubject(credited.ID)}; row.publishedAt == nil || row.attempts != 0 || !slices.Equal(row.destinations, want) {
 		t.Fatalf("the other issue's comment on a healthy document has published_at %v, attempt_count %d and published_destinations %v, want it published to %v",
 			row.publishedAt, row.attempts, row.destinations, want)
 	}
@@ -806,6 +818,7 @@ func TestABrokenCreditListBacksOffItsEventAndHoldsOnlyItsOwnersLaterSessionCopie
 // publishes, and so does the broken reply's issue's message, bound for the claimant the broken
 // reply names.
 func TestABrokenRowOfAnEventThatIsNotDueFailsNoOtherOwnersRecipientRead(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	writer := model.Actor{Kind: "session", ID: "session-writer"}
 	other := model.Actor{Kind: "session", ID: "session-other"}
@@ -841,7 +854,7 @@ func TestABrokenRowOfAnEventThatIsNotDueFailsNoOtherOwnersRecipientRead(t *testi
 		t.Fatalf("scan the batch beside the broken reply: %v", err)
 	}
 	row := readEventRow(t, database, otherReplied.ID)
-	if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), []string{contracts.AgentSubject(other.ID)}) {
+	if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), []string{contracts.LegacyAgentSubject(other.ID)}) {
 		t.Fatalf("the other issue's reply has published_at %v, attempt_count %d and published_destinations %v, want it published to %s",
 			row.publishedAt, row.attempts, row.destinations, other.ID)
 	}
@@ -873,6 +886,7 @@ func waitOut(t *testing.T, database *store.Store, event model.Event, reached ...
 // later event reaches every other session at once. Each later event replies in a thread of its
 // own, so no due event asks the earlier event's recipient read.
 func TestAnEventBehindAnotherThatIsNotDueIsHeldOnlyOnTheKeysTheOtherCouldStillOwe(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	reached := model.Actor{Kind: "session", ID: "session-reached"}
 	unreached := model.Actor{Kind: "session", ID: "session-unreached"}
@@ -907,32 +921,33 @@ func TestAnEventBehindAnotherThatIsNotDueIsHeldOnlyOnTheKeysTheOtherCouldStillOw
 				spec := seedDocument(t, database, new("T-1"), "spec", reached, []model.Actor{reached})
 				breakDocumentCredits(t, database, spec)
 				earlier := reply(t, database, broker, spec, reached)
-				waitOut(t, database, earlier, topic, contracts.AgentSubject(reached.ID))
+				waitOut(t, database, earlier, topic, contracts.LegacyAgentSubject(reached.ID))
 				return earlier, reply(t, database, broker, "", reached, unreached)
 			},
-			want: []string{topic, contracts.AgentSubject(reached.ID)},
+			want: []string{topic, contracts.LegacyAgentSubject(reached.ID)},
 		},
 		{
 			name: "the earlier event's reads answer and its send to one session failed",
 			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) (model.Event, model.Event) {
 				earlier := reply(t, database, broker, "", reached, stalled)
-				waitOut(t, database, earlier, topic, contracts.AgentSubject(reached.ID))
+				waitOut(t, database, earlier, topic, contracts.LegacyAgentSubject(reached.ID))
 				return earlier, reply(t, database, broker, "", reached, unreached, stalled)
 			},
-			want: []string{topic, contracts.AgentSubject(reached.ID), contracts.AgentSubject(unreached.ID)},
+			want: []string{topic, contracts.LegacyAgentSubject(reached.ID), contracts.LegacyAgentSubject(unreached.ID)},
 		},
 		{
 			name:  "the earlier event's reads answer and its role route is pending",
 			route: new("role:reviewer"),
 			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) (model.Event, model.Event) {
 				earlier := reply(t, database, broker, "", reached)
-				waitOut(t, database, earlier, topic, contracts.AgentSubject(reached.ID))
+				waitOut(t, database, earlier, topic, contracts.LegacyAgentSubject(reached.ID))
 				return earlier, reply(t, database, broker, "", reached, unreached)
 			},
-			want: []string{topic, contracts.AgentSubject(reached.ID), contracts.AgentSubject(unreached.ID)},
+			want: []string{topic, contracts.LegacyAgentSubject(reached.ID), contracts.LegacyAgentSubject(unreached.ID)},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			database := storetest.Open(t)
 			broker := events.NewBroker()
 			seedIssue(t, database, "T-1", tc.route)
@@ -975,6 +990,7 @@ func TestAnEventBehindAnotherThatIsNotDueIsHeldOnlyOnTheKeysTheOtherCouldStillOw
 // held back from the current holder until the earlier event's retry, its role forward included,
 // even though the earlier event's role route is resolved to that same holder in the batch.
 func TestAnEarlierEventsReachedRoleRouteDoesNotNameTheRolesCurrentHolder(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	holder := model.Actor{Kind: "session", ID: roleHolder}
 	database := storetest.Open(t)
@@ -1024,6 +1040,7 @@ func TestAnEarlierEventsReachedRoleRouteDoesNotNameTheRolesCurrentHolder(t *test
 // failed the query or the query failed in the store and the stop came while the batch's answers
 // were still due.
 func TestAStoppingBatchReleasesTheEventsWhoseRecipientQueryFailed(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	writer := model.Actor{Kind: "session", ID: "session-writer"}
 	assertReleased := func(t *testing.T, database *store.Store, events ...model.Event) {
@@ -1105,7 +1122,7 @@ func TestAStoppingBatchReleasesTheEventsWhoseRecipientQueryFailed(t *testing.T) 
 		stop := run(t, database, publisher, broker)
 		// The batch's sends to the issue topic go one at a time (planChains), so the comment's,
 		// which is held unanswered, is the one sent.
-		waitFor(t, 5*time.Second, "the comment sent", func() bool {
+		waitFor(t, "the comment sent", func() bool {
 			return slices.Contains(publisher.sent(), "notifications.dispatch.issue.T-1.comment.created")
 		})
 		stop()

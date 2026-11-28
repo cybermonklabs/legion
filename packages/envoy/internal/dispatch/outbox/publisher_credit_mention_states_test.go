@@ -54,6 +54,7 @@ type creditMentionFixture struct {
 // and leftTo differ by one input, mentionDeliveries.held, which leftTo answers before any state
 // and the predicate does not read at all; that is a row of its own here.
 func TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
 	credit := model.Actor{Kind: "session", ID: "session-credit"}
@@ -149,7 +150,7 @@ func TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy(t *testi
 				return creditMentionFixture{
 					comment:  head,
 					checks:   []recipientCheck{{event: created, want: []string{claimant.ID}}},
-					heldRows: []string{contracts.AgentSubject(credit.ID)},
+					heldRows: []string{contracts.LegacyAgentSubject(credit.ID)},
 				}
 			},
 		},
@@ -210,18 +211,20 @@ func TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy(t *testi
 				if _, err := database.Pool.Exec(context.Background(), `
 					insert into comment_fallback_copies (comment_id, destination, event_id, session_id)
 					values ($1, $2, $3, $4)
-				`, head, contracts.AgentSubject(credit.ID), created.ID, credit.ID); err != nil {
+				`, head, contracts.LegacyAgentSubject(credit.ID), created.ID, credit.ID); err != nil {
 					t.Fatalf("hold the fallback row that owns the credit's destination: %v", err)
 				}
 				return creditMentionFixture{
 					comment:  head,
 					checks:   []recipientCheck{{event: created, want: []string{claimant.ID}}},
-					heldRows: []string{contracts.AgentSubject(credit.ID)},
+					heldRows: []string{contracts.LegacyAgentSubject(credit.ID)},
 				}
 			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Each row has its own database and broker, and reads the test's actors only.
+			t.Parallel()
 			database := storetest.Open(t)
 			broker := events.NewBroker()
 			seedIssue(t, database, "T-1", nil)
@@ -274,7 +277,7 @@ func checkEventHeldForItsMention(t *testing.T, database *store.Store, event mode
 	}
 	want := make([]string, 0, len(reached))
 	for _, sessionID := range reached {
-		want = append(want, contracts.AgentSubject(sessionID))
+		want = append(want, contracts.LegacyAgentSubject(sessionID))
 	}
 	destinations, _ := publishedDestinations(t, database, event.ID)
 	if got := agentTopics(destinations); !slices.Equal(got, want) {
@@ -302,6 +305,7 @@ func checkEventHeldForItsMention(t *testing.T, database *store.Store, event mode
 // rows reads the attempts as they stand then, by when the sender has pinned the session it
 // resolved (destinations.leftTo, publishFallbackCopies).
 func TestACreditThisReadResolvedTheRoleMentionToKeepsItsCopy(t *testing.T) {
+	t.Parallel()
 	const role = "held-by-the-session-the-document-credits"
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
@@ -332,12 +336,12 @@ func TestACreditThisReadResolvedTheRoleMentionToKeepsItsCopy(t *testing.T) {
 		t.Fatalf("scan batch: %v", err)
 	}
 
-	want := []string{contracts.AgentSubject(claimant.ID)}
+	want := []string{contracts.LegacyAgentSubject(claimant.ID)}
 	if got := agentTopics(readEventRow(t, rig.database, created.ID).destinations); !slices.Equal(got, want) {
 		t.Fatalf("the comment reached sessions %v, want %v: the claimant hears it on its own topic, and the session the mention is on its way to takes the copy that mention decides, not one of the event's",
 			got, want)
 	}
-	rows := []string{contracts.AgentSubject(credit.ID)}
+	rows := []string{contracts.LegacyAgentSubject(credit.ID)}
 	if got := heldDestinations(t, rig.database, head); !slices.Equal(got, rows) {
 		t.Fatalf("the comment holds fallback rows for %v, want %v: this read resolved the comment's mention of %s to that session, so its copy is the one that mention decides and is kept for the pass that publishes it",
 			got, rows, fmt.Sprintf("@%s", target))

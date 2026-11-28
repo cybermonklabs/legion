@@ -18,7 +18,7 @@ import (
 
 // The walks of the list of terms of a root (R50) do work in proportion to what they read, as the
 // form's own table measures each rule (specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText)
-// and with its measure: the CPU time of the thread that walks (cputest.OfCall), of n units and of
+// and with its measure: the CPU time of the thread that walks (cputest.OnThread), of n units and of
 // 4n, the two sizes in turn, the least of the samples of each. The work of the larger grows less
 // than levelTwoWorkGrowth times. A walk that reads the record in memory works on maps, whose cost
 // for each entry grows once they no longer fit the cache of a core, so the sizes of such a row keep
@@ -31,19 +31,19 @@ import (
 const walkSamples = 7
 
 // leastWork is the CPU time of one call of each of calls, each window timed on its thread
-// (cputest.Measure of cputest.OfCall), the least of walkSamples samples, the calls in turn, so
-// that a change of the machine's load reaches each.
+// (cputest.MeasureThread), the least of walkSamples samples, the calls in turn, so that a change
+// of the machine's load reaches each.
 func leastWork(calls ...func()) []time.Duration {
 	least := make([]time.Duration, len(calls))
 	for sample := range walkSamples {
 		for index, call := range calls {
 			runtime.GC()
-			took, _ := cputest.Measure(func(runs int) (time.Duration, error) { // a call reports no error
-				return cputest.OfCall(func() {
+			took := cputest.MeasureThread(func(runs int) func() {
+				return func() {
 					for range runs {
 						call()
 					}
-				}), nil
+				}
 			})
 			if sample == 0 || took < least[index] {
 				least[index] = took
@@ -191,12 +191,12 @@ func TestTheWalksOfTheListGrowInProportionToWhatTheyRead(t *testing.T) {
 func TestTheListOfTwoDocumentsThatDefineTheSameTermsIsMadeInWorkInProportionToItsTerms(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	sizes := []int{250, 4 * 250}
-	served := &server{deps: tree.deps}
-	served.deps.SpecRoots = []string{tree.root}
+	form := tree.deps.SpecForm
+	form.roots = []string{tree.root}
 	reads := make([]func() int, len(sizes))
 	for index, size := range sizes {
 		root := createFormIssue(t, tree.handler, "", fmt.Sprintf("A root of %d terms", size), "# The Spec\n\nThe design of the written account.\n")
-		served.deps.SpecRoots = append(served.deps.SpecRoots, root.Key)
+		form.roots = append(form.roots, root.Key)
 		var spec strings.Builder
 		spec.WriteString("# Spec\n\n## Terms\n\n")
 		for term := range size {
@@ -208,7 +208,7 @@ func TestTheListOfTwoDocumentsThatDefineTheSameTermsIsMadeInWorkInProportionToIt
 			approveFormDocument(t, tree.handler, document.PrimaryArtifactID)
 		}
 		reads[index] = func() int {
-			approved, err := served.approvedSpecTexts(context.Background(), tree.database.Pool, root.Key)
+			approved, err := form.approvedSpecTexts(context.Background(), tree.database.Pool, root.Key)
 			if err != nil {
 				t.Fatal(err)
 			}

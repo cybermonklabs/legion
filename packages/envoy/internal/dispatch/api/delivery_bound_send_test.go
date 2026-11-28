@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -122,6 +123,7 @@ func attemptStates(t *testing.T, database *store.Store, table, column, id string
 // and it must take it - the row names the message's own target - and pin it to the session the
 // target resolved to, rather than refusing an attempt whose row names no session.
 func TestABoundSendTakesAnUnpinnedAttemptAndPinsTheSessionItsTargetResolvedTo(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	direct := directServer(deps)
@@ -159,11 +161,53 @@ func TestABoundSendTakesAnUnpinnedAttemptAndPinsTheSessionItsTargetResolvedTo(t 
 	}
 }
 
+// A message an earlier release stored has no attempt at all, and the sender bound to its first
+// attempt opens it (openFirstMessageDeliveryAttempt): a keyed send's repeat does, and so does the
+// delivery sweep's resume of that send. Once its author deleted it there is nothing to send. The
+// delete settled no attempt, since it had none, so the bound sender opens none either - settled
+// or pending - and sends nothing: it is told the attempt is not its to send, as a bound sender
+// whose attempt the delete settled is. The sender read the message before the delete, as one
+// that was already on its way did, so what decides is the row it reads under the lock.
+func TestABoundSendOfADeletedMessageWithNoAttemptOpensNoneAndSendsNothing(t *testing.T) {
+	t.Parallel()
+	listener := startResumeListener(t)
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
+	direct := directServer(deps)
+	issue := createInteractionIssue(t, handler, "TEST", "A deleted message no attempt was opened for", "before")
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	author, err := json.Marshal(alice)
+	if err != nil {
+		t.Fatalf("encode the author: %v", err)
+	}
+	// Stored as an earlier release stored it: the message row and no attempt.
+	message, err := scanMessage(database.Pool.QueryRow(context.Background(), `
+		insert into messages (issue_key, author, body, target) values ($1, $2, 'The text its author withdrew', 'session:s1')
+		returning `+messageColumns, issue.Key, author))
+	if err != nil {
+		t.Fatalf("store the message: %v", err)
+	}
+	if deleted := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/messages/"+message.ID, nil, "alice"); deleted.Code != http.StatusOK {
+		t.Fatalf("delete the message: status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+
+	_, err = direct.deliverMessageResuming(context.Background(), message, "steer", alice, nil, 1)
+	if !errors.Is(err, errAttemptNotPending) {
+		t.Fatalf("bound send of the deleted message's first attempt: err=%v, want errAttemptNotPending", err)
+	}
+	if sends := listener.answered(); len(sends) != 0 {
+		t.Fatalf("listener sends = %#v, want none: the message was deleted", sends)
+	}
+	if states := attemptStates(t, database, "message_deliveries", "message_id", message.ID); len(states) != 0 {
+		t.Fatalf("attempts = %v, want none: the delete settled none and the send opens none", states)
+	}
+}
+
 // The delivery sweep names one attempt and must send that attempt or nothing. A live sender
 // holding it - its claim inside the lease - owns the frame, so a bound send makes none and opens
 // no attempt beside it, where a Retry would open one; once that claim lapses, the bound send takes
 // the attempt under its original number and key.
 func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLapses(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	direct := directServer(deps)
@@ -187,9 +231,9 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 	// A sender claimed attempt 1 a moment ago and is still sending it.
 	strandStoredAttempt(t, database, "comment_deliveries", "comment_id", comment.ID, "'0 seconds'", "'5 minutes'")
 	listener.forget()
-	held, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
-	if err != nil {
-		t.Fatalf("resume beside a live sender: %v", err)
+	held, waits, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
+	if err != nil || waits != nil {
+		t.Fatalf("resume beside a live sender: %v (waits %+v)", err, waits)
 	}
 	if held.Attempt != 1 || held.State != "pending" {
 		t.Fatalf("resume beside a live sender = %#v, want attempt 1 reported as the live sender left it", held)
@@ -203,9 +247,9 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 
 	// That sender never came back.
 	strandStoredAttempt(t, database, "comment_deliveries", "comment_id", comment.ID, "'5 minutes'", "'5 minutes'")
-	resumed, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
-	if err != nil {
-		t.Fatalf("resume the abandoned attempt: %v", err)
+	resumed, waits, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
+	if err != nil || waits != nil {
+		t.Fatalf("resume the abandoned attempt: %v (waits %+v)", err, waits)
 	}
 	if resumed.Attempt != 1 || resumed.State != "sent" {
 		t.Fatalf("resume of the abandoned attempt = %#v, want attempt 1 sent", resumed)
@@ -225,6 +269,7 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 // resumeOwedDelivery hands deliverMessageResuming the attempt's number and nothing else - and a
 // stranded urgent message it resumes still reaches the listener as urgent, not as a plain steer.
 func TestTheDeliverySweepResumesAnAttemptWithTheUrgencyItRecorded(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	direct := directServer(deps)
@@ -254,6 +299,7 @@ func TestTheDeliverySweepResumesAnAttemptWithTheUrgencyItRecorded(t *testing.T) 
 // its own instead - in another mode, or beside a sender still holding the stranded one - is a new
 // send of the person's, which asked for no urgency.
 func TestARetryCarriesTheUrgencyOfTheAttemptItResumesAndNoneOnANewAttempt(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	issue := createInteractionIssue(t, handler, "TEST", "Urgent retries", "before")

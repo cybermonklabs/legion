@@ -16,6 +16,8 @@ import (
 func TestCopyMetaRefusesAFileThatIsNotAJSONObject(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LOADTEST_ROOT", dir)
+	tokenFile := credentialFileAt(t, "dispatch-token", "t\n")
+	listenerFile := credentialFileAt(t, "listener-token", "l\n")
 	for _, content := range []string{`[{"namespace":"loadtest"}]`, `null`, `"loadtest"`, `{"namespace":`, ``, `{"a":1} {"b":2}`} {
 		path := filepath.Join(dir, "copy.json")
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -29,7 +31,7 @@ func TestCopyMetaRefusesAFileThatIsNotAJSONObject(t *testing.T) {
 		out := filepath.Join(dir, "step")
 		err := runLoad([]string{"-allow-foreign", "-url", "http://127.0.0.1:1", "-listener", "http://127.0.0.1:1", "-nats", "nats://127.0.0.1:1",
 			"-nats-mon", "http://127.0.0.1:1", "-pprof", "http://127.0.0.1:1", "-pg", "postgres://postgres@127.0.0.1:1/dispatch",
-			"-token", "t", "-listener-token", "l", "-events", "0", "-sessions", "1", "-requests", "0", "-out", out, "-copy-meta", path})
+			"-token-file", tokenFile, "-listener-token-file", listenerFile, "-events", "0", "-sessions", "1", "-requests", "0", "-out", out, "-copy-meta", path})
 		if err == nil || !strings.Contains(err.Error(), path) {
 			t.Errorf("loadgen run with -copy-meta holding %q: error %v, want a refusal naming %s", content, err, path)
 		}

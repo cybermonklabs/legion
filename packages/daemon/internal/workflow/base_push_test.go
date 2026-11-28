@@ -99,6 +99,7 @@ func seedBasePushTree(t *testing.T, pool *pgxpool.Pool) {
 // was in, and nothing is queued - since what a moved base says is only that the next read of those
 // pull requests is needed.
 func TestABasePushMarksEveryOpenPullRequestOnThatBase(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedBasePushTree(t, pool)
 
@@ -109,10 +110,11 @@ func TestABasePushMarksEveryOpenPullRequestOnThatBase(t *testing.T) {
 	assertPhasesLeftAsThey(t, pool)
 }
 
-// A push to a branch no pull request is recorded on - every push of the other automation a mapped
+// A push to a branch no pull request is recorded on - every push of the other automation a heard
 // repository carries, and every push to a repository Legion has no open pull request in - changes
 // nothing: the handler's one lookup finds no row and the transaction ends there.
 func TestAPushToABaseNothingIsRecordedOnChangesNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedBasePushTree(t, pool)
 

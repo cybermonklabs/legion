@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The `legion` tool's description of `ready_for_update` says that a kept volume stays with its
+  Sandbox through the round unless a reset or a change of its disk shape deletes it, that the
+  daemon keeps the pod and says so when it finds work that origin does not hold, and that a round
+  over a drift that breaks the pod replaces the pod anyway. It said that the daemon replaces the
+  pod and its disk when the round ends in every case.
+time: 2026-11-26T14:03:20Z
+custom:
+    Issue: pr5706

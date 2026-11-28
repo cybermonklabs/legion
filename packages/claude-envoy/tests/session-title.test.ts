@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { skipWithout } from "@legion/test-fixtures/host-tools"
 import { queryTmux, sessionTitle, type TmuxQuery, tmuxPaneTitle } from "../src/session-title"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const SESSION_ID = "3084299d-32a7-41a3-ba9b-f61675b03b8d"
 const SERVER_PID = "4242"
@@ -338,11 +339,17 @@ test("a title keeps no bidirectional override, and keeps a private-use glyph", a
 // at module scope: a call per row would print the warning per row.
 const withoutTmux = skipWithout("tmux")
 
+/** Where the two rows' tmux sockets go. A socket path has 107 bytes to fit in (Linux's `sun_path`
+ *  holds 108 with its terminating zero), and tmux refuses a longer one (`Filename too long`):
+ *  `<directory>/title-tmux-XXXXXX/tmux.sock` passes it under a `TMPDIR` over 79 bytes. So the
+ *  directories go under `/tmp`, whatever `TMPDIR` is, as mod-link.test.ts's socket homes do. */
+const SOCKET_ROOT = "/tmp"
+
 test.skipIf(withoutTmux)(
   "a real tmux server answers a pane it does not have with no answer, and names its own pid",
   async () => {
     // A running server answers a pane it does not have with an empty line and exit status 0.
-    const directory = mkdtempSync(join(tmpdir(), "title-tmux-"))
+    const directory = mkdtempSync(join(SOCKET_ROOT, "title-tmux-"))
     const socket = join(directory, "tmux.sock")
     execFileSync("tmux", ["-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "probe"])
     try {
@@ -384,7 +391,7 @@ test.skipIf(withoutTmux)(
 test.skipIf(withoutTmux)(
   "queryTmux keeps the tabs between fields when its process has neither TMUX nor a UTF-8 locale",
   () => {
-    const directory = mkdtempSync(join(tmpdir(), "title-tmux-"))
+    const directory = mkdtempSync(join(SOCKET_ROOT, "title-tmux-"))
     const socket = join(directory, "tmux.sock")
     execFileSync("tmux", ["-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "probe"])
     try {
@@ -403,7 +410,7 @@ test.skipIf(withoutTmux)(
           "-e",
           `import { queryTmux } from ${JSON.stringify(source)}; process.stdout.write(JSON.stringify(await queryTmux(${JSON.stringify(socket)}, ${JSON.stringify(pane)}, "#{session_name}\\t#{pid}")))`,
         ],
-        { env: { PATH: process.env["PATH"] ?? "", HOME: directory } },
+        { env: { PATH: process.env["PATH"] ?? "", HOME: directory, ...NO_TRANSPILER_CACHE } },
       )
       expect(child.stdout.toString()).toBe(JSON.stringify(`probe\t${pid}\n`))
     } finally {
@@ -432,7 +439,13 @@ test("queryTmux is bounded even by a tmux that ignores SIGTERM", () => {
         "-e",
         `import { queryTmux } from ${JSON.stringify(source)}; const started = Date.now(); const answer = await queryTmux("/nonexistent/tmux.sock", "%0", "x"); process.stdout.write(\`\${String(answer)} \${Date.now() - started}\`)`,
       ],
-      { env: { PATH: `${directory}:${process.env["PATH"] ?? ""}`, HOME: directory } },
+      {
+        env: {
+          PATH: `${directory}:${process.env["PATH"] ?? ""}`,
+          HOME: directory,
+          ...NO_TRANSPILER_CACHE,
+        },
+      },
     )
     const ran = Date.now() - started
     const [answer, elapsed] = child.stdout.toString().split(" ")

@@ -1,6 +1,13 @@
 package api
 
+// main's #2780 added the guard that holds internal/api's reachable claim states to the ones
+// internal/supervise declares, which it reads by parsing that package's own sources.
+//ci:reads packages/daemon/internal/supervise/*.go !**/*_test.go claimStates lists ../supervise and parses each .go file of it but the test files
+
 import (
+	"io"
+	"log/slog"
+
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -178,7 +185,7 @@ func sentenceNaming(t *testing.T, refusal, needle string) string {
 // suspends where the request arrives and starts again, and which the compaction refuses, since
 // it has no agent to ask for a compaction at all.
 type reachDoor struct {
-	op               controllerOp
+	op               agentAction
 	live             func(supervise.ClaimState) bool
 	stopped          func(supervise.ClaimState) bool
 	overADeadProcess func(supervise.ClaimState) bool
@@ -200,8 +207,8 @@ func (d reachDoor) reaches(state supervise.ClaimState) bool {
 
 // Each door's words for the states it reaches are the states its own predicates admit, over
 // every state a claim can be in: the sentence every refusal that ends in askAgainLater carries
-// (controllerOp.reaches), and the live half the held suspension's refusal writes its own
-// sentence around (controllerOp.liveStates). A door that named the other door's set, or a set
+// (agentAction.reaches), and the live half the held suspension's refusal writes its own
+// sentence around (agentAction.liveStates). A door that named the other door's set, or a set
 // that had gone stale against the predicate, fails here whatever the surrounding wording is.
 func TestEachDoorNamesTheStatesItsOwnPredicatesReach(t *testing.T) {
 	all := claimStates(t)
@@ -212,7 +219,7 @@ func TestEachDoorNamesTheStatesItsOwnPredicatesReach(t *testing.T) {
 				t.Errorf("liveStates = %q, want %q, the states %s reaches while an agent runs",
 					door.op.liveStates, stateWords(live), door.op.name)
 			}
-			if clause := "whose agent is " + stateWords(live); !strings.Contains(door.op.reaches, clause) {
+			if clause := "an agent that is " + stateWords(live); !strings.Contains(door.op.reaches, clause) {
 				t.Errorf("reaches = %q, want it to carry %q", door.op.reaches, clause)
 			}
 			if door.stopped != nil {
@@ -251,38 +258,34 @@ func TestTheHeldSuspensionRefusalNamesEachDoorsOwnLiveStates(t *testing.T) {
 			for _, state := range all {
 				t.Run(door.op.name+" over a "+string(role)+" that is "+string(state), func(t *testing.T) {
 					recorder := httptest.NewRecorder()
-					if refuseHeldSuspension(recorder, token, state, role, door.op) {
+					if refusalServer().refuseHeldSuspension(recorder, refusalRequest(), token, state, role, door.op, nil) {
 						t.Fatal("the refusal reported true, want the false every caller returns as its own answer")
 					}
-					var failure Failure
-					decodeInto(t, recorder, &failure)
 					wantCode := claimUnsettled
 					if state == supervise.StateWorking {
 						wantCode = claimInATurn
 					}
-					if recorder.Code != http.StatusConflict || failure.Code != wantCode {
-						t.Fatalf("refusal = %d %s, want %d %s", recorder.Code, failure.Code, http.StatusConflict, wantCode)
-					}
+					message := refused(t, recorder, http.StatusConflict, wantCode)
 
-					clauses := strings.SplitN(sentenceNaming(t, failure.Error, startsAgainName(role)), ", and ", 2)
+					clauses := strings.SplitN(sentenceNaming(t, message, startsAgainName(role)), ", and ", 2)
 					if len(clauses) != 2 {
 						t.Fatalf("the sentence of what reaches the claim is %q, want a clause for each of the two", clauses[0])
 					}
 					if named := statesNamed(clauses[0], all); !slices.Equal(named, stopped) {
-						t.Errorf("%s reaches %v in the refusal, want %v: %q", startsAgainName(role), named, stopped, failure.Error)
+						t.Errorf("%s reaches %v in the refusal, want %v: %q", startsAgainName(role), named, stopped, message)
 					}
 					if !strings.Contains(clauses[1], door.op.name) {
 						t.Errorf("the second clause is %q, want it to name %s", clauses[1], door.op.name)
 					}
 					if named := statesNamed(clauses[1], all); !slices.Equal(named, live) {
-						t.Errorf("%s reaches %v in the refusal, want %v: %q", door.op.name, named, live, failure.Error)
+						t.Errorf("%s reaches %v in the refusal, want %v: %q", door.op.name, named, live, message)
 					}
 					want := slices.Concat(stopped, live)
 					slices.SortFunc(want, func(a, b supervise.ClaimState) int {
 						return slices.Index(all, a) - slices.Index(all, b)
 					})
-					if named := statesNamed(failure.Error, all); !slices.Equal(named, want) {
-						t.Errorf("the refusal names %v, want %v: %q", named, want, failure.Error)
+					if named := statesNamed(message, all); !slices.Equal(named, want) {
+						t.Errorf("the refusal names %v, want %v: %q", named, want, message)
 					}
 				})
 			}
@@ -300,7 +303,7 @@ func TestTheHeldSuspensionRefusalNamesEachDoorsOwnLiveStates(t *testing.T) {
 func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 	for _, row := range []struct {
 		name  string
-		op    controllerOp
+		op    agentAction
 		token claim.Token
 		state supervise.ClaimState
 		role  claim.Role
@@ -312,10 +315,10 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 			token: "LEGION-209-implementer",
 			state: supervise.StateReady,
 			role:  claim.RoleImplementer,
-			want: "LEGION-209-implementer has a suspension held over it, and a fresh session reaches no claim a " +
-				"suspension waits over, whatever state it is in. Of the claims with no suspension held over them, " +
+			want: "LEGION-209-implementer has a suspension held over it, and a fresh session reaches no agent a " +
+				"suspension waits over, whatever state it is in. Of the agents with no suspension held over them, " +
 				"fresh_session (`legion claims retry --fresh-session`) reaches those that are suspended, failed or " +
-				"retired, and a fresh session reaches those whose agent is registered, ready or idle. Ask again " +
+				"retired, and a fresh session reaches those that are registered, ready or idle. Ask again " +
 				"later; `read_state` (`legion claims list`) shows its state",
 		},
 		{
@@ -324,10 +327,10 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 			token: "LEGION-209-implementer",
 			state: supervise.StateReady,
 			role:  claim.RoleImplementer,
-			want: "LEGION-209-implementer has a suspension held over it, and a compaction reaches no claim a " +
-				"suspension waits over, whatever state it is in. Of the claims with no suspension held over them, " +
+			want: "LEGION-209-implementer has a suspension held over it, and a compaction reaches no agent a " +
+				"suspension waits over, whatever state it is in. Of the agents with no suspension held over them, " +
 				"fresh_session (`legion claims retry --fresh-session`) reaches those that are suspended, failed or " +
-				"retired, and a compaction reaches those whose agent is ready or idle. Ask again later; " +
+				"retired, and a compaction reaches those that are ready or idle. Ask again later; " +
 				"`read_state` (`legion claims list`) shows its state",
 		},
 		{
@@ -336,16 +339,16 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 			token: "INFRA-controller",
 			state: supervise.StateLaunching,
 			role:  claim.RoleController,
-			want: "INFRA-controller has a suspension held over it, and a compaction reaches no claim a suspension " +
-				"waits over, whatever state it is in. Of the claims with no suspension held over them, the daemon's " +
+			want: "INFRA-controller has a suspension held over it, and a compaction reaches no agent a suspension " +
+				"waits over, whatever state it is in. Of the agents with no suspension held over them, the daemon's " +
 				"controller keeper (whose resume an operator's own suspension holds) reaches those that are " +
-				"suspended, failed or retired, and a compaction reaches those whose agent is ready or idle. Ask " +
+				"suspended, failed or retired, and a compaction reaches those that are ready or idle. Ask " +
 				"again later; `read_state` (`legion claims list`) shows its state",
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			refuseHeldSuspension(recorder, row.token, row.state, row.role, row.op)
+			refusalServer().refuseHeldSuspension(recorder, refusalRequest(), row.token, row.state, row.role, row.op, nil)
 			var failure Failure
 			decodeInto(t, recorder, &failure)
 			if failure.Error != row.want {
@@ -353,4 +356,15 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 			}
 		})
 	}
+}
+
+// refusalServer and refusalRequest are what a refusal written on its own needs: a server that
+// places no caller in a pod and a request that states no contract, so the answer takes this
+// daemon's own shape and the refusal's own sentence is all there is to read (contractsFor).
+func refusalServer() *server {
+	return &server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+}
+
+func refusalRequest() *http.Request {
+	return httptest.NewRequest(http.MethodPost, "/legion/v1/claims/compact", nil)
 }

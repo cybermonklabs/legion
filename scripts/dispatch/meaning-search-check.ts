@@ -1,7 +1,10 @@
 import { parseArgs } from "node:util";
 import { SQL } from "bun";
 import { z } from "zod";
-import { DispatchClient } from "../../packages/envoy-client/src/dispatch-http";
+import {
+  DISPATCH_TOOL_DEADLINE_MS,
+  DispatchClient,
+} from "../../packages/envoy-client/src/dispatch-http";
 import {
   checkBuild,
   type DispatchConfig,
@@ -503,10 +506,12 @@ export function liveDispatch(config: DispatchConfig): DispatchReads {
     issue: (key) => client().getIssue(key),
     coverage: async () => {
       const url = `${config.url}/api/v1/search/coverage`;
+      const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
       return readJson(
         url,
-        await credential.headers("GET", url),
-        (status) => status >= 200 && status < 300
+        await credential.headers("GET", url, undefined, deadline),
+        (status) => status >= 200 && status < 300,
+        deadline
       );
     },
   };
@@ -544,7 +549,7 @@ function postgresLexer(target: string): Lexer & { close(): Promise<void> } {
 }
 
 async function main(argv: readonly string[]): Promise<number> {
-  const prelude = readCommandLine(argv, parseArguments, "config" satisfies Category);
+  const prelude = await readCommandLine(argv, parseArguments, "config" satisfies Category);
   if (!prelude.ready) return prelude.code;
   const { options } = prelude;
   const lexer =

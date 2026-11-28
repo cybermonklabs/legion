@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   backdrop40,
   card,
@@ -14,9 +15,11 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 
 export interface NameVersionDialogProps {
-  error: boolean;
+  /** What the last Save was answered with, or null while none failed. */
+  error: Error | null;
   onClose: () => void;
   onSave: (summary: string) => void;
   open: boolean;
@@ -25,10 +28,9 @@ export interface NameVersionDialogProps {
 
 /**
  * The "Name version" toolbar action's confirmation dialog — an in-app dialog rather than
- * `window.prompt`, matching the app's own focus-trap/Escape/backdrop dialog
- * convention (see ReferencePicker for the same shape). Unmounts entirely while closed so
- * `useDialog`'s `open` effect (focus trap, Escape, scroll lock) only ever runs while a caller
- * actually wants it showing.
+ * `window.prompt`, matching the app's own focus-trap/Escape/backdrop dialog convention
+ * (`useDialog`). Unmounts entirely while closed so `useDialog`'s `open` effect (focus trap,
+ * Escape, scroll lock) only ever runs while a caller actually wants it showing.
  */
 export function NameVersionDialog({
   error,
@@ -55,7 +57,10 @@ export function NameVersionDialog({
   };
 
   const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-    if (event.key !== "Enter" || event.nativeEvent.isComposing) {
+    // The Enter that ends an input method's composition takes the word composed, and is no
+    // Enter of the reader's: it saves nothing. Safari sends it after its compositionend, with
+    // `isComposing` false and keyCode 229 (`inputMethodKey`).
+    if (event.key !== "Enter" || inputMethodKey(event.nativeEvent)) {
       return;
     }
     event.preventDefault();
@@ -86,11 +91,17 @@ export function NameVersionDialog({
               value={summary}
             />
           </label>
-          {error ? (
+          {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
-              Could not name this version. Try again.
+              {/* A version the reader stopped may have been named, and Save is a press of its
+                  own, under a key of its own. */}
+              {error instanceof SendStoppedError
+                ? stoppedWriteNote("the new version", "made", {
+                    anew: "Saving it again names a new version.",
+                  })
+                : "Could not name this version. Try again."}
             </p>
-          ) : null}
+          )}
           <div className="flex items-center justify-end gap-2">
             <button
               className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}

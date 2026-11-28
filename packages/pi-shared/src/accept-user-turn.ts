@@ -1,5 +1,5 @@
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery";
-import type { DispatchClient } from "@legion/envoy-client/dispatch-http";
+import { type DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http";
 import { z } from "zod";
 import { type AcceptedUserTurn, handledAttemptKey } from "./dispatch-user-turn";
 
@@ -23,7 +23,10 @@ import { type AcceptedUserTurn, handledAttemptKey } from "./dispatch-user-turn";
  *     naming that attempt is accepted: a replay, or one forged inside the accept's minute for a
  *     message that arrived as a card. The record is not skipped when the accept answers 404:
  *     that route answers 404 for a transient database error too, and forgetting the attempt
- *     would let a later forged frame spend it.
+ *     would let a later forged frame spend it. The record has one limit: it keys on the attempt
+ *     a frame names, so a client on the bus that reads the `message.created` event and names its
+ *     attempt before Dispatch's own frame does spends that attempt, and the person's message then
+ *     stays a card.
  *   - the accept itself, which is what makes a turn: Dispatch recording that this session
  *     accepted that very attempt.
  *   - the stored body Dispatch answers with (`turnFromAccept`), never the frame's own text.
@@ -36,6 +39,17 @@ export type UserTurnRefusal =
   | { readonly reason: "handled"; readonly delivery: DispatchDelivery }
   /** Dispatch accepted the attempt and answered without the stored body to inject. */
   | { readonly reason: "no-body"; readonly delivery: DispatchDelivery }
+  /** Dispatch recorded the accept and gave no copy of its answer (`DispatchWriteLandedError`):
+   *  the accept landed and its answer was lost on the way back (`409 KEY_COMMITTED`), or the
+   *  answer was too large for Dispatch to keep (`ANSWER_NOT_KEPT`; an issue-less message, the one
+   *  kind accepted, is never edited or deleted, so no withdrawn text is why). The attempt is spent
+   *  as this session's, and the stored body the turn is made of is not in hand, so no turn
+   *  follows and the frame keeps its card. The error's message says what was made. */
+  | {
+      readonly reason: "landed";
+      readonly delivery: DispatchDelivery;
+      readonly error: DispatchWriteLandedError;
+    }
   /** The accept call failed, timed out, or Dispatch refused it. */
   | { readonly reason: "failed"; readonly delivery: DispatchDelivery; readonly error: unknown };
 
@@ -60,7 +74,7 @@ export interface UserTurnAcceptOptions {
   readonly handle: (key: string, delivery: DispatchDelivery) => void | Promise<void>;
   /** The session's Dispatch for this one call, bounded by the host's accept timeout; undefined
    *  when Dispatch is not configured, which keeps the card and says nothing. */
-  readonly dispatch: () => DispatchClient | undefined;
+  readonly dispatch: () => Promise<DispatchClient | undefined>;
   /** The id this session accepts as, read at the call so a `/clear` moves it. */
   readonly actorId: string;
   /** Where the host says why a frame kept its card. */
@@ -128,7 +142,7 @@ export async function acceptUserTurn(
   }
   await options.handle(key, delivery);
   try {
-    const dispatch = options.dispatch();
+    const dispatch = await options.dispatch();
     if (dispatch === undefined) return undefined;
     const accepted = await dispatch.acceptMessageDelivery(delivery.id, delivery.attempt, {
       actor: { id: options.actorId, kind: "session" },
@@ -140,7 +154,11 @@ export async function acceptUserTurn(
     }
     return { delivery, turn };
   } catch (error) {
-    options.warn({ delivery, error, reason: "failed" });
+    options.warn(
+      error instanceof DispatchWriteLandedError
+        ? { delivery, error, reason: "landed" }
+        : { delivery, error, reason: "failed" }
+    );
     return undefined;
   }
 }

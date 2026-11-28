@@ -10,7 +10,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
-import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type {
   EngineInterface,
@@ -38,6 +37,12 @@ import {
   unreadRowPrompt,
 } from "../hooks/mod-protocol"
 import { type ModLink, startModLink } from "../src/mod-link"
+
+/** Where the socket homes are made. A mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and that
+ *  whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a deep
+ *  `TMPDIR` (a dev box's `/mnt/scratch/...`, a Legion pod's) leaves none, so the homes go under
+ *  `/tmp`, whatever `TMPDIR` is, as channel-fatal-exit.test.ts's do. */
+const SOCKET_ROOT = "/tmp"
 
 /** The hook `on("session.start", ...)` takes, as `On` declares it. */
 type SessionStartHook = (
@@ -382,7 +387,7 @@ async function turn(turnId: string, requests: number, inside?: () => Promise<voi
 }
 
 beforeAll(async () => {
-  const directory = await mkdtemp(join(tmpdir(), "mod-"))
+  const directory = await mkdtemp(join(SOCKET_ROOT, "mod-"))
   scratch = directory
   const server = await startModLink({
     sessionId: SESSION_ID,

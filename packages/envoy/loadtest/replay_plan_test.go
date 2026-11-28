@@ -204,9 +204,10 @@ func TestReplayNamedVersionUploadOrEdit(t *testing.T) {
 	o := rpOptions()
 	o.uploads = 1
 	a := onlyWrite(t, rpPlan(t, o, []string{line}, nil))
-	wantRoutes(t, a, []string{"POST /api/v1/issues/{key}/artifacts [upload]"})
-	if b := lastBody(a); b["content"] != want || b["name"] != "spec" || b["summary"] != "s" {
-		t.Fatalf("upload body: content matches %v, name %v", b["content"] == want, b["name"])
+	wantRoutes(t, a, []string{"GET /api/v1/artifacts/{id}/text [upload]"}, []string{"POST /api/v1/issues/{key}/artifacts [upload]"})
+	if b := lastBody(a); b["content"] != want || b["name"] != "spec" || b["summary"] != "s" ||
+		b["precondition"].(map[string]any)["document"] != (replayDocToken{}) {
+		t.Fatalf("upload body: content matches %v, name %v, base %v", b["content"] == want, b["name"], b["precondition"])
 	}
 
 	o.uploads = 0
@@ -498,6 +499,119 @@ func TestReplayResolve(t *testing.T) {
 func TestReplaySessionMessage(t *testing.T) {
 	a := onlyWrite(t, rpPlan(t, rpOptions(), []string{rpEvent(1, "message.created", "ACME-1", rpSession, time.Second, map[string]any{"body": "m"})}, nil))
 	wantRoutes(t, a, []string{"POST /api/v1/issues/{key}/messages [message]"})
+}
+
+// TestReplayOfDeletedPostsPlansNoRefusedWrite: Dispatch serves every event of a comment or a
+// message its author deleted with the delete mark and without its body (attachPostMarks), and
+// refuses a post written with a blank body (400 INVALID_COMMENT, 400 INVALID_MESSAGE) or a reply
+// to a deleted post (409 POST_DELETED). Over a log holding a comment deleted before the instant,
+// one deleted in the window, one deleted after it, a message deleted in the window and one
+// written before it, the reconstruction and the plan write every such post with deletedPostBody
+// in its place, send the window's deletes after the replies that came before them, and send no
+// delete of a message the stack has no copy of.
+func TestReplayOfDeletedPostsPlansNoRefusedWrite(t *testing.T) {
+	deleted := func(payload map[string]any, at time.Time) map[string]any {
+		delete(payload, "body")
+		payload["deleted_at"], payload["deleted_by"] = at.Format(time.RFC3339Nano), sess("s1")
+		return payload
+	}
+	message := func(id string) map[string]any {
+		return map[string]any{"id": id, "issue_key": "PRJ-1", "author": sess("s1")}
+	}
+	logs := []issueLog{{Key: "PRJ-1", Number: 1, Events: []replayEvent{
+		mkEvent(t, 1, "PRJ-1", "issue.created", mins(-100), sess("s0"), issueSnap("PRJ-1", "t", "open", nil)),
+		mkEvent(t, 2, "PRJ-1", "comment.created", mins(-50), sess("s1"), deleted(comment("gone", nil), mins(-40))),
+		mkEvent(t, 3, "PRJ-1", "comment.created", mins(-45), sess("s1"), comment("gone-reply", map[string]any{"reply_to": "gone"})),
+		mkEvent(t, 4, "PRJ-1", "comment.deleted", mins(-40), sess("s1"), deleted(comment("gone", nil), mins(-40))),
+		mkEvent(t, 5, "PRJ-1", "comment.created", mins(-30), sess("s1"), deleted(comment("later", nil), tUntil.Add(time.Hour))),
+		mkEvent(t, 6, "PRJ-1", "message.created", mins(-20), sess("s1"), deleted(message("m-old"), mins(7))),
+		// The window: a root deleted in it after a reply to it, a message deleted in it, and the
+		// delete of the message written before it.
+		mkEvent(t, 10, "PRJ-1", "comment.created", mins(2), sess("s1"), deleted(comment("late", nil), mins(5))),
+		mkEvent(t, 11, "PRJ-1", "comment.created", mins(3), sess("s3"), comment("late-reply", map[string]any{"reply_to": "late"})),
+		mkEvent(t, 12, "PRJ-1", "message.created", mins(4), sess("s1"), deleted(message("m-gone"), mins(6))),
+		mkEvent(t, 13, "PRJ-1", "comment.deleted", mins(5), sess("s1"), deleted(comment("late", nil), mins(5))),
+		mkEvent(t, 14, "PRJ-1", "message.deleted", mins(6), sess("s1"), deleted(message("m-gone"), mins(6))),
+		mkEvent(t, 15, "PRJ-1", "message.deleted", mins(7), sess("s1"), deleted(message("m-old"), mins(7))),
+	}}}
+	rec, err := buildState("PRJ", tAt, tUntil, logs, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The state: each comment keeps its place, and the seed writes none with a blank body.
+	is := &rec.State.Issues[0]
+	bodies := map[string]string{}
+	for i := range is.Comments {
+		c := &is.Comments[i]
+		bodies[c.ID] = c.Body
+		_, body, err := commentBody(c, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(body["body"].(string)) == "" {
+			t.Errorf("the seed writes comment %s with a blank body, which Dispatch refuses 400 INVALID_COMMENT", c.ID)
+		}
+	}
+	want := map[string]string{"gone": deletedPostBody, "gone-reply": "body gone-reply", "later": deletedPostBody}
+	if !reflect.DeepEqual(bodies, want) {
+		t.Errorf("the state's comment bodies are %v, want %v", bodies, want)
+	}
+	if c := stateCounts(rec.State, rec.Window); c.CommentsDeleted != 1 {
+		t.Errorf("comments_deleted %d, want 1: the comment deleted before the instant", c.CommentsDeleted)
+	}
+
+	// The window's plan.
+	var lines []string
+	for _, ev := range rec.Window {
+		lines = append(lines, string(ev.Raw))
+	}
+	p, err := planReplay(rpBundle(t, rec.State, lines, nil), rpOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	made := map[replayRef]bool{{idComment, "gone"}: true, {idComment, "gone-reply"}: true, {idComment, "later"}: true}
+	deletedAt := map[string]time.Duration{}
+	for _, a := range p.Actions {
+		if !a.Write {
+			continue
+		}
+		kinds = append(kinds, a.Kind)
+		for _, st := range a.Stages {
+			for _, r := range st {
+				switch r.Method {
+				case "POST":
+					if text, _ := r.Body["body"].(string); strings.TrimSpace(text) == "" {
+						t.Errorf("%s at %s writes a blank body, which Dispatch refuses with a 400", r.route(a.Kind), a.Offset)
+					}
+					if to, ok := r.Body["reply_to"].(replayRef); ok {
+						if at, gone := deletedAt[to.Logged]; gone {
+							t.Errorf("a reply at %s to %s, deleted at %s, which Dispatch refuses 409 POST_DELETED", a.Offset, to.Logged, at)
+						}
+					}
+					for _, pr := range r.Produces {
+						made[pr.Ref] = true
+					}
+				case "DELETE":
+					ref := *r.Params["id"].Ref
+					if !made[ref] {
+						t.Errorf("%s names %v, which nothing before it makes", r.route(a.Kind), ref)
+					}
+					deletedAt[ref.Logged] = a.Offset
+				}
+			}
+		}
+	}
+	if want := []string{rkPlain, rkReply, rkMessage, rkCommentDelete, rkMessageDelete}; !slices.Equal(kinds, want) {
+		t.Errorf("planned writes %v, want %v", kinds, want)
+	}
+	if want := map[string]int{"comment.created": 1, "message.created": 1}; !reflect.DeepEqual(p.Counts.DeletedBodies, want) {
+		t.Errorf("deleted_bodies %v, want %v", p.Counts.DeletedBodies, want)
+	}
+	if got := p.Counts.NotSent["unseeded_message:message.deleted"]; got != 1 {
+		t.Errorf("not_sent %v, want the delete of the message written before the window counted unseeded_message", p.Counts.NotSent)
+	}
 }
 
 func TestReplayAsksAndClaim(t *testing.T) {

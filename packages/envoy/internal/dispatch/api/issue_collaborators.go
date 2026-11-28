@@ -11,8 +11,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // collaboratorReason is one way a person or an agent worked an issue. The values are bits so a
@@ -55,11 +56,6 @@ var collaboratorEventReasons = map[string]collaboratorReason{
 // collaboratorEventTypes is collaboratorEventReasons' keys, the type list the one events read
 // binds.
 var collaboratorEventTypes = slices.Sorted(maps.Keys(collaboratorEventReasons))
-
-// legionDaemonSessionPrefix starts the session id the Legion daemon writes an issue's status and
-// lifecycle messages under (legion-daemon:<PROJECT>, packages/daemon's DaemonSession). It holds no
-// conversation, so it is nobody to ask and never a collaborator.
-const legionDaemonSessionPrefix = "legion-daemon:"
 
 // Registry states the collaborators answer names.
 const (
@@ -218,7 +214,9 @@ func (s *server) tallyCollaboratorEvents(
 				tallyOf(people, login).add(reason, &at)
 			}
 		case "session":
-			if id != "" && !strings.HasPrefix(id, legionDaemonSessionPrefix) {
+			// The Legion daemon's session holds no conversation and no title, so it is never a
+			// collaborator.
+			if id != "" && !legion.DaemonSession(id) {
 				tallyOf(sessions, id).add(reason, &at)
 			}
 		}
@@ -231,7 +229,7 @@ func (s *server) tallyCollaboratorEvents(
 
 // issueLegionAgents is the listener's Legion agent registry entries for the issue, or
 // "unavailable" when there is no listener or it did not answer within the client's window.
-func (s *server) issueLegionAgents(ctx context.Context, key string) ([]envoy.LegionAgent, string) {
+func (s *server) issueLegionAgents(ctx context.Context, key string) ([]listenerwire.LegionAgentAnswer, string) {
 	if s.deps.Envoy == nil {
 		return nil, legionRegistryUnavailable
 	}
@@ -248,7 +246,7 @@ func (s *server) issueLegionAgents(ctx context.Context, key string) ([]envoy.Leg
 // newest title the session stamped on anything it wrote (delivery.ResolveSessionTitles), which a
 // later write carrying none does not take away; null for a session that never stamped one.
 func (s *server) collaboratorAgents(
-	ctx context.Context, sessions map[string]*collaboratorTally, registry []envoy.LegionAgent,
+	ctx context.Context, sessions map[string]*collaboratorTally, registry []listenerwire.LegionAgentAnswer,
 ) ([]collaboratorAgent, error) {
 	agents := make([]collaboratorAgent, 0, len(sessions)+len(registry))
 	listed := make(map[string]struct{}, len(sessions)+len(registry))

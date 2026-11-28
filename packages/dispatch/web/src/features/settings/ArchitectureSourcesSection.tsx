@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import { api, apiErrorMessage, isSourceNotFound, removedEvenIfGone } from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -19,7 +19,12 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import {
+  refusedNote,
+  stoppedNote,
+  useKeyedWrite,
+  useRefusalOfSubject,
+} from "../writes/useKeyedWrite";
 import {
   ownerRepoPattern,
   settingsFieldLabel,
@@ -37,11 +42,24 @@ interface SourceKey {
   readonly repo: string;
 }
 
+/** `source` as the section's sentences name it: `the architecture source acme/web for CORE`. */
+function sourceName(source: SourceKey): string {
+  return `the architecture source ${source.repo} for ${source.project}`;
+}
+
+/** The id of the section's heading, which an address names to open Settings at this section
+ *  (`SettingsPage`): an issue's Components line links there while its project has no source. */
+export const ARCHITECTURE_SOURCES_HEADING_ID = "architecture-sources-heading";
+
 /** A project's architecture sources, one row per repository: the branch its architecture
  * documents are imported from, the commit imported and how many components it supplies. Saving
  * runs the server's GitHub App access check, so a listed row has proven access — it shows
  * "Access verified" until a sync reports otherwise — and a failed check surfaces the server's
- * reason inline. Saving a repository the project already has changes that source's branch. */
+ * reason inline. Saving a repository the project already has changes that source's branch.
+ *
+ * Its form's groups, in this order: Source project, Source repository, Branch and Add source, two
+ * columns from `sm` and one below it; each field shrinks with its column, and a value longer than
+ * its field ends in an ellipsis with the whole value as its title. */
 export function ArchitectureSourcesSection(): ReactNode {
   const queryClient = useQueryClient();
   const [project, setProject] = useState("");
@@ -55,6 +73,7 @@ export function ArchitectureSourcesSection(): ReactNode {
     inline: true,
     label: (input: { project: string; repo: string; branch: string }) =>
       `${input.project}'s architecture source ${input.repo}`,
+    method: "PUT",
     write: (input, bounds) =>
       api.putArchitectureSource(input.project, input.repo, { branch: input.branch }, bounds),
     onSettled: () => submitGuard.release(),
@@ -68,7 +87,14 @@ export function ArchitectureSourcesSection(): ReactNode {
   });
   const deleteSource = useKeyedWrite({
     label: (source: SourceKey) => `${source.project}'s architecture source ${source.repo} removed`,
-    write: (source, bounds) => api.deleteArchitectureSource(source.project, source.repo, bounds),
+    // A removal made again after one that landed finds no source (`404 SOURCE_NOT_FOUND`), which
+    // is the removal done (`removedEvenIfGone`).
+    method: "DELETE",
+    write: (source, bounds) =>
+      removedEvenIfGone(
+        api.deleteArchitectureSource(source.project, source.repo, bounds),
+        isSourceNotFound
+      ),
     onSuccess: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
@@ -78,6 +104,7 @@ export function ArchitectureSourcesSection(): ReactNode {
   const refreshSource = useKeyedWrite({
     label: (source: SourceKey) =>
       `Refresh of ${source.project}'s architecture source ${source.repo}`,
+    method: "POST",
     write: (source, bounds) => api.syncArchitectureSource(source.project, source.repo, bounds),
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
@@ -86,12 +113,24 @@ export function ArchitectureSourcesSection(): ReactNode {
     event.preventDefault();
     submitGuard.guard(() => saveSource.mutate({ branch, project, repo: repository }));
   };
+  // A removal's and a refresh's refusals sit under the table, each one line for every row, so each
+  // names the source it was about, and goes once that source leaves the list - removed in another
+  // tab, or by another person - rather than stand under sources it was never about.
+  const listed = (source: SourceKey) =>
+    sources.data?.some((row) => row.project === source.project && row.repo === source.repo) ===
+    true;
+  const deleteRefused = useRefusalOfSubject(deleteSource, listed)
+    ? deleteSource.variables
+    : undefined;
+  const refreshRefused = useRefusalOfSubject(refreshSource, listed)
+    ? refreshSource.variables
+    : undefined;
 
   return (
-    <section aria-labelledby="architecture-sources-heading">
+    <section aria-labelledby={ARCHITECTURE_SOURCES_HEADING_ID}>
       <h2
         className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
-        id="architecture-sources-heading"
+        id={ARCHITECTURE_SOURCES_HEADING_ID}
       >
         Architecture sources
       </h2>
@@ -251,6 +290,7 @@ export function ArchitectureSourcesSection(): ReactNode {
                 pattern={ownerRepoPattern}
                 placeholder="owner/repo"
                 required
+                title={repository === "" ? undefined : repository}
                 value={repository}
               />
             </label>
@@ -262,6 +302,7 @@ export function ArchitectureSourcesSection(): ReactNode {
                 id="architecture-source-branch"
                 onChange={(event) => setBranch(event.target.value)}
                 required
+                title={branch === "" ? undefined : branch}
                 value={branch}
               />
             </label>
@@ -276,36 +317,45 @@ export function ArchitectureSourcesSection(): ReactNode {
           {saveSource.isError ? (
             <div className="mt-4">
               <QueryError
-                message={apiErrorMessage(
-                  saveSource.error,
-                  "Couldn't save the architecture source."
-                )}
+                message={
+                  stoppedNote(saveSource, "the architecture source", "saved") ??
+                  apiErrorMessage(saveSource.error, "Couldn't save the architecture source.")
+                }
                 onRetry={() => submitGuard.retryLast(saveSource)}
                 retrying={saveSource.isPending}
               />
             </div>
           ) : null}
-          {deleteSource.isError ? (
+          {deleteRefused === undefined ? null : (
             <div className="mt-4">
               <QueryError
-                message="Couldn't delete the architecture source."
-                onRetry={() => deleteSource.mutate(deleteSource.variables)}
+                message={
+                  stoppedNote(
+                    deleteSource,
+                    `the removal of ${sourceName(deleteRefused)}`,
+                    "made"
+                  ) ?? `Couldn't delete ${sourceName(deleteRefused)}.`
+                }
+                onRetry={deleteSource.retry}
                 retrying={deleteSource.isPending}
               />
             </div>
-          ) : null}
-          {refreshSource.isError ? (
+          )}
+          {refreshRefused === undefined ? null : (
             <div className="mt-4">
               <QueryError
-                message={apiErrorMessage(
-                  refreshSource.error,
-                  "Couldn't refresh the architecture source."
-                )}
-                onRetry={() => refreshSource.mutate(refreshSource.variables)}
+                message={
+                  stoppedNote(
+                    refreshSource,
+                    `the refresh of ${sourceName(refreshRefused)}`,
+                    "made"
+                  ) ?? refusedNote(`refresh ${sourceName(refreshRefused)}`, refreshSource.error)
+                }
+                onRetry={refreshSource.retry}
                 retrying={refreshSource.isPending}
               />
             </div>
-          ) : null}
+          )}
         </>
       ) : null}
     </section>

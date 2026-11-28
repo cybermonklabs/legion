@@ -29,8 +29,7 @@ const (
 
 // seedDeployedIssues writes the two deployed issues in the project that owns acme/widgets
 // (seedDeliveryProject), since an attribution holds an issue to the repository the pull request
-// is in, and clears their events, so a run against a database an earlier run left holds only
-// what this test writes. The pull requests and runs are cleared by deliveryTestPool.
+// is in.
 func seedDeployedIssues(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	seedDeliveryProject(t, ctx, pool)
@@ -44,9 +43,6 @@ func seedDeployedIssues(t *testing.T, ctx context.Context, pool *store.Pool) {
 			values ($1, $2, $3, $1, 'done', '{"kind":"system","id":"delivery-test"}', $1)
 			on conflict do nothing`, key, deliveryProject, deployedIssueBand+number); err != nil {
 			t.Fatalf("seed issue %s: %v", key, err)
-		}
-		if _, err := pool.Exec(ctx, `delete from events where issue_key = $1`, key); err != nil {
-			t.Fatalf("clear the events of %s: %v", key, err)
 		}
 	}
 }
@@ -161,6 +157,7 @@ func requireDeployedEvent(t *testing.T, ctx context.Context, pool *store.Pool, i
 // event while no deploy has shipped it: with no deploy run at all, with one created before its
 // merge, and with a failed one created after it.
 func TestDeployedEventWaitsForAShippingRun(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	seedDeployedIssues(t, ctx, pool)
@@ -197,6 +194,7 @@ func TestDeployedEventWaitsForAShippingRun(t *testing.T) {
 // (here two hours ahead of the database's); a second pass writes none and leaves the marker; a
 // pull request outside the deploy repository, attributed and merged before that run, writes none.
 func TestDeployedEventIsWrittenOncePerPullRequest(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	pool = laggingDatabaseClock(t, ctx, pool, 2*time.Hour)
 	settings := seedDeliverySettings(t, ctx, pool)
@@ -244,6 +242,7 @@ func TestDeployedEventIsWrittenOncePerPullRequest(t *testing.T) {
 // run listing, as TestReconcileCatchesAMissedDeployRun) ships a pull request stored earlier, and
 // the same pass writes the issue's event.
 func TestReconcileWritesTheDeployedEvent(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeployedIssues(t, ctx, pool)
@@ -263,7 +262,7 @@ func TestReconcileWritesTheDeployedEvent(t *testing.T) {
 		mustEncode(t, w, shippedRunJobs())
 	})
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	requireDeployedEvent(t, ctx, pool, deployedIssue, "acme/widgets", 501, 900, "2024-01-01T02:10:00Z")
 	if at := deployedEventAt(t, ctx, pool, "acme/widgets", 501); at == nil {
@@ -279,6 +278,7 @@ func TestReconcileWritesTheDeployedEvent(t *testing.T) {
 // durable hands it over) stores the run and its jobs, and the same envelope ends with the issue's
 // event. The envelope names only the run; its facts come from GitHub, as intake.go requires.
 func TestIntakeWritesTheDeployedEvent(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	seedDeployedIssues(t, ctx, pool)
@@ -291,7 +291,7 @@ func TestIntakeWritesTheDeployedEvent(t *testing.T) {
 	fake.handle("GET /repos/acme/widgets/actions/runs/900/jobs", func(w http.ResponseWriter, r *http.Request) {
 		mustEncode(t, w, shippedRunJobs())
 	})
-	intake := newIntake(nil, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil)
+	intake := newIntake(tuningFor(t), nil, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, unrenamed())
 
 	envelope, err := json.Marshal(map[string]string{
 		"kind": "workflow", "action": "completed", "repo": "acme/widgets",
@@ -300,7 +300,7 @@ func TestIntakeWritesTheDeployedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the envelope: %v", err)
 	}
-	handled, err := intake.route(ctx, settings, string(envelope))
+	handled, err := intake.route(ctx, &settings, string(envelope))
 	if err != nil || !handled {
 		t.Fatalf("route the deploy run's envelope = (%v, %v), want handled without error", handled, err)
 	}

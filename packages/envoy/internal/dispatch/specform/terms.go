@@ -151,48 +151,53 @@ func holdsLetterOrDigit(key string) bool {
 // breaks is each rule of R50 that the proposed definition at of term breaks: a name with a
 // character outside the alphabet of a term (outsideAlphabet), or with no letter and no digit; a
 // definition of other than one sentence, counted as the rules of R49 count one (sentencesOf), so a
-// definition with no word that has a letter has no sentence, and its footnotes count with it
-// (sentencesDetail); a second definition of a term the list holds, which names where the list
-// defines it; and the second definition of a term the document defines more than once under Terms,
-// which counts its definitions.
-func (index termIndex) breaks(at int, term Term) []broken {
+// definition with no word that has a letter has no sentence, and the sentences of its footnotes
+// count with it (noted, footnoteJudge.sentences); a second definition of a term the list holds,
+// which names where the list defines it; and the second definition of a term the document defines
+// more than once under Terms, which counts its definitions.
+func (index termIndex) breaks(at int, term Term, noted footnotesHeld) []broken {
 	var found []broken
 	key := TermKey(term.Name)
 	if held := outsideAlphabet(term.Name); len(held) > 0 {
-		found = append(found, broken{ruleTermName, termNameDetail(held)})
+		found = append(found, broken{rule: ruleTermName, detail: termNameDetail(held)})
 	} else if !holdsLetterOrDigit(key) {
-		found = append(found, broken{ruleTermName, emptyNameDetail})
+		found = append(found, broken{rule: ruleTermName, detail: emptyNameDetail})
 	}
-	if sentences := len(sentencesOf(oneLine(term.Definition))); sentences != 1 {
-		found = append(found, broken{ruleDefinitionSentences, sentencesDetail(sentences, term.Footnotes)})
+	if sentences := len(sentencesOf(proseLine(term.Definition))) + noted.count; sentences != 1 {
+		found = append(found, broken{rule: ruleDefinitionSentences, detail: definitionSentencesDetail(sentences, noted)})
 	}
 	if listed, ok := index.listed[key]; ok {
-		found = append(found, broken{ruleTermSecondDefinition, fmt.Sprintf(
+		found = append(found, broken{rule: ruleTermSecondDefinition, detail: fmt.Sprintf(
 			"%s already defines this term. Use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first",
 			listed.Where)})
 	}
 	if same := index.proposed[key]; len(same) > 1 && same[1] == at {
-		found = append(found, broken{ruleTermSecondDefinition, fmt.Sprintf("this document defines this term %d times. Keep one definition", len(same))})
+		found = append(found, broken{rule: ruleTermSecondDefinition, detail: fmt.Sprintf("this document defines this term %d times. Keep one definition", len(same))})
 	}
 	return found
 }
 
-// sentencesDetail is the detail of the rule definition-sentences for a definition of sentences
-// sentences whose words come in part from footnotes footnotes (Term.Footnotes). A footnote is part
-// of the definition that refers to it, as of every text, so the writer who sees one sentence
-// learns where the other one is, and the way out: the words of the footnote go in the one
-// sentence, or the footnote goes.
-func sentencesDetail(sentences, footnotes int) string {
-	if footnotes == 0 {
+// definitionSentencesDetail is the detail of the rule definition-sentences for a definition of
+// sentences sentences, of which its footnotes add those that noted counts. A footnote is part of
+// the definition that refers to it, as of every text, so the writer who sees one sentence learns
+// where the other one is, and the way out: the words of the footnote go in the one sentence, or
+// the footnote goes. Where Dispatch stopped the count (footnotesHeld.atLeast), the detail says
+// "at least".
+func definitionSentencesDetail(sentences int, noted footnotesHeld) string {
+	if len(noted.adds) == 0 {
 		return fmt.Sprintf("the definition has %d sentences, and a definition has one", sentences)
 	}
+	total := fmt.Sprint(sentences)
+	if noted.atLeast {
+		total = "at least " + total
+	}
 	notes, say := "footnote", "says"
-	if footnotes > 1 {
+	if len(noted.adds) > 1 {
 		notes, say = "footnotes", "say"
 	}
-	return fmt.Sprintf("the definition has %d sentences with its %s, and a definition has one. "+
+	return fmt.Sprintf("the definition has %s sentences with its %s, and a definition has one. "+
 		"A footnote is part of the definition that refers to it. "+
-		"Put what the %s %s in the one sentence of the definition, or remove the %s", sentences, notes, notes, say, notes)
+		"Put what the %s %s in the one sentence of the definition, or remove the %s", total, notes, notes, say, notes)
 }
 
 // lineBreaks is the rule of R50 that line, a line in the form of a term line outside Terms,
@@ -205,5 +210,5 @@ func (index termIndex) lineBreaks(line Text) []broken {
 	if !ok {
 		return nil
 	}
-	return []broken{{ruleTermSecondDefinition, fmt.Sprintf(lineDetail, definition.Where)}}
+	return []broken{{rule: ruleTermSecondDefinition, detail: fmt.Sprintf(lineDetail, definition.Where)}}
 }

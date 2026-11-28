@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The Go broker client says once when a pod session's registration it was waiting on landed: "the
+  secrets broker answered this pod's session once it was registered", with the session and how
+  long it waited, as the TypeScript client says it. It said the wait, and never its end.
+time: 2026-11-18T18:58:54Z
+custom:
+    Issue: pr4140

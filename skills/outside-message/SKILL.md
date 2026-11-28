@@ -1,102 +1,45 @@
 ---
 name: outside-message
-description: "Use before any text reaches a person outside the company: a comment on an issue or pull request of a repository the company does not own, an email, a chat message to another company, a release note, an enrollment reply, a bug report, a disclosure. Use it also before you open an ask that asks the operator to approve such text. Not for a message to the operator, to another agent, or inside the company's own organization."
+description: "Use when text you write will reach a person outside the company (a comment, issue or pull request on a repository the company does not own, an email, a release note, a bug report, a disclosure), and before you ask the operator to approve such text."
 ---
 
 # A message to someone outside the company
 
-The operator approves every message that leaves the company, and four steps come before you ask.
+The operator approves every message that leaves the company. Do the four steps below, then ask.
 
-## The exclusions
+Not covered: text written in a person's own name, which that person signs off; a message to the operator, to another agent, or inside the company's own organization; a release the pipeline publishes from approved template text, unless its text changes.
 
-An exclusion exists only where the operator has stated it. Never infer one from the shape of a
-message.
+## Exclusions
 
-**A project the operator has excluded by name** goes out without approval. Only the operator's own
-answer names such a project, and your stream's brief is where that answer reaches you. With no such
-answer for the project in front of you, there is no exclusion.
+An exclusion exists only where the operator stated it. Never infer one from the shape of a message.
 
-**A pull request to a project that has already enrolled**, with its description and its comments to
-that project's maintainers.  The four steps still
-apply. The approval ask does not. The work does not wait for the pull request either: prepare and
-sign the changes locally, and send them when the work they belong to ends.
+- **A project the operator excluded by name** goes out without approval. Only the operator's own answer names one, and it reaches you in your stream's brief.
+- **A pull request to a project that has enrolled**, with its description and its comments to that project's maintainers: do the four steps, and skip the ask. Prepare and sign the changes locally, and send them when the work they belong to ends. Enrollment is the enrolling project's own record, which your stream's brief locates; never judge it from a message's tone or from a maintainer having replied before.
 
-What counts as enrolled is the enrolling project's own record, and its stream's brief says where
-that record is. Do not decide enrollment from a message's tone, or from a maintainer having replied
-to the company before.
-
-Everything else waits for the operator: a first contact with a project that has not enrolled, a bug
-report, a disclosure, and a reply to a maintainer who wrote first.
-
-Hold an extremely high bar. Optimise every upstream report, patch or public post for a human
-reader and for being received well, so each one builds the company's reputation rather than a
-reputation for low-quality or careless submissions.
+Everything else waits for the operator: a first contact with a project that has not enrolled, a bug report, a disclosure, a reply to a maintainer who wrote first.
 
 ## The four steps
 
-1. **Research the audience.** Read the repository's contributing guide, its issue and pull-request
-   templates, its code of conduct, and its last ten issues or pull requests. Read how the
-   maintainers write to each other. Search for what has already been discussed about your subject; a
-   question they answered last month, asked again, costs you the reader.
-2. **Write for that audience, in their conventions.** Use their template where they have one, their
-   terms, their level of detail. Run `skill://asd-ste100` and `skill://plain-words` over the text.
-   Neither removes AI writing tells; where your session has a pass for those, run it as well.
-3. **Follow their conventions in form as well as words.** A pull request on their repository uses
-   their pull-request template. An issue uses their issue template. A thread reply matches the
-   thread.
-4. **A fresh reviewer reads it and cuts.** Dispatch a subagent that has not seen the drafting, give
-   it the message and the research, and tell it to remove everything that is not needed to
-   understand the core message. A reviewer that only approves has not done step 4. A subagent with
-   no model of its own runs on yours. Where your session can give the reviewer a different model,
-   do: a reader of the same model as the writer is the weaker check, though no measurement here
-   separates the two.
+1. **Research the audience.** Read the repository's contributing guide, its issue and pull-request templates, its code of conduct, its last ten issues or pull requests, and what was already discussed about your subject.
+2. **Write in their conventions:** their template, their terms, their level of detail. Run `skill://asd-ste100` and `skill://plain-words` over the text, and your session's pass over AI writing tells where it has one.
+3. **Match their form.** A pull request uses their pull-request template, an issue their issue template, and a thread reply matches the thread.
+4. **A fresh reviewer cuts.** Give a subagent that has not seen the drafting the message and the research, and tell it to remove everything not needed to understand the core message. Give it a different model from yours where your session can. It returns what it removed, or "the reviewer removed nothing".
 
-**Step 4 ends with a list of what it removed, and that list goes in the ask.** The list is what proves the cut happened: three lines naming what came out,
-or the sentence "the reviewer removed nothing", which is itself an answer.
+The operator approves the text the reviewer cut, byte for byte. Any edit after the cut, even one line of fact, sends the text back through step 1 and a new review.
 
-**The text the operator approves is the text the reviewer cut, byte for byte.** Any edit after the
-cut, even one line of fact, sends the text back through step 1 and a new fresh review, because a
-sentence added after the cut reaches the operator unreviewed.
+Where the stream that owns the relationship keeps its own rules for writing to maintainers (in its project's `AGENTS.md`, its skills or its brief), those rules decide how the message reads. Read them before you draft, and change the form there, not here.
 
-The form of the text is not in this skill. Where the stream that owns the relationship keeps its own
-rules for writing to maintainers — in its project's `AGENTS.md`, in its skills, or in its brief —
-those rules decide how the message reads, and some of them are owned by people through that
-repository's code owners. Read them before you draft, and send a change to the form there rather
-than into this file.
+## The ask
 
-This skill covers when approval is needed and what comes before the ask. The project's own rules
-cover how the text reads.
-
-## Then the ask
-
-**Put the full message text in the ask itself.** Not a link to a document holding it, not a summary
-of it, not "the draft is at …". A link makes the operator open another document, and the operator cannot judge the message from the ask.
-
-An ask for an outside message has, in this order:
+The ask carries, in this order:
 
 - who the reader is, and one line on what they already know about this;
-- **the message, in full, as it would be sent**;
-- **what the reviewer removed in step 4**, in three lines or fewer, or "the reviewer removed
-  nothing";
+- **the message in full, as it would be sent**, never a link to it or a summary;
+- **what the reviewer removed in step 4**, in three lines or fewer, or "the reviewer removed nothing";
 - what changes if the answer is no.
 
-Link the research, not the message. An ask with no removal line has not had step 4, whatever it
-says.
+Link the research, not the message. An ask with no removal line has not had step 4.
 
-## One batch, not one ask at a time
+## Upstream reports, patches and public posts
 
-An upstream bug report, patch or public post that needs the operator's approval goes into one
-review batch, never a per-message "can I send this" ask. Write its entry — what it is and how
-serious; who receives it and what they do; the exact text or patch; its evidence; a non-author
-reviewer's APPROVE under your stream's reviewer-model rule; what the operator decides; its owner
-— into the batch, add it under the batch's Waiting list, and tell the batch owner. Your stream's
-brief names the batch and its owner. Where your stream's brief names no batch, ask the operator
-for one, or hold the entry until there is a batch; a missing batch is not a reason to send a
-per-message ask.
-
-## What this skill does not cover
-
-- Text written in a person's own name, which that person signs off.
-- A message to another agent or to the operator: write it plainly and send it; no approval step.
-- Posting a release the pipeline publishes from approved template text: the template was approved
-  once; the release needs no new ask unless its text changes.
+These go into the review batch your stream's brief names, never into a per-message ask. Write the entry into the batch (what it is and how serious; who receives it and what they do; the exact text or patch; its evidence; a non-author reviewer's APPROVE under your stream's reviewer-model rule; what the operator decides; its owner), add it under the batch's Waiting list, and tell the batch owner. Where the brief names no batch, ask the operator for one or hold the entry.

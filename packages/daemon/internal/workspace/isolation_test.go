@@ -2,7 +2,10 @@ package workspace
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,23 +13,25 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Every agent of a tree writes the shared clone, so everything below is what a tree agent can plant
 // there for the next provisioning of the tree, and what provisioning's credentialed clone and fetch
-// — the tmux runtime's, which name the token file in their environment — must never obey. On tmux
-// that is defence, not a boundary (config.go); a pod's boundary, two init containers — three with
-// a skills_repository — of which only the ones that touch no tree volume hold the token, is
-// proven by internal/runtime/sandbox/boundary_test.go, and with a skills_repository by
-// TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite (manifest_test.go).
+// — which name the token file in their environment — must never obey. That is defence, not a
+// boundary, on both runtimes (config.go): a Kubernetes issue pod's workspace-init holds the token
+// and runs git in the clone its agents write, as the tmux runtime's provisioning does in the shared
+// clone. internal/runtime/sandbox/boundary_test.go runs that workspace-init as an issue pod's
+// manifest states it.
 
 // gitHooks is every hook githooks(5) names; a planted script under each name records whether git
 // ran it.
@@ -48,7 +53,7 @@ func plantHooks(t *testing.T, dir, sink string) {
 	}
 	script := "#!/bin/sh\nprintf '%s token-file=%s\\n' \"${0##*/}\" \"$LEGION_PROVISIONING_TOKEN_FILE\" >> '" + sink + "'\nexit 0\n"
 	for _, hook := range gitHooks {
-		if err := os.WriteFile(filepath.Join(dir, hook), []byte(script), 0o755); err != nil {
+		if err := execfile.Write(filepath.Join(dir, hook), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -69,6 +74,14 @@ func advanceRemote(t *testing.T, remote string) {
 // provision's error.
 func provisionTwice(t *testing.T, plant func(t *testing.T, run *recordingRunner, clone string)) error {
 	t.Helper()
+	return provisionTwiceThen(t, plant, func(*testing.T) {})
+}
+
+// provisionTwiceThen is provisionTwice with arm run after the remote has advanced and before the
+// second provision, so what arm sets in the test's environment reaches the second provision and
+// none of the fixture's own commands.
+func provisionTwiceThen(t *testing.T, plant func(t *testing.T, run *recordingRunner, clone string), arm func(t *testing.T)) error {
+	t.Helper()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	if _, err := Provision(context.Background(), run, req); err != nil {
@@ -76,6 +89,7 @@ func provisionTwice(t *testing.T, plant func(t *testing.T, run *recordingRunner,
 	}
 	plant(t, run, filepath.Join(req.StateDir, "repos", "github.com", "acme", "widgets"))
 	advanceRemote(t, run.remote)
+	arm(t)
 	req.Issue = "WIDGETS-43"
 	_, err := Provision(context.Background(), run, req)
 	return err
@@ -96,6 +110,7 @@ func requireAbsent(t *testing.T, sink, what string) {
 // (post-index-change), not in any other step. Nor does one that provisioning's own environment
 // names through GIT_CONFIG_PARAMETERS (git's `-c`), which git reads after the pins.
 func TestProvisionRunsNoHookTheTreePlanted(t *testing.T) {
+	// Not parallel: one row plants GIT_CONFIG_PARAMETERS with t.Setenv.
 	for _, tc := range []struct {
 		name  string
 		plant func(t *testing.T, clone, sink string)
@@ -124,20 +139,67 @@ func TestProvisionRunsNoHookTheTreePlanted(t *testing.T) {
 	}
 }
 
+// No git that provisioning starts, directly or through jj, starts git's automatic maintenance:
+// each reads gc.auto=0 and maintenance.auto=false among the pins (pinnedGitConfig), so the
+// credentialed fetch starts no `git maintenance run --auto` and no `git gc --auto`, which git 2.47
+// would leave running behind the fetch holding the clone's ref locks while jj exports the refs the
+// fetch moved (#5349). The clone's own configuration asks for it at every fetch:
+// gc.auto=1 and gc.autoPackLimit=1 make a gc due on any clone, and maintenance.auto=true is what
+// the pin overrules. git's trace2 event target records every git process the second provision
+// starts and every child each of them starts; it is set after advanceRemote, so it holds that
+// provision's fetch and nothing the fixture ran.
+func TestProvisionStartsNoGitMaintenance(t *testing.T) {
+	// Not parallel: records git's trace through the process GIT_TRACE2_EVENT environment variable.
+	trace := filepath.Join(t.TempDir(), "trace2.json")
+	err := provisionTwiceThen(t, func(t *testing.T, _ *recordingRunner, clone string) {
+		for _, pair := range [][2]string{{"gc.auto", "1"}, {"gc.autoPackLimit", "1"}, {"maintenance.auto", "true"}} {
+			runSetup(t, clone, "git", "--git-dir="+filepath.Join(clone, ".git"), "config", pair[0], pair[1])
+		}
+	}, func(t *testing.T) { t.Setenv("GIT_TRACE2_EVENT", trace) })
+	if err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	body, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatalf("read the second provision's git trace: %v", err)
+	}
+	fetched := false
+	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+		var event struct {
+			Event string   `json:"event"`
+			Argv  []string `json:"argv"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode the git trace event %q: %v", line, err)
+		}
+		if event.Event == "start" && slices.Contains(event.Argv, "fetch") {
+			fetched = true
+		}
+		if slices.Contains(event.Argv, "maintenance") || slices.Contains(event.Argv, "gc") {
+			t.Errorf("the second provision's git traced %s of %q: git's automatic maintenance ran under provisioning",
+				event.Event, strings.Join(event.Argv, " "))
+		}
+	}
+	if !fetched {
+		t.Fatalf("the second provision's git trace holds no git fetch, so it says nothing of the fetch's maintenance:\n%s", body)
+	}
+}
+
 // recordingScript writes an executable that appends what it is and the token file its environment
 // named to sink, then runs tail (a shell fragment).
 func recordingScript(t *testing.T, what, sink, tail string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), what)
 	script := "#!/bin/sh\nprintf '" + what + " token-file=%s\\n' \"$LEGION_PROVISIONING_TOKEN_FILE\" >> '" + sink + "'\n" + tail + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
 // plantWorkspaceConfig writes toml as the configuration jj keeps for the working copy at dir, in
-// the config home this test's runner and fixtures share (newLocalRunner's): the file `jj config
+// the config home this test's runner and fixtures share (TestMain's): the file `jj config
 // path --workspace` names. On the tmux runtime that is a channel a pane has, since panes share
 // the daemon's config home; a pod's config home starts empty every launch, and the one way a file
 // on the tree volume becomes jj configuration there, a legacy .jj/workspace-config.toml, is the
@@ -157,6 +219,7 @@ func plantWorkspaceConfig(t *testing.T, dir, toml string) {
 // jj starts the git its configuration names. A git.executable-path the tree planted is never the
 // git provisioning's jj starts: it starts the one boot resolved.
 func TestProvisionStartsOnlyTheGitBootResolved(t *testing.T) {
+	t.Parallel()
 	sink := filepath.Join(t.TempDir(), "planted-git-ran")
 	err := provisionTwice(t, func(t *testing.T, run *recordingRunner, clone string) {
 		git, err := exec.LookPath("git")
@@ -178,6 +241,7 @@ func TestProvisionStartsOnlyTheGitBootResolved(t *testing.T) {
 // planted there never runs with the token file in its environment — though it does run, in the
 // uncredentialed workspace add.
 func TestTheCredentialedFetchRunsNoWorkingCopyFilter(t *testing.T) {
+	t.Parallel()
 	testbin.RequireJJFilters(t)
 	sink := filepath.Join(t.TempDir(), "filter-ran")
 	err := provisionTwice(t, func(t *testing.T, _ *recordingRunner, clone string) {
@@ -212,6 +276,7 @@ func TestTheCredentialedFetchRunsNoWorkingCopyFilter(t *testing.T) {
 // (here, and only in the tests, the local bare remote's file transport too), so the rewritten
 // fetch fails and the command never runs.
 func TestProvisionRefusesATransportTheTreeRewroteTo(t *testing.T) {
+	t.Parallel()
 	sink := filepath.Join(t.TempDir(), "ext-ran")
 	err := provisionTwice(t, func(t *testing.T, run *recordingRunner, clone string) {
 		command := recordingScript(t, "ext", sink, "exit 1")
@@ -229,6 +294,7 @@ func TestProvisionRefusesATransportTheTreeRewroteTo(t *testing.T) {
 // credential answers github.com alone, so the host never receives the token, and no askpass the
 // tree configured is asked in its place.
 func TestProvisionSendsTheTokenOnlyToGitHub(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var received []string
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -266,6 +332,7 @@ func TestProvisionSendsTheTokenOnlyToGitHub(t *testing.T) {
 // git asks it for every repository on github.com, whatever credential.useHttpPath says (an
 // operator's global configuration can set it), and never for another scheme, host, or port.
 func TestTheProvisioningCredentialAnswersOnlyGitHub(t *testing.T) {
+	t.Parallel()
 	credential, err := newProvisioningCredential(t.TempDir(), "test-installation-token")
 	if err != nil {
 		t.Fatal(err)
@@ -324,6 +391,7 @@ func TestTheProvisioningCredentialAnswersOnlyGitHub(t *testing.T) {
 // TestWorkspaceInitKeepsAnUnpushedChildDespiteARevsetAliasPlantedInTheSharedClone covers the
 // shared clone's own workspace file end to end.
 func TestNoJJCommandReadsALegacyConfigurationTheTreePlanted(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	ws, err := Provision(context.Background(), run, provisionRequest(t))
 	if err != nil {
@@ -338,7 +406,11 @@ func TestNoJJCommandReadsALegacyConfigurationTheTreePlanted(t *testing.T) {
 		t.Fatal(err)
 	}
 	beside := filepath.Join(ws.Dir, ".jj", "workspace-config.toml")
-	if err := os.WriteFile(filepath.Join(ws.Dir, ".jj", "workspace-config-id"), []byte(strings.Repeat("ab", 10)), 0o644); err != nil {
+	// The id is random, as jj's own are: the config home every test shares keeps a directory per
+	// id, and a fixed one would be a directory this test's next run, or another test, could read.
+	id := make([]byte, 10)
+	_, _ = rand.Read(id)
+	if err := os.WriteFile(filepath.Join(ws.Dir, ".jj", "workspace-config-id"), []byte(hex.EncodeToString(id)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(beside, planted, 0o644); err != nil {
@@ -367,7 +439,9 @@ func TestNoJJCommandReadsALegacyConfigurationTheTreePlanted(t *testing.T) {
 // another directory outright, and for one a lexical join reads as the clone's own while jj, which
 // canonicalizes it physically, opens another repository (pointThroughALink).
 func TestTheRunnerRefusesAWorkspaceWhoseRepoPointerNamesAnotherDirectory(t *testing.T) {
+	t.Parallel()
 	t.Run("an absolute pointer to another directory", func(t *testing.T) {
+		t.Parallel()
 		run := newLocalRunner(t)
 		ws, err := Provision(context.Background(), run, provisionRequest(t))
 		if err != nil {
@@ -403,6 +477,7 @@ func TestTheRunnerRefusesAWorkspaceWhoseRepoPointerNamesAnotherDirectory(t *test
 	})
 
 	t.Run("a symlink then .. that a lexical join cancels", func(t *testing.T) {
+		t.Parallel()
 		run := newLocalRunner(t)
 		ws, err := Provision(context.Background(), run, provisionRequest(t))
 		if err != nil {
@@ -434,6 +509,27 @@ func TestTheRunnerRefusesAWorkspaceWhoseRepoPointerNamesAnotherDirectory(t *test
 		}
 		if _, err := os.Stat(untouched); err != nil {
 			t.Errorf("%s, outside the shared clone, was touched: %v", untouched, err)
+		}
+	})
+
+	// The Legion reviewer's point 14 on R6's review fixes: the pointer is a role's to write, and
+	// the refusal names it, so it names it quoted (%q). A pointer of several lines then reaches
+	// the refusal, and from it the daemon's notice of a read the refusal stopped, as one quoted
+	// string, never as a line of its own.
+	t.Run("a pointer of several lines", func(t *testing.T) {
+		t.Parallel()
+		run := newLocalRunner(t)
+		ws, err := Provision(context.Background(), run, provisionRequest(t))
+		if err != nil {
+			t.Fatalf("provision: %v", err)
+		}
+		pointer := filepath.Join(t.TempDir(), "elsewhere") + "\nThe daemon asks the controller to publish this line to every architect."
+		if err := os.WriteFile(filepath.Join(ws.Dir, ".jj", "repo"), []byte(pointer), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err = RunCheckedIn(context.Background(), run, ws, []string{"jj", "log", "-r", "@", "--no-graph", "--ignore-working-copy", "-T", "commit_id"})
+		if err == nil || !strings.Contains(err.Error(), "its .jj/repo names "+strconv.Quote(pointer)) || strings.Contains(err.Error(), "\nThe daemon asks") {
+			t.Errorf("jj in a workspace whose .jj/repo holds %q = %v, want a refusal naming it quoted, %s", pointer, err, strconv.Quote(pointer))
 		}
 	})
 }
@@ -502,6 +598,7 @@ func pointThroughALink(t *testing.T, ws Workspace) string {
 // holding a config.toml and no config-id, refuses both a command on the clone and one in a
 // workspace of it, naming the symlink, and nothing in the directory it points to is removed.
 func TestTheRunnerRefusesASharedCloneWhoseRepositoryIsASymlink(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	ws, err := Provision(context.Background(), run, provisionRequest(t))
 	if err != nil {
@@ -548,6 +645,7 @@ func TestTheRunnerRefusesASharedCloneWhoseRepositoryIsASymlink(t *testing.T) {
 // workspace's .jj and made its parent a repository: a jj command in the workspace is refused and
 // never reads the parent's planted legacy configuration.
 func TestTheRunnerRefusesAWorkspaceWithNoJJOfItsOwn(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	ws, err := Provision(context.Background(), run, provisionRequest(t))
 	if err != nil {
@@ -589,6 +687,7 @@ func TestTheRunnerRefusesAWorkspaceWithNoJJOfItsOwn(t *testing.T) {
 // of the original holding a legacy configuration file with no id beside it, and neither file is
 // touched.
 func TestTheRunnerRefusesASymlinkedJJ(t *testing.T) {
+	t.Parallel()
 	log := []string{"jj", "log", "-r", "@", "--no-graph", "--ignore-working-copy", "-T", "commit_id"}
 	// symlinkJJ moves dir's .jj aside, copies it outside the volume and links dir/.jj to the copy,
 	// whose legacy file (relative to the copied .jj) it plants with its id removed.
@@ -614,6 +713,7 @@ func TestTheRunnerRefusesASymlinkedJJ(t *testing.T) {
 	}
 
 	t.Run("the shared clone's .jj", func(t *testing.T) {
+		t.Parallel()
 		run := newLocalRunner(t)
 		ws, err := Provision(context.Background(), run, provisionRequest(t))
 		if err != nil {
@@ -640,6 +740,7 @@ func TestTheRunnerRefusesASymlinkedJJ(t *testing.T) {
 	})
 
 	t.Run("a workspace's .jj", func(t *testing.T) {
+		t.Parallel()
 		run := newLocalRunner(t)
 		ws, err := Provision(context.Background(), run, provisionRequest(t))
 		if err != nil {
@@ -668,6 +769,7 @@ func TestTheRunnerRefusesASymlinkedJJ(t *testing.T) {
 // snapshotted, reached through a symlinked parent, is kept, never removed. The state directory
 // itself may be a symlink (TestGitWorktreeEntriesThroughASymlinkedClone).
 func TestTheRunnerRefusesASymlinkedLayoutDirectory(t *testing.T) {
+	t.Parallel()
 	log := []string{"jj", "log", "-r", "@", "--no-graph", "--ignore-working-copy", "-T", "commit_id"}
 	// moveBehindASymlink copies dir outside the layout, moves dir aside and links dir to the
 	// copy; it returns the copy.
@@ -706,6 +808,7 @@ func TestTheRunnerRefusesASymlinkedLayoutDirectory(t *testing.T) {
 	// The state directory itself is outside the held layout: a pod or operator may reach its tree
 	// volume through a symlink. Provision and a command in the resulting workspace both work.
 	t.Run("a symlinked state directory is allowed", func(t *testing.T) {
+		t.Parallel()
 		run := newLocalRunner(t)
 		request := provisionRequest(t)
 		if err := os.MkdirAll(filepath.Dir(request.StateDir), 0o755); err != nil {
@@ -733,6 +836,7 @@ func TestTheRunnerRefusesASymlinkedLayoutDirectory(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			run := newLocalRunner(t)
 			ws, err := Provision(context.Background(), run, provisionRequest(t))
 			if err != nil {
@@ -756,6 +860,7 @@ func TestTheRunnerRefusesASymlinkedLayoutDirectory(t *testing.T) {
 	}
 
 	t.Run("a workspace's repository directory", func(t *testing.T) {
+		t.Parallel()
 		run := newLocalRunner(t)
 		ws, err := Provision(context.Background(), run, provisionRequest(t))
 		if err != nil {
@@ -799,8 +904,10 @@ func TestTheRunnerRefusesASymlinkedLayoutDirectory(t *testing.T) {
 
 // A workspace's .jj/repo that is neither a directory nor a regular file is refused, naming what it
 // is, rather than waited on: a FIFO there would otherwise block the runner, which reads .jj/repo
-// before the command's deadline starts (readGitdir).
+// before the command's deadline starts (readGitdir). A runner that waits on it fails the row by
+// name before the test binary's deadline (testwait.Receive).
 func TestTheRunnerRefusesAWorkspaceWhoseRepoIsNotARegularFile(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	ws, err := Provision(context.Background(), run, provisionRequest(t))
 	if err != nil {
@@ -819,25 +926,18 @@ func TestTheRunnerRefusesAWorkspaceWhoseRepoIsNotARegularFile(t *testing.T) {
 		_, err := RunCheckedIn(context.Background(), run, ws, []string{"jj", "log", "-r", "@", "--no-graph", "--ignore-working-copy", "-T", "commit_id"})
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "is a fifo") {
-			t.Errorf("jj in a workspace whose .jj/repo is a FIFO = %v, want a refusal naming what it is", err)
-		}
-	case <-time.After(20 * time.Second):
-		// Release the blocked reader so the test process can finish, then fail.
-		if writer, err := os.OpenFile(fifo, os.O_WRONLY, 0); err == nil {
-			writer.Close()
-		}
-		t.Fatal("the runner blocked reading a FIFO at .jj/repo for 20 s")
+	if err := testwait.Receive(t, "jj in a workspace whose .jj/repo is a FIFO", done); err == nil || !strings.Contains(err.Error(), "is a fifo") {
+		t.Errorf("jj in a workspace whose .jj/repo is a FIFO = %v, want a refusal naming what it is", err)
 	}
 }
 
 // A workspace's .jj/repo that is a regular file larger than any path jj writes there is refused,
 // naming the bound, rather than read whole: a tree agent can write the file, and the runner reads
 // it before each jj command, under whatever its caller holds (the tmux daemon's store lock among
-// them). The file is gitdirLimit bytes, one more than the bound readGitdir answers.
+// them). The file is gitdirLimit bytes, one more than the bound readGitdir answers, and the read's
+// answer is waited for with no span of its own (testwait.Receive).
 func TestWorkspaceRepositoryRefusesAPointerLargerThanAnyPath(t *testing.T) {
+	t.Parallel()
 	jjDir := filepath.Join(t.TempDir(), ".jj")
 	if err := os.Mkdir(jjDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -855,13 +955,9 @@ func TestWorkspaceRepositoryRefusesAPointerLargerThanAnyPath(t *testing.T) {
 		target, err := workspaceRepository(jjDir)
 		done <- answer{target, err}
 	}()
-	select {
-	case got := <-done:
-		want := repo + " is larger than 4096 bytes"
-		if got.err == nil || got.err.Error() != want {
-			t.Fatalf("workspaceRepository of a %d-byte .jj/repo = (%d-byte path, %v), want the refusal %q", gitdirLimit, len(got.target), got.err, want)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatalf("workspaceRepository was still reading %s after 20s", repo)
+	got := testwait.Receive(t, "workspaceRepository of "+repo, done)
+	want := repo + " is larger than 4096 bytes"
+	if got.err == nil || got.err.Error() != want {
+		t.Fatalf("workspaceRepository of a %d-byte .jj/repo = (%d-byte path, %v), want the refusal %q", gitdirLimit, len(got.target), got.err, want)
 	}
 }

@@ -1,12 +1,24 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
+import { focusOnDocument } from "../features/shell/roving";
 import {
   borderDefault,
   borderStrong,
   card,
   cardHoverBorder,
   dangerText,
+  focusBorder,
   inputClasses,
+  pageFailedText,
+  pageHairBorder,
+  pageInkText,
+  pageLineBorder,
+  pageMarkBg,
+  pageMutedText,
+  pagePaneBg,
+  pagePaperBg,
+  pageQuietText,
+  pageRowHoverBg,
   selectedCardBg,
   selectedCardBorder,
   surfaceMutedBg,
@@ -16,10 +28,39 @@ import {
 } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
 import { TruncatedText } from "./TruncatedText";
+import { useTooltips } from "./tooltips";
 
 function fold(value: string | undefined): string {
   return (value ?? "").trim().toLocaleLowerCase();
 }
+
+/**
+ * Each colour the picker draws inside `NoTooltips`, the new issue page's, by the role `main`'s
+ * colour has: the trigger is the page's header control (its rule and muted words on the
+ * paper); the popover is the page's menu (the prototype's `#menu`: the hairline rule on the
+ * paper), whose rows are its items, in the ink with the mark grey under the pointer and on the
+ * active row; an empty list is quiet words, a refusal the failed red, and Clear the page's pane
+ * with muted words. A detail is muted words too, not quiet ones: it is drawn on its row's mark
+ * grey under the pointer and on the active row, where the quiet grey reads 4.11:1 in the light
+ * scheme, under the 4.5:1 its words need. The search box keeps `main`'s focus rule, the one
+ * focus indicator of the application.
+ *
+ * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
+ * pairs each text class with the nearest enclosing ground of the same file across both branches
+ * of a ternary: a page colour written beside `main`'s would pair `main`'s words with the page's
+ * paper and the page's words with `main`'s card. Each pair here is one `theme/classes.ts`
+ * registers for the page, which `shared-controls.tooltips.test.tsx` holds.
+ */
+const ON_PAGE = {
+  checkbox: pageHairBorder,
+  clear: `${pagePaneBg} ${pageMutedText}`,
+  detail: pageMutedText,
+  empty: pageQuietText,
+  failure: `${pageLineBorder} ${pageFailedText}`,
+  panel: `${pageHairBorder} ${pagePaperBg}`,
+  search: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+  trigger: `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${pageLineBorder} ${pagePaperBg} ${pageMutedText}`,
+} as const;
 
 export interface MultiSelectProps {
   /** Trigger content; defaults to the label with the selection count (`Labels · 2`). */
@@ -86,9 +127,15 @@ export function MultiSelect({
   searchLabel,
   selected,
   triggerAriaLabel,
-  triggerClassName = `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
+  triggerClassName,
 }: MultiSelectProps): ReactNode {
   const id = useId();
+  const tooltips = useTooltips();
+  const trigger =
+    triggerClassName ??
+    (tooltips
+      ? `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`
+      : ON_PAGE.trigger);
   const listboxId = `${id}-options`;
   const optionId = (value: string) => `${id}-option-${encodeURIComponent(value)}`;
   const [query, setQuery] = useState("");
@@ -143,6 +190,43 @@ export function MultiSelect({
     wasOpen.current = open;
   }, [open]);
 
+  // Every row, the Create row and Clear are buttons, so the focus can reach one, as a screen
+  // reader's cursor puts it there, and a press of each can take that focus to the body, where
+  // Escape no longer reaches the popover. Clear and the Create row always leave with their own
+  // press, Clear as the pick empties and the Create row as its value is made and the search
+  // empties, so a press of one that holds the focus gives it to the search box at the press
+  // itself, and the move does not depend on when the host applies the pick. A row's press need not
+  // take the row away. It can move the row, since a host can order the rows by the pick
+  // (`IssueLabels`, `ComponentPicker`), but a row the press only moves keeps its focus: as React
+  // ends a commit that took the focus away, it focuses again the element that held it before,
+  // where that element is still on the page (react-dom's `flushMutationEffects`). A row the press
+  // takes off the page loses the focus to the body, as in Details a label only the open draft
+  // holds does as the reader unpicks it: `IssueLabels` lists the draft's labels with the issue's
+  // and the project's, so that label is listed only while the draft holds it. So a press of a row
+  // that holds the focus only notes it, and the commit that answers the press gives the search box
+  // the focus only where that commit took the row off the page. A pointer press focuses none of
+  // them (`onMouseDown` below), and leaves the focus where it is. A row or a Create row the
+  // options take away holds no press, and its focus stays on the page's body, as for every change
+  // the reader did not make. A popover that closes takes the search box along, and the close above
+  // gives the focus back to the trigger instead.
+  const focusSearchFirst = (event: { readonly currentTarget: EventTarget }) => {
+    if (event.currentTarget === document.activeElement) inputRef.current?.focus();
+  };
+  // Whether a row was pressed while it held the focus, until the commit that answers the press:
+  // the press asks for a render, so that commit comes even where the press changes nothing else.
+  const focusedRowPressed = useRef(false);
+  const [, renderAfterPress] = useState(0);
+  const noteFocusedRow = (event: { readonly currentTarget: EventTarget }) => {
+    if (event.currentTarget !== document.activeElement) return;
+    focusedRowPressed.current = true;
+    renderAfterPress((renders) => renders + 1);
+  };
+  useEffect(() => {
+    const pressed = focusedRowPressed.current;
+    focusedRowPressed.current = false;
+    if (pressed && focusOnDocument()) inputRef.current?.focus();
+  });
+
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown" && rows.length > 0) {
       event.preventDefault();
@@ -171,9 +255,13 @@ export function MultiSelect({
   };
 
   const rowClassName = (active: boolean) =>
-    `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder} ${
-      active ? `${selectedCardBg} ${selectedCardBorder}` : ""
-    }`;
+    tooltips
+      ? `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder} ${
+          active ? `${selectedCardBg} ${selectedCardBorder}` : ""
+        }`
+      : `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${pageLineBorder} ${pageInkText} ${pageRowHoverBg} ${
+          active ? pageMarkBg : ""
+        }`;
 
   return (
     <>
@@ -182,7 +270,7 @@ export function MultiSelect({
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-label={triggerAriaLabel}
-        className={triggerClassName}
+        className={trigger}
         disabled={disabled}
         onClick={() => onOpenChange(!open)}
         ref={triggerRef}
@@ -193,17 +281,17 @@ export function MultiSelect({
       {open ? (
         <AnchoredPanel
           anchorRef={triggerRef}
-          className={`z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${card} ${borderDefault}`}
+          className={`z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
           onDismiss={() => onOpenChange(false)}
         >
-          <div className={`sticky top-0 border-b p-2 ${card}`}>
+          <div className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}>
             <input
               aria-activedescendant={activeRow === undefined ? undefined : optionId(activeRow)}
               aria-autocomplete="list"
               aria-controls={listboxId}
               aria-expanded="true"
               aria-label={searchLabel}
-              className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
+              className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${tooltips ? inputClasses(true) : ON_PAGE.search}`}
               disabled={disabled}
               onChange={(event) => {
                 setQuery(event.target.value);
@@ -238,21 +326,30 @@ export function MultiSelect({
                   id={optionId(option)}
                   key={option}
                   onClick={() => toggle(option)}
+                  onClickCapture={noteFocusedRow}
                   onMouseDown={(event) => event.preventDefault()}
                   role="option"
                   type="button"
                 >
                   <span
                     aria-hidden="true"
-                    className={`grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${borderStrong}`}
+                    className={`grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${tooltips ? borderStrong : ON_PAGE.checkbox}`}
                   >
                     {isSelected ? "✓" : ""}
                   </span>
-                  <TruncatedText className="min-w-0 flex-1" title={label}>
-                    {label}
-                  </TruncatedText>
+                  {tooltips ? (
+                    <TruncatedText className="min-w-0 flex-1" title={label}>
+                      {label}
+                    </TruncatedText>
+                  ) : (
+                    // Inside `NoTooltips` (the new issue page) no `title` can give back what an
+                    // ellipsis cut, so the label wraps instead and is read whole.
+                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{label}</span>
+                  )}
                   {detail === undefined ? null : (
-                    <span className={`shrink-0 text-xs tabular-nums ${textMutedOnSurface}`}>
+                    <span
+                      className={`shrink-0 text-xs tabular-nums ${tooltips ? textMutedOnSurface : ON_PAGE.detail}`}
+                    >
                       {detail}
                     </span>
                   )}
@@ -266,6 +363,7 @@ export function MultiSelect({
                 disabled={disabled}
                 id={optionId(createValue)}
                 onClick={() => create(createValue)}
+                onClickCapture={focusSearchFirst}
                 onMouseDown={(event) => event.preventDefault()}
                 role="option"
                 type="button"
@@ -277,18 +375,25 @@ export function MultiSelect({
               </button>
             )}
             {rows.length === 0 ? (
-              <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>{emptyMessage}</p>
+              <p className={`px-3 py-2 text-sm ${tooltips ? textMutedOnSurface : ON_PAGE.empty}`}>
+                {emptyMessage}
+              </p>
             ) : null}
           </div>
           {error === null ? null : (
-            <p className={`border-t px-3 py-2 text-sm ${borderDefault} ${dangerText}`}>{error}</p>
+            <p
+              className={`border-t px-3 py-2 text-sm ${tooltips ? `${borderDefault} ${dangerText}` : ON_PAGE.failure}`}
+            >
+              {error}
+            </p>
           )}
           {selected.length === 0 ? null : (
-            <div className={`sticky bottom-0 border-t p-2 ${card}`}>
+            <div className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}>
               <button
-                className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${surfaceMutedBg} ${textSecondaryOnSurface}`}
+                className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
                 disabled={disabled}
                 onClick={() => onChange([])}
+                onClickCapture={focusSearchFirst}
                 onMouseDown={(event) => event.preventDefault()}
                 type="button"
               >

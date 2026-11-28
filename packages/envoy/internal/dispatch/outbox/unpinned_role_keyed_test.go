@@ -31,6 +31,7 @@ import (
 // that one session the mention's mode - the comment arrives as this copy rather than as a steer -
 // and nothing else, which is the trade the round's decision made.
 func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-the-unanswered-mention-may-name"
 	const mentioned = "mentioned-and-held-by-nobody-the-outbox-can-name"
 	const holder = "ses_holds_the_routed_role"
@@ -62,13 +63,10 @@ func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
 	want := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
-	// The copy is the one send this pass makes to that session, so a pass that made none is read
-	// for what it is rather than timed out: the wait it took instead is the finding.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && len(recv.received()) == 0 {
-		time.Sleep(20 * time.Millisecond)
-	}
-	forwards := recv.received()
+	// The copy is the one send this pass makes to that session, and the pass returned once the
+	// stream acknowledged it, so every copy it sent is read here (receivedNow): a pass that made
+	// none reads none, for what it is.
+	forwards := recv.receivedNow(t, rig.client)
 	if len(forwards) != 1 || forwards[0].DedupeKey != want {
 		t.Fatalf("%s was sent %+v in the pass that read the comment, want one copy under %q, the key the mention of %s carries wherever its sender pins it: a copy under the event's own key %s waits for the attempt or shows that host the comment twice",
 			holder, forwards, want, target, fmt.Sprintf("dispatch-%d", comment.ID))
@@ -90,9 +88,7 @@ func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing
 	dueNow(t, rig.database, comment.ID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
-
-	if copies := recv.received(); len(copies) != 1 {
+	if copies := recv.receivedNow(t, rig.client); len(copies) != 1 {
 		t.Fatalf("%s was sent %+v once its mention was pinned and sent, want the one copy it already has: the copy carries that mention's own key, so the session is shown the comment once",
 			holder, copies)
 	}
@@ -106,6 +102,7 @@ func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing
 // copy bound for the session the issue's claim names, and the comment is published once both
 // have settled.
 func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-either-mention-may-name"
 	const first = "mentioned-first-and-held-by-nobody-the-outbox-can-name"
 	const second = "mentioned-second-and-held-by-nobody-the-outbox-can-name"
@@ -134,16 +131,18 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "pending")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "pending")
 
+	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	after := time.Now()
 
 	if forwards := recv.received(); len(forwards) != 0 {
 		t.Fatalf("%s was sent %+v while two mentions of the comment were live and pinned to no session, want nothing: one key serves one mention, so neither copy can carry the key the mention that reaches this host will repeat",
 			holder, forwards)
 	}
 	_, _, reached := eventState(t, rig.database, comment.ID)
-	if slices.Contains(reached, contracts.AgentSubject(holder)) || slices.Contains(reached, contracts.RoleTopicPrefix+routed) {
+	if slices.Contains(reached, contracts.LegacyAgentSubject(holder)) || slices.Contains(reached, contracts.RoleTopicPrefix+routed) {
 		t.Fatalf("the comment reached %v, want neither the route %s nor %s among them: both copies wait for the comment's two unpinned mentions",
-			reached, route, contracts.AgentSubject(holder))
+			reached, route, contracts.LegacyAgentSubject(holder))
 	}
 	if at := publishedAt(t, rig.database, comment.ID); at != nil {
 		t.Fatalf("published_at = %v while two unpinned mentions of the comment are live", at)
@@ -152,8 +151,8 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the copies wait on two unpinned mentions, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+	if !waitsFromScan(due, before, after) {
+		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 	}
 
 	// Both senders resolve, find no session, and fail their attempts, as they do within a round
@@ -172,7 +171,7 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 		t.Fatalf("the comment was not published once both mentions settled: attempt_count %d, publish_error %s, reached %v",
 			attempts, publishFailure(failure), reached)
 	}
-	waitFor(t, 10*time.Second, "the copies both mentions' failure owes", func() bool { return len(recv.received()) > 0 })
+	waitFor(t, "the copies both mentions' failure owes", func() bool { return len(recv.received()) > 0 })
 }
 
 // A comment with two unpinned mentions, one past the lease the outbox waits a send out for and
@@ -186,6 +185,7 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 // the forward went in this pass under the prefixed event key, a key that host never claimed,
 // and the mention the sender pinned to it landed beside it.
 func TestAForwardWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-either-mention-may-name"
 	const lapsed = "mentioned-first-whose-attempt-is-past-its-lease"
 	const live = "mentioned-second-whose-attempt-is-live"
@@ -245,5 +245,5 @@ func TestAForwardWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 		t.Fatalf("the comment was not published once both mentions settled: attempt_count %d, publish_error %s, reached %v",
 			attempts, publishFailure(failure), reached)
 	}
-	waitFor(t, 10*time.Second, "the copy both mentions' failure owes", func() bool { return len(recv.received()) > 0 })
+	waitFor(t, "the copy both mentions' failure owes", func() bool { return len(recv.received()) > 0 })
 }

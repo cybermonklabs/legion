@@ -1,10 +1,8 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -27,15 +26,17 @@ import (
 // A finished root's close suspends every member of its tree, and the suspension of a role in a
 // turn is held for that turn's end. A child carried into a tree of its own before that turn ends —
 // a person's label on it (admission's orphan carry) or the root's hand-over at its linger's expiry
-// (admission's consumption of the hand-over) — moves to a new generation, and the close's suspend
-// row, of the earlier generation, finishes without acting. The new tree's starts then stop that
-// role themselves: they hold its suspension, as the daemon and keeping its session, and launch
-// nothing of the new tree while it runs in the old one. They do so with the close's hold still in
-// memory, and with nothing held, as after a restart that forgot it. The hold is bounded where the
-// old tree's close would have ended the turn, at the old root's linger expiry, not at the stop
-// timeout. Once the turn ends, or that expiry ends a turn that never does, the new tree's architect
-// launches and the role resumes its session in the new tree.
+// (admission's consumption of the hand-over) — moves to a new generation, which the close's
+// suspend row serves an earlier one of; the row still holds the role's suspension while the role
+// runs in the old tree (stopInLeftTree), waiting until it stops. The new tree's starts stop that
+// role too: they hold its suspension, as the daemon and keeping its session, and launch nothing of
+// the new tree while it runs in the old one. They do so with the close's hold still in memory, and
+// with nothing held, as after a restart that forgot it. The hold is bounded where the old tree's
+// close would have ended the turn, at the old root's linger expiry, not at the stop timeout. Once
+// the turn ends, or that expiry ends a turn that never does, the new tree's architect launches and
+// the role resumes its session in the new tree.
 func TestACarriedChildsRoleStillInATurnStopsBeforeItsNewTreeLaunches(t *testing.T) {
+	t.Parallel()
 	const rootKey, childKey = "LEGION-207", "LEGION-208"
 	carries := []struct {
 		name string
@@ -99,7 +100,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 	start := time.Now().UTC().Truncate(time.Second)
 	until := start.Add(linger)
 	parent := rootKey
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			records.PutIssue(ctx, tx, record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION", Title: "root", Phase: phase.Done,
 				Generation: 1, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1}),
@@ -123,7 +124,6 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 	sup.deps.Clock, sup.deps.Timeouts.Stop, sup.deps.Store = machineClock, stopTimeout, trees
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, quietLogger())
 	admission := admit.New(records, engine, 2, "legion", quietLogger())
-	var logs bytes.Buffer
 	clock := start
 	runner := &outbox{
 		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: trees,
@@ -131,7 +131,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 		githubAPI: newBranchGitHub(t, nil, branchExists).url, notices: &outboxPublisher{},
 		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: childKey, Status: "todo", HandedOver: true, Labels: []string{"legion"}}},
 		handlers: []intake.Handler{engine, admission}, now: func() time.Time { return clock },
-		log: slog.New(slog.NewJSONHandler(&logs, nil)),
+		log: quietLogger(),
 		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/" + childKey}, nil
 		},
@@ -170,7 +170,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 		}
 	})
 	var carried *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		carried, err = records.Issue(ctx, tx, childKey)
 		return err
@@ -195,8 +195,32 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 	}
 
 	run("the carry's rows while the implementer's turn runs")
-	if closeHeld && !strings.Contains(logs.String(), `"msg":"outbox supervise row serves an earlier generation; finished without acting"`) {
-		t.Fatalf("the close's suspend row did not finish as one of an earlier generation; log:\n%s", logs.String())
+	// Every suspend of the old tree for the implementer waits on it while its turn runs there: the
+	// close's own row, where the close held its suspension first, and the one the carry queued for
+	// the claim it left standing in the old tree (workflow.Engine.StopLeftTree).
+	wantStops := 1
+	if closeHeld {
+		wantStops = 2
+	}
+	rows, err := pool.Query(ctx, `select last_error from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'suspend'
+		and payload->>'tree' = $2 and payload->>'role' = 'implementer' order by id`, childKey, rootKey)
+	if err != nil {
+		t.Fatalf("read the old tree's suspend rows: %v", err)
+	}
+	waited, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the old tree's suspend rows: %v", err)
+	}
+	want := "suspend of tree " + rootKey + ", which " + childKey + " has left for tree " + childKey + ", waits for " +
+		string(implementer) + ":working in tree " + rootKey + " to stop"
+	if len(waited) != wantStops {
+		t.Fatalf("the old tree's suspend rows of the implementer last waited on %q; want %d, each waiting on %q", waited, wantStops, want)
+	}
+	for _, lastError := range waited {
+		if !strings.Contains(lastError, want) {
+			t.Fatalf("an old tree's suspend row of the implementer, of the earlier generation, last waited on %q; want it waiting on the implementer still running in tree %s (%q)",
+				lastError, rootKey, want)
+		}
 	}
 	architect := mustClaimToken(t, childKey, claim.RoleArchitect)
 	launchesOf := func(method string, token claim.Token) []fake.Call {
@@ -252,7 +276,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 				and coalesce(payload->>'task', '') <> ''`, childKey).Scan(&task); err != nil {
 		t.Fatalf("read the implementer's start at generation 2: %v", err)
 	}
-	if want := "Issue: " + childKey + ". Phase: implementing. Resume the existing phase work."; !strings.Contains(task, want) {
+	if want := resumeTaskOf(t, pool, engine, childKey); !strings.Contains(task, want) {
 		t.Fatalf("the implementer's start task = %q, want it to say %q", task, want)
 	}
 	run("the carry's rows once the implementer has stopped")
@@ -266,7 +290,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 			t.Fatalf("the operator-held implementer while its start waits = %s in tree %s, resumed %d times; want suspended, re-pointed to %s and not resumed",
 				got.State, got.Tree, len(launchesOf("Resume", implementer)), childKey)
 		}
-		if err := machine.Handle(ctx, supervise.RequestResume{Claim: implementer}); err != nil {
+		if err := machine.Handle(ctx, supervise.RequestResume{Claim: implementer, By: supervise.SuspendedByOperator}); err != nil {
 			t.Fatalf("the operator's resume: %v", err)
 		}
 	}
@@ -285,6 +309,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 // the cluster. The check before a start reads each claim's view, which only Retree changes, and
 // goes on while the issue's architect launches.
 func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
+	t.Parallel()
 	sup, fakeRuntime := newOutboxSupervisor(t, "legion", t.TempDir())
 	rt := newStallingRuntime(t, fakeRuntime, false)
 	sup.deps.Runtime = rt
@@ -317,6 +342,7 @@ func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
 // lingers, or none recorded, leaves no close to wait for, so the stop is bounded at the stop timeout
 // from now, as an operator's is.
 func TestACarriedRolesStopDeadlineIsItsOldRootsLingerExpiry(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 13, 1, 0, 0, 0, time.UTC)
 	until := now.Add(17 * time.Minute)
 	const stop = 10 * time.Second

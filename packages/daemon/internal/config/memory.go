@@ -15,10 +15,10 @@ import (
 // is the experiment named memory, Project.ExperimentsDeclared); ConfigFiles are the Oh My Pi
 // settings overlays every role of a memory-group tree names in PI_CONFIG_FILES, after the
 // operator's own and the role's own (role_config_files); and InstructionsPath is the one markdown
-// file the daemon reads at boot and appends to every such role's system prompt, after the
-// deployment's own instructions. A project whose file names no block is off and passes none of
-// the three on; a block at `off` draws no new tree into the memory group, and a tree already
-// drawn keeps the files it names.
+// file the daemon reads at boot, and again at each launch, and appends to every such role's
+// system prompt, after the deployment's own instructions. A project whose file names no block is
+// off and passes none of the three on; a block at `off` draws no new tree into the memory group,
+// and a tree already drawn keeps the files it names.
 type Memory struct {
 	Mode             ExperimentMode
 	ConfigFiles      []string
@@ -87,7 +87,7 @@ func checkMemory(cfg Config) error {
 		if memory.Word() != ExperimentOff && len(memory.ConfigFiles) == 0 {
 			return fmt.Errorf("%s is %s and names no config_files: a memory-group tree's roles read their memory overlays from that key, so name at least one, or set mode: off", field, memory.Mode)
 		}
-		if err := checkDeclaredOverlays(cfg, field+".config_files", "the block", memory.ConfigFiles); err != nil {
+		if err := checkDeclaredOverlays(cfg, field+".config_files", "the block", memory.ConfigFiles, nil); err != nil {
 			return err
 		}
 	}

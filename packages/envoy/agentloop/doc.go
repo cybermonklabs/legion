@@ -1,5 +1,5 @@
-// Package agentloop runs a model and the tools it calls: the one model loop the Legion daemon
-// and Dispatch share, and the only import of Grafana's AI SDK for Go in this repository. It is
+// Package agentloop runs a model and the tools it calls: the model loop of the secrets broker
+// (internal/cipher), and the only import of Grafana's AI SDK for Go in this repository. It is
 // the engine and nothing more. It keeps no conversation store, carries no tools of its own and
 // routes nothing: a caller hands it an endpoint, a model, the messages, the tools the model may
 // call and the bounds of the run, and reads back the reply, every step and what the run cost.
@@ -35,7 +35,8 @@
 // # The retry
 //
 // Both of the SDK's retry layers are off, and this package retries once itself: on a transport
-// error, a 429 or a 5xx, decided from the response status before any of the body is read, and
+// error or an outage status (a 408, a 429, a 5xx), decided from the response status before any of
+// the body is read, and
 // only while Bounds.Time is left. A stream that breaks after its first byte is FaultProviderError
 // and is never retried, so a caller's OnText never sees the same text twice.
 //

@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A message a registered session sends or publishes now names the machine and directory of its registration even when the listener cannot read its interest record (no record, a record this build cannot decode, or a read the bus did not answer), as long as the listener holds the session''s entry or can read it within the stamp''s one-second window: the sender stamp takes both from the session entry it already reads for the title. Before, both were empty.'
+time: 2026-11-17T17:39:50.806655212Z
+custom:
+    Issue: pr4334

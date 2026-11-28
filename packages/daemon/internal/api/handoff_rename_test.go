@@ -24,11 +24,20 @@ import (
 // the repository under cybermonklabs/legion, on cybermonklabs' installation.
 var transferredLegion = ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
 
+// servesOneOf is the `served` predicate of a daemon serving repos (Options.Served, internal/daemon's
+// servesRepository): whether GitHub answered both role Apps installed on a repository, which here
+// is whether it is one of repos, compared as GitHub compares names, regardless of case.
+func servesOneOf(repos ...ghrepo.Repository) func(ghrepo.Repository) bool {
+	return func(repo ghrepo.Repository) bool {
+		return slices.ContainsFunc(repos, func(served ghrepo.Repository) bool { return strings.EqualFold(served.String(), repo.String()) })
+	}
+}
+
 // transferStates are the states a tree recorded before its repository's transfer is driven in:
 // the configured pair with the project serving the repository GitHub holds it under, that same
 // pair with one more repository of the owner the transfer moved it away from served beside it,
 // and no pair at all. The second is the state of the production failure of 2026-11-06, where
-// adding sjawhar/oh-my-pi to the project's mapping made sjawhar an owner of the project and the
+// serving sjawhar/oh-my-pi as well made sjawhar an owner of the project and the
 // owner rule this replaced switched the live pair off; it must read exactly what the first does.
 // The third is the control: with no pair configured the record's own repository is read.
 var transferStates = []struct {
@@ -49,7 +58,7 @@ var transferStates = []struct {
 // newTransferHandoffHarness is newHandoffHarness for a deployment that configures renames and
 // serves repositories: the serving rule the daemon hands the server (Options.Serving), built
 // here from what the daemon's own is built from — the repositories it serves and the configured
-// pairs, read one repository at a time (ghrepo.Serves, which is what internal/daemon's
+// pairs, read one repository at a time (servesOneOf, which stands for the answer internal/daemon's
 // repositories.serving reads) — where the harnesses above hand none and a recorded repository
 // is served under its own name. GitHub is read at api, and the harness's Dispatch holds the
 // handoff records a completion names (writeHandoff).
@@ -62,8 +71,9 @@ func newTransferHandoffHarness(t *testing.T, api string, renames ghrepo.Renames,
 	for _, repo := range served {
 		repositories = append(repositories, ghrepo.MustParse(repo))
 	}
+	serves := servesOneOf(repositories...)
 	serving := func(recorded ghrepo.Repository) ghrepo.Repository {
-		return renames.Serving(recorded, func(repo ghrepo.Repository) bool { return ghrepo.Serves(repositories, repo) })
+		return renames.Serving(recorded, serves)
 	}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
@@ -71,7 +81,7 @@ func newTransferHandoffHarness(t *testing.T, api string, renames ghrepo.Renames,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
 		Handlers: []intake.Handler{facts}, Dispatch: h.handoffs, PluginRelaunchable: true,
 		Tokens: handoffTokens{}, GitHubAPI: api,
-		GitHubRepositories: func() []ghrepo.Repository { return repositories }, RepositoryRenames: renames,
+		Served: serves, RepositoryRenames: renames,
 		Serving: serving,
 	}).Handler
 	return h, facts

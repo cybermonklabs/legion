@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -75,6 +74,7 @@ func addAnAskBlock(t *testing.T, handler http.Handler, artifactID string, actor 
 }
 
 func TestTheNextAskOnTheIssueNamesTheDeclinedAsk(t *testing.T) {
+	t.Parallel()
 	const question = "Which transport should the billing exporter use?"
 	const note = "I have no view on this one; pick what the team can run."
 	// theDeclinedAsk is the part the write's answer carries, once the person has declined.
@@ -205,7 +205,7 @@ func TestTheNextAskOnTheIssueNamesTheDeclinedAsk(t *testing.T) {
 		requireNamesTheDeclinedAsk(t, "the ask whose check filled every place", crowded.Body.String(), declined)
 
 		// A check that cannot run at all: the allowance ends before its first read.
-		served.suggestionTimeout = time.Nanosecond
+		served.suggestionTimeout = spentRelatedAllowance
 		unchecked := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
 			"question": "Which of them comes last?", "actor": adviceSessionActor("session-crowded"),
 		})
@@ -273,6 +273,7 @@ const adviceBoundBytes = 64 * 1024
 // such an issue paid that, and the cost grew with each decline. The read sends heads now
 // (declinedAskHead), and this test fails if they ever go.
 func TestTheDeclinedAskReminderStaysBoundedWhateverThePeopleWrote(t *testing.T) {
+	t.Parallel()
 	const declines = 10
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "HEAVY")

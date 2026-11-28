@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  `CheckResult.observed_tree`, the tree a result's observed text is shown as, which
+  `GET /api/v1/issues/{key}/results` answers to a caller that sent `Dispatch-Trees: 1`.

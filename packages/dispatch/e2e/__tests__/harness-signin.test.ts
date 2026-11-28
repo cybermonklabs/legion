@@ -201,3 +201,25 @@ describe("DISPATCH_E2E_SIGNIN", () => {
     rowLimit("short", "short")
   );
 });
+
+describe("DISPATCH_E2E_BINARY_B", () => {
+  // The first server to start migrates the empty database (e2e/harness-listeners.ts). An earlier
+  // build given as B starts first, as production ran it before this tree; with none, A starts first.
+  test(
+    "an earlier build given as B starts before A, this tree, and A starts first without one",
+    async () => {
+      const cases: [Record<string, string>, string[]][] = [
+        [
+          { ...twoProcesses, DISPATCH_E2E_BINARY_B: "previous-build/envoy-dispatch" },
+          ["dispatch-b", "dispatch-a"],
+        ],
+        [twoProcesses, ["dispatch-a", "dispatch-b"]],
+      ];
+      for (const [env, order] of cases) {
+        const ids = (await listenersIn(env)).map((listener) => listener.id);
+        expect(ids.filter((id) => id.startsWith("dispatch-"))).toEqual(order);
+      }
+    },
+    rowLimit("short", "short")
+  );
+});

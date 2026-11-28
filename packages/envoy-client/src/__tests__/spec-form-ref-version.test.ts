@@ -8,12 +8,15 @@
 // before any request. A ref of an issue names no document, so the same check must refuse it.
 // Control rows: a ref that names a document (`/spec`, `/artifact/spec.md`) with --version is taken.
 import { afterAll, beforeEach, expect, test } from "bun:test";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 const makeDirectory = temporaryDirectories("spec-form-ref-version");
+
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
 const requests: string[] = [];
 
 const ARTIFACTS = [
@@ -86,7 +89,6 @@ beforeEach(() => {
   requests.length = 0;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{ code: number; stdout: string }> {
@@ -96,7 +98,7 @@ async function run(argv: readonly string[]): Promise<{ code: number; stdout: str
     {
       HOME: stateDir,
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "test-token",
+      DISPATCH_TOKEN: TOKEN,
       DISPATCH_STATE_DIR: stateDir,
       DISPATCH_HOST: "omp",
       DISPATCH_SESSION_ID: "ses-1",

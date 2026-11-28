@@ -1,4 +1,4 @@
-import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the answer form's own submit, which user-event has no form for
 import { fireEvent, render, waitFor, within } from "@testing-library/react";
@@ -9,8 +9,15 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { api } from "../../api/client";
 import type { Ask, AskRead, Comment } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AskBlockHost } from "./typed-block-drawing";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const schema = new Schema({
   nodes: {
@@ -88,6 +95,13 @@ const ask: Ask = {
   state: "open",
   urgency: "high",
 };
+
+/** `ask` with `overrides`, asked three minutes before this moment. A row that reads the card's
+ *  `3 minutes ago` builds its ask here as it runs: the card reads the clock as it draws, and
+ *  `ask` is dated as the file loaded, which random order can put a minute before the row. */
+function askedThreeMinutesAgo(overrides: Partial<Ask> = {}): Ask {
+  return { ...ask, created_at: new Date(Date.now() - 3 * 60_000).toISOString(), ...overrides };
+}
 
 const answeredAsk: Ask = {
   ...ask,
@@ -214,12 +228,9 @@ function renderCard({
     footer: scoped,
     section,
     user,
-    /** The compact card's free-text disclosure: opens the composer and returns its field. */
-    async openComposer() {
-      await user.click(
-        scoped.getByRole("button", { name: "Add a note or answer in your own words" })
-      );
-      return scoped.getByLabelText("Your answer") as HTMLTextAreaElement;
+    /** The compact card's answer box, which stands in place. */
+    async answerField() {
+      return (await scoped.findByLabelText("Your answer")) as HTMLTextAreaElement;
     },
     recordRows() {
       return scoped
@@ -238,65 +249,71 @@ test.each([
   ["high", "High"],
   ["med", "Medium"],
   ["low", "Low"],
-] as const)("an open %s decision names its urgency in the block header and hosts the shared ask card, which names who asked", async (urgency, label) => {
-  const card = renderCard({ ask: { ...ask, urgency }, node: askNode({ urgency }) });
-  try {
-    const pill = card.section.querySelector("[data-dispatch-ask-pill]");
-    expect(pill?.textContent).toBe(label);
-    expect(pill?.getAttribute("data-dispatch-ask-pill")).toBe(urgency);
-    expect(card.header.getByText("Decision")).toBeDefined();
-    // The card, not the header, says who asked and when — once, not twice.
-    expect(card.section.querySelector("[data-dispatch-ask-asked]")).toBeNull();
-    const hosted = card.footer.getByRole("article", { name: `Urgency: ${label}` });
-    expect(hosted.dataset.testid).toBe("ask-ask-1");
-    // The asker's button holds its name, its attribution follows, and its live link sits beside
-    // the button rather than inside it.
-    const asker = within(hosted).getByRole("button", { name: "Architect for CORE-1" });
-    const agent = asker.closest<HTMLElement>("[data-agent-name]");
-    expect(agent?.textContent).toContain("Architect for CORE-1 (for sjawhar)");
-    const live = within(agent as HTMLElement).getByRole("link", {
-      name: "Open live conversation with Architect for CORE-1 (for sjawhar)",
-    });
-    expect(asker.contains(live)).toBe(false);
-    await waitFor(() =>
-      expect(within(hosted).getByText("3 minutes ago", { exact: false })).toBeDefined()
-    );
-    // The editor's content is the question; the card does not repeat it.
-    expect(within(hosted).queryByText("Should we ship?")).not.toBeInTheDocument();
-    // The reference copy control lives in the card's metadata line, once.
-    expect(card.section.querySelectorAll('[aria-label^="Copy reference"]')).toHaveLength(1);
-    expect(within(hosted).getByRole("button", { name: /^Copy reference/ })).toBeDefined();
-  } finally {
-    card.unmount();
+] as const)(
+  "an open %s decision names its urgency in the block header and hosts the shared ask card, which names who asked",
+  async (urgency, label) => {
+    const card = renderCard({ ask: askedThreeMinutesAgo({ urgency }), node: askNode({ urgency }) });
+    try {
+      const pill = card.section.querySelector("[data-dispatch-ask-pill]");
+      expect(pill?.textContent).toBe(label);
+      expect(pill?.getAttribute("data-dispatch-ask-pill")).toBe(urgency);
+      expect(card.header.getByText("Decision")).toBeDefined();
+      // The card, not the header, says who asked and when — once, not twice.
+      expect(card.section.querySelector("[data-dispatch-ask-asked]")).toBeNull();
+      const hosted = card.footer.getByRole("article", { name: `Urgency: ${label}` });
+      expect(hosted.dataset.testid).toBe("ask-ask-1");
+      // The asker's button holds its name, its attribution follows, and its live link sits beside
+      // the button rather than inside it.
+      const asker = within(hosted).getByRole("button", { name: "Architect for CORE-1" });
+      const agent = asker.closest<HTMLElement>("[data-agent-name]");
+      expect(agent?.textContent).toContain("Architect for CORE-1 (for sjawhar)");
+      const live = within(agent as HTMLElement).getByRole("link", {
+        name: "Open live conversation with Architect for CORE-1 (for sjawhar)",
+      });
+      expect(asker.contains(live)).toBe(false);
+      await waitFor(() =>
+        expect(within(hosted).getByText("3 minutes ago", { exact: false })).toBeDefined()
+      );
+      // The editor's content is the question; the card does not repeat it.
+      expect(within(hosted).queryByText("Should we ship?")).not.toBeInTheDocument();
+      // The reference copy control lives in the card's metadata line, once.
+      expect(card.section.querySelectorAll('[aria-label^="Copy reference"]')).toHaveLength(1);
+      expect(within(hosted).getByRole("button", { name: /^Copy reference/ })).toBeDefined();
+    } finally {
+      card.unmount();
+    }
   }
-});
+);
 
 test.each([
   ["open", "open there"],
   ["answered", "answered there"],
   ["resolved", "resolved there"],
-] as const)("a block copied from a %s ask names its source's document and state from its own attributes", (state, there) => {
-  const card = renderCard({
-    indexed: false,
-    node: askNode({
-      copied_from: "ask-source",
-      copied_from_document: "dispatch://CORE-1/artifact/plan",
-      state,
-    }),
-  });
-  try {
-    const link = card.header.getByRole("link", { name: "CORE-1 plan" });
-    expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/plan#b-b-1");
-    expect(card.header.getByText(/Copied from/).textContent).toBe(
-      `Copied from CORE-1 plan, ${there}`
-    );
-    // No ask of its own: no composer, the block's attributes record what its source shows.
-    expect(card.footer.queryByLabelText("Your answer")).not.toBeInTheDocument();
-    expect(getAsk).not.toHaveBeenCalled();
-  } finally {
-    card.unmount();
+] as const)(
+  "a block copied from a %s ask names its source's document and state from its own attributes",
+  (state, there) => {
+    const card = renderCard({
+      indexed: false,
+      node: askNode({
+        copied_from: "ask-source",
+        copied_from_document: "dispatch://CORE-1/artifact/plan",
+        state,
+      }),
+    });
+    try {
+      const link = card.header.getByRole("link", { name: "CORE-1 plan" });
+      expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/plan#b-b-1");
+      expect(card.header.getByText(/Copied from/).textContent).toBe(
+        `Copied from CORE-1 plan, ${there}`
+      );
+      // No ask of its own: no composer, the block's attributes record what its source shows.
+      expect(card.footer.queryByLabelText("Your answer")).not.toBeInTheDocument();
+      expect(getAsk).not.toHaveBeenCalled();
+    } finally {
+      card.unmount();
+    }
   }
-});
+);
 
 test("a block copied from an issue's spec links to the spec", () => {
   const card = renderCard({
@@ -455,8 +472,10 @@ test("the hosted card offers the options as the shared choice rows, plus Other, 
     })) as HTMLInputElement;
     expect(card.footer.getByRole("radio", { name: "Hold" })).toBeDefined();
     expect(card.footer.getByRole("radio", { name: "Other" })).toBeDefined();
-    // Nothing chosen: nothing to submit yet.
-    expect(card.footer.queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
+    // Nothing chosen: nothing to submit yet. Answer stands in place under the box.
+    expect(
+      (card.footer.getByRole("button", { name: "Answer" }) as HTMLButtonElement).disabled
+    ).toBe(true);
     await card.user.click(ship);
     expect(ship.checked).toBe(true);
     const submit = card.footer.getByRole("button", { name: "Answer" });
@@ -545,7 +564,7 @@ test("a decision with no options answers in words alone", async () => {
   });
   try {
     expect(card.footer.queryByRole("radio")).not.toBeInTheDocument();
-    const field = await card.openComposer();
+    const field = await card.answerField();
     const submit = card.footer.getByRole("button", { name: "Answer" });
     expect((submit as HTMLButtonElement).disabled).toBe(true);
     await card.user.click(field);
@@ -586,7 +605,7 @@ test("Ask back on an issue document's decision posts a clarification on the issu
   try {
     // No exchange yet: nothing to disclose.
     expect(card.footer.queryByRole("button", { name: /repl/ })).not.toBeInTheDocument();
-    const field = await card.openComposer();
+    const field = await card.answerField();
     const askBack = card.footer.getByRole("button", { name: "Ask back" });
     // Nothing to send yet.
     expect((askBack as HTMLButtonElement).disabled).toBe(true);
@@ -631,7 +650,7 @@ test("Ask back on a project document's decision posts the clarification on the d
     owner: { project: "CORE", slug: "design" },
   });
   try {
-    await card.user.click(await card.openComposer());
+    await card.user.click(await card.answerField());
     await card.user.paste("Before or after the freeze?");
     await card.user.click(card.footer.getByRole("button", { name: "Ask back" }));
     await waitFor(() => expect(createArtifactComment).toHaveBeenCalledTimes(1));
@@ -650,7 +669,7 @@ test("a question-shaped answer with no option chosen offers Ask back instead, as
   createComment.mockResolvedValue(reply("Which release train?"));
   const card = renderCard({ node: askNode({ urgency: "med" }) });
   try {
-    await card.user.click(await card.openComposer());
+    await card.user.click(await card.answerField());
     await card.user.paste("Which release train?");
     const submit = card.footer.getByRole("button", { name: "Answer" });
     expect((submit as HTMLButtonElement).disabled).toBe(false);
@@ -687,6 +706,9 @@ test("an existing exchange shows its newest replies under an open decision", asy
 });
 
 test("an answered decision hosts the shared record: who answered and when, the chosen option, the note, and its exchange", async () => {
+  // The record's rows are read before its exchange arrives, which holds only where the engine
+  // draws the rows in the commit that mounts the card (`MarkdownBody`).
+  await warmMarkdownRenderer();
   const card = renderCard({
     ask: answeredAsk,
     node: askNode({ answered_by: "bob", selected: ["Ship"], state: "answered", urgency: "low" }),
@@ -716,7 +738,7 @@ test("an answered decision hosts the shared record: who answered and when, the c
 
 test("a hosted block whose ask has no recorded author says when it was asked, without a dangling separator", async () => {
   const card = renderCard({
-    ask: { ...ask, author: { id: "", kind: "user" } },
+    ask: askedThreeMinutesAgo({ author: { id: "", kind: "user" } }),
     node: askNode({ urgency: "high" }),
   });
   try {
@@ -750,7 +772,10 @@ test("a reply written in Markdown keeps its paragraphs and list inside the block
   }
 });
 
-test("a resolved decision hosts the shared resolution record and no composer", () => {
+// A live document's resolved decision keeps its thread's reply behind Write a reply, as every
+// collapsed thread under a settled ask does; there is no answer form, and the reply's own form
+// waits for the control.
+test("a resolved decision hosts the shared resolution record, with Write a reply and no form", () => {
   const resolved: Ask = {
     ...ask,
     resolution: {
@@ -765,6 +790,7 @@ test("a resolved decision hosts the shared resolution record and no composer", (
   try {
     expect(card.section.querySelector("form")).toBeNull();
     expect(card.footer.getByTestId("ask-resolution-badge").textContent).toBe("Resolved");
+    expect(card.footer.getByRole("button", { name: "Write a reply" })).toBeInTheDocument();
   } finally {
     card.unmount();
   }
@@ -774,7 +800,11 @@ test("a resolved decision hosts the shared resolution record and no composer", (
 // card, so nothing to answer or ask back, and the header carries what the card would have said.
 
 test("a read-only surface shows an open decision's options with nothing to answer or ask back, and names who asked", () => {
-  const card = renderCard({ node: askNode({ urgency: "med" }), readOnly: true });
+  const card = renderCard({
+    ask: askedThreeMinutesAgo(),
+    node: askNode({ urgency: "med" }),
+    readOnly: true,
+  });
   try {
     expect(card.section.querySelector("form")).toBeNull();
     expect(card.footer.queryByRole("button", { name: "Ask back" })).not.toBeInTheDocument();
@@ -791,7 +821,7 @@ test("a read-only surface shows an open decision's options with nothing to answe
 
 test("a read-only block whose ask has no recorded author still says when it was asked", () => {
   const card = renderCard({
-    ask: { ...ask, author: { id: "", kind: "user" } },
+    ask: askedThreeMinutesAgo({ author: { id: "", kind: "user" } }),
     node: askNode({ urgency: "med" }),
     readOnly: true,
   });

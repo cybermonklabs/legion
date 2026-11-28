@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useRef } from "react";
+import { type KeyboardEvent, type ReactNode, useRef } from "react";
 
 import {
   activeTabIndicatorBorder,
@@ -21,24 +21,14 @@ export function tabButtonId(idPrefix: string, id: string): string {
   return `${idPrefix}-${id}-tab`;
 }
 
-/** A tablist may be narrower than its tabs (a phone); a tab focused from the keyboard or
- *  selected must be fully visible, which Chromium's `focus()` alone does not guarantee. Only the
- *  tablist scrolls: `scrollIntoView` would also move the page, undoing the per-tab scroll
- *  position IssuePage restores when a panel comes back. */
-function revealTab(node: HTMLElement | null | undefined): void {
-  const list = node?.parentElement;
-  if (node === null || node === undefined || list === null || list === undefined) {
-    return;
-  }
-  const listBox = list.getBoundingClientRect();
-  const box = node.getBoundingClientRect();
-  if (box.left < listBox.left) {
-    list.scrollLeft += box.left - listBox.left;
-  } else if (box.right > listBox.right) {
-    list.scrollLeft += box.right - listBox.right;
-  }
-}
-
+/**
+ * A tablist and, after it, `trailing` (a toolbar of the selected tab's). Its groups, in this
+ * order: the tabs, and `trailing`. A tablist narrower than its tabs - the issue's ten tabs on a
+ * phone, or beside the comment margin - wraps onto a further line rather than scrolling, so every
+ * tab is in view at every width; `trailing` moves to the next line whole when it does not fit
+ * beside the tabs. The tabs take the keyboard as one roving stop: the arrow keys, Home and End
+ * select and focus a tab.
+ */
 export function Tabs<Id extends string>({
   activeTab,
   ariaLabel,
@@ -89,20 +79,10 @@ export function Tabs<Id extends string>({
       return;
     }
     selectTab(next.id);
-    const node = tabRefs.current[next.id];
-    node?.focus();
-    revealTab(node);
+    tabRefs.current[next.id]?.focus();
   };
 
-  useEffect(() => {
-    revealTab(tabRefs.current[activeTab]);
-  }, [activeTab]);
-
   const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";
-  // Compact tabs sit tighter on phones, which is what keeps the shorter tablists on one line. The
-  // issue's nine tabs, one carrying a count pill, no longer fit a 390 px viewport: there the
-  // tablist scrolls sideways, as it already did at 360 px, and `revealTab` keeps the focused or
-  // selected tab fully visible. Every tab stays reachable and keeps its 44 px target.
   const tabPadding = compact ? "px-1.5 md:px-2" : "px-3";
   const tabGap = compact ? "gap-0 md:gap-1" : "gap-1";
 
@@ -110,11 +90,7 @@ export function Tabs<Id extends string>({
     <div
       className={`${compact ? "mb-0" : "mb-3"} flex flex-wrap items-center gap-1 border-b ${borderDefault}`}
     >
-      <div
-        aria-label={ariaLabel}
-        className={`flex min-w-0 ${tabGap} overflow-x-auto [scrollbar-width:thin]`}
-        role="tablist"
-      >
+      <div aria-label={ariaLabel} className={`flex min-w-0 flex-wrap ${tabGap}`} role="tablist">
         {tabs.map((tab) => (
           <button
             aria-controls={`${idPrefix}-${tab.id}-panel`}

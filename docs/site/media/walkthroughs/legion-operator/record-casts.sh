@@ -62,6 +62,12 @@ done
 work=$(mktemp -d /tmp/legion-docs-casts.XXXXXX)
 evidence=$(mktemp -d /tmp/legion-docs-casts-evidence.XXXXXX)
 mkdir -p "$evidence/logs" "$work/bin" "$work/xdg" "$work/tmux"
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, scripts/e2e/lib/process-tree.sh); a fork of this
+# shell that execs nothing carries none and is stopped by its pid (run_marks' comment there). The
+# operator's shells and the daemon start under `env -i` (shell_env) and name the mark themselves; a
+# daemon pane carries the XDG_CONFIG_HOME the daemon moves under its state directory, $work/state.
+export LEGION_E2E_RUN=$work
 timeout_hook=
 pg_container=legion-docs-casts-pg-$$
 nats_container=legion-docs-casts-nats-$$
@@ -86,7 +92,7 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_pid "$model_pid"
   stop_pid "$daemon_keeper_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
+  stop_marked_processes "$work"
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1
   rm -rf "$work"
   echo "evidence: $evidence (logs/daemon.log, logs/listener.log, logs/model.log)"
@@ -123,14 +129,21 @@ docker run -d --name "$pg_container" --cpus 0.5 --memory 2g --mount type=tmpfs,d
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion -p 127.0.0.1::5432 mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
 pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
 until_true 60 "Postgres" docker exec "$pg_container" pg_isready -h 127.0.0.1 -U legion -d legion
-docker run -d --name "$nats_container" --cpus 0.5 --memory 512m -p 127.0.0.1::4222 nats:2.10 -js >/dev/null
+# shellcheck source-path=SCRIPTDIR source=../../../../../scripts/e2e/lib/nats-image.sh
+. "$root/scripts/e2e/lib/nats-image.sh"
+docker run -d --name "$nats_container" --cpus 0.5 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
 until_true 90 "NATS" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/envoy-token")
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/operator-token")
 ENVOY_API_TOKEN="$(cat "$operator/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=example-host-legion NATS_URLS=$nats_url \
   start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$work/envoy-listener"
-until_true 60 "the Envoy listener" curl -fsS -H "Authorization: Bearer $(cat "$operator/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
+# The bearer reaches curl on standard input from printf, a shell builtin, so it is in no command line.
+envoy_up() {
+  printf 'Authorization: Bearer %s' "$(cat "$operator/envoy-token")" |
+    curl -fsS -H @- "http://127.0.0.1:$envoy_port/v1/sessions"
+}
+until_true 60 "the Envoy listener" envoy_up
 # The agents' model: accepts every request and never answers.
 start_process model bun -e \
   "const s = Bun.serve({ hostname: '127.0.0.1', port: 0, idleTimeout: 0, fetch: () => new Promise(() => {}) }); console.log('model listening port=' + s.port)"
@@ -201,7 +214,7 @@ EOF
 shell_env=(env -i "PATH=$work/bin:$PATH" "HOME=$omp_home" "OMP_PROFILE=$profile" "TERM=xterm-256color"
   "LANG=C.UTF-8" "XDG_STATE_HOME=$work/xdg" "TMUX_TMPDIR=$work/tmux" "XDG_CONFIG_HOME=$XDG_CONFIG_HOME"
   "MISE_DATA_DIR=$MISE_DATA_DIR" "JJ_CONFIG=$JJ_CONFIG" "LEGION_OMP_PATH=$work/bin/omp"
-  "LEGION_GH_PATH=$legion_gh_path")
+  "LEGION_GH_PATH=$legion_gh_path" "LEGION_E2E_RUN=$work")
 legion() { (cd "$operator" && "${shell_env[@]}" "$work/bin/legion" "$@"); }
 
 check=daemon

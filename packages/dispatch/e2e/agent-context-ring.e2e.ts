@@ -1,5 +1,5 @@
 import { type FakeSession, setLiveSessions } from "./agents";
-import { publishAgentStreamFrame } from "./api";
+import { dropAgentStreamViewers, publishAgentStreamFrame } from "./api";
 import { frontLiveView } from "./live-views";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -13,7 +13,9 @@ import { asUser } from "./users";
  * window it holds them in, and the share between them is the viewer's to draw. A session that
  * published no such frame, and one whose host reports a window of zero, have no share, and the
  * row under the message box draws nothing rather than a ring at nought percent — a figure the
- * session never gave.
+ * session never gave. A host that stops reporting a window it reported before - a switch to a
+ * model with none - says so with a `context-cleared` frame (INFRA-4325), and the ring it drew
+ * goes with it.
  *
  * The frames are spelt here as the wire carries them, never imported from the SPA or the
  * contracts, so this file reads the same against the commit before the change and each row
@@ -27,6 +29,7 @@ const RING_ID = "01a0e812-0003-7000-8000-000000000001";
 const ZERO_ID = "01a0e812-0003-7000-8000-000000000002";
 const SILENT_ID = "01a0e812-0003-7000-8000-000000000003";
 const PHONE_ID = "01a0e812-0003-7000-8000-000000000004";
+const CLEARED_ID = "01a0e812-0003-7000-8000-000000000005";
 
 /** A live session for a row to open. `last_seen` is taken when the row seeds, never at this
  *  module's scope, which a worker evaluates once and every later spec of that worker ages. */
@@ -47,14 +50,26 @@ function contextFrame(seq: number, tokens: number, contextWindow: number): Recor
   return { contextWindow, kind: "context", seq, tokens, v: 1 };
 }
 
-/** One settled turn, so the view opens on a conversation rather than on its empty line. */
-function turnFrame(seq: number): Record<string, unknown> {
+/** The session's `context-cleared` frame: it has no window to report any more, so the figures
+ *  the last `context` frame gave are gone. */
+function clearedFrame(seq: number): Record<string, unknown> {
+  return { kind: "context-cleared", seq, v: 1 };
+}
+
+/** One settled turn, so the view opens on a conversation rather than on its empty line. Its time
+ *  is its id as well, so a turn at another time is another turn rather than a later snapshot of
+ *  this one. */
+function turnFrame(
+  seq: number,
+  text = "Reading the release notes.",
+  at = 1_000
+): Record<string, unknown> {
   return {
     kind: "message",
     message: {
-      at: 1_000,
-      id: "a1000",
-      parts: [{ text: "Reading the release notes.", type: "text" }],
+      at,
+      id: `a${at}`,
+      parts: [{ text, type: "text" }],
       role: "assistant",
       streaming: false,
     },
@@ -83,8 +98,10 @@ interface Edges {
   right: number;
 }
 
-/** One element's left and right edges on screen, rounded to whole pixels. */
+/** One element's left and right edges on screen, rounded to whole pixels, once it shows. */
 async function edgesOf(locator: Locator): Promise<Edges> {
+  await expect(locator).toBeVisible();
+  // The wait above drew the element, and a drawn element has a box, so the box is there.
   const box = await locator.boundingBox();
   expect(box).not.toBeNull();
   if (box === null) throw new Error("the element is not on the page");
@@ -176,17 +193,74 @@ test("a window of zero and a session that published no context frame draw no rin
   }
 });
 
-// R3. At a phone width the facts under the message box scroll sideways and the ring does not:
-// it keeps the box's right edge, where a reader's thumb finds it, while the delivery mode, the
-// machine and a long directory run under it. The page itself never scrolls sideways.
-// SLOW(>=2s): a live view opened on the session's replay at a phone width, then the row under
-// the message box scrolled and measured before and after.
-test("at a phone width the ring keeps the right edge of the box while the facts scroll @phone @phone-only", async ({
+// R1 (INFRA-4325). A session that held a window and then has none - its host switched to a model
+// that reports no window - sends `context-cleared`, and the ring goes: on the open page as the
+// frame arrives, and again when the view rebuilds from a replay that holds the clearing after the
+// reading. The rebuild's replay carries a turn the page has not shown yet, so the ring is read as
+// absent only once the rebuilt transcript is on screen. A reading after that draws the ring again,
+// so its absence is the view's decision rather than a view that has stopped drawing one.
+// SLOW(>=2s): a live view opened on the session's replay, a live frame waited on, a rebuild
+// through the page's resubscribe waited on, and a last frame waited on.
+test("a cleared context window takes the ring away, live and after a rebuild from the replay", async ({
   browser,
 }) => {
-  await setLiveSessions([
-    session(PHONE_ID, "Phone", "/workspaces/a-directory-long-enough-to-run-off-a-phone-screen"),
-  ]);
+  await setLiveSessions([session(CLEARED_ID, "Cleared")]);
+  await publishAgentStreamFrame(
+    CLEARED_ID,
+    replayOf(CLEARED_ID, [turnFrame(1), contextFrame(1, 8_192, 32_768)]),
+    "replay"
+  );
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.goto(livePath(CLEARED_ID));
+    const footer = frontLiveView(page).getByTestId("agent-composer-footer");
+    await expect(contextRing(page)).toContainText("25%");
+
+    // The session reports that it has no window now, while the reader is looking at it.
+    await publishAgentStreamFrame(CLEARED_ID, clearedFrame(2));
+    await expect(contextRing(page)).toHaveCount(0);
+    await expect(footer).not.toContainText("%");
+
+    // The page loses its subscription and rebuilds the whole transcript from the session's
+    // replay, which holds the reading and, after it, the clearing.
+    await publishAgentStreamFrame(
+      CLEARED_ID,
+      replayOf(CLEARED_ID, [
+        turnFrame(1),
+        contextFrame(1, 8_192, 32_768),
+        clearedFrame(2),
+        turnFrame(1, "Switched to a model with no window.", 2_000),
+      ]),
+      "replay"
+    );
+    await dropAgentStreamViewers(CLEARED_ID);
+    await expect(
+      frontLiveView(page).getByText("Switched to a model with no window.", { exact: true })
+    ).toBeVisible();
+    await expect(contextRing(page)).toHaveCount(0);
+    await expect(footer).not.toContainText("%");
+
+    // A window the session really has, on the same page: the ring is drawn again.
+    await publishAgentStreamFrame(CLEARED_ID, contextFrame(3, 68_000, 200_000));
+    await expect(contextRing(page)).toContainText("34%");
+  } finally {
+    await context.close();
+  }
+});
+
+// R3. At a phone width the facts under the message box wrap as groups and the ring does not
+// move with them: it keeps the box's right edge, where a reader's thumb finds it, while the
+// delivery mode, the machine and a long directory take the lines beside it. Nothing scrolls
+// sideways: not the facts, not the page; the long directory shortens to an ellipsis inside its
+// own line, with the whole path as its title.
+// SLOW(>=2s): a live view opened on the session's replay at a phone width, then the row under
+// the message box measured.
+test("at a phone width the ring keeps the right edge of the box while the facts wrap @phone @phone-only", async ({
+  browser,
+}) => {
+  const longDir = "/workspaces/a-directory-long-enough-to-run-off-a-phone-screen";
+  await setLiveSessions([session(PHONE_ID, "Phone", longDir)]);
   await publishAgentStreamFrame(
     PHONE_ID,
     replayOf(PHONE_ID, [turnFrame(1), contextFrame(2, 68_000, 200_000)]),
@@ -200,26 +274,42 @@ test("at a phone width the ring keeps the right edge of the box while the facts 
     await expect(ring).toContainText("34%");
 
     const facts = frontLiveView(page).getByTestId("agent-composer-facts");
-    const scroll = await facts.evaluate((row) => ({
-      clientWidth: row.clientWidth,
-      scrollWidth: row.scrollWidth,
-    }));
-    // The facts really are wider than the screen leaves them, so scrolling them means something.
-    expect(scroll.scrollWidth).toBeGreaterThan(scroll.clientWidth);
+    const delivery = facts.getByTestId("agent-delivery-picker");
+    const dir = facts.getByTestId("agent-footer-dir");
+    await expect(dir).toBeVisible();
+    const layout = await facts.evaluate((row) => {
+      const box = row.getBoundingClientRect();
+      // The parts the row draws: a group with nothing in it (the session's pickers, before it
+      // reports them) draws no box, and a box at the page's corner says nothing about the row.
+      const parts = [...row.querySelectorAll("[data-testid]")]
+        .filter((part) => part.getClientRects().length > 0)
+        .map((part) => part.getBoundingClientRect());
+      return {
+        clientWidth: row.clientWidth,
+        inside: parts.every((part) => part.left >= box.left - 0.5 && part.right <= box.right + 0.5),
+        scrollWidth: row.scrollWidth,
+      };
+    });
+    // The facts hold more than one phone line, so they wrap rather than scroll, and every part
+    // of them sits inside their own box.
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
+    expect(layout.inside).toBe(true);
+    // One line would be as tall as its tallest part, the delivery picker; the facts are taller.
+    const [deliveryBox, factsBox] = [await delivery.boundingBox(), await facts.boundingBox()];
+    expect(factsBox?.height ?? 0, "the facts wrapped onto a second line").toBeGreaterThan(
+      (deliveryBox?.height ?? Number.POSITIVE_INFINITY) + 1
+    );
+    // The directory is cut to its line with an ellipsis, and its whole path is one hover away.
+    const dirText = dir.locator("span").first();
+    await expect(dirText).toHaveAttribute("title", longDir);
+    expect(await dirText.evaluate((text) => text.scrollWidth > text.clientWidth + 1)).toBe(true);
+    expect(await dirText.evaluate((text) => getComputedStyle(text).textOverflow)).toBe("ellipsis");
 
     const box = await edgesOf(frontLiveView(page).getByTestId("agent-composer"));
-    const before = await edgesOf(ring);
-    expect(before.right).toBeLessThanOrEqual(box.right);
-    expect(before.left).toBeGreaterThan(box.left + (box.right - box.left) / 2);
-
-    await facts.evaluate((row) => {
-      row.scrollTo(row.scrollWidth, 0);
-    });
-    await expect.poll(() => facts.evaluate((row) => Math.round(row.scrollLeft))).toBeGreaterThan(0);
-
-    // The facts moved under it; the ring is where it was.
-    expect(await edgesOf(ring)).toEqual(before);
-    await expect(ring).toContainText("34%");
+    const drawn = await edgesOf(ring);
+    expect(drawn.right).toBeLessThanOrEqual(box.right);
+    expect(drawn.left).toBeGreaterThan(box.left + (box.right - box.left) / 2);
+    expect(drawn.left).toBeGreaterThanOrEqual((await edgesOf(facts)).right);
 
     const widths = await page.evaluate(() => ({
       clientWidth: document.documentElement.clientWidth,

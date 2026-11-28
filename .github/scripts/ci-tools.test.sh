@@ -53,9 +53,10 @@
 # handed, one per line, and the ladder case below reads the pinned flags off that record. Those
 # flags are the ladder ci_tools_curl holds every fetch to, and before that case no assertion
 # here or anywhere else held them to a shape, so an edit of one of them reached a runner unseen.
-# The case prints no recorded argument, whether it passes or fails: this helper is handed a pull
-# token with `-u` and a blob's `Authorization: Bearer …` with `-H`, and it takes both as
-# arguments exactly so that they reach no log line, which a test that printed them would undo.
+# The case prints no recorded argument, whether it passes or fails, though none should hold a
+# credential: this helper hands curl a token request's credential in a config on standard input
+# (`-K -`) and a blob's `Authorization: Bearer …` on standard input (`-H @-`), and the ghcr-mirror
+# case below holds the second to that.
 #
 # THE MKTEMP ON THESE CASES' PATH: the write-error cases must name the file a fetch writes into,
 # and that file is a mktemp the helper makes under RUNNER_TEMP. Those cases put an mktemp of
@@ -98,11 +99,31 @@ curl_arguments="$work/curl-arguments"
 # The curl the cases run, first on their PATH: the record of what it was handed, then the real
 # one with `--retry-max-time 1` after the arguments the helper wrote, which is the bound the
 # header above explains.
+# While the file $forwarding_curl exists, the stand-in is a curl whose redirects keep every
+# header: a call that follows redirects (`-L`, alone or in a cluster such as `-fsSL`) gets
+# `--location-trusted` too, which makes curl 8.5.0 send an `Authorization` header and a `-u`
+# password to every origin it is sent on to (measured 2026-11-17). That is a curl older than
+# 7.58.0, or a `.curlrc` that names the option, and it is the curl a credentialed call must be
+# safe under: the cases that read a redirect to another origin run under it, so they read that
+# the credential reaches no other origin through this helper, whatever curl's own rule is. A call
+# with no `-L` is handed nothing more, since `--location-trusted` would make it follow.
+forwarding_curl="$work/forwarding-curl"
 real_curl=$(command -v curl)
 cat > "$work/bin/curl" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$@" > "$curl_arguments"
-exec "$real_curl" "\$@" --retry-max-time 1
+forward=()
+if [ -e "$forwarding_curl" ]; then
+  for argument in "\$@"; do
+    case \$argument in
+      --location | -[!-]*L*)
+        forward=(--location-trusted)
+        break
+        ;;
+    esac
+  done
+fi
+exec "$real_curl" "\$@" --retry-max-time 1 \${forward[@]+"\${forward[@]}"}
 SH
 chmod 0755 "$work/bin/curl"
 
@@ -472,9 +493,16 @@ tools:
 YAML
 
 # The origin: a directory server that writes every path it is asked for, served or not, to a log.
-# A case reads that log to say which sources a run went to.
+# A case reads that log to say which sources a run went to. Beside it, in <log>.auth, each path
+# with the Authorization header the request carried, or `none`: the bearer a blob request sends
+# reaches curl on standard input, and this is where a case reads that it reached the origin.
+# A file with `<file>.redirect` beside it is answered with the redirect that file writes,
+# `<status> <location>`, as ghcr.io answers a blob's GET with a 307 to the store that holds it and
+# github.com a release asset with a 302; a file that writes the status alone is answered with no
+# Location. A HEAD is logged and answered the same way as a GET.
 cat > "$work/origin.py" <<'PY'
 import http.server
+import os
 import socketserver
 import sys
 
@@ -485,10 +513,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=root, **kwargs)
 
-    def do_GET(self):
+    def record(self):
         with open(logfile, "a") as log:
             log.write(self.path + "\n")
-        super().do_GET()
+        with open(logfile + ".auth", "a") as log:
+            log.write(self.path + " " + (self.headers.get("Authorization") or "none") + "\n")
+
+    def redirected(self):
+        """Answers the redirect `<file>.redirect` writes, where there is one, and says whether it did."""
+        redirect = self.translate_path(self.path) + ".redirect"
+        if not os.path.isfile(redirect):
+            return False
+        with open(redirect) as handle:
+            status, *location = handle.read().split()
+        self.send_response(int(status))
+        if location:
+            self.send_header("Location", location[0])
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
+    def do_GET(self):
+        self.record()
+        if not self.redirected():
+            super().do_GET()
+
+    def do_HEAD(self):
+        self.record()
+        if not self.redirected():
+            super().do_HEAD()
 
     def log_message(self, *args):
         pass
@@ -547,13 +600,24 @@ origin() {
 # run <function> <argument…>: the helper, sourced into a shell with errexit, nounset and pipefail
 # on, as a GitHub `run:` step has. Sets `out` to the combined output and `status` to the exit
 # code. Not a subshell, so both survive the call.
+# Every origin here is http, so the run sets CI_TOOLS_REDIRECT_HTTP=1, the helper's one way to
+# follow a redirect to an http store; no workflow and no action sets it, so production follows
+# https alone. A case that sets `redirect_http=` runs without it. A case that sets `curl_home` to a
+# directory runs with that directory as HOME, CURL_HOME and XDG_CONFIG_HOME, which is where curl
+# looks for a .curlrc.
+redirect_http=1
+curl_home=""
 run() {
+  local -a home=()
+  [ -z "$curl_home" ] || home=(HOME="$curl_home" CURL_HOME="$curl_home" XDG_CONFIG_HOME="$curl_home")
   set +e
   out=$(env CI_TOOLS_MANIFEST="$manifest" \
     CI_TOOLS_GITHUB_BASE="$base/github" \
     CI_TOOLS_GHCR_BASE="$base/ghcr" \
     CI_TOOLS_NPM_BASE="$base/npm" \
     CI_TOOLS_URL_BASE="$base/url" \
+    CI_TOOLS_REDIRECT_HTTP="$redirect_http" \
+    ${home[@]+"${home[@]}"} \
     PATH="$work/bin:$PATH" \
     RUNNER_TEMP="$runner_temp" \
     bash -euo pipefail -c 'source "$1"; "$2" "${@:3}"' bash "$helper" "$@" 2>&1)
@@ -599,8 +663,8 @@ RECORDED_TEMPORARY_FILE='<the temporary file this run named>'
 # line, with the tenth replaced by that placeholder. The whole record is held, and so is its
 # length, which is what catches a word appended anywhere, after the URL included: curl reads the
 # last word on --retry-max-time, so one appended word there takes the bound off every fetch this
-# repository makes. It is read inside `is` and never printed: a call carries credentials among
-# its arguments, and the helper passes them that way so that they reach no log line.
+# repository makes. It is read inside `is` and never printed, so a credential that ever reached
+# an argument would still reach no log line through this test.
 recorded_ladder() {
   local argument number=0
   while IFS= read -r argument; do
@@ -683,6 +747,191 @@ check "asked the package for an anonymous pull token" \
   "$(is "$(asked_for "$log" "/ghcr/token?service=ghcr.io&scope=repository:$REGISTRY_PATH:pull")" true)"
 check "and for the blob the digest names" \
   "$(is "$(asked_for "$log" "/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED")" true)"
+check "the blob request carried the pull token as its bearer" \
+  "$(is "$(grep -F "/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED " "$log.auth")" \
+    "/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED Bearer fixture-token")"
+# The record is of the call that ran last, so it is the blob request's own only while it holds
+# that request's URL: read that first, or the check below could pass on another call's record.
+check "the last call curl was handed is the blob request" \
+  "$(is "$(grep -cxF "$base/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED" "$curl_arguments" || true)" 1)"
+check "and none of its arguments holds the token, which it read on standard input" \
+  "$(is "$(grep -c fixture-token "$curl_arguments" || true)" 0)"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: ghcr-mirror — the package answers the blob with a redirect to another origin"
+# ghcr.io answers a blob's GET with a 307 to pkg-containers.githubusercontent.com, the store that
+# holds it, whose address carries a grant of its own. The fetch follows it in a call of its own,
+# handed no header, so the pull token reaches the package and no other origin. The fetch runs
+# under the forwarding curl, so a fetch that left the follow to curl's `-L` hands the store the
+# token here.
+origin blob-store
+store_base=$base
+store_log=$log
+origin blob-redirect
+rm -- "$root/$ASSET_PATH"
+blob_path="/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED"
+printf '307 %s\n' "$store_base$blob_path" > "$root$blob_path.redirect"
+run ci_tools_field tarred max_time
+bound=$out
+dest="$work/dest/blob-redirect"
+: > "$forwarding_curl"
+run ci_tools_fetch tarred "$dest"
+rm -f -- "$forwarding_curl"
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the bytes" "$(is "$(digest_of "$dest")" "$TARRED")"
+check "names the copy as the source that served them" \
+  "$(contains "$out" "^ci-tools: tarred: ghcr-mirror served the bytes, sha256 $TARRED$")"
+check "the blob request carried the pull token to the package" \
+  "$(is "$(grep -F "$blob_path " "$log.auth")" "$blob_path Bearer fixture-token")"
+check "the store was asked for the blob once, with no Authorization header" \
+  "$(is "$(cat "$store_log.auth")" "$blob_path none")"
+check "by a call handed the pinned ladder, the protocols it may use and the store's address alone" \
+  "$(is "$(recorded_ladder)" "$({ pinned_ladder "$bound"; printf '%s\n' "$RECORDED_TEMPORARY_FILE" --proto =http,https "$store_base$blob_path"; })")"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: ghcr-mirror — a blob redirect to an address that is not https is refused"
+# The store's address reaches curl as a command-line URL, where curl's redirect protocol filter
+# does not apply, so the fetch reads it only when its scheme is https, or http under
+# CI_TOOLS_REDIRECT_HTTP=1, which this file sets for its http stand-ins and production never does.
+# A file:// or gopher:// address, and an http one without that variable, is refused before any
+# call, and nothing of what it names is written.
+origin blob-scheme-store
+store_base=$base
+store_log=$log
+origin blob-scheme
+rm -- "$root/$ASSET_PATH"
+for target in "file:///etc/hostname" "gopher://127.0.0.1:1/1x"; do
+  printf '307 %s\n' "$target" > "$root$blob_path.redirect"
+  dest="$work/dest/blob-scheme-${target%%:*}"
+  authority=${target#*://}
+  run ci_tools_fetch tarred "$dest"
+  check "a 307 to $target fails" "$(is "$status" 1)"
+  check "and names the redirect it refused, by its scheme and host alone" \
+    "$(contains "$out" "the blob request answered 307, a redirect to ${target%%://*}://${authority%%/*}, which")"
+  check "and the scheme it reads a store at" "$(contains "$out" "which this run does not follow: it reads a store at an https address alone")"
+  check "and nothing is at the destination" "$(nothing_at "$dest")"
+  check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+done
+printf '307 %s\n' "$store_base$blob_path" > "$root$blob_path.redirect"
+redirect_http=""
+run ci_tools_fetch tarred "$work/dest/blob-scheme-http"
+redirect_http=1
+check "a 307 to an http store, without CI_TOOLS_REDIRECT_HTTP, fails" "$(is "$status" 1)"
+check "and names that redirect" \
+  "$(contains "$out" "the blob request answered 307, a redirect to $store_base, which this run does not follow: it reads a store at an https address alone")"
+check "and the store was asked nothing" "$(is "$(cat "$store_log")" "")"
+check "and nothing is at the destination" "$(nothing_at "$work/dest/blob-scheme-http")"
+
+echo "case: a token request the package answers with a redirect to another origin"
+# The pull,push request carries the push credential, and the token it answers is the bearer of
+# every later request, so neither may come from another origin: the request follows no redirect,
+# and the answer is refused for its status. It runs under the forwarding curl, so a request that
+# followed would hand the other origin the credential.
+origin token-elsewhere
+elsewhere_base=$base
+elsewhere_log=$log
+printf '{"token":"elsewhere-token"}\n' > "$root/ghcr/token"
+origin token-redirect
+printf '302 %s\n' "$elsewhere_base/ghcr/token" > "$root/ghcr/token.redirect"
+: > "$forwarding_curl"
+run ci_tools_ghcr_token "" pull,push "fixture-actor:fixture-password"
+rm -f -- "$forwarding_curl"
+check "fails" "$(is "$status" 1)"
+check "names the status and the origin it pointed at" \
+  "$(is "$out" "the pull,push token request answered 302, a redirect to $elsewhere_base, which this run does not follow")"
+check "the package was asked, with the credential" \
+  "$(is "$(cat "$log.auth")" "/ghcr/token?service=ghcr.io&scope=repository:$REGISTRY_PATH:pull,push Basic $(printf 'fixture-actor:fixture-password' | base64)")"
+check "the other origin was asked nothing" "$(is "$(cat "$elsewhere_log")" "")"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: a token request redirected elsewhere, under a .curlrc that names location-trusted"
+# curl reads ~/.curlrc before its command line, and location-trusted there follows a redirect and
+# sends the credential to every origin. The credentialed call puts -q first, which reads no
+# .curlrc, so this run is the run above.
+curl_home="$work/curlrc-home"
+mkdir -p "$curl_home"
+printf 'location-trusted\n' > "$curl_home/.curlrc"
+origin token-curlrc-elsewhere
+elsewhere_base=$base
+elsewhere_log=$log
+printf '{"token":"elsewhere-token"}\n' > "$root/ghcr/token"
+origin token-curlrc
+printf '302 %s\n' "$elsewhere_base/ghcr/token" > "$root/ghcr/token.redirect"
+run ci_tools_ghcr_token "" pull,push "fixture-actor:fixture-password"
+curl_home=""
+check "fails" "$(is "$status" 1)"
+check "names the status and the origin it pointed at" \
+  "$(is "$out" "the pull,push token request answered 302, a redirect to $elsewhere_base, which this run does not follow")"
+check "the other origin was asked nothing" "$(is "$(cat "$elsewhere_log")" "")"
+
+echo "case: ci_tools_registry_head — a HEAD the package answers, and one it redirects to the store"
+# The HEAD .github/scripts/mirror-ci-tools.sh and the tool-fallback job read the package with. A
+# registry may answer a HEAD of a blob with a redirect to the store that holds it, so the HEAD
+# follows it, and the bearer goes with the first request alone: the store is read in a call of its
+# own, handed no header, which the forwarding curl the redirect runs under would otherwise pass
+# on. A redirect that names no address is refused, naming its status.
+origin head-store
+store_base=$base
+store_log=$log
+origin head-redirect
+head_url="$base$blob_path"
+run ci_tools_registry_head fixture-token "$work/head-headers" "$head_url"
+check "a blob the package holds answers 200" "$(is "$out" 200)"
+check "to a HEAD that carried the token as its bearer" \
+  "$(is "$(cat "$log.auth")" "$blob_path Bearer fixture-token")"
+check "and the answer's headers are in the file it was given" \
+  "$(is "$(grep -ci '^content-length:' "$work/head-headers" || true)" 1)"
+printf '302 %s\n' "$store_base$blob_path" > "$root$blob_path.redirect"
+: > "$forwarding_curl"
+run ci_tools_registry_head fixture-token "$work/head-headers" "$head_url"
+rm -f -- "$forwarding_curl"
+check "a redirect to the store that holds the blob reads the store's 200" "$(is "$out" 200)"
+check "the package was asked again with the token" \
+  "$(is "$(tail -n 1 "$log.auth")" "$blob_path Bearer fixture-token")"
+check "the store was asked once, with no Authorization header" \
+  "$(is "$(cat "$store_log.auth")" "$blob_path none")"
+check "by a call handed the protocols it may use and the store's address, and no header" \
+  "$(is "$(cat "$curl_arguments")" "$(printf '%s\n' -sS --proto =http,https -o /dev/null -D "$work/head-headers" -w '%{http_code}' -I -L "$store_base$blob_path")")"
+check "and the headers file holds the store's answer, the blob's own length" \
+  "$(is "$(awk 'tolower($1) == "content-length:" { value = $2 } END { gsub(/\r/, "", value); print value }' "$work/head-headers")" "$(wc -c < "$work/payloads/tarred")")"
+printf '302\n' > "$root$blob_path.redirect"
+run ci_tools_registry_head fixture-token "$work/head-headers" "$head_url"
+check "a redirect that names no address exits 0, so the caller reads its status" "$(is "$status" 0)"
+check "and prints that status beside a refusal that names it" \
+  "$(is "$out" "::error::ci-tools: a HEAD of $head_url answered 302, a redirect that names no address"$'\n'"302")"
+check "and the store was asked nothing more" "$(is "$(cat "$store_log.auth")" "$blob_path none")"
+check "and nothing is left under the runner's temporary directory" "$(is "$(temporary_files)" "")"
+printf '302 %s\n' "file:///etc/hostname" > "$root$blob_path.redirect"
+run ci_tools_registry_head fixture-token "$work/head-headers" "$head_url"
+check "a redirect to a file:// address prints its status beside a refusal that names it" \
+  "$(is "$out" "::error::ci-tools: a HEAD of $head_url answered 302, a redirect to file://, which this run does not follow: it reads a store at an https address alone"$'\n'"302")"
+check "and the store was asked nothing more" "$(is "$(cat "$store_log.auth")" "$blob_path none")"
+printf '302 %s\n' "$store_base$blob_path" > "$root$blob_path.redirect"
+curl_home="$work/curlrc-home"
+run ci_tools_registry_head fixture-token "$work/head-headers" "$head_url"
+curl_home=""
+check "under a .curlrc that names location-trusted, the redirect to the store reads its 200" "$(is "$out" 200)"
+check "and the store was asked once more, again with no Authorization header" \
+  "$(is "$(cat "$store_log.auth")" "$blob_path none"$'\n'"$blob_path none")"
+
+echo "case: github-release — a release asset that redirects to another origin"
+# A request that carries no credential follows a redirect, as a release download must: github.com
+# answers an asset with a 302 to release-assets.githubusercontent.com, and npm, PyPI and
+# get.pulumi.com redirect too. The request that carries a credential is the one that follows none.
+origin asset-store
+asset_store_log=$log
+asset_store_base=$base
+origin asset-redirect
+printf '302 %s\n' "$asset_store_base/$ASSET_PATH" > "$root/$ASSET_PATH.redirect"
+dest="$work/dest/asset-redirect"
+run ci_tools_fetch tarred "$dest"
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the bytes" "$(is "$(digest_of "$dest")" "$TARRED")"
+check "names the primary as the source that served them" \
+  "$(contains "$out" "^ci-tools: tarred: github-release served the bytes, sha256 $TARRED$")"
+check "the release host was asked for the asset" "$(is "$(asked_for "$log" "/$ASSET_PATH")" true)"
+check "and the origin it redirected to served it" "$(is "$(asked_for "$asset_store_log" "/$ASSET_PATH")" true)"
+check "and no second source was read" "$(is "$(asked_for "$log" "/ghcr/")" false)"
 check "and left no temporary file" "$(is "$(temporary_files)" "")"
 
 echo "case: github-release — the primary serves one byte changed"
@@ -937,8 +1186,8 @@ run ci_tools_source_name packaged second
 check "for an npm row too" "$(is "$out" "npm")"
 run ci_tools_source_name oddsource second
 check "a word no second source is read from fails" "$(is "$status" 1)"
-check "naming the row, the word and the five" \
-  "$(contains "$out" "^::error::ci-tools: oddsource: the manifest's second_source is 's3', and this file reads github-release, ghcr-mirror, npm, pypi and pulumi-releases$")"
+check "naming the row, the word and the six" \
+  "$(contains "$out" "^::error::ci-tools: oddsource: the manifest's second_source is 's3', and this file reads github-release, ghcr-mirror, npm, pypi, pulumi-releases and helm-releases$")"
 # Each side is the row's own word and neither is the other's default: this row's primary is a
 # service of its own, and `github-release` is its second source, which is a word a row may now
 # write on either side.
@@ -955,11 +1204,11 @@ check "and a pulumi-releases row's is its own" "$(is "$out" "pulumi-releases")"
 run ci_tools_source_name oddprimary primary
 check "a word no primary is read with fails" "$(is "$status" 1)"
 check "naming the row, the field and the words a primary is written in" \
-  "$(contains "$out" "^::error::ci-tools: oddprimary: the manifest's primary_source is 'ghcr-mirror', and this file reads github-release, pypi and pulumi-releases as a primary$")"
+  "$(contains "$out" "^::error::ci-tools: oddprimary: the manifest's primary_source is 'ghcr-mirror', and this file reads github-release, pypi, pulumi-releases and helm-releases as a primary$")"
 run ci_tools_fetch oddprimary "$work/dest/oddprimary"
 check "and the fetch of that row fails" "$(is "$status" 1)"
 check "with the same sentence" \
-  "$(contains "$out" "^::error::ci-tools: oddprimary: the manifest's primary_source is 'ghcr-mirror', and this file reads github-release, pypi and pulumi-releases as a primary$")"
+  "$(contains "$out" "^::error::ci-tools: oddprimary: the manifest's primary_source is 'ghcr-mirror', and this file reads github-release, pypi, pulumi-releases and helm-releases as a primary$")"
 check "and nothing is at the destination" "$(nothing_at "$work/dest/oddprimary")"
 run ci_tools_source_name tarred both
 check "a mode that is neither primary nor second fails" "$(is "$status" 1)"

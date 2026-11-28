@@ -1,6 +1,7 @@
 package outbox
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -33,8 +34,7 @@ import (
 // exactly as one the listener kept.
 func keptCopies(t *testing.T, client *bus.Client, role string) []contracts.Envelope {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	var copies []contracts.Envelope
 	for seq := uint64(1); ; {
 		stored, err := client.NextStoredMessage(ctx, bus.KeptRoleSubject(role), seq)
@@ -233,6 +233,7 @@ func keptRoleEvent(t *testing.T, key, role string) (*store.Store, *events.Broker
 // agent subject. The copy is the envelope as its sender sent it, on its own role topic and under
 // its own dedupe key, which is what the drain's forward to the next holder reads.
 func TestARoleRouteToAnUnheldRoleIsKeptForTheRolesNextHolder(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role = "kept-unclaimed"
 	rig.silent(t, contracts.RoleTopicPrefix+role)
@@ -266,6 +267,7 @@ func TestARoleRouteToAnUnheldRoleIsKeptForTheRolesNextHolder(t *testing.T) {
 // same Nats-Msg-Id (bus.KeptMsgID, the dedupe key and the role), so the stream holds one copy of
 // it however often the outbox retries: the role's next holder is handed the message once.
 func TestAKeptRoleRouteRetriedAfterALostAcknowledgementIsKeptOnce(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role = "kept-retried"
 	rig.silent(t, contracts.RoleTopicPrefix+role)
@@ -304,6 +306,7 @@ func TestAKeptRoleRouteRetriedAfterALostAcknowledgementIsKeptOnce(t *testing.T) 
 // role route unrecorded, and the outbox's own retry keeps it: nothing of the message is lost to a
 // keep NATS did not take.
 func TestAKeptRoleRouteWhoseKeepFailedStaysPendingAndIsKeptOnTheRetry(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role = "kept-failed"
 	rig.silent(t, contracts.RoleTopicPrefix+role)
@@ -342,6 +345,7 @@ func TestAKeptRoleRouteWhoseKeepFailedStaysPendingAndIsKeptOnTheRetry(t *testing
 // and the stream holds the forward for the session itself (dispatch://INFRA-392). The event
 // stays pending with the error it had before the kept lane, and nothing is kept.
 func TestARoleRouteToAnUnresponsiveHolderErrsWithNothingKept(t *testing.T) {
+	t.Parallel()
 	const role = "kept-unresponsive"
 	database, broker, event := keptRoleEvent(t, "T-1", role)
 	publisher := &keepRecorder{}
@@ -368,6 +372,7 @@ func TestARoleRouteToAnUnresponsiveHolderErrsWithNothingKept(t *testing.T) {
 // begins with the hyphen model.ParseRoute allows and roles.Valid refuses - so the two patterns
 // are not one, and this is the token a route can carry to a role nobody may ever hold.
 func TestARoleTokenNoClaimCanNameIsSkippedWithNothingKept(t *testing.T) {
+	t.Parallel()
 	const role = "-reviewer"
 	database, broker, event := keptRoleEvent(t, "T-1", role)
 	publisher := &keepRecorder{}
@@ -407,6 +412,7 @@ func TestARoleTokenNoClaimCanNameIsSkippedWithNothingKept(t *testing.T) {
 // publishes (cmd/listener/role_keep.go, keepRoleMessage). The two writers' copies of one message
 // therefore carry one id, and the stream stores it once.
 func TestAKeptRoleRouteIsPublishedOnTheRolesKeptLaneUnderTheKeptMsgID(t *testing.T) {
+	t.Parallel()
 	const role = "kept-named"
 	database, broker, event := keptRoleEvent(t, "T-1", role)
 	publisher := &keepRecorder{}
@@ -432,19 +438,22 @@ func TestAKeptRoleRouteIsPublishedOnTheRolesKeptLaneUnderTheKeptMsgID(t *testing
 // claimUnder makes holder role's holder, registered with entry, as a session plugin's
 // registration does, and reports what failed rather than failing the test: it is called on the
 // goroutine the outbox publishes its keep on, where a t.Fatalf would end that goroutine alone.
-// roleRig.claim is this call made from a test's own goroutine.
+// roleRig.claim is this call made from a test's own goroutine. An entry naming no machine is
+// registered through test-machine, the listener the claim is made through, as every
+// registration names the listener it came through.
 func (r *roleRig) claimUnder(role, holder string, entry session.SessionEntry) error {
 	if _, err := r.registry.SetRole(holder, "test-machine", role, false); err != nil {
 		return fmt.Errorf("claim %s for %s: %w", role, holder, err)
 	}
+	entry.MachineID = cmp.Or(entry.MachineID, "test-machine")
 	if err := r.sessions.Put(holder, entry); err != nil {
 		return fmt.Errorf("register %s: %w", holder, err)
 	}
 	return nil
 }
 
-// handedNow is the forward a scan that has returned handed the holder, waited for with the
-// shared bound (testwait.Eventually). The forward's send returns on the stream's acknowledgement
+// handedNow is the forward a scan that has returned handed the holder, waited for until the test
+// binary's deadline (testwait.Receive). The forward's send returns on the stream's acknowledgement
 // (roleForward.forward, a request whose reply is the stream's PubAck), and the holder's own
 // subscription is handed the same message on its own connection, which can arrive just after
 // that acknowledgement on a busy machine. No listener runs in the tests that read it, so nothing
@@ -452,16 +461,7 @@ func (r *roleRig) claimUnder(role, holder string, entry session.SessionEntry) er
 // scan sent it.
 func handedNow(t *testing.T, recv *receiver, what string) contracts.Envelope {
 	t.Helper()
-	var forward contracts.Envelope
-	testwait.Eventually(t, what+": the holder takes the forward the scan sent", func() bool {
-		select {
-		case forward = <-recv.arrived:
-			return true
-		default:
-			return false
-		}
-	})
-	return forward
+	return testwait.Receive(t, what+": the holder takes the forward the scan sent", recv.arrived)
 }
 
 // A role claimed while the keep was in flight is handed the kept copy by the keep itself, in the
@@ -478,6 +478,7 @@ func handedNow(t *testing.T, recv *receiver, what string) contracts.Envelope {
 // the copy can reach the holder, and the holder takes exactly one copy of it: the forward goes
 // under the id the drain's own forward would carry, which is what collapses the two.
 func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNextEvent(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "kept-claimed-under-the-keep", "ses_claimed_under_the_keep"
 	const key = "T-1"
@@ -494,7 +495,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 	outbox.scan(context.Background(), unfenced{})
 	keptScan := time.Since(started)
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
 	}
 	if publishedAt(t, rig.database, kept.ID) == nil {
@@ -539,7 +540,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 		t.Fatalf("the holder received %d forwards (%v), want the kept %s first and the issue's next event %s after it",
 			len(received), eventIDs(received), keptKey, nextKey)
 	}
-	subject := contracts.AgentSubject(holder)
+	subject := contracts.LegacyAgentSubject(holder)
 	stored := storedMsgIDs(t, rig.conn, subject)
 	forwards := []string{
 		bus.ForwardMsgID(contracts.RoleForwardDedupePrefix+keptKey, subject),
@@ -549,7 +550,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 		t.Fatalf("the stream holds %v on %s, want the handover's copy of the kept event and the next event's forward, each under the id the drain's own forward of it would carry: %v",
 			stored, subject, forwards)
 	}
-	t.Logf("the holder had the kept copy when the scan that kept it returned, %s after that scan began; the issue's next event reached it in the scan that began %s later, which took %s. The copy is on the role's kept lane as well, where nothing but the listener's sweep, minutes apart, would have read it.",
+	t.Logf("the scan that kept the copy and handed it to the holder took %s; the issue's next event was handed to it in the scan that began %s later, which took %s. The copy is on the role's kept lane as well, where nothing but the listener's sweep, minutes apart, would have read it.",
 		keptScan, nextStarted.Sub(started), nextScan)
 }
 
@@ -567,6 +568,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 // read on the lane itself: both copies in the order a drain hands them over, the earlier first,
 // and nothing taken by the holder or stored on its agent subject.
 func TestACopyKeptForARoleClaimedUnderTheKeepWaitsBehindTheCopiesOnItsLane(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "kept-behind-older-copies", "ses_claimed_behind_older_copies"
 	const key = "T-1"
@@ -593,7 +595,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepWaitsBehindTheCopiesOnItsLane(t *te
 
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
 	}
 	if publishedAt(t, rig.database, later.ID) == nil {
@@ -605,8 +607,8 @@ func TestACopyKeptForARoleClaimedUnderTheKeepWaitsBehindTheCopiesOnItsLane(t *te
 		t.Fatalf("the holder was handed %v in the scan that kept %s, want nothing: %s reaches it first, and only the drain of the role's lane hands either over",
 			eventIDs(taken), laterKey, earlierKey)
 	}
-	if copies := storedCopies(t, rig.client, contracts.AgentSubject(holder)); copies != 0 {
-		t.Fatalf("the stream holds %d copies on %s, want none: nothing was forwarded to the holder", copies, contracts.AgentSubject(holder))
+	if copies := storedCopies(t, rig.client, contracts.LegacyAgentSubject(holder)); copies != 0 {
+		t.Fatalf("the stream holds %d copies on %s, want none: nothing was forwarded to the holder", copies, contracts.LegacyAgentSubject(holder))
 	}
 	kept := keptCopies(t, rig.client, role)
 	if len(kept) != 2 || kept[0].EventID != earlierKey || kept[1].EventID != laterKey {
@@ -632,6 +634,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepWaitsBehindTheCopiesOnItsLane(t *te
 // Nothing sweeps and nothing drains here - no listener runs in this test - so the two handovers
 // are the only way either copy can reach the holder.
 func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "kept-twice-under-one-claim", "ses_claimed_under_the_first_keep"
 	const key = "T-1"
@@ -651,7 +654,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 	scanned := time.Since(started)
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim made under the first keep", claimed); err != nil {
 		t.Fatalf("the claim made under the first keep: %v", err)
 	}
 	firstKey, secondKey := fmt.Sprintf("dispatch-%d", first.ID), fmt.Sprintf("dispatch-%d", second.ID)
@@ -664,7 +667,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 			t.Fatalf("%s was not published: attempt_count %d, publish_error %v", event.key, attempts, failure)
 		}
 	}
-	received := recv.received()
+	received := recv.receivedNow(t, rig.client)
 	if len(received) != 2 || received[0].EventID != firstKey || received[1].EventID != secondKey {
 		t.Fatalf("the holder received %d forwards (%v) in the scan that kept both copies, want %s and then %s: the second copy is the one the batch's own handover record frees",
 			len(received), eventIDs(received), firstKey, secondKey)
@@ -676,7 +679,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 		t.Fatalf("role %s's kept lane holds %v, want %s before %s, both left where the drain would read them",
 			role, eventIDs(copies), firstKey, secondKey)
 	}
-	subject := contracts.AgentSubject(holder)
+	subject := contracts.LegacyAgentSubject(holder)
 	stored := storedMsgIDs(t, rig.conn, subject)
 	forwards := []string{
 		bus.ForwardMsgID(contracts.RoleForwardDedupePrefix+firstKey, subject),
@@ -686,7 +689,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 		t.Fatalf("the stream holds %v on %s, want both handovers under the ids the drain's own forwards of them would carry: %v",
 			stored, subject, forwards)
 	}
-	t.Logf("the holder had both copies of the issue when the scan that kept them returned, %s after it began; nothing drained the lane and nothing swept it.", scanned)
+	t.Logf("the scan that kept both copies of the issue and handed both to the holder took %s; nothing drained the lane and nothing swept it.", scanned)
 }
 
 // Two events of one issue kept in one batch, with the role claimed by one session under the
@@ -706,6 +709,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 // left is read on the lane itself: both copies in the order a drain hands them over, and nothing
 // taken by the holder that claimed the role second.
 func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role = "kept-twice-across-two-claims"
 	const firstHolder, secondHolder = "ses_claimed_under_the_first_keep", "ses_claimed_under_the_second_keep"
@@ -726,7 +730,7 @@ func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testi
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 
 	for range 2 {
-		if err := <-claimed; err != nil {
+		if err := testwait.Receive(t, "a claim made under one of the keeps", claimed); err != nil {
 			t.Fatalf("a claim made under one of the keeps: %v", err)
 		}
 	}
@@ -740,7 +744,7 @@ func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testi
 			t.Fatalf("%s was not published: attempt_count %d, publish_error %v", event.key, attempts, failure)
 		}
 	}
-	if taken := toFirstHolder.received(); len(taken) != 1 || taken[0].EventID != firstKey {
+	if taken := toFirstHolder.receivedNow(t, rig.client); len(taken) != 1 || taken[0].EventID != firstKey {
 		t.Fatalf("the session that claimed the role under the first keep received %v, want %s alone: the handover behind that keep is the one that reached it",
 			eventIDs(taken), firstKey)
 	}
@@ -748,9 +752,9 @@ func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testi
 		t.Fatalf("the session that claimed the role under the second keep received %v, want nothing: %s is still on the lane in front of %s for its own drain to send",
 			eventIDs(taken), firstKey, secondKey)
 	}
-	if copies := storedCopies(t, rig.client, contracts.AgentSubject(secondHolder)); copies != 0 {
+	if copies := storedCopies(t, rig.client, contracts.LegacyAgentSubject(secondHolder)); copies != 0 {
 		t.Fatalf("the stream holds %d copies on %s, want none: nothing was forwarded to the holder that claimed the role second",
-			copies, contracts.AgentSubject(secondHolder))
+			copies, contracts.LegacyAgentSubject(secondHolder))
 	}
 	if copies := keptCopies(t, rig.client, role); len(copies) != 2 || copies[0].EventID != firstKey || copies[1].EventID != secondKey {
 		t.Fatalf("role %s's kept lane holds %v, want %s before %s: the order the role's own drain hands the issue's events to the holder that claimed it last",

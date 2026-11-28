@@ -4,12 +4,17 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // twoExperiments are two experiments declared under the `experiments` key, each with one arm that
@@ -32,6 +37,7 @@ func twoExperiments(alpha, beta string) []config.Experiment {
 // the refusal names the arm's own key. An arm that names no overlay adds no value, since its
 // panes start on the role's own files.
 func TestTheTmuxBootGateReadsOneValuePerRolePerDeclaredArm(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	// The stub refuses two shapes: any value naming both arms' overlays, which no pane is ever
@@ -41,7 +47,7 @@ func TestTheTmuxBootGateReadsOneValuePerRolePerDeclaredArm(t *testing.T) {
 		"case \"$PI_CONFIG_FILES\" in *tester.yml*beta.yml*)\n" +
 		"  echo \"error: Failed to parse config overlay $PI_CONFIG_FILES: SyntaxError\" >&2; exit 1;; esac\n" +
 		"echo '{\"value\": false}'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	tester, alpha, beta := filepath.Join(dir, "tester.yml"), filepath.Join(dir, "alpha.yml"), filepath.Join(dir, "beta.yml")
@@ -79,6 +85,7 @@ func TestTheTmuxBootGateReadsOneValuePerRolePerDeclaredArm(t *testing.T) {
 // The boot read of a declared arm's overlays refuses a file no pane could read, naming the arm's
 // own key under the `experiments` key and the file, as it does for the `memory` block's own.
 func TestDeclaredArmOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		Project: "test",
 		Runtime: config.Runtime{Name: "tmux"},
@@ -105,12 +112,13 @@ func TestDeclaredArmOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
 // recovers the panic that read makes — without it the first half would pass over a reader that
 // never queries at all.
 func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
+	t.Parallel()
 	const tree, issue = "LEGION-1", "LEGION-2"
 	declared := config.Project{}.ExperimentsDeclared("projects.test")
 	if len(declared) != 1 || declared[0].Name != config.MemoryExperimentName {
 		t.Fatalf("a project that writes no experiment declares %+v, want the memory experiment alone", declared)
 	}
-	arms, err := launchVariants(nil, declared, "/state")(context.Background(), tree, issue)
+	arms, err := launchVariants(nil, declared, "/state")(context.Background(), tree, issue, claim.RoleImplementer)
 	if err != nil || arms.Variants != nil || arms.Instructions != nil {
 		t.Fatalf("launchVariants over a fileless declaration = %+v, %v, want no arm and no error", arms, err)
 	}
@@ -119,10 +127,63 @@ func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
 		Variants: []config.Variant{{Name: "on", Weight: 1, ConfigFiles: []string{"/etc/legion-alpha/alpha.yml"}}, {Name: "off", Weight: 1}}}}
 	read := func() (queried bool) {
 		defer func() { queried = recover() != nil }()
-		_, _ = launchVariants(nil, naming, "/state")(context.Background(), tree, issue)
+		_, _ = launchVariants(nil, naming, "/state")(context.Background(), tree, issue, claim.RoleImplementer)
 		return false
 	}
 	if !read() {
 		t.Fatal("launchVariants read no record for a declaration whose arm names a file, want the record read")
+	}
+}
+
+// An experiment that names its roles reaches the launches of those roles alone: in a tree drawn
+// into its arm, the planner and the implementer launch with the arm's overlays and instructions,
+// and the reviewer, the tester, the architect and the merger launch on the deployment's own
+// settings, so the roles that judge a treated tree's work are the control's. The tree keeps its
+// arm throughout: the same record answers every role. An experiment that names no roles reaches
+// every role, as it did before the key existed.
+func TestAnExperimentReachesOnlyTheRolesItNames(t *testing.T) {
+	t.Parallel()
+	const tree, issue = "LEGION-1", "LEGION-2"
+	recorded := map[string][]record.Assignment{tree: {{Experiment: "cheaper-model", Variant: "open"}}}
+	declare := func(roles []claim.Role) []config.Experiment {
+		return []config.Experiment{{Name: "cheaper-model", Mode: config.ExperimentRandom, Unit: config.ExperimentTree, Roles: roles,
+			Variants: []config.Variant{
+				{Name: "open", Weight: 1, ConfigFiles: []string{"/etc/legion-experiments/open.yml"}, InstructionsPath: "/etc/legion-experiments/open.md"},
+				{Name: "control", Weight: 1},
+			}}}
+	}
+	spawn := func(declared []config.Experiment, role claim.Role) runtime.SpawnSpec {
+		s := memorySpecs(t, "")
+		launch := experiment.ForLaunch(declared, "/state")
+		s.variants = func(_ context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
+			return launch.Arms(recorded, tree, issue, role), nil
+		}
+		return memorySpawn(t, s, tree, issue, role)
+	}
+	wantVariants := func(roles []claim.Role) []runtime.Variant {
+		return []runtime.Variant{{Experiment: "cheaper-model", Name: "open", ConfigFiles: []string{"/etc/legion-experiments/open.yml"}, Roles: roles}}
+	}
+	wantInstructions := []string{"/state/experiments/cheaper-model/open.md"}
+
+	roles := []claim.Role{claim.RolePlanner, claim.RoleImplementer}
+	named := declare(roles)
+	for _, role := range claim.Roles {
+		spec := spawn(named, role)
+		treated := role == claim.RolePlanner || role == claim.RoleImplementer
+		switch {
+		case treated && (!reflect.DeepEqual(spec.Variants, wantVariants(roles)) || !reflect.DeepEqual(spec.Prompt.VariantInstructionsPaths, wantInstructions)):
+			t.Errorf("the %s of a treated tree: variants = %+v, instructions = %q; want the arm %+v and %q",
+				role, spec.Variants, spec.Prompt.VariantInstructionsPaths, wantVariants(roles), wantInstructions)
+		case !treated && (len(spec.Variants) != 0 || len(spec.Prompt.VariantInstructionsPaths) != 0):
+			t.Errorf("the %s of a treated tree, a role the experiment leaves out: variants = %+v, instructions = %q; want neither",
+				role, spec.Variants, spec.Prompt.VariantInstructionsPaths)
+		}
+	}
+
+	for _, role := range claim.Roles {
+		if spec := spawn(declare(nil), role); !reflect.DeepEqual(spec.Variants, wantVariants(nil)) {
+			t.Errorf("the %s of a treated tree under an experiment that names no roles: variants = %+v, want the arm %+v",
+				role, spec.Variants, wantVariants(nil))
+		}
 	}
 }

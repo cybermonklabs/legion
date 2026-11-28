@@ -21,6 +21,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // rules is count horizontal rules in a row, a block a walk of the live tree meets no lock at,
@@ -37,6 +39,7 @@ func rules(count int) string { return strings.Repeat("***\n\n", count) }
 // meets a lock at each text it reads (YXmlText.ToDelta) and none in a run of rules, so the document
 // holds one long enough that a keystroke lands inside the walk.
 func TestReadsOfALiveDocumentRunBesideItsPeers(t *testing.T) {
+	t.Parallel()
 	seeded := "# Heading\n\n" + rules(200) + "before\n\nafter\n"
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	reads := []struct {
@@ -238,6 +241,7 @@ func TestReadsOfALiveDocumentRunBesideItsPeers(t *testing.T) {
 // stored stamp under cached hits and shared folds. The reader service must stay roomless and each
 // read must observe one complete stored state.
 func TestColdReadsRunBesideStoredWrites(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	versioned := NewPgVersioned(database)
@@ -337,23 +341,19 @@ func TestColdReadsRunBesideStoredWrites(t *testing.T) {
 // typing brings that evidence at whatever speed the loaded machine allows, so no fixed time bounds
 // it. The loop ends with the test's failure once the test has failed, which is how a typing peer
 // whose send failed reports it (typeIntoDocument), and once the test binary's deadline is within
-// overlapMargin, so a room that stopped taking the peer's updates fails the subtest by name rather
-// than in the binary's timeout panic. A deadline that leaves no more than overlapMargin to begin
-// with - a local `-timeout` shorter than the margin - fails once, by name, before the loop: that
-// reads like a misconfigured run, not a peer that stopped overlapping.
+// overlapMargin (testwait.Remaining), so a room that stopped taking the peer's updates fails the
+// subtest by name rather than in the binary's timeout panic. A deadline that leaves no more than
+// overlapMargin to begin with fails once, by name, before the loop, saying whether the -timeout was
+// too short or the tests before used it up.
 func overlapping(t *testing.T, read func() bool) {
 	t.Helper()
-	rawDeadline, bounded := t.Deadline()
-	if bounded && time.Until(rawDeadline) <= overlapMargin {
-		t.Fatalf("the test binary's deadline leaves %s, not more than overlapMargin (%s): raise -timeout or lower overlapMargin for a local run", time.Until(rawDeadline).Round(time.Millisecond), overlapMargin)
-	}
-	deadline := rawDeadline.Add(-overlapMargin)
+	deadline := time.Now().Add(testwait.Remaining(t, overlapMargin))
 	runs := 0
 	for overlapped := 0; overlapped < overlapsWanted; runs++ {
 		if t.Failed() {
 			t.Fatalf("%d of %d runs overlapped a peer's update before the test failed, want %d", overlapped, runs, overlapsWanted)
 		}
-		if bounded && time.Now().After(deadline) {
+		if time.Now().After(deadline) {
 			t.Fatalf("%d of %d runs overlapped a peer's update with %s left before the test binary's deadline, want %d", overlapped, runs, overlapMargin, overlapsWanted)
 		}
 		if read() {
@@ -367,7 +367,7 @@ const (
 	overlapsWanted = 50
 	// overlapMargin is what overlapping leaves of the test binary's deadline: time for the
 	// subtest's typing peers to stop and their room to drain, which typeIntoDocument's cleanup
-	// waits up to 30 s for at each step, so the failure is reported before the timeout panics.
+	// waits for at each step, so the failure is reported before the timeout panics.
 	overlapMargin = 90 * time.Second
 )
 
@@ -388,7 +388,7 @@ func newPeeredService(t *testing.T, markdown string) (*Service, string, string) 
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, markdown)
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	return service, artifactID, server.URL
 }
 
@@ -467,15 +467,10 @@ func typeIntoDocument(t *testing.T, service *Service, serverURL, artifactID stri
 	// the peer's last update, and, once no other peer is typing into the room, it makes every
 	// update durable, before the connection closes. The service's shutdown then has none of the
 	// peers' updates left to drain inside its budget, which a backlog of keystrokes would overrun.
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		close(stopped)
 		done.Wait()
-		client := peer.Doc.ClientID()
-		sent := peer.Doc.StateVector().Clock(client)
-		waitFor(t, 30*time.Second, "the room to apply the peer's last update", func() bool {
-			room := service.srv.GetDoc(artifactID)
-			return room == nil || room.StateVector().Clock(client) >= sent
-		})
+		awaitPeerApplied(t, service, artifactID, peer)
 		// The room counts the updates it has not stored across all its peers (pendingUpdates), and
 		// a peer still typing keeps that count above zero for as long as it types whenever the
 		// room stores more slowly than it types, so only the last peer to stop waits for it.
@@ -536,6 +531,61 @@ func keepUp(service *Service, artifactID string, peer *crdt.Doc, stopped <-chan 
 		case <-time.After(100 * time.Microsecond):
 		}
 	}
+}
+
+// awaitPeerApplied waits until the room holds every update peer has made, or until peer's reader
+// has stopped, and fails the test in the second case, naming what stopped it. The wait has no
+// bound but the test binary's own (waitFor), so only a fact may end it: the room applying the
+// updates, or the reader ending, after which nothing the peer does reaches this wait again.
+// Waiting for the first fact alone holds a soak whose peer the server has closed until the
+// binary's deadline: a planted close did so at 150.03 s under -timeout 3m, and under CI's 60m it
+// would hold the leg for most of an hour. In job 140239891619, before waitFor lost its span, the
+// same close cost two 30 s waits (TestStoredOrderSoak: two peers' writes failed with a broken
+// pipe). The reader's end is asked first, and an absent room is no answer: the room is gone only
+// once its sockets are, so its absence leaves the wait to the peer's end rather than passing a
+// peer whose update never landed.
+func awaitPeerApplied(t *testing.T, service *Service, artifactID string, peer *docstest.Peer) {
+	t.Helper()
+	client := peer.Doc.ClientID()
+	sent := peer.Doc.StateVector().Clock(client)
+	held := func() (clock uint64, present bool) {
+		room := service.srv.GetDoc(artifactID)
+		if room == nil {
+			return 0, false
+		}
+		return room.StateVector().Clock(client), true
+	}
+	ended := false
+	waitFor(t, 0, "the room to apply the peer's last update, or the peer's reader to end", func() bool {
+		select {
+		case <-peer.Ended:
+			ended = true
+			return true
+		default:
+		}
+		clock, present := held()
+		return present && clock >= sent
+	})
+	if !ended {
+		return
+	}
+	// An update the room applied as the reader ended still counts.
+	clock, present := held()
+	if present && clock >= sent {
+		return
+	}
+	room := fmt.Sprintf("the room holds clock %d of the peer's %d", clock, sent)
+	if !present {
+		room = fmt.Sprintf("the room is gone, and the peer had made clock %d", sent)
+	}
+	if gaveUp, err := peer.ReaderGaveUp(); gaveUp {
+		t.Errorf("the peer's reader stopped at %s with its socket still open, before the room applied its last update: %v; %s",
+			peer.EndedAt().Format(time.RFC3339Nano), err, room)
+		return
+	}
+	dropped, readErr := peer.DroppedWithoutCloseFrame()
+	t.Errorf("the peer's connection ended at %s before the room applied its last update: %s; close frame %d, close code %d, dropped without a close frame %t, read error: %v",
+		peer.EndedAt().Format(time.RFC3339Nano), room, peer.CloseFrame(), peer.CloseCode(), dropped, readErr)
 }
 
 // allowing is err unless it is want, which the read is expected to meet.

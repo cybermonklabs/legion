@@ -41,9 +41,10 @@
 # a merge group and a dispatch. The gate refuses a consumer that names anything but a digest this
 # file holds.
 #
-# To add an image this repository builds rather than copies, push the Dockerfile first: that
-# push is what builds the image and lands it in the package, and the row carrying the digest
-# that build pushed lands in a later push, for the reason the two commits below are two.
+# To add an image this repository builds rather than copies, or to change one, push its build
+# recipe first: the push that changes any part of the recipe (rule 10 of check-ci-images.sh says
+# what the recipe holds) builds the image and lands it in the package, and a later push moves the
+# row's `digest:` onto what that build pushed, for the reason the two commits below are two.
 #
 # To move an image to a new version, push two commits. The first adds the new version's row and
 # leaves every consumer on the row it has, so the ci-images job of that run copies the new
@@ -54,6 +55,11 @@
 # the new digest while the ci-images job of the same run is still copying it.
 # .github/scripts/check-ci-images.sh admits the extra row for that reason. It asks for one row
 # at each pin, and refuses no row beside it.
+#
+# Bun moves the same way: the new `oven/bun` rows go first and alone, and the second commit
+# moves .bun-version, worker.Dockerfile's ARG BUN_VERSION, every FROM and the three bun rows of
+# .github/ci-tools.yaml together. Any other tool of .github/ci-tools.yaml moves in one commit,
+# its rows and its pin together, as that file's header says.
 #
 # .github/scripts/check-ci-images.sh is the gate. It reads this file and every file a CI job
 # runs, and its header says what each of its two modes refuses.
@@ -70,8 +76,19 @@ images:
     tag: pgvector-2358fcba
     digest: sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 
+  # PgBouncer 1.25.2, the pool internal/ompsessions' TestEveryPoolPinsItsSearchPath starts with
+  # docker in transaction mode in front of its test Postgres: its PoolImage constant
+  # (packages/daemon/internal/ompsessions/searchpath_test.go) names this copy by digest, and the
+  # daemon-go job pulls it first. 1.25.2 refuses search_path as a startup parameter, and 1.26.0
+  # and later accept it, so the row stays at 1.25.2 while a pool the session database is reached
+  # through does.
+  - upstream: docker.io/edoburu/pgbouncer:v1.25.2-p0
+    tag: pgbouncer-v1.25.2-p0-7d7a27d9
+    digest: sha256:7d7a27d9e90985cab5cf42256f5c13a3120baa4b055b69df37beb272b89b2340
+
   # NATS: the `services:` NATS of the pi-envoy and pi-legion jobs, both testnats.Image constants,
-  # the envoy-client job's pre-pull, nats-server.ts and scripts/e2e/lib/nats-stream.test.ts.
+  # the envoy-client and claude-envoy jobs' pre-pulls, packages/envoy-client/test/nats-server.ts
+  # and scripts/e2e/lib/nats-stream.test.ts.
   - upstream: docker.io/library/nats:2.10
     tag: nats-2.10-5498ba57
     digest: sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
@@ -83,11 +100,24 @@ images:
 
   # The S3-compatible server the envoy-go job starts: tests3.Image. No dispatch job starts it:
   # a job inside a container cannot start a container it could reach, so
-  # .github/docker/browser.Dockerfile's `weed` stage copies /usr/bin/weed out of this image and
+  # the `.github/docker/browser.Dockerfile#weed` stage copies /usr/bin/weed out of this image and
   # the shard job of .github/workflows/dispatch-browser.yaml starts that baked binary instead.
   - upstream: docker.io/chrislusf/seaweedfs:3.97
     tag: seaweedfs-3.97-bb05d66d
     digest: sha256:bb05d66d2963b1cc48073190781c3dd29e2c4c88a2ae2986bf58e38c86d89c6e
+
+  # The busybox of the kind proofs (scripts/e2e/lib/kind-sandbox.sh's kind_busybox): their gvisor
+  # check pod, and the container shared-clone-kind.sh runs its launch driver in, on the kind
+  # network. e2e.yaml runs shared-clone-kind.sh on a dispatch.
+  - upstream: docker.io/library/busybox:1.37
+    tag: busybox-1.37-a7dbc319
+    digest: sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+
+  # The node image of kind v0.33.0, its release's default: the kind cluster
+  # shared-clone-kind.sh makes with that kind (kind-sandbox.sh's kind_sandbox_install_kind).
+  - upstream: docker.io/kindest/node:v1.37.0
+    tag: node-v1.37.0-a1ed56cf
+    digest: sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 
   # The judge container of pi-legion's skill scenarios: rig.sh's judge_image.
   - upstream: docker.io/library/ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
@@ -128,6 +158,16 @@ images:
     tag: buildkit-buildx-stable-1-cec9f139
     digest: sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
+  # actionlint, the workflow-file checker two steps run in a `run:` that names this copy by
+  # digest: the `ci-filters` job of .github/workflows/ci.yaml, and
+  # .github/workflows/workflow-files.yaml. rhysd publishes it, and it is the one image of this
+  # file a step runs as a command rather than a service, a base or a builder. It carries the
+  # shellcheck actionlint hands each inline `run:` body, 0.11.0 in this image, so the shellcheck
+  # version CI runs moves only when this row does.
+  - upstream: docker.io/rhysd/actionlint:1.7.12
+    tag: actionlint-1.7.12-b1934ee5
+    digest: sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
   # The Postgres the Stage 1 live proof starts when no DSN is given: PostgreSQL 18, the major
   # version CI's `services:` Postgres and Cloud SQL run. The `test` job gives the script a DSN
   # (LEGION_E2E_PG_DSN), so CI does not reach this pull today; the devbox does, and it was the
@@ -135,6 +175,17 @@ images:
   - upstream: docker.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
     tag: postgres-979bccfd
     digest: sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+
+  # Docker Compose 2.12.2, the oldest release packages/envoy/deploy/scripts/autodeploy.sh and
+  # up-dispatch.sh are held to: their tests take the binary out of this copy by digest, from
+  # /usr/libexec/docker/cli-plugins/docker-compose, and download nothing. This Docker CLI image
+  # ships that release as its Compose plugin (DOCKER_COMPOSE_VERSION=2.12.2), and the binary is
+  # the release asset Docker publishes, byte for byte, on both platforms: sha256 36d1728c… on
+  # amd64, a2c98191… on arm64, the two `.sha256` files of the v2.12.2 release. docker/compose-bin,
+  # the image of that binary alone, has no tag before v2.17.0.
+  - upstream: docker.io/library/docker:20.10.20-cli
+    tag: docker-20.10.20-cli-466edff9
+    digest: sha256:466edff9fbc8e1326259d04412f55684c2e0f79c574eb9782c252011a87d8046
 
   # Playwright's own published browser image, with two readers. It is the base of
   # .github/docker/browser.Dockerfile, which the row below builds, and it is the container the
@@ -153,7 +204,7 @@ images:
   # The browser image this repository builds from the row above, and the one row of this file
   # with `built:` where every other has `upstream:`: .github/workflows/browser-image.yaml builds
   # and pushes it, and nothing copies it. Every CI job that can launch WebKit or Firefox runs in
-  # it, pinned at this digest by a `container:` of .github/workflows/dispatch-browser.yaml.
+  # it, pinned at this digest by each `.github/workflows/dispatch-browser.yaml#container:`.
   - built: .github/docker/browser.Dockerfile
-    tag: browser-69c3a316
-    digest: sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+    tag: browser-398fb2e8
+    digest: sha256:398fb2e8a6c44a549a3b0a9c9bf562948c83a16917b2d3ce09190b2f663c3df3

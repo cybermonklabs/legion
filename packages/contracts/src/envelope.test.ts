@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import dedupeKeys from "../fixtures/dedupe-keys.json";
 import { dedupeKeyNamesItsEvent, EnvelopeSchema } from "./envelope";
 import {
-  agentSubject,
   dispatchDocumentSubject,
   GHOSTWISPR_TOPIC_PREFIX,
   ghostWisprSubject,
@@ -11,6 +10,7 @@ import {
   githubResourceSubject,
   githubSubject,
   githubWorkflowSubject,
+  legacyAgentSubject,
   SUBJECT_MAX_BYTES,
   sanitizeSubjectSegment,
   slackSubject,
@@ -22,7 +22,7 @@ const buildEnvelope = (overrides: Record<string, unknown> = {}) => ({
   event_id: "evt-1",
   source: "agent",
   source_event_id: "src-1",
-  topic: agentSubject("ses_123"),
+  topic: legacyAgentSubject("ses_123"),
   dedupe_key: "agent.ses_123.src-1",
   issued_at: Date.now(),
   payload_summary: "hello",
@@ -49,7 +49,7 @@ describe("EnvelopeSchema", () => {
 
     expect(item).toMatchObject({
       source: "agent",
-      topic: agentSubject("ses_123"),
+      topic: legacyAgentSubject("ses_123"),
       dedupe_key: "agent.ses_123.src-1",
     });
   });
@@ -476,9 +476,10 @@ describe("githubJobSubject", () => {
 // the stream's MsgId and every host's dedupe answer one question, so a key either side misjudges is
 // a repeat one of them drops and the other does not, or a distinct event both lose.
 describe("dedupeKeyNamesItsEvent", () => {
-  test.each(
-    dedupeKeys.keys.map((row) => [row.name, row.envelope, row.names] as const)
-  )("%s", (_name, envelope, names) => {
-    expect(dedupeKeyNamesItsEvent(envelope)).toBe(names);
-  });
+  test.each(dedupeKeys.keys.map((row) => [row.name, row.envelope, row.names] as const))(
+    "%s",
+    (_name, envelope, names) => {
+      expect(dedupeKeyNamesItsEvent(envelope)).toBe(names);
+    }
+  );
 });

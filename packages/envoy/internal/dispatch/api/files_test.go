@@ -16,11 +16,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fileIssue creates the project and issue a file upload lands on and returns the issue key.
@@ -64,6 +64,7 @@ func versionRow(t *testing.T, database *store.Store, artifactID string, number i
 }
 
 func TestUploadsGoToTheFileStoreAndAreServedFromIt(t *testing.T) {
+	t.Parallel()
 	memory := filestest.NewMemory()
 	handler, database, _ := newTestServer(t, testServerOptions{files: memory})
 	issue := fileIssue(t, handler)
@@ -118,6 +119,7 @@ func TestUploadsGoToTheFileStoreAndAreServedFromIt(t *testing.T) {
 // without asking again, privately since the route is authenticated; a document version is the
 // document's JSON read and says nothing of the kind.
 func TestAFileVersionIsCachedForeverAndADocumentVersionIsNot(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	issue := fileIssue(t, handler)
 	if upload := multipartRequest(t, handler, "/api/v1/issues/"+issue+"/artifacts", map[string]string{"name": "shot.png"}, "shot.png", "image/png", []byte("png bytes"), "alice"); upload.Code != http.StatusCreated {
@@ -138,6 +140,7 @@ func TestAFileVersionIsCachedForeverAndADocumentVersionIsNot(t *testing.T) {
 }
 
 func TestAnUploadTheStoreRefusesLeavesNoVersionBehind(t *testing.T) {
+	t.Parallel()
 	memory := filestest.NewMemory()
 	memory.SetFailure(errors.New("bucket unreachable"))
 	handler, database, _ := newTestServer(t, testServerOptions{files: memory})
@@ -160,6 +163,7 @@ func TestAnUploadTheStoreRefusesLeavesNoVersionBehind(t *testing.T) {
 }
 
 func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
+	t.Parallel()
 	// An upload made before the store existed keeps its bytes in the row; the store configured
 	// later holds nothing for it, and the route serves the row.
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -174,10 +178,10 @@ func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
 	}
 
 	memory := filestest.NewMemory()
-	deps, err := NewDeps(DepsInput{
+	deps, err := NewDeps(withDocumentService(t, DepsInput{
 		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example", Files: memory,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("new deps with a store: %v", err)
 	}
@@ -193,6 +197,7 @@ func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
 }
 
 func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
+	t.Parallel()
 	memory := filestest.NewMemory()
 	handler, database, _ := newTestServer(t, testServerOptions{files: memory})
 	issue := fileIssue(t, handler)
@@ -227,10 +232,10 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 	}
 
 	// Without a store at all, a cleared row is a configuration the server names: 503.
-	noStore, err := NewDeps(DepsInput{
+	noStore, err := NewDeps(withDocumentService(t, DepsInput{
 		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("new deps without a store: %v", err)
 	}
@@ -246,24 +251,31 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 // DISPATCH_FILE_STORE_BUCKET, or one of a build that predates the fleet columns, which registers
 // no file_store - an upload to a process with a bucket keeps its bytes in its row as well as in the
 // bucket, so the bucketless process serves it. A live process with a bucket, or a bucketless one
-// whose row has lapsed, leaves the bytes in the bucket alone.
+// whose row has lapsed, leaves the bytes in the bucket alone. Each row but the earlier build's is
+// this build's process, so it names this build's owner lock protocol ($1), as processes.Register
+// writes it. The other process registers before the issue is filed: the earlier build's insert
+// takes the owner lock gate and waits, at most 5 s, for every transaction holding it, and before
+// the issue there is no document whose settlement could hold it.
 func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
+	t.Parallel()
+	thisBuild := []any{store.OwnerLockProtocol}
 	for _, tc := range []struct {
 		name, insert string
+		args         []any
 		keepsBytes   bool
 	}{
-		{"bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store) values (gen_random_uuid(), '{fingerprint}', 1, 1, false)`, true},
-		{"process that predates the fleet columns", `insert into server_processes (instance, signing_keys) values (gen_random_uuid(), '{fingerprint}')`, true},
-		{"process with a bucket", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store) values (gen_random_uuid(), '{fingerprint}', 1, 1, true)`, false},
-		{"lapsed bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour')`, false},
+		{"bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, $1)`, thisBuild, true},
+		{"process that predates the fleet columns", `insert into server_processes (instance, signing_keys) values (gen_random_uuid(), '{fingerprint}')`, nil, true},
+		{"process with a bucket", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, true, $1)`, thisBuild, false},
+		{"lapsed bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour', $1)`, thisBuild, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			memory := filestest.NewMemory()
 			handler, database, _ := newTestServer(t, testServerOptions{files: memory})
-			issue := fileIssue(t, handler)
-			if _, err := database.Pool.Exec(context.Background(), tc.insert); err != nil {
+			if _, err := database.Pool.Exec(context.Background(), tc.insert, tc.args...); err != nil {
 				t.Fatalf("add the other server process: %v", err)
 			}
+			issue := fileIssue(t, handler)
 			image := pngBytes("both places")
 			response := multipartRequest(t, handler, "/api/v1/issues/"+issue+"/artifacts", map[string]string{"name": "shot.png"}, "shot.png", "image/png", image, "alice")
 			if response.Code != http.StatusCreated {
@@ -284,10 +296,10 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 				t.Fatalf("the row holds %d bytes; beside a %s it should hold the upload's %d", len(row), tc.name, len(image))
 			}
 
-			bucketless, err := NewDeps(DepsInput{
+			bucketless, err := NewDeps(withDocumentService(t, DepsInput{
 				Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 				ServerURL: "https://dispatch.example",
-			})
+			}))
 			if err != nil {
 				t.Fatalf("new deps without a store: %v", err)
 			}
@@ -315,34 +327,29 @@ func (h heldPut) Put(ctx context.Context, sha, mime string, body []byte) error {
 	return h.Memory.Put(ctx, sha, mime, body)
 }
 
-// uploadLockProbeWindow bounds how long the probe below retries the issue's row lock. It is far
-// longer than any write this test's own setup makes - the issue create and the settlement of the
-// spec document it wrote - and shorter than the package's test timeout, so a holder the probe
-// cannot name is reported as a failure rather than a hang.
-const uploadLockProbeWindow = 20 * time.Second
+// issueOwnerLockKey is the pg_locks predicate for an issue's owner lock (store.LockOwner) in the
+// test's own database: a two-key advisory lock, the owner namespace as its classid and the hashtext
+// of the owner's lock key as its objid, both read as the unsigned 32-bit values that view carries.
+// pg_locks spans the whole server, and an advisory lock is the database's own, so the same two
+// keys held in another database (another test's, or postgres) are no lock of this issue and must
+// not be named as its holder. The two keys are passed in from store rather than spelled again here
+// (store.OwnerLockNamespace, store.Owner.LockKey), so a change to either reaches this read instead
+// of leaving it looking for a lock nothing takes any more.
+const issueOwnerLockKey = `l.locktype = 'advisory' and l.objsubid = 2
+			and l.database = (select oid from pg_database where datname = current_database())
+			and l.classid = ($2::bigint & 4294967295)::oid
+			and l.objid = (hashtext($1)::bigint & 4294967295)::oid`
 
-// uploadIssueLock is the statement an upload's transaction takes the issue row with
-// (storeArtifact's issue branch, through requireOpenOwnerStatus and issueOpenStatus under
-// ownerRowLock), as pg_stat_activity shows it, and it is the only statement of this test's two
-// writers that an upload runs: pg_stat_activity shows a holder at whatever statement it is on,
-// and the settlement's is one of the document's own reads or lockEventOwner's of last_seq
-// (events/broker.go), never this one. It is also the first statement the upload's transaction
-// makes, so an upload that opened its transaction before writing its object would sit on it for
-// the whole of Put. One that ran further statements between the row and Put would show one of
-// those instead and be retried to the window's end, whose failure names what it read rather
-// than timing out mutely.
-const uploadIssueLock = "select status, closed_at is null from issues where key = $1 for no key update"
-
-// issueRowLockHolder is what the probe reads of the backend whose transaction holds the issue's
-// row, so a red run names the writer it lost the row to.
-type issueRowLockHolder struct {
+// issueOwnerLockHolder is what the probe reads of the backend whose transaction holds the issue's
+// owner lock, so a red run names the writer it lost the lock to.
+type issueOwnerLockHolder struct {
 	pid       int32
 	state     string
 	xactStart *time.Time
 	query     string
 }
 
-func (h issueRowLockHolder) String() string {
+func (h issueOwnerLockHolder) String() string {
 	start := "null"
 	if h.xactStart != nil {
 		start = h.xactStart.Format(time.RFC3339Nano)
@@ -350,34 +357,146 @@ func (h issueRowLockHolder) String() string {
 	return fmt.Sprintf("backend %d, state %q, xact_start %s, query %q", h.pid, h.state, start, h.query)
 }
 
-// readIssueRowLockHolder names the transaction holding issue's row: the row's xmax is that
-// transaction's id, pg_locks holds that transaction's own lock on its id, and pg_stat_activity
-// names the backend running it. It answers nil when the holder ended between the refusal and this
-// read, and when several lockers left a multixact in xmax, which is no transaction id.
-func readIssueRowLockHolder(t *testing.T, database *store.Store, issue string) *issueRowLockHolder {
+// readIssueOwnerLockHolder names the transaction holding issue's owner lock: pg_locks holds the
+// granted advisory lock on that owner's two keys (issueOwnerLockKey), and pg_stat_activity names
+// the backend running it. It answers nil when the holder ended between the refusal and this read.
+func readIssueOwnerLockHolder(t *testing.T, database *store.Store, issue string) *issueOwnerLockHolder {
 	t.Helper()
-	var holder issueRowLockHolder
+	var holder issueOwnerLockHolder
 	var state, query *string
 	err := database.Pool.QueryRow(context.Background(), `
 		select a.pid, a.state, a.xact_start, a.query
 		from pg_locks l join pg_stat_activity a on a.pid = l.pid
-		where l.locktype = 'transactionid' and l.granted
-			and l.transactionid = (select xmax from issues where key = $1)
-	`, issue).Scan(&holder.pid, &state, &holder.xactStart, &query)
+		where l.granted and a.pid <> pg_backend_pid() and `+issueOwnerLockKey+`
+		limit 1
+	`, store.IssueOwner(issue).LockKey(), int64(store.OwnerLockNamespace)).Scan(&holder.pid, &state, &holder.xactStart, &query)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
-		t.Fatalf("read the holder of issue %s's row lock: %v", issue, err)
+		t.Fatalf("read the holder of issue %s's owner lock: %v", issue, err)
 	}
 	holder.state, holder.query = deref(state), deref(query)
 	return &holder
 }
 
+// uploadLockProbe is what one run of probeIssueOwnerLock met: whether it took the issue's owner
+// lock, whether any attempt was refused, and what held the lock at the first refusal.
+type uploadLockProbe struct {
+	took   bool
+	looked bool
+	holder *issueOwnerLockHolder
+}
+
+// heldBy names what the first refused attempt read, for a failure's message.
+func (p uploadLockProbe) heldBy() string {
+	switch {
+	case !p.looked:
+		return "nothing: no attempt was refused"
+	case p.holder == nil:
+		return "nothing: the holding transaction had ended before the refusal could be followed up"
+	}
+	return p.holder.String()
+}
+
+// uploadHoldsTheLock is the failure to report when the holder the probe named is an upload's own
+// transaction, and "" when it is anything else. What names it is the issue read, not the lock:
+// the two go out in one batch (store.LockOwnerAndRead), the server runs the lock first and the
+// read after it, and pg_stat_activity shows a backend at the last statement it ran, so a
+// transaction parked under that lock shows the read. Matching the lock's own statement could
+// never fire. The read is the first statement an upload's transaction makes (storeArtifact's
+// issue branch, through requireOpenOwnerStatus), so an upload that opened its transaction before
+// writing its object would sit on it for the whole of Put, and it is no statement of this test's
+// other writer: the settlement of the spec document fileIssue wrote shows one of the document's
+// own reads or its write phase's. An upload that ran further statements between that read and
+// Put would show one of those instead and be retried until the test binary's deadline, whose
+// failure names what it read rather than timing out mutely.
+func (p uploadLockProbe) uploadHoldsTheLock() string {
+	if p.holder == nil || !strings.Contains(p.holder.query, issueStatusRead) {
+		return ""
+	}
+	return fmt.Sprintf("the upload holds the issue's owner lock while its bytes are in the store: %s", p.holder)
+}
+
+// probeIssueOwnerLock tries issue's owner lock without waiting, over and over, until it takes it
+// or the holder it first met is an upload's own transaction, where retrying could only wait for
+// ever. A lock it takes is released with the statement that took it, since it runs on the pool
+// outside a transaction (store.TryLockOwners). Its one bound is the test binary's deadline
+// (testwait.UntilPolling), whose failure names what the first refused attempt read.
+//
+// It is a function rather than a loop inside the test below so that the fast arm it answers is
+// shown to fire against a holder a test makes itself
+// (TestTheUploadLockProbeNamesAnUploadsOwnTransaction): an arm no run can reach guards nothing.
+func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string) uploadLockProbe {
+	t.Helper()
+	var probe uploadLockProbe
+	testwait.UntilPolling(t, 2*time.Millisecond, "issue "+issue+"'s owner lock to be taken while its upload's bytes are in flight (what the first refused attempt read)", func() (string, bool) {
+		taken, err := store.TryLockOwners(context.Background(), database.Pool, store.IssueOwner(issue))
+		if err != nil {
+			t.Fatalf("try the issue's owner lock while its upload's bytes are in flight: %v", err)
+		}
+		if len(taken) == 1 {
+			probe.took = true
+			return "taken", true
+		}
+		// Read once, at the first refusal: a reading per attempt would bury the one that
+		// matters, and a holder parked in Put is still there to be named at any later attempt.
+		if !probe.looked {
+			probe.looked = true
+			probe.holder = readIssueOwnerLockHolder(t, database, issue)
+			t.Logf("the issue's owner lock refused the probe; it is held by %s", probe.heldBy())
+			if probe.uploadHoldsTheLock() != "" {
+				return probe.heldBy(), true
+			}
+		}
+		return probe.heldBy(), false
+	})
+	return probe
+}
+
+// The negative control of that fast arm: a transaction of this test's own takes the issue's owner
+// lock and makes the read every upload makes under it (store.LockOwnerAndRead, issueStatusRead),
+// which is what pg_stat_activity shows of an upload's transaction parked in Put, and then holds
+// both. The probe must name that holder and answer there, rather than wait for ever on a lock it
+// will never take. Without this nothing shows the arm can fire, and the test below could only
+// ever fail by timing out.
+func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := fileIssue(t, handler)
+	ctx := context.Background()
+	holding, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the issue's owner lock: %v", err)
+	}
+	defer holding.Rollback(ctx)
+	var status string
+	var open bool
+	// The lock and the read an upload's transaction makes under it, in one batch, as the upload
+	// makes them: the lock waits out the settlement of the spec document fileIssue wrote, so once
+	// it returns this transaction is the lock's only holder.
+	if err := store.LockOwnerAndRead(ctx, holding, store.IssueOwner(issue), issueStatusRead, []any{issue}, &status, &open); err != nil {
+		t.Fatalf("hold the issue's owner lock as an upload's transaction holds it: %v", err)
+	}
+
+	probe := probeIssueOwnerLock(t, database, issue)
+	if probe.took {
+		t.Fatal("the probe took the issue's owner lock while this test's transaction held it")
+	}
+	held := probe.uploadHoldsTheLock()
+	if held == "" {
+		t.Fatalf("the probe read %s while a transaction holding the lock sat on an upload's own statement, so its fast arm can never fire", probe.heldBy())
+	}
+	if !strings.Contains(held, issueStatusRead) {
+		t.Fatalf("the probe's refusal reads %q, want the statement it matched the holder on in it", held)
+	}
+	t.Logf("the probe's fast arm fires: %s", held)
+}
+
 // An upload writes its object before its transaction opens, so while the store takes the bytes
-// the issue's row is free: the transaction locks it for no key update, and every other writer
-// of the issue (a comment, an ask, a status change) would queue behind a store write nothing
-// bounds.
+// the issue's owner lock is free: the transaction takes that lock (store.LockOwner), and every
+// other writer of the issue (a comment, an ask, a status change) would queue behind a store
+// write nothing bounds.
 //
 // The settlement of the spec the issue creation seeds is one of those writers - it takes the same
 // row for no key update (docs.lockArtifactOwner) for the ten-odd milliseconds its transaction
@@ -387,18 +506,20 @@ func readIssueRowLockHolder(t *testing.T, database *store.Store, issue string) *
 // loaded machine, naming a lock that is not the upload's.
 //
 // The upload stays in Put until this test releases it, so a lock the upload holds is held for
-// every attempt of the probe below, while the issue's own setup holds that row only for a
+// every attempt of the probe below, while the issue's own setup holds that lock only for a
 // moment: the spec document fileIssue wrote settles a settle delay later, and that settlement's
-// transaction takes the issue row as the owner of the event it appends (events/broker.go,
-// lockEventOwner). The probe therefore retries, and takes the lock once that writer commits.
+// transaction takes the issue's owner lock for the event it appends (lockArtifactOwner). The
+// probe therefore retries, and takes the lock once that writer commits.
 //
 // Which of the two it met is measured rather than reasoned: the first refused attempt reads the
-// holder of the row (readIssueRowLockHolder) and logs it, so a run that waited names the writer
-// it waited for, and a holder running the upload's own statement (uploadIssueLock) fails the
-// test there, where retrying could only spend the window. Most runs are refused nothing and log
-// nothing: the settlement usually commits while fileIssue's own request is still answering,
-// before there is an upload to hold anything.
+// holder of the lock (readIssueOwnerLockHolder) and logs it, so a run that waited names the
+// writer it waited for, and a holder sitting on the statement an upload's transaction makes
+// under that lock fails the test there (uploadLockProbe.uploadHoldsTheLock), where retrying
+// could only wait for ever. Most runs are refused nothing and log nothing: the settlement
+// usually commits while fileIssue's own request is still answering, before there is an upload to
+// hold anything.
 func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
+	t.Parallel()
 	held := heldPut{Memory: filestest.NewMemory(), entered: make(chan struct{}), release: make(chan struct{})}
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(held.release) }) }
@@ -446,38 +567,9 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	case response := <-uploaded:
 		t.Fatalf("the upload answered without writing to the store: status=%d body=%s", response.Code, response.Body.String())
 	}
-	deadline := time.Now().Add(uploadLockProbeWindow)
-	// Read once, at the first refusal: a reading per attempt would bury the one that matters,
-	// and a holder parked in Put is still there to be named at any later attempt.
-	var holder *issueRowLockHolder
-	var looked bool
-	heldBy := func() string {
-		switch {
-		case !looked:
-			return "nothing: no attempt was refused"
-		case holder == nil:
-			return "nothing: the holding transaction had ended before the refusal could be followed up"
-		}
-		return holder.String()
-	}
-	for {
-		_, err := database.Pool.Exec(context.Background(), `select key from issues where key = $1 for no key update nowait`, issue)
-		if err == nil {
-			break
-		}
-		var refused *pgconn.PgError
-		if !looked && errors.As(err, &refused) && refused.Code == "55P03" {
-			looked = true
-			holder = readIssueRowLockHolder(t, database, issue)
-			t.Logf("the issue's row refused the probe (55P03) while the store holds the upload's bytes; its lock is held by %s", heldBy())
-			if holder != nil && strings.Contains(holder.query, uploadIssueLock) {
-				t.Fatalf("the upload holds the issue's row while its bytes are in the store: %s", holder)
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("lock the issue while its upload's bytes are in flight, over %s of attempts: %v; the first refusal read %s", uploadLockProbeWindow, err, heldBy())
-		}
-		time.Sleep(2 * time.Millisecond)
+	probe := probeIssueOwnerLock(t, database, issue)
+	if holding := probe.uploadHoldsTheLock(); holding != "" {
+		t.Fatal(holding)
 	}
 	release()
 	if response := <-uploaded; response.Code != http.StatusCreated {
@@ -505,6 +597,7 @@ func (s tampered) Get(ctx context.Context, sha string) (*files.Object, error) {
 // response is cut short of its Content-Length, which a client reports. Over a real connection,
 // since the cut is the connection's.
 func TestATamperedObjectIsNotDeliveredWhole(t *testing.T) {
+	t.Parallel()
 	original := bytes.Repeat([]byte("o"), 300_000)
 	replaced := append(bytes.Repeat([]byte("o"), 299_999), 'x')
 	store := tampered{Store: filestest.NewMemory(), sha: files.SHA256(original), bytes: replaced}

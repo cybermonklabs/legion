@@ -1,0 +1,51 @@
+kind: Added
+body: |-
+  A session can take its inbound messages through the Envoy listener's relay socket instead of
+  NATS, over HTTPS alone: `ENVOY_INBOUND=listener` (or `"inbound": "listener"` in the `envoy`
+  section of envoy.json; the variable wins, and `nats`, or nothing set, is NATS as before).
+  `envoySettings`' `inbound` then carries `{ relaySetting, relayCredential }`, the session's broker
+  credential, and the choice is refused, turning off inbound messages alone and naming why, beside
+  a NATS server (`ENVOY_NATS_URL` or `envoy.natsUrls`, naming both), with a bearer for the listener,
+  with no broker route, for a caller that names no session, and for any other value; with it, a NATS
+  server named or not, a listener at a plain http address of another machine turns Envoy off as a
+  whole, its tools included (the token would cross the network unencrypted; a conflict with a NATS
+  server is named first), while a session not set to `listener` keeps a plain http listener. The
+  start
+  notice says the socket carries no live view. `connectListenerRelay`
+  (`@legion/envoy-client/listener-relay`) opens `<ENVOY_URL>/v1/sessions/<session>/relay`
+  (subprotocol `envoy-relay.v1`) with a fresh DPoP proof of the session's broker token and answers a
+  `ListenerRelay`, a connection of the shape a plugin holds over NATS (`InboundConnection`), so
+  consumer delivery runs on either. A `sub` the listener refuses (`subject_not_granted`, or
+  `subscription_limit` past the one subscription a socket holds) ends that subscription with an
+  error naming its subject and code, and is logged once;
+  `flush` waits on a WebSocket ping's pong, which the listener sends after it handled every `sub`
+  before it, and rejects when its socket closes or is replaced first; a `msg`'s headers keep each
+  name's case and every value in order (`RelaySocketHeaders.values`), and a frame past 2 MiB, larger
+  than any the listener sends, is dropped unread. A close is opened again as
+  the listener's code says, each cause doubling its own waits: 4401 and 1012 at once however often
+  they come, 4403 after 1 s doubling to a minute and 1013 after 5 s doubling to a minute, 1001 and
+  1006 at once and then after 1 s doubling, and any other close, 1008 `bad_frame` included, after
+  1 s doubling; a 1008 is logged naming the ops of the frames sent since the listener last answered
+  a ping. An upgrade refused 401 or 403 (its status read from Bun's `error` event) waits as
+  4403 does, one refused 503 after a 1013 goes on with the 1013's waits, and an upgrade not answered
+  within 20 s is dropped and tried again. Only 4401, 4403 and an upgrade refused 401 or 403 trade
+  for a fresh token; every open signs a fresh DPoP proof. A refused trade is told to the session
+  once per outage (`inboundUnavailable`), and only a registration the listener accepted ends it:
+  the socket's own open ends none. A registration an edge listener refuses for a topic of
+  no project of the session's token (403 `topic_not_in_project` or `repository_not_in_project`,
+  naming the topics in `refused`, `EnvoyApiError.refused`) has the host drop exactly those topics
+  and tell the session which, once, with the reason (`registerWithRelay`'s `drop`,
+  `refusedTopicsNoticeText`), logs one line naming them, and registers the rest at once; the refusal
+  forgets only those topics on the relay (`ConsumerDelivery.unfollow`), so a topic another
+  registration added meanwhile keeps being handed to the host, and the resend names only the topics
+  the session still follows (`RelayRegistration.followed` is read again before it), so one
+  unsubscribed meanwhile is not put back. A trade that fails for a session the
+  socket has since followed away from tells no outage.
+  `registerWithRelay`, `RelayRegistration`, `RegisteringRelay` and `NoRelaySubjectError` move from
+  `@legion/envoy-client/consumer-delivery` to `@legion/envoy-client/relay-registration`.
+  `test/relay-socket-stand-in` (`@legion/envoy-client/test/relay-socket-stand-in`) serves the
+  socket and a broker's token exchange on one origin, and a test's own listener routes beside them
+  (`routes`), for a plugin's tests and an outside driver's.
+time: 2026-11-20T09:58:42Z
+custom:
+    Issue: feat-listener-relay-client

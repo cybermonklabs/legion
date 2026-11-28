@@ -34,17 +34,17 @@
 // working copy while another role of the issue is in a turn (supervise's sendPending), so the
 // implementer's task waits for that turn to end; the tester's completions come instead from a
 // turn of its own, begun while the implementer works and so before the new entry's task could
-// reach it. Neither of the moves the daemon makes on its own serves here. A CI red moves no issue,
-// since the daemon judges no check, so the proof publishes no settlement; and the daemon reads a
-// head's mergeability at its start, after a handoff, and for an approved review round in reviewing
-// alone, so a head that starts conflicting with its base while the tester tests is not read until
-// the next handoff (dispatch://INFRA-3164). The move back into testing is the reviewer's own
+// reach it. Neither a CI red nor a conflict with the base serves here, since neither moves an
+// issue: the daemon judges no check, so the proof publishes no settlement, and for a head that
+// conflicts with its base the daemon makes no move at all: the issue keeps its phase, and the
+// implementer is asked to merge the base forward when the next step needs a head that merges
+// (dispatch://INFRA-4374 R0, R1). The move back into testing is the reviewer's own
 // request over POST /legion/v1/phase/backward, from reviewing, under a grant its registered
 // session minted, because the engine takes a backward move from no role but the one running the
 // issue's phase (workflow's Engine.backward, BACKWARD_REFUSED).
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real claim supervision and its worker
 // stream, the real openWorkflow, the real JetStream consumers and the real outbox lanes. Facts
 // enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS stream for the
@@ -131,6 +131,9 @@ type behindEntryFenceLive struct {
 // longer works, the registered reviewer's own move back into testing, and the same completion at
 // the same head refused because a move back raised the entry the phase now stands on.
 func TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share.
 	r := newBehindEntryFenceLive(t)
 	r.step("the tester works its entry", r.testerWorksItsEntry)
 	r.step("testing is entered again by a forward move", r.testingIsEnteredAgain)

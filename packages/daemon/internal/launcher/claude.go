@@ -14,10 +14,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
+	"golang.org/x/sys/unix"
 )
 
 // SavedMarkerSuffix names the file the launcher writes beside a fresh Claude Code transcript once
@@ -54,11 +54,11 @@ var resumeLookupTimeout = 30 * time.Second
 // the database, doubling up to its last value until resumeLookupTimeout; a test shortens it.
 var resumeLookupBackoff = []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second}
 
-// sessionDial is how the launcher reaches a generation's session database, for a resume's lookup
-// (sessionWritten) and for the keeper alike: through clientURL, the generation's own database
-// through the socket its proxy has already bound, or with none through the URL file the child's
-// environment names (DSNFileVariable), read afresh at each connection, since that file is a
-// projection something else may replace.
+// sessionDial is how the launcher reaches a generation's session database, for a resume's lookups
+// (sessionWritten, and sessionByID for a session named by its id alone) and for the keeper alike:
+// through clientURL, the generation's own database through the socket its proxy has already bound,
+// or with none through the URL file the child's environment names (DSNFileVariable), read afresh
+// at each connection, since that file is a projection something else may replace.
 type sessionDial struct{ clientURL, dsnFile string }
 
 // newSessionDial is the session database a generation's environment names, refused when it has no
@@ -82,7 +82,7 @@ func (d sessionDial) url() (string, error) {
 }
 
 // connect opens one connection to the database.
-func (d sessionDial) connect(ctx context.Context) (*pgx.Conn, error) {
+func (d sessionDial) connect(ctx context.Context) (*ompsessions.Conn, error) {
 	dsn, err := d.url()
 	if err != nil {
 		return nil, err
@@ -95,7 +95,7 @@ func (d sessionDial) connect(ctx context.Context) (*pgx.Conn, error) {
 // resumeLookupTimeout, as a database that is briefly unreachable must not fail the launch; a URL
 // file that is missing or empty is refused at once. parent's end (the container's stop) ends the
 // wait as the timeout does.
-func (d sessionDial) dial(parent context.Context, ready func(context.Context, *pgx.Conn) error) (*pgx.Conn, error) {
+func (d sessionDial) dial(parent context.Context, ready func(context.Context, *ompsessions.Conn) error) (*ompsessions.Conn, error) {
 	ctx, cancel := context.WithTimeout(parent, resumeLookupTimeout)
 	defer cancel()
 	for attempt := 0; ; attempt++ {
@@ -120,7 +120,7 @@ func (d sessionDial) dial(parent context.Context, ready func(context.Context, *p
 
 // closeSessions closes conn, a session database connection if any, bounded by the proxy's own
 // drain.
-func closeSessions(conn *pgx.Conn) {
+func closeSessions(conn *ompsessions.Conn) {
 	if conn != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), sessionDrain)
 		_ = conn.Close(ctx)
@@ -142,7 +142,7 @@ type claudeKeeper struct {
 	sessions  sessionDial
 	configDir string
 	session   string
-	conn      *pgx.Conn
+	conn      *ompsessions.Conn
 	// transcript and record are the two kept files: the transcript and the phase-reminder record.
 	transcript, record *keptFile
 	// appendRow and replaceRow write a kept file's row: ompsessions.Append and Replace, which a
@@ -157,7 +157,7 @@ type claudeKeeper struct {
 
 // rowWrite is ompsessions.Append's and Replace's shape: a compare-and-set write of content at path
 // over the byte_len its writer last saved.
-type rowWrite func(ctx context.Context, conn *pgx.Conn, path string, saved int64, content []byte, mtime time.Time) error
+type rowWrite func(ctx context.Context, conn *ompsessions.Conn, path string, saved int64, content []byte, mtime time.Time) error
 
 // keptFile is one kept file as its writer last saved it.
 type keptFile struct {
@@ -255,7 +255,7 @@ func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*cl
 // the child starts on the session the table holds, and the transcript's marker is written: the
 // table already holds what the claim records. parent's end (the container's stop) ends the wait as
 // the timeout does. A nil keeper, a generation that keeps nothing, closes conn.
-func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
+func (k *claudeKeeper) open(parent context.Context, conn *ompsessions.Conn) error {
 	if k == nil {
 		closeSessions(conn)
 		return nil
@@ -305,13 +305,19 @@ func (k *claudeKeeper) connect(ctx context.Context) error {
 // strict prefix of the row. It never shortens a longer file: a relaunch into the same pod keeps
 // what the last save missed, which the first save then appends. A file that is neither a prefix
 // nor an extension of the row is left as it is, and the first save rewrites the row from it.
+// The file there is something the role wrote and the launcher is its container's PID 1, so it is
+// read only as a regular file and only up to one byte past the row (readHead): a link, a fifo or
+// anything else that is no regular file is refused at once in words naming it, never followed or
+// waited on, and a file of any size is read no further than one byte past the row.
 func (k *claudeKeeper) restore(ctx context.Context, f *keptFile) error {
 	row, ok, err := ompsessions.Read(ctx, k.conn, f.path)
 	if err != nil || !ok {
 		return err
 	}
 	f.saved, f.tail = int64(len(row)), lastWindow(row)
-	local, err := readNoFollow(f.path)
+	// One byte past the row is all the comparisons below need: a file no longer than the row is
+	// read whole, and a longer one begins with the row exactly when what was read of it does.
+	local, err := readHead(f.path, len(row)+1)
 	switch {
 	case errors.Is(err, os.ErrNotExist) || err == nil && len(local) < len(row) && bytes.HasPrefix(row, local):
 		if err := writeRestored(f.path, row); err != nil {
@@ -449,9 +455,12 @@ func (k *claudeKeeper) saveFile(ctx context.Context, f *keptFile) error {
 
 // saveChanges saves what f gained since its writer last saved it: only its new bytes, appended,
 // when the file still holds what was saved, and the whole of it otherwise. A transcript is saved up
-// to its last newline. A file not written yet, or with nothing new to save, writes nothing.
+// to its last newline. A file not written yet, or with nothing new to save, writes nothing. The
+// file is the role's and the launcher is its container's PID 1, so it is opened only as a regular
+// file (rolefile.OpenRegular): a link, a fifo or anything else at its path is refused at once in
+// words naming it, never followed or waited on, and the save is tried again at the next one.
 func (k *claudeKeeper) saveChanges(ctx context.Context, f *keptFile) error {
-	file, err := os.OpenFile(f.path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	file, err := rolefile.OpenRegular(unix.AT_FDCWD, f.path, f.path, unix.O_RDONLY, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -578,10 +587,14 @@ func (k *claudeKeeper) logf(format string, args ...any) {
 	}
 }
 
-// writeMarker writes SavedMarkerSuffix beside transcript, an empty owner-only file, never through
-// a link already at that path.
+// writeMarker writes SavedMarkerSuffix beside transcript, an empty owner-only file. The path is
+// the role's and the launcher is its container's PID 1, so the marker is opened only as a regular
+// file (rolefile.OpenRegular): a fifo, whose plain write-only open waits for a reader for as long
+// as none comes, a link, a socket, a device or a directory at its path is refused at once in
+// words naming it, never followed or waited on, and left as it is.
 func writeMarker(transcript string) error {
-	marker, err := os.OpenFile(transcript+SavedMarkerSuffix, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	path := transcript + SavedMarkerSuffix
+	marker, err := rolefile.OpenRegular(unix.AT_FDCWD, path, path, unix.O_WRONLY|unix.O_CREAT, 0o600)
 	if err != nil {
 		return err
 	}
@@ -611,14 +624,20 @@ func writeRestored(path string, content []byte) error {
 	return err
 }
 
-// readNoFollow is path's content, refusing a link at path.
-func readNoFollow(path string) ([]byte, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+// readHead is at most the first limit bytes of the regular file at path, or why it is no file a
+// read may take. The file is opened as rolefile.OpenRegular opens one, so a link at path is never
+// followed, a fifo or a device is never waited on, and anything but a regular file is refused in
+// words naming it; a missing file is open's own error, for which errors.Is(err, os.ErrNotExist)
+// holds. The read stops at limit rather than refuse a longer file, as rolefile.ReadBounded would:
+// restore keeps a file longer than its row, and needs only enough of it to tell whether it begins
+// with the row.
+func readHead(path string, limit int) ([]byte, error) {
+	file, err := rolefile.OpenRegular(unix.AT_FDCWD, path, path, unix.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	return io.ReadAll(file)
+	return io.ReadAll(io.LimitReader(file, int64(limit)))
 }
 
 // lastWindow is content's last tailWindow bytes, copied.

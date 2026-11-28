@@ -17,6 +17,7 @@ import (
 // comment's role mention attempt is live and unpinned, ses-u (thread root author, named by no
 // mention) is owed an author-route copy.
 func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
+	t.Parallel()
 	const role = "reviewer"
 	const holder = "ses-r"
 	const author = "ses-u"
@@ -49,7 +50,7 @@ func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
 	firstPass := time.Since(start)
 	_, _, reached := eventState(t, rig.database, comment.ID)
 	attempts, due := nextAttempt(t, rig.database, comment.ID)
-	sentFirst := slices.Contains(reached, contracts.AgentSubject(author))
+	sentFirst := slices.Contains(reached, contracts.LegacyAgentSubject(author))
 	var reread time.Duration
 	if due != nil {
 		reread = time.Until(*due)
@@ -65,10 +66,9 @@ func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
 	}
 	dueNow(t, rig.database, comment.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
 	_, _, reached = eventState(t, rig.database, comment.ID)
 	t.Logf("R17 SECOND PASS: reached=%v published=%v ses-u copies=%d ses-r copies=%d",
-		reached, publishedAt(t, rig.database, comment.ID) != nil, len(u.received()), len(r.received()))
+		reached, publishedAt(t, rig.database, comment.ID) != nil, len(u.receivedNow(t, rig.client)), len(r.receivedNow(t, rig.client)))
 	if !sentFirst {
 		t.Errorf("ses-u's author copy was not sent in the first pass: it waited for the re-read (%v)", reread.Round(10*time.Millisecond))
 	}
@@ -77,6 +77,7 @@ func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
 // R17 order: comment N carries the unpinned, unresolved role mention; comment N+1 of the same
 // owner names no mention. ses-u, the thread root's author, is owed both.
 func TestR17UnrelatedAuthorCopyOrder(t *testing.T) {
+	t.Parallel()
 	const role = "reviewer"
 	const author = "ses-u"
 	ctx := store.WithTransactionTracking(context.Background())
@@ -116,9 +117,8 @@ func TestR17UnrelatedAuthorCopyOrder(t *testing.T) {
 	}
 	dueNow(t, rig.database, first.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
 	var order []string
-	for _, item := range u.received() {
+	for _, item := range u.receivedNow(t, rig.client) {
 		order = append(order, item.DedupeKey)
 	}
 	t.Logf("R17 ORDER: event N=%d N+1=%d; ses-u received dedupe keys in order %v", first.ID, second.ID, order)

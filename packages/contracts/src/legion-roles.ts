@@ -28,6 +28,21 @@ export type LegionRole = (typeof LEGION_ROLES)[number];
  * them rather than two lists kept in step by hand. */
 export const GATED_STEPS = ["decisions", "criteria", "spec"] as const;
 
+/** The scale of a plan's rating, `planRating`: the whole numbers from 1 (the plan cost the work)
+ * to 5 (the plan fit the work). This is its one definition. The plugin's `plan_rating`, the
+ * `dispatch_plans` description and `dispatch plans`' printer read these, and `scripts/gen-go.ts`
+ * generates them into Go for Dispatch's record of the retro (`envoy/internal/contracts`) and for the
+ * daemon's completion route (`github.com/sjawhar/envoy/steprecord`). They are written in this
+ * module, which the dispatch command's bundle and the dashboard already load, so both read them
+ * without the daemon's API module; `legion-api.ts` re-exports them. */
+export const LEGION_PLAN_RATING_LEAST = 1;
+export const LEGION_PLAN_RATING_MOST = 5;
+
+/** The most characters the reason of a plan's rating holds, counted as Unicode code points as the
+ * daemon and Dispatch count them, generated into Go with the scale: Dispatch's record of the retro
+ * takes one to 2,000. */
+export const LEGION_PLAN_REASON_MAX = 2000;
+
 export interface ParsedRoleToken {
   project: string;
   issue: IssueKey;
@@ -43,35 +58,6 @@ const DISPATCH_ROLE_PART =
 
 export function isLegionRole(role: string): role is LegionRole {
   return LEGION_ROLES.some((candidate) => candidate === role);
-}
-
-/**
- * The role that works a phase, the TypeScript mirror of the daemon's own table
- * (`packages/daemon/internal/phase/phase.go`, `RoleFor`). A phase no role works —
- * `awaiting_person`, `done`, `held`, `unrecorded` — has none, and so has any value that is not
- * a phase; `admitted` and `accepting` are the tree architect's, and `retro` is the implementer's
- * second turn on the issue it developed. The one reader here, the phase reminder, runs for a
- * phase worker alone, so the architect's two phases never remind anyone.
- */
-export function roleForPhase(phase: string): LegionRole | undefined {
-  switch (phase) {
-    case "planning":
-      return "planner";
-    case "implementing":
-    case "retro":
-      return "implementer";
-    case "testing":
-      return "tester";
-    case "reviewing":
-      return "reviewer";
-    case "admitted":
-    case "accepting":
-      return "architect";
-    case "merging":
-      return "merger";
-    default:
-      return undefined;
-  }
 }
 
 export function isLegionProjectToken(project: string): boolean {

@@ -1,0 +1,43 @@
+kind: Added
+custom:
+  Issue: pr4369
+body: |-
+  A Dispatch tool spec can carry `dryRunHelp`, the sentence its command's `--dry-run` help prints.
+  The `dispatch_artifact` spec's sentence says that before the dry run asks Dispatch anything, and
+  with Dispatch off too, it refuses a text past the document limit, and then one holding a NUL
+  character or a byte that is not UTF-8, whether it is read from content-file, from stdin or from
+  a Markdown file, in the order and words of a Markdown file's upload, once the flags are read,
+  before it checks the arguments and before anything that needs Dispatch, as the call does; that
+  it then asks Dispatch how it would store text given inline, read from content-file or from
+  stdin, and refuses a text that Dispatch would store under another spelling, but for typed
+  blocks' attributes in another order, which the call
+  uploads in Dispatch's order, or that the call refuses for the text alone; that it sends Dispatch
+  the bytes of any other Markdown file, refusing what Dispatch refuses of them but never their
+  spelling;
+  that for a text it asks about (each but an empty text given inline, read from content-file or
+  from stdin, which it passes with no warning) and did not refuse before it asks, when Dispatch
+  cannot answer, it says so on stderr and passes; and that with force it asks for none of a new
+  document's refusals and checks
+  the spelling Dispatch answers as for any text, so it passes with no warning a text the call can
+  then refuse for one of them: under a name the owner does not hold, because the call uploads a
+  new document; under a name the owner holds, because a replacement holds those rules for the
+  blocks it adds or changes, and refuses a rendering that grows past the bytes one document holds
+  over the version it replaces. It also says that the dry run does not read whether the owner
+  holds the name, which the call reads only after it checks the text: a text the check refuses is
+  refused alike under a held
+  name, and a text it passes the call without force still refuses under a held name, though the
+  dry run passes it. The spec's description says that a text past the document limit, or holding a
+  NUL character or a byte that is not UTF-8, read from content-file, from stdin or from a Markdown
+  path file, is refused in that order once the flags are read, before the arguments are checked
+  and before anything that needs Dispatch, by the call and its dry run alike, with Dispatch on or
+  off. The spec's `force` description says that the command checks the text first, so a text it
+  refuses for the text alone gets that refusal, not the refusal of a name the owner holds.
+  `MARKDOWN_DOCUMENT_MAX_BYTES` (1 MiB) and `MARKDOWN_DOCUMENT_TOO_LARGE` are the most bytes of
+  markdown one document may hold and the text of Dispatch's `413 CAP_EXCEEDED` for an upload past
+  it, generated into Go for the server. `TEXT_REFUSAL_HEADER` (`Dispatch-Text-Refusal`) is the
+  header the markdown round trips put on their refusal of a text for the text alone, a mark with
+  one value that a client reads for its presence alone; it is generated into Go as
+  `contracts.TextRefusalHeader`. The round trip's request type, `MarkdownRoundTripInput`,
+  takes `new_document` beside `markdown`, which asks for the refusals only a new document makes,
+  and `FileRoundTripInput` is the body of the file round trip, a file's bytes as base64 in `file`
+  with the same `new_document`.

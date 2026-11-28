@@ -11,7 +11,8 @@
 // package. The one mode builds only on the Bun the repo-root `.bun-version`
 // pins, because bundler output depends on the exact Bun build (LEGION-568):
 //   --out <dir>  make <dir>, a new or empty directory outside the repository, a
-//                runnable copy of the plugin built from this tree.
+//                runnable copy of the plugin built from this tree, whose package.json
+//                and bundles declare the tree's daemon API contract (`pluginManifest`).
 //
 // scripts/build-inputs.txt must name every file this build reads, since
 // release.yaml's $CLAUDE_ENVOY_VERSION_ARGS covers that list and a build input missing from it is
@@ -19,8 +20,9 @@
 // buildBundles and buildLegionPlugin report reading; a file this script reads by path or
 // imports from outside the listed packages (.bun-version, scripts/third-party-notices.ts, the
 // scripts it runs) is listed by hand.
-import { cp, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises"
+import { chmod, cp, lstat, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { daemonContract, type PluginManifest } from "@legion/contracts/daemon-contract"
 import { thirdPartyNotices } from "../../../scripts/third-party-notices"
 import { PHASE_HOOK_TOOL_NAME } from "../src/legion-phase-hook"
 
@@ -31,6 +33,23 @@ const repoRoot = resolve(packageRoot, "..", "..")
  *  itself without needing a real file on disk. */
 const pinnedBunVersion = (await readFile(join(repoRoot, ".bun-version"), "utf8")).trim()
 
+/** The package's manifest as the plugin carries it: the committed one with this tree's daemon API
+ *  contract as `legion.daemonApiVersion` (`daemonContract`), the number the daemon's boot gate
+ *  holds the installed manifest to. The committed manifest names none; where the package's
+ *  manifest holds one, as release.yaml's claude_envoy_build writes it before it builds
+ *  (.github/scripts/release-claude-envoy-version.sh), that one is kept. `--out` writes this as the
+ *  plugin's package.json, and every bundle inlines it in place of the committed one, so the code a
+ *  pane runs states the contract its manifest declares. */
+async function pluginManifest(): Promise<PluginManifest> {
+  const manifest = JSON.parse(
+    await readFile(join(packageRoot, "package.json"), "utf8"),
+  ) as PluginManifest
+  return {
+    ...manifest,
+    legion: { ...manifest.legion, daemonApiVersion: daemonContract(manifest, packageRoot) },
+  }
+}
+
 /** Output name -> source entrypoint, relative to the package root. `dispatch` is the `dispatch`
  *  CLI that `bin/dispatch` runs, built from the shared library's entry. `session-title-hook` is a
  *  bundle of its own rather than a mode of `session-hook`, because Claude Code blocks the user's
@@ -40,6 +59,10 @@ export const BUNDLE_ENTRYPOINTS = {
   "envoy-channel": "bin/envoy-channel.ts",
   "session-hook": "hooks/session-hook.ts",
   "session-title-hook": "hooks/session-title-hook.ts",
+  // The Codex CLI's hooks: `codex-tool-hook` runs after every tool call, so it is a
+  // bundle of its own that imports the inbox alone, as `session-title-hook` is for each prompt.
+  "codex-hook": "hooks/codex-hook.ts",
+  "codex-tool-hook": "hooks/codex-tool-hook.ts",
   dispatch: "../envoy-client/bin/dispatch.ts",
 } as const
 
@@ -141,8 +164,8 @@ const LEGION_HOOKS: readonly {
       // woken by it rather than a stalled one, and earns no reminder.
       backgroundTasks: "${background_tasks}",
     },
-    // The `Stop` answer waits on the reminder's record check, which bounds its own daemon read at
-    // 5 s (RECORD_READ_BOUND_MS, packages/pi-shared/src/phase-reminder.ts); the others answer from
+    // The `Stop` answer waits on the reminder's owed check, which bounds its own daemon read at
+    // 3 s (OWED_READ_BOUND_MS, packages/pi-shared/src/phase-reminder.ts); the others answer from
     // memory and the state file alone.
     timeout: 30,
   },
@@ -306,6 +329,9 @@ export async function buildBundles(outdir: string): Promise<string[]> {
 }
 
 async function bundleFromPackageRoot(outdir: string): Promise<string[]> {
+  const manifestPath = join(packageRoot, "package.json")
+  const manifest = JSON.stringify(await pluginManifest())
+  let manifestInlined = false
   const result = await Bun.build({
     entrypoints: Object.values(BUNDLE_ENTRYPOINTS).map((entry) => join(packageRoot, entry)),
     outdir,
@@ -329,11 +355,30 @@ async function bundleFromPackageRoot(outdir: string): Promise<string[]> {
     sourcemap: "none",
     naming: "[name].[ext]",
     metafile: true,
+    // A bundle that imports the package's manifest inlines `pluginManifest()` in its place, so it
+    // states the contract the committed manifest leaves out; any other manifest loads as it is.
+    plugins: [
+      {
+        name: "plugin-manifest",
+        setup(build) {
+          build.onLoad({ filter: /[\\/]package\.json$/ }, async ({ path }) => {
+            if (path !== manifestPath) {
+              return { contents: await readFile(path, "utf8"), loader: "json" }
+            }
+            manifestInlined = true
+            return { contents: manifest, loader: "json" }
+          })
+        },
+      },
+    ],
   })
   if (!result.success) {
     throw new AggregateError(result.logs, "bundle build failed")
   }
   if (!result.metafile) throw new Error("Bun.build returned no metafile")
+  if (!manifestInlined) {
+    throw new Error(`no bundle imported ${manifestPath}, so none states this tree's contract`)
+  }
   // The metafile's keys are relative to the working directory, the package root.
   const inputs = Object.keys(result.metafile.inputs)
   await writeFile(join(outdir, "THIRD_PARTY_NOTICES"), await thirdPartyNotices(inputs, packageRoot))
@@ -389,29 +434,144 @@ async function outRefusal(out: string): Promise<string | null> {
 
 /** `out` as a runnable plugin directory: the package's plugin files, with each `skills/<name>`
  *  link to the repository's skill copied as the files it points at (file modes kept, so
- *  `bin/dispatch` stays executable), then a fresh `dist/` and `legion/`. */
+ *  `bin/dispatch` stays executable) and its package.json as `pluginManifest()`, then a fresh
+ *  `dist/` and `legion/`. */
 async function buildOut(out: string): Promise<void> {
   await mkdir(out, { recursive: true })
   for (const source of PLUGIN_SOURCES) {
     await cp(join(packageRoot, source), join(out, source), { recursive: true, dereference: true })
   }
+  await writeFile(join(out, "package.json"), `${JSON.stringify(await pluginManifest(), null, 2)}\n`)
   await buildBundles(join(out, "dist"))
   await buildLegionPlugin(join(out, "legion"))
 }
 
+/** What the Codex plugin, `@sjawhar/codex-envoy`, takes from `codex/`: its npm
+ *  manifest, its plugin manifest, its hooks, its README, and `bin/dispatch`, the `dispatch`
+ *  command a terminal runs (the manifest's npm `bin`), since the plugin's `dispatch` tool ends a
+ *  command after 120 s and `dispatch login --device` waits longer for a person's approval. It is
+ *  a package of its own because Codex's plugin rules and Claude Code's cannot both hold in one
+ *  directory: Codex's validator (`validate_plugin.py` of the `plugin-creator` skill Codex
+ *  installs) refuses a manifest that names its hooks file, so its hooks must sit at
+ *  `hooks/hooks.json`, which is also where Claude Code reads its own, and an npm install of a
+ *  plugin reads the package's root, never a subdirectory. Measured on Codex CLI 0.154.0 and
+ *  Claude Code 2.1.325. */
+const CODEX_SOURCES = [".codex-plugin", "bin", "hooks", "package.json", "README.md"] as const
+
+/** Each skill Claude Code may not load on its own (`disable-model-invocation: true`) and what
+ *  Codex shows for it. Codex's validator refuses that field; Codex's own form of it is the skill's
+ *  `agents/openai.yaml` with `policy.allow_implicit_invocation: false`, which keeps the skill out
+ *  of the model's context until a person names it as `$<skill>`, and that file needs a display
+ *  name and a 25-64 character description. A skill that sets the field and is not listed here
+ *  fails the build, so a new one is described on purpose. */
+export const CODEX_EXPLICIT_SKILLS: Readonly<
+  Record<string, { readonly displayName: string; readonly shortDescription: string }>
+> = {
+  "thermonuclear-code-quality": {
+    displayName: "Thermonuclear Code Quality",
+    shortDescription: "Deep maintainability audit of a branch or PR diff",
+  },
+  "thermonuclear-deep-review": {
+    displayName: "Thermonuclear Deep Review",
+    shortDescription: "Deep correctness and security review of a diff",
+  },
+}
+
+/** `SKILL.md` as Codex takes it: its `disable-model-invocation` line gone, and, when that line
+ *  said `true`, the `agents/openai.yaml` that says the same thing in Codex's terms; null for a
+ *  skill that sets nothing. */
+export function codexSkill(
+  name: string,
+  source: string,
+): { readonly skill: string; readonly openaiYaml: string | null } {
+  const match = /^---\n([\s\S]*?)\n---\n/.exec(source)
+  if (match === null) throw new Error(`skill ${name} has no frontmatter`)
+  const lines = (match[1] as string).split("\n")
+  const field = lines.find((line) => /^disable-model-invocation\s*:/.test(line))
+  if (field === undefined) return { skill: source, openaiYaml: null }
+  const value = field.slice(field.indexOf(":") + 1).trim()
+  if (value !== "true" && value !== "false") {
+    throw new Error(`skill ${name} sets disable-model-invocation to ${value}, not true or false`)
+  }
+  const kept = lines.filter((line) => line !== field)
+  const skill = `---\n${kept.join("\n")}\n---\n${source.slice(match[0].length)}`
+  if (value === "false") return { skill, openaiYaml: null }
+  const shown = CODEX_EXPLICIT_SKILLS[name]
+  if (shown === undefined) {
+    throw new Error(
+      `skill ${name} sets disable-model-invocation: true, so CODEX_EXPLICIT_SKILLS must describe it`,
+    )
+  }
+  const openaiYaml = [
+    "interface:",
+    `  display_name: ${JSON.stringify(shown.displayName)}`,
+    `  short_description: ${JSON.stringify(shown.shortDescription)}`,
+    "policy:",
+    "  allow_implicit_invocation: false",
+    "",
+  ].join("\n")
+  return { skill, openaiYaml }
+}
+
+/** `out` as the Codex plugin's package: `codex/`'s files, this package's skills as Codex takes
+ *  them (`codexSkill`), and `dist/` — copied from `dist` when given, the bundles a checked build
+ *  already holds, else built afresh. */
+export async function buildCodexPlugin(out: string, dist?: string): Promise<void> {
+  await mkdir(out, { recursive: true })
+  for (const source of CODEX_SOURCES) {
+    await cp(join(packageRoot, "codex", source), join(out, source), { recursive: true })
+  }
+  const skills = join(packageRoot, "skills")
+  for (const name of (await readdir(skills)).sort()) {
+    const target = join(out, "skills", name)
+    await cp(join(skills, name), target, { recursive: true, dereference: true })
+    const skillFile = join(target, "SKILL.md")
+    const { skill, openaiYaml } = codexSkill(name, await readFile(skillFile, "utf8"))
+    await writeFile(skillFile, skill)
+    if (openaiYaml !== null) {
+      await mkdir(join(target, "agents"), { recursive: true })
+      await writeFile(join(target, "agents", "openai.yaml"), openaiYaml)
+    }
+  }
+  if (dist === undefined) await buildBundles(join(out, "dist"))
+  else await cp(dist, join(out, "dist"), { recursive: true })
+  // The pack keeps each file's mode as the disk has it, and the copies and writes above take the
+  // source's mode and the builder's umask: a build under umask 0002, which a systemd user unit
+  // runs with, ships group-writable files. Every entry of `out` is shipped, so each loses group and
+  // other write; every user keeps read, and search on each directory and execute on each file the
+  // owner can run. The published modes are then the same whoever builds.
+  for (const path of [
+    out,
+    ...(await readdir(out, { recursive: true })).map((entry) => join(out, entry)),
+  ]) {
+    const entry = await lstat(path)
+    if (entry.isSymbolicLink()) continue
+    const mode = entry.mode & 0o7777
+    const runnable = entry.isDirectory() || (mode & 0o100) !== 0
+    await chmod(path, (mode & ~0o022) | 0o444 | (runnable ? 0o111 : 0))
+  }
+}
+
 const USAGE =
-  "usage: bun scripts/build.ts --out <dir>. dist/ and legion/ are generated, never committed: " +
-  "release.yaml's claude_envoy_build builds them and packs them into the tarball it publishes " +
-  "to npm."
+  "usage: bun scripts/build.ts --out <dir> | --codex-out <dir> [--dist <built dist/>]. dist/ " +
+  "and legion/ are generated, never committed: release.yaml's claude_envoy_build builds them " +
+  "and packs them into the tarballs it publishes to npm."
 
-type Mode = { readonly kind: "out"; readonly dir: string }
+type Mode =
+  | { readonly kind: "out"; readonly dir: string }
+  | { readonly kind: "codex-out"; readonly dir: string; readonly dist?: string }
 
-/** The one mode `args` names, or null for none, more than one, an unknown argument, or `--out`
+/** The one mode `args` names, or null for none, more than one, an unknown argument, or a flag
  *  with no directory after it. */
-function parseMode(args: readonly string[]): Mode | null {
-  const [first, second, ...rest] = args
-  if (rest.length > 0 || second === undefined) return null
-  if (first === "--out" && !second.startsWith("--")) return { kind: "out", dir: second }
+export function parseMode(args: readonly string[]): Mode | null {
+  const isValue = (value: string | undefined): value is string =>
+    value !== undefined && !value.startsWith("--")
+  const [first, second, third, fourth, ...rest] = args
+  if (rest.length > 0 || !isValue(second)) return null
+  if (first === "--out" && third === undefined) return { kind: "out", dir: second }
+  if (first !== "--codex-out") return null
+  if (third === undefined) return { kind: "codex-out", dir: second }
+  if (third === "--dist" && isValue(fourth)) return { kind: "codex-out", dir: second, dist: fourth }
   return null
 }
 
@@ -426,9 +586,14 @@ if (import.meta.main) {
   }
   const refusal = await outRefusal(mode.dir)
   if (refusal !== null) {
-    process.stderr.write(`refusing --out: ${refusal}\n`)
+    process.stderr.write(`refusing --${mode.kind}: ${refusal}\n`)
     process.exit(1)
   }
-  await buildOut(mode.dir)
-  process.stdout.write(`built the Claude Envoy plugin into ${resolve(mode.dir)}\n`)
+  if (mode.kind === "out") {
+    await buildOut(mode.dir)
+    process.stdout.write(`built the Claude Envoy plugin into ${resolve(mode.dir)}\n`)
+  } else {
+    await buildCodexPlugin(mode.dir, mode.dist)
+    process.stdout.write(`built the Codex Envoy plugin into ${resolve(mode.dir)}\n`)
+  }
 }

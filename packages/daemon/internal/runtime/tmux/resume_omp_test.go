@@ -2,17 +2,17 @@ package tmux
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A role moved back to Oh My Pi from Claude Code resumes the session file its claim recorded, which
@@ -62,14 +62,20 @@ func TestThePinnedOhMyPiRefusesToResumeAClaudeCodeTranscript(t *testing.T) {
 		host := Host{StateDir: dir}
 		promptFile := writeLaunchPrompt(t, spec, host)
 		inner, pairs, err := NewOmpLauncher(nil, shellprefix.Word(omp)).Launch(spec, host, promptFile)
-		if err != nil || pairs != nil {
-			t.Fatalf("Launch = %v, %v", pairs, err)
+		var want []string
+		if resume != "" {
+			want = []string{"-e", runtime.SessionExclusiveVariable + "=1"}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, shell, "-c", inner)
+		if err != nil || !slices.Equal(pairs, want) {
+			t.Fatalf("Launch = %q, %v; want the pairs %q", pairs, err, want)
+		}
+		cmd := exec.CommandContext(testwait.Context(t), shell, "-c", inner)
 		cmd.Dir = work
 		cmd.Env = []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true"}
+		// The pane's own pairs, as tmux hands them to the pane's environment.
+		for i := 1; i < len(pairs); i += 2 {
+			cmd.Env = append(cmd.Env, pairs[i])
+		}
 		// One RPC request, then end of input: a session that started answers it and exits.
 		cmd.Stdin = strings.NewReader(`{"type":"get_state","id":"1"}` + "\n")
 		var out, errOut bytes.Buffer

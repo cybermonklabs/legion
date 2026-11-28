@@ -14,6 +14,7 @@ import (
 )
 
 func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.T) {
+	t.Parallel()
 	var database *store.Store
 	pendingDuringSend := "not observed"
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
@@ -92,6 +93,7 @@ func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.
 }
 
 func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	roleHolder := "s1"
 	roleLookups := 0
@@ -166,30 +168,31 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 	mu.Unlock()
 	type deliveryResult struct {
 		attempt model.CommentDelivery
+		held    *mentionHeldForOrder
 		err     error
 	}
 	first := make(chan deliveryResult, 1)
 	second := make(chan deliveryResult, 1)
 	go func() {
-		attempt, err := direct.deliverResolvedCommentMention(
+		attempt, held, err := direct.deliverResolvedCommentMention(
 			context.Background(), comment, event, stale, model.Actor{Kind: "user", ID: "alice"}, attemptClaim{}, direct.newTakeoverRetry(),
 		)
-		first <- deliveryResult{attempt: attempt, err: err}
+		first <- deliveryResult{attempt: attempt, held: held, err: err}
 	}()
 	<-started
 	mu.Lock()
 	roleHolder = "s2"
 	mu.Unlock()
 	go func() {
-		attempt, err := direct.deliverResolvedCommentMention(
+		attempt, held, err := direct.deliverResolvedCommentMention(
 			context.Background(), comment, event, stale, model.Actor{Kind: "user", ID: "bob"}, attemptClaim{}, direct.newTakeoverRetry(),
 		)
-		second <- deliveryResult{attempt: attempt, err: err}
+		second <- deliveryResult{attempt: attempt, held: held, err: err}
 	}()
 	close(release)
 	firstResult := <-first
 	secondResult := <-second
-	if firstResult.err != nil || secondResult.err != nil {
+	if firstResult.err != nil || secondResult.err != nil || firstResult.held != nil || secondResult.held != nil {
 		t.Fatalf("concurrent retries: first=%#v second=%#v", firstResult, secondResult)
 	}
 	if firstResult.attempt.Attempt != 1 || firstResult.attempt.SessionID == nil || *firstResult.attempt.SessionID != "s1" {
@@ -214,6 +217,7 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 // takes an attempt of its own; once it is plainly abandoned a retry resumes the original
 // attempt, under its original number, so the listener deduplicates a send that did land.
 func TestAbandonedMentionAttemptIsResumedUnderItsOriginalIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	keys := []string{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -310,6 +314,7 @@ func TestAbandonedMentionAttemptIsResumedUnderItsOriginalIdempotencyKey(t *testi
 // never sent: once its claim lapses the next retry must resolve it and send it, under its own
 // number and idempotency key, not report it undeliverable without ever calling the listener.
 func TestStrandedMentionAttemptIsResolvedRatherThanFailedUnsent(t *testing.T) {
+	t.Parallel()
 	keys := []string{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

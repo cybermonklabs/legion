@@ -2,10 +2,11 @@ package outbox
 
 import (
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf16"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // What one event carries of an item is bounded in UTF-16 units and sent in bytes, so every
@@ -42,26 +44,21 @@ func capBody(t *testing.T) string {
 }
 
 // eventPayload is the payload of the one event that arrived on topic, decoded out of its
-// envelope. It fails the test when nothing arrives within ten seconds.
+// envelope. It fails the test when nothing arrives before the test binary's deadline.
 func eventPayload(t *testing.T, received <-chan *natsgo.Msg, topic string) (contracts.Envelope, map[string]any) {
 	t.Helper()
-	select {
-	case message := <-received:
-		var envelope contracts.Envelope
-		if err := json.Unmarshal(message.Data, &envelope); err != nil {
-			t.Fatalf("decode the envelope on %s: %v", topic, err)
-		}
-		var delivered struct {
-			Payload map[string]any `json:"payload"`
-		}
-		if err := json.Unmarshal([]byte(envelope.Payload), &delivered); err != nil {
-			t.Fatalf("decode the event the envelope on %s carries: %v", topic, err)
-		}
-		return envelope, delivered.Payload
-	case <-time.After(10 * time.Second):
-		t.Fatalf("nothing arrived on %s", topic)
-		return contracts.Envelope{}, nil
+	message := testwait.Receive(t, "an event on "+topic, received)
+	var envelope contracts.Envelope
+	if err := json.Unmarshal(message.Data, &envelope); err != nil {
+		t.Fatalf("decode the envelope on %s: %v", topic, err)
 	}
+	var delivered struct {
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(envelope.Payload), &delivered); err != nil {
+		t.Fatalf("decode the event the envelope on %s carries: %v", topic, err)
+	}
+	return envelope, delivered.Payload
 }
 
 // A comment body of exactly the share an event carries reaches a subscriber through a real NATS
@@ -71,6 +68,7 @@ func eventPayload(t *testing.T, received <-chan *natsgo.Msg, topic string) (cont
 // session at all, silently. The share is counted in UTF-16 units and the payload in bytes, so
 // this holds the widest body the share allows (capBody) against the server's 1 MiB default.
 func TestRunDeliversACommentBodyAtTheEventShareThroughNATS(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
 	issueTopic := "notifications.dispatch.issue.T-1.comment.created"
@@ -87,7 +85,7 @@ func TestRunDeliversACommentBodyAtTheEventShareThroughNATS(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	_, payload := eventPayload(t, received, issueTopic)
@@ -107,6 +105,7 @@ func TestRunDeliversACommentBodyAtTheEventShareThroughNATS(t *testing.T) {
 // (asks.go's validateAskWording, ask_transitions.go's text). At their worst case in bytes they
 // still reach a subscriber whole.
 func TestRunDeliversTheWidestAnsweredAskThroughNATS(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
 	issueTopic := "notifications.dispatch.issue.T-1.ask.answered"
@@ -129,7 +128,7 @@ func TestRunDeliversTheWidestAnsweredAskThroughNATS(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	_, payload := eventPayload(t, received, issueTopic)
@@ -154,6 +153,7 @@ func TestRunDeliversTheWidestAnsweredAskThroughNATS(t *testing.T) {
 // payload_summary, with the payload's short top-level fields kept, its long one gone, and
 // payload_omitted saying so. A reader then knows which comment to read.
 func TestRunPublishesAStandInForAnEventNATSRefuses(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
 	issueTopic := "notifications.dispatch.issue.T-1.comment.created"
@@ -176,7 +176,7 @@ func TestRunPublishesAStandInForAnEventNATSRefuses(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	envelope, payload := eventPayload(t, received, issueTopic)
@@ -203,5 +203,134 @@ func TestRunPublishesAStandInForAnEventNATSRefuses(t *testing.T) {
 	}
 	if payload["issue_key"] != "T-1" {
 		t.Fatalf("the stand-in dropped the issue key, a short field: %v", payload)
+	}
+}
+
+// A person's reply in an ask's thread whose event NATS refuses still tells each reader whether
+// the ask is its own: the stand-in keeps ask_sessions whole, here seven session ids that encode
+// past the standInPayloadFieldBytes it keeps of any other field, in the order the event carried
+// them. Without them each owner's card, the asker's among them, would read the reply as a comment
+// on an issue, with no command that answers the ask and no turn.
+func TestRunStandInKeepsAnAsksSessionsWholeThroughNATS(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
+	issueTopic := "notifications.dispatch.issue.T-1.comment.created"
+	received := subscribe(t, subscriber, issueTopic)
+	broker := events.NewBroker()
+	seedIssue(t, database, "T-1", nil)
+	const askID = "7f3c9a2e-1b4d-4e8f-9a6c-2d5e8b1f4a70"
+	owners := make([]string, 7)
+	for i := range owners {
+		owners[i] = fmt.Sprintf("01a1e182-0be0-7786-b3f7-%012d", i+1)
+	}
+	if encoded, err := json.Marshal(owners); err != nil || len(encoded) <= standInPayloadFieldBytes {
+		t.Fatalf("the ask's %d sessions encode to %d bytes (%v), want more than the %d a stand-in keeps of another field",
+			len(owners), len(encoded), err, standInPayloadFieldBytes)
+	}
+	body := strings.Repeat("a", 1_200_000)
+	if int64(len(body)) <= subscriber.MaxPayload() {
+		t.Fatalf("a body of %d bytes fits the server's maximum payload of %d, so it is not refused",
+			len(body), subscriber.MaxPayload())
+	}
+	event := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"), Type: "comment.created", Actor: model.Actor{Kind: "user", ID: "alice"},
+		Payload: model.CommentEventPayload{
+			Comment: model.Comment{
+				ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", IssueKey: new("T-1"), Body: body,
+				Author: model.Actor{Kind: "user", ID: "alice"}, AskID: new(askID),
+			},
+			AskSessions: owners,
+		},
+	})
+	stop := run(t, database, client, broker)
+	defer stop()
+
+	waitFor(t, "the event marked published", func() bool {
+		return publishedAt(t, database, event.ID) != nil
+	})
+	_, payload := eventPayload(t, received, issueTopic)
+	if payload["payload_omitted"] != true {
+		t.Fatalf("the copy does not say its payload was left out, so it is no stand-in: %v", payload["payload_omitted"])
+	}
+	if _, kept := payload["body"]; kept {
+		t.Fatalf("the stand-in kept the body NATS refused, so it is refused too")
+	}
+	if payload["ask_id"] != askID {
+		t.Fatalf("the stand-in's ask_id is %v, want %s", payload["ask_id"], askID)
+	}
+	listed, _ := payload["ask_sessions"].([]any)
+	kept := make([]string, 0, len(listed))
+	for _, session := range listed {
+		id, _ := session.(string)
+		kept = append(kept, id)
+	}
+	if !slices.Equal(kept, owners) {
+		t.Fatalf("the stand-in's ask_sessions is %v, want the ask's %d sessions whole and in order: %v",
+			payload["ask_sessions"], len(owners), owners)
+	}
+}
+
+// A person's reply in the thread of a project document's ask names that document only in
+// project_key and artifact_slug: an owner reads the reply on its own topic, which names no
+// document, and its card's command that answers the ask posts into the document those two name.
+// A slug grows with the document's name, here past the standInPayloadFieldBytes a stand-in keeps
+// of any other field, so the stand-in NATS carries in place of the refused event keeps both whole,
+// beside ask_sessions. Without them the owner's card would carry no command that answers the ask.
+func TestRunStandInKeepsTheDocumentOfADocumentAsksReplyWholeThroughNATS(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
+	broker := events.NewBroker()
+	seedIssue(t, database, "T-1", nil)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	slug := strings.TrimSuffix(strings.Repeat("design-notes-for-the-queue-", 11), "-")
+	if encoded, err := json.Marshal(slug); err != nil || len(encoded) <= standInPayloadFieldBytes {
+		t.Fatalf("the slug encodes to %d bytes (%v), want more than the %d a stand-in keeps of another field",
+			len(encoded), err, standInPayloadFieldBytes)
+	}
+	document := seedDocument(t, database, nil, slug, alice)
+	documentTopic := "notifications.dispatch.document.TT." + slug + ".comment.created"
+	received := subscribe(t, subscriber, documentTopic)
+	const askID = "7f3c9a2e-1b4d-4e8f-9a6c-2d5e8b1f4a70"
+	const owner = "01a1e182-0be0-7786-b3f7-a997f855c04b"
+	body := strings.Repeat("a", 1_200_000)
+	if int64(len(body)) <= subscriber.MaxPayload() {
+		t.Fatalf("a body of %d bytes fits the server's maximum payload of %d, so it is not refused",
+			len(body), subscriber.MaxPayload())
+	}
+	event := appendEvent(t, database, broker, model.Event{
+		ArtifactID: new(document), Project: "TT", Type: "comment.created", Actor: alice,
+		Payload: model.CommentEventPayload{
+			Comment: model.Comment{
+				ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", ArtifactID: new(document), Body: body,
+				Author: alice, AskID: new(askID),
+			},
+			ProjectKey: "TT", ArtifactSlug: slug, AskSessions: []string{owner},
+		},
+	})
+	stop := run(t, database, client, broker)
+	defer stop()
+
+	waitFor(t, "the event marked published", func() bool {
+		return publishedAt(t, database, event.ID) != nil
+	})
+	_, payload := eventPayload(t, received, documentTopic)
+	if payload["payload_omitted"] != true {
+		t.Fatalf("the copy does not say its payload was left out, so it is no stand-in: %v", payload["payload_omitted"])
+	}
+	if _, kept := payload["body"]; kept {
+		t.Fatalf("the stand-in kept the body NATS refused, so it is refused too")
+	}
+	if payload["project_key"] != "TT" {
+		t.Fatalf("the stand-in's project_key is %v, want TT", payload["project_key"])
+	}
+	if payload["artifact_slug"] != slug {
+		t.Fatalf("the stand-in's artifact_slug is %v, want the document's %d-byte slug whole: %s",
+			payload["artifact_slug"], len(slug), slug)
+	}
+	if listed, _ := payload["ask_sessions"].([]any); payload["ask_id"] != askID || !slices.Equal(listed, []any{owner}) {
+		t.Fatalf("the stand-in names ask %v and its sessions %v, want ask %s and [%s]",
+			payload["ask_id"], payload["ask_sessions"], askID, owner)
 	}
 }

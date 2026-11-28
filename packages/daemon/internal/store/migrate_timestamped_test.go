@@ -103,6 +103,7 @@ func schemaVersionColumnType(t *testing.T, store *Store) string {
 // daemon carrying only t2 — the later timestamp, merged first — takes t1 when
 // the daemon that carries it arrives, and t2 does not run a second time.
 func TestMigrateAppliesATimestampedMigrationMergedAfterALaterOne(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	t1 := craftedMigration(t1Version, "first_written", "timestamped_first_written")
@@ -154,6 +155,7 @@ func TestMigrateAppliesATimestampedMigrationMergedAfterALaterOne(t *testing.T) {
 }
 
 func TestMigrateAppliesEveryTimestampedMigrationOnceOnAFreshDatabase(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	t1 := craftedMigration(t1Version, "first_written", "timestamped_first_written")
@@ -192,6 +194,7 @@ func TestMigrateAppliesEveryTimestampedMigrationOnceOnAFreshDatabase(t *testing.
 // inside its own transaction, and a database that already took one widens
 // nothing.
 func TestTheFirstTimestampedMigrationWidensTheVersionColumn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	if _, err := store.migrate(ctx, numberedWith(t)); err != nil {

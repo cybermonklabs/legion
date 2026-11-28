@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/controller"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -44,12 +45,19 @@ const (
 
 // controllerKeeper keeps the daemon's own controller running (`controller: daemon`). The controller
 // is one claim, on the controller role with no issue, which its machine supervises as any claim's:
-// a death relaunches the same session, within the launch failure budget. What the machine leaves to
-// its caller is the keeper's: the claim is created when the store holds none, launched while
-// queued, resumed when suspended, and, when its budget ran out (failed) or its agent ended it
-// (retired), retried with fresh budgets after a wait that doubles while it keeps failing. At each
-// ready it hands the controller the start message. The liveness sweep (watchController) says when
-// the controller is not registered, from a loop of its own.
+// a death relaunches the same session, within the launch failure budget, the launch after the
+// session's second end in a row with no finished turn between starts a fresh session (supervise's
+// SessionRun, dispatch://INFRA-2045 R1), and a daemon-driven relaunch of a session older than
+// `controller_session_max_age_hours` starts a fresh one too (supervise's replaceAgedSession, R3).
+// What the machine leaves to its caller is the keeper's: the claim is created when the store holds
+// none, launched while queued, resumed when suspended, and, when its budget ran out (failed) or its
+// agent ended it (retired), retried with fresh budgets after a wait that doubles while it keeps
+// failing. A controller held for OpenAI's cyber-policy refusal is the one failed controller it never
+// retries (supervise.Claim.KeeperRetries): an operator's `legion claims retry` brings it back. At
+// each ready it hands the controller the start message. At each look of a working controller it
+// ends a turn open longer than turnBound (TurnPastBound, R2). It stops no live controller for any
+// other reason. The liveness sweep (watchController) says when the controller is not registered,
+// from a loop of its own.
 type controllerKeeper struct {
 	supervisor *supervisor
 	// project is the project token the claim is filed under.
@@ -66,10 +74,22 @@ type controllerKeeper struct {
 	// and backoff the wait that set it.
 	retryAt time.Time
 	backoff time.Duration
+	// heldLogged is the line keep last wrote for a retry the hold refused, and heldReason that
+	// refusal, for the episode the refused retry holds the claim in (keep, held): the line is
+	// written once per episode and cause, and the reason rides each later retry's Warn. Both are
+	// cleared at one point, leaveHeld, at each way out of the episode.
+	heldLogged, heldReason string
+	// turnBound is `controller_turn_bound_minutes`, 0 for the rule off
+	// (config.Config.ControllerTurnBound).
+	turnBound time.Duration
 }
 
-func newControllerKeeper(ctx context.Context, sup *supervisor, project string, retryFirst time.Duration, log *slog.Logger) *controllerKeeper {
-	return &controllerKeeper{supervisor: sup, project: project, ctx: ctx, log: log, now: time.Now, retryFirst: retryFirst}
+// newControllerKeeper is the keeper of project's controller, with the wait before its first retry
+// and the bound of its turn rule (turnBound, 0 for the rule off), so no keeper is built with the
+// rule silently off.
+func newControllerKeeper(ctx context.Context, sup *supervisor, project string, retryFirst, turnBound time.Duration, log *slog.Logger) *controllerKeeper {
+	return &controllerKeeper{supervisor: sup, project: project, ctx: ctx, log: log, now: time.Now, retryFirst: retryFirst,
+		turnBound: turnBound}
 }
 
 func (k *controllerKeeper) token() claim.Token { return claim.ControllerToken(k.project) }
@@ -108,7 +128,13 @@ func (k *controllerKeeper) keep() error {
 		m = created
 	}
 	var request supervise.Event
-	switch state := m.Claim().State; state {
+	c := m.Claim()
+	state := c.State
+	if state != supervise.StateFailed && state != supervise.StateRetired {
+		// The claim left the state a refused retry holds it in, whatever it moved to.
+		k.leaveHeld()
+	}
+	switch state {
 	case supervise.StateQueued:
 		// No request of this keeper marks itself exempt from the wake pacing, this spawn
 		// included: the machine exempts the controller's claim by identity, which covers the
@@ -122,6 +148,14 @@ func (k *controllerKeeper) keep() error {
 		// only the operator's resume runs a controller the operator suspended.
 		request = supervise.RequestRuleResume{Claim: token, Reason: "the daemon keeps its controller running"}
 	case supervise.StateFailed, supervise.StateRetired:
+		if !c.KeeperRetries() {
+			// No retry, at any wait, and the wait starts over once the controller runs again
+			// (cyberPolicyHeldLine).
+			k.retryAt, k.backoff = time.Time{}, 0
+			k.held(slog.LevelError, cyberPolicyHeldLine, token, c.CyberPolicyRefusal(),
+				"state", state, "cause", string(c.FailureCause), "failure", c.Failure)
+			return nil
+		}
 		now := k.now()
 		if k.retryAt.IsZero() {
 			k.backoff = k.retryFirst
@@ -135,26 +169,101 @@ func (k *controllerKeeper) keep() error {
 		}
 		k.backoff = min(2*k.backoff, controllerRetryMax)
 		k.retryAt = now.Add(k.backoff)
-		k.log.Warn("controller: retrying the daemon's controller", "claim", token, "state", state, "nextRetryAt", k.retryAt)
+		retrying := []any{"claim", token, "state", state, "nextRetryAt", k.retryAt}
+		if k.heldReason != "" {
+			retrying = append(retrying, "reason", k.heldReason)
+		}
+		k.log.Warn("controller: retrying the daemon's controller", retrying...)
 		request = supervise.RequestRetry{Claim: token}
 	case supervise.StateReady, supervise.StateWorking, supervise.StateIdle:
 		k.retryAt, k.backoff = time.Time{}, 0
-		return nil
+		return k.mind(ctx, m)
 	default:
 		// Launching, connected, registered, or a launch the previous daemon left uncertain: the
 		// machine and boot's reconciliation own those.
 		return nil
 	}
-	if err := m.Handle(ctx, request); err != nil {
+	err := m.Handle(ctx, request)
+	// A retry resumes the recorded session (R5 of dispatch://INFRA-4508): the run of refused turns
+	// no longer starts a new one, and the machine starts one only after the session's launches keep
+	// ending (supervise's SessionRun, dispatch://INFRA-2045 R1) or when the session is older than
+	// its age (supervise's replaceAgedSession, R3: the keeper's retry is no operator's, so it is not
+	// exempt from that rule). The keeper asks for a new session in a retry in one case alone: the
+	// resume is refused because one of the recorded session's names is held for another
+	// claim, or for none (supervise.IsSessionHeldElsewhere, claim.SessionHeldRefusal). Such a resume
+	// would be refused at every retry, and nobody else retries this claim, so the keeper asks the
+	// retry again in a new session, as an operator's `legion claims retry --fresh-session` does,
+	// and the answer to that is the one judged below: the hold's wait on the role, a lookup the
+	// listener refuses, or the retry admitted. The resume's other refusals — a session name the
+	// daemon cannot hold, a claim at the cap of held names — are answered as before: no new session
+	// is asked for.
+	if retry, ok := request.(supervise.RequestRetry); ok && !retry.FreshSession && supervise.IsSessionHeldElsewhere(err) {
+		request = supervise.RequestRetry{Claim: token, FreshSession: true}
+		err = m.Handle(ctx, request)
+	}
+	// A retry in a new session the hold refuses is no fault of the keeper's, and its own backoff
+	// asks again, so it returns nothing its loop logs at Error; the keeper says why once per
+	// episode, at the level the cause asks for. A role held under the recorded session by another
+	// claim's live process waits for an operator's suspend of that claim, which the reason names,
+	// with the bound: Warn (supervise.ErrForgetWaitsForRole). A lookup the listener refuses the
+	// same way every time is a fault no suspend fixes: Error, with the listener's status
+	// (notify.RoleLookupRefused). Each later retry's Warn carries the reason. Any other answer, an
+	// admitted request among them, ends the episode.
+	var refusedLookup *notify.RoleLookupRefused
+	switch {
+	case err != nil && errors.Is(err, supervise.ErrForgetWaitsForRole):
+		// The wait covers both of forgetWait's causes, a role held under the recorded session and
+		// a lookup the listener did not answer; the reason says which (review round 16 of #4220,
+		// #63).
+		k.held(slog.LevelWarn, "controller: the retry of the daemon's controller waits for the Envoy listener to free its role, or to answer who holds it", token, err)
+		return nil
+	case err != nil && errors.As(err, &refusedLookup):
+		k.held(slog.LevelError, "controller: the retry of the daemon's controller is refused: the Envoy listener refuses the lookup of its role's holder", token, err,
+			"status", refusedLookup.Status)
+		return nil
+	}
+	k.leaveHeld()
+	if err != nil {
 		return fmt.Errorf("%T for the controller's claim: %w", request, err)
 	}
 	return nil
 }
 
+// cyberPolicyHeldLine is the keeper's one line for a controller held for OpenAI's cyber-policy
+// refusal (supervise.Claim.KeeperRetries), which it retries at no wait: its retry would be one the
+// daemon makes by itself, which the machine refuses (supervise.ErrHeldForCyberPolicy), since the
+// start message the keeper sends at the relaunch's ready is input from outside the session, which
+// ends Oh My Pi's own hold, so the refused content would go to OpenAI again and add a refusal to
+// the organization's record. The line is written once per episode (held, leaveHeld) at Error, and
+// its reason is the machine's refusal (supervise.Claim.CyberPolicyRefusal), which names the
+// operator's `legion claims retry`: the machine admits that retry for such a controller, in a new
+// session.
+const cyberPolicyHeldLine = "controller: the daemon's controller is held for OpenAI's cyber_policy refusal of its session's content; the keeper does not retry it"
+
+// held records a retry the hold refused (keep): its reason, for each later retry's Warn, and one
+// line at level, written once per episode and cause.
+func (k *controllerKeeper) held(level slog.Level, msg string, token claim.Token, err error, args ...any) {
+	k.heldReason = err.Error()
+	if k.heldLogged == msg {
+		return
+	}
+	k.heldLogged = msg
+	k.log.Log(k.ctx, level, msg, append([]any{"claim", token, "reason", err}, args...)...)
+}
+
+// leaveHeld ends a held episode (keep, held): the one reset of what a refused retry recorded,
+// called at each way out of it — a request admitted, a refusal of another cause, and the claim in
+// any state but failed or retired, running or not — so the next refused retry is written again,
+// and no later retry's Warn names a reason that is no longer the claim's.
+func (k *controllerKeeper) leaveHeld() { k.heldLogged, k.heldReason = "", "" }
+
 // ready hands the controller the start message once its agent says it is ready, at every launch, so
 // each one runs the skill's start procedure before any wake. A start message still pending from an
 // earlier launch — its turn interrupted by the death this launch replaced — is sent on this ready
-// instead, so none is queued behind it.
+// instead, so none is queued behind it. The message is the daemon's own and resumes nothing
+// (RequestDeliver.ResumesNothing): a claim an operator suspended at or after this ready — between
+// the ready and the message, or while it was launching, the suspension held until this ready and
+// ended there — refuses it and stays suspended, and the next launch's ready sends it again.
 func (k *controllerKeeper) ready(c supervise.Claim) {
 	m, ok := k.supervisor.Machine(c.Token)
 	if !ok {
@@ -162,15 +271,25 @@ func (k *controllerKeeper) ready(c supervise.Claim) {
 	}
 	// The ready route calls this on its own goroutine, beside the keeper's loop, so the decision
 	// takes a fresh hold mark at the call.
-	err := m.Handle(store.ForConcurrentWorker(k.ctx), supervise.RequestDeliver{Claim: c.Token, Task: ControllerStartMessage})
+	err := m.Handle(store.ForConcurrentWorker(k.ctx), supervise.RequestDeliver{Claim: c.Token, Task: ControllerStartMessage, ResumesNothing: true})
+	var refused *supervise.RefusedError
 	switch {
 	case err == nil:
 	case errors.Is(err, supervise.ErrDeliveryPending):
 		k.log.Info("controller: the start message waits behind the controller's pending delivery", "claim", c.Token)
+	case errors.As(err, &refused):
+		k.log.Info(startMessageRefusedLine, "claim", c.Token, "reason", err)
 	default:
 		k.log.Error("controller: hand the daemon's controller its start message", "claim", c.Token, "error", err)
 	}
 }
+
+// startMessageRefusedLine is the keeper's Info line for a start message the machine refused with a
+// *RefusedError (ready): a controller that left its ready before the message — suspended, by an
+// operator at or after this ready or by anyone else (supervise.RequestDeliver.ResumesNothing), or
+// failed, retired or launch-uncertain, each of which ignores a delivery. The next launch's ready
+// sends the message again.
+const startMessageRefusedLine = "controller: the start message is not sent: the controller left its ready before it"
 
 // stopLaunchedController ends the daemon's own controller on a daemon that leaves the controller to
 // its operator (`controller: operator`). A claim an earlier boot under `controller: daemon` stored
@@ -196,7 +315,7 @@ func (s *supervision) stopLaunchedController(ctx context.Context) error {
 	if state := m.Claim().State; state != supervise.StateRetired {
 		s.log.Warn("controller: stopping the controller an earlier boot under controller: daemon launched; this daemon leaves the controller to its operator",
 			"claim", token, "state", state)
-		if err := m.Handle(ctx, supervise.RequestStop{Claim: token}); err != nil {
+		if err := m.Handle(ctx, supervise.RequestStop{Claim: token, By: supervise.SuspendedByOperator}); err != nil {
 			return fmt.Errorf("stop %s, the controller an earlier boot under controller: daemon launched, since this daemon leaves the controller to its operator (controller: operator): %w", token, err)
 		}
 	}
@@ -241,13 +360,14 @@ const controllerNotRegistered = "controller not registered; run legion controlle
 // runtime and either `controller` mode: every sweep interval it reads the project's controller
 // record, and when no session holds it, or the Envoy role registry says the session is gone, it says
 // so at most once per worker boot timeout, naming the remedy for its mode: `legion controller
-// start` for the operator's controller, the keeper's relaunch for the daemon's, with the state of
-// its claim as the store holds it, so a launch in flight or a backoff reads apart from a death. It
-// reads only the store and the role registry, never the controller's machine, whose lock a launch
-// holds for as long as the launch takes, so the keeper's loop and the controller's launches never
-// hold it up. The Prober logs why each Gone or Unknown verdict was reached; Unknown is never a death
-// verdict, so it says nothing more. Every line the sweep and its Prober write names the mode, and
-// both modes write the same lines on the same cadence.
+// start` for the operator's controller, the keeper's relaunch for the daemon's, or the operator's
+// retry for a daemon's controller its keeper does not retry (launchedControllerLine), with the
+// state of its claim as the store holds it, so a launch in flight or a backoff reads apart from a
+// death. It reads only the store and the role registry, never the controller's machine, whose lock
+// a launch holds for as long as the launch takes, so the keeper's loop and the controller's
+// launches never hold it up. The Prober logs why each Gone or Unknown verdict was reached; Unknown
+// is never a death verdict, so it says nothing more. Every line the sweep and its Prober write
+// names the mode, and both modes write the same lines on the same cadence.
 func watchController(ctx context.Context, st *store.Store, cfg config.Config, p plan, log *slog.Logger) {
 	launched := cfg.ControllerLaunch == config.ControllerLaunchDaemon
 	log = log.With("mode", string(cfg.ControllerLaunch))
@@ -275,12 +395,12 @@ func watchController(ctx context.Context, st *store.Store, cfg config.Config, p 
 		case controller.Gone:
 			if logged.IsZero() || time.Since(logged) >= cfg.WorkerBootTimeout {
 				if launched {
-					state, err := launchedControllerState(ctx, st, p.project)
-					attrs := []any{"project", cfg.Project, "registered", record.Registered(), "claimState", state}
+					held, err := launchedController(ctx, st, p.project)
+					attrs := []any{"project", cfg.Project, "registered", record.Registered(), "claimState", held.State}
 					if err != nil {
 						attrs = append(attrs, "claimError", err.Error())
 					}
-					log.Warn(controllerNotRegistered+" only under controller: operator; this daemon launches its own controller and relaunches it", attrs...)
+					log.Warn(launchedControllerLine(held), attrs...)
 				} else {
 					log.Warn(controllerNotRegistered, "project", cfg.Project, "registered", record.Registered())
 				}
@@ -295,20 +415,35 @@ func watchController(ctx context.Context, st *store.Store, cfg config.Config, p 
 	}
 }
 
-// launchedControllerState is the state of the daemon's own controller's claim as the store holds
-// it, "" before the daemon has created the claim.
-func launchedControllerState(ctx context.Context, st *store.Store, project string) (supervise.ClaimState, error) {
+// launchedControllerLine is the liveness sweep's line for the daemon's own controller while no
+// live session holds the record (watchController), given its claim as the store holds it, the
+// zero claim before the daemon has created one. It names the remedy: the keeper's relaunch of the
+// controller, which the sweep's reader waits for, or, for a controller the keeper retries no more
+// (supervise.Claim.KeeperRetries, a controller held for OpenAI's cyber-policy refusal), the
+// operator's retry (supervise.RetryCommand), since the keeper writes its own line once per
+// process and this one recurs.
+func launchedControllerLine(c supervise.Claim) string {
+	if c.Role == claim.RoleController && !c.KeeperRetries() {
+		return controllerNotRegistered + " only under controller: operator; this daemon's controller is held for OpenAI's cyber_policy refusal of its session's content, which its keeper does not retry: run " +
+			supervise.RetryCommand(c.Token)
+	}
+	return controllerNotRegistered + " only under controller: operator; this daemon launches its own controller and relaunches it"
+}
+
+// launchedController is the daemon's own controller's claim as the store holds it, the zero claim
+// before the daemon has created one.
+func launchedController(ctx context.Context, st *store.Store, project string) (supervise.Claim, error) {
 	claims, err := st.Claims(ctx)
 	if err != nil {
-		return "", err
+		return supervise.Claim{}, err
 	}
 	token := claim.ControllerToken(project)
 	for _, c := range claims {
 		if c.Token == token {
-			return c.State, nil
+			return c, nil
 		}
 	}
-	return "", nil
+	return supervise.Claim{}, nil
 }
 
 // claimReadyHook is the ready route's hook: the daemon's controller's ready goes to its keeper, and

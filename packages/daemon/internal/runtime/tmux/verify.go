@@ -24,6 +24,10 @@ var noServerStderr = regexp.MustCompile(`no server running|server exited unexpec
 // means no Legion pane. Every other failure proves nothing about the pane (tmux.ts:386-392).
 var paneGoneStderr = regexp.MustCompile(`can't find pane|` + noServerStderr.String())
 
+// windowGoneStderr is what a command's stderr says when the window it targets provably does not
+// exist, as paneGoneStderr says of a pane.
+var windowGoneStderr = regexp.MustCompile(`can't find window|` + noServerStderr.String())
+
 // targetAbsent is a failure that says nothing is behind a target: no server, or no such session
 // (tmux.ts:42-46).
 func targetAbsent(res result) bool {
@@ -49,8 +53,8 @@ type paneLookup struct {
 // readPaneLookup reads a `list-panes -t <pane>` result (tmux.ts:394-433). The listing is the
 // pane's whole window, so the pane-id column picks the row, exactly: an id missing from a good
 // listing is absent, never approximated by a sibling's pid. A failure is absent only on proof
-// (paneGoneStderr); a client killed by its timeout, any other stderr, or a row whose pid does not
-// parse proves nothing and is failed.
+// (paneGoneStderr); a client killed by its timeout or by another signal, any other stderr, or a row
+// whose pid does not parse proves nothing and is failed.
 func readPaneLookup(paneID string, res result) paneLookup {
 	if res.timedOut > 0 {
 		return paneLookup{status: paneLookupFailed, detail: fmt.Sprintf("list-panes -t %s timed out after %s", paneID, res.timedOut)}
@@ -61,6 +65,9 @@ func readPaneLookup(paneID string, res result) paneLookup {
 			return paneLookup{status: paneAbsent}
 		}
 		detail := fmt.Sprintf("list-panes -t %s exited %d", paneID, res.exitCode)
+		if res.signal != "" {
+			detail = fmt.Sprintf("list-panes -t %s was ended by %s", paneID, res.signal)
+		}
 		if stderr != "" {
 			detail += ": " + stderr
 		}

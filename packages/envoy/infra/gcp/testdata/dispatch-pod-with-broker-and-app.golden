@@ -111,6 +111,10 @@
             "value": "http://example-dispatch-listener.dispatch.svc.cluster.local:9020"
           },
           {
+            "name": "ENVOY_ACCOUNT_TOKEN_FILE",
+            "value": "/var/run/secrets/envoy-listener/token"
+          },
+          {
             "name": "ENVOY_TOKEN",
             "valueFrom": {
               "secretKeyRef": {
@@ -227,6 +231,11 @@
             "readOnly": true
           },
           {
+            "mountPath": "/var/run/secrets/envoy-listener",
+            "name": "envoy-listener-account-token",
+            "readOnly": true
+          },
+          {
             "mountPath": "/var/run/secrets/dispatch",
             "name": "agent-secrets-account-token",
             "readOnly": true
@@ -308,6 +317,20 @@
           }
         },
         "name": "nats-seed"
+      },
+      {
+        "name": "envoy-listener-account-token",
+        "projected": {
+          "sources": [
+            {
+              "serviceAccountToken": {
+                "audience": "http://example-dispatch-listener.dispatch.svc.cluster.local:9020",
+                "expirationSeconds": 3600,
+                "path": "token"
+              }
+            }
+          ]
+        }
       },
       {
         "name": "agent-secrets-account-token",

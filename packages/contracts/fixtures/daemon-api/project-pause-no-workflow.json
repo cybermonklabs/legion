@@ -1,0 +1,4 @@
+{
+  "code": "PAUSE_UNAVAILABLE",
+  "error": "this daemon cannot pause its project: it runs no workflow (legion.yaml names no dispatch_url), and a pause stops the project's roles and holds their work through the workflow's outbox; nothing changed"
+}

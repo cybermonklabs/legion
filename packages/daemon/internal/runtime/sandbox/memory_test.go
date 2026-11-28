@@ -77,6 +77,7 @@ func memorySpec(t *testing.T) runtime.SpawnSpec {
 // order the operator wrote them, and the shim hands that value to Oh My Pi untouched. A launch for
 // a tree in no memory group is told the operator's and the role's own alone.
 func TestAMemoryGroupRoleIsToldTheMemoryOverlaysLast(t *testing.T) {
+	t.Parallel()
 	r := memoryRuntime(t, memoryOverlays)
 	own := operatorPod().Env["PI_CONFIG_FILES"] + ":" + strings.Join(roleFiles[claim.RoleTester], ":")
 	if got, want := envOf(workerOf(t, r, memorySpec(t)))["PI_CONFIG_FILES"], own+":"+strings.Join(memoryOverlays, ":"); got != want {
@@ -92,6 +93,7 @@ func TestAMemoryGroupRoleIsToldTheMemoryOverlaysLast(t *testing.T) {
 // instructions, then the memory's, each separated by a blank line and its trailing newlines
 // dropped. A launch given none ends at the deployment's own.
 func TestTheMemoryInstructionsAreTheLastFragmentOfTheSystemPrompt(t *testing.T) {
+	t.Parallel()
 	r := memoryRuntime(t, memoryOverlays)
 	spec := memorySpec(t)
 	memory := filepath.Join(t.TempDir(), "memory.md")
@@ -115,6 +117,7 @@ func TestTheMemoryInstructionsAreTheLastFragmentOfTheSystemPrompt(t *testing.T) 
 // the update round that is to replace its pod. A pod built with the mount holds them all, and its
 // role is told the whole list.
 func TestAKeptPodBuiltBeforeTheMemoryMountIsToldNoMemoryOverlay(t *testing.T) {
+	t.Parallel()
 	before := runtimeWithOptions(t, func(o *Options) { o.RoleConfigFiles = roleFiles })
 	after := memoryRuntime(t, memoryOverlays)
 	own := operatorPod().Env["PI_CONFIG_FILES"] + ":" + strings.Join(roleFiles[claim.RoleTester], ":")
@@ -131,7 +134,7 @@ func TestAKeptPodBuiltBeforeTheMemoryMountIsToldNoMemoryOverlay(t *testing.T) {
 			spec := memorySpec(t)
 			s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{Spec: podOf(t, tc.built, spec)}}}
 			l := launchOf(t, after, spec)
-			kept, readable := after.keptBy(s, l)
+			kept, readable := after.keptBy(s, "", l)
 			if !readable {
 				t.Fatal("keptBy could not read the pod's template")
 			}
@@ -157,11 +160,12 @@ func TestAKeptPodBuiltBeforeTheMemoryMountIsToldNoMemoryOverlay(t *testing.T) {
 // memory-group one and the pod held no memory overlay; here the pod holds them and the launch is
 // in no group.
 func TestAKeptPodHoldingTheMemoryOverlaysTellsALaunchInNoMemoryGroupNone(t *testing.T) {
+	t.Parallel()
 	r := memoryRuntime(t, memoryOverlays)
 	own := operatorPod().Env["PI_CONFIG_FILES"] + ":" + strings.Join(roleFiles[claim.RoleTester], ":")
 	s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{Spec: podOf(t, r, memorySpec(t))}}}
 	l := launchOf(t, r, workerSpec(t))
-	kept, readable := r.keptBy(s, l)
+	kept, readable := r.keptBy(s, "", l)
 	if !readable {
 		t.Fatal("keptBy could not read the pod's template")
 	}
@@ -181,6 +185,7 @@ func TestAKeptPodHoldingTheMemoryOverlaysTellsALaunchInNoMemoryGroupNone(t *test
 // controller runs in no tree, so no memory group ever names it those files. Restarting on the
 // same configuration is no move.
 func TestAMovedMemoryOverlaysMountDriftsEveryIssuePodOfTheDeployment(t *testing.T) {
+	t.Parallel()
 	at := func(dir string) func(*Options) {
 		return func(o *Options) {
 			volume, mount := memoryMount(dir)
@@ -211,6 +216,7 @@ func TestAMovedMemoryOverlaysMountDriftsEveryIssuePodOfTheDeployment(t *testing.
 // `experiments.memory` is no arm of the block (runtime.Variant.MemoryBlock), so its moved overlay
 // is named by the key the operator wrote it under, as every arm of the `experiments` key is.
 func TestAMovedOverlayOfExperimentsMemoryIsNamedByItsOwnKey(t *testing.T) {
+	t.Parallel()
 	const field = "projects.LEGION.experiments.memory.variants.memory.config_files"
 	at := func(dir string) func(*Options) {
 		return func(o *Options) {
@@ -237,6 +243,7 @@ func TestAMovedOverlayOfExperimentsMemoryIsNamedByItsOwnKey(t *testing.T) {
 // tree, so its value is its own overlays alone, and a project at mode off is probed with the
 // command a deployment with no memory block is.
 func TestTheImageProbeReadsEveryWorkflowRolesMemoryOverlays(t *testing.T) {
+	t.Parallel()
 	command := func(r *Runtime) []string {
 		return containerNamed(t, r.probeManifest("legion-probe", ImageProbe{Contract: 5, RoleReferences: testRoleReferences}, time.Time{}).Spec.PodTemplate.Spec, probeContainer).Command
 	}
@@ -270,6 +277,7 @@ func TestTheImageProbeReadsEveryWorkflowRolesMemoryOverlays(t *testing.T) {
 // moving a project onto memory changes no other pod. Memory before the block and after it are the
 // same pod.
 func TestNoMemoryBeforeOrAfterTheBlockBuildsTheSamePod(t *testing.T) {
+	t.Parallel()
 	with, without := memoryRuntime(t, memoryOverlays), memoryRuntime(t, nil)
 	spec := workerSpec(t)
 	if got, want := podOf(t, with, spec), podOf(t, without, spec); !reflect.DeepEqual(got, want) {
@@ -282,6 +290,7 @@ func TestNoMemoryBeforeOrAfterTheBlockBuildsTheSamePod(t *testing.T) {
 
 // configure refuses a memory overlay PI_CONFIG_FILES cannot name, as it refuses a role's own.
 func TestConfigureRefusesAMemoryOverlayPIConfigFilesCannotName(t *testing.T) {
+	t.Parallel()
 	for _, file := range []string{"memory.yml", "/etc/a:b.yml"} {
 		opts := testOptions()
 		opts.ExperimentVariants = memoryVariants([]string{file})

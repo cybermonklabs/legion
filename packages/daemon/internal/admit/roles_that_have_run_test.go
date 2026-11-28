@@ -16,14 +16,15 @@ import (
 
 // A re-admitted tree brings back the roles of its members that have run, and no others. The claim
 // row is what says a role has run: a re-admission clears the generation's facts and never a claim
-// (record.ClearTreeGeneration touches pull_requests, design_gates, phases and issues), and a
+// (workflow.Engine.ClearTreeGeneration touches pull_requests, phases and design_gates), and a
 // claim's token carries no generation (claim.NewToken), so the row outlives the generation that
 // wrote it — which is why every state here asserts that the rows it seeded are still there after
 // the re-admission. A role that holds none has never run, and a session started for it would hold
 // no transcript and no task, so nothing but a message could ever wake it: it is not started at all.
 //
-// The four states are the member mid-phase, the member in a phase with no worker of its own, the
-// re-admitted root itself, and the member whose phase worker never ran.
+// The five states are the member mid-phase, the member in a phase with no worker of its own, the
+// re-admitted root itself, the member whose phase worker never ran, and the member waiting in
+// awaiting_children, of which no role is brought back whatever has run.
 //
 // What the old behaviour was: the first two states' assertion that a role holding no claim row has
 // no start row at all ("want no start row at all"). Before this rule, startMidPhaseMembers
@@ -52,8 +53,8 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 			Rank: "B", LastDispatchSeq: 1})
 	}
 
-	// hasRun records each role of key as one that has run: the claim row the tree's close left
-	// suspended, the durable record of the run before this generation.
+	// hasRun records each role of key as one that has run: a claim row left suspended, the durable
+	// record of the run before this generation.
 	hasRun := func(t *testing.T, pool *pgxpool.Pool, key string, roles ...claim.Role) []claim.Token {
 		t.Helper()
 		tokens := make([]claim.Token, 0, len(roles))
@@ -64,14 +65,14 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 	}
 
 	// survived is the assertion the rule itself reads: every claim row seeded before the
-	// re-admission is still there, in the state the tree's close left it.
+	// re-admission is still there, in the suspended state it was seeded in.
 	survived := func(t *testing.T, pool *pgxpool.Pool, tokens []claim.Token) {
 		t.Helper()
 		states := claimStates(t, pool)
 		for _, token := range tokens {
 			state, kept := states[string(token)]
 			if !kept || state != string(supervise.StateSuspended) {
-				t.Fatalf("the claim %s reads %q, kept=%v after the re-admission; want the suspended row the close left, which no generation clears", token, state, kept)
+				t.Fatalf("the claim %s reads %q, kept=%v after the re-admission; want the suspended row seeded before it, which no generation clears", token, state, kept)
 			}
 		}
 	}
@@ -167,9 +168,10 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 	t.Run("a member in a phase with no worker of its own", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, nil)
-		// Accepting waits on the tree's architect, which the promotion starts, so the member's own
-		// phase has no worker and no row of its own waits for a slot. The roles that have run come
-		// back all the same, each start claimable at once, because such a start waits for nothing.
+		// Accepting waits on the architect that owns the member, here the tree's, which the promotion
+		// starts, so the member's own phase has no worker and no row of its own waits for a slot. The
+		// roles that have run come back all the same, each start claimable at once, because such a
+		// start waits for nothing.
 		seedTree(t, pool, phase.Accepting, "needs_review")
 		tokens := hasRun(t, pool, member, claim.RoleTester, claim.RolePlanner, claim.RoleImplementer)
 
@@ -190,9 +192,10 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, nil)
 		seedTree(t, pool, "", "")
-		// Every role of the root has run under the generation before, and the re-admission still
-		// starts none of them: a root standing at admitted has run nothing in this generation, and
-		// its first phase is the waiting line's to start.
+		// Every role of the root has run under the generation before, and the re-admission brings
+		// none of them back but its architect, which the promotion starts: a root standing at
+		// admitted has run nothing in this generation, and its first phase is the waiting line's to
+		// start.
 		tokens := hasRun(t, pool, root, claim.Roles...)
 
 		apply(t, pool, admission, "readmit", readmission, newEngine())
@@ -225,6 +228,37 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		rows := startRows(t, pool, member)
 		assertCarriesThePhase(t, rows, claim.RoleTester)
 		assertBroughtBack(t, rows, claim.RolePlanner)
+		assertArchitectStarted(t, pool, architectStart(t, pool, admission, root, ""))
+		survived(t, pool, tokens)
+	})
+
+	t.Run("a member waiting on its children", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := newAdmission(t, 1, nil)
+		seedTree(t, pool, "", "")
+		// The member held its implementing start because a child of it is open, and every role
+		// of it has run, its own sub-architect among them. No role of a waiting parent is woken
+		// for its work (dispatch://INFRA-3320 R11): its next start is the one it holds, which the
+		// admission pass gives back once no open child is left. So the re-admission brings none
+		// of them back, and queues the member's branch alone, as for every member past admitted.
+		parent, waited := root, fixedNow.Add(-2*time.Hour)
+		held := record.ChildrenWait{Start: phase.Implementing, Task: "Continue member. Issue: LEGION-209. Phase: implementing.",
+			Reason: "a review asked for changes, while these Dispatch children of LEGION-209 were open: LEGION-210 (backlog)", Since: waited}
+		putIssue(t, pool, record.Issue{Key: member, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
+			Title: "member", Tree: root, Parent: &parent, Phase: phase.AwaitingChildren, Generation: 1, Status: "in_progress",
+			DispatchStatus: "in_progress", Rank: "B", LastDispatchSeq: 1, ChildrenWait: &held, ChildrenWaitedAt: &waited})
+		seedMirrorChild(t, pool, "LEGION-210", "backlog", member)
+		tokens := hasRun(t, pool, member, claim.Roles...)
+
+		apply(t, pool, admission, "readmit", readmission, newEngine())
+
+		runBranchRows(t, pool, member)
+		if rows := startRows(t, pool, member); len(rows) != 0 {
+			t.Fatalf("the starts of %s = %+v, want none: no role of a waiting parent is brought back", member, rows)
+		}
+		if got := issue(t, pool, member); got.Phase != phase.AwaitingChildren || got.ChildrenWait == nil || got.ChildrenWait.Task != held.Task {
+			t.Fatalf("%s after the re-admission = phase %s, held start %+v; want it waiting still with the start it held", member, got.Phase, got.ChildrenWait)
+		}
 		assertArchitectStarted(t, pool, architectStart(t, pool, admission, root, ""))
 		survived(t, pool, tokens)
 	})

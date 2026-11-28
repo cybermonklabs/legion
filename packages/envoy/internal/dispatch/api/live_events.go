@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -35,9 +36,10 @@ import (
 // sent, so its state is bounded whatever the backlog was, and it is freed with the subscription
 // when the page unsubscribes or the socket closes.
 //
-// The event log can be reset under a reader (`truncate events restart identity`, the browser
-// suite's e2e/seed.ts): the ids restart at 1 and the relay, which notices, ends the generation and
-// with it every open subscription, and each page subscribes again. A page only ever raises its
+// The event log can be reset under a reader (the browser suite's e2e/seed.ts deletes its rows and
+// restarts its ids; `truncate events restart identity` does the same): the ids restart at 1 and
+// the relay, which notices, ends the generation and with it every open subscription, and each page
+// subscribes again. A page only ever raises its
 // cursor and never lowers it, so it resumes with a since above the new log's newest id. Unclamped,
 // the live loop would then drop every event of the new log for ever, on a subscription that stays
 // open: a reader silent for good, with nothing logged and nothing failed. So a since above the
@@ -100,9 +102,9 @@ func (s *server) startEventsSubscription(ctx context.Context, stream liveStreame
 // generation and waits, on the next generation, for a horizon proven after the reset. A relay
 // subscription taken meanwhile carries a published cursor that names a position in the old log:
 // above the new log's newest id, or at an id whose row is gone or carries another created_at than
-// the relay read (eventLogWasReset). Started there, the subscription would drop the new log's
-// events up to it, or start and then be ended by the relay's reset, sending the page through a
-// resubscribe and, for a page with no complete replay, the whole refresh it owes a gap. So the
+// the relay read (events.EventLogWasReset). Started there, the subscription would drop the new
+// log's events up to it, or start and then be ended by the relay's reset, sending the page through
+// a resubscribe and, for a page with no complete replay, the whole refresh it owes a gap. So the
 // subscription waits for that reset, which ends the relay subscription, and subscribes again on
 // the generation the relay starts next. A subscription with no since then replays from
 // replacedFrom, read when it found the relay on the replaced log, rather than starting at the new
@@ -141,7 +143,7 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 			endEventsAfterFailure(ctx, stream, sub, "read the event log's head", err)
 			return
 		}
-		if !eventLogWasReset(subscription.head, subscription.headAt, head, cursorAt) {
+		if !events.EventLogWasReset(subscription.head, subscription.headAt, head, cursorAt) {
 			break
 		}
 		if since == nil && replacedFrom < 0 {
@@ -316,7 +318,10 @@ func (s *server) replayThrough(ctx context.Context, from, published int64, compl
 	if behind > maxLiveReplay {
 		return eventReplay{start: published, after: published}, nil
 	}
-	missed, err := s.readEventsAfterID(ctx, from, published, maxLiveReplay)
+	// The replay serves whoever subscribed, and this read resolves no credential of theirs, so it
+	// reads as one that proves no author: an ask reserved for its author carries no detail here
+	// (refs' visibility registry).
+	missed, err := s.readEventsAfterID(ctx, model.Actor{}, from, published, maxLiveReplay)
 	if err != nil {
 		return eventReplay{}, err
 	}
@@ -348,7 +353,7 @@ func (s *server) resumeAfterOverflow(ctx context.Context, after int64) (relaySub
 		return relaySubscription{}, eventReplay{}, false
 	}
 	head, cursorAt, behind, err := eventSubscriptionCheck(ctx, s.deps.Store.Pool, next.head, &after)
-	if err != nil || eventLogWasReset(next.head, next.headAt, head, cursorAt) {
+	if err != nil || events.EventLogWasReset(next.head, next.headAt, head, cursorAt) {
 		next.cancel()
 		return relaySubscription{}, eventReplay{}, false
 	}
@@ -360,13 +365,13 @@ func (s *server) resumeAfterOverflow(ctx context.Context, after int64) (relaySub
 	return next, caughtUp, true
 }
 
-// eventSubscriptionCheck is eventCursorCheck for an events subscription whose relay subscription
-// began at cursor, and in the same statement how many events a resume from since stands behind
-// it: the rows of (since, cursor], counted up to maxLiveReplay+1, which is all the bound needs
-// (replayThrough). behind is -1 when there is nothing to count: no since, or a since above the
-// cursor, which resolveEventReplay answers without a replay read. One statement, so a resume waits
-// for the shared pool once before its replay read rather than twice: on a restart every page
-// resumes at once, behind every request queued for a connection.
+// eventSubscriptionCheck is events.EventCursorCheck for an events subscription whose relay
+// subscription began at cursor, and in the same statement how many events a resume from since
+// stands behind it: the rows of (since, cursor], counted up to maxLiveReplay+1, which is all the
+// bound needs (replayThrough). behind is -1 when there is nothing to count: no since, or a since
+// above the cursor, which resolveEventReplay answers without a replay read. One statement, so a
+// resume waits for the shared pool once before its replay read rather than twice: on a restart
+// every page resumes at once, behind every request queued for a connection.
 func eventSubscriptionCheck(ctx context.Context, q queryer, cursor int64, since *int64) (maxID int64, cursorAt *time.Time, behind int, err error) {
 	if err := q.QueryRow(ctx, `
 		select coalesce((select max(id) from events), 0), (select created_at from events where id = $1),

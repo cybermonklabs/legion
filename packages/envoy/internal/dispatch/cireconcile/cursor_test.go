@@ -17,8 +17,9 @@ import (
 // line report more heads open than the repository has, which is the number an operator reads
 // the pass's progress against.
 func TestAPageTwoPassesShareCountsItsHeadsOnce(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Twenty-five heads are two pages, and every one of them is read over REST, so the pass can
 	// be cut short in the middle of the second page.
 	all := heads(25)
@@ -27,6 +28,7 @@ func TestAPageTwoPassesShareCountsItsHeadsOnce(t *testing.T) {
 		h.github.refuseChecks(gitHubRepository, pull.sha)
 	}
 	h.reconciler.PassTimeout = 3 * time.Second
+	h.boundEndsAtTheStall()
 	// GitHub is slower than the first pass has left at the second head of the second page.
 	h.github.stall(runsOf(head(22)), time.Minute)
 
@@ -69,8 +71,9 @@ func TestAPageTwoPassesShareCountsItsHeadsOnce(t *testing.T) {
 // taking it up to the listing for every page left, so refusing the first page would leave no
 // page of the cycle read by a query at all.
 func TestACycleThatReadsARepositoryBothWaysCountsEachPageOnce(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Forty-five heads are three pages of a query, and three windows of the REST listing.
 	all := heads(45)
 	h.listHeads(all...)
@@ -85,6 +88,7 @@ func TestACycleThatReadsARepositoryBothWaysCountsEachPageOnce(t *testing.T) {
 	// there on is the listing's, this pass's and the next pass's alike.
 	h.github.refusePage(gitHubRepository, 1)
 	h.reconciler.PassTimeout = 3 * time.Second
+	h.boundEndsAtTheStall()
 	// GitHub is slower than the first pass has left at the second head of the second page.
 	h.github.stall(runsOf(head(22)), time.Minute)
 
@@ -143,8 +147,9 @@ func TestACycleThatReadsARepositoryBothWaysCountsEachPageOnce(t *testing.T) {
 // is enough for that, and a number names the same place in the listing however many have closed
 // below it.
 func TestARepositoryReadOverRESTIsTakenUpAtTheNumberTheCursorNames(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Forty-five heads are three windows of the REST listing.
 	all := heads(45)
 	h.listHeads(all...)
@@ -157,6 +162,7 @@ func TestARepositoryReadOverRESTIsTakenUpAtTheNumberTheCursorNames(t *testing.T)
 	// from the REST listing, by this pass and by the pass that takes its cursor up.
 	h.github.refusePage(gitHubRepository, 0)
 	h.reconciler.PassTimeout = 3 * time.Second
+	h.boundEndsAtTheStall()
 	// GitHub is slower than the first pass has left at the second head of the second window.
 	h.github.stall(runsOf(head(22)), time.Minute)
 
@@ -200,7 +206,7 @@ func TestARepositoryReadOverRESTIsTakenUpAtTheNumberTheCursorNames(t *testing.T)
 	}
 }
 
-// pullsPath is where the stand-in lists the mapped repository's open pull requests, which is
+// pullsPath is where the stand-in lists the harness's repository's open pull requests, which is
 // the read a test answers with a rate limit to end a pass in the listing a refused query sent
 // it to.
 const pullsPath = "/repos/" + gitHubRepository + "/pulls"
@@ -214,8 +220,9 @@ const pullsPath = "/repos/" + gitHubRepository + "/pulls"
 // every position after it down, and the heads between would be read by no pass of this cycle
 // while the pass that closed the cycle recorded that it had covered them.
 func TestAPageAQueryWasRefusedForIsTakenUpAtItsNumber(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Forty-five heads are three pages of a query, and three windows of the REST listing.
 	all := heads(45)
 	h.listHeads(all...)
@@ -290,8 +297,9 @@ func TestAPageAQueryWasRefusedForIsTakenUpAtItsNumber(t *testing.T) {
 // and nothing but its number still finds it. The pages of a query are read one after another,
 // and GitHub answers each of them from the pull requests open at the moment it is asked.
 func TestARefusedPageIsReadFromItsNumberWithinOnePass(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Forty-five heads are three pages of a query, and three windows of the REST listing.
 	all := heads(45)
 	h.listHeads(all...)
@@ -345,8 +353,9 @@ func TestARefusedPageIsReadFromItsNumberWithinOnePass(t *testing.T) {
 // repository by query alone, with five pull requests below the second page merged between the
 // query that answered the first page and the query that asks for the second.
 func TestAMergeBelowAQueryCursorMovesNoPageOfTheQuery(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Forty-five heads are three pages of a query.
 	all := heads(45)
 	h.listHeads(all...)
@@ -378,8 +387,8 @@ func TestAMergeBelowAQueryCursorMovesNoPageOfTheQuery(t *testing.T) {
 	}
 }
 
-// mergeWhenRecorded merges the pull requests of the mapped repository that are not in left the
-// moment the pass records a check run of head at: the stand-in answers the repository's open
+// mergeWhenRecorded merges the pull requests of the harness's repository that are not in left
+// the moment the pass records a check run of head at: the stand-in answers the repository's open
 // pull requests with left from then on.
 //
 // It is how a test puts a merge inside one pass, between the query that answered a page and
@@ -406,9 +415,9 @@ type mergingWriter struct {
 	merge func()
 }
 
-func (w *mergingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	changed, err := w.Writer.Record(ctx, observation)
-	if observation.Number == w.at {
+func (w *mergingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
+	changed, err := w.Writer.RecordRuns(ctx, observations)
+	if len(observations) > 0 && observations[0].Number == w.at {
 		w.merge()
 	}
 	return changed, err

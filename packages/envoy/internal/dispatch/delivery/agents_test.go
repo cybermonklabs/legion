@@ -17,8 +17,7 @@ const (
 	titlesIssueBand = 3000
 )
 
-// seedTitlesIssue writes titlesIssue in deliveryProject and clears its events, so a run against
-// the database an earlier run left reads only what this test writes.
+// seedTitlesIssue writes titlesIssue in deliveryProject.
 func seedTitlesIssue(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	seedDeliveryProject(t, ctx, pool)
@@ -28,14 +27,11 @@ func seedTitlesIssue(t *testing.T, ctx context.Context, pool *store.Pool) {
 		on conflict do nothing`, titlesIssue, deliveryProject, titlesIssueBand+1); err != nil {
 		t.Fatalf("seed issue %s: %v", titlesIssue, err)
 	}
-	if _, err := pool.Exec(ctx, `delete from events where issue_key = $1`, titlesIssue); err != nil {
-		t.Fatalf("clear the events of %s: %v", titlesIssue, err)
-	}
 }
 
 // writeSessionEvent appends one event of titlesIssue at at, stamped with actor as the writer
-// stored it: a write's actor is JSONB on the events row, which is where ResolveSessionTitles
-// reads a session's title from.
+// stored it: a write's actor is JSONB on the events row, and the trigger on events records the
+// title it stamps in session_titles, which is where ResolveSessionTitles reads it from.
 func writeSessionEvent(t *testing.T, ctx context.Context, pool *store.Pool, at time.Time, actor json.RawMessage) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
@@ -65,13 +61,14 @@ func actorJSON(t *testing.T, actor model.Actor) json.RawMessage {
 // stamped. A session that wrote but never stamped a title is absent from the map, which is the
 // limit chosen for INFRA-1368: nothing here backfills a name, so SessionTitle answers its bare id.
 func TestASessionKeepsItsNameAfterAWriteThatCarriesNoTitle(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	seedTitlesIssue(t, ctx, pool)
-
 	const (
 		named    = "ses_release_sender"
 		nameless = "ses_never_titled"
 	)
+	seedTitlesIssue(t, ctx, pool)
+
 	at := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
 	writeSessionEvent(t, ctx, pool, at, actorJSON(t, model.Actor{
 		Kind: "session", ID: named, Origin: &model.ActorOrigin{SessionTitle: "Release sender"},

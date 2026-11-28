@@ -1,4 +1,4 @@
-import { api, type WriteBounds } from "../../api/client";
+import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type {
   AnchorInput,
   AskOption,
@@ -9,21 +9,18 @@ import type {
   EditCommentInput,
 } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
-import { retriesUnderItsKey } from "../writes/keyed-write";
+import { draftParties } from "../refs/party-references";
+import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { carriedBlocks, type FollowedBlocks } from "./block-spans";
-import type {
-  AcceptedMention,
-  ComposerAnchor,
-  ComposerKind,
-  ComposerOwner,
-  ReplyTarget,
-} from "./composer-model";
+import type { SeededMention } from "./composer-draft";
+import type { ComposerAnchor, ComposerKind, ComposerOwner, ReplyTarget } from "./composer-model";
+import { ADDRESS_WORDS, DELIVERY_COMMANDS, MOVED_SEND_WORDS } from "./composer-words";
 
 /** A send's own copy of the draft, taken when it starts: what the request is built from, and
- *  what a refusal hands back. Mentions are offsets into that exact text. */
+ *  what a refusal hands back. Who it addresses is in its text, written there as a reference
+ *  (R4), so there is nothing beside the words to keep in step with them. */
 export interface SentDraft {
   readonly body: string;
-  readonly mentions: readonly AcceptedMention[];
   readonly replacement: string;
 }
 
@@ -46,6 +43,35 @@ export const saveCommentEdit: SaveCommentEdit = (id, body, carried, bounds) =>
   api.editComment(id, { body, ...carried }, bounds);
 
 /**
+ * A statement of the issue's spec (one of its `requirement` blocks) that a comment is on, as the
+ * issue page's box writes it: the document (its id or slug) and the statement's whole words, with
+ * no occurrence and no mark, and the statement's row on the page. The server finds those words in
+ * the document and anchors the comment to the lowest block that holds them, which for a statement
+ * of one paragraph is that paragraph, and refuses words the document holds twice. No composer
+ * holds it as its own anchor (`ComposerAnchor`): the host names it, and the send carries it beside
+ * the composer's anchor (`SentRequest.statement`).
+ */
+export interface StatementAnchor {
+  readonly artifact: string;
+  readonly quote: string;
+  /** The statement's row in the issue page's outline, its node id `<slug>#b-<block id>`: the row
+   *  the comment lands under once it is sent (`Landing.under`). A held send keeps it with the
+   *  rest, so a box that mounts again over the send - after a reload, or after the reader left
+   *  the issue - lands there too. It is the page's own: the anchor the server is sent names the
+   *  document and the words alone (`attempt`). */
+  readonly row: string;
+}
+
+/** Whether two sends or drafts are on the same statement - the same document and the same words,
+ *  which are what the server places a comment by - or both on none. */
+export function sameStatement(
+  a: StatementAnchor | undefined,
+  b: StatementAnchor | undefined
+): boolean {
+  return a?.artifact === b?.artifact && a?.quote === b?.quote;
+}
+
+/**
  * A send, whole, as it stood when Send started it: where it goes (the owner, the reply it answers,
  * its kind and anchor), what it carries (the draft and an ask's fields), and, for an edit, which
  * comment it saves and how. TanStack gives a pending mutation each new render's options and calls
@@ -64,6 +90,12 @@ export interface SentRequest {
   readonly draft: SentDraft;
   readonly edit:
     | {
+        /** The comment's body the edit was written over, as the editor last saw it at the press:
+         *  a refused edit is put back in its editor only while the comment still holds this body,
+         *  or reads as the edit would save it (`useKeptDrafts`'s `changedUnder`). Undefined in a
+         *  send kept by a build that kept none, which is offered beside the comment as one
+         *  written over another body is. */
+        readonly base?: string;
         /** The block ids the save carries, worked out at the press from the blocks the editor
          *  followed through the edit (`carriedIdsOf`), and kept with the send across a reload, so
          *  every attempt under the send's key sends the same body. Undefined when the blocks
@@ -84,20 +116,33 @@ export interface SentRequest {
    *  live view sends a session its commands verbatim. */
   readonly pickedDelivery?: DeliveryCapability;
   readonly replyTo: ReplyTarget | null;
+  /** The mentions the issue page's box wrote in front of the draft for the reply it answers and
+   *  that still open it as the reader left it (`openingSeeds`), each the party and the link
+   *  written for it (`partyMention`); absent where none do, and from every other send. What the
+   *  reader writes over a refusal keeps them as the box then holds them (`HeldSends.keep`), and
+   *  the reader's own move off the reply carries the send with none (`HeldSends.carry`). A box
+   *  that mounts again over the held send - after a reload, or after the reader left the issue -
+   *  takes these back out when the reply ends or moves, as the box that wrote them would, and
+   *  never a link the reader wrote. They are the page's own: no request carries them
+   *  (`attempt`). */
+  readonly seeds?: readonly SeededMention[];
   /** The key that names this send to Dispatch (`Idempotency-Key`), so that every attempt of it,
    *  and a reload's, is that one write there. Minted when Send builds the request, and kept by a
    *  Retry of a send that ended without Dispatch's verdict (`requestFor`). */
   readonly sendKey: string;
+  /** The statement a comment with no reply is on, where the issue page's box aims at one
+   *  (`StatementAnchor`); absent from every other send. A send that carries one carries no
+   *  `anchor` of its own. */
+  readonly statement?: StatementAnchor;
 }
 
-/** The command, at the start of a body, that sends it in a mode other than the plain one (Send,
- *  unless the session refuses Send: `plainDelivery`). `deliveryPlan` strips it from what goes out,
- *  and the composer names it where it tells the reader how to send in another mode or what a bare
- *  command still needs. */
-export const DELIVERY_COMMANDS = { aside: "/aside", btw: "/btw" } as const satisfies Record<
-  Exclude<DeliveryCapability, "steer">,
-  string
->;
+/** The mentions the issue page's box wrote for the reply `request` answers (`SentRequest.seeds`),
+ *  which a box over that held send takes out when the reply ends or moves; none where it holds no
+ *  send. One the box let go of answers no reply and holds none, its mentions taken out of the
+ *  draft as it went (`HeldSends.carry`). */
+export function heldSeeds(request: SentRequest | undefined): readonly SeededMention[] {
+  return request?.seeds ?? [];
+}
 
 function parseDelivery(body: string): { body: string; delivery: DeliveryCapability } {
   for (const mode of ["btw", "aside"] as const) {
@@ -123,39 +168,6 @@ export function deliveryPlan(
     delivery: inherited === undefined ? undefined : hasCommand ? parsed.delivery : inherited,
   };
 }
-
-export function mentionText(text: string): string {
-  return `@${text}`;
-}
-
-/** The accepted mentions the body still carries: each target once, and only while its span reads
- *  exactly as it was accepted. A span the reader edited is their prose, not a mention. */
-export function survivingMentions(
-  body: string,
-  mentions: readonly AcceptedMention[]
-): AcceptedMention[] {
-  const seen = new Set<string>();
-  const surviving: AcceptedMention[] = [];
-  for (const mention of mentions) {
-    if (
-      seen.has(mention.target) ||
-      mention.start < 0 ||
-      mention.end > body.length ||
-      mention.start >= mention.end ||
-      body.slice(mention.start, mention.end) !== mentionText(mention.text)
-    ) {
-      continue;
-    }
-    seen.add(mention.target);
-    surviving.push(mention);
-  }
-  return surviving;
-}
-
-/** What a send says once it is past `SEND_DEADLINE_MS`: still the server's, as any late send is,
- *  and still being tried under its key, which Dispatch takes once. */
-export const KEYED_SEND_LATE_TEXT =
-  "Still sending — Dispatch has not confirmed it yet. It keeps trying, and the message is delivered once.";
 
 /** The message a send to a session puts on the wire: its body with any delivery command stripped,
  *  the mode it names or the reply's thread or the session takes, and the reply it answers - or, in
@@ -196,19 +208,117 @@ function sameMessage(refused: SentRequest, next: Omit<SentRequest, "sendKey">): 
   );
 }
 
-/** Whether `next` is the refused send unedited: the same draft - its text, accepted mentions and a
- *  suggestion's replacement, and an ask's fields - to the same place, in the same kind. */
+/** Whether `a` and `b` are one owner: one issue, one document, or one session. */
+function sameOwner(a: ComposerOwner, b: ComposerOwner): boolean {
+  switch (a.kind) {
+    case "issue":
+      return b.kind === "issue" && b.issueKey === a.issueKey;
+    case "artifact":
+      return b.kind === "artifact" && b.artifactId === a.artifactId;
+    case "session":
+      return b.kind === "session" && b.sessionId === a.sessionId;
+  }
+}
+
+/** Where a send goes: its owner, the mark it is anchored to, the statement it is on, the reply it
+ *  answers, and, for an edit, the comment it saves - a send's, or a composer's as its props name
+ *  it. */
+export type Address = Pick<SentRequest, "anchor" | "owner" | "replyTo" | "statement"> & {
+  readonly edit: { readonly id: string } | undefined;
+};
+
+/** The part of a send's address a move of the reader's own changes: its owner, the reply it
+ *  answers and the statement it is on (Cancel reply, an Agents row's issue pick, the issue page's
+ *  box's own end of its target; `HeldSends.carry`). */
+export type CarriedAddress = Pick<SentRequest, "owner" | "replyTo" | "statement">;
+
+/** Whether `next` goes where `sent` went. A refused send's draft lives at that address: a press
+ *  from a composer its host has moved to another is not its Retry (`HeldSends.send`), and only a
+ *  move the reader makes with the composer's own controls takes the send there with it
+ *  (`HeldSends.carry`). */
+export function sameAddress(sent: Address, next: Address): boolean {
+  return (
+    sameOwner(sent.owner, next.owner) &&
+    sent.anchor?.artifact === next.anchor?.artifact &&
+    sent.anchor?.mark_id === next.anchor?.mark_id &&
+    sameStatement(sent.statement, next.statement) &&
+    sent.replyTo?.id === next.replyTo?.id &&
+    sent.edit?.id === next.edit?.id
+  );
+}
+
+/** The owner Dispatch stores the files of a message for `owner` under: its issue, its document's
+ *  project, or, for a direct message, the agent's conversation. */
+export function artifactOwnerOf(owner: ComposerOwner): ArtifactOwner {
+  switch (owner.kind) {
+    case "issue":
+      return { issue: owner.issueKey };
+    case "artifact":
+      return { project: owner.project };
+    case "session":
+      return { session: owner.sessionId };
+  }
+}
+
+/** A preposition of `ADDRESS_WORDS`. */
+type AddressPreposition = (typeof ADDRESS_WORDS.prepositions)[number];
+
+/** What a message is for, named by the owner its files go to (`artifactOwnerOf`), in the
+ *  composer's words: as a direct message, or `preposition` its issue or another document - `for
+ *  CORE-1` where a draft was written or a file pasted, `to CORE-1` where a send went. The
+ *  composer's words of a pasted file and of a draft's address are these alike. */
+export function ownerWords(owner: ArtifactOwner, preposition: AddressPreposition): string {
+  if ("issue" in owner) return `${preposition} ${owner.issue}`;
+  if ("session" in owner) return ADDRESS_WORDS.direct;
+  return `${preposition} ${ADDRESS_WORDS.document}`;
+}
+
+/** Where `address` sends a message, in the composer's words: as a reply, or where its owner is
+ *  (`ownerWords`). */
+export function addressWords(
+  { owner, replyTo }: CarriedAddress,
+  preposition: AddressPreposition
+): string {
+  return replyTo === null ? ownerWords(artifactOwnerOf(owner), preposition) : ADDRESS_WORDS.reply;
+}
+
+/**
+ * What a send the reader stopped says once they have moved its draft to another address with the
+ * composer's own controls (`HeldSends.carry`): the stopped write may have reached Dispatch at
+ * `stopped`, its own address, and its key is used only there, so the draft sent from here is a new
+ * message under a key of its own, which can make two. It says so in the words of every surface's
+ * stopped write (`stoppedWriteNote`). A margin compose says the same beside a stopped send it
+ * offers for its words (`stoppedOfferOf` in `useKeptDrafts`).
+ */
+export function movedSendNote(stopped: CarriedAddress): string {
+  const { anew, made, what } = MOVED_SEND_WORDS;
+  return stoppedWriteNote(`${what}${addressWords(stopped, "to")}`, made, {
+    anew,
+  });
+}
+
+/** A send the reader stopped whose draft they have since moved to another address, which says so
+ *  (`movedSendNote`). It ends as a stopped write does, with Retry and Discard. It keeps the
+ *  address the stopped write went to (`stopped`), which a host that says the note in words of its
+ *  own names. */
+export class SendMovedError extends SendStoppedError {
+  readonly stopped: CarriedAddress;
+
+  constructor(stopped: CarriedAddress) {
+    super(movedSendNote(stopped));
+    this.name = "SendMovedError";
+    this.stopped = stopped;
+  }
+}
+
+/** Whether `next` is the refused send unedited: the same draft - its text and a suggestion's
+ *  replacement, and an ask's fields - to the same place, in the same kind. */
 export function unedited(refused: SentRequest, next: Omit<SentRequest, "sendKey">): boolean {
   return (
     refused.kind === next.kind &&
-    JSON.stringify(refused.owner) === JSON.stringify(next.owner) &&
-    refused.anchor?.artifact === next.anchor?.artifact &&
-    refused.anchor?.mark_id === next.anchor?.mark_id &&
-    refused.replyTo?.id === next.replyTo?.id &&
-    refused.edit?.id === next.edit?.id &&
+    sameAddress(refused, next) &&
     refused.draft.body === next.draft.body &&
     refused.draft.replacement === next.draft.replacement &&
-    JSON.stringify(refused.draft.mentions) === JSON.stringify(next.draft.mentions) &&
     (next.kind !== "ask" || JSON.stringify(refused.ask) === JSON.stringify(next.ask))
   );
 }
@@ -223,7 +333,11 @@ export function unedited(refused: SentRequest, next: Omit<SentRequest, "sendKey"
  * under a new key: for a message to one session, unedited, the refused request as it was sent - its
  * mode, picked or plain - so a message the live view sent in a mode it picked never goes out again
  * in the Agents row's mode; for anything else, and an edited draft, the request as the composer
- * shows it now, a comment in the modes its mentioned sessions advertise now.
+ * shows it now, a comment in the modes its mentioned sessions advertise now. Either way it is a
+ * Retry only from a composer at the address the refused send's draft lives at (`sameAddress`):
+ * the one it was sent to, or the one the reader has carried it to since with the composer's own
+ * controls (`HeldSends.carry`), where a stopped send's request names a key nothing has gone out
+ * under. The store refuses one from a composer its host has moved (`HeldSends.send`).
  */
 export function requestFor(
   refused: SentRequest | undefined,
@@ -250,13 +364,16 @@ function attempt(
   sent: SentRequest & { readonly owner: Exclude<ComposerOwner, { kind: "session" }> },
   bounds: WriteBounds
 ): Promise<unknown> {
-  const { anchor, ask, draft, kind, owner, plainDelivery, replyTo } = sent;
-  const { body, mentions, replacement } = draft;
+  const { anchor, ask, draft, kind, owner, plainDelivery, replyTo, statement } = sent;
+  const { body, replacement } = draft;
   // A provisional mark is named by its id; a quote anchor (a closed issue's document) by its text
-  // and occurrence, where the server writes the mark.
+  // and occurrence, where the server writes the mark; a statement by its words alone, which the
+  // server finds in the document, and never by its row, the page's own (`StatementAnchor`).
   const selection: AnchorInput | undefined =
     anchor === undefined
-      ? undefined
+      ? statement === undefined
+        ? undefined
+        : { artifact: statement.artifact, quote: statement.quote }
       : anchor.mark_id === undefined
         ? { artifact: anchor.artifact, occurrence: anchor.occurrence, quote: anchor.quote }
         : { artifact: anchor.artifact, mark_id: anchor.mark_id };
@@ -286,19 +403,23 @@ function attempt(
       bounds
     );
   }
-  const targets = survivingMentions(body, mentions).map((mention) => mention.target);
+  // Who this comment addresses is in its own words (`draftParties`), so nothing names them
+  // beside the body: the request carries the mode they are told in and no `mentions` array. A
+  // draft that names nobody leaves a typed `/btw` the reader's own first word.
+  const parties = draftParties(body);
   const baseBody = kind === "suggestion" && body.trim() === "" ? "Suggested replacement." : body;
-  const plan = deliveryPlan(baseBody, targets.length === 0 ? undefined : plainDelivery);
+  const plan = deliveryPlan(baseBody, parties.named ? plainDelivery : undefined);
+  // A reply under an ask names the ask (`ask_id`), and a reply to a comment names the comment
+  // (`reply_to`): the server reads `reply_to` as a comment's id alone.
   const comment: CreateCommentInput = {
     body: plan.body,
-    ...(replyTo === null ? {} : { reply_to: replyTo.id }),
-    ...(kind === "suggestion" ? { suggestion: { replace_with: replacement } } : {}),
-    ...(targets.length === 0
+    ...(replyTo === null
       ? {}
-      : {
-          delivery: plan.delivery ?? plainDelivery,
-          mentions: targets.map((target) => ({ target })),
-        }),
+      : replyTo.parentKind === "ask"
+        ? { ask_id: replyTo.id }
+        : { reply_to: replyTo.id }),
+    ...(kind === "suggestion" ? { suggestion: { replace_with: replacement } } : {}),
+    ...(parties.named ? { delivery: plan.delivery ?? plainDelivery } : {}),
   };
   const input = replyTo === null ? { ...comment, anchor: selection } : comment;
   return owner.kind === "issue"

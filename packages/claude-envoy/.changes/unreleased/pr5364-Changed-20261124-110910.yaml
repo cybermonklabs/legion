@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The `agent-secrets` skill says that a secret request that waits for a person is already in that
+  person's Dispatch Inbox, so the agent opens no Dispatch ask, comment or message asking them to
+  approve it, and reads the decision with `agent-secrets status` instead. The `dispatch-first`
+  skill the plugin injects names this exception in its rule to open an ask when a person blocks
+  the work.
+time: 2026-11-24T11:09:10Z
+custom:
+    Issue: pr5364

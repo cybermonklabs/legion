@@ -32,8 +32,10 @@ func heldRuntimeTick(t *testing.T, w *workflowRuntime, eventID string) {
 func waitingLine(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	var line []string
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		state, err := projection.Project(context.Background(), tx, record.NewStore(), "CAPTURE", nil, nil, nil, nil, nil, catchUpClock())
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		state, err := projection.Project(context.Background(), projection.Inputs{
+			Tx: tx, Store: record.NewStore(), Project: "CAPTURE", Now: catchUpClock(),
+		})
 		if err != nil {
 			return err
 		}
@@ -63,6 +65,7 @@ func waitingLine(t *testing.T, pool *store.Pool) []string {
 // between them, a pass that passed the held root over would hand the root behind it a slot that
 // no pass takes back to restore the order.
 func TestTheBootCatchUpHoldKeepsItsRootsPlaceOnTheRuntime(t *testing.T) {
+	t.Parallel()
 	answered := catchUpClock().Add(-time.Hour)
 	client := &awaitingDispatch{}
 	var logs syncBuffer
@@ -87,7 +90,7 @@ func TestTheBootCatchUpHoldKeepsItsRootsPlaceOnTheRuntime(t *testing.T) {
 	// The boot holds the roots its catch-up will read, in the reconcile's own transaction, and
 	// then makes its admission pass: the pass breaks at the held root, so the one behind it takes
 	// nothing and both keep their places.
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return w.holdForCatchUp(context.Background(), tx)
 	}); err != nil {
 		t.Fatalf("hold the roots to catch up: %v", err)

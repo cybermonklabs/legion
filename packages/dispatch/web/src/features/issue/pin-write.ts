@@ -1,9 +1,10 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { ApiError, api, type WriteBounds } from "../../api/client";
+import { holdBackReads, replaceQueryData } from "../../api/query-client";
 import type { UserIssueState, UserState } from "../../api/types";
-import { type Shape, shape } from "../writes/write-storage";
-import { defineWriteKind, ofKind, type Writes, writesOf } from "../writes/write-store";
+import { type Shape, shape } from "../writes/tab-storage";
+import { defineWriteKind, isLive, ofKind, type Writes, writesOf } from "../writes/write-store";
 import { pinnedItemMarker, stateForIssue } from "./pins";
 
 export type PinStateOperation = { readonly id: string; readonly op: "pin" | "unpin" };
@@ -73,10 +74,7 @@ function pinAttempt({ issueKey, operation }: PinWrite) {
 function pinsOut(writes: Writes, issueKey: string): boolean {
   return writes.rows().some((row) => {
     const pin = ofKind(row, pinWrite);
-    return (
-      pin?.detail.issueKey === issueKey &&
-      (pin.status === "queued" || pin.status === "sending" || pin.status === "late")
-    );
+    return pin?.detail.issueKey === issueKey && isLive(pin);
   });
 }
 
@@ -84,9 +82,10 @@ function pinsOut(writes: Writes, issueKey: string): boolean {
  * A pin or an unpin, one write of the store each, ordered on its issue (`pin:<issue>`), shown in
  * the shell's indicator and kept across a reload. The surface applies it to `["user-state"]` at
  * once; once the issue's last pin lands, the state Dispatch answered replaces what the page
- * showed and the next pin reads the state afresh, and a refused, discarded or dropped one has the
- * page read its state again. The states pins' answers left go with the person signed in
- * (`reset`), so another person's next pin never writes over them.
+ * showed, over any read of it still out, which was asked before the answer (`replaceQueryData`),
+ * and the next pin reads the state afresh, and a refused, discarded or dropped one has the page
+ * read its state again. The states pins' answers left go with the person signed in (`reset`), so
+ * another person's next pin never writes over them.
  */
 const pinWrite = defineWriteKind<PinWrite>({
   kept: keptPin,
@@ -98,7 +97,7 @@ const pinWrite = defineWriteKind<PinWrite>({
       void client.invalidateQueries({ queryKey: ["user-state"] });
       return;
     }
-    client.setQueryData<UserState>(["user-state"], (current) => ({
+    replaceQueryData<UserState>(client, ["user-state"], (current) => ({
       ...current,
       [issueKey]: answer as UserIssueState,
     }));
@@ -114,14 +113,21 @@ const pinWrite = defineWriteKind<PinWrite>({
 
 /** Pins or unpins one item of `issueKey` for the viewer: applied to the page's state at once and
  *  written behind every pin of that issue still out. The operation may be derived from the stored
- *  `dismissed` list at the moment of the write, which is what a toggle needs. */
+ *  `dismissed` list at the moment of the write, which is what a toggle needs. A read of the state
+ *  already out is given up, and one asked while the pin is out waits until the pin is decided,
+ *  for at most `SEND_DEADLINE_MS` (`holdBackReads`): Dispatch can answer it before it takes the
+ *  pin, with the item as it was. The state is the viewer's alone, so the hold keeps back nobody
+ *  else's change, and ends on no event. */
 export function writePin(
   client: QueryClient,
   issueKey: string,
   operation: PinStateOperation | ((dismissed: string[]) => PinStateOperation)
 ): void {
   let applied: PinStateOperation | undefined;
-  client.setQueryData<UserState>(["user-state"], (current) => {
+  // Held before the write: the read it gives up is asked again at once (`replaceQueryData`), and
+  // must wait for the pin like every other.
+  const release = holdBackReads(client, { keys: [["user-state"]] });
+  replaceQueryData<UserState>(client, ["user-state"], (current) => {
     const state = stateForIssue(current, issueKey);
     applied = typeof operation === "function" ? operation(state.dismissed ?? []) : operation;
     return {
@@ -132,7 +138,10 @@ export function writePin(
       },
     };
   });
-  if (applied === undefined) return;
+  if (applied === undefined) {
+    release();
+    return;
+  }
   const detail = { issueKey, operation: applied };
   writesOf(client)
     .run({
@@ -141,9 +150,11 @@ export function writePin(
       label: `${applied.op === "pin" ? "Pin" : "Unpin"} on ${issueKey}`,
       presentation: "indicator",
       target: `pin:${issueKey}`,
+      method: "PUT",
       write: pinAttempt(detail),
     })
-    .catch(() => {});
+    .catch(() => {})
+    .finally(release);
 }
 
 /** Forgets every issue state a pin answer left: the unit-test preload, between tests. */
