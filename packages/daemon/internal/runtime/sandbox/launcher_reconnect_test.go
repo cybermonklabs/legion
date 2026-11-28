@@ -261,8 +261,17 @@ type redialedLauncher struct {
 // redial says hello for token's launcher from its pod as the tracker holds it, with the token of
 // the role's Secret (rigLauncherHello), through the runtime's resolver, and serves the accepted
 // connection as a redialedLauncher whose first state reports running (0 for no child). It fails
-// the test when the resolver refuses the hello.
+// the test when the resolver refuses the hello. Its hello says the launcher waits for no start's
+// credential (redialWaiting says either).
 func redial(t *testing.T, g *rig, token claim.Token, running uint64, hangUp bool) *redialedLauncher {
+	t.Helper()
+	return redialWaiting(t, g, token, running, hangUp, false)
+}
+
+// redialWaiting is redial whose hello says, by waits, whether the launcher starts a child only once
+// its slot's gh files hold the start's credential (shimwire.LauncherHello.CredentialWait), which
+// decides whether a launch into its pod asks slotAppChanges or goes on to writeLaunchCredential.
+func redialWaiting(t *testing.T, g *rig, token claim.Token, running uint64, hangUp, waits bool) *redialedLauncher {
 	t.Helper()
 	_, slot, ok := token.Cut()
 	if !ok {
@@ -274,7 +283,9 @@ func redial(t *testing.T, g *rig, token claim.Token, running uint64, hangUp bool
 	if pod == nil || g.secret(roleSecretName(name, role)) == nil {
 		t.Fatalf("%s has no pod or no launcher Secret to say hello from", token)
 	}
-	handler, _, reason := g.r.LauncherResolver()(rigLauncherHello(g, name, string(pod.UID), role))
+	hello := rigLauncherHello(g, name, string(pod.UID), role)
+	hello.CredentialWait = waits
+	handler, _, reason := g.r.LauncherResolver()(hello)
 	if handler == nil {
 		t.Fatalf("the resolver refused %s's launcher saying hello again from pod %s: %s", token, pod.UID, reason)
 	}

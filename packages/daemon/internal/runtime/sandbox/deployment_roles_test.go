@@ -468,6 +468,100 @@ func TestALaunchOfAClaimWhoseRoleNamesNoAppIsRefusedNamingTheRole(t *testing.T) 
 	if secret := g.secret(roleSecretName(SandboxName(reviewer), claim.RoleReviewer)); secret != nil {
 		t.Errorf("the refused launch wrote the Secret %s", secret.Name)
 	}
+	if got := commandsOf(g.sent(reviewer)); got != "" {
+		t.Errorf("the refused launch sent the reviewer's launcher %q, want nothing", got)
+	}
+}
+
+// A launch of a claim whose role names no App into a pod the launch keeps is refused before any
+// child starts, on each of the three paths of a kept pod (gitHubBundles names all four). Each row
+// has its control: the same launch of a role that names an App, which starts in the same pod, so no
+// refusal below is the rig's own.
+//   - A pod built after the checker was dropped lacks that role (runtime.PodLacks): the reviewer's
+//     claim launched as the checker is refused. Launched as the reviewer, it starts in that pod.
+//   - A pod built while the deployment defined the checker, then a restart without it, the
+//     checker's launcher waiting for no start's credential: slotAppChanges asks the App of the
+//     role and is refused. With the checker still defined, generation 2 starts.
+//   - The same pod, the launcher waiting for its credential: writeLaunchCredential asks the App of
+//     the role and is refused. With the checker still defined, generation 2 starts.
+//
+// In each refusal the launcher receives no start. The fault each row guards against is the
+// checker's process starting in a kept pod holding the lease its slot held before, an App the
+// deployment no longer gives that role.
+func TestALaunchOfAClaimWhoseRoleNamesNoAppIntoAKeptPodIsRefusedBeforeAnyStart(t *testing.T) {
+	const checker claim.Role = "checker"
+	dropped := appauth.DeploymentApps{"critic": appauth.Review}
+	t.Run("a pod built after the drop lacks the role", func(t *testing.T) {
+		reviewer, err := claim.NewToken(testProject, testTree, claim.RoleReviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g := newRig(t, nil,
+			withOptions(func(o *Options) { o.DeploymentApps = dropped }),
+			withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}))
+		kept := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+		g.launcher(reviewer)
+		_, err = g.r.Spawn(g.ctx, testSpec(t, reviewer, checker, testTree))
+		if err == nil || !strings.Contains(err.Error(), "was built without checker, the role of its step") {
+			t.Fatalf("Spawn of %s as the checker into the kept pod = %v, want it refused because the pod lacks the checker", reviewer, err)
+		}
+		if got := commandsOf(g.sent(reviewer)); got != "" {
+			t.Fatalf("the refused launch sent the reviewer's launcher %q, want nothing", got)
+		}
+		loc, err := g.r.Spawn(g.ctx, testSpec(t, reviewer, claim.RoleReviewer, testTree))
+		if err != nil || loc.Sandbox == nil || loc.Sandbox.PodUID != kept.Sandbox.PodUID {
+			t.Fatalf("the control, Spawn of %s as the reviewer = %+v, %v, want it started in the kept pod %s", reviewer, loc.Sandbox, err, kept.Sandbox.PodUID)
+		}
+		if got := commandsOf(g.sent(reviewer)); got != "start 1" {
+			t.Errorf("the control sent the reviewer's launcher %q, want start 1", got)
+		}
+	})
+	for _, tc := range []struct {
+		name     string
+		deployed appauth.DeploymentApps
+		waits    bool
+		refusal  string
+	}{
+		{name: "slotAppChanges, the launcher waiting for no credential, the checker dropped", deployed: dropped,
+			refusal: "read the App its slot holds: the role checker is none of Legion's"},
+		{name: "slotAppChanges's control, the checker still defined",
+			deployed: appauth.DeploymentApps{checker: appauth.Implement, "critic": appauth.Review}},
+		{name: "writeLaunchCredential, the launcher waiting for its credential, the checker dropped", deployed: dropped, waits: true,
+			refusal: "write its slot's github credential: the role checker is none of Legion's"},
+		{name: "writeLaunchCredential's control, the checker still defined", waits: true,
+			deployed: appauth.DeploymentApps{checker: appauth.Implement, "critic": appauth.Review}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := deploymentRig(t)
+			token, err := claim.NewToken(testProject, testTree, checker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			loc := g.spawn(testSpec(t, token, checker, testTree))
+			restarted := secondRuntime(t, g, func(o *Options) {
+				*o = g.opts
+				o.DeploymentApps = tc.deployed
+				withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)})(g, o)
+			})()
+			launcher := redialWaiting(t, g, token, 0, false, tc.waits)
+			again, err := restarted.Spawn(g.ctx, nextGeneration(testSpec(t, token, checker, testTree), 2))
+			if tc.refusal == "" {
+				if err != nil || again.Sandbox == nil || again.Sandbox.PodUID != loc.Sandbox.PodUID {
+					t.Fatalf("Spawn of generation 2 as the checker = %+v, %v, want it started in the kept pod %s", again.Sandbox, err, loc.Sandbox.PodUID)
+				}
+				if got := launcher.commands(); got != "start 2" {
+					t.Errorf("the checker's launcher received %q, want start 2", got)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.refusal) {
+				t.Fatalf("Spawn of generation 2 as the checker = %v, want it refused with %q", err, tc.refusal)
+			}
+			if got := launcher.commands(); got != "" {
+				t.Errorf("the refused launch sent the checker's launcher %q, want nothing", got)
+			}
+		})
+	}
 }
 
 // A line of a pod's log that a role of the deployment wrote is that role's, never the launcher's
