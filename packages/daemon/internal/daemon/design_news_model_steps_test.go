@@ -294,9 +294,10 @@ func (m *newsModel) do(name string) {
 		// claim's given entry stays the one its phases row names, and a news-only start still
 		// reaches it. It takes the place of the confirmed task whose turn runs (queue), and gives
 		// back that task's credit: the turn's result, when it comes, is another delivery's. The
-		// write of the newer task can fail, and a queue changes memory only once the store takes
-		// its write, so that leaves the claim holding the task whose turn runs; check marks the
-		// give-back where the claim holds this task, or none.
+		// retirement of the running task, or the write of the newer task after it, can fail:
+		// memory keeps the retirement either way and takes the newer task only once the store has
+		// it, so a failed write leaves the claim holding no task; check marks the give-back where
+		// the claim holds this task, or none.
 		m.superseding = fmt.Sprintf("model:%d", m.step)
 		m.handle(rev, supervise.RequestDeliver{Claim: rev.token, ID: m.superseding, Task: "Review the change again.",
 			Phase: phase.Reviewing, Generation: readIssue(m.t, m.r.pool, pathChild).Generation})

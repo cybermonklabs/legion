@@ -795,8 +795,10 @@ outage every claim that reaches six is told.
 **When the store refuses a write of a claim**, the daemon tells once, as
 `claim-write-refused on <KEY>`, with the claim's role and generation, the store call, the state the
 claim's row holds, the state the daemon tried to write, the SQLSTATE and the constraint. A refusal
-the store made itself, before it sent a statement, has no SQLSTATE and names the store's rule as the
-constraint. The daemon keeps none of the refused decision: it reads the claim again from the store,
+the store made itself has no SQLSTATE and names the store's rule as the constraint: a value the
+store refused before it sent a statement, or `other-delivery`, a retirement the store refused
+because the claim's row holds another delivery than the one the retirement deletes. The daemon
+keeps none of the refused decision: it reads the claim again from the store,
 so its memory holds what the store holds, and it asks the agent for its state before it sends the
 agent anything (`supervise: a claim write the store refused` and `supervise: the claim was read
 again from the store after a refused write`, in [A pod does not come up](#a-pod-does-not-come-up)).
@@ -1693,10 +1695,11 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   the claim's row holds), `refused=` (the state the daemon tried to write), `generation=`,
   `sqlstate=` and `constraint=`, means the store judged the row the daemon held and would refuse
   the same write again. The refusal is a check the row breaks (`23514`), a unique index another
-  row holds (`23505`), any other SQLSTATE outside the owed ones above, or a value the store refused
-  itself before it sent a statement. That last one has no `sqlstate`, and it names the store's
-  rule as the constraint (`bigint-fit`, `int4-fit`, `json-encode`, `pause-stop`). The daemon keeps
-  none of that decision.
+  row holds (`23505`), any other SQLSTATE outside the owed ones above, or a refusal the store made
+  itself. That last one has no `sqlstate`, and it names the store's rule as the constraint: a value
+  the store refused before it sent a statement (`bigint-fit`, `int4-fit`, `json-encode`,
+  `pause-stop`), or a retirement it refused because the claim's row holds another delivery than the
+  one the retirement deletes (`other-delivery`). The daemon keeps none of that decision.
   It makes no other claim write of it and does nothing the decision was to do once its write
   landed: it revokes no capability, stops no registration and stops no process it had not stopped
   already. It reads the claim again from the store (the next line), so its memory holds what the

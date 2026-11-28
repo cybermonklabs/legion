@@ -97,10 +97,11 @@ func (m *Machine) writesWait() (time.Time, bool) {
 // the claim's process go is followed by no observation of that process, so without this timer
 // those acts and that report would wait for an event that may never come.
 //
-// unlock calls it after everything else of the decision, so the decision's own let-go (letGo,
-// whose disarmAll disarms every timer) cannot take it off again. A timer already armed is the one
-// for this window, since a refusal's rebuild disarms every timer and builds none of this kind
-// (giveBackHeld, build). Once the window has ended, or with nothing owed, it arms nothing.
+// unlock calls it after settleRefusal, once the decision's rows have run, so the decision's own
+// let-go (letGo, whose disarmAll disarms every timer) cannot take it off again. A timer already
+// armed is the one for this window, since a refusal's rebuild disarms every timer and builds none
+// of this kind (giveBackHeld, build). Once the window has ended, or with nothing owed, it arms
+// nothing.
 func (m *Machine) armWindowEnd() {
 	if m.owedWrite == nil {
 		return
