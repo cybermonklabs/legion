@@ -7,15 +7,17 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -52,19 +54,7 @@ func stopSession(t *testing.T, mux *http.ServeMux, sessionID, query string) *htt
 // before the delete.
 func (rig *sessionConsumerReapRig) requireNoConsumer(t *testing.T, sessionID, when string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for {
-		info, err := rig.consumers.Info(ctx, sessionID)
-		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
-			return
-		}
-		if ctx.Err() != nil {
-			t.Fatalf("the consumer of %s %s: %+v, %v; want it deleted with the session's record",
-				sessionID, when, info, err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	awaitConsumerGone(t, rig.consumers, sessionID, when)
 }
 
 // A clean stop takes the session's consumer with the record it deletes. Every normal end of a
@@ -166,15 +156,6 @@ func stopAnswer(t *testing.T, recorder *httptest.ResponseRecorder) listenerwire.
 	return answer
 }
 
-// keptStopSilence is how long the session of a kept stop is watched for a frame it must not
-// receive: one it already holds, sent to it again. A stop that deleted the consumer leaves the
-// relay pulling one the stream no longer holds, and the relay restarts at the ack floor
-// relayRetryFirst after that pull failed, so this window is several times that wait. Nothing
-// sends the session a frame inside it otherwise: the frame it holds is answered, so the relay
-// does not take it for unreachable (relayReceiptWait), and the consumer's ack wait is a minute
-// (bus.SessionConsumerAckWait).
-const keptStopSilence = 4 * relayRetryFirst
-
 // A conditional stop that keeps the session's record leaves that session's consumer exactly as it
 // found it, whichever of the stop's conditions kept the record. The record stands, so the session
 // is still there, and the consumer is what it receives through: the stream must hold the very
@@ -217,13 +198,13 @@ func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) 
 		},
 	} {
 		t.Run(kept.name, func(t *testing.T) {
-			rig := newRelayRig(t)
+			rig, fake := newRelayRigOnFakeClock(t)
 			sessionID := "ses_kept_stop_" + id.New()
 			agent := contracts.LegacyAgentSubject(sessionID)
 			standIn := startSessionStandIn(t, rig.url, sessionID, answerReceived)
 			rig.subscribe(t, kept.registration(t, sessionID))
 			held, _ := rig.storeEvent(t, agent)
-			requireFrames(t, standIn.collect(t, 1, 10*time.Second), held)
+			requireFrames(t, standIn.receive(t, 1), held)
 			created := consumerCreatedAt(t, rig, sessionID, "before the stop")
 
 			answer := stopAnswer(t, stopSession(t, rig.mux, sessionID, kept.query(rig.entry(t, sessionID))))
@@ -234,11 +215,11 @@ func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) 
 			if _, err := rig.harness.sessions.Get(sessionID); err != nil {
 				t.Fatalf("the kept registration of %s is gone: %v", sessionID, err)
 			}
-			standIn.none(t, keptStopSilence)
-
-			next, _ := rig.storeEvent(t, agent)
-
-			requireFrames(t, standIn.collect(t, 1, 10*time.Second), next)
+			// The same consumer must deliver the next frame without replaying the held one.
+			rig.noneThroughMarker(t, standIn, sessionID)
+			if retry := fake.Now().Add(relayRetryFirst); slices.ContainsFunc(fake.Armed(), retry.Equal) {
+				t.Fatalf("the relay has a retry armed for %s after a stop that kept its consumer", retry)
+			}
 			if again := consumerCreatedAt(t, rig, sessionID, "after the stop that kept its record"); !again.Equal(created) {
 				t.Fatalf("the consumer of %s was created at %s and the stop that kept its record left one created at %s; want the session's own consumer untouched",
 					sessionID, created, again)
@@ -269,18 +250,23 @@ func TestACleanStopDeletesTheConsumerOfACallerThatHungUpOnceItsRecordWasGone(t *
 	defer hungUp()
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID, nil).WithContext(hangUp)
-	unlock := rig.delivery.locks.lock(sessionID)
+	release := sync.OnceFunc(rig.delivery.locks.lock(sessionID))
+	defer release()
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
 		rig.mux.ServeHTTP(recorder, request)
 	}()
-	awaitDeleteWaitingOrDone(t, &rig.delivery.locks, sessionID, served, 2*time.Second)
-	rig.waitForRecordDeleted(t, sessionID)
+	awaitLockWaitOrDone(t, &rig.delivery.locks, sessionID, served, "the consumer delete")
+	ctx := testwait.Context(t)
+	testwait.Until(t, "the session bucket to have no record of "+sessionID, func() (error, bool) {
+		_, err := rig.sessions.Refresh(ctx, sessionID)
+		return err, errors.Is(err, nats.ErrKeyNotFound)
+	})
 
 	hungUp()
-	unlock()
-	<-served
+	release()
+	testwait.Receive(t, "the clean stop to answer", served)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("the stop of %s answered %d: %s", sessionID, recorder.Code, recorder.Body.String())
@@ -324,19 +310,7 @@ func TestACleanStopsRelayHandOverNeverPromisesAFurtherDelivery(t *testing.T) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for {
-		info, err := rig.consumers.Info(ctx, sessionID)
-		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
-			break
-		}
-		if ctx.Err() != nil {
-			t.Fatalf("the consumer of %s after the stop: %+v, %v; want it deleted with the session's record, which is why nothing delivers the naked messages",
-				sessionID, info, err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	awaitConsumerGone(t, rig.consumers, sessionID, "after the clean stop")
 }
 
 // handOverLineNaming is the one hand-over record of sessionID in logs, whatever level it was
@@ -372,17 +346,16 @@ const handOverRecordGoneLine = "session relay stopped; the session has no record
 // relay holding one message delivered and unacked, which is where both hand-over rows start: the
 // session's record goes next, and that one message is what the hand-over line counts returned.
 // A nil answer leaves the stand-in silent, so the frame stays outstanding and its message stays
-// delivered and unacked, and the rig's receipt wait is longer than either row, so the relay
-// cannot pause, and so forget the frame it holds, before the record goes. It returns the rig, the
-// session, its stand-in and the message the relay holds.
+// delivered and unacked. The relay's clock does not move, so its receipt deadline cannot pass
+// before the record goes. It returns the rig, the session, its stand-in and the message held.
 func relayHoldingOneMessage(t *testing.T, prefix string) (*relayRig, string, *sessionStandIn, contracts.Envelope) {
 	t.Helper()
-	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
+	rig, _ := newRelayRigOnFakeClock(t)
 	sessionID := prefix + id.New()
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	stored, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
-	requireFrames(t, standIn.collect(t, 1, 10*time.Second), stored)
+	requireFrames(t, standIn.receive(t, 1), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 	return rig, sessionID, standIn, stored
 }
@@ -438,9 +411,7 @@ func instanceRegistration(t *testing.T, sessionID, epoch, instanceID string) str
 // consumer changes it.
 func consumerCreatedAt(t *testing.T, rig *relayRig, sessionID, when string) time.Time {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	info, err := rig.consumers.Info(ctx, sessionID)
+	info, err := rig.consumers.Info(testwait.Context(t), sessionID)
 	if err != nil {
 		t.Fatalf("the consumer of %s %s: %v; want the stream holding it", sessionID, when, err)
 	}

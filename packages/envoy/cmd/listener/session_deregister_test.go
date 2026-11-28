@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -43,24 +46,19 @@ func (rig *sessionConsumerRig) requireNoConsumer(t *testing.T, sessionID string)
 	}
 }
 
-// awaitNoConsumer waits for the stream to hold no consumer named for sessionID and fails the
-// test when it still does 5 s on. The deregistration answers before its delete runs
-// (sessionDelivery.deleteAfterAnswer), so a row that reads the stream the moment the answer
-// comes reads it before the delete.
+// awaitNoConsumer waits for the asynchronous deregistration delete to remove the consumer.
 func (rig *sessionConsumerRig) awaitNoConsumer(t *testing.T, sessionID string) {
 	t.Helper()
-	deadline := time.Now().Add(listenerWaitBound(t))
-	for {
-		_, err := rig.consumers.Info(context.Background(), sessionID)
-		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
-			return
-		}
-		if time.Now().After(deadline) {
-			name, _ := bus.SessionConsumerName(sessionID)
-			t.Fatalf("the stream holds %s still (%v); want it deleted with the registration", name, err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	awaitConsumerGone(t, rig.consumers, sessionID, "after deregistration")
+}
+
+func awaitConsumerGone(t *testing.T, consumers *bus.SessionConsumers, sessionID, when string) {
+	t.Helper()
+	ctx := testwait.Context(t)
+	testwait.Until(t, "the consumer of "+sessionID+" to be gone "+when, func() (string, bool) {
+		info, err := consumers.Info(ctx, sessionID)
+		return fmt.Sprintf("%+v, %v", info, err), errors.Is(err, bus.ErrSessionConsumerNotFound)
+	})
 }
 
 // requireConsumer fails the test unless sessionID's consumer is on the stream.
@@ -140,10 +138,9 @@ func TestDeregistrationOfAnotherInstanceKeepsTheSessionConsumer(t *testing.T) {
 	rig.requireConsumer(t, sessionID)
 }
 
-// A consumer deleted with its registration stays deleted while this listener keeps relaying: the
-// delete dropped the pending start the relay's restarts leave behind, so a restart that was
-// already past its wanted check finds the consumer missing and ends (bus.ErrSessionConsumerNotFound)
-// rather than creating one at that start.
+// A restart whose create failed leaves its start pending. Deregistering after that failure
+// stops the run and clears the pending start. Even a retry already past its ownership check
+// must then find no consumer, instead of creating one at the old start.
 //
 // No heartbeat runs during the DELETE here, and that is what the row rests on: a registration
 // behind the delete writes the entry again and creates the consumer again by design, since the
@@ -151,23 +148,42 @@ func TestDeregistrationOfAnotherInstanceKeepsTheSessionConsumer(t *testing.T) {
 // retry bringing back the consumer of a session that registered no more.
 func TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry(t *testing.T) {
 	t.Parallel()
-	// The relay's windows are shortened to a tenth of production's, so the row spends its own
-	// wait over several of the relay's retries rather than seconds of the clock.
-	const window = 100 * time.Millisecond
-	rig := newRelayRigReceipt(t, window, 2*window, window)
+	rig, fake := newRelayRigOnFakeClock(t)
 	sessionID := "ses_deregister_retry_" + id.New()
+	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	// A message nothing answers: the relay sends its frame, pauses for want of a receipt, and
-	// restarts the consumer at its ack floor again and again, each restart deleting the consumer
-	// and creating it at that floor. That is the retry the delete must outlast.
-	rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
-	rig.awaitPending(t, sessionID, 0)
+	stored, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	frames := standIn.receive(t, 1)
+	requireFrames(t, frames, stored)
+	var run *relayRun
+	withHeldRelayFrame(t, rig, frames[0], func(frame *relayFrame) { run = frame.run })
+
+	receipt := fake.Now().Add(relayReceiptWait)
+	fake.AwaitArmedAt(t, "the unanswered frame's receipt deadline", receipt)
+	fake.Set(receipt)
+	pause := receipt.Add(relayPauseFirst)
+	fake.AwaitArmedAt(t, "the unresponsive relay's pause backoff", pause)
+	failed := failCreates(t, rig, sessionID, 1)
+	fake.Set(pause)
+	awaitCreateFailure(t, failed)
+	fake.AwaitArmedAt(t, "the relay's retry after its failed create", pause.Add(relayRetryFirst))
 
 	rig.deregister(t, sessionID, "")
+	ctx := testwait.Context(t)
+	if !rig.deps.consumers.deletes.wait(ctx) {
+		t.Fatal("the consumer delete did not finish")
+	}
+	testwait.Receive(t, "the deregistered session's relay to end", run.done)
 
-	rig.awaitNoConsumer(t, sessionID)
-	for deadline := time.Now().Add(10 * window); time.Now().Before(deadline); time.Sleep(window / 2) {
-		rig.requireNoConsumer(t, sessionID)
+	// Model a retry that already passed its ownership check by calling its restart step.
+	// This reads the same pending start the failed create left on the delivery connection.
+	_, pull, outcome := rig.relays.restart(ctx, &relayRun{sessionID: sessionID})
+	if pull != nil {
+		pull.Stop()
+	}
+	rig.requireNoConsumer(t, sessionID)
+	if outcome != relayEnded {
+		t.Fatalf("restart after deregistration returned %v, want relayEnded", outcome)
 	}
 }
 
@@ -199,9 +215,7 @@ func TestAPublishToALaneTheListenerOwnsIsRefused(t *testing.T) {
 			if body := recorder.Body.String(); !strings.Contains(body, lane) {
 				t.Fatalf("the refusal of %s is %q, want it to name the lane %s it lies under", subject, body, lane)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if _, err := client.LastStoredMessage(ctx, subject); !errors.Is(err, natsgo.ErrMsgNotFound) {
+			if _, err := client.LastStoredMessage(testwait.Context(t), subject); !errors.Is(err, natsgo.ErrMsgNotFound) {
 				t.Fatalf("the stream holds a message on %s (%v); the refused publish stored nothing", subject, err)
 			}
 		})
@@ -223,7 +237,8 @@ func TestADeregistrationAnswersWhileItsConsumerDeleteWaits(t *testing.T) {
 	rig.requireConsumer(t, sessionID)
 	// The session's lock, held as one of this listener's own consumer calls holds it: the
 	// delete waits for it, and the answer must not.
-	unlock := rig.deps.consumers.locks.lock(sessionID)
+	unlock := sync.OnceFunc(rig.deps.consumers.locks.lock(sessionID))
+	defer unlock()
 
 	recorder := httptest.NewRecorder()
 	answered := make(chan time.Duration, 1)
@@ -233,6 +248,8 @@ func TestADeregistrationAnswersWhileItsConsumerDeleteWaits(t *testing.T) {
 		answered <- time.Since(started)
 	}()
 
+	// DELETE uses a wall-clock context.WithTimeout, not the registration clock. Keep the
+	// route's wall-clock budget assertion until the DELETE route has a clock of its own.
 	select {
 	case took := <-answered:
 		if took >= sendRequestBudget {
@@ -270,11 +287,12 @@ func TestACleanStopKeepsTheConsumerOfARegistrationThatLandedUnderIt(t *testing.T
 	rig.requireConsumer(t, sessionID)
 	// The moment the stop belongs to: the registration above was written at or before it, so
 	// the stop removes that entry and answers that it did.
-	stopAt := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	stopAt := strconv.FormatInt(rig.entry(t, sessionID).UpdatedAt, 10)
 
 	// The relaunch, held where the race is: it waits for the session's lock inside its consumer
 	// call, with its entry unwritten.
-	unlock := rig.deps.consumers.locks.lock(sessionID)
+	unlock := sync.OnceFunc(rig.deps.consumers.locks.lock(sessionID))
+	defer unlock()
 	relaunched := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		recorder := httptest.NewRecorder()
@@ -297,7 +315,7 @@ func TestACleanStopKeepsTheConsumerOfARegistrationThatLandedUnderIt(t *testing.T
 	unlock()
 	awaitLockUsers(t, &rig.deps.consumers.locks, sessionID, 0)
 
-	recorder := <-relaunched
+	recorder := testwait.Receive(t, "the relaunch's registration to answer", relaunched)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("the relaunch's registration: status %d: %s", recorder.Code, recorder.Body.String())
 	}
