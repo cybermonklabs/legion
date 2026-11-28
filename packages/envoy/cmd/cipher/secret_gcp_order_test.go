@@ -117,7 +117,7 @@ func startMetadataServer(t *testing.T, email string) *metadataServer {
 	m := &metadataServer{requests: map[string]int{}}
 	answers := map[string]string{
 		metadataTokenPath: `{"access_token":"metadata-not-a-secret","expires_in":3600,"token_type":"Bearer"}`,
-		"/computeMetadata/v1/instance/service-accounts/default/email":    email,
+		metadataEmailPath: email,
 		"/computeMetadata/v1/instance/service-accounts/default/identity": "metadata-identity-token",
 		"/computeMetadata/v1/project/project-id":                         "acme-deployment",
 	}
@@ -480,8 +480,7 @@ func startPartialMetadataServer(t *testing.T, token, email metadataAnswer) (*met
 	t.Helper()
 	m := &metadataServer{requests: map[string]int{}}
 	held, holding := make(chan struct{}), make(chan string, 8)
-	var releasing sync.Once
-	release := func() { releasing.Do(func() { close(held) }) }
+	release := sync.OnceFunc(func() { close(held) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		m.requests[r.URL.Path]++
@@ -543,7 +542,7 @@ func useFakeGCPMetadataClock(t *testing.T, start time.Time) *clocktest.Fake {
 // the bound is armed and the command has not returned: the email read, after the token, at
 // probeWait, and the token read at tokenWait, with no email read after it.
 func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:578); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381; main.useFakeGCPMetadataClock, gcpMetadataClock set at secret_gcp_order_test.go:531).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:577); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381; main.useFakeGCPMetadataClock, gcpMetadataClock set at secret_gcp_order_test.go:530).
 	const (
 		// probeWait and tokenWait are the bounds of the email read and of the token read, written
 		// here and never read from the code under test, so a changed bound fails the row.

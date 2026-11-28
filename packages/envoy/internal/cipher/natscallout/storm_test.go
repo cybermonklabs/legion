@@ -170,12 +170,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 				nats.ReconnectHandler(func(*nats.Conn) { reconnected.Add(1) }))
 		}()
 	}
-	ended := make(chan struct{})
-	go func() {
-		wait.Wait()
-		close(ended)
-	}()
-	testwait.Receive(t, "every first connection attempt to end", ended)
+	testwait.Returns(t, "every first connection attempt to end", wait.Wait)
 	require.NoError(t, errors.Join(errs...), "a first connection was not admitted")
 	require.EqualValues(t, connections, decided.Load(), "every first connection was decided")
 
@@ -233,28 +228,24 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		decideBudget = 2 * hubTimeout
 		t.Cleanup(func() { decideBudget = was })
 		keys := testnats.NewCalloutKeys(t)
-		server, url := testnats.StartWithCalloutServer(t, keys)
-		server.Restart(t, quickCalloutConfig(t, keys))
-		require.Equal(t, controlHubTimeout.Seconds(), hubAuthTimeout(t, server),
-			"the control's server's authorization timeout, in seconds, is not controlHubTimeout, so the control is not the one it names")
+		_, url := startQuickCalloutServer(t, keys)
 		const control = 5
 		controls := sessionsNamed(t, "ses_late", control)
 		decidedHere, clientsHere := newDecidedNonces(), newLastNonces()
 		// signedAfter closes, for each nonce a control client signs, once that same client signs
-		// another one; previous is each client's last signed nonce, and unsigned every nonce a held
-		// request named that no control client had signed.
+		// another one (the client's last nonce, read before it signs: lastNonces.lastOf); unsigned is
+		// every nonce a held request named that no control client had signed.
 		var signing sync.Mutex
-		previous := make(map[string]string, control)
 		signedAfter := map[string]chan struct{}{}
 		var unsigned []string
 		signers := make(map[string]func(nonce string), control)
 		for _, s := range controls {
 			sign := clientsHere.signer(s.id)
 			signers[s.id] = func(nonce string) {
+				last, signedBefore := clientsHere.lastOf(s.id)
 				sign(nonce)
 				signing.Lock()
 				defer signing.Unlock()
-				last, signedBefore := previous[s.id]
 				if signedBefore && last == nonce {
 					// The same nonce signed again is the same connection, not a later one.
 					return
@@ -262,7 +253,6 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 				if signedBefore {
 					close(signedAfter[last])
 				}
-				previous[s.id] = nonce
 				signedAfter[nonce] = make(chan struct{})
 			}
 		}
@@ -299,12 +289,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 				conns[index], errs[index] = reconnectingSession(t, url, s, false, signers[s.id], nats.RetryOnFailedConnect(true))
 			})
 		}
-		ended := make(chan struct{})
-		go func() {
-			wait.Wait()
-			close(ended)
-		}()
-		testwait.Receive(t, "every control client's first connection attempt to end", ended)
+		testwait.Returns(t, "every control client's first connection attempt to end", wait.Wait)
 		require.NoError(t, errors.Join(errs...))
 		testwait.Until(t, "every control client admitted on a request after its held first one", allConnected(conns))
 		late.Close()
@@ -318,23 +303,22 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	})
 
 	t.Run("control: clients that give up on a refused credential", func(t *testing.T) {
-		// A client that does not set IgnoreAuthErrorAbort gives up only after two refusals in a
-		// row, where the main part's heldOff makes sure of one, so here the service stays off the
-		// bus until every client has closed, and only then comes back; every client is still
-		// closed then, for good. This control's server waits controlHubTimeout for an answer
-		// (quickCalloutConfig), before its restart and after it.
+		// A client that does not set IgnoreAuthErrorAbort closes for good once the same server has
+		// refused it twice in a row (reconnectingSession). The server admits every client while first
+		// runs, so it refuses none before its restart. The restart, after first has closed, puts the
+		// server's authorization timeout at controlHubTimeout (restartQuickCalloutServer), and no
+		// service runs after it, so every client is refused that soon each time it reconnects, and
+		// the control waits until every client has closed while no service runs. A closed nats.go
+		// connection never reconnects (closed is final in nats.go v1.55.0), so a client closed here
+		// would stay closed once a service came back.
 		keys := testnats.NewCalloutKeys(t)
 		server, url := testnats.StartWithCalloutServer(t, keys)
-		server.Restart(t, quickCalloutConfig(t, keys))
-		require.Equal(t, controlHubTimeout.Seconds(), hubAuthTimeout(t, server),
-			"the control's server's authorization timeout, in seconds, is not controlHubTimeout, so the control is not the one it names")
 		const control = 20
 		controls := make([]*session, control)
 		for index := range controls {
 			controls[index] = newSession(t, fmt.Sprintf("ses_control_%02d", index), 15*time.Minute)
 		}
-		deps := Deps{Introspect: introspector(controls...)}
-		first := startService(t, url, keys, deps, Decide)
+		first := startService(t, url, keys, Deps{Introspect: introspector(controls...)}, Decide)
 		conns := make([]*nats.Conn, control)
 		for index, s := range controls {
 			nc, err := reconnectingSession(t, url, s, true, nil)
@@ -342,10 +326,8 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 			conns[index] = nc
 		}
 		first.Close()
-		server.Restart(t, quickCalloutConfig(t, keys))
-		require.Equal(t, controlHubTimeout.Seconds(), hubAuthTimeout(t, server),
-			"the control's restarted server's authorization timeout, in seconds, is not controlHubTimeout, so the control is not the one it names")
-		open := func() (string, bool) {
+		restartQuickCalloutServer(t, server, keys)
+		testwait.Until(t, "every control client to close while no service runs", func() (string, bool) {
 			count := 0
 			for _, nc := range conns {
 				if !nc.IsClosed() {
@@ -353,12 +335,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 				}
 			}
 			return fmt.Sprintf("%d of %d open", count, len(conns)), count == 0
-		}
-		testwait.Until(t, "every control client to close while no service runs", open)
-		back := startService(t, url, keys, deps, Decide)
-		t.Cleanup(back.Close)
-		reading, closed := open()
-		require.True(t, closed, "a control client came back once the service did: %s", reading)
+		})
 	})
 }
 
@@ -462,6 +439,14 @@ func (l *lastNonces) signer(id string) func(nonce string) {
 	}
 }
 
+// lastOf is the nonce client id signed last, and false where it has signed none.
+func (l *lastNonces) lastOf(id string) (string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	nonce, signed := l.last[id]
+	return nonce, signed
+}
+
 // decidedNonces keeps the nonce of every request a service decided with no error.
 type decidedNonces struct {
 	mu     sync.Mutex
@@ -549,6 +534,25 @@ func startDebugCalloutServer(t *testing.T, keys testnats.CalloutKeys) (*testnats
 	return server, url
 }
 
+// startQuickCalloutServer is testnats.StartWithCalloutServer with the server's authorization
+// timeout at controlHubTimeout: the fixture names the deployed hub's, so the server is restarted at
+// once with quickCalloutConfig (restartQuickCalloutServer).
+func startQuickCalloutServer(t *testing.T, keys testnats.CalloutKeys) (*testnats.Server, string) {
+	t.Helper()
+	server, url := testnats.StartWithCalloutServer(t, keys)
+	restartQuickCalloutServer(t, server, keys)
+	return server, url
+}
+
+// restartQuickCalloutServer restarts server with quickCalloutConfig, and fails the test unless its
+// /varz then reports controlHubTimeout as its authorization timeout (hubAuthTimeout).
+func restartQuickCalloutServer(t *testing.T, server *testnats.Server, keys testnats.CalloutKeys) {
+	t.Helper()
+	server.Restart(t, quickCalloutConfig(t, keys))
+	require.Equal(t, controlHubTimeout.Seconds(), hubAuthTimeout(t, server),
+		"the control's server's authorization timeout, in seconds, is not controlHubTimeout, so the control is not the one it names")
+}
+
 // controlHubTimeout is the authorization timeout of the storm controls' own servers
 // (quickCalloutConfig): a quarter of the deployed hub's two seconds (testnats.CalloutAuthTimeout).
 // What a control proves does not rest on the timeout's length, only on the server's refusal once
@@ -569,19 +573,31 @@ func quickCalloutConfig(t *testing.T, keys testnats.CalloutKeys) string {
 	return strings.Replace(config, line, fmt.Sprintf("\n  timeout: %g\n", controlHubTimeout.Seconds()), 1)
 }
 
-// hubAuthTimeout is how long server waits for the auth service's answer before it refuses the
-// client, as its /varz reports it: auth_timeout, a JSON number of seconds (2 at
-// testnats.CalloutConfig, 0.5 at quickCalloutConfig).
-func hubAuthTimeout(t *testing.T, server *testnats.Server) float64 {
+// hubVarz is what the tests here read of the hub's /varz: total_connections (hubConnects) and
+// auth_timeout (hubAuthTimeout), each nil where /varz does not name it.
+type hubVarz struct {
+	TotalConnections *int64   `json:"total_connections"`
+	AuthTimeout      *float64 `json:"auth_timeout"`
+}
+
+// readHubVarz reads server's /varz, which must answer 200 with a JSON body.
+func readHubVarz(t *testing.T, server *testnats.Server) hubVarz {
 	t.Helper()
 	resp, err := http.Get(server.MonitorURL() + "/varz")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "the hub's /varz")
-	var varz struct {
-		AuthTimeout *float64 `json:"auth_timeout"`
-	}
+	var varz hubVarz
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&varz))
+	return varz
+}
+
+// hubAuthTimeout is how long server waits for the auth service's answer before it refuses the
+// client, as its /varz reports it: auth_timeout, a JSON number of seconds (2 at
+// testnats.CalloutConfig, 0.5 at quickCalloutConfig).
+func hubAuthTimeout(t *testing.T, server *testnats.Server) float64 {
+	t.Helper()
+	varz := readHubVarz(t, server)
 	require.NotNil(t, varz.AuthTimeout, "the hub's /varz names no auth_timeout")
 	return *varz.AuthTimeout
 }

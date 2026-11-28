@@ -591,7 +591,7 @@ func TestSignEnrollmentRefusedInHelperMode(t *testing.T) {
 // whose stdout is the caller's.
 // Every case runs twice: once with the paths named by AGENT_SECRETS_KEY_DIR and
 // AGENT_SECRETS_HELPER_SOCK, once with both unset and the files at the $XDG_RUNTIME_DIR defaults.
-// identity runs on a fake clock that starts a day behind the wall clock (runIdentityCase), and
+// identity runs on a fake clock that starts a day behind the wall clock (identityPaths), and
 // both verdicts that read the time read it: the marker stamped at its start is fresh and the one
 // stamped staleAge before it stale, whatever the wall clock says, and a helper that never answers
 // is given up on once the row moves the clock to the deadline the row expects, silentWait, which
@@ -601,7 +601,7 @@ func TestIdentity(t *testing.T) {
 	for _, mode := range []string{"named", "defaults"} {
 		for _, tc := range identityCases() {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
-				p := identityPaths(t, mode, time.Now().Add(-24*time.Hour))
+				p := identityPaths(t, mode)
 				code, stdout, stderr := runIdentityCase(t, p, tc)
 				if code != tc.exit {
 					t.Fatalf("exit %d, want %d (stderr %q)", code, tc.exit, stderr)
@@ -658,7 +658,7 @@ func TestIdentityWithoutSourceAsksNothing(t *testing.T) {
 	for _, mode := range []string{"named", "defaults"} {
 		for _, tc := range cases {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
-				p := identityPaths(t, mode, time.Now().Add(-24*time.Hour))
+				p := identityPaths(t, mode)
 				broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 				t.Setenv("AGENT_SECRETS_URL", broker.URL())
 				metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
@@ -704,11 +704,11 @@ type identityCase struct {
 // identityPaths gives one row a home, a runtime directory and a state directory of its own, with
 // the key dir and the helper socket named by AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK
 // (mode "named") or left at the $XDG_RUNTIME_DIR defaults with both unset (mode "defaults"), and
-// start as the moment its clock stands at.
-func identityPaths(t *testing.T, mode string, start time.Time) identityRowPaths {
+// a start a day behind the wall clock, the moment its clock stands at.
+func identityPaths(t *testing.T, mode string) identityRowPaths {
 	t.Helper()
 	runtime := shortTempDir(t)
-	p := identityRowPaths{home: t.TempDir(), state: t.TempDir(), start: start}
+	p := identityRowPaths{home: t.TempDir(), state: t.TempDir(), start: time.Now().Add(-24 * time.Hour)}
 	t.Setenv("HOME", p.home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_RUNTIME_DIR", runtime)

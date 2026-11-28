@@ -17,7 +17,6 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // waitRequestID is the one request waitBroker serves, and waitValue the value its grant releases
@@ -377,10 +376,10 @@ func removeBackoffOverlay() error {
 // runWaiting runs `agent-secrets WAIT_ME --wait 1m -- sh -c …` against b, built to record its
 // backoff sleeps (buildRecordingBackoff), with its wait limit set to limit seconds (waitLimitEnv)
 // where limit is not 0, names it to b, and fails t unless the child ran with the granted value. It
-// takes the child's exit through the shared wait (testwait.Receive), so a child that never exits
-// fails t before the binary's deadline, naming that wait; its cleanup kills the child and takes
-// that exit again, so no child outlives the test. It answers the backoff sleeps the run asked for,
-// in order.
+// runs the child as a call (startCall) and takes its exit with end, the shared wait
+// (testwait.Receive), so a child that never exits fails t before the binary's deadline, naming that
+// wait; startCall's cleanup kills the child and takes that exit again, so no child outlives the
+// test. It answers the backoff sleeps the run asked for, in order.
 func runWaiting(t *testing.T, b *waitBroker, key *proofKey, limit int) []string {
 	t.Helper()
 	binary := buildRecordingBackoff(t)
@@ -390,37 +389,21 @@ func runWaiting(t *testing.T, b *waitBroker, key *proofKey, limit int) []string 
 	if limit != 0 {
 		cmd.Env = append(cmd.Env, waitLimitEnv+"="+strconv.Itoa(limit))
 	}
-	var stdout, stderr strings.Builder
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start agent-secrets: %v", err)
-	}
-	var waitErr error
-	exited := make(chan struct{})
-	go func() { waitErr = cmd.Wait(); close(exited) }()
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		testwait.Receive(t, "agent-secrets exec to exit", exited)
-	})
+	c := startCall(t, cmd)
 	b.client <- cmd.Process.Pid
-	testwait.Receive(t, "agent-secrets exec to exit", exited)
-	err := waitErr
-	exit := 0
+	exit := c.end(t)
 	var exitErr *exec.ExitError
-	switch {
-	case errors.As(err, &exitErr):
-		exit = exitErr.ExitCode()
-	case err != nil:
-		t.Fatalf("run agent-secrets: %v (stderr %q)", err, stderr.String())
+	if c.err != nil && !errors.As(c.err, &exitErr) {
+		t.Fatalf("run agent-secrets: %v (stderr %q)", c.err, c.stderr.String())
 	}
 	b.mu.Lock()
 	badProofs := b.badProofs
 	b.mu.Unlock()
 	if badProofs != 0 {
-		t.Fatalf("the broker refused %d proofs: a proof signs the path alone, never the query (stderr %q)", badProofs, stderr.String())
+		t.Fatalf("the broker refused %d proofs: a proof signs the path alone, never the query (stderr %q)", badProofs, c.stderr.String())
 	}
-	if exit != 0 || !strings.Contains(stdout.String(), "ran-the-child") {
-		t.Fatalf("exit %d, stdout %q, stderr %q; want the child run with the granted value", exit, stdout.String(), stderr.String())
+	if exit != 0 || !strings.Contains(c.stdout.String(), "ran-the-child") {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want the child run with the granted value", exit, c.stdout.String(), c.stderr.String())
 	}
 	data, err := os.ReadFile(backoffs)
 	if errors.Is(err, os.ErrNotExist) {
@@ -443,7 +426,7 @@ func runWaiting(t *testing.T, b *waitBroker, key *proofKey, limit int) []string 
 // starved the client fails it. The loop before this change read at 2 s and 6 s, without a wait, so
 // it learnt of the grant from a read made after it, which fails the row whatever the timing.
 func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.runWaiting, main.buildRecordingBackoff, t.Setenv at exec_wait_test.go:323); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((*waitBroker).requireReleaseFromTheGrantedRead, (*waitBroker).requireClientStep, an upper bound on a measured time at exec_wait_test.go:213).
+	// Not parallel: it sets environment variables of the whole process (main.runWaiting, main.buildRecordingBackoff, t.Setenv at exec_wait_test.go:322); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((*waitBroker).requireReleaseFromTheGrantedRead, (*waitBroker).requireClientStep, an upper bound on a measured time at exec_wait_test.go:212).
 	const grantAfter = 300 * time.Millisecond
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, true, false, grantAfter)
@@ -480,7 +463,7 @@ func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
 // of the time either process was held up (requireClientStep), in 2 status reads. A loop that slept
 // its 2 s backoff after every pending answer, a held one too, asks for that sleep.
 func TestExecLearnsOfAGrantAfterAFullHold(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.runWaiting, main.buildRecordingBackoff, t.Setenv at exec_wait_test.go:323); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((*waitBroker).requireClientStep, an upper bound on a measured time at exec_wait_test.go:213).
+	// Not parallel: it sets environment variables of the whole process (main.runWaiting, main.buildRecordingBackoff, t.Setenv at exec_wait_test.go:322); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((*waitBroker).requireClientStep, an upper bound on a measured time at exec_wait_test.go:212).
 	const limit = 1
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, true, true, 300*time.Millisecond)
@@ -520,7 +503,7 @@ func TestTheWaitLimitEndsInsideTheClientsCallTimeout(t *testing.T) {
 // learns of the grant from its second read: a run with no sleep fails only when it read more than
 // twice.
 func TestExecBacksOffAgainstABrokerThatIgnoresWait(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.runWaiting, main.buildRecordingBackoff, t.Setenv at exec_wait_test.go:323).
+	// Not parallel: it sets environment variables of the whole process (main.runWaiting, main.buildRecordingBackoff, t.Setenv at exec_wait_test.go:322).
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, false, false, 9*time.Second)
 	backoffs := runWaiting(t, b, key, 0)

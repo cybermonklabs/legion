@@ -62,10 +62,7 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 	// no poll reached the broker before the code was approved, and no slow_down lengthened the
 	// interval. One move to the interval is one poll, which the approved code answers.
 	firstPoll := func() {
-		armed := testwait.Until(t, "the helper's first poll of the machine login to arm its wait", func() ([]time.Time, bool) {
-			armed := loginFake.Armed()
-			return armed, len(armed) > 0
-		})
+		armed := loginFake.AwaitArmed(t, "the helper's first poll of the machine login to arm its wait", 1)
 		if want := start.Add(pollWait); len(armed) != 1 || !armed[0].Equal(want) {
 			t.Fatalf("the helper's first poll of the machine login waits on its clock until %v; want only %s (%s after %s)", armed, want, pollWait, start)
 		}
@@ -85,16 +82,7 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 	slow.holds.Store(1)
 	cmd := exec.Command(binary, args...)
 	cmd.Env = append(append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+rig.URL, "AGENT_SECRETS_KEY_DIR="+keyDir), env...)
-	var out, errOut strings.Builder
-	cmd.Stdout = &out
-	cmd.Stderr = &errOut
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("run enroll --helper: %v", err)
-	}
-	var waitErr error
-	done := make(chan struct{})
-	go func() { waitErr = cmd.Wait(); close(done) }()
-	t.Cleanup(func() { _ = cmd.Process.Kill(); testwait.Receive(t, "the killed enroll --helper to exit", done) })
+	c := startCall(t, cmd)
 	// brokerCall arms the op's bound before it starts the op and its timer after, so the transport
 	// can hold the answer before the timer is armed. The machine login's op left neither: brokerCall
 	// ends the one and stops the other as it returns.
@@ -105,10 +93,8 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 	// requireNoAnswer fails the row once enroll --helper has exited: no answer may come before the
 	// row moves the op's clock.
 	requireNoAnswer := func(state opState) {
-		select {
-		case <-done:
-			t.Fatalf("enroll --helper exited before the row moved the helper's op to its bound (the op's clock holds %+v): exit %d, stdout %q, stderr %q", state, cmd.ProcessState.ExitCode(), out.String(), errOut.String())
-		default:
+		if c.ended() {
+			t.Fatalf("enroll --helper exited before the row moved the helper's op to its bound (the op's clock holds %+v): exit %d, stdout %q, stderr %q", state, cmd.ProcessState.ExitCode(), c.stdout.String(), c.stderr.String())
 		}
 	}
 	held := testwait.Until(t, "the transport to hold the enrollment's answer while the helper's op arms its bound and its timer", func() (opState, bool) {
@@ -122,12 +108,12 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 		t.Fatalf("while the transport holds the enrollment's answer the helper's op has armed %v on its clock; want only %v, its %s bound and its timer %s after that", held.Armed, want, opBound, opSlack)
 	}
 	opFake.Advance(opBound)
-	testwait.Receive(t, "enroll --helper to exit once the helper's op reached its bound", done)
+	exit := c.end(t)
 	var exitErr *exec.ExitError
-	if waitErr != nil && !errors.As(waitErr, &exitErr) {
-		t.Fatalf("run enroll --helper: %v\nstdout: %s\nstderr: %s", waitErr, out.String(), errOut.String())
+	if c.err != nil && !errors.As(c.err, &exitErr) {
+		t.Fatalf("run enroll --helper: %v\nstdout: %s\nstderr: %s", c.err, c.stdout.String(), c.stderr.String())
 	}
-	stdout, stderr, exit := out.String(), errOut.String(), cmd.ProcessState.ExitCode()
+	stdout, stderr := c.stdout.String(), c.stderr.String()
 	rows := enrollmentsOf(t, rig, runtimeID)
 	outcome := fmt.Sprintf("exit %d, stdout %q, stderr %q; the broker's rows for %s: %+v", exit, stdout, stderr, runtimeID, rows)
 	if n := slow.held.Load(); n != 1 {
