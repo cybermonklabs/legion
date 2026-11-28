@@ -181,6 +181,7 @@ type sessionRelay interface {
 // connection fails, and only a test builds a listener without one.
 type sessionDelivery struct {
 	consumers *bus.SessionConsumers
+	reconnect relayReconnect
 	// stream is the client whose verdict decides which topics /v1/interests/subscribe adds to a
 	// session's row (splitUncapturedTopics, bus.Client.ReachesNoSession): every topic but one
 	// neither the deployed stream, as the client last read its subjects, nor this build captures.
@@ -367,7 +368,10 @@ func (d *sessionDelivery) resumeHeld(r *http.Request, sessionID string) {
 // credential, as a hub that has yet to reload a new nkey on every server makes, is waited out
 // under the start's bound before it fails; any other failure ends the start as before.
 func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger, options ...bus.ConnectOption) (*sessionDelivery, error) {
-	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(), options...)
+	delivery := &sessionDelivery{stream: stream, logger: logger, now: time.Now}
+	// A caller's start check takes precedence. If it adds one, it must also register the hook.
+	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(),
+		append([]bus.ConnectOption{bus.WithStartCheck(delivery.reconnect.register)}, options...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +406,8 @@ func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stre
 	// it and one whose connection failed logs no threshold at all.
 	logger.Info("session consumer inactive threshold resolved; the server removes a session consumer this long after its last pull, which stands above the sweep's own bound",
 		slog.String("inactive_threshold", inactiveThreshold.String()))
-	return &sessionDelivery{consumers: consumers, stream: stream, logger: logger, now: time.Now}, nil
+	delivery.consumers = consumers
+	return delivery, nil
 }
 
 // close closes the session-consumer connection, if one is open.

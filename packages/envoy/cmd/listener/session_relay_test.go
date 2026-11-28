@@ -395,6 +395,95 @@ func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T)
 	rig.noneThroughMarker(t, second, sessionID)
 }
 
+// A reconnect ends an idle pull without waiting for the pull to stall. The next pull starts
+// after the retry wait and delivers the frame that still awaited an ack.
+func TestASessionRelayRestartsAtTheAckFloorWhenItsConsumerConnectionReconnects(t *testing.T) {
+	t.Parallel()
+	_, url := testnats.Start(t)
+	proxy := testnats.StartProxy(t, url)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	// Prompt reconnect shortens nats.go's own retry timer for this connection alone.
+	// The test waits for the reconnect and never reads how long it took
+	// (dispatch://INFRA-3149/comment/769de508-777d-4a13-99c6-e857f3c9c9f5).
+	consumerRig := newSessionConsumerRigWithDeliveryOn(t, client, url, proxy.URL(), []bus.ConnectOption{bus.WithPromptReconnect()})
+	const sessionID = "ses_pull_reconnect"
+	agent := contracts.LegacyAgentSubject(sessionID)
+	standIn := startSessionStandIn(t, url, sessionID, nil)
+	// Register before starting the relays. A registration heard by a running relay
+	// can cut short its next retry wait.
+	consumerRig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+
+	relays, err := startSessionRelays(consumerRig.deps.consumers, consumerRig.harness.config)
+	if err != nil {
+		t.Fatalf("start the session relays: %v", err)
+	}
+	t.Cleanup(func() { relays.stop(testwait.Context(t)) })
+	rig := &relayRig{sessionConsumerRig: consumerRig, relays: relays, url: url}
+	origin := time.Unix(0, 0)
+	fake := clocktest.New(origin)
+	rig.relays.clock = fake
+	rig.relays.setOwned(true)
+
+	before, floor := rig.storeEvent(t, agent)
+	first := standIn.receive(t, 1)
+	requireFrames(t, first, before)
+	standIn.reply(first[0], relayReplyDone)
+	awaitAcked(t, rig.consumers, sessionID, floor)
+	held, _ := rig.storeEvent(t, agent)
+	pending := standIn.receive(t, 1)
+	requireFrames(t, pending, held)
+	standIn.reply(pending[0], relayReplyReceived)
+	awaitAckState(t, rig.consumers, sessionID, 1, floor)
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
+	awaitPulled(t, rig.consumers, []string{sessionID})
+
+	// The proxy cuts the consumer connection without stopping the server, which would
+	// answer the old pull request with a shutdown status and could end the pull itself.
+	proxy.Cut()
+	proxy.Restore()
+	// The pull's stall uses the bus's own clock. Require the reconnect reason so that
+	// a stall on that clock cannot satisfy the wait, regardless of wall time.
+	const warning = "session relay pull ended; restarting at the ack floor"
+	const reason = "the session consumer's connection reconnected"
+	testwait.Until(t, "the relay to warn that "+reason, func() (any, bool) {
+		records := warnLinesNaming(rig.harness.logs.String(), sessionID)
+		for _, record := range records {
+			if record["msg"] == warning && record["error"] == reason {
+				return record, true
+			}
+		}
+		return records, false
+	})
+	// Store the message before advancing the retry timer. A restart at the stream's
+	// end instead of the ack floor would skip it.
+	retry := origin.Add(relayRetryFirst)
+	fake.AwaitArmedAt(t, "the relay's retry after reconnect", retry)
+	after, seq := rig.storeEvent(t, agent)
+	fake.Set(retry)
+	frames := standIn.receive(t, 2)
+	requireFrames(t, frames, held, after)
+	for _, frame := range frames {
+		standIn.reply(frame, relayReplyDone)
+	}
+	awaitAcked(t, rig.consumers, sessionID, seq)
+
+	info, err := rig.consumers.Info(testwait.Context(t), sessionID)
+	if err != nil {
+		t.Fatalf("read the restarted session consumer: %v", err)
+	}
+	if info.Config.OptStartSeq != floor+1 {
+		t.Fatalf("the relay restarted at sequence %d, want %d just after the old ack floor", info.Config.OptStartSeq, floor+1)
+	}
+	const stall = 30 * time.Second // Twice bus.sessionPullHeartbeat.
+	if elapsed := fake.Now().Sub(origin); elapsed >= stall {
+		t.Fatalf("the relay restarted after %s on the fake clock, want less than %s", elapsed, stall)
+	}
+}
+
 // A frame is acked only once the session answers done: after received alone the consumer still
 // holds the message for an ack, and after done it holds nothing. The frame carries the contract's
 // headers.

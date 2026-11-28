@@ -1224,6 +1224,50 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 	}
 }
 
+var errRelayConnectionReconnected = errors.New("the session consumer's connection reconnected")
+
+// relayReconnect shares one signal among the pulls open on the session-consumer connection.
+// Each reconnect retires that signal so a new pull waits for the next reconnect instead.
+type relayReconnect struct {
+	mu     sync.Mutex
+	next   context.Context
+	signal context.CancelFunc
+}
+
+// register attaches the signal to the client that opens the session-consumer connection.
+// The hook does not wait for a relay to stop its pull or make any requests.
+func (r *relayReconnect) register(client *bus.Client) error {
+	client.AddReconnectHook(func(context.Context, *nats.Conn) error {
+		r.mu.Lock()
+		signal := r.signal
+		r.next, r.signal = nil, nil
+		r.mu.Unlock()
+		if signal != nil {
+			signal()
+		}
+		return nil
+	})
+	return nil
+}
+
+// watch takes the signal before opening a pull so a reconnect between open and Next still wakes
+// it. The returned cleanup removes the callback when the pull ends without a reconnect.
+func (r *relayReconnect) watch(ctx context.Context) (context.Context, func()) {
+	r.mu.Lock()
+	if r.next == nil {
+		r.next, r.signal = context.WithCancel(context.Background())
+	}
+	next := r.next
+	r.mu.Unlock()
+
+	pullCtx, cancel := context.WithCancelCause(ctx)
+	stop := context.AfterFunc(next, func() { cancel(errRelayConnectionReconnected) })
+	return pullCtx, func() {
+		stop()
+		cancel(nil)
+	}
+}
+
 // relayNATS restarts a NATS session's consumer at its ack floor and publishes each message it pulls
 // as a frame on the session's relay subject, in stream order, with up to the consumer's
 // MaxAckPending in flight. It pauses, sending nothing more, once the oldest frame the session has
@@ -1257,6 +1301,8 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			return relayEnded
 		}
 	}
+	pullCtx, stopWatching := m.delivery.reconnect.watch(ctx)
+	defer stopWatching()
 	start, pull, outcome := m.restart(ctx, run)
 	if pull == nil {
 		return outcome
@@ -1340,7 +1386,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 	// back any more leave the set here (relayPassedSet.prune).
 	m.passed.prune(sessionID, start)
 	for {
-		next := ctx
+		next := pullCtx
 		cancelNext := context.CancelFunc(func() {})
 		if deadline, sent, waiting := m.receiptDeadline(run); waiting {
 			c := m.clk()
@@ -1348,15 +1394,20 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 				run.pausedOn = sent
 				return relayPaused
 			}
-			next, cancelNext = c.WithDeadline(ctx, deadline)
+			next, cancelNext = c.WithDeadline(pullCtx, deadline)
 		}
 		msg, err := pull.Next(next)
 		cancelNext()
-		if err != nil {
+		// A reconnect ends just the pull, not ownership of the session. Check its cause
+		// before treating a deadline as a receipt wait or handling a queued frame.
+		reconnected := context.Cause(pullCtx) == errRelayConnectionReconnected
+		if err != nil || reconnected {
 			if ctx.Err() != nil {
 				return relayEnded
 			}
-			if errors.Is(err, context.DeadlineExceeded) {
+			if reconnected {
+				err = errRelayConnectionReconnected
+			} else if errors.Is(err, context.DeadlineExceeded) {
 				continue
 			}
 			m.logger.Warn("session relay pull ended; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
