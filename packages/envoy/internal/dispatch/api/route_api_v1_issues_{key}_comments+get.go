@@ -12,7 +12,7 @@ var _ = declareRoute(routeDecl{
 		"A comment thread is a comment with no reply_to and no ask_id, and each comment whose reply_to names it; its row is {comment, replies, last_activity_at}, the replies oldest first, each shaped as the list shapes it. A comment with an ask_id is an entry of its ask's thread on GET /api/v1/issues/{key}/asks, and of no comment thread.",
 		"?person=in keeps each thread with an entry a person wrote, and each thread on text, whoever wrote it: its first comment has an anchor, or one of its comments is a reply that stores a quote; the route takes no other person value. With ?order=activity, ?artifact= keeps each thread whose first comment is anchored in that document, with all its replies, and the page's ETag hashes every parameter of the request, If-None-Match answering 304 as for the list."),
 	Handler: (*server).listComments,
-	Read:    readEntry{Writes: readWritesNothing},
+	Read:    readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfCommentListAtACut + " " + asOfThreadPageAtACut},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: []shapedComment{}, Params: issueCommentsQuery{},
 		Also: []routeAnswer{{Status: http.StatusOK, Body: commentThreadPage{}}},

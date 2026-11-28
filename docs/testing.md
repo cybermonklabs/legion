@@ -780,12 +780,13 @@ such a test would take the binary toward the step's limit.
 
 ## A test in a daemon package that states the rule runs beside the others
 
-Six packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
+Seven packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
 the default build calls `t.Parallel()` as its first statement or says why not: `internal/daemon`,
-`internal/workflow`, `internal/store`, `internal/runtime/sandbox`, `internal/workspace` and
-`cmd/legion`. Each `TestMain` sets how many run at once (`daemonTestParallelism`,
-`workflowTestParallelism` and `storeTestParallelism` 4, `sandboxTestParallelism`,
-`workspaceTestParallelism` and `cmdTestParallelism` 8).
+`internal/workflow`, `internal/store`, `internal/runtime/sandbox`, `internal/workspace`,
+`cmd/legion` and `internal/ghroute`. Each `TestMain` sets how many run at once
+(`daemonTestParallelism`, `workflowTestParallelism` and `storeTestParallelism` 4,
+`sandboxTestParallelism`, `workspaceTestParallelism`, `cmdTestParallelism` and
+`ghrouteTestParallelism` 8).
 The live drivers behind `//go:build e2e` of `internal/daemon`, `internal/workflow`,
 `internal/store` and `cmd/legion`, which no unit run compiles, are not held to the rule, and the
 check below reads only the default build. Each test of `internal/daemon` already has a database of
@@ -805,7 +806,7 @@ one second in `TestAPodStartsItsRolesOneLoadAtATime`, or the rig's two-second bo
 `TestSuspendOfAPodWhoseLauncherNeverConnectedReturnsAtOnce`). A new test with neither the call nor
 the comment runs alone for no reason.
 
-So each of the six packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
+So each of the seven packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
 in the file that declares `TestMain`, runs `packages/daemon/internal/testparallel`'s `Require`
 over the package's own test files, those go/build's default context selects (no `-tags`). It finds a test as go test
 does, whatever name the file imported `testing` under. The reason goes on the comment's first
@@ -837,10 +838,10 @@ remote is copied from a template built once per default branch; the template its
 ## A daemon test writes a file it then executes with `internal/execfile`
 
 In a package of the daemon module whose tests run beside each other (`cmd/legion`,
-`internal/daemon`, `internal/intake`, `internal/runtime/sandbox`, `internal/workspace`), a test
-writes a file it or its program then executes (a stand-in git, gh, jj or curl, a wrapper on a PATH)
-with `packages/daemon/internal/execfile` (`execfile.Write`, `execfile.Append`), never `os.WriteFile`
-or an `os.OpenFile` of its own. A child
+`internal/daemon`, `internal/ghroute`, `internal/intake`, `internal/runtime/sandbox`,
+`internal/workspace`), a test writes a file it or its program then executes (a stand-in git, gh,
+jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile` (`execfile.Write`,
+`execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
 another test forks while the file is open for writing holds the write descriptor until its own
 exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
 (ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for

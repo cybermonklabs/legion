@@ -19,6 +19,6 @@ var _ = declareRoute(routeDecl{
 	// (canonicalizeUUIDPath).
 	ID:          &idRoute{Reason: "a broadcast id: one send to many sessions"},
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: broadcastRead{}},
 })
