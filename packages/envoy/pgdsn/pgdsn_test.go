@@ -1,5 +1,7 @@
 package pgdsn
 
+//ci:reads packages/envoy/scripts/fixtures/pg-url.json TestRefusalHoldsToTheSharedPgURLCorpus reads ../scripts/fixtures/pg-url.json
+
 import (
 	"encoding/json"
 	"errors"

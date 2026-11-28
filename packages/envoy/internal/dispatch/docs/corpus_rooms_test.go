@@ -1,5 +1,7 @@
 package docs
 
+//ci:reads packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md driveCorpusRooms globs ../pmdoc/testdata/corpus/*.md, one room per document, for the fork-clone and settlement-tree tests
+
 import (
 	"os"
 	"path/filepath"

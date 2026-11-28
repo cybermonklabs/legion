@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/daemon/docker/jj rolePushFixture's podDir reads ../../docker/jj, the image's jj wrapper, and writes it into the pod's bin
+
 import (
 	"errors"
 	"maps"

@@ -127,6 +127,15 @@ compiles; ci.yaml, since a job reads its own definition; and the job's own file 
 gate on one of that job's steps reads too, since the step runs only in a run the job's filter
 selected: the test job's filter holds every harness its steps test.
 
+A file a test reads through `..` that go list does not see is in the filter only through a
+`//ci:` line of the test's own file: one outside the test's module, and one inside it that no
+package the job builds holds - no package directory of the job's `go list -deps`, no file one of
+them embeds and no testdata of a package the job tests, as the delivery package's testdata, which
+packages/envoy/internal/dispatch/api/delivery_test.go reads, is for envoy-go-race-api. So
+check-ci-filters.sh (rule 26) fails on such a read that no `//ci:reads`, `//ci:reads-set` or
+`//ci:builds` line of the file names: a line taken out would drop the file from that job's
+filter in silence, and a change to it would then start no job that runs the test.
+
 The files become patterns in three forms (ci_filter_coverage.compressed): `<dir>/**` for a
 directory whose every file but its Go test files is read, `<dir>/*` for such a directory's own
 files, and the path itself otherwise. The directory forms select a file a change deletes there,

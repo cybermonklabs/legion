@@ -1,5 +1,7 @@
 package natscallout
 
+//ci:reads packages/envoy/scripts/lib/legacy-subjects-gate-callout-publishers.json TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject reads ../../../scripts/lib/legacy-subjects-gate-callout-publishers.json (calloutPublishersFile)
+
 import (
 	"bytes"
 	"encoding/json"

@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/envoy/cmd/dispatch/README.md TestTheGuideNamesTheMembersEachAnswersRouteCanLeaveOut reads ../../../cmd/dispatch/README.md, the guide it holds the route to
+
 import (
 	"maps"
 	"os"

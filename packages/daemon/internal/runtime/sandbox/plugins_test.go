@@ -1,5 +1,7 @@
 package sandbox
 
+//ci:reads packages/daemon/docker/claude-code/* runClaudeStart and pinnedClaudeCode read the pin's package.json and package-lock.json under ../../../docker/claude-code
+
 import (
 	"encoding/json"
 	"errors"

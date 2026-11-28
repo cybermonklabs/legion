@@ -418,20 +418,31 @@
 #      too, passed every other rule (dispatch://INFRA-5794/spec#b-r2). A step that readies a gated
 #      step (a cache restore, a sysctl, a fetch) shares its gate, so a gate of the filter on the
 #      step's job is enough.
-#  26. a Go test file, or a Go file that holds a //ci: line, that reads a path outside its Go module
+#  26. a Go test file, or a Go file that holds a //ci: line, that reads a path outside its package
 #      through `..` (a filepath.Join or path.Join whose leading arguments are string literals
 #      starting with `..`, taken as far as its literals go, or a `"../..."` literal, comments
 #      aside) while no //ci:reads, //ci:reads-set or //ci:builds line of that file names the path,
-#      naming the file, the path and the source text. go list sees no such read and the filters
-#      are computed from those lines, so a line taken out drops the read from every filter, and a
-#      change to the file starts no job that runs the test: taking out a //ci:reads line of
-#      packages/daemon/internal/prompts/roles_test.go passed every other rule
-#      (dispatch://INFRA-5794/spec#b-r2). A path is in the deepest module whose directory holds
-#      it, so a read into a module nested in the file's (packages/envoy/infra in packages/envoy)
-#      is outside the file's module. A path no file of the repository holds (an escape a test
-#      refuses, a fixture it writes), the module's own root or a directory around it (a path the
-#      source finishes with a value it computes, which the source cannot name), and a read inside
-#      the file's own module are not this rule's.
+#      naming the file, the path and the source text. A path outside the file's Go module always
+#      needs the line; one inside it needs it where a gate one of whose test runs compiles the
+#      file builds no package that holds the path: no package directory of a `go list -deps` of
+#      that gate's go commands, no file they embed and no testdata of a package its test runs test
+#      holds it (for a gate with a go command this check does not reduce, every file under a Go
+#      module's directory does). A glob is held when the files it matches are, and a directory when
+#      the files directly in it are, their Go test files aside in both - a directory of a package
+#      the gate builds is held - and either, where that leaves no file, when every file it names
+#      is. go list sees no such read and the filters are computed from those lines, so a line taken
+#      out drops the read from that job's filter, and a change to the file starts no job that runs
+#      the test: taking out a //ci:reads line of packages/daemon/internal/prompts/roles_test.go
+#      passed every other rule (dispatch://INFRA-5794/spec#b-r2), and so did taking out
+#      packages/envoy/internal/dispatch/api/delivery_test.go's line for the delivery package's
+#      testdata, which envoy-go-race-api then read no more. A line of another test's file is no
+#      answer for this one: taking that line out would leave the read in no filter again. A path
+#      is in the deepest module whose directory holds it, so a read into a module nested in the
+#      file's (packages/envoy/infra in packages/envoy) is outside the file's module. A path no file
+#      of the repository holds (an escape a test refuses, a fixture it writes) and a path in the
+#      file's own package directory are not this rule's, nor is a directory around the file's
+#      module, for a read outside it, or around its package, for one inside: the source finishes
+#      such a path with a value it computes, which the source cannot name.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to

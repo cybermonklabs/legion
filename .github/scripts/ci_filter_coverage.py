@@ -3674,24 +3674,31 @@ def directive_covers(d, path: str, expander: Expander) -> bool:
     return False
 
 
-def check_declared_reads(data, expander: Expander, files: list, problems: list[Annotation]) -> None:
-    """Rule 26: a test that reads a file outside its Go module through `..` names it in a //ci: line
-    of its own file, since go list sees no such read and the filters are computed from those lines:
-    a line taken out leaves the read in no filter, and a change to that file then starts no job that
-    runs the test (packages/daemon/internal/prompts/roles_test.go's three lines are the case this
-    rule was written for). It reads each Go test file, and each Go file that holds a //ci: line, for
-    the paths go_up_reads finds, and keeps those outside the file's module that name a file or a
-    directory of the repository and are not the module's own root or a directory around it (a path
-    the source finishes with a value it computes cannot be named from the source). A path is in
-    the deepest module whose directory holds it, so a read into a module nested in the file's
-    (packages/envoy/infra in packages/envoy) is outside the file's module. This rule checks no read
-    inside the file's module. A path none of the file's //ci: lines covers fails, naming the file,
-    the path and the source text it came from."""
+def check_declared_reads(data, session: Session, expander: Expander, files: list, unreduced: dict,
+                         problems: list[Annotation]) -> None:
+    """Rule 26: a test that reads a file outside its package through `..` names it in a //ci: line
+    of its own file, when go list sees no such read, since the filters are computed from those
+    lines: a line taken out leaves the read in no filter, and a change to that file then starts no
+    job that runs the test (packages/daemon/internal/prompts/roles_test.go's three lines are the
+    case this rule was written for, and packages/envoy/internal/dispatch/api/delivery_test.go's
+    read of the delivery package's testdata the case of a read inside the test's module). It reads
+    each Go test file, and each Go file that holds a //ci: line, for the paths go_up_reads finds,
+    and keeps those that name a file or a directory of the repository (a path the test makes up
+    names none). A path is in the deepest module whose directory holds it, so a read into a module
+    nested in the file's (packages/envoy/infra in packages/envoy) is outside the file's module.
+    Outside the file's module, the module's own root and a directory around it are passed over (a
+    path the source finishes with a value it computes cannot be named from the source), and a path
+    none of the file's //ci: lines covers fails. Inside it, a path in the file's own package
+    directory, that directory and one around it are passed over, and so is one every gate whose
+    test runs compile the file holds through go list alone (reads_inside_module): only one that
+    some such gate's go commands do not reach, and none of the file's //ci: lines covers, fails.
+    Each names the file, the path and the source text it came from."""
     roots = go_module_roots(files)
     known = expander.known
     lines = defaultdict(list)
     for d in getattr(data, "DIRECTIVES", ()):
         lines[d.path].append(d)
+    inside: dict = {}  # a file -> its reads inside its module and outside its package no line of it names
     for path in files:
         if not path.endswith(".go") or not (path.endswith("_test.go") or path in lines):
             continue
@@ -3702,9 +3709,12 @@ def check_declared_reads(data, expander: Expander, files: list, problems: list[A
             text = (REPO / path).read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             continue
-        seen = set()
+        here, seen = os.path.dirname(path), set()
         for read, source in go_up_reads(path, text):
-            if read in seen or read.startswith("..") or module_of(read, roots) == module or under(module, read):
+            if read in seen or read.startswith(".."):
+                continue
+            own = module_of(read, roots) == module
+            if (under(read, here) or under(here, read)) if own else under(module, read):
                 continue
             seen.add(read)
             if not (read in known or expander.expand(f"{read}/**") or
@@ -3712,11 +3722,95 @@ def check_declared_reads(data, expander: Expander, files: list, problems: list[A
                 continue  # a path the test makes up (an escape it refuses, a fixture it writes)
             if any(directive_covers(d, read, expander) for d in lines[path]):
                 continue
-            suggested = read if read in known or any(c in read for c in "*?[") else f"{read}/**"
+            if own:
+                inside.setdefault(path, []).append((read, source))
+                continue
             problems.append(error(path, f"{path} reads {read} through {source}, outside its module {module}, and no "
                                         f"//ci:reads, //ci:reads-set or //ci:builds line of the file names it, so a "
                                         f"change to it starts no job that runs this test; add `//ci:reads "
-                                        f"{suggested} <the test that reads it>` to the file's //ci: block"))
+                                        f"{suggested_read(read, known)} <the test that reads it>` to the file's //ci: "
+                                        f"block"))
+    for (path, read, source), wheres in reads_inside_module(data, session, expander, files, unreduced, inside):
+        problems.append(error(path, f"{path} reads {read} through {source}, outside its package "
+                                    f"{os.path.dirname(path)}, which no package that "
+                                    f"{' or '.join(f'job {w}' for w in wheres)} builds holds, and no //ci:reads, "
+                                    f"//ci:reads-set or //ci:builds line of the file names it, so a change to it "
+                                    f"does not start the job that runs this test; add `//ci:reads "
+                                    f"{suggested_read(read, known)} <the test that reads it>` to the file's //ci: "
+                                    f"block"))
+
+
+def suggested_read(read: str, known: set) -> str:
+    """The glob a //ci:reads line that declares `read` names: the path of a file or a glob as it
+    is, and a directory's whole tree."""
+    return read if read in known or any(c in read for c in "*?[") else f"{read}/**"
+
+
+def reads_inside_module(data, session: Session, expander: Expander, files: list, unreduced: dict,
+                        inside: dict) -> list:
+    """Rule 26's reads inside a test's module, ((the file, the path, the source text), the gates
+    that miss it), in the order of `files` and of the reads: a read some gate misses, of the gates
+    whose test runs compile the file. A test run compiles a file its listing names as a test file
+    of a package it tests, or as a source of a package of its closure, which are the files whose
+    //ci: lines closure applies. A gate holds a read when it reads every file of held_files(read)
+    through go list alone: closure without the RULES of any file, so the package directories of
+    each `go list -deps`, the files they embed and the testdata of each package a test run tests,
+    with every Go file and every file under a Go module's directory for a gate with a go command
+    this check does not reduce. A line of another test's file is no answer for this one: taking it
+    out would leave this read in no filter. Only a gate that compiles such a file walks its closure
+    again, and the problems that walk raises were reported when gate_read_sets walked it first."""
+    if not inside:
+        return []
+    needed = {(path, read, source): held_files(read, expander)
+              for path in files for read, source in inside.get(path, ())}
+    missed: dict = {key: [] for key in needed}
+    walked: dict = {}  # a Run -> the files its closure reads through go list alone
+    fallback = None
+    before = len(session.problems)
+    for g in data.GATES:
+        compiled = set()
+        for r in gate_runs(g):
+            if r.mode != "test":
+                continue
+            for pkg in session.listing(r):
+                d = rel(pkg["Dir"]) if pkg.get("Dir") and not pkg.get("Standard") else None
+                if d is not None and not pkg.get("ForTest"):
+                    compiled.update(f"{d}/{name}" for name in (pkg.get("GoFiles") or []) + (pkg.get("CgoFiles") or []))
+            for pkg in session.named(r):
+                d = rel(pkg["Dir"]) if pkg.get("Dir") else None
+                if d is not None:
+                    compiled.update(f"{d}/{name}" for name in (pkg.get("TestGoFiles") or []) + (pkg.get("XTestGoFiles") or []))
+        asked = [key for key in needed if key[0] in compiled]
+        if not asked:
+            continue
+        held = set()
+        for r in gate_runs(g):
+            if r not in walked:
+                walked[r] = set().union(*(read_files(read, expander) for read in closure(session, {}, r, set())))
+            held |= walked[r]
+        if unreduced.get(g.filter):
+            if fallback is None:
+                fallback = set(module_trees_and_go_files(files))
+            held |= fallback
+        for key in asked:
+            if not needed[key] <= held:
+                missed[key].append(g.job + (f' step "{g.step}"' if g.step else ""))
+    del session.problems[before:]
+    return [(key, list(dict.fromkeys(wheres))) for key, wheres in missed.items() if wheres]
+
+
+def held_files(read: str, expander: Expander) -> set:
+    """The files a gate's go commands must read for rule 26 to count a read inside a test's module
+    as one go list sees: the file a path names; the files a glob matches, its Go test files aside;
+    and the files directly in a directory, its Go test files aside, which are what go list reads
+    of the directory of a package a gate builds. Only where that leaves none - a glob of Go test
+    files alone, a directory holding nothing but directories - is it every file the path names."""
+    if read in expander.known:
+        return {read}
+    glob = any(c in read for c in "*?[")
+    named = expander.expand(read if glob else f"{read}/**")
+    sources = {f for f in named if not f.endswith(TEST_SUFFIX) and (glob or os.path.dirname(f) == read)}
+    return sources or set(named)
 
 
 def tag_step_files(entry, gate_files: dict, selection: Selection) -> tuple:
@@ -4327,7 +4421,7 @@ def check() -> int:
             problems.append(error(GATES_DIR, f"filter {name} has {unread_filter_patterns(filters[name])[0]}, "
                                              f"a brace picomatch expands and this check does not read"))
     check_dead_patterns(data, expander, problems)
-    check_declared_reads(data, expander, files, problems)
+    check_declared_reads(data, session, expander, files, unreduced, problems)
     if mode == "generate":
         out = os.environ.get("CI_FILTERS_OUT", "")
         problems = list(dict.fromkeys(problems))

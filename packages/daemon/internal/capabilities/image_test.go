@@ -1,5 +1,7 @@
 package capabilities
 
+//ci:reads packages/daemon/docker/claude-code/* TestTheCommittedClaudeCodePinIsOneAPodCanInstall reads the pin's package.json and package-lock.json under ../../docker/claude-code
+
 import (
 	"context"
 	"encoding/json"

@@ -1,5 +1,7 @@
 package supervise
 
+//ci:builds packages/daemon ./internal/stream ./internal/claudebridge outcomeImporter's compiledDependencies runs go list -deps -export ../stream ../claudebridge, and checkOutcomeSource type-checks the source in each directory
+
 import (
 	"fmt"
 	"go/ast"

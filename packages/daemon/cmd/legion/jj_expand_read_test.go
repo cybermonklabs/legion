@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/daemon/docker/jj TestTheBuiltinListIsTheImageWrappers and TestTheGlobalOptionListsAreTheImageWrappers read ../../docker/jj, the image's jj wrapper
+
 import (
 	"errors"
 	"maps"
