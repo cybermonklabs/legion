@@ -90,7 +90,8 @@ with tsc, the typecheck's own compiler, and holds every listed block to what tsc
 tsgo resolves differently fails that pull request's lint job by name. A bump of the pinned tsgo
 that changes a listing fails the same way, on the pull request that bumps it. The listing runs
 `bunx --no-install` (`.github/scripts/ci_ts_listing.py#BUNX`), so a checkout whose node_modules
-lacks the pin fails the listing, naming the cause, rather than fetching a package.
+lacks the pin lists with a tsgo on PATH where there is one, and otherwise fails the listing,
+naming the cause; either way it fetches no package.
 
 On a 4-processor runner the generation spends about 7 s in the table's thread, 14 s of
 processor time in go list and, with tsc, 11 s listing the dashboard's and the proof editor's

@@ -403,15 +403,18 @@
 #
 # Every rule reads the filters from the same run of the engine that computes them, in memory, and
 # names the gate file, the //ci: line or the workflow a fault is in. The go commands of every gate
-# and every //ci:builds line run at once, in a pool of CI_FILTERS_JOBS (default: the machine's
-# processors, at most 8; 1 runs them one after another), each answer keyed by what it asks, so the
-# filters are the same text whatever the pool's size. With more than one, each Run's `go list
-# -deps` starts as the table declares the Run (ci_filter_coverage.start_early), so those listings
-# run while the rest of the table loads, and toolchain()'s `go env GOROOT`, once per module
-# directory, runs on the table's thread during the load; the other go commands, module_files()'s
-# `go env -json` and `go work edit -json` and check_vet_tags()'s `go list`, run when the walk asks
-# them. A listing's failure waits in its answer and is reported when the walk asks it, as it is
-# when the command runs then.
+# and every //ci:builds line run at once, in two pools of CI_FILTERS_JOBS threads each (default:
+# the machine's processors, at most 8; 1 runs them one after another, in no pool), each answer
+# keyed by what it asks, so the filters are the same text whatever the pools' size. With more than
+# one, each Run's `go list -deps` starts in the first pool as the table declares the Run
+# (ci_filter_coverage.start_early), so those listings run while the rest of the table loads, and
+# toolchain()'s `go env GOROOT`, once per module directory, runs on the table's thread during the
+# load; the other go commands, module_files()'s `go env -json` and `go work edit -json` and
+# check_vet_tags()'s `go list`, run when the walk asks them. The second pool runs what the walk
+# asks of each Run (ci_filter_coverage.Session.prefetch): a listing the first pool began is waited
+# for there, not run again, but module_files()'s commands run beside the early listings still
+# running, so up to twice CI_FILTERS_JOBS go commands can run at once. A listing's failure waits
+# in its answer and is reported when the walk asks it, as it is when the command runs then.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
@@ -617,10 +620,11 @@ export CI_FILTERS_MODE="${1:-check}"
 # (ci_ts_listing.start), with tsgo (ci_ts_listing.COMPILER), right after the engine's own import,
 # and every mode starts each Run's `go list -deps` as the table declares the Run
 # (ci_filter_coverage.start_early), so they run while the table loads. The TypeScript listings
-# read the tree and write nothing in it; the early go list commands are go commands like the
-# others, whose write of a go.work.sum the guard below names. After the load, the generate mode
-# prints the command the programs are listed with and how many listings start() began
-# (ci_ts_listing.started_summary).
+# read the tree and write nothing in it; the early go list commands run, like the walk's, in the
+# Session's environment (GOPROXY=off over an empty module cache), which rewrites no go.sum or
+# go.work.sum, and the guard below names any file of the tree that still changes. After the load,
+# the generate mode prints the command the programs are listed with and how many listings start()
+# began (ci_ts_listing.started_summary).
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
 import hashlib
 import os

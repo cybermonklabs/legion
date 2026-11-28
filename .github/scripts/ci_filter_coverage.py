@@ -568,8 +568,11 @@ class Session:
         module files - so the walk that follows reads them from the cache. Each command is
         independent of the others and its answer is keyed by what it asks, so the cache holds
         what a run one after another would; the problems they raise are put in the order of
-        their messages, which no scheduling moves. CI_FILTERS_JOBS bounds the pool (default: the
-        machine's processors, at most 8; 1 runs them one after another). Returns the pool size."""
+        their messages, which no scheduling moves. CI_FILTERS_JOBS bounds this pool, beside
+        start_early()'s (default: the machine's processors, at most 8; 1 runs them one after
+        another): a listing start() began is waited for here, not run again, but module_files()'s
+        commands run beside the early listings still running, so up to twice that many go commands
+        run at once. Returns the pool size."""
         jobs = go_jobs()
         tasks = []
         for r in dict.fromkeys(runs):
@@ -591,8 +594,12 @@ class Session:
 
 
 def go_jobs() -> int:
-    """How many go commands run at once: CI_FILTERS_JOBS, by default the machine's processors, at
-    most 8; 1 runs them one after another."""
+    """How many threads each of the two pools of go commands holds: start_early()'s, for the
+    listings begun while the table loads, and prefetch()'s, for the walk's commands. It is
+    CI_FILTERS_JOBS, by default the machine's processors, at most 8. prefetch()'s listings wait for
+    those start_early()'s pool began, but its module_files() commands run beside the early listings
+    still running, so up to twice that many go commands run at once until those end. A value of 1
+    still runs every command one after another, and start_early() makes no pool then."""
     return int(os.environ.get("CI_FILTERS_JOBS") or min(8, os.cpu_count() or 1))
 
 
