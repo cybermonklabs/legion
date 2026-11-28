@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -480,27 +481,41 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 }
 
 // A document listed owed with no markdown version stays owed when a version is written after the
-// tick listed it, and one that never gains a version has its marks cleared and is stated. The
-// tick's pass over such a document clears its marks and states it only under the document owner's
-// lock, once its re-read under that lock answers the document's row with no markdown version
-// (indexOwedDocument). A clear decided from the listing would take the mark of a version the
-// release before this one writes and indexes in between: that release states nothing in the store
-// and never sets the mark again, and no pass of this build would reach the version.
+// tick listed it, or after the tick's re-read under the owner lock found none, and one that never
+// gains a version has its marks cleared and is stated (R16's fourth statement that writes the
+// stated columns). The tick's pass over such a document clears its marks and states it only under
+// the document owner's lock, once its re-read under that lock answers the document's row with no
+// markdown version, in one statement that tests again that no markdown version stands
+// (indexOwedDocument). A clear decided from the listing, or from the re-read alone, would take the
+// mark of a version the release before this one writes and indexes in between: that release states
+// nothing in the store and never sets the mark again, and no pass of this build would reach the
+// version.
 //
-// Documents D and E of issue CORE-1 hold no version and the backfill's mark, which a tick that has
-// run already did not list. The next tick lists both at version 0 and is held there
-// (afterOwedDocumentsListed); the stand-in for the release before then writes D's first markdown
-// version and indexes it as that release does - the version recorded and the re-index queue's row
-// settled, nothing stated in the store - and commits, and the tick is released. Each wait on the
-// tick is bounded by fenceWait. D reaches no clear (beforeNoVersionClear) and still holds the mark.
-// E, which never gains a version, reaches the clear, holds no mark, stands at version 0 and is
-// stated at version 0 by this build's rule.
+// Documents D (written), E (raced) and F (untouched) of issue CORE-1 hold no version, and each
+// one's document_block_versions row is as the backfill of rule 2 leaves it: store_owed_at set,
+// store_owed_rule 2, and stated_version and stated_rule null. A tick lists the three at version 0
+// and is held there (afterOwedDocumentsListed). While it is held, D's first version is written
+// through the real version write (writeFirstVersion, as the upload route writes a version), with
+// more blocks than deferBlockIndexBlocks, so the write leaves D's index to the reconciliation and
+// marks D owed; then the tick is released. The tick is held again at beforeNoVersionClear once its
+// re-read under the owner lock has found no markdown version of E, and E's first markdown version
+// is inserted by SQL on a connection that takes no owner lock, whose trigger
+// (document_block_versions_owe) sets E's version null; then the tick is released. F stays without
+// a markdown version, and no hook holds the tick at it. Each wait for the tick to reach a hook is
+// bounded by fenceWait, past which the test fails and releases every tick it holds.
+//
+// After that tick D and E each keep their null version and their own mark, of the time it held,
+// stated by no pass (a clear and a later re-mark would leave a mark of another time and the
+// clear's stated columns), and F holds no mark, its version 0, its stated_version 0 and its
+// stated_rule 2. The next tick indexes the versions of D and
+// E: each row stands at its version, stated at it by rule 2 with no mark, and each block of D's
+// version holds its node; and the owed count then reads 0.
 func TestAVersionWrittenAfterTheTickListedItsDocumentStaysOwed(t *testing.T) {
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 	awaitedBlockIndexTick(t, service)
 	documents := map[string]string{}
-	for _, slug := range []string{"written", "untouched"} {
+	for _, slug := range []string{"written", "raced", "untouched"} {
 		var document string
 		if err := database.Pool.QueryRow(ctx, `
 			with document as (
@@ -508,31 +523,44 @@ func TestAVersionWrittenAfterTheTickListedItsDocumentStaysOwed(t *testing.T) {
 				values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}')
 				returning id
 			), marked as (
-				insert into document_block_versions (artifact_id, store_owed_at) select id, now() from document
+				insert into document_block_versions (artifact_id, store_owed_at, store_owed_rule) select id, now(), $2::integer from document
 			)
 			select id::text from document
-		`, slug).Scan(&document); err != nil {
-			t.Fatalf("create the document %s, marked as the backfill marks one no pass of this build's rule stated: %v", slug, err)
+		`, slug, refs.BlockIndexMarkingRule).Scan(&document); err != nil {
+			t.Fatalf("create the document %s, marked as the backfill of rule 2 marks one no pass of this build's rule stated: %v", slug, err)
 		}
 		documents[slug] = document
 	}
-	written, untouched := documents["written"], documents["untouched"]
+	written, raced, untouched := documents["written"], documents["raced"], documents["untouched"]
+	// The mark each document holds, by its time: a pass that leaves a document owed keeps it, and a
+	// mark the document takes again after a clear is another, of a later time (oweDocumentIndex).
+	marks := map[string]string{}
+	for slug, document := range documents {
+		row := artifactsInTreeReadRow(t, database, document)
+		if row.version != "null" || row.owedAt == "null" || row.owedRule != strconv.Itoa(refs.BlockIndexMarkingRule) ||
+			row.statedVersion != "null" || row.statedRule != "null" {
+			t.Fatalf("the document %s (%s) reads %s, want the backfill of rule 2's mark and no stated column: this test proves nothing", slug, document, row)
+		}
+		marks[document] = row.owedAt
+	}
 
 	listed := make(chan []owedDocument, 1)
-	release := make(chan struct{})
+	atClear := make(chan struct{}, 1)
+	listing, clearing := newArtifactsInTreeHold(), newArtifactsInTreeHold()
+	defer listing.open()
+	defer clearing.open()
 	service.afterOwedDocumentsListed = func(owed []owedDocument) error {
 		listed <- owed
-		select {
-		case <-release:
-			return nil
-		case <-time.After(fenceWait):
-			return fmt.Errorf("the test did not release the tick within %s of its listing", fenceWait)
-		}
+		return listing.wait("afterOwedDocumentsListed")
 	}
 	cleared := make(chan string, len(documents))
 	service.beforeNoVersionClear = func(artifactID string) error {
 		cleared <- artifactID
-		return nil
+		if artifactID != raced {
+			return nil
+		}
+		atClear <- struct{}{}
+		return clearing.wait("beforeNoVersionClear")
 	}
 	defer func() { service.afterOwedDocumentsListed, service.beforeNoVersionClear = nil, nil }()
 
@@ -545,7 +573,9 @@ func TestAVersionWrittenAfterTheTickListedItsDocumentStaysOwed(t *testing.T) {
 	select {
 	case owed = <-listed:
 	case <-time.After(fenceWait):
-		t.Fatalf("the tick did not list its owed documents within %s", fenceWait)
+		listing.open()
+		clearing.open()
+		t.Fatalf("the tick never reached afterOwedDocumentsListed within %d s", artifactsInTreeHookBound)
 	}
 	for slug, document := range documents {
 		found := slices.IndexFunc(owed, func(listed owedDocument) bool { return listed.id == document })
@@ -553,22 +583,38 @@ func TestAVersionWrittenAfterTheTickListedItsDocumentStaysOwed(t *testing.T) {
 			t.Errorf("the tick listed %+v, want %s (%s) among them at version 0", owed, slug, document)
 		}
 	}
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		for _, statement := range []string{
-			`insert into artifact_versions (artifact_id, number, markdown, authors)
-			 values ($1::uuid, 1, 'First words.', '[{"kind":"user","id":"alice"}]')`,
-			`update document_block_versions set version = 1 where artifact_id = $1::uuid`,
-			`delete from refs_grammar_owed where kind = 'artifact' and id = $1::uuid`,
-		} {
-			if _, err := tx.Exec(ctx, statement, written); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("write and index the first markdown version of %s as the release before does: %v", written, err)
+	// D's first version, through the real version write, past the bound a write indexes in its own
+	// request: the write leaves D's blocks to the reconciliation and marks D owed.
+	var writtenKey string
+	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, written).Scan(&writtenKey); err != nil {
+		t.Fatalf("read the ref_key of %s: %v", written, err)
 	}
-	close(release)
+	writeFirstVersion(t, database, service, written, writtenKey, deferredList(deferredItems), func(seeded string) string { return seeded })
+	settle(t, database, written)
+	if rows, _ := artifactsInTreeBlockNodes(t, database, written); rows != 0 {
+		t.Fatalf("the version write of %s indexed %d blocks in its own request, want none: past deferBlockIndexBlocks it leaves them to the reconciliation, so this test proves nothing", written, rows)
+	}
+	if row := artifactsInTreeReadRow(t, database, written); !row.keeps(marks[written]) {
+		t.Fatalf("the version write left %s reading %s, want it owed its index and holding its mark of %s: this test proves nothing", written, row, marks[written])
+	}
+	listing.open()
+	racedWait := ""
+	select {
+	case <-atClear:
+		inserted, cancel := context.WithTimeout(ctx, fenceWait)
+		_, err := database.Pool.Exec(inserted, `
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			values ($1::uuid, 1, 'Words written while the tick is held before its clear.', '[{"kind":"user","id":"alice"}]')
+		`, raced)
+		cancel()
+		if err != nil {
+			clearing.open()
+			t.Fatalf("insert the first markdown version of %s by SQL, on a connection that takes no owner lock, while the tick is held before its clear: %v", raced, err)
+		}
+	case <-time.After(fenceWait):
+		racedWait = fmt.Sprintf("the tick never reached beforeNoVersionClear within %d s", artifactsInTreeHookBound)
+	}
+	clearing.open()
 	select {
 	case err := <-ticked:
 		if err != nil {
@@ -577,6 +623,7 @@ func TestAVersionWrittenAfterTheTickListedItsDocumentStaysOwed(t *testing.T) {
 	case <-time.After(fenceWait):
 		t.Fatalf("the tick did not finish within %s of its release", fenceWait)
 	}
+	service.afterOwedDocumentsListed, service.beforeNoVersionClear = nil, nil
 	close(cleared)
 	var reached []string
 	for document := range cleared {
@@ -587,21 +634,54 @@ func TestAVersionWrittenAfterTheTickListedItsDocumentStaysOwed(t *testing.T) {
 			t.Errorf("the document %s reached the clear of a document holding no markdown version (reached: %v), want it kept from that clear: its version committed after the listing",
 				written, reached)
 		}
-		if markedAt, _ := backfillMark(t, database, written); markedAt == nil {
-			t.Errorf("the document %s holds no mark after the tick that listed it with no markdown version and indexed nothing of the version written since, "+
-				"want the backfill's mark standing: no pass of this build has stated that version", written)
+		if row := artifactsInTreeReadRow(t, database, written); !row.keeps(marks[written]) {
+			t.Errorf("the tick that listed %s at version 0 cleared the mark of version %d, written while it was held: its row reads %s, want version null and its mark of %s, stated by no pass",
+				written, artifactsInTreeNewestVersion(t, database, written), row, marks[written])
+		}
+	})
+	t.Run("a version written while the tick is held before its clear", func(t *testing.T) {
+		if racedWait != "" {
+			t.Error(racedWait)
+			return
+		}
+		if row := artifactsInTreeReadRow(t, database, raced); !row.keeps(marks[raced]) {
+			t.Errorf("the statement that clears a document with no version cleared %s, which holds version %d: its row reads %s, want version null and its mark of %s, stated by no pass",
+				raced, artifactsInTreeNewestVersion(t, database, raced), row, marks[raced])
 		}
 	})
 	t.Run("a document that never gains a version", func(t *testing.T) {
 		if !slices.Contains(reached, untouched) {
 			t.Errorf("the document %s did not reach the clear of a document holding no markdown version (reached: %v), want it cleared", untouched, reached)
 		}
-		markedAt, _ := backfillMark(t, database, untouched)
-		if version := blockIndexAt(t, database, untouched); markedAt != nil || version == nil || *version != 0 {
-			t.Errorf("the document %s, which never gains a version, holds the mark %v at version %s after the tick, want no mark and version 0: "+
-				"without the tick's clear it stays owed for ever", untouched, markedAt, standsText(version))
+		if row := artifactsInTreeReadRow(t, database, untouched); row.owedAt != "null" || row.version != "0" || row.statedVersion != "0" ||
+			row.statedRule != strconv.Itoa(refs.BlockIndexMarkingRule) {
+			t.Errorf("the tick left %s, which holds no markdown version, marked: version %s, stated_version %s, stated_rule %s (store_owed_at %s)",
+				untouched, row.version, row.statedVersion, row.statedRule, row.owedAt)
 		}
-		requireStatedByThisRule(t, database, untouched, 0, "after the tick over the document that never gains a version")
+	})
+
+	// The next tick indexes the versions written after the listing and before the clear.
+	awaitedBlockIndexTick(t, service)
+	indexed := []string{written}
+	if racedWait == "" {
+		indexed = append(indexed, raced)
+	}
+	t.Run("the next tick indexes each version written while the tick was held", func(t *testing.T) {
+		for _, document := range indexed {
+			version := artifactsInTreeNewestVersion(t, database, document)
+			if row := artifactsInTreeReadRow(t, database, document); version == 0 || !row.statedAt(version) {
+				t.Errorf("the next tick left version %d of %s unindexed: its row reads %s", version, document, row)
+			}
+		}
+		if rows, named := artifactsInTreeBlockNodes(t, database, written); rows != deferredBlocks || named != rows {
+			t.Errorf("the next tick left version %d of %s unindexed: %d of its %d block rows hold their node, want each of the version's %d blocks holding its node",
+				artifactsInTreeNewestVersion(t, database, written), written, named, rows, deferredBlocks)
+		}
+	})
+	t.Run("no document owes its block index after the next tick", func(t *testing.T) {
+		if count, owed := artifactsInTreeOwed(t, database); count != 0 {
+			t.Errorf("%d documents still owe their block index after every tick, want 0: %v", count, owed)
+		}
 	})
 }
 

@@ -287,6 +287,38 @@ issue_artifacts_blocks() {
   pass "$section" "each of the $count blocks of $document is a node holding its rank${with_text:+ and its text} and the supertag of its type"
 }
 
+# issue_artifacts_hang SECTION DOCUMENT ARTIFACT ISSUE: each block of ARTIFACT's newest version, as
+# its blocks read lists it and the reference read resolves DOCUMENT#b-<id>, hangs under ISSUE: the
+# chain of each node's newest part_of, from the block's node up, reaches the issue node ISSUE. It
+# fails naming the document and the block.
+issue_artifacts_hang() {
+  local section="$1" document="$2" artifact="$3" issue="$4" line id type count=0
+  local -a blocks
+  tree_send GET "/api/v1/artifacts/$artifact/blocks"
+  tree_want 200 "$section" "read the blocks of $document"
+  mapfile -t blocks < <(jq -r '.[] | "\(.id)\t\(.type)"' "$work/body")
+  ((${#blocks[@]} > 0)) || fail "$section" "read the blocks of $document" "the blocks read lists none"
+  for line in "${blocks[@]}"; do
+    IFS=$'\t' read -r id type <<<"$line"
+    issue_artifacts_resolve "$section" "$document#b-$id"
+    with_vars "$section" "read where block $id of $document hangs" "
+      with recursive up(kind, id, depth) as (
+        select :'k'::text, :'i'::text, 0
+        union all
+        select t.to_kind, t.to_id, up.depth + 1 from up
+        cross join lateral (select tuple.to_kind, tuple.to_id, tuple.asserted from graph_tuples tuple
+          where tuple.from_kind = up.kind and tuple.from_id = up.id and tuple.kind = 'part_of'
+          order by tuple.seq desc limit 1) t
+        where t.asserted and up.depth < 64)
+      select coalesce(bool_or(kind = 'issue' and id = :'o'), false) from up" "k=$resolved_kind" "i=$resolved_id" "o=$issue"
+    [[ "$answer" == t ]] ||
+      fail "$section" "the blocks of $issue's converted documents hang under $issue" \
+        "block $id ($type) of $document, node $resolved_kind $resolved_id: its part_of chain reaches no issue $issue"
+    count=$((count + 1))
+  done
+  pass "$section" "each of the $count blocks of $document hangs under $issue"
+}
+
 # issue_artifacts_edit SECTION ARTIFACT FROM TO: seed-corpus.sh's corpus_edit of one replace: the
 # agent replaces FROM by TO in ARTIFACT, which writes its next version.
 issue_artifacts_edit() {
@@ -691,6 +723,25 @@ for row in "spec $old/spec spec" "verification $old_verification_ref verificatio
   expect "$section" "GET /api/v1/issues/$old/artifacts answers $slug as $want" "[$want]" \
     --arg s "$slug" '[.[] | select(.slug == $s) | {primary, role}]'
 done
+# The conversion writes O's decisions query node (docs' writeDecisionsQuery), a non-spec query
+# node, which its own address answers with its query's name as `role`. The issue's list of its
+# artifacts lists no decisions query (api's issueArtifactsListed: Decisions is a view over decision
+# nodes and not a document), so the list is read to hold none.
+with_vars "$section" "read the decisions query node of $old" "
+  select coalesce((select string_agg(a.slug || '|' || a.ref_key, ',') from artifacts a
+                   join graph_nodes n on n.kind = 'artifact' and n.id = a.ref_key
+                   where a.issue_key = :'o' and n.attributes->>'query' = 'decisions'), '(none)')" "o=$old"
+[[ "$answer" =~ ^[^,|]+\|[^,|]+$ ]] ||
+  fail "$section" "$old holds one decisions query node after its conversion" "the artifacts of $old that are query nodes of query decisions read $answer"
+IFS='|' read -r decisions_slug decisions_ref <<<"$answer"
+want='{"primary":false,"role":"decisions"}'
+tree_send GET "/api/v1/issues/$old/artifacts/$decisions_slug"
+tree_want 200 "$section" "read $decisions_slug of $old"
+expect "$section" "GET /api/v1/issues/$old/artifacts/$decisions_slug answers the decisions query node $decisions_ref as $want" "$want" '{primary, role}'
+tree_send GET "/api/v1/issues/$old/artifacts"
+tree_want 200 "$section" "list $old's artifacts"
+expect "$section" "GET /api/v1/issues/$old/artifacts lists no decisions query node $decisions_ref (issueArtifactsListed)" "[]" \
+  --arg s "$decisions_slug" '[.[] | select(.slug == $s) | {primary, role}]'
 issue_artifacts_blocks "$section" "dispatch://$old/artifact/verification-md" "$old_verification"
 issue_artifacts_resolve "$section" "dispatch://$old/artifact/verification-md#b-c-old"
 with_vars "$section" "read where the check c-old hangs" "
@@ -705,6 +756,10 @@ with_vars "$section" "read where the check c-old hangs" "
   select coalesce(bool_or(kind = 'issue' and id = :'o'), false) from up" "k=$resolved_kind" "i=$resolved_id" "o=$old"
 [[ "$answer" == t ]] || fail "$section" "the blocks of $old's converted documents hang under $old" "c-old's part_of chain reaches no issue $old"
 pass "$section" "the blocks of $old's converted documents hang under $old"
+for row in "dispatch://$old/spec $old_spec" "dispatch://$old/artifact/verification-md $old_verification" "dispatch://$old/artifact/plan-md $old_plan"; do
+  read -r document artifact <<<"$row"
+  issue_artifacts_hang "$section" "$document" "$artifact" "$old"
+done
 query "$section" "read the role columns of $old's artifacts" \
   "select count(*) from artifacts where issue_key = '$old' and role is not null"
 [[ "$answer" == 0 ]] || fail "$section" "no column of $old's artifacts rows holds a role" "$answer rows hold one"
@@ -798,6 +853,18 @@ IFS='|' read -r head_cursor rule2_horizon rule1_cursors <<<"$answer"
   fail "$section" "this head's cursor stands at marking_rule 2 from the horizon rule 2 recorded" \
     "its cursor reads $head_cursor, the horizon $rule2_horizon, the cursors of rule 1 $rule1_cursors"
 pass "$section" "this head's cursor at marking_rule 2 reads $head_cursor, from the horizon $rule2_horizon (the cursors of rule 1: $rule1_cursors)"
+# The cursor is this head's own row, apart from the rows of the build of rule 1: this head holds
+# one row, at marking_rule 2, and every row at marking_rule 1 is another build's.
+with_vars "$section" "read the cursor rows of this head and of rule 1" "
+  select coalesce((select string_agg(marking_rule::text, ',') from block_index_event_cursors where build_commit = :'h'), 'none')
+         || '|' || (select count(*) from block_index_event_cursors where marking_rule = 1 and build_commit = :'h')
+         || '|' || (select count(*) from block_index_event_cursors where marking_rule = 1 and build_commit <> :'h')" \
+  "h=$head_commit"
+IFS='|' read -r head_rules head_rule1_rows other_rule1_rows <<<"$answer"
+[[ "$head_rules" == 2 && "$head_rule1_rows" == 0 && "$other_rule1_rows" -gt 0 ]] ||
+  fail "$section" "this head's cursor is its own row at marking_rule 2, not the cursor of the build of rule 1" \
+    "this head's rows read marking_rule $head_rules, $head_rule1_rows of its rows and $other_rule1_rows of other builds' read marking_rule 1"
+pass "$section" "this head's cursor is one row of its own at marking_rule 2, apart from the $other_rule1_rows row(s) of rule 1"
 issue_artifacts_edit "$section" "$old_notes" "The release before writes it again." "This head writes it last."
 corpus_version "$section" "$old_notes"
 last_notes="$tree_value"

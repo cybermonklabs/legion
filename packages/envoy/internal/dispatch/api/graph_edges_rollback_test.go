@@ -1271,6 +1271,17 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 		defer stateRollbackView(t, database, store.GraphEdgesFourArmsDeleted)
 		requireTheIssueReadAtScale(t, database)
 	})
+	// The same two reads beside the waits a release before leaves with no issue_links row
+	// (rollbackStateUnprojectedWaits), over which Postgres reads a probe of issue_links that ends in
+	// no offset 0 as a hashed `= any` over the whole table: here the plan of the read of one issue
+	// tells a fenced probe from an unfenced one, and names issue_links where the probe is unfenced
+	// (viewArmsRequireTheScaleReadBesideUnprojectedWaits).
+	t.Run("a read of one issue at scale beside waits no issue_links row projects scans no relation table", func(t *testing.T) {
+		viewArmsRequireTheScaleReadBesideUnprojectedWaits(t, database, store.GraphEdgesFourArmsDeleted)
+	})
+	t.Run("a read of one issue at scale beside waits no issue_links row projects scans no relation table at the head the migrations state", func(t *testing.T) {
+		viewArmsRequireTheScaleReadBesideUnprojectedWaits(t, database, store.GraphEdgesBlockNodeListed)
+	})
 	// The third control, against this database: the view of the step with the probe of issue_links
 	// stated with no `offset 0`, which Postgres reads as a hashed `= any` over the whole table where
 	// it expects the read to run the probe more often than that whole read costs, so the plan of the

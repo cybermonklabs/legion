@@ -775,6 +775,7 @@ func requireTheIssueTreeMigrationsKeepToTheLimit(t *testing.T, fsys fs.FS) {
 	if len(failed) > 0 {
 		t.Logf("the census under a %d byte table limit:\n%s", issueTreeTableLimit, reportText(report))
 	}
+	migrationSizeRequireTheNamedMigrations(t, ours, reading, report)
 
 	// The second census, at pgmigrate.CensusTableLimit, is the verdict on graph_nodes and
 	// graph_tuples, and reads the size of each that a migration of the set touches.

@@ -279,6 +279,7 @@ func TestEveryPointerAtAMovedNodeIsATupleAndItsProjection(t *testing.T) {
 	if !found {
 		t.Errorf("the result %s reads back through no check c1 of %s: it belongs to no check node the issue holds", resultID, issue.Key)
 	}
+	pointersRequireTheResultThroughItsPair(t, database, issue.Key, resultID, tree, checkAddress)
 
 	// Prose keeps its bytes and resolves through the moved_to tuple.
 	for index, now := range read(bodies) {
@@ -305,6 +306,44 @@ func TestEveryPointerAtAMovedNodeIsATupleAndItsProjection(t *testing.T) {
 	}
 	if moved := pointersFarEnds(t, database, "block", notesAddress, graphstore.TupleMovedTo, "block"); len(moved) != 0 {
 		t.Errorf("the block %s, which did not move, states the moved_to tuples %v, want none", notesAddress, moved)
+	}
+}
+
+// pointersRequireTheResultThroughItsPair holds the check_results pair to what c-pointers says of it:
+// check_results_check is indexed on that pair, its key led by check_artifact_id and then
+// check_block_id, so a read of a check's results by the pair is that index's read; and the result
+// resultID of issue, read back through its check by that pair, belongs to the check node the issue
+// holds, c1 at the issue's tree (checkAddress, the node of tree's c1). A pair the projection writer
+// left at the check's old home reads back through no check node the issue holds.
+func pointersRequireTheResultThroughItsPair(t *testing.T, database *store.Store, issue, resultID, tree, checkAddress string) {
+	t.Helper()
+	ctx := context.Background()
+	var keys []string
+	if err := database.Pool.QueryRow(ctx, `
+		select coalesce(array_agg(a.attname::text order by k.ord), '{}')
+		from pg_index i
+		join pg_class c on c.oid = i.indexrelid
+		cross join lateral unnest(i.indkey::int2[]) with ordinality k (attnum, ord)
+		join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+		where c.relname = 'check_results_check' and i.indrelid = 'check_results'::regclass
+	`).Scan(&keys); err != nil {
+		t.Fatalf("read the key columns of check_results_check: %v", err)
+	}
+	if len(keys) < 2 || !slices.Equal(keys[:2], []string{"check_artifact_id", "check_block_id"}) {
+		t.Errorf("check_results_check indexes check_results on %v, want a key led by the pair check_artifact_id, check_block_id", keys)
+	}
+	var throughPair int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*)::int
+		from check_results r
+		join artifacts a on a.id = r.check_artifact_id and a.issue_key = $3
+		join graph_nodes n on n.kind = $4 and n.id = a.ref_key || '#' || r.check_block_id and n.state <> 'gone'
+		where r.check_artifact_id = $1::uuid and r.check_block_id = 'c1' and r.id = $2::uuid and n.id = $5
+	`, tree, resultID, issue, refs.BlockNodeKind, checkAddress).Scan(&throughPair); err != nil {
+		t.Fatalf("read the result %s back through its check's pair: %v", resultID, err)
+	}
+	if throughPair != 1 {
+		t.Errorf("the result %s reads back through no check c1 of %s by the pair check_results_check indexes: it belongs to no check node the issue holds", resultID, issue)
 	}
 }
 
