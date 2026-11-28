@@ -624,12 +624,14 @@ func TestTheRenamePassAndARunWriteUnderTheNewNameNeverDeadlock(t *testing.T) {
 // request to the repository's new name while a webhook write (UpsertPullRequest) stores that pull
 // request under the new name, in each order. A trigger holds whichever of the two writes the new
 // name's row first, once it holds that row and before that row's change trigger runs, and the
-// other then starts and waits on that row, so the two overlap. Before it meets the pull request,
-// the pass moves a pull request of an earlier pair and deletes one whose twin the new name holds,
-// writes whose triggers take the change log's lock. The pass must still write the new name's row
-// before it takes that lock: else the write, let on, waits for the lock while the pass waits for
-// the write's row, and Postgres refuses one of them as a deadlock (40P01), or the write commits
-// first and the pass's move of the pull request to that key is refused as a duplicate (23505).
+// other then starts and waits on that row, so the two overlap. The history also holds a pull
+// request of an earlier pair and one whose twin the new name holds: writes that would take the
+// change log's lock before the pass meets the pull request if the line made them in statements of
+// their own, which is the cycle this test fails on. The pass writes the new name's row in the one
+// statement that copies every pair and deletes the collisions (copyPullRequests), before any
+// trigger takes that lock: else the write, let on, waits for the lock while the pass waits for the
+// write's row, and Postgres refuses one of them as a deadlock (40P01), or the write commits first
+// and the pass's move of the pull request to that key is refused as a duplicate (23505).
 // Both end with no error, and the pull request is stored once, under the new name, as the write
 // wrote it: one the write stored first is a collision, whose row under the old name the pass
 // deletes.

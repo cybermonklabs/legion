@@ -783,8 +783,10 @@ var repoRenameLines = []repoRenameLine{
 		// searchProgressScope writes from the settings stays the scope the line after this one
 		// writes into the stored progress. The line writes the settings only where it holds them
 		// (hold): settings another writer first stores after the line's lock stay for the next
-		// pass. Their key is their one row, which no write changes, so the line writes no row
-		// under a new key and no statement of it waits on another writer's row.
+		// pass. The hold's `for no key update` waits for a settings write in progress, while the
+		// line holds no change log lock. The settings' key is their one row, which no write
+		// changes, so the line writes no row under a new key, and no statement after the hold
+		// waits on another writer's row: the line writes only the one row it holds.
 		fields: "delivery_settings.deploy_repo, .excluded_repos",
 		hold: func(renames []repoRename) string {
 			where := anyRepoRename(renames, func(r repoRename) string {
