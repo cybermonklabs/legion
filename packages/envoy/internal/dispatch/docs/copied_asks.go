@@ -410,11 +410,9 @@ func owedCopiesOf(ctx context.Context, tx pgx.Tx, documents ...documentAsks) ([]
 // colliding keys take the same id twice in a row, harmless because an advisory lock is re-entrant
 // within one session), and returns, sorted and once each, every other document of each document's
 // owner whose latest version holds the block of one of that document's asks with no ask of its own
-// under that block's id (copiesOf). A document's latest version is read for the block's opener
-// from the last colon of its fence on (`:ask{<id> …}`, the id as pmdoc.TypedBlockIDAttribute
-// writes it): every opener the parser opens holds it (pmdoc.ParseTypedDirectiveOpen), and the
-// opener of a plan task under the same id, `:::plan_task{<id> …}`, does not. One that quotes the
-// opener elsewhere, in code, is settled for nothing.
+// under that block's id (copiesOf). A document's latest version is read for the block's opener as
+// copyOpenerPatterns spells it, from askOpenerMark on. One that quotes the opener elsewhere, in
+// code, is settled for nothing.
 // The caller has taken no pending row and appended no event. A copy's settlement waits on the row
 // this marks holding its own owner lock and room lock, which the caller never takes, and deletes
 // its own row before it appends an event, so the two can wait on each other in only one direction.
@@ -468,16 +466,16 @@ func ProjectsInLockOrder(ctx context.Context, tx pgx.Tx, projects []string) ([]s
 }
 
 // copiesOf reads the other documents of document's owner holding the block of one of its asks with
-// no ask of their own under that block's id (owedCopiesQuery).
+// no ask of their own under that block's id (owedCopiesQuery), each block id paired with each of
+// its opener's patterns (copyOpenerPatterns).
 func copiesOf(ctx context.Context, tx pgx.Tx, document documentAsks) ([]string, error) {
 	var blockIDs, patterns []string
 	for _, ask := range document.asks {
 		if ask.BlockID == nil {
 			continue
 		}
-		opener := `%:ask{` + likeLiteral(pmdoc.TypedBlockIDAttribute(*ask.BlockID))
 		blockIDs = append(blockIDs, *ask.BlockID, *ask.BlockID)
-		patterns = append(patterns, opener+` %`, opener+`}%`)
+		patterns = append(patterns, copyOpenerPatterns(*ask.BlockID)...)
 	}
 	if len(blockIDs) == 0 {
 		return nil, nil
@@ -492,6 +490,16 @@ func copiesOf(ctx context.Context, tx pgx.Tx, document documentAsks) ([]string, 
 		return nil, fmt.Errorf("read copies of asks: %w", err)
 	}
 	return copies, nil
+}
+
+// copyOpenerPatterns is the two LIKE patterns of the opener of the ask block under blockID, one of
+// which a markdown holding that opener matches: askOpenerMark, then the id as
+// pmdoc.TypedBlockIDAttribute writes it (likeLiteral), then the space before the block's next
+// attribute or the brace that closes them, so an id never matches the opener of a longer id it
+// begins.
+func copyOpenerPatterns(blockID string) []string {
+	opener := `%` + askOpenerMark + likeLiteral(pmdoc.TypedBlockIDAttribute(blockID))
+	return []string{opener + ` %`, opener + `}%`}
 }
 
 // documentOwner reads the owner of the document artifactID without locking it: the owner this

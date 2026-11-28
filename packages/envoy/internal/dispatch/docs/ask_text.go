@@ -153,19 +153,26 @@ func (s *Service) askedText(ctx context.Context, artifactID string, withBlocks, 
 	return answer, nil
 }
 
+// askOpenerMark is what the opening line of every ask block holds and that of no other typed block
+// does: the last colon of its fence, the block's type and the brace of its attributes. The
+// renderer writes the opening line of every typed block as a fence of three colons or more, the
+// block's type and the brace of its attributes, with nothing between them (pmdoc's
+// renderer.block), and the parser opens a typed block on that spelling alone
+// (pmdoc.ParseTypedDirectiveOpen), whose type holds no colon. Whatever stands before the fence - a
+// list item's marker or indentation, a blockquote's `>`, the indentation of a block the ask block
+// is nested in - and however many colons the fence takes where it nests, the colon right before
+// `ask{` is the fence's last. `ask{` alone would also match the opener of every other typed block
+// whose type ends in ask, `:::plan_task{` among them. The test of a stored text for an ask block
+// (holdsAskOpener) and the search of an owner's documents for the copies of an ask
+// (copyOpenerPatterns) both look for it.
+const askOpenerMark = ":ask{"
+
 // holdsAskOpener reports whether markdown holds the opening line of an ask block, as far as one
-// search of it can tell: whether it holds `:ask{`. The renderer writes the opening line of every
-// typed block as a fence of three colons or more, the block's type and the brace of its
-// attributes, with nothing between them (pmdoc's renderer.block), and the parser opens a typed
-// block on that spelling alone (pmdoc.ParseTypedDirectiveOpen). Whatever stands before the fence -
-// a list item's marker or indentation, a blockquote's `>`, the indentation of a block the ask
-// block is nested in - and however many colons the fence takes where it nests, the colon right
-// before `ask{` is the fence's last. `ask{` alone would also match the opener of every other typed
-// block whose type ends in ask, `:::plan_task{` among them, and read every plan document as one
-// that holds an ask block. A markdown that holds `:ask{` outside an opener, in a code block or a
-// sentence, is read back into a tree all the same, as one that holds an ask block is.
+// search of it can tell: whether it holds askOpenerMark. A markdown that holds the mark outside an
+// opener, in a code block or a sentence, is read back into a tree all the same, as one that holds
+// an ask block is.
 func holdsAskOpener(markdown string) bool {
-	return strings.Contains(markdown, ":ask{")
+	return strings.Contains(markdown, askOpenerMark)
 }
 
 // storedAskedText is askedText for stored, the markdown and the token of the document's latest

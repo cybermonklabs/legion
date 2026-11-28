@@ -48,7 +48,8 @@ func TestCopiedAskQueriesAvoidSequentialScans(t *testing.T) {
 	copiesOnProject, _ := owedCopiesQuery(artifactOwner{Project: project})
 	document := "00000000-0000-4000-8000-000000000000"
 	blocks := []string{"decision"}
-	patterns := []string{"%ask{#decision %"}
+	// The copies' reads bind the block id once for each pattern of its opener, as copiesOf does.
+	copied, patterns := []string{blocks[0], blocks[0]}, copyOpenerPatterns(blocks[0])
 	queries := []struct {
 		name     string
 		sql      string
@@ -60,16 +61,16 @@ func TestCopiedAskQueriesAvoidSequentialScans(t *testing.T) {
 	}{
 		{"an issue document's copy sources", sourcesOfIssue, "artifacts", "artifacts_issue_key", []any{blocks, document, issueKey}},
 		{"a project document's copy sources", sourcesOfProject, "artifacts", "artifacts_project_documents", []any{blocks, document, projectKey}},
-		{"the copies of an issue document's retracted ask", copiesOnIssue, "artifacts", "artifacts_issue_key", []any{blocks, document, issueKey, patterns}},
-		{"the copies of a project document's retracted ask", copiesOnProject, "artifacts", "artifacts_project_documents", []any{blocks, document, projectKey, patterns}},
+		{"the copies of an issue document's retracted ask", copiesOnIssue, "artifacts", "artifacts_issue_key", []any{copied, document, issueKey, patterns}},
+		{"the copies of a project document's retracted ask", copiesOnProject, "artifacts", "artifacts_project_documents", []any{copied, document, projectKey, patterns}},
 		// The lateral read of each candidate's latest version: its unique (artifact_id, number).
-		{"the latest versions of an issue's copies", copiesOnIssue, "artifact_versions", "artifact_versions_artifact_id_number_key", []any{blocks, document, issueKey, patterns}},
-		{"the latest versions of a project's copies", copiesOnProject, "artifact_versions", "artifact_versions_artifact_id_number_key", []any{blocks, document, projectKey, patterns}},
+		{"the latest versions of an issue's copies", copiesOnIssue, "artifact_versions", "artifact_versions_artifact_id_number_key", []any{copied, document, issueKey, patterns}},
+		{"the latest versions of a project's copies", copiesOnProject, "artifact_versions", "artifact_versions_artifact_id_number_key", []any{copied, document, projectKey, patterns}},
 		// Each candidate document's asks under the block ids.
 		{"the asks of an issue's copy sources", sourcesOfIssue, "asks", "asks_block_id_unique", []any{blocks, document, issueKey}},
 		{"the asks of a project's copy sources", sourcesOfProject, "asks", "asks_block_id_unique", []any{blocks, document, projectKey}},
-		{"the asks of an issue's copies", copiesOnIssue, "asks", "asks_block_id_unique", []any{blocks, document, issueKey, patterns}},
-		{"the asks of a project's copies", copiesOnProject, "asks", "asks_block_id_unique", []any{blocks, document, projectKey, patterns}},
+		{"the asks of an issue's copies", copiesOnIssue, "asks", "asks_block_id_unique", []any{copied, document, issueKey, patterns}},
+		{"the asks of a project's copies", copiesOnProject, "asks", "asks_block_id_unique", []any{copied, document, projectKey, patterns}},
 		// Each source ask's part_of, through any index keyed on the ask's node, and the document
 		// it names.
 		{"the part_of of an issue's copy sources", sourcesOfIssue, "graph_tuples", explaintest.AnyIndex, []any{blocks, document, issueKey}},

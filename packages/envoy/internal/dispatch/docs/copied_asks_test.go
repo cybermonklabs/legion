@@ -333,7 +333,9 @@ func TestCopiedAskSourcesAreTheDocumentOwnersOwn(t *testing.T) {
 
 // The copies of an ask are found by its block's opener as the rendering writes it
 // (pmdoc.TypedBlockIDAttribute), an id written `id="…"` included: a document of the same owner
-// whose latest version holds the block is a copy, and one holding another block is not.
+// whose latest version holds the block is a copy, and one holding another block is not. Nor is one
+// holding a plan task under the ask's block id, whose opener, `:::plan_task{…}`, holds `ask{` and
+// the id but not askOpenerMark.
 func TestTheCopiesOfAnAskAreFoundByItsBlockIDAsWritten(t *testing.T) {
 	t.Parallel()
 	service, _ := newTestService(t)
@@ -345,6 +347,7 @@ func TestTheCopiesOfAnAskAreFoundByItsBlockIDAsWritten(t *testing.T) {
 			source := createIssueDocument(t, service.store, 1, "Context\n\n"+ask(id))
 			copied := createIssueDocument(t, service.store, 1, "Copy\n\n"+ask(id))
 			createIssueDocument(t, service.store, 1, "Other\n\n"+ask(id+"-other"))
+			createIssueDocument(t, service.store, 1, "Plan\n\n:::plan_task{"+pmdoc.TypedBlockIDAttribute(id)+"}\nRead the version.\n:::\n")
 			ctx := context.Background()
 			tx, err := service.store.Pool.Begin(ctx)
 			if err != nil {
@@ -360,33 +363,6 @@ func TestTheCopiesOfAnAskAreFoundByItsBlockIDAsWritten(t *testing.T) {
 				t.Fatalf("copies of the ask under %q = %v, want only %s", id, found, copied)
 			}
 		})
-	}
-}
-
-// A plan task under an ask's block id is no copy of the ask: its opener, `:::plan_task{#t1}`,
-// holds `ask{#t1}` but not the `:ask{#t1` that every ask block's opener holds, so a document of
-// the same owner whose latest version holds that plan task and no ask under the id is not found,
-// while a document holding the ask block is.
-func TestAPlanTaskUnderAnAsksBlockIDIsNoCopyOfTheAsk(t *testing.T) {
-	t.Parallel()
-	service, _ := newTestService(t)
-	ask := ":::ask{#t1 urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
-	source := createIssueDocument(t, service.store, 1, "Context\n\n"+ask)
-	copied := createIssueDocument(t, service.store, 1, "Copy\n\n"+ask)
-	plan := createIssueDocument(t, service.store, 1, "Plan\n\n:::plan_task{#t1}\nRead the version.\n:::\n")
-	ctx := context.Background()
-	tx, err := service.store.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	issue, id := "DOC-1", "t1"
-	found, err := copiesOf(ctx, tx, documentAsks{artifactID: source, owner: artifactOwner{IssueKey: &issue}, asks: []model.Ask{{BlockID: &id}}})
-	if err != nil {
-		t.Fatalf("copiesOf: %v", err)
-	}
-	if !slices.Equal(found, []string{copied}) {
-		t.Fatalf("copies of the ask under t1 = %v, want only the copy %s and not the plan %s", found, copied, plan)
 	}
 }
 
