@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -39,9 +40,8 @@ func unacknowledgedEnvelope(topic string) contracts.Envelope {
 // sender for the first and not for the others (cmd/listener), so a message the stream may hold is
 // never free and one it cannot hold never costs. A publish whose connection closed under it is sent
 // again, and its acknowledgement says so (StoredAck.Resent), since the copy the stream names may
-// be the first send's. Each case reads the stream to show what the error claims: the stream stores
-// what an unacknowledged publish sent once the server answers again, and holds nothing of a
-// publish that waited for a reconnect.
+// be the first send's. Each case reads the stream to show what the error claims: the stream holds
+// what an unacknowledged publish sent, and nothing of a publish that waited for a reconnect.
 func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) {
 	t.Parallel()
 	server, uri := testnats.Start(t)
@@ -49,9 +49,8 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(client.Close)
-	// storedOn is how many messages the stream holds on topic: one StreamInfo request, so a wait
-	// on it polls every storedOnPoll, not every millisecond.
+	t.Cleanup(func() { bustest.Close(t, client) })
+	// storedOn is how many messages the stream holds on topic.
 	storedOn := func(t *testing.T, topic string) uint64 {
 		t.Helper()
 		info, err := client.JS().StreamInfo(bus.Stream, &nats.StreamInfoRequest{SubjectsFilter: topic})
@@ -60,7 +59,6 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		}
 		return info.State.Subjects[topic]
 	}
-	const storedOnPoll = 10 * time.Millisecond
 
 	t.Run("a publish under a context that has already ended sends nothing and is no ErrUnacknowledged", func(t *testing.T) {
 		topic := contracts.LegacyAgentSubject("ses_unacknowledged_ended")
@@ -88,32 +86,46 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		}
 	})
 
+	// The server's replies are held (FreezeReplies), so the publish reaches the stream and its
+	// acknowledgement does not reach the client. The publish's context is cancelled once the stream
+	// holds the publish's own message, read beside the relay (StoredOn): a fact no other message the
+	// client sends makes, so the context ends during the acknowledgement wait, after the send, however
+	// long the send took to go out. A deadline of the row's own could pass before the send on a loaded
+	// machine, and the error would then be the context's alone. The acknowledgement wait ends on the
+	// cancel, or on the publish's own bound (publishBound) should that come first; either is the
+	// context's end.
 	t.Run("a publish whose acknowledgement is lost after its send is ErrUnacknowledged and is stored", func(t *testing.T) {
 		topic := contracts.LegacyAgentSubject("ses_unacknowledged_lost")
-		thaw := server.Freeze(t)
+		thaw := server.FreezeReplies(t)
 		t.Cleanup(thaw)
-		// A window, not a wait: the frozen server cannot acknowledge the publish, which must end at
-		// this context's 500 ms with the context's error.
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		ctx, cancel := context.WithCancel(testwait.Context(t))
 		defer cancel()
-		_, err := client.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
+		published := make(chan error, 1)
+		go func() {
+			_, err := client.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
+			published <- err
+		}()
+		reads := testwait.Context(t)
+		testwait.Until(t, "the stream to store the publish its server's answer is held from", func() (string, bool) {
+			stored := server.StoredOn(t, reads, bus.Stream, topic)
+			return fmt.Sprintf("the stream holds %d messages on %s", stored, topic), stored == 1
+		})
+		cancel()
+		err := testwait.Receive(t, "the publish whose context ended after its send to return", published)
 		thaw()
-		if !errors.Is(err, bus.ErrUnacknowledged) || !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("a publish to a server that stopped answering = %v, want ErrUnacknowledged around the context's error", err)
+		if !errors.Is(err, bus.ErrUnacknowledged) || !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("a publish to a server whose answer was held = %v, want ErrUnacknowledged around the context's error", err)
 		}
-		testwait.UntilPolling(t, 50*time.Millisecond, "the stream to store what the frozen server held (the last read is how many messages it held on the topic)",
-			func() (uint64, bool) {
-				stored := storedOn(t, topic)
-				return stored, stored == 1
-			})
+		if stored := storedOn(t, topic); stored != 1 {
+			t.Fatalf("the stream holds %d messages on %s, want the one the unacknowledged publish stored", stored, topic)
+		}
 	})
 
 	t.Run("a publish whose connection closed under it is sent again and its acknowledgement says so", func(t *testing.T) {
 		topic := contracts.LegacyAgentSubject("ses_unacknowledged_resent")
-		thaw := server.Freeze(t)
+		thaw := server.FreezeReplies(t)
 		t.Cleanup(thaw)
 		closing := client.Connection()
-		before := closing.Stats().OutMsgs
 		type answer struct {
 			ack bus.StoredAck
 			err error
@@ -125,31 +137,27 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			ack, err := client.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
 			answered <- answer{ack, err}
 		}()
-		// The send is out on the frozen connection, its request waiting for an answer, when the
-		// connection closes: the request fails with nats.ErrConnectionClosed and the bus sends it
-		// again on the connection it dials in its place once the server answers again.
-		testwait.UntilPolling(t, time.Millisecond, "the publish to go out on the frozen connection (the last read is how many messages went out since)",
-			func() (uint64, bool) {
-				sent := closing.Stats().OutMsgs - before
-				return sent, sent > 0
-			})
+		// The send has reached the stream, its request waiting for an answer the relay holds, when
+		// the connection closes: the request fails with nats.ErrConnectionClosed and the bus sends it
+		// again on the connection it dials in its place once the server's answers pass again. The
+		// stream's count on the publish's own subject, read beside the relay, is what shows the send
+		// went out: no other message the client sends moves it.
+		reads := testwait.Context(t)
+		testwait.Until(t, "the stream to store the publish before its connection closes", func() (string, bool) {
+			stored := server.StoredOn(t, reads, bus.Stream, topic)
+			return fmt.Sprintf("the stream holds %d messages on %s", stored, topic), stored == 1
+		})
 		closing.Close()
 		thaw()
-		var got answer
-		select {
-		case got = <-answered:
-		case <-testwait.Context(t).Done():
-			t.Fatal("the publish whose connection closed under it did not return by the test's deadline")
-		}
+		got := testwait.Receive(t, "the publish whose connection closed under it to return", answered)
 		if got.err != nil {
 			t.Fatalf("a publish sent again after its connection closed = %v, want it acknowledged", got.err)
 		}
 		if !got.ack.Resent {
 			t.Fatalf("a publish sent again after its connection closed answered %+v, want Resent", got.ack)
 		}
-		// The first send reached the stream after the thaw too, or the stream stored the second
-		// alone; under one Nats-Msg-Id it holds one copy either way, and the second's verdict says
-		// which (Duplicate).
+		// The first send was stored before the close, so the resend is a repeat of it under the same
+		// Nats-Msg-Id, and the stream holds the one copy.
 		t.Logf("the resend's acknowledgement: %+v", got.ack)
 		if stored := storedOn(t, topic); stored != 1 {
 			t.Fatalf("the stream holds %d messages on %s, want the one copy of the publish sent twice", stored, topic)
@@ -163,8 +171,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		if err != nil {
 			t.Fatalf("connect through the reply gate: %v", err)
 		}
-		t.Cleanup(reconnecting.Close)
-		before := reconnecting.Connection().Stats().OutMsgs
+		t.Cleanup(func() { bustest.Close(t, reconnecting) })
 		proxy.FreezeServerReplies()
 		type answer struct {
 			ack bus.StoredAck
@@ -177,13 +184,9 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			ack, err := reconnecting.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
 			answered <- answer{ack, err}
 		}()
-		testwait.UntilPolling(t, storedOnPoll, "the publish to reach the server before reconnecting", func() (string, bool) {
-			sent := reconnecting.Connection().Stats().OutMsgs - before
-			if sent == 0 {
-				return "nothing sent", false
-			}
+		testwait.Until(t, "the publish to reach the server before reconnecting", func() (string, bool) {
 			stored := storedOn(t, topic)
-			return fmt.Sprintf("%d sent, %d stored on the topic", sent, stored), stored == 1
+			return fmt.Sprintf("the stream holds %d messages on %s", stored, topic), stored == 1
 		})
 		first, err := client.JS().GetLastMsg(bus.Stream, topic)
 		if err != nil {
@@ -193,12 +196,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			t.Fatalf("force reconnect: %v", err)
 		}
 		proxy.Restore()
-		var got answer
-		select {
-		case got = <-answered:
-		case <-testwait.Context(t).Done():
-			t.Fatal("the publish interrupted by reconnect did not return by the test's deadline")
-		}
+		got := testwait.Receive(t, "the publish interrupted by reconnect to return", answered)
 		if got.err != nil {
 			t.Fatalf("a publish sent again after reconnect = %v, want it acknowledged", got.err)
 		}
@@ -223,7 +221,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		if err != nil {
 			t.Fatalf("connect through the reply gate: %v", err)
 		}
-		t.Cleanup(reconnecting.Close)
+		t.Cleanup(func() { bustest.Close(t, reconnecting) })
 		proxy.FreezeServerReplies()
 		body := []byte(`{"kept":7}`)
 		answered := make(chan error, 1)
@@ -233,7 +231,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			_, err := reconnecting.PublishCursorAt(ctx, subject, body, 0)
 			answered <- err
 		}()
-		testwait.UntilPolling(t, storedOnPoll, "the cursor write to be stored before reconnecting (the last read is how many writes the stream held on the subject)",
+		testwait.Until(t, "the cursor write to be stored before reconnecting (the last read is how many writes the stream held on the subject)",
 			func() (uint64, bool) {
 				stored := storedOn(t, subject)
 				return stored, stored == 1
@@ -242,12 +240,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			t.Fatalf("force reconnect: %v", err)
 		}
 		proxy.Restore()
-		var got error
-		select {
-		case got = <-answered:
-		case <-testwait.Context(t).Done():
-			t.Fatal("the cursor write interrupted by reconnect did not return by the test's deadline")
-		}
+		got := testwait.Receive(t, "the cursor write interrupted by reconnect to return", answered)
 		if errors.Is(got, bus.ErrCursorMoved) {
 			t.Fatalf("a cursor write the stream stored before the reconnect = %v, want no ErrCursorMoved: the cursor holds this write", got)
 		}
@@ -289,7 +282,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		go func() {
 			answered <- reconnecting.WriteTakeoverRecord(ctx, subject, record)
 		}()
-		testwait.UntilPolling(t, storedOnPoll, "the takeover record to be stored before reconnecting (the last read is how many records the stream held on the subject)",
+		testwait.Until(t, "the takeover record to be stored before reconnecting (the last read is how many records the stream held on the subject)",
 			func() (uint64, bool) {
 				stored := storedOn(t, subject)
 				return stored, stored == 1
@@ -329,31 +322,27 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		t.Cleanup(reconnecting.Close)
 		proxy.FreezeServerReplies()
 		answered := make(chan error, 1)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			answered <- reconnecting.WriteHandoverRecord(ctx, subject, record)
 		}()
-		testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the handover record to be stored before reconnecting",
-			func() bool { return storedOn(t, subject) == 1 })
+		testwait.Until(t, "the handover record to be stored before reconnecting (the last read is how many records the stream held on the subject)",
+			func() (uint64, bool) {
+				stored := storedOn(t, subject)
+				return stored, stored == 1
+			})
 		if err := reconnecting.Connection().ForceReconnect(); err != nil {
 			t.Fatalf("force reconnect: %v", err)
 		}
 		proxy.Restore()
-		var got error
-		select {
-		case got = <-answered:
-		case <-time.After(15 * time.Second):
-			t.Fatal("the handover record write interrupted by reconnect did not return")
-		}
+		got := testwait.Receive(t, "the handover record write interrupted by reconnect to return", answered)
 		if got != nil {
 			t.Fatalf("a handover record write the stream stored before the reconnect = %v, want nil: the subject holds the record", got)
 		}
 		if n := storedOn(t, subject); n != 1 {
 			t.Fatalf("the stream holds %d handover records on %s, want the one this call stored", n, subject)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
 		records, err := client.TakeoverRecords(ctx, role)
 		if err != nil {
 			t.Fatalf("read %s's takeover records: %v", role, err)
@@ -379,10 +368,10 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			t.Fatalf("a publish while the client reconnects = %v, want the context's error and no ErrUnacknowledged", err)
 		}
 		server.Start(t)
-		testwait.UntilPolling(t, 50*time.Millisecond, "the stream to answer again after its server started", func() (string, bool) {
+		testwait.Until(t, "the stream to answer again after its server started", func() (string, bool) {
 			_, err := client.JS().StreamInfo(bus.Stream)
 			connected := client.Connected()
-			return fmt.Sprintf("connected %t, stream read %v", connected, err), connected && err == nil
+			return fmt.Sprintf("the client reads connected %t, the stream's info answered %v", connected, err), connected && err == nil
 		})
 		if stored := storedOn(t, topic); stored != 0 {
 			t.Fatalf("the stream holds %d messages on %s, want none", stored, topic)
