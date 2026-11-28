@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  Dispatch's access-log line (`msg="dispatch: request"`) names where a request's time went, in
+  four fields after `bytes` on every line: `db_ms` and `db_calls`, the time and the count of the
+  statements it sent; `db_wait_ms`, its waits for a pooled connection; and `roster_wait_ms`, its
+  reads of the listener's session list, with any wait for a fresh copy. Nothing goes between
+  `status`, `elapsed_ms` and `bytes`, which the production looks read as one run.
+time: 2026-11-28T17:38:42Z
+custom:
+    Issue: INFRA-5609

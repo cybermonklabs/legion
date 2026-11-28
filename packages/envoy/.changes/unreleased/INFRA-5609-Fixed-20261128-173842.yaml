@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  Dispatch's issue list for a priority (`GET /api/v1/issues?advances=<id>`, with `&open=true`
+  and as a page) reads less on every request. It walked down from every issue that states any
+  priority, for all priorities, on each read; it now walks only from the issues that state a
+  priority the request names, and from all of them only for `advances=none` or `advances=any`.
+  The listing climbed each listed row's parents four times, once each for its components,
+  repository, priority and `advances` relations, with a scan of the issues table each time; it
+  now climbs once and each value reads that climb, and an unpaged list reads its rows' values from
+  its own matches rather than looking each row up again. The answers are the same, byte for byte.
+  On production's data the largest priority's whole list went from 60,451 buffers to 21,471, its
+  open list from 53,276 to 16,249 and its page of 50 from 35,280 to 11,349.
+time: 2026-11-28T17:38:42Z
+custom:
+    Issue: INFRA-5609
