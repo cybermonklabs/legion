@@ -1881,7 +1881,7 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 // run still sends it (owedRepositoryGap); a move to another listener before that run loses it,
 // since the entry carries no mark.
 func (m *sessionRelays) reMarkWithheldGap(sessionID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), sendRequestBudget)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerSendRequestBudget)
 	defer cancel()
 	if _, err := m.noteRepositoryGap(ctx, sessionID); err != nil {
 		// noteRepositoryGap notes nothing when its write fails, so this notes the fresh id itself,

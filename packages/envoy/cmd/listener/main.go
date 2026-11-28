@@ -124,7 +124,7 @@ type listenerDeps struct {
 	repositories *edgeRepositories
 	// registrationBudget is the budget of POST /v1/interests/subscribe (subscribeHandler): its
 	// store work and every consumer call it makes, the repair after its entry included, timed from
-	// the request's arrival. Zero is sendRequestBudget, which every listener main builds runs with.
+	// the request's arrival. Zero uses the listener's route budget (sendRequestBudget in production).
 	// It is a seam for a test whose own work runs inside that budget, as a session's consumer lock
 	// it holds while it writes, or a hook a pass calls: such a test gives the registration what is
 	// left of the test binary's deadline here, so the budget does not count the test's work, which
@@ -132,11 +132,11 @@ type listenerDeps struct {
 	registrationBudget time.Duration
 }
 
-// registrationBudgetOr is the registration's budget (registrationBudget): sendRequestBudget unless
+// registrationBudgetOr is the registration's budget: the listener's route budget unless
 // a test set one.
 func (d *listenerDeps) registrationBudgetOr() time.Duration {
 	if d.registrationBudget == 0 {
-		return sendRequestBudget
+		return listenerSendRequestBudget
 	}
 	return d.registrationBudget
 }
@@ -1034,6 +1034,14 @@ func listenerDialOptions(options ...bus.ConnectOption) []bus.ConnectOption {
 	}
 }
 
+// reportsPublishBusCalls is whether this binary logs each topic publish's bus call as it starts
+// and, where it fails, with its error: only a test build that reconnects promptly
+// (promptReconnectBuild=1, the binaries test_build_test.go builds) does, so a reconnect row can
+// cancel its caller while the call waits for the bus and read whether the call ended by that
+// cancel or by the route's own deadline (TestAWriteThroughANATSReconnectWaitsOrFailsByName). No
+// other build writes these lines.
+func reportsPublishBusCalls() bool { return promptReconnectBuild == "1" }
+
 // listenerJetStreamWait is the main client's options with bus.WithJetStreamWait added where
 // jetStreamWaitBuild is set; a build that set it to no positive duration stops.
 func listenerJetStreamWait(options []bus.ConnectOption) []bus.ConnectOption {
@@ -1158,7 +1166,8 @@ func main() { runListener(listenerCredentialWait) }
 // did.
 func runListener(credentialWait time.Duration) {
 	// A test build's switches (promptReconnectBuild, durableBindIntervalBuild, jetStreamWaitBuild)
-	// are read before anything starts, so a build that set one wrongly stops at once.
+	// are read before anything starts, so a build that set one wrongly stops at once;
+	// sendRequestBudgetBuild is read as the package starts (listenerSendRequestBudget).
 	dialOptions := listenerDialOptions()
 	bindInterval := listenerDurableBindInterval()
 	_ = listenerJetStreamWait(nil)

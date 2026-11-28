@@ -28,3 +28,13 @@ func jetStreamWaitListenerBinary(t testing.TB) string {
 		Flags: []string{"-ldflags", promptListenerBuildFlags + " -X main.jetStreamWaitBuild=650ms"},
 	})
 }
+
+// shortBudgetListenerBinary is only for rows whose request must run out of route budget.
+// Its reconnect is also prompt; no verdict depends on either shortened duration.
+func shortBudgetListenerBinary(t testing.TB) string {
+	t.Helper()
+	return cmdtest.BuildCommand(t, cmdtest.Command{
+		Name:  "envoy-listener",
+		Flags: []string{"-ldflags", promptListenerBuildFlags + " -X main.sendRequestBudgetBuild=350ms"},
+	})
+}

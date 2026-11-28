@@ -78,7 +78,7 @@ func holderRecord(ctx context.Context, sessions *session.SessionRegistry, sessio
 	if entry, state := sessions.Lookup(sessionID); state == session.Live {
 		return entry, nil
 	}
-	readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+	readCtx, cancel := context.WithTimeout(ctx, sendRequestBound(roleHolderReadTimeout))
 	defer cancel()
 	return read(readCtx, sessionID)
 }
@@ -95,7 +95,7 @@ func holderRecord(ctx context.Context, sessions *session.SessionRegistry, sessio
 type leaderHolderSessions struct{ *session.SessionRegistry }
 
 func (s leaderHolderSessions) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
-	return bucketSessionEntry(ctx, s.SessionRegistry, sessionID, roleHolderReadTimeout)
+	return bucketSessionEntry(ctx, s.SessionRegistry, sessionID, sendRequestBound(roleHolderReadTimeout))
 }
 
 // resolveRoleHolderFromLeaders resolves role's holder within ctx (roles.ResolveHolder) from the
@@ -415,7 +415,7 @@ func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.Ro
 // its own caller holds.
 func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegistry, holder, previous, claimantInstanceID string) (roleSupersession, error) {
 	if previous == "" || holder != previous {
-		_, _, err := liveSessionEntry(ctx, sessions, holder, roleHolderReadTimeout, sessionIsLive, sessions.RefreshFromLeader)
+		_, _, err := liveSessionEntry(ctx, sessions, holder, sendRequestBound(roleHolderReadTimeout), sessionIsLive, sessions.RefreshFromLeader)
 		switch {
 		case errors.Is(err, nats.ErrKeyNotFound):
 			return roleTakenFromHolder, nil
@@ -425,7 +425,7 @@ func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegis
 			return roleStaysWithHolder, nil
 		}
 	}
-	predecessor, err := bucketSessionEntry(ctx, sessions, holder, roleHolderReadTimeout)
+	predecessor, err := bucketSessionEntry(ctx, sessions, holder, sendRequestBound(roleHolderReadTimeout))
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return roleTakenFromHolder, nil

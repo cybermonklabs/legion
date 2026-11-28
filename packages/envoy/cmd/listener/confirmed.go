@@ -223,7 +223,7 @@ type roleSend struct {
 // did not answer fails closed to naming no holder rather than refusing a delivery that still happens.
 // A nil scope names result as it is, at no read's cost.
 func (s *roleSend) shownHolder(result roles.Resolution) roles.Resolution {
-	readCtx, cancel := context.WithTimeout(s.ctx, roleHolderReadTimeout)
+	readCtx, cancel := context.WithTimeout(s.ctx, sendRequestBound(roleHolderReadTimeout))
 	defer cancel()
 	shown, err := s.scope.holderConfirmed(readCtx, s.d.sessions, result)
 	if err != nil {
@@ -298,7 +298,7 @@ func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint
 			err = mayBeOwnUnread{err}
 		}
 		if recipient != s.holder {
-			readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+			readCtx, cancel := context.WithTimeout(ctx, sendRequestBound(roleHolderReadTimeout))
 			named, namedErr := s.scope.namesHolderConfirmed(readCtx, s.d.sessions, recipient)
 			cancel()
 			if namedErr != nil || !named {
@@ -523,7 +523,7 @@ func (s *roleSend) missConfirmed() bool {
 	if s.keepTellsNobody() {
 		return true
 	}
-	ctx, cancel := context.WithTimeout(s.ctx, roleHolderReadTimeout)
+	ctx, cancel := context.WithTimeout(s.ctx, sendRequestBound(roleHolderReadTimeout))
 	defer cancel()
 	confirmed, err := resolveRoleHolderFromLeaders(ctx, s.d, s.role)
 	if err != nil {
@@ -670,7 +670,7 @@ func (s *roleSend) timedOut() {
 // retry is judged as a first send.
 func (s *roleSend) answeredLateForward(ctx context.Context, resolvedAt time.Time, forwarded contracts.Envelope, seq uint64) bool {
 	stored := s.d.delivery.now()
-	if !roles.ForwardStoredTooLate(resolvedAt, stored, sendRequestBudget) {
+	if !roles.ForwardStoredTooLate(resolvedAt, stored, listenerSendRequestBudget) {
 		return false
 	}
 	late := fmt.Errorf("role %s: event %s was stored for its holder %s %s after that holder was resolved: %w",
@@ -834,7 +834,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
 	// reads the same stamp this send's own 202 names.
 	send.item.Sender = senderStamp(ctx, d.clk(), d.registry, d.sessions, item.SourceSession)
-	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(sendRequestBudget))
+	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(listenerSendRequestBudget))
 	resolvedAt := d.delivery.now()
 	first, err := send.resolve(firstCtx)
 	cancelFirst()

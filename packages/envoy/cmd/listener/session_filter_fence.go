@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
 )
@@ -340,7 +341,7 @@ func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store
 	if m == nil || m.consumers == nil {
 		return errNoSessionConsumers
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	ctx, cancel := clock.WithShownTimeout(m.clk(), ctx, sendRequestBound(sessionConsumerCallTimeout))
 	defer cancel()
 	unlock, err := m.locks.lockWithin(ctx, sessionID)
 	if err != nil {

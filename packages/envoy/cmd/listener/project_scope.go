@@ -678,7 +678,7 @@ func (h *edgeTopicHold) answer(ctx context.Context) ([]string, error) {
 	readCtx := ctx
 	if deadline, bounded := ctx.Deadline(); bounded {
 		var cancel context.CancelFunc
-		readCtx, cancel = context.WithDeadline(ctx, deadline.Add(-edgeRegistrationReserve))
+		readCtx, cancel = context.WithDeadline(ctx, deadline.Add(-sendRequestBound(edgeRegistrationReserve)))
 		defer cancel()
 	}
 	answered, err := h.repositories.readFresh(readCtx, h.projects)
@@ -1065,7 +1065,7 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 			}
 			continue
 		}
-		removeCtx, cancel := context.WithTimeout(ctx, sendRequestBudget)
+		removeCtx, cancel := context.WithTimeout(ctx, listenerSendRequestBudget)
 		removed, err := d.registry.Remove(removeCtx, item.SessionID, leaving, store.RoleReleaseAuthority{})
 		if err != nil {
 			cancel()

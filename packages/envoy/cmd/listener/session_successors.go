@@ -69,7 +69,7 @@ func sessionSuccessorsHandler(d *listenerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "session_id is required", "session_id")
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		ctx, cancel := context.WithTimeout(r.Context(), listenerSendRequestBudget)
 		defer cancel()
 		principal, successors, err := handoverSuccessors(ctx, d.client, d.known, sessionID)
 		if err != nil {

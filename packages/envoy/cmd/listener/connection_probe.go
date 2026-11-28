@@ -64,7 +64,7 @@ const connectionProbeTimeout = 1 * time.Second
 // a connection that is reconnecting say something about this listener, not about the session, and
 // a listener that cannot ask must not call every session of the deployment stopped.
 func probeSessionConnection(ctx context.Context, client *bus.Client, sessionID string, logger *logging.Logger) bool {
-	probeCtx, cancel := context.WithTimeout(ctx, connectionProbeTimeout)
+	probeCtx, cancel := context.WithTimeout(ctx, sendRequestBound(connectionProbeTimeout))
 	defer cancel()
 	reply := bus.SessionReplySubject(client.Connection().NewInbox(), sessionID)
 	_, err := client.RequestCore(probeCtx, bus.DeliverSubject(sessionID), reply, nats.Header{bus.ConnectionProbeHeader: []string{"1"}})

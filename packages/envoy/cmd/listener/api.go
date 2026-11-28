@@ -647,7 +647,8 @@ func senderStamp(ctx context.Context, clk clock.Clock, registry *store.Registry,
 		return nil
 	}
 	sender := &contracts.EnvelopeSender{SessionID: sourceSession}
-	readCtx, cancel := clock.WithShownTimeout(clk, ctx, senderStampReadTimeout)
+	readBound := sendRequestBound(senderStampReadTimeout)
+	readCtx, cancel := clock.WithShownTimeout(clk, ctx, readBound)
 	defer cancel()
 	var unansweredInterest, titleErr error
 	interest, interestErr := registry.Get(readCtx, sourceSession)
@@ -676,7 +677,7 @@ func senderStamp(ctx context.Context, clk clock.Clock, registry *store.Registry,
 	if readErr := errors.Join(unansweredInterest, titleErr); readErr != nil {
 		registry.Logger().Warn("listener sender stamp left out what a read-through did not answer within its bound",
 			slog.String("session_id", sourceSession),
-			slog.Duration("bound", senderStampReadTimeout),
+			slog.Duration("bound", readBound),
 			slog.String("error", readErr.Error()),
 		)
 	}
@@ -807,6 +808,31 @@ func deliveryModeVerdictFor(sessionID, title string, capabilities []string, adve
 // comes from the client's attempt, so a change of that attempt moves it too.
 const sendRequestBudget = contracts.ListenerCallTimeout * 7 / 10
 
+// sendRequestBudgetBuild is a test build's route budget, as time.ParseDuration reads it, which a
+// test that runs the listener's binary sets with -ldflags "-X main.sendRequestBudgetBuild=350ms"
+// (shortBudgetListenerBinary), so a row whose request must run out of its budget in an outage is
+// answered within that budget rather than 3.5 s; no verdict reads the shortened value, and each
+// row decides on the child's named 503 and the order of its lines
+// (dispatch://INFRA-6373/comment/5fed8d3f-200b-4ad2-bf16-9cc2d426404a). It is empty in every
+// other build, and a build that set it to no positive duration stops at the start.
+var sendRequestBudgetBuild string
+
+// listenerSendRequestBudget is the route budget this binary runs with: sendRequestBudget, or
+// sendRequestBudgetBuild in a test build that set it.
+var listenerSendRequestBudget = listenerBuildDuration("sendRequestBudgetBuild", sendRequestBudgetBuild, sendRequestBudget)
+
+// sendRequestBound is a bound that runs inside the route budget (sendSessionReadTimeout,
+// senderStampReadTimeout, connectionProbeTimeout and the rest), scaled by the same factor as a
+// test build's shorter budget, so the bound that ends a call first at 3.5 s ends it first there
+// too and the route reaches its 503 by the same path. With the production budget it is bound
+// exactly.
+func sendRequestBound(bound time.Duration) time.Duration {
+	if listenerSendRequestBudget >= sendRequestBudget {
+		return bound
+	}
+	return max(time.Nanosecond, time.Duration(float64(bound)*float64(listenerSendRequestBudget)/float64(sendRequestBudget)))
+}
+
 // sendSessionReadTimeout bounds the send route's read of the target session from the bucket, so a
 // bucket that does not answer still leaves most of sendRequestBudget (~2.5 s) to the sender stamp,
 // the connection probe and the publish (connectionProbeTimeout says how they share it). The role
@@ -911,7 +937,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// Every bus read and the publish below share one deadline derived from the caller's own, so
 		// a bus this listener cannot reach is answered as a named 503 inside the caller's attempt
 		// rather than left to that caller's timeout.
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		ctx, cancel := context.WithTimeout(r.Context(), listenerSendRequestBudget)
 		defer cancel()
 		var body listenerwire.MessageBody
 		var targetSession string
@@ -972,7 +998,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// entry within the gone horizon is not gone to this route while the known-session store
 		// holds its record, which it answers from memory: only a session neither store knows is
 		// the 404 a sender routes around the pane on.
-		target, recipientState, err := liveSessionEntry(ctx, d.sessions, targetSession, sendSessionReadTimeout, notGone, d.sessions.Refresh)
+		target, recipientState, err := liveSessionEntry(ctx, d.sessions, targetSession, sendRequestBound(sendSessionReadTimeout), notGone, d.sessions.Refresh)
 		// At the edge a target is one only while the token that registered it lists one of the
 		// sender's projects and the stream's leader confirms that record is a writer's
 		// (edgeScope.showsConfirmed). Any other target, and one no entry stands for, whose record
@@ -1219,7 +1245,7 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 			}
 			conditions.NotRegisteredAfter = millis
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		ctx, cancel := context.WithTimeout(r.Context(), listenerSendRequestBudget)
 		defer cancel()
 		// Whether the delete removes an entry is read before it runs: Delete is idempotent and
 		// EntryDeleted counts a key that was already absent, so neither answer tells a stop from
@@ -1584,11 +1610,17 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// The sender stamp's read and the publish take this one deadline, derived from the
 		// caller's own context, so this route too answers a bus it cannot reach rather than
 		// spending the caller's attempt.
-		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
+		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(listenerSendRequestBudget))
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.clk(), d.registry, d.sessions, item.SourceSession)
+		if reportsPublishBusCalls() {
+			logger.Info("listener publish entering bus call", slog.String("topic", item.Topic))
+		}
 		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, record, senderOf(r, item), &item)
 		if err != nil {
+			if reportsPublishBusCalls() {
+				logger.Info("listener publish bus call failed", slog.String("topic", item.Topic), slog.String("error", err.Error()))
+			}
 			record.refuseBusUnavailable(w, err)
 			return
 		}
@@ -1629,7 +1661,7 @@ func sessionInfoFor(ctx context.Context, registry *store.Registry, entry session
 		return listenerwire.SessionInfo{}, err
 	}
 	info := sessionInfoWith(entry, held)
-	readCtx, cancel := context.WithTimeout(ctx, sessionInterestReadTimeout)
+	readCtx, cancel := context.WithTimeout(ctx, sendRequestBound(sessionInterestReadTimeout))
 	defer cancel()
 	interest, err := registry.Get(readCtx, entry.SessionID)
 	switch {
@@ -1820,7 +1852,7 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 		// leader did not answer is this route's bus-unavailable 503 inside that bound, never a
 		// session silently dropped from the list.
 		scope := edgeScopeOf(r, repositories)
-		ctx, cancel := context.WithTimeout(r.Context(), roleHolderReadTimeout)
+		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBound(roleHolderReadTimeout))
 		defer cancel()
 		for _, entry := range entries {
 			if !strings.Contains(entry.Dir, dirFilter) || !strings.Contains(entry.Title, titleFilter) {
@@ -1876,7 +1908,7 @@ const sessionRegistrationView = "registration"
 // session.Gone as the state a session with no record is in. Every other error is a read that did
 // not answer, the bus-unavailable 503 with Retry-After: 1.
 func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, r *http.Request, d *listenerDeps, sessionID string) {
-	entry, err := bucketSessionEntry(ctx, d.sessions, sessionID, roleHolderReadTimeout)
+	entry, err := bucketSessionEntry(ctx, d.sessions, sessionID, sendRequestBound(roleHolderReadTimeout))
 	hidden, hideErr := edgeScopeOf(r, nil).hidesConfirmed(ctx, d.sessions, sessionID, entry, err)
 	switch {
 	case errors.Is(err, bus.ErrRefused):
@@ -1950,7 +1982,7 @@ func writeUnshownSession(ctx context.Context, w http.ResponseWriter, scope *edge
 // them.
 func claimRefreshProjects(ctx context.Context, sessions *session.SessionRegistry, r *http.Request, sessionID string, entry session.SessionEntry) (projects []string, clearForged bool, err error) {
 	if entry.SessionID == sessionID {
-		readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+		readCtx, cancel := context.WithTimeout(ctx, sendRequestBound(roleHolderReadTimeout))
 		confirmed, ok, readErr := sessions.StoredByWriter(readCtx, sessionID)
 		cancel()
 		if readErr != nil {
@@ -2014,7 +2046,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 		}
 		switch r.URL.Query().Get("view") {
 		case sessionRegistrationView:
-			ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+			ctx, cancel := context.WithTimeout(r.Context(), listenerSendRequestBudget)
 			defer cancel()
 			writeSessionRegistration(ctx, w, r, d, sessionID)
 			return
@@ -2028,9 +2060,9 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 		if includes(r, string(session.Unresponsive)) {
 			accept = notGone
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		ctx, cancel := context.WithTimeout(r.Context(), listenerSendRequestBudget)
 		defer cancel()
-		entry, state, err := liveSessionEntry(ctx, d.sessions, sessionID, roleHolderReadTimeout, accept, d.sessions.Refresh)
+		entry, state, err := liveSessionEntry(ctx, d.sessions, sessionID, sendRequestBound(roleHolderReadTimeout), accept, d.sessions.Refresh)
 		// At the edge a session of none of the token's projects is answered as one no listener
 		// has heard of, and a shown session's roles and topics are those projects' alone.
 		scope := edgeScopeOf(r, d.repositories)
@@ -2159,7 +2191,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 
 		switch r.Method {
 		case http.MethodGet:
-			ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+			ctx, cancel := context.WithTimeout(r.Context(), listenerSendRequestBudget)
 			defer cancel()
 			item, err := registry.Get(ctx, sessionID)
 			// Only a session the registry holds no key for is unknown; a read NATS did not
@@ -2197,7 +2229,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 				writeJSONError(w, http.StatusForbidden, refusal, "session_id")
 				return
 			}
-			ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+			ctx, cancel := context.WithTimeout(r.Context(), listenerSendRequestBudget)
 			defer cancel()
 			// A deregistration answers no topic list, and this route's 204 carries no body
 			// to write one in, so the store's first answer is dropped here.
@@ -2466,7 +2498,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		}
 		var roleWarning string
 		body.Role, roleWarning = d.registry.ClaimedRole(body.Role)
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		ctx, cancel := context.WithTimeout(r.Context(), listenerSendRequestBudget)
 		defer cancel()
 		entry, err := d.sessions.Get(body.SessionID)
 		if errors.Is(err, nats.ErrKeyNotFound) {
@@ -2486,7 +2518,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// refreshed here and the one the predecessor rule falls back to. A read that does not
 		// answer keeps the cache's entry and goes on, so this claim is never worse off than it
 		// was without the bucket read.
-		if fresh, freshErr := bucketSessionEntry(ctx, d.sessions, body.SessionID, roleHolderReadTimeout); freshErr == nil {
+		if fresh, freshErr := bucketSessionEntry(ctx, d.sessions, body.SessionID, sendRequestBound(roleHolderReadTimeout)); freshErr == nil {
 			entry = fresh
 		}
 		// The process this claim is made by is the one the request states, and the claim records
@@ -2916,7 +2948,7 @@ func roleGetHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		role, _ := d.registry.ReadRole(name, roles.Valid)
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		ctx, cancel := context.WithTimeout(r.Context(), listenerSendRequestBudget)
 		defer cancel()
 		scope := edgeScopeOf(r, nil)
 		result, err := roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
@@ -3945,7 +3977,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 				startHandover(*d.delivery, role, runKeptRoleDrain)
 			}
 		}
-		warningCtx, cancelWarnings := context.WithTimeout(ctx, unwiredRepositoryWarningTimeout)
+		warningCtx, cancelWarnings := context.WithTimeout(ctx, sendRequestBound(unwiredRepositoryWarningTimeout))
 		defer cancelWarnings()
 		warnedRepositories := make(map[string]struct{})
 		for _, topic := range body.Topics {
@@ -4123,7 +4155,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		// write does, and store work that did not answer is the bus-unavailable 503. The
 		// consumer's filter update after it runs on the same context, as a registration's
 		// consumer calls do, since the client waits for it too.
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		ctx, cancel := clock.WithShownTimeout(d.clk(), r.Context(), listenerSendRequestBudget)
 		defer cancel()
 		// The role claims released are the ones this process holds, never the whole session's:
 		// a session id names no process, and a second process that resumed this one's id hands
