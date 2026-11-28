@@ -882,7 +882,7 @@ const unreachedProbeBudget = "1h"
 
 // probeImageCutOnceLogged runs `legion probe-image` with args under a parent context whose deadline
 // passes once the file at log holds line, the line a stand-in writes once it has started and waits
-// (passedDeadline, gh_help_timeout_test.go), and answers its exit code, stdout and stderr. Before
+// (passedDeadline, passed_deadline_test.go), and answers its exit code, stdout and stderr. Before
 // that stand-in runs, the probe starts Oh My Pi and the image's commands several times, each a
 // process a loaded machine can start late, so a deadline counted from the probe's start could pass
 // before the stand-in began, and cut a step other than the one the test means to cut. Each

@@ -245,6 +245,33 @@ test("a test of a first load's data runs on the response that lands, and fetches
   }
 });
 
+test("a refresh judges every check before it marks any query, and gives each check the client", () => {
+  const queryClient = newClient();
+  const keyA = ["issue-summary", "CORE-1"];
+  const keyB = ["issue-summary", "CORE-2"];
+  queryClient.setQueryData(keyA, { title: "First issue" });
+  queryClient.setQueryData(keyB, { title: "Second issue" });
+  let checkClient: QueryClient | undefined;
+  try {
+    refreshQueries(queryClient, [
+      { queryKey: keyA },
+      {
+        queryKey: keyB,
+        when: (_data, _query, receivedClient) => {
+          checkClient = receivedClient;
+          return queryClient.getQueryState(keyA)?.isInvalidated !== true;
+        },
+      },
+    ]);
+
+    expect(queryClient.getQueryState(keyB)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(keyA)?.isInvalidated).toBe(true);
+    expect(checkClient).toBe(queryClient);
+  } finally {
+    queryClient.clear();
+  }
+});
+
 test("a refresh owed to a removed read is not paid by the read that replaces it", async () => {
   const queryClient = newClient();
   const first = servedQuery(queryClient, ["issues", "pinned"], 500);

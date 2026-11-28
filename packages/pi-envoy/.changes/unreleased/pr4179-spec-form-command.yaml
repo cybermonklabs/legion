@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  The bundled `dispatch` command gains `dispatch spec-form`, which prints the form of The Spec in
+  a document as an approval request would judge it, and writes nothing. `dispatch
+  request-approval` prints a refusal for that form as `SPEC_FORM: <the refusal>` and exits 1.
+custom:
+    Issue: pr4179
