@@ -558,7 +558,7 @@ func TestInstallCannotTellWhetherTheRestartReplacedTheHelperWhenAReadFails(t *te
 func TestUnitPropertyNamesTheBoundOfAReadThatDoesNotAnswer(t *testing.T) {
 	bin := t.TempDir()
 	// exec, so the kill at the bound reaches the process that holds the read's stdout.
-	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\nexec /bin/sleep 3600\n"), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\nexec /bin/sleep 3600\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
