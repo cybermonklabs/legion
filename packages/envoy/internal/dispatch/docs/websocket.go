@@ -284,10 +284,9 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 // transaction stored it, or if a browser client that holds it sends it when it syncs
 // (room_appends.go, "What a nil return means").
 // A refused update on a closed issue - refused with its whole run, or cut from the run whose
-// prefix this call stored (RoomFlush.cut) - is dropped and closes the room for its issue
-// (refuseClosedIssueAppend), so its browsers reconnect read-only. Either is decided
-// under the document's advisory lock, so it is never this process's own write in flight, and
-// needs no room-sync lane to run.
+// prefix this call stored (RoomFlush.cut) - is dropped, and this call hands it to
+// refuseClosedIssueAppend. Either is decided under the document's advisory lock, so it is never
+// this process's own write in flight, and needs no room-sync lane to run.
 //
 // An update that never reaches the store - its room failed, or a live write, a settlement or a
 // catch-up already made it durable - lands its credit here instead: the room drops it with the
@@ -386,8 +385,8 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 		a.service.closeRoomOnReplacedHistory(room, class.instance)
 	}
 	// When the gate cut this call's own update from the run it stored (RoomFlush.cut), its class
-	// leaves the queue as this call ends, so no later call meets the gate for it: it is refused
-	// here, as it is when the gate refuses the whole run.
+	// leaves the queue as this call ends, so no later call meets the gate for it: this call hands
+	// it to refuseClosedIssueAppend, as it does when the gate refuses the whole run.
 	if slices.Contains(flush.cut, class) {
 		a.service.refuseClosedIssueAppend(room, class.instance)
 	}
@@ -878,7 +877,7 @@ func (s *Service) armDrainedSettle(room string, settles, changed, local bool) {
 	}
 }
 
-// storeParked appends, in the order the room committed them, the parked bytes its drains queued
+// storeParked appends the parked bytes its drains queued, taking them in the order they were queued
 // (classifyDrained), each on its own and gated on the cursor of the room instance that parked
 // it (AppendParkedUpdate). It stores them with no class, no credit and no settlement owed: they
 // changed nothing the room renders, and the commit that integrates them marks the document owed.
