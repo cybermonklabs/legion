@@ -109,6 +109,9 @@ How it reads a step:
     it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
+  * the CI gotestsum form, `gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/<name>.jsonl"
+    --format standard-quiet|standard-verbose --raw-command -- go test -json …`, is read as
+    `go test …` by `ci_filter_coverage.as_go_test`, also after assignments or in an xargs tail;
   * a step of a matrix job that writes `${{ matrix.<key> }}` in its run: is one step per row of
     the job's matrix, each with the row's value written in, since each row is a job of its own:
     a legs job's go test step (`go_legs.py … ${{ matrix.leg }} ${{ strategy.job-total }} |
@@ -163,7 +166,7 @@ from pathlib import Path
 
 import yaml
 from audited_scripts import Unreadable, names_audited, reading_of
-from ci_filter_coverage import called_workflows, script_lines, step_workdir
+from ci_filter_coverage import as_go_test, called_workflows, script_lines, step_workdir
 
 ROOT = Path(__file__).resolve().parents[2]
 # Repository-relative, as the documents below are keyed and as every message names them.
@@ -551,7 +554,7 @@ def steps_of(found: dict) -> list[Step]:
                 name = step.get("name") or f"step {index + 1}"
                 # The one test of whether a run: names an audited script, which reading_of starts
                 # from too, so a step that reaches it here is one that test names.
-                audited = bool(names_audited(script))
+                audited = bool(names_audited(as_go_test(script)))
                 if not audited and (workdir not in MODULE_DIRS
                                     or not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script)))):
                     continue
@@ -610,7 +613,7 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str, 
     the lister prints. `row` is the matrix row the run: is, kept on the step."""
     label = f"{workflow}'s {job} / {name}" + (f" ({row})" if row else "")
     try:
-        reading = reading_of(workdir, script)
+        reading = reading_of(workdir, as_go_test(script))
     except Unreadable as unreadable:
         raise Refused(f"{label}: {unreadable}") from None
     if reading is None:
@@ -666,9 +669,10 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
             if not printed:
                 raise Refused(f"{step.label}: `{lister}` printed no package")
             # An AUDITED_SCRIPTS script piped into here was resolved to its go test by audited_step
-            # before this step was made; what is left must be a go test, under `env`, variables
-            # and a wrapper at most.
-            tail = expand(piped.group("test"), variables)
+            # before this step was made. go_command reads the tail past `env`, assignments and
+            # the supported wrappers.
+            # The jsonfile path is not a test argument. Remove it before expanding shell variables.
+            tail = expand(as_go_test(piped.group("test")), variables)
             words, command = go_command(tail)
             if not (len(words) > 1 and words[0] == "go" and words[1] == "test"):
                 raise Refused(f"{step.label}: `{tail}`, what this step pipes into xargs, is no go test")
@@ -691,10 +695,9 @@ def go_command(line: str) -> tuple[list[str], str]:
     A step writes `GODEBUG=checkfinalizers=1 go test …` and
     `RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test …`. Neither the
     variables nor the wrapper changes which test functions the command runs, which is all this
-    script reads, so both are dropped and what is left is the go command. A value holding `$`,
-    and a wrapper GO_WRAPPERS does not name, are left where they are, so the caller refuses the
-    line rather than guessing. The text is cut word by word off the line itself, so the quoting
-    of what is left - a `-run` pattern above all - is the line's own.
+    script reads, so both are dropped. The CI gotestsum form likewise reads as its go test.
+    A value holding `$` and an unknown wrapper are left for the caller to refuse. The text is
+    cut word by word off the line itself, so the quoting of the arguments is the line's own.
     """
     rest = line.strip()
     # `xargs env NAME=value … <command>`: xargs runs a program, not a shell, so a step that must
@@ -708,6 +711,7 @@ def go_command(line: str) -> tuple[list[str], str]:
             rest = head[1]
             continue
         break
+    rest = as_go_test(rest)
     head = rest.split(None, 1)
     if len(head) == 2 and head[0].endswith(GO_WRAPPERS) and head[1].split(None, 1)[0] == "go":
         rest = head[1]

@@ -30,13 +30,9 @@ It changes the root spec only where it changes the Summary, a requirement, a che
 
 ## The token the secrets broker lends
 
-The implement App token the secrets broker lends (`skill://agent-secrets`) takes three GitHub writes of your tree's work: a re-run of your tree's CI run, the enqueue, arming, dequeue or disarming of a pull request no merger merges, and a comment on a pull request your `gh` does not reach. Any other write your `gh` cannot make is a finding (`skill://legion-worker/references/findings.md`). Take it narrowed to the one repository, and call `curl`, never `gh`:
+The implement App token the secrets broker lends as `LEGION_IMPLEMENT_APP` (`skill://agent-secrets`) takes three GitHub writes of your tree's work: a re-run of your tree's CI run, the enqueue, arming, dequeue or disarming of a pull request no merger merges, and a comment on a pull request your `gh` does not reach. Any other write your `gh` cannot make is a finding (`skill://legion-worker/references/findings.md`). Take it narrowed to the one repository, read `<owner>`'s token out of it as `agent-secrets --help` shows, and make the write with `curl -fsS`, never `gh`.
 
-```sh
-agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: <the write, and why>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | curl -fsS -X POST -H @- --data-binary "$1" <url>' sh '<the JSON body>'
-```
-
-- Keep the call in single quotes and give `curl` the header on standard input, so the token is in no command's arguments. Never print the token.
+- Keep the call in single quotes, give `curl` the JSON body as the inner shell's first argument (`--data-binary "$1"`), and give it the header on standard input, so the token is in no command's arguments. Never print the token.
 - Name in `--reason` the write, why you make it, and your issue's key.
 - Exit 77 with no `agent-secrets:` grant line is a denial, and exit 22 is GitHub's refusal, whose status curl prints. A denial and a 4xx are final: ask no other session to make the write. After a 5xx, make it once more at a later wake. Name a denial, a 4xx or a second failure in your summary.
 
