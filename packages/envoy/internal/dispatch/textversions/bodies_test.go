@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -670,10 +671,10 @@ func writeComment(t *testing.T, database *store.Store, broker *events.Broker, bo
 	return writeOwnedComment(t, database, broker, commentOwner{issue: new(textversionstest.Issue)}, body, indexed)
 }
 
-// noServerURL is the server URL these rows index a comment under. No comment they write holds a
-// dashboard URL, which is the one form the server's own URL reads (refs.IndexItem), so none names
-// anything.
-const noServerURL = ""
+// noOrigins is the server origins these rows index a comment under: none. No comment they write
+// holds a dashboard URL, which is the one form the server's origins read (refs.IndexItem), so none
+// names anything.
+var noOrigins text.Origins
 
 // writeOwnedComment writes a comment of body that owner owns, with its comment.created event,
 // whose body the event carries as model.EventBody cuts it, in one transaction, as the create route
@@ -693,7 +694,7 @@ func writeOwnedComment(t *testing.T, database *store.Store, broker *events.Broke
 			t.Fatalf("insert the comment: %v", err)
 		}
 		if indexed {
-			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.id, body, noServerURL, createdAt, nil, nil); err != nil {
+			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.id, body, noOrigins, createdAt, nil, nil); err != nil {
 				t.Fatalf("index the comment's blocks: %v", err)
 			}
 		}
@@ -727,7 +728,7 @@ func indexComment(t *testing.T, database *store.Store, id, body string) {
 		if err := tx.QueryRow(ctx, `select created_at from comments where id = $1::uuid`, id).Scan(&createdAt); err != nil {
 			t.Fatalf("read the comment: %v", err)
 		}
-		if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, noServerURL, createdAt, nil, nil); err != nil {
+		if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, noOrigins, createdAt, nil, nil); err != nil {
 			t.Fatalf("index the comment's blocks: %v", err)
 		}
 	})
@@ -755,7 +756,7 @@ func writeEdit(t *testing.T, tx pgx.Tx, broker *events.Broker, id, body string) 
 	`, id, body).Scan(&editedAt, &owner.issue, &owner.document); err != nil {
 		t.Fatalf("edit the comment: %v", err)
 	}
-	if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, noServerURL, editedAt, nil, nil); err != nil {
+	if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, noOrigins, editedAt, nil, nil); err != nil {
 		t.Fatalf("index the edited comment's blocks: %v", err)
 	}
 	return appendOwnedCommentEvent(t, tx, broker, owner, "comment.edited", id, body, editedAt)

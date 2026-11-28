@@ -36,17 +36,18 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
+// dispatchAccount is the ServiceAccount the test broker's BROKER_API_ACCOUNTS names as the
+// caller "dispatch", and dispatchAudience the audience its projected token carries: devrelay
+// stands in for Dispatch's server, so it presents that account's token.
 const (
-	// dispatchAccount is the ServiceAccount the test broker's BROKER_API_ACCOUNTS names as the
-	// caller "dispatch", and dispatchAudience the audience its projected token carries: devrelay
-	// stands in for Dispatch's server, so it presents that account's token.
 	dispatchAccount  = "system:serviceaccount:example-ns:example-dispatch"
 	dispatchAudience = "agent-secrets"
 	testApprover     = "sami@example.com"
@@ -60,7 +61,7 @@ const (
 func newDevrelayTestServer(t *testing.T) (brokerURL, callerToken string, issuer *oidctest.Issuer) {
 	t.Helper()
 	st := storetest.Open(t)
-	local := secrets.NewLocal(policytest.Secret("AGENT_SECRETS_PROOF_APPROVAL", testApprover, policy.TierHuman, testValue))
+	local := memory.New(policytest.Secret("AGENT_SECRETS_PROOF_APPROVAL", testApprover, policy.TierHuman, testValue))
 	cur := policytest.Current(t, local)
 
 	mux := http.NewServeMux()
@@ -70,7 +71,7 @@ func newDevrelayTestServer(t *testing.T) (brokerURL, callerToken string, issuer 
 	enr := &enroll.Service{Store: st, Lease: time.Hour}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	reqMachine := &requests.Machine{
-		Store: st, Policy: cur, Secrets: policytest.Store(local),
+		Store: st, Policy: cur, Secrets: local,
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
@@ -96,7 +97,7 @@ func newDevrelayTestServer(t *testing.T) (brokerURL, callerToken string, issuer 
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix,
 		// People sign in to the approval page at the same local issuer, which stands in for every
 		// provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), srv.URL, st, reqMachine),
@@ -329,7 +330,7 @@ Environment defaults: AGENT_SECRETS_URL, AGENT_SECRETS_ACCOUNT_TOKEN_FILE, AGENT
 // machine logs in and devrelay approves its typed code by the operator's login, the resulting
 // launcher credential enrolls a box, the box asks for an approval-required secret, the operator
 // signs in to the broker's own page and approves that record there (no relay can decide it), and
-// the grant releases the fake secrets store's value.
+// the grant releases the memory store's value.
 func TestDevStackEnrollsRequestsApprovesAndReleases(t *testing.T) {
 	brokerURL, callerToken, issuer := newDevrelayTestServer(t)
 
@@ -430,7 +431,7 @@ func TestDevStackEnrollsRequestsApprovesAndReleases(t *testing.T) {
 		t.Fatalf("GET /v1/requests/{id} after the page's approval = %d %s (%v), want state=granted with a grant_id", status, body, err)
 	}
 
-	// --- release: the grant's value is the fake secrets store's ---
+	// --- release: the grant's value is the memory store's ---
 	valuesProof, err := proof.Sign(sessionKey, enrolled.EnrollmentID, http.MethodPost, brokerURL+"/v1/grants/"+*approved.GrantID+"/values", time.Now())
 	if err != nil {
 		t.Fatal(err)

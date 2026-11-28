@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sjawhar/envoy/infra/gcp"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // These tests run the bootcmd entry that formats and mounts the data disk as the golden holds it,
@@ -58,7 +59,7 @@ func runEntry(t *testing.T, entry, device string, stubs map[string]string) diskR
 	record := filepath.Join(t.TempDir(), "calls")
 	for name, body := range stubs {
 		stub := "#!/bin/sh\nprintf '%s\\n' \"" + name + " $*\" >>\"$RECORD\"\n" + body + "\n"
-		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte(stub), 0o700))
+		require.NoError(t, testexec.WriteFile(filepath.Join(bin, name), []byte(stub), 0o700))
 	}
 	require.Equal(t, 1, strings.Count(entry, dataDevice), "the entry names the device once")
 	cmd := gcp.ShellCommand(t, "-c", strings.ReplaceAll(entry, dataDevice, device))
