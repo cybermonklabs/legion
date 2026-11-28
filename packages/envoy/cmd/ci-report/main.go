@@ -320,9 +320,13 @@ func loadReport(path string) ([]specgraph.TestOutcome, error) {
 }
 
 // callBound is how long one call of the dispatch command may run: a little over the command's own
-// one bound of 60 s, within which it ends every call it makes, answered or not. A call still
-// running then is ended, so a command that hangs holds the step no longer than this, and every
-// later check still gets its call and its line.
+// one bound of 60 s, within which it ends every call it makes, answered or not (RESULT_BOUND's
+// totalMs, packages/envoy-client/src/dispatch-commands/job-result.ts). A call still running then
+// is ended, so a command that hangs holds the step no longer than this, and every later check
+// still gets its call and its line. TestTheCallBoundIsOverTheCommandsOwnBound reads the command's
+// bound from its source and holds callBound over it, so a change to either bound that would end a
+// call the command may still answer fails there. How far over is the time the command takes to
+// start and to end after its bound, and nothing holds it: a larger value ends a hung call later.
 const callBound = 75 * time.Second
 
 // callWaitDelay is how long the reporter waits for the command's output to close once the command
