@@ -1691,16 +1691,39 @@ func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 	for index, issue := range issues {
 		keys[index] = issue.key
 	}
+	// The boot's backlog is also what the block-index tick does after the backfill: it reads the
+	// event log after its build's cursor one page a tick, every 30 s (docs' readEventsAfterCursor),
+	// and indexes again each document it marks, whose new windows the window arm then writes; it
+	// fills the record digests the backfill's versions owe and drains the queries they mark (docs'
+	// drainOwedQueryMarks); and the settlements the release before left owed at its shutdown are
+	// resumed (docs' resumeOwedSettlements). Their statements run beside the readings, where they
+	// count against the loaders' statements, so the readings wait them out as they wait out the
+	// window arm: until this head's cursor has read every event and nothing of them is owed.
+	bootStarted, firstUnread, firstSettlements, firstMarks, firstDigests := time.Now(), int64(-1), -1, -1, -1
 	waitSkeletonOwed(t, conn, "head's boot", func() (bool, string) {
 		if !strings.Contains(head.process.Output.String(), skeletonBackfillDone) {
 			return false, "the boot backfill is not done"
 		}
-		var marked int
-		if err := conn.QueryRow(context.Background(), `select count(*) from issue_head_marks where issue_key = any($1)`, keys).Scan(&marked); err != nil {
+		var marked, settlements, marks, digests int
+		var unread int64
+		if err := conn.QueryRow(context.Background(), `select
+			(select count(*) from issue_head_marks where issue_key = any($1)),
+			(select count(*) from doc_settlements_pending p join artifacts a on a.id = p.artifact_id where a.issue_key = any($1)),
+			(select count(*) from issue_query_marks where issue_key = any($1)),
+			(select count(*) from version_renders r join artifacts a on a.id = r.artifact_id where r.digest_owed and a.issue_key = any($1)),
+			(select count(*) from events e where e.id > coalesce((select max(c.event_id) from block_index_event_cursors c where c.build_commit = $2), 0))`,
+			keys, headCommit).Scan(&marked, &settlements, &marks, &digests, &unread); err != nil {
 			return false, err.Error()
 		}
-		return marked == len(keys), fmt.Sprintf("%d of the %d issues hold their mark", marked, len(keys))
+		if firstUnread < 0 {
+			firstUnread, firstSettlements, firstMarks, firstDigests = unread, settlements, marks, digests
+		}
+		return marked == len(keys) && unread == 0 && settlements == 0 && marks == 0 && digests == 0, fmt.Sprintf(
+			"%d of the %d issues hold their mark, the block-index tick has %d events to read, %d documents owe their settlement, %d issues owe their queries' versions and %d versions owe their record digests",
+			marked, len(keys), unread, settlements, marks, digests)
 	})
+	t.Logf("c-tree-read-bound: the head's boot left the block-index tick %d events to read, %d documents owing their settlement, %d issues owing their queries' versions and %d versions owing their record digests; none is owed after %s",
+		firstUnread, firstSettlements, firstMarks, firstDigests, time.Since(bootStarted).Round(time.Second))
 	statements.head = true
 	statements.waitWindowsOwed(t, "head")
 	skeletonAnalyze(t, conn, "new side")

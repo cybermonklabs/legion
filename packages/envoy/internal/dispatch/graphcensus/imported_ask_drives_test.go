@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,9 +43,11 @@ const (
 // decision in a document of more blocks than a write indexes in its own request, which writes the
 // decision through the typed-node pass on its own; the settlement of a copy of the notes' ask block
 // on a document of its own; the settlement of an ask block whose question a person's edit emptied;
-// the settlement that carries a person's approval onto an approval request a session opened; a
-// person's edit that takes the block of an answered ask out of its document; an upload that changes
-// nothing, whose version no index pass plans; the settlement of a person's upload that writes the
+// the settlement that carries a person's approval onto an approval request a session opened; the
+// fill of the record digest of an upload that writes a spec back to the text a person approved,
+// which retracts the approval request a session opened over the edit before it; a person's edit
+// that takes the block of an answered ask out of its document; an upload that changes nothing,
+// whose version no index pass plans; the settlement of a person's upload that writes the
 // answered ask's block back, which retracts that person's removal; the decisions step's conversion
 // of an issue whose decisions document holds one section a session wrote and a person kept; and
 // the step's catch-up of an unfollow a build before this one recorded.
@@ -55,9 +58,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	// What each drive's Ready writes for the drive and its check: the issue the close and the
 	// reopen take, the document the Keep keeps a decision of and the decision's sum, the copy, the
 	// document whose ask block is emptied and that ask, the document the carry settles and its
-	// approval request, the document whose answered ask a person removes and that ask, the document
-	// an upload leaves as it was, and the project the decisions step converts.
-	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, removal, removedAsk, unchanged string
+	// approval request, the issue whose spec's approval request the digest fill retracts and that
+	// request, the document whose answered ask a person removes and that ask, the document an
+	// upload leaves as it was, and the project the decisions step converts.
+	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, satisfied, satisfiedRequest, removal, removedAsk, unchanged string
 	// The token of the version same.md's replacement replaces, read before its drive.
 	var unchangedBase map[string]string
 	const decided = "DECIDE"
@@ -295,6 +299,98 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Counts: merged(answerCounted, personNodeCounted, versionCounted, approvalMoveCounted, map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeText}: {"block_text"},
 		}),
+	}, {
+		// The fill of the record digest an upload left owed that writes a converted issue's spec
+		// back to the text alice approved (R14's hash gate): the approval stands again by the
+		// version's digest, so the fill retracts the approval request a session opened over the
+		// edit before the upload (closeSatisfiedApprovalRequests), through the one writer of an
+		// ask's answer state, under the request's own ask.resolved. The upload is the Ready's, its
+		// fill held off by the issue's owner lock, which a transaction of the Ready's own takes at
+		// the start of that fill (docs.Service.HoldFills) and holds past the fill's bound
+		// (SetAfterCommitLockWaitForTest), so the digest stays owed and the request open; the drive
+		// is the drain a request runs once its write has committed (DrainOwedQueries), whose fill
+		// comes first. Its drain finds no query the upload moved past the version the upload wrote.
+		Name: "docs/version_render.go#closeSatisfiedApprovalRequests", Database: r.database,
+		Sites: []string{"docs/version_render.go#closeSatisfiedApprovalRequests", "asks/settle.go#Queue", "docs/query_marks.go#drainMark"},
+		Ready: func(t *testing.T) {
+			const requirement = "An urgent ask comes first."
+			created := decoded[struct {
+				Key     string `json:"key"`
+				Primary string `json:"primary_artifact_id"`
+			}](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "SIZE", "title": "What the digest fill retracts", "force": true,
+				"spec": ":::criterion{#sized-urgent-list}\nI want the urgent list.\n:::\n\n:::requirement{#sized-urgent-first}\n" + requirement + "\n:::\n",
+			}, "alice", http.StatusCreated))
+			spec := created.Primary
+			satisfied = created.Key
+			approved := decoded[model.ArtifactReview](t, r.request(t, http.MethodPost, "/api/v1/artifacts/"+spec+"/reviews",
+				map[string]any{"state": "approved"}, "alice", http.StatusCreated))
+			approvedText := decoded[struct {
+				Markdown string `json:"markdown"`
+			}](t, r.request(t, http.MethodGet, fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", spec, approved.Version), nil, "alice", http.StatusOK)).Markdown
+			// alice's edit moves the requirement, so her approval no longer stands, and a session
+			// asks for the approval of the version it wrote.
+			r.request(t, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", map[string]any{
+				"ops": []map[string]any{{"op": "replace", "find": requirement, "with": "An urgent ask comes second."}},
+			}, "alice", http.StatusOK)
+			satisfiedRequest = decoded[struct {
+				Ask struct {
+					ID string `json:"id"`
+				} `json:"ask"`
+			}](t, r.request(t, http.MethodPost, "/api/v1/artifacts/"+spec+"/approval-requests",
+				map[string]any{"actor": sessionActor("ses_satisfied")}, "", http.StatusCreated)).Ask.ID
+			var name string
+			if err := r.database.Pool.QueryRow(ctx, `select name from artifacts where id = $1::uuid`, spec).Scan(&name); err != nil {
+				t.Fatalf("read the name of the spec %s: %v", spec, err)
+			}
+			base := r.uploadBase(t, spec)
+			var (
+				holding sync.Mutex
+				holder  pgx.Tx
+				held    error
+			)
+			r.documents.SetAfterCommitLockWaitForTest(100 * time.Millisecond)
+			defer r.documents.SetAfterCommitLockWaitForTest(0)
+			r.documents.HoldFills(func(issue string) {
+				holding.Lock()
+				defer holding.Unlock()
+				if issue != satisfied || holder != nil || held != nil {
+					return
+				}
+				if holder, held = r.database.Pool.Begin(ctx); held == nil {
+					held = store.LockOwner(ctx, holder, store.IssueOwner(issue))
+				}
+			})
+			defer r.documents.HoldFills(nil)
+			defer func() {
+				holding.Lock()
+				defer holding.Unlock()
+				if holder != nil {
+					_ = holder.Rollback(ctx)
+				}
+			}()
+			r.request(t, http.MethodPost, "/api/v1/issues/"+satisfied+"/artifacts", map[string]any{
+				"name": name, "content": approvedText, "precondition": base,
+			}, "alice", http.StatusCreated)
+			holding.Lock()
+			took, err := holder != nil, held
+			holding.Unlock()
+			if !took || err != nil {
+				t.Fatalf("take the owner lock of %s at the start of the upload's fill (taken %v): %v", satisfied, took, err)
+			}
+			r.awaitTrue(t, "the upload leaving its version's digest owed and the approval request open", `
+				select exists (select 1 from version_renders where artifact_id::text = $1 and digest_owed)
+				   and exists (select 1 from asks where id = $2::uuid and state = 'open')
+			`, spec, satisfiedRequest)
+		},
+		Drive: func(t *testing.T) {
+			r.documents.DrainOwedQueries(ctx, satisfied)
+			r.awaitTrue(t, "the fill retracting the approval request the upload satisfied", `
+				select exists (select 1 from asks where id = $1::uuid and state = 'resolved')
+			`, satisfiedRequest)
+		},
+		// The request's retraction: its answer_state and its resolution.
+		Counts: resolutionCounted,
 	}, {
 		// alice's edit that takes the block of an answered ask out of its document: the version's
 		// index pass plans her removal into its own write (refs.PlanBlocks), and the edit appends

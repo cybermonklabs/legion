@@ -121,6 +121,8 @@ const READS = {
     key: ["artifact", "artifact-1", "blocks"],
   },
   docSummary: { data: { id: "artifact-1" }, key: documentSummaryQuery("CORE", "plan-md").queryKey },
+  // CORE-1's document list, the Artifacts tab's read, whose rows draw each document's approval.
+  documentList: { key: ["artifacts", "CORE-1"] },
   documentPage: { data: { id: "artifact-1" }, key: ["artifact-ref", "CORE/plan-md"] },
   documentPanel: {
     data: { edges: [], node: { id: "artifact-1", kind: "artifact" } },
@@ -208,6 +210,16 @@ const READS = {
     data: { edges: [], node: { id: "CORE-1/spec#intro", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/spec#b-intro@v2").queryKey,
   },
+  // CORE-1's spec's own reads under its document's key, beside the document's read: its blocks,
+  // its asks, its text and its version 2.
+  specAsks: {
+    data: [{ id: "ask-6", question: "Ship it?" }],
+    key: ["artifact", "artifact-3", "asks"],
+  },
+  specBlocks: {
+    data: [{ from: 0, id: "intro", to: 4, type: "paragraph" }],
+    key: ["artifact", "artifact-3", "blocks"],
+  },
   // CORE-1's spec itself, as its document page reads it (`ProofDocument`).
   specDocument: { key: ["artifact", "artifact-3"] },
   // CORE-1's spec, one document, opened on two spellings of its address.
@@ -219,6 +231,8 @@ const READS = {
     data: { edges: [], node: { id: "artifact-3", kind: "artifact" } },
     key: ["references", "to", "dispatch://CORE-1/artifact/spec"],
   },
+  specText: { key: ["artifact", "artifact-3", "text"] },
+  specVersion: { key: ["artifact", "artifact-3", "version", 2] },
   // The Steps tab's read of CORE-1's step records.
   steps: { key: issueStepsQuery("CORE-1").queryKey },
   summary: { key: issueSummaryQuery("CORE-1").queryKey },
@@ -803,6 +817,42 @@ const rules: Record<string, Rule> = {
         "projects",
         "replies",
         "userState",
+        "unrelatedDetail",
+      ],
+    },
+  // The hash gate's fill of a query document's version (R14) moves the document's approval alone,
+  // after the version's own `artifact.version` refreshed its text, blocks and asks.
+  "a digest of a query document's version refreshes the two reads that draw its approval - the document's own and the issue's document list - and none of the document's text, blocks, asks or versions":
+    {
+      event: event(
+        "artifact.digest",
+        {
+          approval_current: true,
+          approved_version: 1,
+          artifact_id: "artifact-3",
+          content_sha256: "0".repeat(64),
+          name: "spec.md",
+          version: 2,
+        },
+        { actor: { id: "digest-fill", kind: "system" }, notify: false }
+      ),
+      refreshes: ["detail", "log", "projectList", "specDocument", "documentList"],
+      spares: [
+        "specAsks",
+        "specBlocks",
+        "specText",
+        "specVersion",
+        "specPanel",
+        "specBlock",
+        "docBlocks",
+        "comments",
+        "decisions",
+        "summary",
+        "asks",
+        "inbox",
+        "pinned",
+        "projects",
+        "replies",
         "unrelatedDetail",
       ],
     },

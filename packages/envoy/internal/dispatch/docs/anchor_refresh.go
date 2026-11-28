@@ -413,6 +413,42 @@ func (s *Service) AnchorOccurrences(ctx context.Context, artifactID string, anch
 	if err != nil || tree == nil {
 		return nil, err
 	}
+	return anchorOccurrencesIn(tree, artifactID, anchors)
+}
+
+// BlocksAndAnchorOccurrences is what Blocks and AnchorOccurrences answer of artifactID's document,
+// read once (readDocument) for both: the tree read reads a spec's block positions and its
+// comments' occurrences off the same document, and two reads of a room this process holds made
+// its tree out of the live document twice, 3 ms of a spec view of 1,393 requirements beside 600
+// comments. The blocks are the caller's own, as Blocks hands them out; with no anchors it answers
+// no occurrences and looks for none.
+func (s *Service) BlocksAndAnchorOccurrences(ctx context.Context, artifactID string, anchors []CommentAnchorInBlock) ([]model.ArtifactBlock, map[int]int, error) {
+	read, tree, err := s.readDocument(ctx, artifactID)
+	var blocks []model.ArtifactBlock
+	switch {
+	case err != nil:
+		return nil, nil, err
+	case read != nil:
+		blocks, tree = slices.Clone(read.blocks), read.tree
+	case tree == nil:
+		return nil, nil, nil
+	default:
+		if _, blocks, err = documentBlocks(tree); err != nil {
+			return nil, nil, err
+		}
+	}
+	if tree == nil || len(anchors) == 0 {
+		return blocks, nil, nil
+	}
+	occurrences, err := anchorOccurrencesIn(tree, artifactID, anchors)
+	if err != nil {
+		return nil, nil, err
+	}
+	return blocks, occurrences, nil
+}
+
+// anchorOccurrencesIn is AnchorOccurrences of tree, artifactID's document as anchoredTree reads it.
+func anchorOccurrencesIn(tree *pmdoc.Node, artifactID string, anchors []CommentAnchorInBlock) (map[int]int, error) {
 	keys := make([]pmdoc.MarkRef, 0, 2*len(anchors))
 	for _, anchor := range anchors {
 		keys = append(keys, pmdoc.MarkRef{Type: string(MarkComment), ID: anchor.MarkID}, pmdoc.MarkRef{Type: string(MarkSuggestion), ID: anchor.MarkID})

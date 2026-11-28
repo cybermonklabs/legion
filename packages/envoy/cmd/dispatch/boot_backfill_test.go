@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -73,7 +74,11 @@ var projectMovedCount = regexp.MustCompile(` project_moved=(\d+)\b`)
 
 // The boot's run of the backfill logs what each outcome of the backfill was and answers its caller
 // nothing, so the process serves on whatever the backfill answered. The record and the run
-// are the test's own, in place of the record of the horizon and the passes.
+// are the test's own, in place of the record of the horizon and the passes. The function's type
+// holds no result (reflect.TypeOf(runBootBackfill).NumOut() is 0): a call statement drops whatever
+// a call answers, so the calls below could not tell a function that hands its caller the run's
+// error, and the test reads the type itself, else it prints `the boot backfill returned <the
+// result types> to its caller, which would stop the process`.
 //
 // The record succeeds in the first four calls. A run with no error logs the done line. A run whose
 // error joins two failures, each graphstore.ErrProjectMoved, as Backfill answers rows whose node the
@@ -86,6 +91,13 @@ var projectMovedCount = regexp.MustCompile(` project_moved=(\d+)\b`)
 // writer of the event log, backend pid 4242, open 31 s: the function logs the skip line with that
 // pid and that age, calls no run and logs no done line.
 func TestTheBootBackfillRunLogsItsOutcome(t *testing.T) {
+	if boot := reflect.TypeOf(runBootBackfill); boot.NumOut() != 0 {
+		results := make([]string, boot.NumOut())
+		for index := range results {
+			results[index] = boot.Out(index).String()
+		}
+		t.Errorf("the boot backfill returned %s to its caller, which would stop the process", strings.Join(results, ", "))
+	}
 	moved := func(row int) error {
 		return fmt.Errorf("write graph node issue/CORE-%d in project CORE, which the store holds in KEY: %w", row, graphstore.ErrProjectMoved)
 	}

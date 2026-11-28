@@ -1308,11 +1308,15 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   }
   if (event.type === "artifact.digest") {
     // Dispatch filled the record digest of a query document's version and evaluated whether its
-    // approval stands: refresh the document's own read and the issue's document list so the
-    // approval chip moves from owed/stale to its verdict.
+    // approval stands. What moves is that approval alone - the `approval` the document's own read
+    // carries (`current_sha256`, `digest_owed`, and whether it stands) and each row of the issue's
+    // document list, whose chip draws it - so those two reads, by their exact keys. The version's
+    // own `artifact.version` refreshed its text, blocks, asks and the issue's coverage already, and
+    // the reads under the document's key (`["artifact", id, ...]`: its text, blocks, asks and each
+    // version) hold nothing a digest changes.
     targets.push(
-      { queryKey: ["artifacts", key] },
-      { queryKey: ["artifact", event.payload.artifact_id] }
+      { exact: true, queryKey: ["artifacts", key] },
+      { exact: true, queryKey: ["artifact", event.payload.artifact_id] }
     );
     return targets;
   }

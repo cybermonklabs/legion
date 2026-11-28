@@ -67,6 +67,12 @@ type liveWrite struct {
 	// closed issue (gateAppend, appendBrowser). A write that never read the owner holds the zero
 	// value, which forks as every write does.
 	ownerClosed bool
+	// followsUnsettled is whether opening the write took over a settlement of the document that an
+	// earlier write had armed and that had not run yet (openLiveWrite, takeOverSettlementLocked):
+	// the write is one of a run of writes inside the settle delay. Such a write publishes into the
+	// room it loads where no room holds the document (publishLiveWrite), so the run's next write
+	// forks that room rather than the stored history.
+	followsUnsettled bool
 	// clientID authors every item the transaction writes, on fork: the document as the
 	// transaction's one read of it found it, with the transaction's updates applied (forkLive). A
 	// rebuilt fork authors under a new one (rebuildFork), which replaces it.
@@ -463,6 +469,7 @@ func (s *Service) openLiveWrite(ctx context.Context, ledger *Ledger, artifactID 
 			// that already defers one, and leave a timer to fire under this write.
 			took := s.takeOverSettlementLocked(state)
 			state.settleDeferred = state.settleDeferred || took
+			write.followsUnsettled = took && state.coldPublished
 			s.unlockState(artifactID, state)
 			write.state = state
 			break
@@ -760,16 +767,17 @@ func (s *Service) warmFork(write *liveWrite, live *crdt.Doc) (*crdt.Doc, error) 
 // a second copy of the document for as long as the write runs, and the write's publish loads none
 // either, which would hold the document with no reader in it (publishLiveWrite, audit finding 11):
 // the publish arms the document's settlement instead (scheduleSettle), and the room loads when that
-// settlement's warm-up runs (settlement.take) or a browser opens the document, from the store,
-// which after the commit holds the write. A browser's room load takes no lock the write holds
-// (onLoadDocument), so a room can load while this reads the store: a room found once the read is
-// done, and not behind head, is forked from instead (warmFork), and the copy read from the store
-// is dropped undecoded, so the document is never held both in a room and in a fork read from the
-// store. A room that loads after that and before the publish meets the write at its publish, which
-// publishes into a room this process holds, resident or still loading (roomHeld). A comment's
-// anchor on a closed issue keeps the store's copy whatever room it finds (closedIssueCommentMark),
-// as readFork sent it here for: a warm fork would make it store the room's own updates, which the
-// gate refuses on a closed issue.
+// settlement's warm-up runs (settlement.take), when a browser opens the document, or at the publish
+// of the next write of a run of writes that keeps putting that settlement off (publishLoadsRoom),
+// from the store, which after the commit holds the write. A browser's room load takes no lock the
+// write holds (onLoadDocument), so a room can load while this reads the store: a room found once
+// the read is done, and not behind head, is forked from instead (warmFork), and the copy read from
+// the store is dropped undecoded, so the document is never held both in a room and in a fork read
+// from the store. A room that loads after that and before the publish meets the write at its
+// publish, which publishes into a room this process holds, resident or still loading (roomHeld). A
+// comment's anchor on a closed issue keeps the store's copy whatever room it finds
+// (closedIssueCommentMark), as readFork sent it here for: a warm fork would make it store the
+// room's own updates, which the gate refuses on a closed issue.
 //
 // What an upload's version takes out (uploadCapture) is what this read held: the stored updates
 // through the head it loaded (forkHold), and no in-flight credit (forkSeq 0), since a credit no
@@ -1041,22 +1049,24 @@ func (s *Service) creditLiveWrite(write *liveWrite, actor model.Actor, document 
 // travels with its operation's rendering (liveWrite.renderings), which the room's update observer
 // may take in place of rendering the room after it.
 //
-// It publishes only into a room this process holds, resident or loading (roomHeld): a write to a
+// It publishes into a room this process holds, resident or loading (roomHeld). A write to a
 // document no room holds here - a cold write (coldFork) - loads none, which would hold the
-// document in memory with no reader in it (audit finding 11). Its committed rows reach whatever
-// room loads next, from the store, and every other process's room through its catch-up
-// (roomCatchUps). The settlement the room's update observer would have armed for the published
-// update is armed here instead (scheduleSettle; the write's slot defers it to finishLiveWrite), so
-// the write is versioned a settle delay on, as a published one is; that settlement loads the room
-// it settles, and so does Shutdown's when a shutdown stops the armed timer (settleRoomWithin's
-// mayLoad). A closed issue's document loads its room the same way: the warm-up's load carries the
-// service's own mark (withOwnerVerified), which allowInject admits, and the settlement saves the
-// write as it saves any closed issue's document (settleRoomWithin). A load already under way when
-// the write committed was told of the write's versions before the commit (Ledger.takeRoomCursors)
-// and is listed by ygo from before its read of the store, so it is found here and published into:
+// document in memory with no reader in it (audit finding 11), unless it follows such a write whose
+// settlement has not run (publishLoadsRoom). Its committed rows reach whatever room loads next,
+// from the store, and every other process's room through its catch-up (roomCatchUps). The
+// settlement the room's update observer would have armed for the published update is armed here
+// instead (scheduleSettle; the write's slot defers it to finishLiveWrite), so the write is
+// versioned a settle delay on, as a published one is; that settlement loads the room it settles,
+// and so does Shutdown's when a shutdown stops the armed timer (settleRoomWithin's mayLoad). A
+// closed issue's document loads its room the same way: the warm-up's load carries the service's
+// own mark (withOwnerVerified), which allowInject admits, and the settlement saves the write as it
+// saves any closed issue's document (settleRoomWithin). A load already under way when the write
+// committed was told of the write's versions before the commit (Ledger.takeRoomCursors) and is
+// listed by ygo from before its read of the store, so it is found here and published into:
 // Server.Apply waits for its load. A room that retires between this check and the publish's
 // Apply is loaded again by that Apply, from a store that holds the write, and idles out like any
-// room a write loads.
+// room a write loads; so does the room a write of a run loads (publishLoadsRoom), whose store
+// holds the write already, so the publish's Apply changes nothing in it.
 //
 // A room that cannot take an update is failed - but not one that refused the publish because it
 // had already failed (ErrServiceUnavailable). By the time such a refusal is handled the recovery
@@ -1071,17 +1081,21 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 		s.beforePublish(write)
 	}
 	// Committed, the write has no more use for its fork, so the fork goes before the publish.
-	// Where no room holds the document (coldFork) the publish loads none: it arms the document's
-	// settlement, whose warm-up loads the room from the store when it runs, as a browser's open of
-	// the document does. A room's shadow the commit installed keeps the fork (newShadow,
-	// installShadowLocked).
+	// Where no room holds the document (coldFork) the publish arms the document's settlement,
+	// whose warm-up loads the room from the store when it runs, as a browser's open of the
+	// document does, and loads none itself unless the write is one of a run (publishLoadsRoom). A
+	// room's shadow the commit installed keeps the fork (newShadow, installShadowLocked).
 	write.releaseFork()
 	if !s.roomHeld(write.artifactID) {
-		if len(write.updates) > 0 {
-			s.scheduleSettle(write.artifactID)
+		if len(write.updates) == 0 {
+			s.recordPublishedLoss(write)
+			return
 		}
-		s.recordPublishedLoss(write)
-		return
+		s.scheduleSettle(write.artifactID)
+		if !s.publishLoadsRoom(write) {
+			s.recordPublishedLoss(write)
+			return
+		}
 	}
 	for index, update := range write.updates {
 		var shadow *roomShadow
@@ -1102,6 +1116,30 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 		return
 	}
 	s.recordPublishedLoss(write)
+}
+
+// publishLoadsRoom reports whether write, a committed write with updates to a document no room
+// holds here, publishes into the room its publish's Apply loads from the store, and records on the
+// document's state what the next write reads of it (roomState.coldPublished). A write that opened
+// while the settlement an earlier such write armed was still owed (liveWrite.followsUnsettled) is
+// one of a run of writes inside the settle delay - an agent's run of edits, or comments anchored
+// in the document one after another - which keeps putting off that settlement, whose warm-up is
+// what would load the room. Without a room each write of the run forks the document's whole stored
+// history (coldFork), so each costs more than the one before: on the spec of 1,393 requirements of
+// c-tree-read-bound, with 8 writers, the marks of its comments 2,201 to 2,400 took 512 ms each
+// where every write forked the store, and 45 ms where a room held the document. So such a write
+// loads the room, and the run's next write forks it (warmFork). The run's first write loads none
+// (audit finding 11), and marks the state so the next write of the run does. A write of a closed
+// issue's document loads none either: a comment's anchor there forks the store whatever room it
+// finds (closedIssueCommentMark), and the settlement loads the room it saves. Its caller holds the
+// write's slot, under which openLiveWrite read the mark.
+func (s *Service) publishLoadsRoom(write *liveWrite) bool {
+	loads := write.followsUnsettled && !write.ownerClosed
+	state := write.state
+	state.mu.Lock()
+	state.coldPublished = !loads
+	s.unlockState(write.artifactID, state)
+	return loads
 }
 
 // publishLiveUpdate applies one committed update to the room and broadcasts it. It reads nothing

@@ -345,10 +345,12 @@ type issueTreeBuilder struct {
 	owed []model.OwedDocument
 	// checks is the number of checks that serve each requirement of the page (queueRequirementChecks),
 	// titles the newest title each session of the page stamped (delivery.ResolveSessionTitles), and
-	// anchors the anchor of each comment of the page that holds one (queueCommentAnchors), by id.
-	checks  map[string]int
-	titles  map[string]string
-	anchors map[string]*model.IssueTreeAnchor
+	// anchors the anchor of each comment of the page that holds one (queueCommentAnchors), by id;
+	// anchorsRead is each document documentPositions read the occurrences of those anchors on.
+	checks      map[string]int
+	titles      map[string]string
+	anchors     map[string]*model.IssueTreeAnchor
+	anchorsRead map[string]bool
 
 	// page is the nodes of the answer from the read's cursor on: a slice of its walk's order, its
 	// first sliced nodes, with the context nodes that slice places, at most pageSize nodes in all
@@ -2405,13 +2407,17 @@ func (b *issueTreeBuilder) untie(order []refs.Target, context map[refs.Target]bo
 }
 
 // documentPositions reads, for each typed block of a role document the page holds (window), its
-// position in its document as GET /api/v1/issues/{key}/artifacts/{slug}/blocks lists it, from that
-// read's own call on each document once (docs.Service.Blocks), and keeps how many blocks each such
-// document lists (counted), which countDocuments reads no second time. It runs after the read's
-// transaction has closed, since a document's blocks are its live room's.
+// position in its document as GET /api/v1/issues/{key}/artifacts/{slug}/blocks lists it
+// (docs.Service.Blocks), off one read of each document, and keeps how many blocks each such
+// document lists (counted), which countDocuments reads no second time. That read answers too the
+// occurrences of the comments' anchors on the document (docs.Service.BlocksAndAnchorOccurrences),
+// which anchorOccurrences then reads of the other documents alone (anchorsRead). It runs after the
+// read's transaction has closed, since a document's blocks are its live room's.
 func (b *issueTreeBuilder) documentPositions(s *server) error {
 	b.positions = map[refs.Target]int{}
 	b.counted = map[string]int{}
+	b.anchorsRead = map[string]bool{}
+	asked, held := b.anchorsByDocument()
 	listed := map[string]map[string]int{}
 	for _, target := range b.page {
 		row, documented := b.roleBlock(target)
@@ -2420,10 +2426,12 @@ func (b *issueTreeBuilder) documentPositions(s *server) error {
 		}
 		positions, read := listed[row.Document]
 		if !read {
-			blocks, err := s.deps.Docs.Blocks(b.ctx, row.Document)
+			blocks, occurrences, err := s.deps.Docs.BlocksAndAnchorOccurrences(b.ctx, row.Document, asked[row.Document])
 			if err != nil {
 				return err
 			}
+			holdOccurrences(held[row.Document], occurrences)
+			b.anchorsRead[row.Document] = true
 			positions = make(map[string]int, len(blocks))
 			for index, block := range blocks {
 				if _, held := positions[block.ID]; !held {

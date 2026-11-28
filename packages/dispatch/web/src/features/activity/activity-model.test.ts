@@ -65,6 +65,51 @@ test("day dividers name Today and Yesterday and spell an older day in full", () 
   ]);
 });
 
+// An artifact.digest is the hash gate's fill of a query document's version (R14), which follows
+// the version's own line one for one: Activity draws no line for it, and no divider moves for it.
+// The digest here is dated today between two lines of yesterday, as the fill of an issue's spec
+// follows the issue's create, so a line for it would break yesterday in two.
+test("an artifact.digest draws no Activity line, and every other line and divider stands as it does without it", () => {
+  const today = new Date(2026, 8, 10, 12, 0, 0);
+  const yesterday = new Date(2026, 8, 9, 12, 0, 0);
+  const digest: DispatchEvent = {
+    actor: { id: "digest-fill", kind: "system" },
+    created_at: today.toISOString(),
+    id: 2,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      approval_current: true,
+      artifact_id: "artifact-1",
+      content_sha256: "0".repeat(64),
+      name: "spec.md",
+      version: 1,
+    },
+    seq: 2,
+    type: "artifact.digest",
+  };
+  const others = [
+    message(1, yesterday.toISOString()),
+    message(3, yesterday.toISOString()),
+    message(4, today.toISOString()),
+  ];
+  const day = dateKey(today.toISOString());
+  const drawn = (events: DispatchEvent[]) => {
+    const items = buildActivityItems({ events, lastReadSeq: 3, today: day });
+    return items.map((item) => (item.kind === "event" ? item.seq : item.id));
+  };
+
+  expect(drawn([...others, digest])).toEqual(drawn(others));
+  expect(drawn([...others, digest])).toEqual([
+    `day:${day}`,
+    4,
+    `day:${dateKey(yesterday.toISOString())}`,
+    "unread-divider",
+    3,
+    1,
+  ]);
+});
+
 const projectEvent = {
   actor: { id: "alice", kind: "user" },
   created_at: "2026-10-25T00:00:00Z",
