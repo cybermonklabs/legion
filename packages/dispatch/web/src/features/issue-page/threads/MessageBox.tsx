@@ -67,7 +67,7 @@ function listedRecipient(agents: readonly Agent[], target: string): Agent | unde
  * box under an entry of a message thread, the one at its foot, and New thread's. It is this
  * part's own field and no `MentionField`, so `@` offers nothing and stores no mention: a message
  * names its agent by its target (R11). Its row of the writing list (`threads-message`
- * in `DISPATCH_WRITING_BOXES`) is not covered for the same reason, so the box draws no hint.
+ * in `DISPATCH_WRITING_BOXES`) is not covered for the same reason.
  *
  * Send writes `POST /api/v1/issues/{key}/messages` through the write store, under this part's own
  * write kind (`threadMessageWrite`), with the words, the message it answers and the thread's

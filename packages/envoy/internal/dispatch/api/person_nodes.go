@@ -246,7 +246,7 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		row.Title = refs.FirstLineWithin(body, s.deps.ServerURL, personNodeTitleRunes)
+		row.Title = refs.FirstLineWithin(body, s.deps.Origins, personNodeTitleRunes)
 		row.CreatedAt = row.CreatedAt.UTC()
 		if editedAt != nil {
 			edited := editedAt.UTC()

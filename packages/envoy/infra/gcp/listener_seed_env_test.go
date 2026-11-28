@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // The script these tests run is the listener's seed script the golden cloud-config writes, byte for
@@ -39,11 +40,11 @@ func seedEnv(t *testing.T, f *fakeGCP) seedEnvRun {
 	var golden gcp.CloudConfig
 	require.NoError(t, yamlUnmarshalGolden(t, &golden))
 	scriptDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(scriptDir, "fetch-secret"), []byte(fileOf(t, golden, "/etc/envoy/fetch-secret")), 0o700))
+	require.NoError(t, testexec.WriteFile(filepath.Join(scriptDir, "fetch-secret"), []byte(fileOf(t, golden, "/etc/envoy/fetch-secret")), 0o700))
 	script := filepath.Join(scriptDir, "listener-seed-env")
-	require.NoError(t, os.WriteFile(script, []byte(fileOf(t, golden, "/etc/envoy/listener-seed-env")), 0o700))
+	require.NoError(t, testexec.WriteFile(script, []byte(fileOf(t, golden, "/etc/envoy/listener-seed-env")), 0o700))
 	binDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(binDir, "sleep"), []byte(sleepStub), 0o700))
+	require.NoError(t, testexec.WriteFile(filepath.Join(binDir, "sleep"), []byte(sleepStub), 0o700))
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "listener.env")
 
@@ -136,9 +137,9 @@ func TestListenerSeedEnvRemovesTheRawSeedWhenTerminatedDuringFetch(t *testing.T)
 	require.NoError(t, yamlUnmarshalGolden(t, &golden))
 	scriptDir := t.TempDir()
 	script := filepath.Join(scriptDir, "listener-seed-env")
-	require.NoError(t, os.WriteFile(script, []byte(fileOf(t, golden, "/etc/envoy/listener-seed-env")), 0o700))
+	require.NoError(t, testexec.WriteFile(script, []byte(fileOf(t, golden, "/etc/envoy/listener-seed-env")), 0o700))
 	started := filepath.Join(scriptDir, "fetch-started")
-	require.NoError(t, os.WriteFile(filepath.Join(scriptDir, "fetch-secret"), []byte(`#!/bin/sh
+	require.NoError(t, testexec.WriteFile(filepath.Join(scriptDir, "fetch-secret"), []byte(`#!/bin/sh
 printf seed >"$1"
 : >"$FETCH_STARTED"
 while :; do sleep 1; done

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // The history reads the trees of two commits and never their ancestry: main's commits are squash
@@ -373,7 +375,7 @@ func TestGitHistoryIsTheSameUnderEachSetting(t *testing.T) {
 		// settings, is the external program's output, so the settings are live.
 		{"diff.external, a textconv of each file and color always, set together", func(c clone) (string, string, GitHistory) {
 			external := filepath.Join(c.t.TempDir(), "external.sh")
-			if err := os.WriteFile(external, []byte("#!/bin/sh\necho EXTERNAL\n"), 0o700); err != nil {
+			if err := testexec.WriteFile(external, []byte("#!/bin/sh\necho EXTERNAL\n"), 0o700); err != nil {
 				c.t.Fatal(err)
 			}
 			git(c, "config", "diff.external", external)

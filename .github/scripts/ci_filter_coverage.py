@@ -49,7 +49,7 @@ from pathlib import Path
 import yaml
 from audited_scripts import Unreadable, reading_of
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
-from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
+from workflow_paths import REQUIRED_CHECKS, PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
 # The workflow that fills, on a push to main, the Go cache families WORKFLOW's jobs restore.
@@ -1726,11 +1726,34 @@ def squash(text: str) -> str:
     return " ".join(text.split())
 
 
+GOTESTSUM_RUN = re.compile(
+    r'(?<![^ \t\n])gotestsum[ \t]+--jsonfile[ \t]+"\$RUNNER_TEMP/go-test-events/[A-Za-z0-9._-]+\.jsonl"'
+    r'[ \t]+--format[ \t]+standard-(?:quiet|verbose)[ \t]+--raw-command[ \t]+--'
+    r'[ \t]+go[ \t]+test[ \t]+-json(?=[ \t\n]|$)'
+)
+
+
+def as_go_test(text: str) -> str:
+    """Read the CI gotestsum form as `go test`, without its added `-json`.
+
+    Keep the command's arguments and anything before the prefix, such as assignments or xargs.
+    Leave other forms alone for the caller to read or refuse.
+    """
+    return GOTESTSUM_RUN.sub("go test", text)
+
+
+def gotestsum_prefix(name: str, verbose: bool = False) -> str:
+    """The CI gotestsum command through `go test -json`, before the test arguments."""
+    format_ = "standard-verbose" if verbose else "standard-quiet"
+    return (f'gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/{name}.jsonl" '
+            f'--format {format_} --raw-command -- go test -json')
+
+
 def script_lines(text: str) -> list:
     """The lines of a run: script as bash splits them (at \\n alone), stripped of spaces and tabs,
-    comments and blank lines aside."""
+    comments and blank lines aside, with CI gotestsum commands read as their go test."""
     stripped = (line.strip(" \t") for line in text.split("\n"))
-    return [line for line in stripped if line and not line.startswith("#")]
+    return [as_go_test(line) for line in stripped if line and not line.startswith("#")]
 
 
 @functools.lru_cache(maxsize=None)
@@ -1930,6 +1953,7 @@ def reduce_line(line: str) -> tuple:
     with -race, the directory its `go -C` names or "", ""), any other as (None, None, None, None,
     None, the first reason it is not one of them)."""
     unreduced = (None, None, None, None, None)
+    line = as_go_test(line)
     special = next((c for c in line if c in NOT_SIMPLE), None)
     if special:
         return *unreduced, f"it has `{special}`"
@@ -2027,7 +2051,13 @@ ENV_ALLOWED = frozenset({
     # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that
     # run go commands among them, and around_job reads a job's env. go reads it nowhere.
     "JOB_TIMEOUT_MINUTES",
-    "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
+    "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN",
+    # Where a live test writes its evidence: the daemon's own log file, and the step-models
+    # chain's directory. The chain writes its records, transcripts, captures and verdicts to that
+    # directory. Each is read at run time by the test that writes it. So go compiles the same
+    # files and runs the same tests with it set as without.
+    "LEGION_E2E_DAEMON_LOG", "LEGION_E2E_STEP_MODELS_EVIDENCE",
+    "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
     # The commit envoy-go-build's edited-migrations step compares a bypass run's tree with:
     # .github/scripts/edited-migrations-base.sh, which that step runs, reads it and hands the base
@@ -2067,11 +2097,12 @@ def exec_wrapped_files(units: list, gates) -> set:
     return {path for own, path, _, _, _ in units if own in readers}
 
 
-def env_reason(document: dict, job: dict, steps: list, exec_wrapped: bool) -> str:
+def env_reason(document: dict, job: dict, steps: list, exec_wrapped: bool = False) -> str:
     """The first env: block of the workflow, the job or one of the steps that can change what a go
     command compiles (an expression, or a name outside ENV_ALLOWED), or ''. `exec_wrapped` says
     the file holding them is one of exec_wrapped_files, whose workflow and job env: may set GOFLAGS
-    to GO_CPU_GOFLAGS."""
+    to GO_CPU_GOFLAGS; a caller that does not say refuses every GOFLAGS, as a file no gate of the
+    wrapper reads does."""
     blocks = [("the workflow's", document.get("env"), exec_wrapped), ("the job's", job.get("env"), exec_wrapped)]
     blocks += [(f'step "{step_label(s)}"\'s', s.get("env"), False) for s in steps]
     for where, env, takes_exec in blocks:
@@ -2134,10 +2165,11 @@ def job_up_to(job: dict, step: dict, including: bool = True) -> dict:
     return job if at is None else {**job, "steps": steps[:at + 1] if including else steps[:at]}
 
 
-def around_reason(document: dict, job: dict, steps: list, exec_wrapped: bool) -> str:
+def around_reason(document: dict, job: dict, steps: list, exec_wrapped: bool = False) -> str:
     """The first thing outside a go command's line that can change what it compiles: an env:,
     a step writing the job's environment, a shell or a container; or ''. `steps` are the steps
-    that may start it, and `exec_wrapped` is env_reason's."""
+    that may start it, and `exec_wrapped` is env_reason's: a caller that reads a workflow no gate of
+    the wrapper reads passes none."""
     return env_reason(document, job, steps, exec_wrapped) or job_reason(job) or shell_reason(document, job, steps)
 
 
@@ -2496,7 +2528,7 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
             mine = [r for (j, ref), rs in claims.items() if j == own and step_matches(step, ref) for r in rs]
             for line in go_lines(script):
                 where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\" runs `{line}`"
-                pinned = [r for r in mine if squash(r.text) in squash(line)]
+                pinned = [r for r in mine if squash(as_go_test(r.text)) in squash(line)]
                 if not pinned:
                     problems.append(error(path, f"{where}, which no Run of a gate in {GATES_DIR} lists; add it "
                                                  f"to the job's gate so its closure is computed"))
@@ -2541,9 +2573,9 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
                                                  f"which is not one run: step of it; update or remove the entry"))
     for (job_id, ref), rs in claims.items():
         steps = [s for s in owner_steps(units, job_id) if step_matches(s, ref)]
-        text = squash(" ".join(str(s.get("run", "")) for s in steps))
+        text = squash(" ".join(as_go_test(str(s.get("run", ""))) for s in steps))
         for r in rs:
-            if not steps or squash(r.text) not in text:
+            if not steps or squash(as_go_test(r.text)) not in text:
                 problems.append(error(GATES_DIR, f"job {job_id} step \"{ref}\" no longer runs `{r.text}`; update or "
                                                  f"remove the Run"))
     check_script_steps(data, units, caller_jobs, inputs_of, excluded, problems)
@@ -2650,7 +2682,6 @@ CALLER_VALUE = re.compile(r"\$\{\{\s*inputs\.([A-Za-z0-9_-]+)\s*\}\}")
 # alone: on a dispatch of main too it is `pr-title (dispatch)`, which main's ruleset does not read.
 # What keeps a skipped pr-title from posting a pass named pr-title is that its name is an
 # expression at all.
-REQUIRED_CHECKS = ("ci-ok", "pr-title")
 VERDICT_JOB = "ci-ok"
 REF_OUTPUT = "ref_is_main"
 REF_OUTPUT_VALUE = "${{ steps.ref.outputs.is_main }}"
@@ -3053,7 +3084,8 @@ def step_go_lines(document: dict, job: dict, step: dict) -> list:
     read out of it, whose SHA-256 the expansion harness checks. No script is read here: what a
     script runs depends on its control flow, which a line-by-line reading cannot see. Raises
     audited_scripts.Unreadable for a run: that names such a script in a form no entry reads."""
-    run = str(step.get("run", ""))
+    # An events filename is not a reference to an audited script, even if it shares its name.
+    run = as_go_test(str(step.get("run", "")))
     reading = reading_of(step_workdir(document, job, step), run)
     return [line for line in script_lines(run if reading is None else reading.script) if TAG_RUN_TEST.search(line)]
 
@@ -4173,6 +4205,7 @@ def check() -> int:
     rules.check_cache_round_trip(documents, problems)
     rules.check_race_fill_packages(data.RACE_FILLS, problems)
     rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
+    rules.check_binaries_fill(data.BINARIES_FILLS, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
     # Rule 20: a vet for another platform passes over no file a build tag would compile.

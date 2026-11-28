@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -161,6 +163,107 @@ func TestTheIdleViewReadsTheDeclinedReleaseTheTurnStartAndTheRunningHoldStreak(t
 	}
 }
 
+// The view gives each claim what the reminder hold asks of a claim that works the open phase
+// (record.PhaseOwed): the run and the entry the claim serves, by supervise.Claim.ServingAt's rule
+// (pods.IdleClaim.ReadServing), and, through the record's reader the daemon hands the store
+// (ReadIdleRecordsWith, record.FillIdleClaims), the entry its role's phases row stands on, whether
+// that row records a completion, whether a merge forward of the issue's pull request holds the
+// role, and whether that pull request is merged while the issue stands in merging. A claim that
+// has served no entry, a role with no row and an issue with no pull request read 0 and false. A
+// claim that has retired no run and holds a task of the issue's run and phase that its agent
+// neither read nor confirmed reads that task's run and entry, where its claims row records run 0.
+func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T) {
+	t.Parallel()
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	st.ReadIdleRecordsWith(func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
+		return record.FillIdleClaims(ctx, record.NewStore(), tx, issue, at, claims)
+	})
+	if _, err := st.Pool().Exec(ctx, `update issues set phase = 'testing' where key = $1`, rootIssue); err != nil {
+		t.Fatalf("move %s into testing: %v", rootIssue, err)
+	}
+	token := claim.Token("legion-legion-legion-208-tester")
+	tester := supervise.Claim{Token: token, Project: "legion", Tree: rootIssue, Issue: rootIssue,
+		Role: claim.RoleTester, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: supervise.StateIdle}
+	if err := st.PutClaim(ctx, tester); err != nil {
+		t.Fatal(err)
+	}
+	if got := idleViewOf(t, st, rootIssue).Claims[0]; got.ServingEntry != 0 || got.RowEntry != 0 || got.RowCompleted ||
+		got.MergeForwardHeld || got.MergedInMerging {
+		t.Fatalf("claim = %+v, want no entry served, no phases row, no merge forward and no merged pull request", got)
+	}
+
+	// The tester left entry 2 behind and a turn confirmed the task of entry 3, which is the entry
+	// it serves; its row stands on entry 4 and records a completion, and the daemon asked the
+	// implementer in testing to merge the base forward onto the head the pull request stands at.
+	tester.ServedEntry = 2
+	if err := st.PutClaim(ctx, tester); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := st.Pool().Exec(ctx, `insert into pending_task_deliveries
+		(claim_token, delivery_id, task, queued_at, delivered_at, confirmed_at, phase, generation, entry)
+		values ($1, 'd-3', 'test it', $2, $2, $2, 'testing', 1, 3)`, string(token), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		records := record.NewStore()
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: rootIssue, Role: claim.RoleTester, Claim: token,
+			Entry: 4, HandoffCommit: "c0de"}); err != nil {
+			return err
+		}
+		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: rootIssue,
+			Repo: "acme/widgets", Number: 42, Branch: "legion/" + rootIssue, HeadSHA: "c0de", Failing: []string{},
+			MergeForward: &record.MergeForward{Head: "c0de", Base: "main", Phase: phase.Testing, AskedAt: now}})
+	}); err != nil {
+		t.Fatalf("record the tester's row and the pull request of %s: %v", rootIssue, err)
+	}
+	if got := idleViewOf(t, st, rootIssue).Claims[0]; got.ServingEntry != 3 || got.RowEntry != 4 || !got.RowCompleted ||
+		!got.MergeForwardHeld || got.MergedInMerging {
+		t.Fatalf("claim = %+v, want entry 3 served, its row on entry 4 with its completion, the merge forward holding it and the pull request open", got)
+	}
+
+	// The issue moves into merging and its pull request merges: the claim reads the merging
+	// finished (record.MergedInMerging), and the ask made in testing does not hold the tester,
+	// which works no phase in merging.
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `update issues set phase = 'merging' where key = $1`, rootIssue); err != nil {
+			return err
+		}
+		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestMerged, Issue: rootIssue,
+			Repo: "acme/widgets", Number: 42, Branch: "legion/" + rootIssue, HeadSHA: "c0de", Failing: []string{},
+			MergeForward: &record.MergeForward{Head: "c0de", Base: "main", Phase: phase.Testing, AskedAt: now}})
+	}); err != nil {
+		t.Fatalf("move %s into merging on its merged pull request: %v", rootIssue, err)
+	}
+	if got := idleViewOf(t, st, rootIssue).Claims[0]; !got.MergedInMerging || got.MergeForwardHeld {
+		t.Fatalf("claim = %+v, want the merging finished by the merged pull request and no merge forward holding it", got)
+	}
+
+	// The merger has retired no run, and holds the task of run 1 and merging at entry 2 that its
+	// agent neither read nor confirmed, as a send that failed before any turn leaves it.
+	merger := claim.Token("legion-legion-legion-208-merger")
+	if err := st.PutClaim(ctx, supervise.Claim{Token: merger, Project: "legion", Tree: rootIssue, Issue: rootIssue,
+		Role: claim.RoleMerger, TreeEpoch: 1, Generation: 1, State: supervise.StateIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool().Exec(ctx, `insert into pending_task_deliveries
+		(claim_token, delivery_id, task, queued_at, phase, generation, entry)
+		values ($1, 'd-merge', 'merge it', $2, 'merging', 1, 2)`, string(merger), now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	var read *pods.IdleClaim
+	for _, c := range idleViewOf(t, st, rootIssue).Claims {
+		if c.Role == claim.RoleMerger {
+			read = &c
+		}
+	}
+	if read == nil || read.ServingGeneration != 1 || read.ServingEntry != 2 {
+		t.Fatalf("the merger = %+v, want run 1 and entry 2 served: it has retired no run and holds the task of that run, phase and entry", read)
+	}
+}
+
 // idleViewOf is the pod's view as the release's own transaction reads it (readIdleView, which
 // ReleaseIdleIssue hands to the rule): the store serves no view of its own, because nothing but
 // that decision reads one.
@@ -170,7 +273,7 @@ func idleViewOf(t *testing.T, st *Store, issue string) pods.IdleView {
 	var view pods.IdleView
 	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		view, err = readIdleView(ctx, tx, "legion", issue)
+		view, err = readIdleView(ctx, tx, "legion", issue, st.idleRecordsOf())
 		return err
 	}); err != nil {
 		t.Fatalf("read the idle view of %s: %v", issue, err)
@@ -584,6 +687,111 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 		record.OutOfWorkflow)
 	if err != nil || !act {
 		t.Fatalf("the close after the race = %t, %v; want it to act", act, err)
+	}
+}
+
+// A paused cancel whose ReleaseCancelPause carries a backstop and lacks a rule of who gets it, the
+// workflow's open phase's worker (OpenPhaseRole) or whether that worker gets one (GetsBackstop), is
+// refused with an error that names each rule it lacks, before it reads or writes anything
+// (checkBackstopRules): the release stays marked, and no stop, pod hold, backstop, decline or start
+// is recorded. Where the cancel skipped the backstop in silence instead, it armed none for a worker
+// that gets one (dispatch://INFRA-2746 R1). A workspace check's decline is a cancel
+// (DeclineIssueRelease), and it is refused the same way. The control is the same cancel, and the
+// same decline, with both rules: each records the implementer stopped by the pause, holds the pod
+// and arms the implementer's backstop.
+func TestACancelWhileThePauseHoldsABackstopAndNoBackstopRuleIsRefused(t *testing.T) {
+	t.Parallel()
+	const openPhaseRole, getsBackstopRule = "ReleaseCancelPause.OpenPhaseRole", "ReleaseCancelPause.GetsBackstop"
+	at := pausedAt.Add(time.Minute)
+	for _, act := range []struct {
+		name     string
+		declines bool
+		run      func(st *Store, paused ReleaseCancelPause) (ReleaseCancelled, error)
+	}{
+		{name: "a cancel", run: func(st *Store, paused ReleaseCancelPause) (ReleaseCancelled, error) {
+			return st.CancelIssueRelease(context.Background(), "legion", rootIssue, resumeRow, record.OutOfWorkflow, paused)
+		}},
+		{name: "a decline", declines: true, run: func(st *Store, paused ReleaseCancelPause) (ReleaseCancelled, error) {
+			return st.DeclineIssueRelease(context.Background(), "legion", rootIssue, IdleReleaseDecline{At: at,
+				Role: claim.RoleImplementer, Reason: pods.DeclineUnpushedWork, Head: "abc", Commits: 1, PodUID: "pod-a"},
+				resumeRow, record.OutOfWorkflow, paused)
+		}},
+	} {
+		t.Run(act.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := migratedStore(t)
+			openRunningTree(t, st)
+			servingReleasedClaim(t, st, claim.RoleImplementer)
+			markRelease(t, st, 18, 20, 22, 0, claim.RoleImplementer)
+			pause, _ := pauseLegion(t, st, pausedAt)
+
+			for _, refused := range []struct {
+				name    string
+				paused  ReleaseCancelPause
+				missing []string
+			}{
+				{name: "no GetsBackstop", paused: ReleaseCancelPause{At: at, Backstop: time.Hour, OpenPhaseRole: implementingWorker},
+					missing: []string{getsBackstopRule}},
+				{name: "no OpenPhaseRole", paused: ReleaseCancelPause{At: at, Backstop: time.Hour, GetsBackstop: getsBackstop},
+					missing: []string{openPhaseRole}},
+				{name: "neither rule", paused: ReleaseCancelPause{At: at, Backstop: time.Hour},
+					missing: []string{openPhaseRole, getsBackstopRule}},
+			} {
+				_, err := act.run(st, refused.paused)
+				if err == nil {
+					t.Fatalf("%s with a backstop and %s while paused went through, want it refused naming the rule it lacks",
+						act.name, refused.name)
+				}
+				for _, rule := range []string{openPhaseRole, getsBackstopRule} {
+					if named, want := strings.Contains(err.Error(), rule), slices.Contains(refused.missing, rule); named != want {
+						t.Fatalf("%s with a backstop and %s = %v; names %s %t, want %t", act.name, refused.name, err, rule, named, want)
+					}
+				}
+				if !releaseMarked(t, st) {
+					t.Fatalf("%s with a backstop and %s was refused and deleted the release's mark, want it standing",
+						act.name, refused.name)
+				}
+				for what, n := range map[string]int{
+					"stops":     pauseCount(t, st, `select count(*) from project_pause_stops where issue = $1`, rootIssue),
+					"backstops": pauseCount(t, st, `select count(*) from pod_wake_backstops where issue = $1`, rootIssue),
+					"declines":  pauseCount(t, st, `select count(*) from idle_release_declines where issue = $1`, rootIssue),
+					"starts":    len(startRows(t, st)),
+				} {
+					if n != 0 {
+						t.Fatalf("%s with a backstop and %s was refused and recorded %d %s, want none: a refused cancel writes nothing",
+							act.name, refused.name, n, what)
+					}
+				}
+				if hold, held, err := st.PausePodHoldOf(ctx, "LEGION", rootIssue); err != nil || held {
+					t.Fatalf("%s with a backstop and %s was refused and the pod's hold = %+v, %t, %v; want none",
+						act.name, refused.name, hold, held, err)
+				}
+			}
+
+			// The control: the same act with both rules records the implementer stopped by the
+			// pause, holds the pod and arms the implementer's backstop an hour after the cancel.
+			cancelled, err := act.run(st, ReleaseCancelPause{At: at, Backstop: time.Hour, OpenPhaseRole: implementingWorker,
+				GetsBackstop: getsBackstop})
+			if err != nil || cancelled.Pause != pause.ID || cancelled.Declined != act.declines ||
+				!slices.Equal(cancelled.Stopped, []claim.Role{claim.RoleImplementer}) {
+				t.Fatalf("%s with both rules while paused = %+v, %v; want pause %d, the implementer stopped and declined %t",
+					act.name, cancelled, err, pause.ID, act.declines)
+			}
+			if releaseMarked(t, st) {
+				t.Fatalf("%s with both rules left the release's mark standing", act.name)
+			}
+			if n := pauseCount(t, st, `select count(*) from project_pause_stops where pause_id = $1 and issue = $2
+				and role = 'implementer' and ended_as = 'stopped'`, pause.ID, rootIssue); n != 1 {
+				t.Fatalf("%s with both rules recorded %d stops of the implementer by pause %d, want 1", act.name, n, pause.ID)
+			}
+			if n := pauseCount(t, st, `select count(*) from pod_wake_backstops where issue = $1 and role = 'implementer'
+				and not fired and due_at = $2`, rootIssue, at.Add(time.Hour)); n != 1 {
+				t.Fatalf("%s with both rules armed %d backstops of the implementer due an hour after it, want 1", act.name, n)
+			}
+			if hold, held, err := st.PausePodHoldOf(ctx, "LEGION", rootIssue); err != nil || !held || hold.Pause != pause.ID {
+				t.Fatalf("%s with both rules left the pod's hold = %+v, %t, %v; want pause %d's", act.name, hold, held, err, pause.ID)
+			}
+		})
 	}
 }
 
@@ -1036,14 +1244,16 @@ func TestAPendingStepRecordHoldsNoIdlePod(t *testing.T) {
 
 // waitingOnTheSerializer is whether a backend of this test's database other than the reader waits
 // on an advisory lock: the shared serializer (treelifecycle.Serialize) is the only one the store
-// takes by that name outside a migration, so a waiter here is a transaction held at its head.
+// takes by that name outside a migration, so a waiter here is a transaction held at its head. The
+// wait is read from pg_locks (lockwaittest.WaitingOn, whose package comment says why not from the
+// wait event).
 func waitingOnTheSerializer(t *testing.T, st *Store) bool {
 	t.Helper()
 	var waiting bool
 	if err := st.Pool().QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity
 		where datname = current_database() and pid <> pg_backend_pid()
-		and wait_event_type = 'Lock' and wait_event = 'advisory')`).Scan(&waiting); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+		and `+lockwaittest.WaitingOn("advisory")+`)`).Scan(&waiting); err != nil {
+		t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 	}
 	return waiting
 }

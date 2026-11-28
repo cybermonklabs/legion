@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // ErrPromptRefused is Oh My Pi answering a prompt frame with `success: false`. Prompt wraps it
@@ -53,13 +54,14 @@ var ErrAdoptRefused = errors.New("runtime: the shim refused to adopt the working
 // transport loss, it sends that operator to the wrong side of the daemon.
 var ErrIdentityUnavailable = errors.New("runtime: the role's GitHub App identity could not be minted")
 
-// ErrNoAnswer is a request whose reply did not arrive within that request's reply deadline, the
-// wait the stream gives it once its frame is written. For most requests the deadline is the RPC
-// timeout (worker_rpc_timeout_seconds), the bound the shipped client puts on a request
-// (worker-rpc.ts:407-421). Three carry a longer one of their own: a compaction waits for the bound
-// its caller passes (CompactTimeout), and an adoption of the working copy and a read of the
-// workspace's work wait for the shim's own timeout plus the RPC timeout, the round trip. It is the
-// transport's silence, which is no answer of either kind.
+// ErrNoAnswer is a request whose reply did not arrive within that request's reply deadline. The
+// deadline counts from the request's start, so it also covers the wait for the stream's writer and
+// the write. A deadline that ends before the frame is written writes no frame. For most requests
+// the deadline is the RPC timeout (worker_rpc_timeout_seconds), the bound the shipped client puts
+// on a request (worker-rpc.ts:407-421). Three carry a longer one of their own: a compaction waits
+// for the bound its caller passes (CompactTimeout), and an adoption of the working copy and a read
+// of the workspace's work wait for the shim's own timeout plus the RPC timeout, the round trip. It
+// is the transport's silence, which is no answer of either kind.
 var ErrNoAnswer = errors.New("no answer on the worker stream within the request's reply deadline")
 
 // ErrPromptUnanswered is a prompt whose frame the daemon wrote to the worker stream and whose
@@ -159,6 +161,11 @@ type Conn interface {
 	// and returns it as the mount holds it now. A shim that cannot is ErrTokenRefused; every other
 	// error is transport.
 	AgentSecretsToken(ctx context.Context) (string, error)
+	// ModelTotals reads what the agent's shim counted of its launch's calls, by model, since its
+	// harness started. ctx bounds the whole read: its wait for the connection's writer, its write
+	// and its wait for the answer. The transport's own write bound can end the write sooner. A
+	// read of a shim that does not count fails at once.
+	ModelTotals(ctx context.Context) (LaunchTotals, error)
 	// Sequence is the order the connection was registered in: one registered later has a larger
 	// sequence, so a caller can tell a connection newer than another.
 	Sequence() uint64
@@ -174,4 +181,11 @@ type Conns interface {
 // ConnState is the agent's answer to `get_state`, reduced to the one field the daemon acts on.
 type ConnState struct {
 	IsStreaming bool
+}
+
+// LaunchTotals is one read of a launch's model totals: the generation of the launch whose
+// connection answered, and what its shim counted.
+type LaunchTotals struct {
+	Generation uint64
+	Totals     shimwire.Totals
 }

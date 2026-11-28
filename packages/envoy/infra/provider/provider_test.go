@@ -36,7 +36,8 @@ type property struct {
 	Plain  bool   `json:"plain"`
 	Ref    string `json:"$ref"`
 	Items  struct {
-		Ref string `json:"$ref"`
+		Type string `json:"type"`
+		Ref  string `json:"$ref"`
 	} `json:"items"`
 }
 
@@ -202,11 +203,16 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	require.Equal(t, "integer", tailnet.Properties["replicas"].Type)
 	listener := s.Types["envoy-infra:gcp:ClusteredHubListener"]
 	require.ElementsMatch(t, []string{
-		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "clientNamespaces", "allowedHosts",
+		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "natsAudience", "clientNamespaces", "allowedHosts",
 		"oidcIssuer", "oidcAudience", "oidcAccounts", "senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
 		"consumerNames", "replaceUnderHold",
 	}, slices.Collect(maps.Keys(listener.Properties)))
-	require.ElementsMatch(t, []string{"image", "nkey", "seedSecretName", "seedSecretKey"}, listener.Required)
+	// The listener connects as its seed's user (nkey, seedSecretName, seedSecretKey) or, with
+	// natsAudience, by its projected ServiceAccount token, so the schema requires neither
+	// identity's inputs: the hub requires the seed's three where natsAudience is unset.
+	require.ElementsMatch(t, []string{"image"}, listener.Required)
+	require.Equal(t, "string", listener.Properties["natsAudience"].Type)
+	require.False(t, listener.Properties["natsAudience"].Secret, "natsAudience is an audience, no secret")
 	// The consumer-name mode and the writer hold's update rule: a plain string and a plain boolean,
 	// optional, which a consumer's stack values give.
 	require.Equal(t, "string", listener.Properties["consumerNames"].Type)
@@ -254,6 +260,13 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	require.Equal(t, "string", dispatch.InputProperties["verdictAppId"].Type)
 	require.False(t, dispatch.InputProperties["verdictAppId"].Secret)
 	require.NotContains(t, dispatch.RequiredInputs, "verdictAppId")
+	// natsAudience, the audience of the projected token each of Dispatch's pods presents to the
+	// NATS auth service in natsSeedSecret's place, is an optional plain string and no secret: the
+	// broker and the kubelet both read it, and it admits nothing by itself.
+	require.Equal(t, "string", dispatch.InputProperties["natsAudience"].Type)
+	require.True(t, dispatch.InputProperties["natsAudience"].Plain)
+	require.False(t, dispatch.InputProperties["natsAudience"].Secret)
+	require.NotContains(t, dispatch.RequiredInputs, "natsAudience")
 	// The Azure embedder's inputs are references and identifiers, never the key: the key form
 	// takes a Secret Manager path, the keyless form a tenant and a client id.
 	for _, input := range []string{
@@ -299,20 +312,29 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 		require.NotContains(t, dispatch.RequiredInputs, input)
 	}
 	// The pods' disruption protection, the front door's and the listener's replica counts, the
-	// listener's sender limit, the database's availability and the image cert-publish runs on are
-	// optional plain strings and integers. Every input that configures Dispatch is optional in the
-	// schema: a generated Go SDK's constructor refuses a nil required input, so a cluster-only
-	// consumer could not call the component at all while one stayed required, and the resolver is
-	// what requires it with clusterOnly off.
+	// listener's sender limit, the database's availability, the image cert-publish runs on and the
+	// app pod's drain are optional plain strings and integers. Every input that configures
+	// Dispatch is optional in the schema: a generated Go SDK's constructor refuses a nil required
+	// input, so a cluster-only consumer could not call the component at all while one stayed
+	// required, and the resolver is what requires it with clusterOnly off.
 	for input, typ := range map[string]string{
 		"priorityClassName": "string", "appPdbMinAvailable": "integer",
 		"frontDoorPdbMinAvailable": "integer", "listenerPdbMinAvailable": "integer",
 		"frontDoorReplicas": "integer", "listenerReplicas": "integer",
 		"senderMessagesPerMinute": "integer", "senderMessageBurst": "integer",
 		"databaseAvailabilityType": "string", "frontDoorToolsImage": "string",
+		"preStopSeconds": "integer", "terminationGracePeriodSeconds": "integer",
 	} {
 		require.Equal(t, typ, dispatch.InputProperties[input].Type, input)
 		require.True(t, dispatch.InputProperties[input].Plain, input)
+		require.False(t, dispatch.InputProperties[input].Secret, input)
+		require.NotContains(t, dispatch.RequiredInputs, input)
+	}
+	// The served and former addresses and the trusted proxy ranges are optional lists of strings,
+	// none a secret: origins and CIDRs, rendered as plain settings.
+	for _, input := range []string{"servedOrigins", "formerOrigins", "trustedProxyRanges"} {
+		require.Equal(t, "array", dispatch.InputProperties[input].Type, input)
+		require.Equal(t, "string", dispatch.InputProperties[input].Items.Type, input)
 		require.False(t, dispatch.InputProperties[input].Secret, input)
 		require.NotContains(t, dispatch.RequiredInputs, input)
 	}

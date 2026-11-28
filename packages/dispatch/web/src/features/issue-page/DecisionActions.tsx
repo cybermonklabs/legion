@@ -423,7 +423,6 @@ function ChangeComposer({
         className="text-sm"
         fieldClassName={tones.field}
         fieldRef={field}
-        hintClassName={`text-xs ${tones.muted}`}
         issueKey={issueKey}
         label={CONTROL_LABELS.your_change}
         labelClassName={`block text-xs ${tones.muted}`}

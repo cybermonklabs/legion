@@ -47,9 +47,9 @@ import { type AskPalette, authored, type TextMarks } from "./ask-text";
  * for the control (`AskBody`'s `ON_PAGE.action`) and, for the dialog, the page's Request changes
  * dialog (`doc/ApprovalChip.tsx`'s `ON_PAGE`), which this one follows: the paper inside its
  * hairline rule over the icon rail's dark, its heading the ink, its words and the field's label
- * the muted grey, the count and the line under the box the quiet grey, a refusal the failed
- * red, Cancel the header control's rule and muted words, and Decline to answer filled with the
- * ink. The box keeps `main`'s focus rule, the application's one focus indicator.
+ * the muted grey, the count the quiet grey, a refusal the failed red, Cancel the header
+ * control's rule and muted words, and Decline to answer filled with the ink. The box keeps
+ * `main`'s focus rule, the application's one focus indicator.
  */
 const TONES = {
   main: {
@@ -63,7 +63,6 @@ const TONES = {
     failed: dangerText,
     field: undefined,
     heading: textSecondaryOnSurface,
-    hint: undefined,
     label: undefined,
   },
   page: {
@@ -77,7 +76,6 @@ const TONES = {
     failed: pageFailedText,
     field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`,
     heading: pageInkText,
-    hint: `text-xs ${pageQuietText}`,
     label: `block text-sm font-medium ${pageMutedText}`,
   },
 } as const;
@@ -93,8 +91,8 @@ const TONES = {
  * the count then reads below zero and **Decline to answer** is held until the note is shorter,
  * so the bound is met here rather than as a refusal from the server. A host that hands `marks`
  * (`AskBodyProps.marks`) gets the dialog's own words in the mark of the body's words, the count
- * in the mark of a value, and the shared field, with its hint, and a refusal in the mark of a
- * value too, as the field's words and the server's are not the body's.
+ * in the mark of a value, and the shared field and a refusal in the mark of a value too, as the
+ * field's words and the server's are not the body's.
  */
 function DeclineDialog({
   error,
@@ -169,7 +167,6 @@ function DeclineDialog({
             fieldRef={(handle) => {
               textareaRef.current = handle?.textarea() ?? null;
             }}
-            hintClassName={tones.hint}
             issueKey={issueKey}
             label={ASK_DECLINE_WORDS.note}
             labelClassName={tones.label}

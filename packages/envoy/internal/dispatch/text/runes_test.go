@@ -45,7 +45,7 @@ func TestHeadRefsMatchesTheSharedHeadTable(t *testing.T) {
 		t.Fatal("the shared head table is empty")
 	}
 	for _, row := range rows {
-		if got := HeadRefs(row.Text, row.Limit, row.Ellipsis, row.Origin); got != row.Head {
+		if got := HeadRefs(row.Text, row.Limit, row.Ellipsis, NewOrigins(row.Origin)); got != row.Head {
 			t.Errorf("%s: HeadRefs(%.80q, %d, %q, %q) = %.200q, want %.200q",
 				row.Name, row.Text, row.Limit, row.Ellipsis, row.Origin, got, row.Head)
 		}
@@ -76,7 +76,7 @@ func TestHeadRefsReadsAWindowOfTheText(t *testing.T) {
 		{Name: "a line of 1 MiB cut as a first line", Text: linkTails, Limit: 160, Ellipsis: "…", Head: strings.Repeat(unit, 7) + "](…"},
 		{Name: "a line of 1 MiB cut as an excerpt", Text: linkTails, Limit: 240, Head: strings.Repeat(unit, 12)},
 	} {
-		if got := HeadRefs(row.Text, row.Limit, row.Ellipsis, row.Origin); got != row.Head {
+		if got := HeadRefs(row.Text, row.Limit, row.Ellipsis, NewOrigins(row.Origin)); got != row.Head {
 			t.Errorf("%s: HeadRefs(%.80q, %d, %q, %q) = %.200q, want %.200q",
 				row.Name, row.Text, row.Limit, row.Ellipsis, row.Origin, got, row.Head)
 		}
@@ -96,13 +96,13 @@ func TestHeadRefsCostsTheSameOnABodyOfAnyLength(t *testing.T) {
 	keys := strings.Repeat("CORE-1 ", (1<<20)/len("CORE-1 "))
 	const link = "[x](dispatch://CORE-1)"
 	links := strings.Repeat(link, (1<<20)/len(link))
-	if got, want := HeadRefs(links, 160, "…", ""), strings.Repeat(link, 7)+"…"; got != want {
+	if got, want := HeadRefs(links, 160, "…", Origins{}), strings.Repeat(link, 7)+"…"; got != want {
 		t.Fatalf("the first cut of a line of links = %q, want %q: the cut did not read the links", got, want)
 	}
 	for _, body := range []struct{ name, text string }{{"links", links}, {"link tails", linkTails}, {"keys", keys}} {
 		began := time.Now()
 		for cut := range 50 {
-			HeadRefs(body.text, 160+cut*7, []string{"…", ""}[cut%2], "https://dispatch.example")
+			HeadRefs(body.text, 160+cut*7, []string{"…", ""}[cut%2], NewOrigins("https://dispatch.example"))
 			if took := time.Since(began); took > time.Second {
 				t.Fatalf("a line of %d bytes of %s: %d cuts took %s, want 50 of them well under a second",
 					len(body.text), body.name, cut+1, took)

@@ -236,11 +236,15 @@ func prose(kind Kind) bool {
 // sentences of its footnotes in the count of a statement and their verbs beside its own, then the
 // four reference rules for every kind, on what it holds (heldBreaks), then the findings of each
 // footnote that it is the first text to hold (footnoteJudge.owned). A line under Terms that is no
-// term line (Kind line) breaks the one rule term-line, and no other. people is the name of each
+// term line (Kind line) breaks the one rule term-line, and a heading that reads as Terms in another
+// form (Kind heading) the one rule terms-heading, and no other. people is the name of each
 // signed-in person (peopleNames).
 func breaks(c Context, people [][]string, text Text, notes *footnoteJudge) []broken {
-	if text.Kind == KindLine {
+	switch text.Kind {
+	case KindLine:
 		return []broken{{rule: ruleTermLine, detail: termLineDetail}}
+	case KindHeading:
+		return []broken{{rule: ruleTermsHeading, detail: termsHeadingDetail}}
 	}
 	var found []broken
 	if prose(text.Kind) {
@@ -357,8 +361,11 @@ func addressBreaks(c Context, people [][]string, address string) []broken {
 }
 
 // standInServer is the address of the server that a path is read against when the context names
-// none: a path names the same page on each server, so one host stands for each.
+// none: a path names the same page on each server, so one host stands for each. standInOrigins is
+// the list of that one origin.
 const standInServer = "https://dispatch.invalid"
+
+var standInOrigins = text.ServerOrigins(standInServer, nil, nil)
 
 // serverPage is the record of Dispatch whose page address opens, an address with no scheme (a
 // path, a fragment, or "//" and a host), by the server's one reading of the address of a page
@@ -366,22 +373,26 @@ const standInServer = "https://dispatch.invalid"
 // its tabs, its documents, its asks, comments and messages, a document of a project or of an
 // agent, and a block of each. It reads address with each "\" as "/", as a browser reads an
 // address of http, and in each way that the dashboard reads it. A component's prose on a page of
-// its own reads it against the origin of the server (nodeRouteFromHref), and each page that draws
-// the document that holds it reads it against that page (c.Pages), as the editor and the browser
-// do. The address links to a record when any reading opens the page of one. So
+// its own reads it against the canonical origin of the server (nodeRouteFromHref), and each page
+// that draws the document that holds it reads it against that page (c.Pages), as the editor and
+// the browser do. The address links to a record when any reading opens the page of one. So
 // "/projects/ACME/documents/terms-md", "projects/ACME/documents/terms-md" and
 // "../../projects/ACME/documents/terms-md" name the same document; from the spec of ACME-1,
 // "artifacts/notes-md", "decisions", "verification" and "#b-x1" name a document of ACME-1, its
 // decisions, its Verification tab and a block of the spec, and from its Artifacts page
-// "notes-md" and "../decisions" do too. A path that names no such page from any base, and an
+// "notes-md" and "../decisions" do too. "//" and a host resolve under the scheme of the canonical
+// origin, as a page at the canonical origin resolves them. So "//" and the host of a served or a
+// former origin of the server (c.Origins) that has the canonical scheme names the page as the
+// canonical host does. The host of one with another scheme, such as an http former origin beside
+// an https canonical one, names none. A path that names no such page from any base, and an
 // address of another host, name none.
 func serverPage(c Context, address string) (text.Ref, bool) {
 	if written, err := url.Parse(address); err != nil || written.Scheme != "" {
 		return text.Ref{}, false
 	}
-	serverURL := c.ServerURL
+	origins, serverURL := c.Origins, c.Origins.Canonical()
 	if serverURL == "" {
-		serverURL = standInServer
+		origins, serverURL = standInOrigins, standInServer
 	}
 	base, err := url.Parse(serverURL)
 	if err != nil {
@@ -392,7 +403,7 @@ func serverPage(c Context, address string) (text.Ref, bool) {
 		return text.Ref{}, false
 	}
 	origin := &url.URL{Scheme: base.Scheme, Host: base.Host}
-	if record, ok := text.ParseRef(origin.ResolveReference(relative).String(), serverURL); ok {
+	if record, ok := text.ParseRef(origin.ResolveReference(relative).String(), origins); ok {
 		return record, true
 	}
 	for _, path := range c.Pages {
@@ -400,7 +411,7 @@ func serverPage(c Context, address string) (text.Ref, bool) {
 		if err != nil {
 			continue
 		}
-		if record, ok := text.ParseRef(page.ResolveReference(relative).String(), serverURL); ok {
+		if record, ok := text.ParseRef(page.ResolveReference(relative).String(), origins); ok {
 			return record, true
 		}
 	}
@@ -580,7 +591,7 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 func referenceForms(c Context, people [][]string, line string, address bool) []span {
 	var links []span
 	references := newCovered(line)
-	for _, located := range text.ExtractAt(line, c.ServerURL) {
+	for _, located := range text.ExtractAt(line, c.Origins) {
 		raw := text.ReferenceAt(line, located.Offset)
 		references.mark(span{start: located.Offset, end: located.Offset + len(raw)})
 		if located.Kind != "url" {
@@ -590,7 +601,7 @@ func referenceForms(c Context, people [][]string, line string, address bool) []s
 	for _, each := range bareKey.find(line) {
 		key := line[each.start:each.end]
 		project := key[:strings.LastIndexByte(key, '-')]
-		ref, ok := text.ParseRef("dispatch://"+key, "")
+		ref, ok := text.ParseRef("dispatch://"+key, text.Origins{})
 		if !references.holds(each.start) && ok && ref.Kind == "issue" && c.IsProjectKey != nil && c.IsProjectKey(project) {
 			links = append(links, span{each.start, each.end, recordBreak(byKey, key, ref)})
 		}

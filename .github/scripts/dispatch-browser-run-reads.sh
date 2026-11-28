@@ -12,9 +12,10 @@
 # {id, name, conclusion, leg} that the merge job's two readings consume - reading one for the
 # legs that owed a blob report, reading three for the legs that did not succeed. <job> is the id
 # of the job that calls dispatch-browser.yaml, the merge job's `${{ inputs.job }}`: GitHub names
-# each job of a called workflow `<caller> / <job>`, and one run of a pull request can run several
-# of ci.yaml's three callers of this workflow, so only the jobs named under this caller are this
-# lane's.
+# each job of a called workflow `<caller> / <job>`, and `<outer> / <caller> / <job>` where ci.yaml
+# is itself called, as `.github/workflows/large-pr-lanes.yaml#approval` calls it; one run of a pull
+# request can run several of ci.yaml's three callers of this workflow, so only the jobs named under
+# this caller are this lane's.
 #
 # `blobs-refused` writes no file and makes no request. It prints the one `::error::` line for a
 # blob download `actions/download-artifact` could not complete and exits 0: that step has
@@ -268,13 +269,27 @@ case "$mode" in
     # Each job's leg name is derived here, once, beside the fields it travels with, so the two
     # readings take it rather than each parsing the job name again.
     #
-    # Only the jobs named `<caller> / <job>` are this lane's: the jobs API lists every job of the
-    # run, ci.yaml's own and, on a pull request labelled full-ci, those of ci.yaml's other caller
-    # of this workflow, whose legs carry the same names after a prefix of their own
-    # (`dispatch-browser / shard (1)` and `dispatch-browser-pr / shard (1)`). Read without the
-    # prefix, the pull-request lane's merge job would name the full lane's red legs as its own,
-    # and reading one would count rows no blob of this lane holds. After the prefix, the name
-    # must be one of this workflow's seven jobs, with a matrix leg in brackets after it.
+    # Only the jobs named under this caller are this lane's: `<caller> / <job>`, or
+    # `<outer> / <caller> / <job>` where ci.yaml is itself a called workflow.
+    # `.github/workflows/large-pr-lanes.yaml#approval` calls ci.yaml, so the legs of an
+    # approval-time run are named `approval / dispatch-browser / shard (1)` and the like, and a
+    # filter that held the name to start with `<caller> / ` would keep none of them: the merge job
+    # would find no shard or alone leg and fail ci-ok. So the caller is read as a segment of the
+    # name, the text between two ` / `: the name's first segment, or its second under one outer
+    # job's name, and it must equal <job> whole. A name holding the caller deeper than that is not
+    # this lane's.
+    #
+    # The jobs API lists every job of the run: ci.yaml's own, and those of ci.yaml's other callers
+    # of this workflow that share the run - dispatch-browser beside dispatch-browser-pr on a pull
+    # request labelled full-ci, dispatch-references beside dispatch-browser-pr on one that changes
+    # what the reference rows test - whose legs carry the same names after a segment of their own
+    # (`dispatch-browser / shard (1)` and `dispatch-browser-pr / shard (1)`, under an outer job's
+    # name or not). Read without the caller's segment, the pull-request lane's merge job would name
+    # the full lane's red legs as its own, and reading one would count rows no blob of this lane
+    # holds; and a segment that only starts with the caller's id is another caller's,
+    # `dispatch-browser-pr` being no `dispatch-browser`. After the caller's segment, the rest of the
+    # name must be one of this workflow's seven jobs, with a matrix leg in brackets after it, and
+    # the leg is read from that rest, so it is the same in both forms.
     #
     # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`.
     # `binaries`, `merge`, `multiprocess`, `embedder` and `visual` are this workflow's other
@@ -285,20 +300,27 @@ case "$mode" in
     # handed them nothing. `visual` is in it because a run whose only red job is that one must
     # not read "every leg of this workflow concluded success": the verdict step fails ci-ok
     # either way, so the gate held, but the summary a person reads was wrong. `embedder` is there
-    # for the same reason. ci.yaml's own jobs do not get a null leg - the prefix drops them
-    # first, which is what keeps them out of reading three, since that reading selects on
+    # for the same reason. ci.yaml's own jobs do not get a null leg - the caller's segment drops
+    # them first, which is what keeps them out of reading three, since that reading selects on
     # conclusion alone: `dispatch-multiprocess` and `broker-multiprocess` are named under no
-    # caller.
+    # caller, and under an outer job's name their second segment is their own id, as in
+    # `approval / dispatch-multiprocess / dispatch-multiprocess`.
     #
     # The project part takes any name that holds no `)`, and the readings take one leg per
     # line, so a project named with a space, a digit or a capital is one leg here rather than
-    # two or none.
-    jq --arg prefix "$caller / " '[.[].jobs[] | select(.name | startswith($prefix)
-          and (ltrimstr($prefix) | test("^(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)")))]
-      | map({id, name, conclusion,
-          leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
-            // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")
-            // null)})' "$pages" > "$out_file"
+    # two or none. The rest is joined again at ` / ` after the split, so a project holding one is
+    # one leg too.
+    jq --arg caller "$caller" '
+      def after_caller: split(" / ") as $segments | (0, 1) as $at
+        | select($segments[$at] == $caller) | $segments[$at + 1:] | join(" / ");
+      [.[].jobs[]
+        | first(.name | after_caller
+            | select(test("^(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)")))
+          as $job
+        | {id, name, conclusion,
+            leg: (($job | capture("^shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
+              // ($job | capture("^alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")
+              // null)}]' "$pages" > "$out_file"
     ;;
   blobs-refused)
     [ "$#" -eq 1 ] || usage "$@"

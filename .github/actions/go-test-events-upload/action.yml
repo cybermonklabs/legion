@@ -1,0 +1,28 @@
+name: Upload the go test events
+description: >-
+  Uploads `$RUNNER_TEMP/go-test-events/<name>.jsonl`, one file per go test run, written by
+  gotestsum's `--jsonfile` or by a script's `tee`. The artifact is named `go-test-events-<check run id>`,
+  so a reader can fetch the job's events by the id in its URL.
+  The calling step uses `if: always()` when any of the job's go test steps has no condition of
+  its own. Otherwise it uses `if: always() && (A || B)`, joining the go test steps' conditions
+  with `||`, so a failed test still gets an upload and a job with no tests due does not.
+  If the upload fails or finds no file, the job fails. A run whose record was lost never reads
+  as green. Anyone can download the artifact during the repository's 90-day retention
+  period, and GitHub's log masking does not cover it. A go test step gives its tests no secret
+  (docs/testing.md, "Which tests a CI job ran").
+
+inputs:
+  check-run-id:
+    description: "`job.check_run_id` of the calling job, which names the artifact."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Upload the go test events
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: go-test-events-${{ inputs.check-run-id }}
+        path: ${{ runner.temp }}/go-test-events/
+        if-no-files-found: error

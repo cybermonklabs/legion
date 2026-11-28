@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2023"],
+    "lib": ["ES2023", "ES2024.Promise"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "baseUrl": ".",
@@ -25,9 +25,7 @@
   "include": [
     "extensions/envoy.ts",
     "extensions/askgate/*.ts",
-    "extensions/dispatch-first-omp.test.ts",
-    "extensions/card-delivery-omp.test.ts",
-    "extensions/session-answers-omp.test.ts",
+    "extensions/*-omp.test.ts",
     "../pi-shared/src/omp-host.d.ts",
     "../pi-shared/src/text-modules.d.ts",
     "scripts/*.ts",
