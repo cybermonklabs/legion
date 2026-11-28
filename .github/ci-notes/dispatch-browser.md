@@ -194,8 +194,7 @@ must find the artifact this job uploaded on the attempt before.
 
 One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/M`, M the job's leg
 count, over four Playwright workers, and the run's `globalSetup` starts one stack per worker, each
-with a
-Postgres, a harness and a file-store bucket of its own (packages/dispatch/e2e/
+with a Postgres, a harness and a file-store bucket of its own (packages/dispatch/e2e/
 harness-pool.ts), so this job has no `postgres:` service and no job-level DATABASE_URL:
 one database cannot serve stacks that truncate it per row, and a run of more than one
 stack starts a server per stack and hands each its own (e2e/harness-postgres.ts).
@@ -305,7 +304,7 @@ which passed. The browser step over them, in seconds:
 
 The browser step's budget was its `timeout-minutes: 11`, that maximum by the rule in this file's
 head: 531 s, shard (2) of run 44917245139 (job 136888588252), and 531 x 1.15 = 611 s -> 11 min.
-It is a hang guard now, 17 minutes, read from the measured legs of the lane at its leg count
+It is a hang guard now, 18 minutes, read from the measured legs of the lane at its leg count
 rather than from this census's maximum, for the reason
 [the step's section](#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is)
 gives with its derivation. The step grows with the suite, not with its rows getting slower: run
@@ -374,8 +373,8 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s, above the census's 176 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 1,020 s, the two download attempts' 120 s each, and the steps without a
-budget at the census's 565 s: 1,825 s, 30 min 25 s, rounded up to the 31 minutes
+browser step's 1,080 s, the two download attempts' 120 s each, and the steps without a
+budget at the census's 565 s: 1,885 s, 31 min 25 s, rounded up to the 32 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -406,14 +405,18 @@ GitHub starts without changing that list.
 Why six and not four, measured on 2026-11-27 with the row placement at both counts, the two arms
 of one tree differing only in the leg count (then written in the shard matrix, the `--shard`
 denominator and the step's name). Eight pairs of dispatched runs of
-.github/workflows/dispatch-browser-nightly.yaml, both arms
-of a pair started in one minute, timed from the run's creation to the end of `dispatch-browser /
-merge`, every runner wait of the lane counted:
+.github/workflows/dispatch-browser-nightly.yaml, both arms of a pair started in one minute, timed
+from the run's creation to the end of `dispatch-browser / merge`, every runner wait of the lane
+counted:
 
 - Four legs: 1,001 to 1,095 s, mean 1,040 s. Six legs: 782 to 926 s, mean 842 s.
 - Six legs ended sooner in all eight pairs, by 115 to 263 s (mean 198 s). Two runs of one tree at
   four legs differ by about 60 s, so that gap is not runner spread.
-- The slowest leg's browser step: median 623 s at four legs, 428 s at six.
+- Four pairs of ci.yaml dispatches before them, timed from the run's creation to the end of
+  `ci-ok (dispatch)`, where the browser lane was the last job before ci-ok: six legs ended sooner
+  in each pair, by 112 to 240 s.
+- The browser step over every leg of the 12 runs of each arm, those 8 and these 4: median 623 s
+  over 48 legs at four legs, 428 s over 72 legs at six.
 - The cost is two more jobs: 1.31 runner-hours a run against 1.21, 8 per cent.
 - The pool was quiet in those runs: a shard leg waited a median 2 s for its runner. In the 28
   full-lane merge groups of 2026-11-26 a shard leg waited p50 230 s, p90 358 s. Over those waits,
@@ -620,11 +623,12 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 17`, is a hang guard. It is not the maximum plus 15 per
+The step's budget, `timeout-minutes: 18`, is a hang guard. It is not the maximum plus 15 per
 cent of this file's head, because on this step that rule made the limit a verdict on the
 runner: the 11 minutes it gave cut shard (4) of run 44985914477 (job 137096923636) with 401 rows
 passed and none failed, on a machine that ran them slower than another of the same minute.
-How the 17 minutes are read (2026-11-27, at six legs with the row-by-row placement):
+How the 18 minutes are read (the legs measured at six legs with the row-by-row placement on
+2026-11-27, and the lane's growth since, read on 2026-11-28):
 
 - The legs: every shard leg of the 12 dispatched full-lane runs of the six-leg measurement arm
   (.github/ci-notes/dispatch-browser.md#where-the-leg-count-is-written-and-how-it-was-chosen), read from the jobs API: 72 legs, every one of which
@@ -632,12 +636,20 @@ How the 17 minutes are read (2026-11-27, at six legs with the row-by-row placeme
   45965076698 and 45965064293 of dispatch-browser-nightly.yaml, and 45950654812, 45950666103,
   45952714370 and 45952704161 of ci.yaml. The browser step: median 428 s, p90 502 s, maximum
   555 s.
-- Measured, not rescaled. The 18 minutes before were read from four-leg legs of 2026-11-21 and
-  2026-11-22, each rescaled to the balanced leg the time split gives (step = 24.0 s + 0.2549 x
-  row time over 68 legs of main), a p90 of 534 s. A rescale runs low: the same method over 112
-  legs of 2026-11-26 (18.7 s + 0.2610 x row time) put the four-leg p90 at 666 s, and the
-  four-leg arm's own 48 legs measured 722 s. So the guard now reads the measured legs of the lane
-  at its leg count.
+- Measured, not rescaled. The four-leg guard before this placement, also 18 minutes, was read
+  from four-leg legs of 2026-11-21 and 2026-11-22, each rescaled to the balanced leg the time
+  split gives (step = 24.0 s + 0.2549 x row time over 68 legs of main), a p90 of 534 s. A rescale
+  runs low: the same method over 112 legs of 2026-11-26 (18.7 s + 0.2610 x row time) put the
+  four-leg p90 at 666 s, and the four-leg arm's own 48 legs measured 722 s. So the guard reads the
+  measured legs of the lane at its leg count, scaled only by how much the lane's row time has
+  grown since they ran.
+- The growth: 1.055. Run 45979370598 of ci.yaml, six legs at this placement on 2026-11-27 10:10Z,
+  held 10,070 s of shard-lane row time over 2,151 rows; main's 17 newest full-lane runs, of
+  2026-11-27 and 2026-11-28, the runs packages/dispatch/e2e/shard-weights.json was read from,
+  held a median 10,623 s over 2,203 to 2,255 rows. A leg's step is 18.7 s plus a part that grows
+  with its row time, so the p90 leg at that size is 18.7 + (502 - 18.7) x 1.055 = 529 s. This
+  scales measured legs at their own leg count by the lane's measured growth; it reads no leg of
+  another count.
 - The factor: 1.75, the slowest runner seen. The leg that was cut ran its 401 rows at a
   per-row median 1.75 times the time job 137096931568 of run 44985911309 took for the same rows,
   started 3 s later (p10 1.42, p90 2.12; 660 s against 391 s of step).
@@ -659,27 +671,31 @@ How the 17 minutes are read (2026-11-27, at six legs with the row-by-row placeme
   smaller leg. A row no table holds is placed by its project's median row, and placed row by row
   such rows spread over the legs in about equal counts, so the error a table's age brings is
   shared rather than landing on one leg. 1.115 is the worse of the two maxima.
-- 502 s x 1.75 x 1.115 = 980 s, rounded up to 17 minutes, 1,020 s.
+- 529 s x 1.75 x 1.115 = 1,032 s, rounded up to 18 minutes, 1,080 s. At the 502 s the legs
+  measured it was 980 s and 17 minutes; the lane's growth since put it past them.
 
 What a hang looks like to it. A row cannot hang it: each row ends at its own budget, the 60 s of
-`packages/dispatch/e2e/playwright.config.ts#testTimeout` or the longer one a row sets, and the leg goes on. A leg
-that has stopped running rows - a stack that never comes up in `globalSetup`, a teardown or a
-blob write that never returns, a worker that stops reporting - is one whose log has stopped
-gaining rows. The runner cancels the step and names it (`The action '<step name>' has timed out
-after 17 minutes.`). The leg's blob report is never written, since Playwright writes it when the
+`packages/dispatch/e2e/playwright.config.ts#testTimeout` or the longer one a row sets, and the leg goes on. What
+reaches 18 minutes, besides a slow leg on a slow runner (below), is a leg that has stopped
+running rows - a stack that never comes up in `globalSetup`, a teardown or a blob write that
+never returns, a worker that stops reporting - whose log has stopped gaining rows. The runner
+cancels the step and names it (`The action '<step name>' has timed out after 18 minutes.`). The
+leg's blob report is never written, since Playwright writes it when the
 run ends: the always-run upload finds no file (run 44985914477's cut shard 4 logged `No files
 were found with the provided path: /__w/_temp/leg-report`), and the merge job says so by name -
 reading one's `no blob report arrived from: shard-4` and reading three's `... uploaded no blob
 report, so the merged report holds none of its rows` - and fails on the leg's result.
 
-What the guard does not establish. 502 s is a p90, not a bound on a healthy leg: the same factors
-on the 72 legs' maximum, 555 s, give 1,083 s, past the 1,020 s cap. So a leg cut at 17 minutes
-is not by itself evidence of a hang; it is a slow leg on a slow runner or a leg that stopped
-running rows, and its log says which.
+What the guard does not establish. 529 s is a p90, not a bound on a healthy leg: the same factors
+on the 72 legs' maximum, 555 s, grown by 1.055 to 584 s, give 1,140 s, past the 1,080 s cap. So a
+leg cut at 18 minutes is not by itself evidence of a hang; it is a slow leg on a slow runner or a
+leg that stopped running rows, and its log says which.
 
 The suite grows, and the guard with it: the full lane's row time went from 6,792 s on 2026-11-22
-to a median 9,086 s on 2026-11-26. Read the guard again, from this list, once the median leg's
-step passes 583 s (1,020 s / 1.75).
+to a median 9,086 s on 2026-11-26, and its shard projects' row time to a median 10,623 s over
+main's 17 full-lane runs of 2026-11-27 and 2026-11-28. Read the guard again, from measured
+six-leg legs, once that row time passes about 11,140 s, the size at which the p90 leg reaches
+553 s (1,080 s / (1.75 x 1.115)).
 
 The week is what the guard holds, so each leg says when its table is past it: below its
 placement line it prints a `::warning::` when e2e/shard-weights.json was read more than 7 days
@@ -687,7 +703,7 @@ before the run, or when a tenth of its rows sit in files the table has no entry 
 (`packages/dispatch/e2e/shard-split.ts#tableWarnings`). Either one means
 `bun e2e/tools/shard-weights.ts --main 17` is due (`--run <id>` adds a named full-lane run's
 report); past the week, at the count split's 1.21 (read at four legs), a p90 leg on that runner
-would end near 1,063 s.
+would end near 1,120 s.
 
 ## Why the file store's address is set on the step and not in the environment
 
@@ -1409,7 +1425,9 @@ exits 1 it reads GitHub's rate_limit route, bounded by its own `timeout 30`. So 
 takes up to 30 + 30 s, and the ladder 3 x 60 + 10 + 20 = 210 s at most. The step's own work
 has a measured maximum of 4 s; it now also runs
 packages/dispatch/e2e/tools/leg-rows.ts over the shard legs' row lists (1.1 MB for the
-full lane's 1,617 rows), measured at 0.02 to 0.08 s on the development box over three runs;
+full lane's 1,617 rows at four legs; each leg lists the whole selection and its own rows, so at
+six legs and 2,255 rows about 2.1 MB), measured at 0.02 to 0.08 s on the development box over
+three runs;
 counted at a whole second, (4 + 1) x 1.15 = 5.75 s, and 210 + 5.75 = 215.75 s, at the next
 whole minute above, is the 4 min that step carries. The rule's two-minute floor does not bind.
 

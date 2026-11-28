@@ -29,8 +29,11 @@
  * places each such row on its own. That is safe: Playwright's own split spreads those rows over
  * the legs too, it runs them in no fixed order, each such hook runs once in every worker that runs
  * a row under it, and each leg packs the rows it keeps into its own groups again.
- * e2e/accessibility.e2e.ts, whose `test.afterAll` judges the rows its own worker ran, is the one
- * file of the shard lane in that shape.
+ * e2e/accessibility.e2e.ts, whose `test.afterAll` judges the rows its own worker ran, is one file
+ * of the shard lane in that shape; the files that read which main this run's server is in a
+ * file-level `beforeAll` (e2e/ask-body-today.e2e.ts, and each file that calls `mainOfThisRun` of
+ * e2e/dashboard-support.ts) are others, and each of those hooks too runs once in every worker that
+ * runs its rows.
  *
  * Why the unit is not the file, which it was until the measurements below. A file is one block
  * of time on one leg, so its weight has to be right for the legs to balance, and the weight of a
@@ -205,11 +208,11 @@ export function placeUnits<U extends Unit>(
   return { loads, placed };
 }
 
-/** How old the table may be before a leg warns: the browser step's 17-minute guard is
- *  502 s x 1.75 x 1.115, and 1.115 is the worst share of the mean the heaviest of six legs took
+/** How old the table may be before a leg warns: the browser step's 18-minute guard is
+ *  529 s x 1.75 x 1.115, and 1.115 is the worst share of the mean the heaviest of six legs took
  *  under a table up to 7 days old, of the two read (.github/ci-notes/dispatch-browser.md, the
  *  browser step's budget). Past that no table was measured, and one that drifted to the count
- *  split's 1.21 would leave a healthy p90 leg on the slowest runner seen near 1,063 s, past the
+ *  split's 1.21 would leave a healthy p90 leg on the slowest runner seen near 1,120 s, past the
  *  guard. */
 export const tableDaysAtMost = 7;
 
