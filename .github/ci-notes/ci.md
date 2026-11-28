@@ -2205,6 +2205,13 @@ What it leaves as it was:
 - Main's ruleset keeps an approval across a push (`dismiss_stale_reviews_on_push` is false), so a
   head pushed after the approval and not approved again reaches the queue with its fast lane
   alone, as before this rule. Legion's review step approves each new head, which runs it again.
+- An approval sent before the `Large PR label` run has put `large-pr` on a head that has just
+  become large runs nothing, because the review's event carries no size, so its run reads no
+  label (#5944: review 6095318330 at 03:02:51Z, Large PR lanes run 46100963090 skipped every
+  job, and run 46100958913 put the label on at 03:05:48Z). That head reaches the queue with its
+  fast lane alone, as before this rule, and the queue runs its slow suites. Approve a head that
+  has just become large only after its `Large PR label` run has concluded, and where an
+  approval came first, approve it again once the label is on.
 - ci.yaml's ci-ok reads a runner shutdown off check runs named for its own jobs
   (.github/scripts/runner-shutdown.sh), and under this caller each is named `approval / <job>`,
   so a job the platform killed in an approval-time run reads as a failure, not as cancelled.

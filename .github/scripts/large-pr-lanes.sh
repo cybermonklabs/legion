@@ -42,7 +42,9 @@
 #          * when this run's CALLER runs (a job `<CALLER> / …` is listed), it waits for
 #            `<CALLER> / ci-ok`, ci.yaml's own verdict, which GitHub creates only once every job
 #            it needs has ended, and concludes as it did: success exits 0, anything else exits 1.
-#            A run whose CALLER jobs all ended with no verdict of this attempt
+#            A verdict of this attempt that is listed and not completed (queued, waiting for a
+#            runner, or running) is waited for, to this job's timeout-minutes. A run whose other
+#            CALLER jobs all ended and that lists no verdict of this attempt
 #            (LARGE_PR_HOLD_ENDED_READS reads in a row) fails;
 #          * when CALLER is skipped (`lead` chose to follow), it chooses again by to_follow, waits
 #            for that run's ci-ok and concludes as it did. When no run is open or passed any more,
@@ -82,8 +84,8 @@ LARGE_FILES=100
 LARGE_LINES=10000
 WORKFLOW_PATH='.github/workflows/large-pr-lanes.yaml'
 # The hold's three settings, read once: how long it sleeps between reads, how many reads in a row
-# of a run with every job ended and no verdict fail it, and how long after `lead` ended it waits
-# for the caller to list a job. `lead`'s warning quotes the last.
+# of a run with every job ended and no verdict of this attempt listed fail it, and how long after
+# `lead` ended it waits for the caller to list a job. `lead`'s warning quotes the last.
 HOLD_POLL=${LARGE_PR_HOLD_POLL_SECONDS:-60}
 HOLD_ENDED_READS=${LARGE_PR_HOLD_ENDED_READS:-3}
 HOLD_START_LIMIT=${LARGE_PR_HOLD_START_SECONDS:-300}
@@ -269,6 +271,7 @@ hold_caller() {
   local want="$CALLER / ci-ok" ended=0 jobs=$1 verdict status conclusion attempt url
   while true; do
     verdict=$(awk -F'\t' -v want="$want" '$1 == want' <<<"$jobs")
+    attempt=''
     if [ -n "$verdict" ]; then
       IFS=$'\t' read -r _ status conclusion attempt url <<<"$verdict"
       if [ "$status" = completed ] &&
@@ -278,9 +281,14 @@ hold_caller() {
       fi
     fi
     # GitHub creates ci.yaml's ci-ok only once its needs have ended, so a moment with every job
-    # of CALLER completed and no verdict is normal; the same reading several reads in a row is a
-    # run that will not reach one.
-    if [ "$(caller_rows "$jobs" '$2 != "completed"')" -eq 0 ]; then
+    # of CALLER completed and no verdict of this attempt listed is normal; the same reading
+    # several reads in a row is a run that will not reach one. A verdict of this attempt that is
+    # listed is not completed here (a completed one concluded above): it is queued, waiting for a
+    # runner, or running, so the run is reaching its verdict and no read counts, however long the
+    # runner takes. This job's timeout-minutes bounds a verdict that never ends.
+    if [ "$attempt" = "$GITHUB_RUN_ATTEMPT" ]; then
+      ended=0
+    elif [ "$(caller_rows "$jobs" '$2 != "completed"')" -eq 0 ]; then
       ended=$((ended + 1))
       if [ "$ended" -ge "$HOLD_ENDED_READS" ]; then
         echo "::error::no job of $CALLER is open and $want has not concluded on attempt $GITHUB_RUN_ATTEMPT, $ended reads in a row, so this run reaches no verdict and this ci-ok fails. $(remedy)"

@@ -11,10 +11,11 @@
 #          still open or passed, which it follows; a run of another workflow, a newer run and a
 #          failed one are no reason to follow, and a refused read runs the suites.
 #   hold   the job named ci-ok of large-pr-lanes.yaml concludes exactly as `approval / ci-ok`
-#          does, waits while that job is absent or still running, reads an earlier attempt's
-#          verdict only when nothing else re-ran, and fails a run that ends with no verdict; when
-#          `approval` is skipped it concludes as the ci-ok of the run it follows, or fails when no
-#          run is left to follow; and it fails when the caller never starts.
+#          does, waits while that job is absent, and while it is queued or running through any
+#          number of reads with every other job ended, reads an earlier attempt's verdict only
+#          when nothing else re-ran, and fails a run that ends with no verdict; when `approval` is
+#          skipped it concludes as the ci-ok of the run it follows, or fails when no run is left
+#          to follow; and it fails when the caller never starts.
 #
 # Each case runs the real script with a stand-in `gh` first on PATH, which answers each read of
 # the jobs and runs routes from a JSON answer through the script's own `--jq`, as gh does, and
@@ -283,6 +284,22 @@ run_hold
 check "exits 0" "$(is "$status" 0)"
 check "waited through the absent and the queued verdict" "$(is "$(reads_made)" 4)"
 check "names the verdict" "$(contains "$out" '^approval / ci-ok concluded success: https://github.com/o/r/actions/runs/41/job/4$')"
+
+echo "case: the verdict waits for a runner after every other job has ended"
+# GitHub lists ci.yaml's ci-ok queued once its needs have ended, and a runner may take minutes to
+# start it (run 46100298072's `approval / ci-ok` waited 82 s): reads of every other job completed
+# and this attempt's verdict queued, then running, more of them in a row than the hold's ended
+# reads (3), are a run reaching its verdict.
+reset
+others_done="$self;$lead_done;approval / changes|completed|success|1;approval / pi-legion / pi-legion|completed|success|1"
+reads "$others_done;approval / ci-ok|queued|-|1" "$others_done;approval / ci-ok|queued|-|1" \
+  "$others_done;approval / ci-ok|queued|-|1" "$others_done;approval / ci-ok|in_progress|-|1" \
+  "$others_done;approval / ci-ok|in_progress|-|1" "$others_done;approval / ci-ok|in_progress|-|1" \
+  "$others_done;approval / ci-ok|completed|success|1"
+run_hold
+check "exits 0" "$(is "$status" 0)"
+check "waited through every read of the queued and the running verdict" "$(is "$(reads_made)" 7)"
+check "concludes as the verdict did" "$(contains "$out" '^approval / ci-ok concluded success: https://github.com/o/r/actions/runs/41/job/7$')"
 
 echo "case: the verdict fails"
 reset
