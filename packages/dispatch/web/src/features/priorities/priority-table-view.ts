@@ -32,8 +32,6 @@ const viewKey = (prefix: string, name: string) => `${prefix}.${name}`;
  *  is read under the column's id now (`readTableView`). */
 export type FormerColumnIds = ReadonlyMap<string, string>;
 
-const NO_FORMER_IDS: FormerColumnIds = new Map();
-
 /** The view `params` carries for the table with this prefix, over these columns. A filter of a
  *  column the table does not have is left where it is: it is another table's, or an older
  *  link's. One of a column that has no filter (`hasFilter`), an older link's, filters nothing. A
@@ -43,7 +41,7 @@ export function readTableView<Row>(
   prefix: string,
   columns: readonly TableColumn<Row>[],
   defaultSorting: SortingState,
-  formerIds: FormerColumnIds = NO_FORMER_IDS
+  formerIds: FormerColumnIds
 ): TableView {
   const key = (name: string) => viewKey(prefix, name);
   const ids = columns.map((column) => column.id);
@@ -85,7 +83,7 @@ export function writeTableView<Row>(
   columns: readonly TableColumn<Row>[],
   view: TableView,
   defaultSorting: SortingState,
-  formerIds: FormerColumnIds = NO_FORMER_IDS
+  formerIds: FormerColumnIds
 ): URLSearchParams {
   const key = (name: string) => viewKey(prefix, name);
   const next = new URLSearchParams(params);
@@ -117,7 +115,7 @@ export function useTableView<Row>(
   prefix: string,
   columns: readonly TableColumn<Row>[],
   defaultSorting: SortingState,
-  formerIds: FormerColumnIds = NO_FORMER_IDS
+  formerIds: FormerColumnIds
 ) {
   const [params, setParams] = useSearchParams();
   const view = useMemo(

@@ -15,7 +15,7 @@ import { runningIssueStatuses } from "../project/issues-table-model";
 import { useKeymapScope } from "../shell/keymap";
 import { NewPriority } from "./NewPriority";
 import { PrioritiesTable } from "./PrioritiesTable";
-import { BACKLOG_STATUSES } from "./priorities-model";
+import { BACKLOG_LAYOUT_KEY, BACKLOG_STATUSES } from "./priorities-model";
 
 /** The page's three tabs, as the address names each (`?tab=`): the order itself, which is the
  *  tab an address naming none opens, and the two faults. */
@@ -110,10 +110,9 @@ const NO_PRIORITY_LAYOUT = {
   statusLegend: true,
 } as const;
 const BACKLOG_LAYOUT = {
-  // The layout a reader stored under the key the list had before moves to this key once
-  // (`moveTableStore`), so it outlives the rename.
-  key: "priorities-backlog",
-  formerKey: "priorities-parked",
+  // A layout a reader stored under the key the list had before moved to this key before the app
+  // first rendered (`moveFormerPriorityLayouts`), so it outlives the rename.
+  key: BACKLOG_LAYOUT_KEY,
   // When the work was moved there is how long it has stood as it is, which is what Updated says
   // on the other list, so Updated opens hidden here, one tick away under Columns, and the room
   // it leaves is Title's.

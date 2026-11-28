@@ -31,6 +31,7 @@ import { DocumentRuntime } from "../doc/runtime";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { writesOf } from "../writes/write-store";
+import { moveFormerPriorityLayouts } from "./former-layouts";
 import { SAVE_AFTER_MS } from "./InPlaceField";
 import { PrioritiesPage } from "./PrioritiesPage";
 
@@ -1475,10 +1476,13 @@ test("no header of the priorities table is longer than 16 characters, whichever 
     });
 });
 
-// The stored layouts' move on the page's first draw (the plan's state table L8a), one row per
-// test. A layout the reader kept under a name the page no longer uses moves to the name it uses
-// now on the first draw, before the first write, and a second draw moves nothing more. Each tab
-// draws its one table, so each test opens the tab whose table's layout it reads.
+// The stored layouts' move before the app's first render (the plan's state table L8a), one row
+// per test. A layout the reader kept under a name the page no longer uses moves to the name it
+// uses now once, before anything renders (`moveFormerPriorityLayouts`), so the table's first
+// write keeps it, and a second move and draw move nothing more. `main.tsx` makes that move before
+// its root renders, and these tests render the page without it, so each makes it before each
+// draw, as a reload runs `main.tsx` again before its own. Each tab draws its one table, so each
+// test opens the tab whose table's layout it reads.
 
 /** The browser keys the page's layouts are stored under (`tableStorageKey`): the list of
  *  priority work in backlog or icebox, the key that list kept its layout under before, and the
@@ -1506,6 +1510,7 @@ const backlogTableDrawn = () =>
 
 test("a layout under the list's former key moves to its key, and the former key goes", async () => {
   localStorage.setItem(FORMER_BACKLOG_KEY, backlogLayout(222, "project"));
+  moveFormerPriorityLayouts();
   const { redraw } = page(FIFTEEN, [], true, { at: BACKLOG_TAB });
   await backlogTableDrawn();
   await waitFor(() => expect(localStorage.getItem(FORMER_BACKLOG_KEY)).toBeNull());
@@ -1514,8 +1519,9 @@ test("a layout under the list's former key moves to its key, and the former key 
   expect(moved.order).toEqual(["status", "key"]);
   // Project opens shown on this list, so the reader's hiding of it is what keeps it hidden.
   expect(moved.visibility.project).toBe(false);
-  // A second draw finds nothing under the former key and moves nothing.
+  // A second move and draw find nothing under the former key and move nothing.
   const first = localStorage.getItem(BACKLOG_KEY);
+  moveFormerPriorityLayouts();
   redraw();
   await backlogTableDrawn();
   expect(localStorage.getItem(FORMER_BACKLOG_KEY)).toBeNull();
@@ -1525,6 +1531,7 @@ test("a layout under the list's former key moves to its key, and the former key 
 test("a layout already under the list's key stays, and the former key goes", async () => {
   localStorage.setItem(FORMER_BACKLOG_KEY, backlogLayout(222, "project"));
   localStorage.setItem(BACKLOG_KEY, backlogLayout(333, "claim"));
+  moveFormerPriorityLayouts();
   const { redraw } = page(FIFTEEN, [], true, { at: BACKLOG_TAB });
   await backlogTableDrawn();
   await waitFor(() => expect(localStorage.getItem(FORMER_BACKLOG_KEY)).toBeNull());
@@ -1533,6 +1540,7 @@ test("a layout already under the list's key stays, and the former key goes", asy
   expect(kept.visibility.claim).toBe(false);
   expect(kept.visibility.project).toBeUndefined();
   const first = localStorage.getItem(BACKLOG_KEY);
+  moveFormerPriorityLayouts();
   redraw();
   await backlogTableDrawn();
   expect(localStorage.getItem(FORMER_BACKLOG_KEY)).toBeNull();
@@ -1540,6 +1548,7 @@ test("a layout already under the list's key stays, and the former key goes", asy
 });
 
 test("with no layout under either key the list writes only what its mount writes, under its key", async () => {
+  moveFormerPriorityLayouts();
   const { redraw } = page(FIFTEEN, [], true, { at: BACKLOG_TAB });
   await backlogTableDrawn();
   const tableKeys = () =>
@@ -1551,6 +1560,7 @@ test("with no layout under either key the list writes only what its mount writes
   expect(written.sizing).toEqual({});
   expect(written.order).toEqual([]);
   const first = localStorage.getItem(BACKLOG_KEY);
+  moveFormerPriorityLayouts();
   redraw();
   await backlogTableDrawn();
   expect(tableKeys()).toEqual([BACKLOG_KEY]);
@@ -1572,6 +1582,7 @@ test("the priorities table's stored width, place and visibility of its backlog c
     order: ["owner", "backlog", "title"],
     visibility: { closed: false, backlog: false },
   };
+  moveFormerPriorityLayouts();
   const { redraw } = page(FIFTEEN, [], true, { box: DESKTOP_BOX });
   const table = await screen.findByRole("table", { name: "Priorities table" });
   await waitFor(() => expect(storedAt(PRIORITIES_KEY)).toEqual(moved));
@@ -1579,6 +1590,7 @@ test("the priorities table's stored width, place and visibility of its backlog c
   // columns a desktop's box draws.
   expect(within(table).getByRole("columnheader", { name: /^Owner/ })).toBeDefined();
   expect(within(table).queryByRole("columnheader", { name: /Backlog, icebox$/ })).toBeNull();
+  moveFormerPriorityLayouts();
   redraw();
   await screen.findByRole("table", { name: "Priorities table" });
   expect(storedAt(PRIORITIES_KEY)).toEqual(moved);
@@ -1591,9 +1603,11 @@ test("a priorities layout that names the backlog column by its id now is left as
     visibility: { closed: false, backlog: false },
   });
   localStorage.setItem(PRIORITIES_KEY, layout);
+  moveFormerPriorityLayouts();
   const { redraw } = page(FIFTEEN);
   await screen.findByRole("table", { name: "Priorities table" });
   expect(localStorage.getItem(PRIORITIES_KEY)).toBe(layout);
+  moveFormerPriorityLayouts();
   redraw();
   await screen.findByRole("table", { name: "Priorities table" });
   expect(localStorage.getItem(PRIORITIES_KEY)).toBe(layout);

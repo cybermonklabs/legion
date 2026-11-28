@@ -7,12 +7,12 @@
  *  Each reads what the browser draws from that fixed answer and what it keeps in its own storage,
  *  and none of it is a claim about what the server decides, so the row runs against a recording
  *  rather than against a harness (packages/dispatch/README.md, "The stubbed layer"). Each load
- *  after the first starts from a storage seeded as the release before left it: each table moves
- *  its layout on its first render (`moveTableStore` and `renameStoredColumns`,
- *  `web/src/features/project/issues-table-storage.ts`), and the priorities table reads an
- *  address's sort by the column's former id the same way (`PRIORITY_FORMER_IDS`), and no filter
- *  of that column under either id: one under the former id names no column the table has, and
- *  the column, a count, has none (`readTableView`,
+ *  after the first starts from a storage seeded as the release before left it: each table's
+ *  layout moves before the app's first render (`moveFormerPriorityLayouts`,
+ *  `web/src/features/priorities/former-layouts.ts`, which `web/src/main.tsx` calls), and the
+ *  priorities table reads an address's sort by the column's former id the same way
+ *  (`PRIORITY_FORMER_IDS`), and no filter of that column under either id: one under the former
+ *  id names no column the table has, and the column, a count, has none (`readTableView`,
  *  `web/src/features/priorities/priority-table-view.ts`). */
 import { expect, type Page } from "@playwright/test";
 
@@ -112,9 +112,9 @@ test("the priorities page lists priority work in backlog or icebox and moves the
   expect(at("Backlog, icebox")).toBeGreaterThan(-1);
   expect(at("Backlog, icebox")).toBeLessThan(at("Active"));
 
-  // The priorities table's stored layout moved on that first render: the width, place and
-  // visibility of the backlog column are under its id now. The mount writes the layout whole, so
-  // Closed, 7 days, which opens hidden, is written hidden beside it.
+  // The priorities table's stored layout moved before that load's first render: the width,
+  // place and visibility of the backlog column are under its id now. The mount writes the layout
+  // whole, so Closed, 7 days, which opens hidden, is written hidden beside it.
   const stored = async (key: string) =>
     page.evaluate((name) => JSON.parse(localStorage.getItem(name) ?? "null"), key);
   await expect
@@ -125,8 +125,8 @@ test("the priorities page lists priority work in backlog or icebox and moves the
       visibility: { closed: false, backlog: true },
     });
 
-  // The list's layout moves when its tab first draws it: under its key now, with the former key
-  // gone.
+  // The list's layout moved before that load's first render too: once its tab draws it, it is
+  // under its key now, with the former key gone.
   await page.getByRole("tab", { name: BACKLOG_TAB }).click();
   await expect(row).toBeVisible();
   await expect.poll(() => stored(FORMER_BACKLOG_KEY)).toBeNull();

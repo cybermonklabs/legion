@@ -111,11 +111,9 @@ export function IssuesTable({
    *  segments with their names are wider than the bar, and the names in a legend under it
    *  (`IssueTableStatus`), so no name is cut at the bar's edge: each of those tables stands in a
    *  box narrower than a project's, whose bar keeps its names and scrolls sideways on a phone.
-   *  Each of those gives its own; unset, the table opens as a project's table does. `formerKey`
-   *  is the key the layout was kept under before, which it moves from once (`useTableLayout`). */
+   *  Each of those gives its own; unset, the table opens as a project's table does. */
   layout?: {
     readonly key: string;
-    readonly formerKey?: string;
     readonly opens: readonly IssueTableColumnId[];
     readonly widths?: IssueTableWidths;
     readonly rowActions?: boolean;
@@ -166,8 +164,7 @@ export function IssuesTable({
   // drags it for every priority, and not once per priority.
   const layout = useTableLayout(
     ownLayout?.key ?? ("project" in listing ? listing.project : SCOPED_LAYOUT_KEY),
-    columnsLayout,
-    { key: ownLayout?.formerKey }
+    columnsLayout
   );
   const { attachAbove, boxWidth, responsive } = layout;
   const flags = useIssueFilters();
