@@ -739,8 +739,8 @@ test("the decisions tab owns its path and names the issue's decisions.md", () =>
 
 test("parses and builds project, documents, and document routes with version and item query", () => {
   expect(parseProjectPath("/projects/CORE")).toEqual({ kind: "project", project: "CORE" });
-  // The filter strip's URL state (`?label=`, `?q=`, `?needs-you=`, `?unread=`) never changes
-  // what route a project path is.
+  // The project page's issue filters in the address (`?label=`, `?q=`, `?needs-you=`, `?unread=`)
+  // never change what route a project path is.
   expect(
     parseProjectPath("/projects/CORE", "?label=x&label=y&q=ship&needs-you=1&unread=1")
   ).toEqual({ kind: "project", project: "CORE" });

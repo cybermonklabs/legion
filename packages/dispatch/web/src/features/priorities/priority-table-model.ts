@@ -1,5 +1,5 @@
 import type { ColumnDef, ColumnFiltersState, VisibilityState } from "@tanstack/react-table";
-import type { LayoutColumns } from "../project/issues-table-layout";
+import type { LayoutColumns } from "../../components/table-layout";
 
 /**
  * One column of a table on the priorities pages, as its page declares it: how wide it is, what
@@ -124,10 +124,12 @@ export function headingOf<Row>(
 /** The layout rules `useTableLayout` takes for these columns: each at its own width, never
  *  below its minimum, with the pinned ones kept at the left edge and the first of them that
  *  may narrow giving up width so the rest fit. On a phone the pinned ones take the whole of the
- *  box, and they are all the table draws there (`phoneHidden`). */
+ *  box, and they are all the table draws there (`phoneHidden`). `rowAttribute` is the attribute
+ *  the table's rows carry, which the box measures its first rows by. */
 export function tableLayout<Row>(
   columns: readonly TableColumn<Row>[],
-  flexible: string
+  flexible: string,
+  rowAttribute: string
 ): LayoutColumns {
   const pinned = columns.filter((column) => column.pinned).map(({ id }) => id);
   const minimums = Object.fromEntries(columns.map((column) => [column.id, column.min]));
@@ -135,6 +137,7 @@ export function tableLayout<Row>(
   const wrapped = columns.filter((column) => column.wrap === true).map(({ id }) => id);
   return {
     ids: columns.map((column) => column.id),
+    rowAttribute,
     hiddenByDefault: Object.fromEntries(
       columns.filter((column) => column.hidden).map(({ id }) => [id, false])
     ),

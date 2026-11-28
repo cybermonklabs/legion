@@ -5,6 +5,8 @@ import { api, apiErrorMessage } from "../../api/client";
 import { deliverySettingsQuery } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
+import { pressOfWrite, type WritePress } from "../../components/focus-place";
+import { heldField } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -16,7 +18,9 @@ import {
   settingsSubmitButton,
 } from "../settings/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
+import { DELIVERY_TIMELINE_NOT_LOADED } from "./delivery-words";
+import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
 /** The characters that separate the entries of a list field, as a character class's body: line
  *  breaks, and commas or spaces too, since neither a GitHub login nor an `owner/repo` can hold
@@ -75,7 +79,8 @@ interface Draft {
   excluded_repos: string;
 }
 
-/** The fields as the stored record fills them, and empty where there is none. */
+/** The fields as `record` fills them: each list one entry per line, and every field empty where
+ *  no record is stored. */
 function recordDraft(record: DeliverySettings | null): Draft {
   return {
     deploy_repo: record?.deploy_repo ?? "",
@@ -171,6 +176,9 @@ interface DeliverySettingsFormProps {
   readonly initial?: DeliverySettings | null;
 }
 
+/** What the form says when its record's read failed. */
+const DELIVERY_SETTINGS_NOT_LOADED = "Couldn't load the delivery settings.";
+
 /**
  * The delivery timeline's configuration record as a form: the deploy repository, its deploy and
  * pull-request-check workflow paths, the deploy workflow's production jobs (one per line) and
@@ -205,7 +213,7 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
       return (
         <div className="mt-6">
           <QueryError
-            message="Couldn't load the delivery settings."
+            message={DELIVERY_SETTINGS_NOT_LOADED}
             onRetry={() => void settings.refetch()}
             retrying={settings.isFetching}
           />
@@ -214,18 +222,44 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
     }
     record = settings.data;
   }
-  return <DeliverySettingsFields record={record} />;
+  // A caller that holds the record reads it itself, so its own read is what moves once a save
+  // lands.
+  return <DeliverySettingsFields record={record} replacedByCaller={initial !== undefined} />;
 }
 
 /**
- * The form itself, over a record `DeliverySettingsForm` has read. Its groups, in this order:
- * Fields - Deploy repository, Deploy workflow, Production jobs, Production apply step, the three
- * Pipeline job names, PR checks workflow, Population authors and Excluded repositories, each one
- * item - then Save, and under them the refusal of a save. Fields are two columns from `sm` and
- * one below it; Save stays on its own line under them. A one-line value longer than its field
- * ends in an ellipsis with the whole value as its title; a list wraps inside its own box.
+ * The form itself, over a record `DeliverySettingsForm` has read or its caller holds. Its groups,
+ * in this order: Fields - Deploy repository, Deploy workflow, Production jobs, Production apply
+ * step, the three Pipeline job names, PR checks workflow, Population authors and Excluded
+ * repositories, each one item - then Save, and under them the refusal of a save, or why the
+ * timeline a save brings is not drawn. Fields are two columns from `sm` and one below it; Save
+ * stays on its own line under them. A one-line value longer than its field ends in an ellipsis
+ * with the whole value as its title; a list wraps inside its own box.
+ *
+ * Save and the fields are held while the save is out - and, where the caller holds the record
+ * (`replacedByCaller`), as the Delivery page's live view does, drawing the timeline in the form's
+ * place once its snapshot comes, until the caller replaces the form (`useHoldUntilDrawn`). Once
+ * the save lands, its own answer is written into the cache as the record and the fields draw what
+ * it changed at once, so no hold waits on the read that follows. Save is held as every held
+ * control is (`held-press.ts`): by `aria-disabled`, never `disabled`, so it keeps its Tab stop and
+ * the reader's focus through the whole hold. Each field is held by `aria-disabled` and read-only,
+ * never `disabled`, so the field the reader submitted from with Enter keeps the focus too. A press
+ * of Save still submits the form, by a click or by Enter, and so does Enter in a field: the form's
+ * submit sends nothing while Save is held. The `refused:` variant paints a held Save as a disabled
+ * one. The form, its fields and its Save stay the same elements through the save, so the focus
+ * stays where the reader pressed; a form the caller replaces goes while Save is held, so the
+ * control the reader pressed from keeps the focus until the form goes. A caller that has not
+ * replaced the form by the write deadline after the save landed lets them go then, with the
+ * reason its timeline is not drawn under the form (`useHoldUntilDrawn`). A refusal lets them go at
+ * once, with its reason under the form.
  */
-function DeliverySettingsFields({ record }: { record: DeliverySettings | null }): ReactNode {
+function DeliverySettingsFields({
+  record,
+  replacedByCaller,
+}: {
+  record: DeliverySettings | null;
+  replacedByCaller: boolean;
+}): ReactNode {
   const queryClient = useQueryClient();
   const id = useId();
   const submitGuard = useSubmitGuard();
@@ -258,6 +292,15 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
       sent: sent && { ...sent, fields: stillSent(sent.fields, changed) },
     });
   };
+  // The write time of the record the form was handed, which its host's read or its caller moves
+  // once a save has been drawn, and so what the holds and the refusal below wait on: the cache's
+  // answer the fields take at the landing is no sign that the caller has drawn it.
+  const version = record?.updated_at ?? null;
+  // The write time of the record the newest press was made over.
+  const [pressedOver, setPressedOver] = useState(version);
+  // `undrawn` is why the timeline a save brings is not drawn once the hold for it ran out, which
+  // only a caller that holds the record puts on.
+  const [drawing, holdUntilDrawn, undrawn] = useHoldUntilDrawn(version);
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
     method: "PUT",
@@ -265,7 +308,22 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
     inline: true,
     label: () => "Delivery settings saved",
     onSettled: () => submitGuard.release(),
-    onSuccess: () => {
+    // The press the save began under, which its holds after the answer keep live (`pressOfWrite`).
+    onMutate: pressOfWrite,
+    onSuccess: (saved, input, press: WritePress) => {
+      // A `PUT` goes under no key (`goesUnderKey`), so Dispatch keeps nothing under one for it
+      // and answers each with the record it stored: a landing with no answer (`null`) is a keyed
+      // write's alone, and here the type's only. The answer is the record from the landing on,
+      // written where the form and every other reader of it read it, unless a newer one is there
+      // already: another writer's, read meanwhile. The fields this Save sent follow it in the
+      // render that takes it in (`retired`, by the Save's own input), before the read below.
+      if (saved !== null) {
+        queryClient.setQueryData(deliverySettingsQuery().queryKey, (current) =>
+          laterRecord(current, saved)
+        );
+        setChanges((current) => retired(current, input));
+      }
+      if (replacedByCaller) holdUntilDrawn(press);
       void queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
       // A live view learns of the save from Dispatch, as a delta, or as the snapshot a page that
       // had none (DELIVERY_NOT_CONFIGURED) is answered once a configuration exists.
@@ -275,56 +333,50 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
       });
     },
   });
+  const held = save.isPending || drawing;
+  // A refusal speaks of the fields as the reader had them, so it goes once a new stored record
+  // fills them again.
+  const refused = useRefusalOfSubject(save, () => pressedOver === version);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    // A held Save is only `aria-disabled`, so its press still submits the form: that submit sends
+    // nothing.
+    if (held) return;
     submitGuard.guard(() => {
-      // This Save, by identity: its own landing, and no record that arrives meanwhile, retires
-      // what it sent, and the landing of an earlier Save leaves a newer one's fields as typed.
-      const press = {};
-      setChanges({ edited, sent: { fields: edited, save: press } });
-      save.mutate(
-        {
-          deploy_repo: draft.deploy_repo,
-          deploy_workflow_path: draft.deploy_workflow_path.trim(),
-          excluded_repos: listEntries(draft.excluded_repos),
-          population_authors: listEntries(draft.population_authors),
-          pr_checks_workflow_path: draft.pr_checks_workflow_path.trim(),
-          production_job_names: lineEntries(draft.production_job_names),
-          production_apply_step_name: textOrNull(draft.production_apply_step_name),
-          pr_checks_rollup_job_name: textOrNull(draft.pr_checks_rollup_job_name),
-          staging_apply_job_name: textOrNull(draft.staging_apply_job_name),
-          staging_e2e_job_name: textOrNull(draft.staging_e2e_job_name),
-        },
-        {
-          onError: () =>
-            setChanges((current) =>
-              current.sent?.save === press ? { ...current, sent: null } : current
-            ),
-          onSuccess: (answer) => {
-            // A `PUT` goes under no key (`goesUnderKey`), so Dispatch keeps nothing under one for
-            // it and answers each with the record it stored: a landing with no answer (`null`) is
-            // a keyed write's alone, and here the type's only.
-            if (answer === null) return;
-            // The answer is the record from now on, written where the form and every other
-            // reader of it read it, unless a newer one is there already: another writer's, read
-            // meanwhile. The fields it sent follow it in the render that takes it in.
-            queryClient.setQueryData(deliverySettingsQuery().queryKey, (current) =>
-              laterRecord(current, answer)
-            );
-            setChanges((current) => retired(current, press));
-          },
-        }
-      );
+      setPressedOver(version);
+      // This Save, by identity, its input: its own landing, and no record that arrives
+      // meanwhile, retires what it sent, and the landing of an earlier Save leaves a newer one's
+      // fields as typed.
+      const input: DeliverySettingsInput = {
+        deploy_repo: draft.deploy_repo,
+        deploy_workflow_path: draft.deploy_workflow_path.trim(),
+        excluded_repos: listEntries(draft.excluded_repos),
+        population_authors: listEntries(draft.population_authors),
+        pr_checks_workflow_path: draft.pr_checks_workflow_path.trim(),
+        production_job_names: lineEntries(draft.production_job_names),
+        production_apply_step_name: textOrNull(draft.production_apply_step_name),
+        pr_checks_rollup_job_name: textOrNull(draft.pr_checks_rollup_job_name),
+        staging_apply_job_name: textOrNull(draft.staging_apply_job_name),
+        staging_e2e_job_name: textOrNull(draft.staging_e2e_job_name),
+      };
+      setChanges({ edited, sent: { fields: edited, save: input } });
+      save.mutate(input, {
+        onError: () =>
+          setChanges((current) =>
+            current.sent?.save === input ? { ...current, sent: null } : current
+          ),
+      });
     });
   };
 
   return (
     <>
       <form className={`mt-6 grid gap-4 rounded-xl border p-4 ${borderDefault}`} onSubmit={submit}>
-        <fieldset className="grid min-w-0 gap-4 sm:grid-cols-2" disabled={save.isPending}>
+        <fieldset className="grid min-w-0 gap-4 sm:grid-cols-2">
           <label className={settingsFieldLabel} htmlFor={`${id}-deploy-repo`}>
             Deploy repository
             <input
+              {...heldField(held)}
               className={settingsMonoInput}
               id={`${id}-deploy-repo`}
               onChange={(event) => setDraft({ ...draft, deploy_repo: event.target.value })}
@@ -338,6 +390,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
           <label className={settingsFieldLabel} htmlFor={`${id}-deploy-workflow`}>
             Deploy workflow
             <input
+              {...heldField(held)}
               className={settingsMonoInput}
               id={`${id}-deploy-workflow`}
               onChange={(event) =>
@@ -356,6 +409,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
                   reference picker nor the renderer: `delivery-production-jobs` in
                   `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
               <textarea
+                {...heldField(held)}
                 aria-describedby={`${id}-production-jobs-hint`}
                 className={settingsMonoInput}
                 id={`${id}-production-jobs`}
@@ -378,6 +432,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
             <label className={settingsFieldLabel} htmlFor={`${id}-production-apply-step`}>
               Production apply step
               <input
+                {...heldField(held)}
                 aria-describedby={`${id}-production-apply-step-hint`}
                 className={settingsMonoInput}
                 id={`${id}-production-apply-step`}
@@ -402,6 +457,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
             <label className={settingsFieldLabel} htmlFor={`${id}-${key}`} key={key}>
               {label}
               <input
+                {...heldField(held)}
                 aria-describedby={`${id}-pipeline-jobs-hint`}
                 className={settingsMonoInput}
                 id={`${id}-${key}`}
@@ -419,6 +475,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
           <label className={settingsFieldLabel} htmlFor={`${id}-pr-checks-workflow`}>
             PR checks workflow
             <input
+              {...heldField(held)}
               className={settingsMonoInput}
               id={`${id}-pr-checks-workflow`}
               onChange={(event) =>
@@ -438,6 +495,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
               {/* One setting per line rather than prose: `delivery-population-authors` in
                   `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
               <textarea
+                {...heldField(held)}
                 aria-describedby={`${id}-population-authors-hint`}
                 className={settingsMonoInput}
                 id={`${id}-population-authors`}
@@ -460,6 +518,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
               {/* One setting per line rather than prose: `delivery-excluded-repos` in
                   `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
               <textarea
+                {...heldField(held)}
                 aria-describedby={`${id}-excluded-repos-hint`}
                 className={settingsMonoInput}
                 id={`${id}-excluded-repos`}
@@ -476,14 +535,14 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
           </div>
         </fieldset>
         <button
+          aria-disabled={held || undefined}
           className={`justify-self-start ${settingsSubmitButton}`}
-          disabled={save.isPending}
           type="submit"
         >
           Save delivery settings
         </button>
       </form>
-      {save.isError ? (
+      {refused ? (
         <div className="mt-4">
           {/* A save the reader stopped may have been made, and the form's button is a press of
               its own: it sends what the fields hold then. */}
@@ -497,7 +556,13 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
             }
           />
         </div>
-      ) : null}
+      ) : undrawn === undefined ? null : (
+        <div className="mt-4">
+          {/* The timeline the save brings and is not drawn is said in the words the page says
+              for a read of it that failed. */}
+          <QueryError message={`${DELIVERY_TIMELINE_NOT_LOADED} ${undrawn}.`} />
+        </div>
+      )}
     </>
   );
 }

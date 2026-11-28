@@ -279,8 +279,10 @@ async function chooseTab(page: Page, tab: keyof typeof TABS): Promise<void> {
  *  where that table is the last thing on the page and its box takes the window rather than
  *  standing under another table below the fold. */
 function pagerBelowWindow(page: Page): Promise<number> {
+  // The pager of the tab's one table, by its component's own test identifier, as
+  // `tablesOverflow` finds its box: `priorities-table-pager` or `issues-table-pager`.
   return page
-    .getByTestId("issues-table-pager")
+    .locator('[data-testid$="-table-pager"]')
     .evaluate((pager) => pager.getBoundingClientRect().bottom - window.innerHeight);
 }
 
@@ -352,11 +354,12 @@ async function expectNoForecast(page: Page): Promise<void> {
   expect(drawn).not.toMatch(/\b(on track|at risk|off track|behind schedule|ahead of schedule)\b/i);
 }
 
-/** Every row of a table, by the name a reader hears: `#1 <title>` on the priorities table and
- *  `<KEY> <title>` on a fault list. */
+/** Every row of a table, by the name a reader hears: `#1 <title>` on the priorities table, whose
+ *  rows carry `data-priority-row`, and `<KEY> <title>` on a fault list, whose carry
+ *  `data-issue-row`. */
 function rowNames(scope: Locator): Promise<string[]> {
   return scope
-    .locator("tr[data-issue-row]")
+    .locator("tr[data-issue-row], tr[data-priority-row]")
     .evaluateAll((rows) => rows.map((row) => row.getAttribute("aria-label") ?? ""));
 }
 
@@ -395,7 +398,7 @@ async function cellUnder(table: Locator, row: Locator, header: string): Promise<
 async function columnTexts(table: Locator, header: string): Promise<string[]> {
   const at = await columnIndex(table, header);
   return table
-    .locator("tr[data-issue-row]")
+    .locator("tr[data-issue-row], tr[data-priority-row]")
     .evaluateAll(
       (rows, index) =>
         rows.map((row) => row.querySelectorAll("td")[index]?.textContent?.trim() ?? ""),
@@ -535,8 +538,14 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
     await expect.poll(() => pagerBelowWindow(page)).toBeLessThanOrEqual(0);
 
-    // The grouping control reads "Group by".
-    await expect(priorities.getByRole("combobox", { exact: true, name: "Group by" })).toBeVisible();
+    // The grouping control reads "Group by", inside the View display menu (INFRA-3135, R2).
+    await priorities.getByRole("button", { exact: true, name: "View" }).click();
+    await expect(
+      page
+        .getByRole("dialog", { name: "View" })
+        .getByRole("group", { exact: true, name: "Group by" })
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
 
     // The count closed in the last 7 days is hidden until the column control turns it on.
     const closed = prioritiesTable.getByRole("columnheader", { name: /^Closed, 7 days/ });
@@ -583,7 +592,7 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     await expect
       .poll(() =>
         page.getByTestId("priorities-table-scroll").evaluate((box) => {
-          const last = [...box.querySelectorAll("tr[data-issue-row]")].at(-1);
+          const last = [...box.querySelectorAll("tr[data-priority-row]")].at(-1);
           if (last === undefined) return Number.NaN;
           return box.getBoundingClientRect().bottom - last.getBoundingClientRect().bottom;
         })
@@ -1001,9 +1010,9 @@ test("a priority row opens its description, its title its page, and what is writ
     ).toBeVisible();
     await expect(page.getByRole("table")).toHaveCount(1);
     await expect(page.locator('section[aria-label^="Work advancing"]')).toHaveCount(0);
-    await page.locator(`tr[data-issue-row="${seed.ids[1]}"]`).focus();
+    await page.locator(`tr[data-priority-row="${seed.ids[1]}"]`).focus();
     await page.keyboard.press("j");
-    await expect(page.locator(`tr[data-issue-row="${seed.ids[2]}"]`)).toBeFocused();
+    await expect(page.locator(`tr[data-priority-row="${seed.ids[2]}"]`)).toBeFocused();
     await page.getByRole("button", { name: `Close #3 ${seed.titles[2]}` }).click();
 
     // The work is on the priority's own page, which the title opens: there the work table is
@@ -1169,7 +1178,7 @@ test("a priority added through the form and a row dragged write the order, which
       name: `Move #3 ${seed.titles[2]}: drag it, or press the up and down arrows`,
     });
     await expect(handle).toBeVisible();
-    await handle.dragTo(page.locator(`tr[data-issue-row="${seed.ids[1]}"]`));
+    await handle.dragTo(page.locator(`tr[data-priority-row="${seed.ids[1]}"]`));
     await expect(page.getByRole("row", { name: `#2 ${seed.titles[2]}` })).toBeVisible();
 
     // Both are the store's now, not the page's: read back from the server, and then from a page
@@ -1488,7 +1497,7 @@ test("a priority's own page writes its title and description and lists only its 
 // width the key, the project and the status leave, so no space stands empty at the table's
 // right: the last column that draws anything ends at the box's right edge, less the room a
 // filling column leaves there for the box's borders and a scrollbar (`EDGE_ROOM`, 20 px,
-// `features/project/issues-table-layout.ts`). An issue title of 190 characters reads whole there
+// `components/table-layout.ts`). An issue title of 190 characters reads whole there
 // and on each fault tab: no ellipsis, no clamp, nothing of it past its box. One of 900, as long
 // as production's longest run, is drawn in eight lines ending in '…', its whole text in its
 // tooltip.
@@ -1728,14 +1737,15 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
           })
         )
       );
-    // Each toolbar's controls by their heights: the row the table's search box stands in, and
-    // every input, select and button drawn in it.
+    // Each toolbar's controls by their heights: each shared control row a table of the page draws
+    // its search box in (`data-control="control-row"`), and every input, select and button drawn
+    // in it.
     const toolbarHeights = () =>
-      page.locator('input[type="search"]').evaluateAll((boxes) =>
-        boxes
-          .filter((box) => box.getBoundingClientRect().height > 0)
-          .map((box) =>
-            [...(box.parentElement?.querySelectorAll("input, select, button") ?? [])]
+      page.locator('[data-control="control-row"]').evaluateAll((rows) =>
+        rows
+          .filter((row) => row.getBoundingClientRect().height > 0)
+          .map((row) =>
+            [...row.querySelectorAll("input, select, button")]
               .filter((control) => control.getBoundingClientRect().height > 0)
               .map((control) => ({
                 height: control.getBoundingClientRect().height,
@@ -1861,6 +1871,105 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
   }
 });
 
+// The New priority form, opened in the priorities table's control row, takes a line of its own
+// there rather than run the row past its width (`NewPriority`, `ControlRow`). At 700 and 720 px
+// wide the row is just over 40rem, the width from which its first line is one line, and that line
+// cannot hold the search box, New priority, the form, Columns and View; at 1280 by 800 it can.
+// At each size, with the form open, the row's scroll width is its client width, and Cancel, the
+// form's last control, stands inside the row's box.
+// SLOW(>=2s): two priorities written, and the page loaded and its form opened at three sizes.
+test("with the New priority form open the priorities control row scrolls nothing sideways at 700, 720 and 1280 px, and Cancel stands inside it", async ({
+  browser,
+}) => {
+  const first = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  const second = await createPriority({ owner: "bob", title: "Cut the review queue" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    const cancel = page
+      .locator('form[aria-label="New priority"]')
+      .getByRole("button", { exact: true, name: "Cancel" });
+    // How far the control row Cancel stands in runs past its own width, and whether Cancel's box
+    // lies inside the row's, to within half a pixel of rounding.
+    const fit = () =>
+      cancel.evaluate((button) => {
+        const row = button.closest('[data-control="control-row"]');
+        if (row === null) throw new Error("Cancel stands in no control row");
+        const box = row.getBoundingClientRect();
+        const own = button.getBoundingClientRect();
+        return {
+          cancelInside: own.left >= box.left - 0.5 && own.right <= box.right + 0.5,
+          past: row.scrollWidth - row.clientWidth,
+        };
+      });
+    for (const size of [{ height: 900, width: 700 }, { height: 900, width: 720 }, DESKTOP]) {
+      await page.setViewportSize(size);
+      await page.goto(PRIORITIES_PATH);
+      await expectRowOrder(page.getByRole("table", { exact: true, name: "Priorities table" }), [
+        `#1 ${first.title}`,
+        `#2 ${second.title}`,
+      ]);
+      await page.getByRole("button", { exact: true, name: "New priority" }).click();
+      await expect(cancel).toBeVisible();
+      soft(
+        await settledValue(`at ${size.width} px: the control row with the form open`, fit),
+        `at ${size.width} px the control row with the New priority form open scrolls nothing sideways, and Cancel stands inside it`
+      ).toEqual({ cancelInside: true, past: 0 });
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// Cancel of the New priority form, pressed from the keyboard, puts the focus back on New
+// priority, the button that opened the form, at every width (`NewPriority`). Left to the control
+// row's hand-off (`ControlRow`), the focus Cancel held went to the page's body at 600 and 640 px,
+// to New priority at 680 px and to Columns from 700 px up. At each size the form is opened with
+// New priority, Cancel takes the focus and Enter presses it, and the focus is on New priority.
+// SLOW(>=2s): two priorities written, and the page loaded and its form opened and cancelled at
+// six sizes.
+test("Cancel of the New priority form puts the keyboard focus back on New priority at 390, 600, 640, 680, 720 and 1280 px", async ({
+  browser,
+}) => {
+  const first = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  const second = await createPriority({ owner: "bob", title: "Cut the review queue" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    const opener = page.getByRole("button", { exact: true, name: "New priority" });
+    const form = page.locator('form[aria-label="New priority"]');
+    const cancel = form.getByRole("button", { exact: true, name: "Cancel" });
+    for (const size of [
+      PHONE,
+      { height: 900, width: 600 },
+      { height: 900, width: 640 },
+      { height: 900, width: 680 },
+      { height: 900, width: 720 },
+      DESKTOP,
+    ]) {
+      await page.setViewportSize(size);
+      await page.goto(PRIORITIES_PATH);
+      await expectRowOrder(page.getByRole("table", { exact: true, name: "Priorities table" }), [
+        `#1 ${first.title}`,
+        `#2 ${second.title}`,
+      ]);
+      await opener.click();
+      await cancel.focus();
+      await expect(cancel).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(form).toHaveCount(0);
+      await soft(
+        opener,
+        `at ${size.width} px Cancel puts the keyboard focus back on New priority`
+      ).toBeFocused();
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 // INFRA-2947 R7 (spec v83 to v85) and check 138e9e4d (Verification v60 to v62), read on a phone,
 // 390 by 844: the priorities tab draws each priority as its place beside one cell, which holds
 // its title, the start of its description, its owner, its three counts under their column names
@@ -1953,7 +2062,7 @@ test("on a phone the priorities tab keeps each place and title together as wide 
           const style = getComputedStyle(node);
           return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden";
         };
-        return [...element.querySelectorAll("tbody tr[data-issue-row]")].map((row, at) => {
+        return [...element.querySelectorAll("tbody tr[data-priority-row]")].map((row, at) => {
           const leaves = [...row.querySelectorAll("*")].filter(
             (node) =>
               shown(node) && node.children.length === 0 && (node.textContent ?? "").trim() !== ""
@@ -2548,21 +2657,27 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
 });
 
 // INFRA-2947 R15 and check 0abe1d81 (Verification v69): a project's Issues tab, the one page
-// outside the priorities pages this change reaches. At 1280 by 800 the search box, each select,
-// Columns, Needs you and Unread each stand 34 px high; at 900 px wide the search box takes a row
-// of its own above the other controls; and at 390 by 844 each of those controls is at least
-// 44 px high.
+// outside the priorities pages this change reaches. At 1280 by 800 the search box, View, Columns
+// and Filters each stand 34 px high; at 900 px wide the search box takes a row of its own above
+// the other controls; and at 390 by 844 each of those controls is at least 44 px high.
 // SLOW(>=2s): a project and one issue written, and the tab read at three sizes.
 test("a project's Issues tab draws its toolbar 34 px high at 1280, its search box on a row of its own at 900, and each control 44 px or more on a phone", async ({
   browser,
 }) => {
   await createProject({ key: "TOOLS", name: "Tools" });
   await createIssue({ project: "TOOLS", title: "An issue the table draws" });
-  // Each control of the toolbar the search box stands in, by its name and its box: the box
-  // itself, the select by the words of the label it stands in (`Group by`), and each button.
+  // Each control of the toolbar the search box stands in, by its name and its box: the shared
+  // control row (`data-control="control-row"`), the search box itself and each button in it.
+  // Group by is a section of the row's display menu, so its control is that menu's trigger,
+  // `View`; Needs you and Unread are in the row's filter panel, so their control is that panel's
+  // trigger, `Filters` (dispatch://INFRA-3135, R2).
   const toolbar = (page: Page) =>
     page.getByRole("searchbox", { exact: true, name: "Search issues" }).evaluate((box) =>
-      [...(box.parentElement?.querySelectorAll("input, select, button") ?? [])]
+      [
+        ...(box
+          .closest('[data-control="control-row"]')
+          ?.querySelectorAll("input, select, button") ?? []),
+      ]
         .filter((control) => control.getBoundingClientRect().height > 0)
         .map((control) => {
           const rect = control.getBoundingClientRect();
@@ -2580,7 +2695,7 @@ test("a project's Issues tab draws its toolbar 34 px high at 1280, its search bo
           };
         })
     );
-  const named = ["Search issues", "Group by", "Columns", "Needs you", "Unread"];
+  const named = ["Search issues", "View", "Columns", "Filters"];
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
