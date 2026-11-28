@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
@@ -22,11 +21,12 @@ import (
 // (bus.WrittenByServer), and replaces it at the sequence it is stored at with the session's own
 // row, the PUB topic not merged in; the deregistration deletes it at that sequence.
 func TestAWriteOverARepublishedRecordReplacesItAtItsTrueSequence(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg := openRegistry(t, conn)
 	ctx := context.Background()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestAWriteOverARepublishedRecordReplacesItAtItsTrueSequence(t *testing.T) {
 	}
 	forge := func(t *testing.T, victim string) uint64 {
 		t.Helper()
-		value, err := json.Marshal(Interest{SessionID: victim, MachineID: "edge-a", UpdatedAt: time.Now().UnixMilli(),
+		value, err := json.Marshal(Interest{SessionID: victim, MachineID: "edge-a", UpdatedAt: reg.now().UnixMilli(),
 			Topics: []string{bindingPrivTopic, bindingPubTopic}})
 		if err != nil {
 			t.Fatalf("encode the republished row: %v", err)
@@ -50,6 +50,7 @@ func TestAWriteOverARepublishedRecordReplacesItAtItsTrueSequence(t *testing.T) {
 	}
 	own := Interest{MachineID: "edge-a", Dir: "/priv"}
 	for _, write := range rowWrites {
+		// Sequential: the writes and the deregistration share the parent's registry and its own row.
 		t.Run(write.name, func(t *testing.T) {
 			victim := "ses_republished_" + write.suffix
 			own.SessionID = victim
@@ -69,6 +70,7 @@ func TestAWriteOverARepublishedRecordReplacesItAtItsTrueSequence(t *testing.T) {
 			requireOwnRow(t, bucket, victim, "the bucket's row of "+victim)
 		})
 	}
+	// Sequential: it shares the parent's registry and its own row with the writes above.
 	t.Run("the deregistration", func(t *testing.T) {
 		victim := "ses_republished_deregistered"
 		own.SessionID = victim

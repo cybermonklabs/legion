@@ -36,6 +36,7 @@ func (kv interestCopyBehindKV) Get(key string) (natsgo.KeyValueEntry, error) {
 // interest reaper. Control: with a current copy the same delete removes the record, so a row
 // fails only for the copy behind.
 func TestAnInterestDeleteRemovesTheRecordACopyBehindAnswers(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_interest_copy_behind"
 	for _, tc := range []struct {
 		name   string
@@ -46,6 +47,7 @@ func TestAnInterestDeleteRemovesTheRecordACopyBehindAnswers(t *testing.T) {
 		{"control: a current copy answers the row the bucket holds", func(_, latest natsgo.KeyValueEntry) natsgo.KeyValueEntry { return latest }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
 			r := openRegistry(t, conn)

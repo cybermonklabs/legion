@@ -14,6 +14,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
@@ -60,9 +61,12 @@ func (kv *racingInterestWrite) racing() {
 // drop every topic the row that won holds - each one a topic the registration that stored it was
 // answered 200 for - with nothing to put them back.
 func TestAnInterestWriteIsRefusedByARowStoredUnderTheRevisionItRead(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg, kv := coldRegistry(t, conn)
+	// The rows this stores and the plan that weighs them read one clock, a fake that nothing moves.
+	reg.now = clocktest.New(registryClockStart).Now
 
 	const sessionID = "ses_interest_cas"
 	const planned, won = "notifications.planned", "notifications.won"
@@ -111,9 +115,12 @@ func TestAnInterestWriteIsRefusedByARowStoredUnderTheRevisionItRead(t *testing.T
 // took at the first attempt from one it refused: the row the bucket holds afterwards is what
 // says the write was conditional at all.
 func TestAMergingInterestWriteIsBuiltAgainOverARowStoredUnderTheRevisionItRead(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg, kv := coldRegistry(t, conn)
+	// The rows this stores and the write that weighs them read one clock, a fake that nothing moves.
+	reg.now = clocktest.New(registryClockStart).Now
 
 	const sessionID = "ses_interest_merge_cas"
 	const merging, won = "notifications.merging", "notifications.won"

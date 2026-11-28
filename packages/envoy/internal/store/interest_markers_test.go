@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -13,21 +14,23 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// captureJSONLogs routes slog.Default() into a buffer for the test and decodes the records back, so
-// a test asserts a line's fields rather than its rendering. Open takes slog.Default() as the
-// registry's logger and hands it to its cache watcher, and a collector takes the registry's, so
-// the pass's lines and the cache's warm-up line both land here when it runs before Open.
-func captureJSONLogs(t *testing.T) func() []map[string]any {
+// ownJSONLogs is a logger of the test's own that writes JSON records at DEBUG and up, and a
+// function that decodes the records it has written so far, so a test asserts a line's fields
+// rather than its rendering. Open takes the logger through WithLogger and hands it to its cache
+// watcher, and a collector takes the registry's (Registry.logger), so the pass's lines and the
+// cache's warm-up line both land there. The process's default logger stays as it was, so the test
+// runs beside the others (ownLogs is the same in text).
+func ownJSONLogs(t *testing.T) (func() []map[string]any, *slog.Logger) {
 	t.Helper()
 	logs := &lockedBuffer{}
-	logtest.SetDefault(t, slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	return func() []map[string]any {
+	records := func() []map[string]any {
 		var records []map[string]any
 		for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
 			if line == "" {
@@ -41,10 +44,12 @@ func captureJSONLogs(t *testing.T) func() []map[string]any {
 		}
 		return records
 	}
+	return records, slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
 // collectorOf is the collector StartInterestMarkerCollector runs, without its ticker, so a test
-// drives its passes one at a time.
+// drives its passes one at a time. Its scan's idle bound is the production one, on the registry's
+// timer clock: openRegistry's is a fake nothing moves, so a scan there ends at the bucket's end.
 func collectorOf(registry *Registry) *interestMarkerCollector {
 	return &interestMarkerCollector{registry: registry, log: registry.logger(), scanIdle: kvwatch.ScanIdleTimeout}
 }
@@ -68,7 +73,7 @@ func jsonRecord(t *testing.T, records []map[string]any, msg string) map[string]a
 // finds it already there.
 func rawInterestBucket(t *testing.T, conn *natsgo.Conn) (natsgo.JetStreamContext, natsgo.KeyValue) {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -149,14 +154,19 @@ func bucketOps(t *testing.T, kv natsgo.KeyValue) map[string]natsgo.KeyValueOp {
 	return nil
 }
 
-// openRegistry opens the registry on conn and waits for its interest cache.
-func openRegistry(t *testing.T, conn *natsgo.Conn) *Registry {
+// openRegistry opens the registry on conn (openOnScanClock) and waits for its interest cache. Its
+// clock and its loops' timer clock are one fake standing at registryClockStart that nothing moves
+// (WithClock, WithTimerClock): a row it stamps reads that fake, no chunked write of its runs past
+// kvchunk.WriteBound on the machine's clock, and a collection pass's scan (collectorOf) ends at the
+// bucket's end, never at its idle bound. options follow those, so a case's own WithLogger or
+// WithClock wins.
+func openRegistry(t *testing.T, conn *natsgo.Conn, options ...OpenOption) *Registry {
 	t.Helper()
-	registry, err := Open(t.Context(), conn, WithReplicas(1))
+	fake := clocktest.New(registryClockStart)
+	registry, err := openOnScanClock(t, t.Context(), conn, append([]OpenOption{WithReplicas(1), WithClock(fake.Now), WithTimerClock(fake)}, options...)...)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(registry.StopWatch)
 	waitFor(t, registry.watcher.Ready)
 	return registry
 }
@@ -167,6 +177,7 @@ func openRegistry(t *testing.T, conn *natsgo.Conn) *Registry {
 // the lowest revision the pass's own scan of the stream saw as a PUT, so nothing below it belongs
 // to a live key (the bucket keeps one message per subject).
 func TestAPassCollectsTheDeleteMarkersAndKeepsEveryLiveKey(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	js, kv := rawInterestBucket(t, conn)
@@ -177,8 +188,8 @@ func TestAPassCollectsTheDeleteMarkersAndKeepsEveryLiveKey(t *testing.T) {
 	seedMarkers(t, kv, markers)
 	revisions := seedLive(t, kv, live)
 
-	records := captureJSONLogs(t)
-	registry := openRegistry(t, conn)
+	records, logger := ownJSONLogs(t)
+	registry := openRegistry(t, conn, WithLogger(logger))
 
 	// The cost the restart pays today, off the registry's own warm-up line.
 	warmUp := jsonRecord(t, records(), "interest registry cache warm-up")
@@ -246,6 +257,7 @@ func TestAPassCollectsTheDeleteMarkersAndKeepsEveryLiveKey(t *testing.T) {
 // A write between the scan and the purge lands above the floor and survives it, whichever write it
 // is: the floor is a sequence the scan already saw, and the bucket only hands out higher ones.
 func TestWritesBetweenTheScanAndThePurgeSurvive(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	js, kv := rawInterestBucket(t, conn)
@@ -299,14 +311,14 @@ func TestWritesBetweenTheScanAndThePurgeSurvive(t *testing.T) {
 // everything). The two reads are compared for exactly this; here the replacement's sequence space
 // is lower as well, and the creation time, which bounds identity, is what the pass reports.
 func TestAPassWhoseScanReadAReplacedStreamPurgesNothing(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	js, kv := rawInterestBucket(t, conn)
 	seedMarkers(t, kv, 12)
 	seedLive(t, kv, 3)
-	// Before Open: the registry takes slog.Default() as its logger when it opens.
-	records := captureJSONLogs(t)
-	registry := openRegistry(t, conn)
+	records, logger := ownJSONLogs(t)
+	registry := openRegistry(t, conn, WithLogger(logger))
 
 	purged, err := collectorOf(registry).pass(js, func(pass *interestPass) {
 		if err := js.DeleteKeyValue(bus.InterestBucket); err != nil {
@@ -334,13 +346,14 @@ func TestAPassWhoseScanReadAReplacedStreamPurgesNothing(t *testing.T) {
 // The same guard from the other side: a floor above the stream's last sequence is refused, because
 // that is the one value that makes an unfiltered purge delete every message in the bucket.
 func TestAFloorAboveTheStreamsLastSequencePurgesNothing(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	js, kv := rawInterestBucket(t, conn)
 	seedMarkers(t, kv, 6)
 	seedLive(t, kv, 3)
-	records := captureJSONLogs(t)
-	registry := openRegistry(t, conn)
+	records, logger := ownJSONLogs(t)
+	registry := openRegistry(t, conn, WithLogger(logger))
 	before := bucketState(t, js, bus.InterestBucket)
 
 	purged, err := collectorOf(registry).pass(js, func(pass *interestPass) {
@@ -366,13 +379,14 @@ func TestAFloorAboveTheStreamsLastSequencePurgesNothing(t *testing.T) {
 // unchanged, is what a JetStream restore leaves: the creation time is the snapshot's, so it says
 // nothing, and only the sequences do. The pass refuses.
 func TestASequenceSpaceThatMovedBackwardsPurgesNothing(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	js, kv := rawInterestBucket(t, conn)
 	seedMarkers(t, kv, 6)
 	seedLive(t, kv, 3)
-	records := captureJSONLogs(t)
-	registry := openRegistry(t, conn)
+	records, logger := ownJSONLogs(t)
+	registry := openRegistry(t, conn, WithLogger(logger))
 	before := bucketState(t, js, bus.InterestBucket)
 
 	purged, err := collectorOf(registry).pass(js, func(pass *interestPass) {
@@ -404,6 +418,7 @@ func TestASequenceSpaceThatMovedBackwardsPurgesNothing(t *testing.T) {
 // Only the creation time tells the two streams apart, so it bounds identity where the sequences
 // cannot.
 func TestAPassWhoseStreamWasReplacedFromTheSameFirstSequencePurgesNothing(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	js, kv := rawInterestBucket(t, conn)
@@ -411,8 +426,8 @@ func TestAPassWhoseStreamWasReplacedFromTheSameFirstSequencePurgesNothing(t *tes
 		t.Fatalf("delete a key that was never put: %v", err)
 	}
 	seedLive(t, kv, 2)
-	records := captureJSONLogs(t)
-	registry := openRegistry(t, conn)
+	records, logger := ownJSONLogs(t)
+	registry := openRegistry(t, conn, WithLogger(logger))
 	if original := bucketState(t, js, bus.InterestBucket); original.FirstSeq != 1 || original.LastSeq != 3 {
 		t.Fatalf("the original stream runs %d-%d, want 1-3", original.FirstSeq, original.LastSeq)
 	}
@@ -458,14 +473,17 @@ func TestAPassWhoseStreamWasReplacedFromTheSameFirstSequencePurgesNothing(t *tes
 // itself; the read after the purge only counts what it removed, so the purge is logged as done
 // with its count unknown.
 func TestAPassThatCannotReadTheStreamSaysWhichReadFailed(t *testing.T) {
+	t.Parallel()
+	// Each subtest reads a bucket of its own account (connectNATS) through a registry of its own.
 	t.Run("the first read", func(t *testing.T) {
+		t.Parallel()
 		conn, cleanup := connectNATS(t)
 		defer cleanup()
 		js, kv := rawInterestBucket(t, conn)
 		seedMarkers(t, kv, 3)
 		seedLive(t, kv, 2)
-		records := captureJSONLogs(t)
-		registry := openRegistry(t, conn)
+		records, logger := ownJSONLogs(t)
+		registry := openRegistry(t, conn, WithLogger(logger))
 		if err := js.DeleteKeyValue(bus.InterestBucket); err != nil {
 			t.Fatalf("delete the interest bucket: %v", err)
 		}
@@ -478,13 +496,14 @@ func TestAPassThatCannotReadTheStreamSaysWhichReadFailed(t *testing.T) {
 		}
 	})
 	t.Run("the second read", func(t *testing.T) {
+		t.Parallel()
 		conn, cleanup := connectNATS(t)
 		defer cleanup()
 		js, kv := rawInterestBucket(t, conn)
 		seedMarkers(t, kv, 3)
 		seedLive(t, kv, 2)
-		records := captureJSONLogs(t)
-		registry := openRegistry(t, conn)
+		records, logger := ownJSONLogs(t)
+		registry := openRegistry(t, conn, WithLogger(logger))
 		purged, _ := collectorOf(registry).pass(js, func(*interestPass) {
 			if err := js.DeleteKeyValue(bus.InterestBucket); err != nil {
 				t.Fatalf("delete the interest bucket: %v", err)
@@ -502,13 +521,14 @@ func TestAPassThatCannotReadTheStreamSaysWhichReadFailed(t *testing.T) {
 		}
 	})
 	t.Run("the read after the purge", func(t *testing.T) {
+		t.Parallel()
 		conn, cleanup := connectNATS(t)
 		defer cleanup()
 		js, kv := rawInterestBucket(t, conn)
 		seedMarkers(t, kv, 3)
 		seedLive(t, kv, 2)
-		records := captureJSONLogs(t)
-		registry := openRegistry(t, conn)
+		records, logger := ownJSONLogs(t)
+		registry := openRegistry(t, conn, WithLogger(logger))
 		gone := purgeThenDelete{JetStreamContext: js, bucket: bus.InterestBucket}
 		if _, err := collectorOf(registry).pass(gone, nil); err == nil {
 			t.Fatal("a pass whose purged stream could not be read returned no error")
@@ -546,6 +566,7 @@ func (j purgeThenDelete) PurgeStream(name string, opts ...natsgo.JSOpt) error {
 // above it and the purge would delete it; a floor taken from the bucket's own scan protects it,
 // because the scan reads operations and revisions and never a value.
 func TestAnUndecodableLiveValueIsKept(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	js, kv := rawInterestBucket(t, conn)
@@ -580,6 +601,7 @@ func TestAnUndecodableLiveValueIsKept(t *testing.T) {
 // and says so, and the listener stays healthy: a timed-out warm-up is not a dead cache, so Ping,
 // WatchErr and the /healthz answer built on them report no fault and nothing rebuilds the watcher.
 func TestAPassWhoseScanTimedOutPurgesNothingAndLeavesTheRegistryHealthy(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	js, kv := rawInterestBucket(t, conn)
@@ -595,30 +617,80 @@ func TestAPassWhoseScanTimedOutPurgesNothingAndLeavesTheRegistryHealthy(t *testi
 	if err != nil {
 		t.Fatalf("wrap the interest bucket: %v", err)
 	}
-	// Every watch of the bucket, the warm-up's and the pass's scan, stalls after two entries, and
-	// both idle bounds are short, so both time out.
-	const idle = 200 * time.Millisecond
-	records := captureJSONLogs(t)
+	// Every watch of the bucket, the warm-up's and the pass's scan, stalls after two entries, so
+	// each ends at its idle bound, the production one (kvwatch.ScanIdleTimeout), on a fake the case
+	// moves past it. The watchers wait on scans (kvwatch.WithAfterFunc, kvwatch.WithNow), and probe
+	// their streams on no period, so nothing else of theirs is armed there; the pass waits on the
+	// registry's timer clock, timers (Registry.timers), which is also its clock. Two fakes, so the
+	// move that ends the pass's scan does not fire the re-read the timed-out warm-up arms on scans
+	// (kvwatch's rereadDelay): the warm-up line read below is that warm-up's alone.
+	scans, timers := clocktest.New(registryClockStart), clocktest.New(registryClockStart)
+	records, logger := ownJSONLogs(t)
+	watchOn := []kvwatch.Option{
+		kvwatch.WithAfterFunc(func(d time.Duration, f func()) kvwatch.Timer { return scans.AfterFunc(d, f) }),
+		kvwatch.WithNow(scans.Now),
+		kvwatch.WithStreamProbeInterval(0),
+		kvwatch.WithLogger(logger),
+	}
 	roles, err := bus.WrapKeyValue(conn, roleKV)
 	if err != nil {
 		t.Fatalf("wrap the role bucket: %v", err)
 	}
-	registry := &Registry{roleKV: roles, now: time.Now, index: newSubjectIndex()}
+	registry := &Registry{roleKV: roles, log: logger, now: timers.Now, timers: timers, index: newSubjectIndex()}
 	registry.cache = newInterestCopy(registry)
 	registry.chunks = kvchunk.NewChunks(registry.now)
 	registry.roleHolders = newRoleHolderCopy(registry)
 	handle := bus.NewKeyValue(kv, earlyEndKV{KeyValue: interests.WatchHandle(), after: 2}, interests.Streams())
-	registry.watcher = kvwatch.New("interest registry", handle, interestCache{registry}, kvwatch.WithScanIdleTimeout(idle))
-	registry.roleWatcher = kvwatch.New("role claims", roles, roleCache{registry})
+	registry.watcher = kvwatch.New("interest registry", handle, interestCache{registry}, watchOn...)
+	registry.roleWatcher = kvwatch.New("role claims", roles, roleCache{registry}, watchOn...)
 	t.Cleanup(registry.StopWatch)
 	registry.watcher.Start()
 	registry.roleWatcher.Start()
-	waitFor(t, registry.watcher.Ready)
+	// The empty role bucket's scan ends at its end, which stops its idle wait.
 	waitFor(t, registry.roleWatcher.Ready)
+	// The warm-up has taken the two entries its scan delivers once the copy's fence holds a revision
+	// for each (kvwatch.Copy keeps one for a delete marker too). Its scan delivers nothing after
+	// them, so its idle wait, armed as its watch began, ends it once scans has moved past the bound.
+	testwait.Until(t, "the interest watcher's warm-up to take the two entries its stalled scan delivers", func() (string, bool) {
+		registry.mu.RLock()
+		defer registry.mu.RUnlock()
+		fenced := registry.cache.FenceLen()
+		return fmt.Sprintf("the copy's fence holds %d keys", fenced), fenced >= 2
+	})
+	scans.AwaitArmedAt(t, "the warm-up scan's idle wait", registryClockStart.Add(kvwatch.ScanIdleTimeout))
+	scans.Advance(kvwatch.ScanIdleTimeout)
+	waitFor(t, registry.watcher.Ready)
 
 	collector := collectorOf(registry)
-	collector.scanIdle = idle
-	purged, err := collector.pass(js, nil)
+	type passed struct {
+		purged uint64
+		err    error
+	}
+	done := make(chan passed, 1)
+	go func() {
+		purged, err := collector.pass(js, nil)
+		done <- passed{purged: purged, err: err}
+	}()
+	// The pass's scan arms its idle bound on timers, and again at each entry it takes, from the
+	// fake's present; nothing else is armed there. So the case moves timers to the bound pending
+	// until the pass returns: a bound armed again by an entry taken after a move is moved to at the
+	// next look.
+	var result passed
+	testwait.Until(t, "the pass to return once the registry's timer clock is past its scan's idle bound", func() (string, bool) {
+		select {
+		case result = <-done:
+			return "the pass returned", true
+		default:
+		}
+		armed, moved := timers.SetWhen(func(_ time.Time, armed []time.Time) (time.Time, bool) {
+			if len(armed) == 0 {
+				return time.Time{}, false
+			}
+			return armed[0], true
+		})
+		return fmt.Sprintf("armed on the registry's timer clock: %v (moved: %t)", armed, moved), false
+	})
+	purged, err := result.purged, result.err
 	if err != nil {
 		t.Fatalf("pass: %v", err)
 	}
@@ -655,9 +727,11 @@ func TestAPassWhoseScanTimedOutPurgesNothingAndLeavesTheRegistryHealthy(t *testi
 // was, logs one WARN however many passes run, and keeps the cache healthy (LEGION-374); the
 // deployed listeners connect under the deployment repository's `envoyNatsAuthorization`.
 func TestThePurgeSendsTheStreamPurgeSubjectItsGrantMustAllow(t *testing.T) {
+	t.Parallel()
 	// Each subtest starts a server of its own (startGrantedServer), whose grant names the purge
 	// subject of the interest bucket.
 	t.Run("a grant that allows it purges, and the trace names the subject", func(t *testing.T) {
+		t.Parallel()
 		purgeSubject := "$JS.API.STREAM.PURGE.KV_" + bus.InterestBucket
 		granted := startGrantedServer(t, nil)
 		purged, err := collectorOf(granted.registry).pass(granted.js, nil)
@@ -679,25 +753,27 @@ func TestThePurgeSendsTheStreamPurgeSubjectItsGrantMustAllow(t *testing.T) {
 	})
 
 	t.Run("a grant that denies it purges nothing, warns once and stays healthy", func(t *testing.T) {
+		t.Parallel()
 		purgeSubject := "$JS.API.STREAM.PURGE.KV_" + bus.InterestBucket
-		records := captureJSONLogs(t)
-		granted := startGrantedServer(t, []string{purgeSubject})
+		records, logger := ownJSONLogs(t)
+		granted := startGrantedServer(t, []string{purgeSubject}, WithLogger(logger))
 		before := bucketState(t, granted.js, bus.InterestBucket)
-		// The server answers a purge the grant refuses with nothing, so the passes purge through a
-		// context that waits a second; on granted.js each pass would wait out its whole 10 s.
-		// nats.go's PurgeStream ignores a per-call wait, so the bound has to be the context's.
-		refusedPurgeJS, err := granted.conn.JetStream(natsgo.MaxWait(time.Second))
-		if err != nil {
-			t.Fatalf("jetstream for the refused purge: %v", err)
-		}
 		// One collector for both passes, as the listener runs one: its latch is what says once.
 		collector := collectorOf(granted.registry)
 		for pass := range 2 {
-			purged, err := collector.pass(refusedPurgeJS, nil)
-			if err == nil || purged != 0 {
-				t.Fatalf("pass %d under a grant that denies the purge = %d, %v; want no purge and the error", pass, purged, err)
+			refused := granted.refusedPurge(t, collector)
+			if refused.err == nil || refused.purged != 0 {
+				t.Fatalf("pass %d under a grant that denies the purge = %d, %v; want no purge and the error", pass, refused.purged, refused.err)
 			}
-			t.Logf("pass %d: %v", pass, err)
+			// The purge ended because the case closed its connection on the server's refusal, and on
+			// nothing else: a purge that failed for another cause is not the refused one.
+			if !errors.Is(refused.err, natsgo.ErrConnectionClosed) {
+				t.Fatalf("pass %d under a grant that denies the purge failed with %v, want the closed connection its refusal ended (%v)", pass, refused.err, natsgo.ErrConnectionClosed)
+			}
+			if !errors.Is(refused.violation, natsgo.ErrPermissionViolation) || !strings.Contains(refused.violation.Error(), purgeSubject) {
+				t.Fatalf("pass %d: the purge's connection reported %v, want the server's permissions violation for %s", pass, refused.violation, purgeSubject)
+			}
+			t.Logf("pass %d: %v (the server: %v)", pass, refused.err, refused.violation)
 		}
 		if state := bucketState(t, granted.js, bus.InterestBucket); state.Msgs != before.Msgs || state.NumSubjects != before.NumSubjects {
 			t.Fatalf("a refused purge changed the bucket: %d messages and %d subjects, want %d and %d",
@@ -707,6 +783,8 @@ func TestThePurgeSendsTheStreamPurgeSubjectItsGrantMustAllow(t *testing.T) {
 		if refusal["level"] != "WARN" {
 			t.Fatalf("a refused purge logged %v, want one WARN for two passes", refusal)
 		}
+		// The server traces the -ERR of each refusal before it sends it, so both passes' lines are in
+		// its log by the time their connections reported them; traceThrough adds the registry's own.
 		var violations []string
 		for _, line := range granted.traceThrough(t) {
 			if strings.Contains(line, "Permissions Violation for Publish to") {
@@ -732,22 +810,84 @@ func TestThePurgeSendsTheStreamPurgeSubjectItsGrantMustAllow(t *testing.T) {
 	})
 }
 
+// refusedPass is what one pass refusedPurge ran returned, and the error the connection its purge
+// went through reported to its error handler.
+type refusedPass struct {
+	purged    uint64
+	err       error
+	violation error
+}
+
+// refusedPurge runs one pass of collector whose purge goes through a connection of its own to the
+// granted server, as the grant's user (testnats.AwaitConnectSeed, which sets NoReconnect). The
+// server answers a purge the grant denies with no reply, only the permissions violation it sends
+// that connection, which nats.go hands the connection's error handler; the handler hands it to the
+// test, which then closes the connection on a goroutine of its own, so no callback waits on the
+// connection it closes. The close ends the purge's request at once: nats.go clears every pending
+// request of a connection it closes, and the request answers natsgo.ErrConnectionClosed. A closed
+// connection sends no second purge, so each pass takes a connection of its own.
+func (g grantedServer) refusedPurge(t *testing.T, collector *interestMarkerCollector) refusedPass {
+	t.Helper()
+	// reports carries the error the handler reported, or nil once the pass returned first, which
+	// only a purge the server did not refuse lets it do.
+	reports := make(chan error, 1)
+	conn, err := testnats.AwaitConnectSeed(t, g.url, g.seed, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
+		select {
+		case reports <- err:
+		default:
+		}
+	}))
+	if err != nil {
+		t.Fatalf("connect to the granted NATS for the refused purge: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream(testnats.MaxWait(t))
+	if err != nil {
+		t.Fatalf("jetstream for the refused purge: %v", err)
+	}
+	type passed struct {
+		purged uint64
+		err    error
+	}
+	done := make(chan passed, 1)
+	go func() {
+		purged, err := collector.pass(js, nil)
+		done <- passed{purged: purged, err: err}
+		select {
+		case reports <- nil:
+		default:
+		}
+	}()
+	violation := testwait.Receive(t, "the granted server's refusal of the purge, which the purge's connection hands its error handler", reports)
+	if violation == nil {
+		result := <-done
+		t.Fatalf("the pass returned %d, %v before the server refused its purge", result.purged, result.err)
+	}
+	go conn.Close()
+	result := testwait.Receive(t, "the pass to return once the connection its purge waits on is closed", done)
+	return refusedPass{purged: result.purged, err: result.err, violation: violation}
+}
+
 // grantedServer is a tracing NATS server with one nkey user, the connection a test's registry and
-// passes share, and the interest bucket on that server.
+// passes share, and the interest bucket on that server, with the server's URL and the user's seed
+// for a connection of a pass's own (refusedPurge).
 type grantedServer struct {
 	srv      *testnats.Server
+	url      string
+	seed     string
 	conn     *natsgo.Conn
 	registry *Registry
-	// js waits as long as the listener's own context does (10 s, internal/bus): on a loaded machine
-	// a seeding put can take more than a second.
+	// js waits for an answer as long as the test's own waits do (testnats.MaxWait): on a loaded
+	// machine a seeding put can take more than a second.
 	js natsgo.JetStreamContext
 	kv natsgo.KeyValue
 }
 
 // startGrantedServer starts a tracing NATS server whose one nkey user may publish to everything
 // except deny, opens a registry on it as the listener does (one connection, its own JetStream
-// context) and seeds the interest bucket with markers behind live keys.
-func startGrantedServer(t *testing.T, deny []string) grantedServer {
+// context), with options (openRegistry), and seeds the interest bucket with markers behind live
+// keys.
+func startGrantedServer(t *testing.T, deny []string, options ...OpenOption) grantedServer {
 	t.Helper()
 	seed, public := testnats.User(t)
 	quoted := make([]string, len(deny))
@@ -760,12 +900,12 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 	srv, uri := testnats.StartConfig(t, config, []string{"-DV", "-js"}, false)
 	// StartConfig returned once the server refused a credential-less client with its own
 	// authorization violation, so it is up, speaking the client protocol and enforcing this user.
-	conn, err := testnats.ConnectSeed(t, uri, seed)
+	conn, err := testnats.AwaitConnectSeed(t, uri, seed)
 	if err != nil {
 		t.Fatalf("connect to the granted NATS: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(10 * time.Second))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -776,21 +916,13 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 	}
 	seedMarkers(t, kv, 6)
 	seedLive(t, kv, 3)
-	registry, err := Open(t.Context(), conn, WithReplicas(1))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(registry.StopWatch)
-	waitFor(t, registry.watcher.Ready)
-	return grantedServer{srv: srv, conn: conn, registry: registry, js: js, kv: kv}
+	registry := openRegistry(t, conn, options...)
+	return grantedServer{srv: srv, url: uri, seed: seed, conn: conn, registry: registry, js: js, kv: kv}
 }
 
 // traceSentinels numbers the sentinels traceThrough publishes, so each call waits for its own
 // sentinel's line rather than for one an earlier call on the same server put in the log.
 var traceSentinels atomic.Uint64
-
-// traceWait bounds how long traceThrough waits for the sentinel's line to reach the server's log.
-const traceWait = 5 * time.Second
 
 // traceThrough publishes a sentinel on the server's connection and returns every line of the
 // server's log once the sentinel's own trace line is in it. The server traces a connection's
@@ -798,32 +930,29 @@ const traceWait = 5 * time.Second
 // permissions violation) before it reads the next. It writes each of those lines from the
 // goroutine reading that connection, a moment after the publish that caused it returns, so a read
 // taken as soon as a pass returns can miss the pass's last lines. Once the sentinel's line is in
-// the log, every line for what the connection sent before it is there too. Past traceWait it fails
-// the test, naming the sentinel's line and every publish the server traced.
+// the log, every line for what the connection sent before it is there too. A wait that gives up
+// names the sentinel's line and every publish the server traced.
 func (g grantedServer) traceThrough(t *testing.T) []string {
 	t.Helper()
 	sentinel := fmt.Sprintf("trace.sentinel.%d", traceSentinels.Add(1))
 	if err := g.conn.Publish(sentinel, nil); err != nil {
 		t.Fatalf("publish the trace sentinel: %v", err)
 	}
-	if err := g.conn.Flush(); err != nil {
+	if err := g.conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the trace sentinel: %v", err)
 	}
 	want := "[PUB " + sentinel + " "
-	deadline := time.Now().Add(traceWait)
-	for {
+	var log string
+	testwait.Until(t, fmt.Sprintf("the server's log to hold a line with %q", want), func() (string, bool) {
 		// The sentinel holds no newline, so the whole log answers what a line of it would; the
 		// split is left to the way out.
-		log := g.srv.Log()
+		log = g.srv.Log()
 		if strings.Contains(log, want) {
-			return strings.Split(log, "\n")
+			return "", true
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server's log holds no line with %q after %s. Every publish it traced:\n%s",
-				want, traceWait, strings.Join(tracedPublishLines(strings.Split(log, "\n")), "\n"))
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return "every publish it traced:\n" + strings.Join(tracedPublishLines(strings.Split(log, "\n")), "\n"), false
+	})
+	return strings.Split(log, "\n")
 }
 
 // tracedPublish matches the line a tracing server writes for each publish a client sends,

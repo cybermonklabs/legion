@@ -53,6 +53,7 @@ func requireMatchesEvery(t *testing.T, what string, view, registered []string) {
 // subject the full list does: that listener keeps serving and counting the session rather than
 // evicting it as a record it cannot decode. This build reads the same manifest as the full record.
 func TestAnEarlierBuildReadsAChunkedRecordAsTheSameSession(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	registered := overlapTopics()
@@ -91,6 +92,7 @@ func TestAnEarlierBuildReadsAChunkedRecordAsTheSameSession(t *testing.T) {
 // other covers. `notifications.>` names no subject family the stream stores, so a session consumer's
 // filter leaves it out and it covers nothing (TestAWildcardTheConsumerFilterLeavesOutCoversNothing).
 func TestCoveringTopicsDropsOnlyWhatAnotherTopicCovers(t *testing.T) {
+	t.Parallel()
 	lane := contracts.RoleTopicPrefix + "legion-controller"
 	got := CoveringTopics([]string{
 		"notifications.team.a.>", "notifications.team.a.b", "notifications.team.a.b.c",
@@ -121,6 +123,7 @@ func TestCoveringTopicsDropsOnlyWhatAnotherTopicCovers(t *testing.T) {
 // A view takes the covering topics when they fit, falls back to the consumer filter's reduction
 // beside the role lanes when they do not, and is bus.ErrTooLarge when neither fits the room.
 func TestAChunkedRecordViewFallsBackToTheReductionThenRefuses(t *testing.T) {
+	t.Parallel()
 	lane := contracts.RoleTopicPrefix + "legion-controller"
 	var topics []string
 	for i := range 200 {
@@ -159,6 +162,7 @@ func TestAChunkedRecordViewFallsBackToTheReductionThenRefuses(t *testing.T) {
 // (cmd/listener's too_large), so the bound is the one a session consumer is already held to, not a
 // new one. The control is the same topics under a covering wildcard, stored in chunks.
 func TestARecordWithNoViewThatFitsIsRefusedAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	kv := rawInterests(t, conn)
@@ -196,6 +200,7 @@ func carriedFilter(topics []string) []string {
 // such a wildcard would leave that consumer filtering on none of them. The control is a wildcard
 // the filter carries, which covers them.
 func TestAWildcardTheConsumerFilterLeavesOutCoversNothing(t *testing.T) {
+	t.Parallel()
 	under := []string{"notifications.team.deploy", "notifications.team.build.x"}
 	for _, wildcard := range []string{"*.team.>", "notifications.team.>.x"} {
 		got := CoveringTopics(append([]string{wildcard}, under...))
@@ -218,6 +223,7 @@ func TestAWildcardTheConsumerFilterLeavesOutCoversNothing(t *testing.T) {
 // never widens to `>`, which an earlier build's index would match against every subject - another
 // project's controller notices among them. A topic the filter does not carry stays as it is.
 func TestTheReductionFallbackReducesOnlyWhatTheConsumerFilterCarries(t *testing.T) {
+	t.Parallel()
 	lane := contracts.RoleTopicPrefix + "legion-controller"
 	var topics []string
 	for i := range 150 {
@@ -255,6 +261,7 @@ func TestTheReductionFallbackReducesOnlyWhatTheConsumerFilterCarries(t *testing.
 // build that gives the stream a subject over the role lanes fails here, and CoveringTopics must
 // then keep role lanes by name.
 func TestNoStreamSubjectContainsARoleLane(t *testing.T) {
+	t.Parallel()
 	lanes := []string{contracts.RoleTopicPrefix + "legion-controller", contracts.RoleTopicPrefix + "INFRA.legion-controller"}
 	for _, subject := range bus.StreamCarriedSubjects() {
 		for _, lane := range lanes {
