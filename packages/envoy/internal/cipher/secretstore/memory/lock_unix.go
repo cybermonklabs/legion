@@ -7,6 +7,9 @@ import (
 	"syscall"
 )
 
+// fileLockMissing is nil: this system has flock, the lock between processes the writer takes.
+func fileLockMissing() error { return nil }
+
 // lockFile takes an exclusive flock on path, made if absent, and answers its release: every
 // writer of one memory secrets file, in this process or another, takes it around its write.
 func lockFile(path string) (unlock func(), err error) {

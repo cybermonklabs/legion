@@ -101,8 +101,12 @@ func (Backend) ProfileHint() (secretstore.ProfileHint, bool) { return secretstor
 // settingsFile is the memory store's settings field naming its file.
 const settingsFile = "memory_secrets_file"
 
-// OpenWriter opens the writer over the file the broker's settings name (memory_secrets_file).
+// OpenWriter opens the writer over the file the broker's settings name (memory_secrets_file). On a
+// system without a file lock between processes it refuses before any write (fileLockMissing).
 func (Backend) OpenWriter(_ context.Context, s secretstore.Settings, _ secretstore.WriterOptions) (secretstore.Writer, error) {
+	if err := fileLockMissing(); err != nil {
+		return nil, err
+	}
 	path := s.Fields[settingsFile]
 	if path == "" {
 		return nil, errors.New("the broker's settings name no memory_secrets_file, so there is no memory store to write")
