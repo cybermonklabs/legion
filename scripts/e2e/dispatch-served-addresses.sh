@@ -70,7 +70,7 @@ fail() {
 dsn=${LEGION_TEST_PG_DSN:-}
 dispatch_bin=${DISPATCH_BIN:-}
 base_bin=${BASE_BIN:-}
-base_commit=${BASE_COMMIT:-c9af8be146396f95b5a3db458d293e9ed0204bb0}
+base_commit=${BASE_COMMIT:-2fbde097a698f2531af9dfb67911f2a46819ccd5}
 issuer_bin=${ISSUER_BIN:-}
 dispatch_cli=${DISPATCH_CLI:-}
 
