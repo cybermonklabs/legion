@@ -742,7 +742,9 @@ func podEndFor(state ClaimState, live podHoldEnd) podHoldEnd {
 // A grant whose start's work the issue left during the park starts nothing either, by the rule
 // every park's end keeps (startLeftWhileParked): the claim is suspended for the daemon, and the
 // hold, which the wake gave up but the machine still records, leaves the gate at the end of this
-// decision as a suspension's (endPodPark), so the pod goes to the next start that waits.
+// decision as a suspension's (endPodPark), so the pod goes to the next start that waits. The
+// exception is that rule's own: a claim that holds a task of work its issue still holds, queued
+// during the park, goes on with the granted launch, for that task.
 func podStartDue(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
 	if waiting == nil || waiting.park == nil {

@@ -3549,10 +3549,19 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bo
 // startLeftWhileParked is the one rule a start that waited keeps where its wait ends: a claim
 // written launching with no process — the state every park and every armed retry leaves it in
 // (waitOnMachine, askPod, pauseGate, relaunchLater) — whose start's work its issue has left since
-// starts no process (startLeft). It answers whether the launch ends here, and what ending it
-// answered: the start left, or its read failed, which relaunchRefused tries again with again,
-// armed under kind, the kind the launch waits under (pluginIntent.waitsUnder), as the lifecycle
-// recheck beside it arms its retry. A claim that still records its process, or that was not left
+// starts no process (startLeft), unless the claim holds a task of work its issue still holds
+// (pendingWorkHolds). The outbox delivers a newer start's task to a claim it finds launching
+// (deliverLater), so a step that sends the role back to work while its launch waits — a checker's
+// return to implementing over the promotion's start that brought the implementer back — leaves
+// that task on the claim, and the launch goes on for it: its process is sent the task at its ready
+// (sendPending), where suspending the claim would retire it unsent (settle). The launch carries its
+// start on unchanged, so the end of a later wait of the same launch judges the two again in the
+// same order.
+//
+// It answers whether the launch ends here, and what ending it answered: the start left, or a read
+// failed — the start's or the held task's — which relaunchRefused tries again with again, armed
+// under kind, the kind the launch waits under (pluginIntent.waitsUnder), as the lifecycle recheck
+// beside it arms its retry. A claim that still records its process, or that was not left
 // launching, was judged by the decision that raised its launch and is judged by nothing here,
 // and so is the zero StartWork.
 func (m *Machine) startLeftWhileParked(ctx context.Context, kind WakeKind, start StartWork, again func(context.Context) error) (bool, error) {
@@ -3563,19 +3572,46 @@ func (m *Machine) startLeftWhileParked(ctx context.Context, kind WakeKind, start
 	case err == nil:
 		return false, nil
 	case errors.Is(err, ErrStartLeft):
+		holds, read := m.pendingWorkHolds(ctx)
+		if read != nil {
+			return true, m.relaunchRefused(ctx, kind, again, read)
+		}
+		if holds {
+			p := m.claim.Pending
+			m.log.Info("supervise: the launch this start waited for is of work its issue has left, but the claim holds a task of work its issue still holds; the launch goes on for that task",
+				"error", err, "delivery", p.ID, "phase", string(p.Phase), "generation", p.Generation)
+			return false, nil
+		}
 		return true, m.startLeft(ctx, err)
 	default:
 		return true, m.relaunchRefused(ctx, kind, again, err)
 	}
 }
 
-// startLeft ends a start's launch that waited and whose work the issue left during the wait
-// (startLeftWhileParked): the claim records no process, so none is stopped, and it is suspended
-// for the daemon, its session kept, the end a launch the tree's lifecycle refuses over a claim with
-// no process takes too (relaunchRefused). The task the start handed it names a phase and is retired
-// unsent with the suspension (settle), and the start of the role's next work resumes the claim by
-// rule. A suspension for the daemon is no stranded claim of a role that works no step the task
-// stands at (workflow.Stranded).
+// pendingWorkHolds is whether the claim holds a task its launch may go on for although the start
+// the launch waited for is of work its issue has left (startLeftWhileParked): a task of a phase
+// that hands the claim work (HoldsWork; a task of news alone hands none), that no turn has taken,
+// and whose phase and run its issue still holds by the judge every queued task is sent by
+// (phaseHolds, Deps.PhaseHolds). A claim that holds no such task answers false, and so does one
+// whose task names no phase, which that judge is never asked about: an operator's own, which no
+// start of the workflow launched for. The error is the judge's read.
+func (m *Machine) pendingWorkHolds(ctx context.Context) (bool, error) {
+	p := m.claim.Pending
+	if !HoldsWork(p) || p.Phase == "" || !p.ConfirmedAt.IsZero() {
+		return false, nil
+	}
+	return m.phaseHolds(ctx, *p)
+}
+
+// startLeft ends a start's launch that waited and whose work the issue left during the wait, over
+// a claim that holds no task of work its issue still holds (startLeftWhileParked): the claim
+// records no process, so none is stopped, and it is suspended for the daemon, its session kept,
+// the end a launch the tree's lifecycle refuses over a claim with no process takes too
+// (relaunchRefused). Whatever task of a phase the claim holds then — the one the start handed it,
+// or one queued during the wait that hands no work its issue still holds — is retired unsent with
+// the suspension (settle), and the start of the role's next work resumes the claim by rule. A
+// suspension for the daemon is no stranded claim of a role that works no step the task stands at
+// (workflow.Stranded).
 func (m *Machine) startLeft(ctx context.Context, err error) error {
 	m.log.Info("supervise: the launch this start waited for is of work its issue has left; suspending the claim with no process started", "error", err)
 	return m.suspended(ctx, SuspendedByDaemon, nil)

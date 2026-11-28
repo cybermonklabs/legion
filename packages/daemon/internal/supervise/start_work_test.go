@@ -113,9 +113,10 @@ func TestARetryOfWorkTheIssueLeftLeavesTheFailedClaimAsItWas(t *testing.T) {
 
 // A start's launch the wake pacing parks waits its turn written launching with no process, and the
 // issue can leave the start's work during the wait. The turn judges the work again: a launch whose
-// work the issue left starts no process and suspends the claim for the daemon, its task retired
-// with the suspension, so the start of the role's next work resumes it by rule. The control is the
-// same parked start whose work still holds at the turn, which launches.
+// work the issue left, over a claim whose task is of that same work, starts no process and
+// suspends the claim for the daemon, its task retired with the suspension, so the start of the
+// role's next work resumes it by rule. The control is the same parked start whose work still holds
+// at the turn, which launches.
 func TestAParkedStartOfWorkTheIssueLeftStartsNoProcessAtItsTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -158,12 +159,83 @@ func TestAParkedStartOfWorkTheIssueLeftStartsNoProcessAtItsTurn(t *testing.T) {
 	}
 }
 
+// A start that brings its role back and hands it nothing (StartWork.BringsBack: the promotion's
+// start of a role of a mid-phase member that has run) can have its launch parked by the wake
+// pacing, and while it waits a step can send that role back to work: a checker's return to
+// implementing, whose task the outbox delivers to the claim it finds launching (deliverLater). By
+// the turn the issue has left the start's work but not the newer task's, so the launch goes on for
+// that task (startLeftWhileParked): the claim is not suspended, its process starts, and the task it
+// is sent at its ready is the newer one. The control is the same park over a newer task whose work
+// the issue has left as well, which suspends the claim for the daemon and retires that task unsent,
+// as every park whose start's work the issue left does over a claim that holds no task of work its
+// issue still holds.
+//
+// The negative control is the rule reverted (the `return false, nil` of startLeftWhileParked's
+// `if holds` branch deleted, so the case falls through to startLeft): the first case then suspends
+// the claim with no process started, which this test reads at the runtime's starts.
+func TestAParkedBroughtBackStartGoesOnForTheNewerTaskItsClaimHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		newerHolds bool
+	}{
+		{"the newer task's work still holds at the turn", true},
+		{"the control: the issue has left the newer task's work too", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broughtBackHolds := true
+			h := pacedHarness(t, wakeRate, func(deps *Deps) {
+				deps.PhaseHolds = func(_ context.Context, _ Claim, d Delivery) (bool, error) {
+					if d.BringsBack {
+						return broughtBackHolds, nil
+					}
+					return tc.newerHolds, nil
+				}
+			})
+			other := h.machineFor(wakeClaim(secondToken, StateQueued))
+			h.mustPostTo(other, RequestSpawn{Claim: secondToken})
+			h.must(RequestSpawn{Claim: h.token, Start: StartWork{Phase: phase.Step, Generation: 1, BringsBack: true}})
+			h.wantState(StateLaunching)
+			h.wantStarts(h.token, 0)
+
+			broughtBackHolds = false
+			newer := RequestDeliver{Claim: h.token, ID: "outbox:41", Row: 41, Task: "implement what the checker returned",
+				Phase: phase.Implementing, Generation: 1}
+			h.must(newer)
+			if p := h.claim().Pending; p == nil || p.ID != newer.ID {
+				t.Fatalf("the parked claim holds %+v, want the newer task %s pending", p, newer.ID)
+			}
+
+			h.advance(wakeInterval + wakePart)
+
+			got := h.claim()
+			if !tc.newerHolds {
+				h.wantStarts(h.token, 0)
+				if got.State != StateSuspended || got.SuspendedBy != SuspendedByDaemon || got.Pending != nil {
+					t.Fatalf("the parked start's claim after its turn = %s by %q holding %+v, want suspended by the daemon holding no task",
+						got.State, got.SuspendedBy, got.Pending)
+				}
+				return
+			}
+			h.wantStarts(h.token, 1)
+			if got.State != StateLaunching || got.SuspendedBy != "" || got.Pending == nil || got.Pending.ID != newer.ID {
+				t.Fatalf("the parked start's claim after its turn = %s by %q holding %+v, want launching, not suspended, holding the newer task %s",
+					got.State, got.SuspendedBy, got.Pending, newer.ID)
+			}
+			h.relaunched()
+			if prompts := h.wantPrompts(1); prompts[0].DeliveryID != newer.ID {
+				t.Fatalf("the launched process was sent delivery %s, want the newer task %s", prompts[0].DeliveryID, newer.ID)
+			}
+		})
+	}
+}
+
 // A start's launch can park at its issue pod's gate as well, behind another role's session load
 // (askPod), written launching with no process, and the issue can leave the start's work before the
 // gate grants the pod. The grant judges the work again, as the wake pacing's turn does
-// (startLeftWhileParked): a launch whose work the issue left starts no process, its claim is
-// suspended for the daemon, and the pod goes to the next start that waits. The control is the same
-// parked start whose work still holds at the grant, which starts once while the next start waits.
+// (startLeftWhileParked): a launch whose work the issue left, over a claim that holds no task,
+// starts no process, its claim is suspended for the daemon, and the pod goes to the next start
+// that waits. The control is the same parked start whose work still holds at the grant, which
+// starts once while the next start waits.
 func TestAStartParkedAtThePodsGateIsJudgedAgainAtItsGrant(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -205,8 +277,8 @@ func TestAStartParkedAtThePodsGateIsJudgedAgainAtItsGrant(t *testing.T) {
 // A start's launch the session store could not answer is tried again a minute later with the claim
 // launching and no process (startWaitsForStore), and that retry carries the start's work, so it
 // judges the work again as a parked launch's turn does: a start whose work the issue left during
-// the minute starts no process and the claim is suspended for the daemon. The control is the same
-// retry while the work holds, which resumes the session again.
+// the minute, over a claim that holds no task, starts no process and the claim is suspended for
+// the daemon. The control is the same retry while the work holds, which resumes the session again.
 func TestAStartRetriedAfterTheSessionStoreFailedJudgesItsWorkAgain(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

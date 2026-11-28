@@ -228,8 +228,9 @@ type wake struct {
 	// start is the work of the workflow start this launch brings its claim back for (StartWork),
 	// the zero StartWork for every other launch. The wait a park holds a launch for can be tens of
 	// minutes over a wave, and the issue can leave that work meanwhile, so the end of every park
-	// judges it again before the launch goes on (startLeftWhileParked): the pacing's turn
-	// (runWake) and the pod gate's grant (podStartDue) alike.
+	// judges it again before the launch goes on, and, where the issue has left it, the task the
+	// claim holds, which the launch goes on for while its work holds (startLeftWhileParked): the
+	// pacing's turn (runWake) and the pod gate's grant (podStartDue) alike.
 	start StartWork
 }
 
@@ -567,8 +568,9 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 	}
 	// The park held a launch written launching with no process for as long as its wait, which
 	// over a wave is tens of minutes, and the start it was raised for may be of work its issue has
-	// left since: such a start starts no process (startLeftWhileParked), whichever park held it —
-	// the pacing's, the pause's, or the pod gate's let out after a pause.
+	// left since: such a start starts no process unless the claim holds a task of work its issue
+	// still holds, queued during the wait, which the launch goes on for (startLeftWhileParked),
+	// whichever park held it — the pacing's, the pause's, or the pod gate's let out after a pause.
 	if left, err := m.startLeftWhileParked(ctx, waiting.kind, waiting.start, m.retryHolding(waiting.pluginMark, waiting.again)); left {
 		return err
 	}
