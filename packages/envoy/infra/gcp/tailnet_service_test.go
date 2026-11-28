@@ -14,6 +14,7 @@ import (
 
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -148,7 +149,7 @@ func newTailnetRig(t *testing.T, selfID string, configure ...func(*tailnetServic
 		"tailscale": fakeTailnetTailscale, "sleep": fakeTailnetSleep,
 		"date": fakeTailnetDate, "timeout": fakeTailnetTimeout,
 	} {
-		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte(fill.Replace(body)), 0o755))
+		require.NoError(t, testexec.WriteFile(filepath.Join(bin, name), []byte(fill.Replace(body)), 0o755))
 	}
 	r.set(t, "clock", strconv.Itoa(tailnetRigStart))
 	r.set(t, "limit", strconv.Itoa(1<<30))
@@ -297,7 +298,7 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	// Wait does not wait for it once the advertiser is gone, and records its PID.
 	sleep := "#!/bin/sh\nexec >/dev/null 2>&1\necho \"$(cat FAKE/clock) sleep $1\" >>FAKE/calls\necho $$ >FAKE/sleep-pid\nexec REALSLEEP 86400\n"
 	sleep = strings.NewReplacer("FAKE", r.fake, "REALSLEEP", realSleep).Replace(sleep)
-	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(r.fake), "bin", "sleep"), []byte(sleep), 0o755))
+	require.NoError(t, testexec.WriteFile(filepath.Join(filepath.Dir(r.fake), "bin", "sleep"), []byte(sleep), 0o755))
 	cmd := shellCommandUntilTheTestDeadline(t, "-c", tailnetAdvertiserScript(r.host))
 	cmd.Env = r.env()
 	var out bytes.Buffer

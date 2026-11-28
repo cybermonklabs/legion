@@ -47,7 +47,7 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 // process of that build start beside the first, or after it.
 func blockIndexProcess(t *testing.T, database *store.Store, commit string) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, BuildCommit: commit})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Origins: testOrigins, Settle: time.Hour, BuildCommit: commit})
 	testcleanup.Add(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -1036,7 +1036,7 @@ func TestTheBlockIndexReindexesItemsRebuildRefsOwed(t *testing.T) {
 		t.Fatalf("first tick = %#v, want the comment indexed", tick)
 	}
 	before := itemBlocksOf(t, database, "comment", comment)
-	report, err := refs.RebuildAll(ctx, database.Pool, "https://dispatch.example")
+	report, err := refs.RebuildAll(ctx, database.Pool, testOrigins)
 	if err != nil {
 		t.Fatalf("rebuild refs: %v", err)
 	}

@@ -9,7 +9,9 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -28,79 +30,106 @@ var environmentReaders = map[string][]string{
 	"syscall": {"Getenv", "Environ"},
 }
 
-// environmentReads walks the non-test Go files under roots and returns each reference to an
-// environment reader as "<path> <package>.<name>", whatever name the file imports the package
+// environmentReads reads the non-test Go files under roots (goFiles) and returns each reference to
+// an environment reader as "<path> <package>.<name>", whatever name the file imports the package
 // under, and each dot import of a reader's package as "<path> import . <package>": with the
 // package's names unqualified, a read cannot be told from a call to the file's own function, so
 // the import is the finding. It also returns the files that import storetest.
 func environmentReads(roots ...string) (reads, storetestImporters []string, err error) {
+	readers := slices.Sorted(maps.Keys(environmentReaders))
+	_, err = goFiles(roots, false, func(at string, file *ast.File, fileSet *token.FileSet) {
+		// A file of the Postgres fixture's own tree is test support: its environment reads are the
+		// fixture's, and its import of storetest is a shared helper's that only test files import
+		// in turn (TestTheGuardFindsAStoretestImportOutsideTheFixtureTree).
+		if strings.Contains(filepath.ToSlash(at), "store/storetest/") {
+			return
+		}
+		if len(importNames(file, storetestImport)) > 0 {
+			storetestImporters = append(storetestImporters, at)
+		}
+		// The name each environment-reading package has in this file.
+		packages := map[string]string{}
+		for _, importPath := range readers {
+			for name := range importNames(file, importPath) {
+				if name == "." {
+					reads = append(reads, filepath.ToSlash(at)+" import . "+importPath)
+				}
+				packages[name] = importPath
+			}
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			pkg, ok := selector.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if importPath, ok := packages[pkg.Name]; ok && slices.Contains(environmentReaders[importPath], selector.Sel.Name) {
+				position := fileSet.Position(selector.Pos())
+				reads = append(reads, filepath.ToSlash(position.Filename)+" "+importPath+"."+selector.Sel.Name)
+			}
+			return true
+		})
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return reads, storetestImporters, nil
+}
+
+// goFiles parses each non-test Go file under roots, testdata and node_modules passed over, or with
+// shallow each of the roots' own files and none below them, and hands each to each with its path
+// and the file set it was parsed into. It counts the files it read. Every check of this package
+// that reads Go source reads it through here.
+func goFiles(roots []string, shallow bool, each func(at string, file *ast.File, fileSet *token.FileSet)) (read int, err error) {
 	fileSet := token.NewFileSet()
 	for _, root := range roots {
-		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		err = filepath.WalkDir(root, func(at string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 			if entry.IsDir() {
-				if entry.Name() == "testdata" || entry.Name() == "node_modules" {
+				if at != root && (shallow || entry.Name() == "testdata" || entry.Name() == "node_modules") {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			if !strings.HasSuffix(at, ".go") || strings.HasSuffix(at, "_test.go") {
 				return nil
 			}
-			file, err := parser.ParseFile(fileSet, path, nil, parser.SkipObjectResolution)
+			file, err := parser.ParseFile(fileSet, at, nil, parser.SkipObjectResolution)
 			if err != nil {
 				return err
 			}
-			// A file of the Postgres fixture's own tree is test support: its environment reads
-			// are the fixture's, and its import of storetest is a shared helper's that only test
-			// files import in turn (TestTheGuardFindsAStoretestImportOutsideTheFixtureTree).
-			fixture := strings.Contains(filepath.ToSlash(path), "store/storetest/")
-			// The name each environment-reading package has in this file.
-			packages := map[string]string{}
-			for _, spec := range file.Imports {
-				importPath, _ := strconv.Unquote(spec.Path.Value)
-				if importPath == storetestImport && !fixture {
-					storetestImporters = append(storetestImporters, path)
-				}
-				if _, reads := environmentReaders[importPath]; !reads {
-					continue
-				}
-				name := importPath
-				if spec.Name != nil {
-					name = spec.Name.Name
-				}
-				if name == "." && !fixture {
-					reads = append(reads, filepath.ToSlash(path)+" import . "+importPath)
-				}
-				packages[name] = importPath
-			}
-			if fixture {
-				return nil
-			}
-			ast.Inspect(file, func(node ast.Node) bool {
-				selector, ok := node.(*ast.SelectorExpr)
-				if !ok {
-					return true
-				}
-				pkg, ok := selector.X.(*ast.Ident)
-				if !ok {
-					return true
-				}
-				if importPath, ok := packages[pkg.Name]; ok && slices.Contains(environmentReaders[importPath], selector.Sel.Name) {
-					position := fileSet.Position(selector.Pos())
-					reads = append(reads, filepath.ToSlash(position.Filename)+" "+importPath+"."+selector.Sel.Name)
-				}
-				return true
-			})
+			read++
+			each(at, file, fileSet)
 			return nil
 		})
 		if err != nil {
-			return nil, nil, fmt.Errorf("walk %s: %w", root, err)
+			return read, fmt.Errorf("walk %s: %w", root, err)
 		}
 	}
-	return reads, storetestImporters, nil
+	return read, nil
+}
+
+// importNames is each name file imports importPath under: the path's last element where the import
+// names none, as it is for each package these checks look for, the name it gives otherwise, and
+// "." for a dot import.
+func importNames(file *ast.File, importPath string) map[string]bool {
+	names := map[string]bool{}
+	for _, spec := range file.Imports {
+		if written, _ := strconv.Unquote(spec.Path.Value); written != importPath {
+			continue
+		}
+		if spec.Name == nil {
+			names[path.Base(importPath)] = true
+		} else {
+			names[spec.Name.Name] = true
+		}
+	}
+	return names
 }
 
 // writeFile writes contents under a test directory and returns its path.

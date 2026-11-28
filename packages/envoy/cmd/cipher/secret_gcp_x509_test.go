@@ -37,6 +37,7 @@ import (
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 
 	"github.com/sjawhar/envoy/internal/cipherclient/repeatprobe"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // storeX509 are the files of an X.509 credential the tests write, and the subject token the
@@ -188,7 +189,7 @@ func TestAnEnterpriseCertificateProxyCredentialsFileIsRefused(t *testing.T) {
 			dir := t.TempDir()
 			ran := filepath.Join(dir, "ran")
 			signer := filepath.Join(dir, "signer")
-			if err := os.WriteFile(signer, []byte("#!/bin/sh\ntouch '"+ran+"'\n"), 0o700); err != nil {
+			if err := testexec.WriteFile(signer, []byte("#!/bin/sh\ntouch '"+ran+"'\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			files := writeStoreX509(t, dir, "http://127.0.0.1:9", "https://iamcredentials.invalid", "store-robot@example-project.iam.gserviceaccount.com")

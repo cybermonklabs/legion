@@ -90,14 +90,20 @@ func TestDispatchNamesItsNetworkEndpointGroup(t *testing.T) {
 }
 
 // Each input is refused without publicOrigin, by its own name, in every mode that has none: on
-// the tailnet and in the sandbox. A range that is no CIDR, is written other than as its network,
-// or is /0, which admits every address past the load balancer and IAP, and a name that is no
-// Compute Engine resource name, are refused too, and so is an oidcIssuer with an empty query or
-// fragment. Control: the arguments every row edits resolve.
+// the tailnet and in the sandbox. Beside the tailnet inputs each is refused with publicOrigin set
+// too, since the load balancer serving publicOrigin there is the deployment's own whole. A range
+// that is no CIDR, is written other than as its network, or is /0, which admits every address
+// past the load balancer and IAP, and a name that is no Compute Engine resource name, are refused
+// too, and so is an oidcIssuer with an empty query or fragment. Control: the arguments every row
+// edits resolve.
 func TestDispatchRefusesAnEntranceItHasNoOriginFor(t *testing.T) {
 	needs := func(input string) string {
 		return input + " needs publicOrigin: it describes the deployment's own load balancer, which serves Dispatch at that origin, " +
 			"and a Dispatch reached through the tailnet front door or inside its cluster has none; set publicOrigin, or unset " + input
+	}
+	besideTheFrontDoor := func(input string) string {
+		return input + " is refused beside the tailnet inputs: beside the front door, the load balancer serving publicOrigin, the backend it takes " +
+			"and the policy admitting it are the deployment's own, and the component renders no part of them; unset " + input + ", or unset the tailnet inputs"
 	}
 	for _, row := range []struct {
 		name, input string
@@ -124,6 +130,16 @@ func TestDispatchRefusesAnEntranceItHasNoOriginFor(t *testing.T) {
 			a.NetworkEndpointGroupName = dispatchNEGName
 			return a
 		}, needs("networkEndpointGroupName")},
+		{"ranges on the tailnet beside publicOrigin", "loadBalancerSourceRanges", func() *gcp.DispatchArgs {
+			a := dispatchFrontDoorPublicOriginArgs()
+			a.LoadBalancerSourceRanges = dispatchLoadBalancerRanges
+			return a
+		}, besideTheFrontDoor("loadBalancerSourceRanges")},
+		{"a group on the tailnet beside publicOrigin", "networkEndpointGroupName", func() *gcp.DispatchArgs {
+			a := dispatchFrontDoorPublicOriginArgs()
+			a.NetworkEndpointGroupName = dispatchNEGName
+			return a
+		}, besideTheFrontDoor("networkEndpointGroupName")},
 		{"a range that is no CIDR", "loadBalancerSourceRanges", func() *gcp.DispatchArgs {
 			a := dispatchEntranceArgs()
 			a.LoadBalancerSourceRanges = []string{"35.191.0.0"}

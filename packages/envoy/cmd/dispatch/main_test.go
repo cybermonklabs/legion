@@ -26,12 +26,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
@@ -46,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -779,18 +782,22 @@ func TestResolveBootConfigRequiresTheAccountTokenFileWhenAgentSecretsURLSet(t *t
 }
 
 // TestDispatchReadsItsProofOrigins: DISPATCH_PROOF_ORIGINS adds origins a broker token's proof may
-// name to DISPATCH_SERVER_URL's, and they reach the verifier main builds: brokerTokenVerifier, from
-// resolveBootConfig and the server URL loadEnvoyConfig reads. A value of production's shape, which
-// lists DISPATCH_SERVER_URL's origin again beside the in-cluster one, starts Dispatch with the two:
-// a proof signed for either is accepted, and one for an origin neither setting names is refused.
-// Unset, DISPATCH_SERVER_URL's origin is the only one. An entry with a path, and one with another
-// scheme, each refuse the start naming it.
+// name to DISPATCH_SERVER_URL's, and so does DISPATCH_SERVED_ORIGINS, after them, and they reach
+// the verifier main builds: brokerTokenVerifier, from resolveBootConfig and the server URL
+// loadEnvoyConfig reads. A value of production's shape, which lists DISPATCH_SERVER_URL's origin
+// again beside the in-cluster one, starts Dispatch with the two: a proof signed for either is
+// accepted, and one for an origin neither setting names is refused. A served address is accepted
+// too, under any Host, and a former address (DISPATCH_FORMER_ORIGINS) is refused as an origin no
+// setting names is (c-l-served 4). Unset, DISPATCH_SERVER_URL's origin is the only one. An entry
+// with a path, and one with another scheme, each refuse the start naming it.
 func TestDispatchReadsItsProofOrigins(t *testing.T) {
 	t.Parallel()
 	const (
 		public    = "https://dispatch.example"
 		inCluster = "http://dispatch.internal.example:8766"
 		elsewhere = "https://dispatch.elsewhere.example"
+		served    = "https://b.example.test"
+		former    = "https://old.example.test"
 		route     = "/api/v1/whoami"
 		token     = "a-session-token-the-broker-issued"
 	)
@@ -828,7 +835,7 @@ func TestDispatchReadsItsProofOrigins(t *testing.T) {
 		if err != nil {
 			t.Fatalf("build the broker token verifier: %v", err)
 		}
-		return proofOrigins(serverURL, boot.ProofOrigins), verifier
+		return proofOrigins(serverURL, boot.ProofOrigins, boot.ServedOrigins), verifier
 	}
 	verify := func(t *testing.T, verifier *ciphertoken.Verifier, origin string) error {
 		t.Helper()
@@ -848,6 +855,42 @@ func TestDispatchReadsItsProofOrigins(t *testing.T) {
 		}
 		if err := verify(t, verifier, elsewhere); !errors.Is(err, ciphertoken.ErrProofInvalid) {
 			t.Errorf("a proof for %s, which no setting names, answered %v, want ErrProofInvalid", elsewhere, err)
+		}
+	})
+
+	t.Run("a served address and a former one", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{
+			"DISPATCH_PROOF_ORIGINS":  inCluster + "," + served,
+			"DISPATCH_SERVED_ORIGINS": served,
+			"DISPATCH_FORMER_ORIGINS": former,
+		})
+		if !slices.Equal(origins, []string{public, inCluster, served}) {
+			t.Fatalf("the verifier's origins are %q, want %q, %q and the served %q, each once", origins, public, inCluster, served)
+		}
+		for _, origin := range []string{public, inCluster, served} {
+			if err := verify(t, verifier, origin); err != nil {
+				t.Errorf("a proof for %s was refused: %v", origin, err)
+			}
+		}
+		atAnotherHost := caller.Signed(t, http.MethodGet, served+route, token)
+		atAnotherHost.Host = "dispatch.internal.example:8766"
+		if _, err := verifier.Verify(t.Context(), atAnotherHost); err != nil {
+			t.Errorf("a proof for the served %s, sent under the in-cluster Host, was refused: %v", served, err)
+		}
+		for _, origin := range []string{former, elsewhere} {
+			if err := verify(t, verifier, origin); !errors.Is(err, ciphertoken.ErrProofInvalid) {
+				t.Errorf("a proof for %s, a former address or one no setting names, answered %v, want ErrProofInvalid", origin, err)
+			}
+		}
+	})
+
+	t.Run("a served address alone", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{"DISPATCH_SERVED_ORIGINS": served})
+		if !slices.Equal(origins, []string{public, served}) {
+			t.Fatalf("the verifier's origins are %q, want %q and the served %q", origins, public, served)
+		}
+		if err := verify(t, verifier, served); err != nil {
+			t.Errorf("a proof for the served %s, with no DISPATCH_PROOF_ORIGINS, was refused: %v", served, err)
 		}
 	})
 
@@ -1373,7 +1416,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 	t.Parallel()
 	closed := storetest.Open(t)
-	closed.Pool.Close()
+	testwait.Returns(t, "every connection of the closed database's pool to come back, so the pool closes", closed.Pool.Close)
 	for name, probe := range map[string]struct {
 		database *store.Store
 		status   int
@@ -1810,14 +1853,14 @@ func TestWriteAnchorBlockBackfillReport(t *testing.T) {
 func TestRebuildRefsRefusesWithoutServerURL(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
-	if code := rebuildRefs(context.Background(), "postgres://unused", "  ", &output); code != 1 {
+	if code := rebuildRefs(context.Background(), "postgres://unused", "  ", text.Origins{}, &output); code != 1 {
 		t.Fatalf("rebuild-refs without server URL exited %d, want 1", code)
 	}
 	if !strings.Contains(output.String(), "dispatch.server_url is required") {
 		t.Fatalf("rebuild-refs refusal = %q", output.String())
 	}
 	output.Reset()
-	if code := rebuildRefs(context.Background(), "", "https://dispatch.example", &output); code != 1 || !strings.Contains(output.String(), "DATABASE_URL is required") {
+	if code := rebuildRefs(context.Background(), "", "https://dispatch.example", text.NewOrigins("https://dispatch.example"), &output); code != 1 || !strings.Contains(output.String(), "DATABASE_URL is required") {
 		t.Fatalf("rebuild-refs without DATABASE_URL: code=%d output=%q", code, output.String())
 	}
 }
@@ -2764,11 +2807,14 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 // table makes its field some and leaves the cursor's none, and the cursor's row alone does the
 // reverse. A table the read cannot read, here the keyword table dropped, makes its field unknown
 // with the read's error, and the cursor's field still reads. The steps run in order on one
-// database, each on what the one before left.
+// database, each on what the one before left. The client's deadline of each read is on a fake
+// clock the row never moves, so no clock ends a read here and the shared wait's end
+// (testwait.Context) bounds one that hangs.
 func TestTheKeywordFillDeferralSaysWhetherEachTableHoldsARow(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
+	unmoved := clocktest.New(time.Now())
 	for _, step := range []struct {
 		name       string
 		statements []string
@@ -2791,7 +2837,7 @@ func TestTheKeywordFillDeferralSaysWhetherEachTableHoldsARow(t *testing.T) {
 				t.Fatalf("%s: %s: %v", step.name, statement, err)
 			}
 		}
-		if got := deferralFields(searchFillTableRows(ctx, database.Pool, searchFillBounds(0))); got != step.want {
+		if got := deferralFields(searchFillTableRows(testwait.Context(t), database.Pool, unmoved, searchFillBounds(0))); got != step.want {
 			t.Errorf("%s: the deferral's fields are\n  %s\nwant\n  %s", step.name, got, step.want)
 		}
 	}
@@ -2832,22 +2878,27 @@ const quickSearchFillLockTimeout = 500 * time.Millisecond
 var quickSearchFill = searchFillBounds(quickSearchFillLockTimeout)
 
 // quickSearchFillEnv is the environment of a process booted with the keyword fill off and
-// quickSearchFill's bounds.
+// quickSearchFill's lock and statement timeouts, with the client's deadline on each read of its
+// deferral line staged past the run (DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT), so only Postgres's own
+// timeouts end those reads however slowly a loaded machine dials.
 var quickSearchFillEnv = map[string]string{
 	"DISPATCH_SEARCH_FILL":                   "off",
 	"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": quickSearchFillLockTimeout.String(),
+	"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": stagedPastTheRun.String(),
 }
 
 // A lock on a table the keyword fill writes ends the read at the server, and the boot goes on.
 // Another connection holds ACCESS EXCLUSIVE on search_text_versions_fill in a transaction it keeps
 // open for the whole test. searchFillTableRows then gives the cursor's table unknown with
 // Postgres's own lock timeout (55P03) and the keyword table still none, and a read of the cursor's
-// table alone ends with 55P03 before the client's deadline could end it; once it returned, no
-// backend of the database waits for a lock on the cursor's table, though the lock is still held.
-// A process booted with DISPATCH_SEARCH_FILL=off under the same lock logs the same fields once,
-// then serves: it answers its health check and the registry of live server processes admits it,
-// and still no backend waits for the lock. Every read here, the process's included, runs at
-// quickSearchFill's bounds.
+// table alone ends with 55P03 under a lock timeout shorter than the client's deadline; once it
+// returned, no backend of the database waits for a lock on the cursor's table, though the lock is
+// still held. A process booted with DISPATCH_SEARCH_FILL=off under the same lock logs the same
+// fields once, then serves: it answers its health check and the registry of live server processes
+// admits it, and still no backend waits for the lock. Every read here, the process's included,
+// runs at quickSearchFill's lock and statement timeouts. The client's deadline of each read here
+// is on a fake clock the row never moves, and the process's is staged past the run
+// (DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT), so only Postgres's own timeout can end a read.
 func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -2862,10 +2913,10 @@ func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testin
 	}
 	const fields = `search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error=ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)`
 
-	if got := deferralFields(searchFillTableRows(ctx, database.Pool, quickSearchFill)); got != fields {
+	if got := deferralFields(searchFillTableRows(testwait.Context(t), database.Pool, clocktest.New(time.Now()), quickSearchFill)); got != fields {
 		t.Errorf("under the lock, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
 	}
-	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "55P03", quickSearchFill)
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "55P03", "lock timeout", quickSearchFill)
 	requireNoKeywordFillCursorLockWait(t, database, "after the reads returned")
 
 	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: quickSearchFillEnv})
@@ -2882,10 +2933,13 @@ func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testin
 // Postgres's statement timeout, and the boot goes on. search_text_versions_fill is replaced with a
 // view whose select sleeps 30 s, past the client's deadline. searchFillTableRows then gives that
 // table unknown with Postgres's own statement timeout (57014) and the keyword table still none,
-// and a read of that table alone ends with 57014 before the client's deadline could end it. A
-// process booted with DISPATCH_SEARCH_FILL=off on that database logs the same fields once, then
-// serves: it answers its health check and the registry of live server processes admits it. Every
-// read here, the process's included, runs at quickSearchFill's bounds.
+// and a read of that table alone ends with 57014 under a statement timeout shorter than the
+// client's deadline. A process booted with DISPATCH_SEARCH_FILL=off on that database logs the same
+// fields once, then serves: it answers its health check and the registry of live server processes
+// admits it. Every read here, the process's included, runs at quickSearchFill's lock and statement
+// timeouts. The client's deadline of each read here is on a fake clock the row never moves, and
+// the process's is staged past the run (DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT), so only
+// Postgres's own timeout can end a read.
 func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -2899,10 +2953,10 @@ func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) 
 		}
 	}
 	const fields = `search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error=ERROR: canceling statement due to statement timeout (SQLSTATE 57014)`
-	if got := deferralFields(searchFillTableRows(ctx, database.Pool, quickSearchFill)); got != fields {
+	if got := deferralFields(searchFillTableRows(testwait.Context(t), database.Pool, clocktest.New(time.Now()), quickSearchFill)); got != fields {
 		t.Errorf("with a read that runs on, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
 	}
-	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "57014", quickSearchFill)
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "57014", "statement timeout", quickSearchFill)
 
 	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: quickSearchFillEnv})
 	process.waitHealthy(t)
@@ -2914,22 +2968,59 @@ func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) 
 }
 
 // requireTheServerEndsTheRead reads table alone at bounds, as searchFillTableRows reads each table,
-// and fails the test unless Postgres itself ended the read: an error of the SQLSTATE code, before
-// bounds' client deadline could end it. It judges the server's end of the read by its error, not
-// by a time that a slow box or a slow dial would stretch.
-func requireTheServerEndsTheRead(t *testing.T, database *store.Store, table, code string, bounds searchFillReadBounds) {
+// on a store of the database's own that traces the read (readBounds), and fails the test unless
+// Postgres itself ends the read. The client's deadline is on a fake clock the row never moves, so
+// nothing but the server or the shared wait's end (testwait.Context) can end the read here; two
+// facts say that the server's bound comes first wherever the client's deadline runs. The setting of
+// that timeout (lock_timeout, statement_timeout) the read runs under, read in the read's own session
+// as the read begins, is set and shorter than bounds' client deadline. And the read ends with an
+// error of the SQLSTATE code whose message cancels the statement due to that timeout (lock timeout,
+// statement timeout): a cancel from the client is one Postgres reports as due to user request, or
+// the context's own error, and fails it.
+func requireTheServerEndsTheRead(t *testing.T, database *store.Store, table, code, timeout string, bounds searchFillReadBounds) {
 	t.Helper()
-	started := time.Now()
-	_, err := searchFillTableHoldsRow(context.Background(), database.Pool, table, bounds)
-	took := time.Since(started)
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != code {
-		t.Errorf("the read of %s ended after %v with %v; want Postgres's own error %s", table, took.Round(time.Millisecond), err, code)
+	traced := &readBounds{read: "select exists(select 1 from public." + table + ")", setting: strings.ReplaceAll(timeout, " ", "_")}
+	_, err := searchFillTableHoldsRow(testwait.Context(t), storetest.TracedStore(t, database, traced).Pool, clocktest.New(time.Now()), table, bounds)
+	switch {
+	case !traced.seen:
+		t.Errorf("the read of %s never sent %q; want the read searchFillTableHoldsRow sends", table, traced.read)
+	case traced.err != nil:
+		t.Errorf("read %s in the session of the read of %s: %v", traced.setting, table, traced.err)
+	case traced.bound <= 0 || traced.bound >= bounds.client:
+		t.Errorf("the read of %s ran under %s = %q; want a bound above 0 and shorter than the client's deadline, %v, so that the server ends the read first",
+			table, traced.setting, traced.value, bounds.client)
 	}
-	if took >= bounds.client {
-		t.Errorf("the read of %s took %v; want less than the client's deadline, %v", table, took.Round(time.Millisecond), bounds.client)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != code || !strings.Contains(pgErr.Message, "due to "+timeout) {
+		t.Errorf("the read of %s ended with %v; want Postgres's own error %s, canceling the statement due to %s", table, err, code, timeout)
 	}
 }
+
+// readBounds is a query tracer (storetest.TracedStore) that, as the statement read begins, reads
+// the setting it names in that statement's own session, on its connection and inside its
+// transaction: current_setting's text in value, and as a duration in bound. seen says the read
+// began, and err is the error of the setting's read. The tracer runs on the goroutine that sends
+// the statement.
+type readBounds struct {
+	read, setting string
+	seen          bool
+	value         string
+	bound         time.Duration
+	err           error
+}
+
+func (b *readBounds) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if b.seen || data.SQL != b.read {
+		return ctx
+	}
+	b.seen = true
+	var seconds float64
+	b.err = conn.QueryRow(ctx, `select current_setting($1), extract(epoch from current_setting($1)::interval)::float8`, b.setting).Scan(&b.value, &seconds)
+	b.bound = time.Duration(seconds * float64(time.Second))
+	return ctx
+}
+
+func (b *readBounds) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // requireNoKeywordFillCursorLockWait fails the test when a backend of the database waits for a
 // lock on search_text_versions_fill. when says at which moment the test reads it.
@@ -2958,18 +3049,16 @@ func deferralFields(fields []any) string {
 	return strings.Join(pairs, " ")
 }
 
-// awaitRegistryAdmission waits up to 30 s for the registry of live server processes to hold a row,
-// which on a database no other process serves is the process's own: once it is admitted, the
-// process serves, and a keyword fill it started takes its hold.
+// awaitRegistryAdmission waits, through the shared wait, for the registry of live server processes
+// to hold a row, which on a database no other process serves is the process's own: once it is
+// admitted, the process serves, and a keyword fill it started takes its hold.
 func awaitRegistryAdmission(t *testing.T, database *store.Store, process *dispatchProcess) {
 	t.Helper()
-	if !testwait.Holds(30*time.Second, 50*time.Millisecond, func() bool {
+	testwait.Until(t, "the registry of live server processes to admit the process", func() (fmt.Stringer, bool) {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from server_processes`).Scan(&rows); err != nil {
 			t.Fatalf("read the registry of live server processes: %v", err)
 		}
-		return rows > 0
-	}) {
-		t.Fatalf("the registry of live server processes admitted no process within 30 s:\n%s", process.Output.String())
-	}
+		return process.Output, rows > 0
+	})
 }

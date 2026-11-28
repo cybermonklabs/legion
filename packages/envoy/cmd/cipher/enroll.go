@@ -159,7 +159,7 @@ func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, projects []string,
 	// path, and the system's reason alone (redact.File): "the broker made enrollment <id>, but
 	// this command could not write its id to enrollment in the directory AGENT_SECRETS_KEY_DIR
 	// names: <operation>: <reason>".
-	if err := writeFileAtomic(path, []byte(resp.EnrollmentID+"\n"), 0o600); err != nil {
+	if err := writeFileAtomic(path, []byte(resp.EnrollmentID+"\n")); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets enroll: the broker made enrollment %s, but this command could not write its id to %s in %s: %v\n", redact.OneLine(resp.EnrollmentID), enrollmentFile, keyDirNamed, redact.File(err))
 		return 1
 	}

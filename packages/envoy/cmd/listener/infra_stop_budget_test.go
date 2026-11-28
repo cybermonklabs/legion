@@ -3,7 +3,6 @@ package main
 //ci:reads packages/envoy/infra/gcp/clusteredhub_listener.go TestTheInfraCopyOfTheStopBudgetIsTheStopBudget parses it (infraStopBudgetRead) for the infra module's copy of the stop budget
 
 import (
-	"go/ast"
 	"go/constant"
 	"go/parser"
 	"go/token"
@@ -11,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
 // Where the infra module writes this listener's stop budget again: read is the path from this
@@ -53,7 +54,7 @@ func TestTheInfraCopyOfTheStopBudgetIsTheStopBudget(t *testing.T) {
 		t.Fatalf("parse %s, which holds the infra module's copy of this listener's stop budget as %s: %v", infraStopBudgetPath, infraStopBudgetName, err)
 	}
 
-	value := infraConstExpr(file, infraStopBudgetName)
+	value := cmdtest.ConstExpr(file, infraStopBudgetName)
 	if value == nil {
 		t.Fatalf("%s declares no constant %s: the infra module's copy of this listener's stop budget (%s, in packages/envoy/cmd/listener/main.go) was renamed or removed, and nothing holds the seconds the listener pods grant to the seconds this listener spends. Whoever moved it points this check at the name it has now.",
 			infraStopBudgetPath, infraStopBudgetName, stopBudget)
@@ -87,30 +88,4 @@ func TestTheInfraCopyOfTheStopBudgetIsTheStopBudget(t *testing.T) {
 			infraStopBudgetPath, infraStopBudgetName, expr, copied, stopBudget, budget)
 	}
 	t.Logf("%s declares %s = %s, %d seconds, which is stopBudget (%s)", infraStopBudgetPath, infraStopBudgetName, expr, copied, stopBudget)
-}
-
-// infraConstExpr returns the expression the constant named name is declared with in file, or nil
-// when the file declares no constant of that name with a value of its own. A spec that carries no
-// value - a line of a const block that repeats the one above it, as an iota run does - is no
-// expression to evaluate, so it is reported as the name being absent rather than read as the
-// previous line's.
-func infraConstExpr(file *ast.File, name string) ast.Expr {
-	for _, decl := range file.Decls {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok || gen.Tok != token.CONST {
-			continue
-		}
-		for _, spec := range gen.Specs {
-			valueSpec, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-			for i, ident := range valueSpec.Names {
-				if ident.Name == name && i < len(valueSpec.Values) {
-					return valueSpec.Values[i]
-				}
-			}
-		}
-	}
-	return nil
 }
