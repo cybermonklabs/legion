@@ -29,6 +29,7 @@ func formRequirement(id, body string) string {
 // a component's name, which the form rules do not read. A path of the page of a record links to
 // the record, and so does a mail link whose words are no email address.
 func TestTheRequestJudgesTheWordsAndTheAddressesOfALink(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
 		{name: "a stop in the address of a link", spec: formRequirement("dot", "Dispatch opens [the record](https://example.com/Web.Config)."),
@@ -89,6 +90,7 @@ func TestTheRequestJudgesTheWordsAndTheAddressesOfALink(t *testing.T) {
 // Verification document, the name of another document of its issue and a path of the issue's
 // Artifacts route open that document. The controls open no record from any page.
 func TestTheRequestReadsAnAddressAgainstThePageOfItsDocument(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
 		{name: "a document of the issue, from its spec", spec: formRequirement("notes", "Dispatch keeps [the notes](artifacts/notes-md)."),
@@ -152,6 +154,7 @@ func TestTheRequestReadsAnAddressAgainstThePageOfItsDocument(t *testing.T) {
 // The control of the two texts of a procedure (procedureFaults): a procedure of one instruction
 // in 20 words opens the request.
 func TestTheRequestTakesAProcedureOfOneInstructionInTwentyWords(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	procedure := formFault{node: "run-merge", kind: specform.KindProcedure}
 	requireFormRows(t, tree, []formRow{{name: "a procedure of one instruction in 20 words",
@@ -162,6 +165,7 @@ func TestTheRequestTakesAProcedureOfOneInstructionInTwentyWords(t *testing.T) {
 // route: a heading in a block quote does not close the part around it, and a part in a block quote
 // or a callout ends with it.
 func TestTheRequestReadsAPartOfTermsInItsContainer(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
 		{name: "a heading in a block quote in the part",
@@ -179,6 +183,7 @@ func TestTheRequestReadsAPartOfTermsInItsContainer(t *testing.T) {
 // Other prose of a document is no text of The Spec: three of the red team's inputs open the
 // request, beside a statement that the form reads.
 func TestTheRequestJudgesNoOtherProse(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	const control = ":::requirement{#control}\nDispatch stores each comment.\n:::\n\n"
 	requireFormRows(t, tree, []formRow{
@@ -194,6 +199,7 @@ func TestTheRequestJudgesNoOtherProse(t *testing.T) {
 // in code font; a definition wholly in its footnote opens; an address that the words show is one
 // word of a sentence; the address of a pull request whose host is in capitals is refused.
 func TestTheRequestJudgesTheTextThatThePageShows(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
 		{name: "one part of a name in code font", spec: formRequirement("code-one", "Dispatch asks `Ada` Lovelace."),
@@ -231,6 +237,7 @@ func TestTheRequestJudgesTheTextThatThePageShows(t *testing.T) {
 // letter of another script in them, and so is an autolink of a record or of a pull request that a
 // word joins. A bare id names a record, and the refusal says so.
 func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
 		{name: "a colour of six digits and letters", spec: formRequirement("colour", "Dispatch stores the color `#12abcd`."),
@@ -312,6 +319,7 @@ func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 // from under the heading, and a decision block goes above it. The decision block alone is no fix
 // for a line of prose or for an example below a term.
 func TestALineUnderTermsIsRefused(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	const moveOut = "Move a line that defines no term, such as an example or a note, out from under the heading Terms."
 	const decision = "Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading."
@@ -353,6 +361,7 @@ func storeUnreadableVersion(t *testing.T, database *store.Store, artifactID stri
 // whose detail names the version and says to write a new one, and the read route says that the
 // approval is refused.
 func TestABrowserEditCanStoreAVersionThatDispatchCannotRead(t *testing.T) {
+	t.Parallel()
 	// The last peer's departure stores version 2 before the server lets its connection go
 	// (settleLastPeer), but only while the settlement timer is still armed. The default delay of
 	// 20 ms can pass between the edit and the departure on a loaded machine: the timer then settles
@@ -435,6 +444,7 @@ func containsLine(lines []string, prefix string) bool {
 // version in one line. A request that breaks the form names it too. So a rule that compares the
 // documents cannot see its texts: the names of its components are no nouns of the system.
 func TestAnApprovedVersionThatDispatchCannotReadStopsNoOtherJudgment(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	seedPeople(t, tree.database, "dispatch.admin@example.com")
 	components := createFormIssue(t, tree.handler, tree.root, "The components",
@@ -497,6 +507,7 @@ func TestAnApprovedVersionThatDispatchCannotReadStopsNoOtherJudgment(t *testing.
 // never 500, the read route says that the approval is refused, the person's approval is refused,
 // and the carry's gate answers a break, so the carry writes no approval.
 func TestAVersionThatTheJudgmentNamesAndDispatchCannotReadIsRefused(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	issue := createFormIssue(t, tree.handler, tree.root, "An unreadable spec", "# Spec\n\n"+formRequirement("clean", "Dispatch shows each record."))
 	storeUnreadableVersion(t, tree.database, issue.PrimaryArtifactID, 1)

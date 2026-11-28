@@ -78,6 +78,11 @@ func (c *cancelAtPoll) Err() error {
 // after it. Each subtest judges what it compares, so each runs alone (`-run`) as it runs among the
 // others.
 func TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork(t *testing.T) {
+	// Not parallel: it reads the whole process's heap statistics (heapAllocated, runtime/metrics'
+	// /gc/heap/allocs:bytes) around each judgment, which every goroutine's allocations move, collects
+	// the whole process's heap first (runtime.GC), and holds the judgment's CPU time to a ratio
+	// (cputest.OnThread under boundWorkTimes), which the package's parallel tests' load on the cores
+	// moves.
 	tree := newSpecFormTree(t, testServerOptions{})
 	served := tree.deps.SpecForm
 	statements := (boundDocumentBytes - len("# Bound\n")) / len(boundStatements(boundBroken, 1))
@@ -177,6 +182,7 @@ func TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork(t *testing.T) {
 // Control: the refusal of fewer findings names the command that lists them all
 // (TestTheRefusalListsTwentyAndCountsTheRest).
 func TestARefusalOfMoreFindingsThanItHoldsNamesWhatTheReadRouteLists(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	issue := createFormIssue(t, tree.handler, tree.root, "Seventy broken statements", boundStatements(boundBroken, 70))
 	response := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)

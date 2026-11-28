@@ -2227,6 +2227,7 @@ func TestIssueDocumentCreationIndexesDispatchReferences(t *testing.T) {
 // A link to a tab of an issue that is a view of the issue (the dashboard's pages file: the
 // Activity tab, `dispatch://<KEY>/activity`) is an edge to the issue, as a link to the issue is.
 func TestADocumentsLinkToATabOfAnIssueIsAnEdgeToTheIssue(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",

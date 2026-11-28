@@ -16,6 +16,7 @@ import (
 // commas: each is trimmed, a key named twice counts once, and blank names no root. An item that is
 // no issue key, an empty item among them, refuses startup naming the setting.
 func TestParseSpecRoots(t *testing.T) {
+	t.Parallel()
 	for raw, want := range map[string][]string{
 		" ACME-1, ACME-7 ": {"ACME-1", "ACME-7"},
 		"ACME-1,ACME-1":    {"ACME-1"},
@@ -81,6 +82,7 @@ func specFormResultOf(findings []specFormFinding) specFormResult {
 // 20 and names the command, which lists them, the first 500 at most. The refusal is the one the
 // judgment writes (specFormResult.refusal), so the command it names is the one the server names.
 func TestTheRefusalBodyHoldsAtMost500Findings(t *testing.T) {
+	t.Parallel()
 	findings := make([]specFormFinding, 501)
 	for index := range findings {
 		findings[index] = specFormFinding{
