@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The line and the counter a walk's expiry notice writes, by the text and the harness's series
@@ -55,11 +56,13 @@ func (r *hourRig) expiryNotices(role string) []storedNotice {
 //   - a copy forwarded: the claim, the forward, the confirm, then the forward's report
 //     (finishRoleForward): the delivered count and last the forward's line (hourForwardLine).
 //
-// A sweep does not wait for the walks it starts, and a holder can take a forward before its
-// report, so a row that reads a report's counts or lines waits here first.
+// A pass of the sweeps (hourRig.sweep) returns after these writes, and the lines are there once it
+// has. A handover a route starts runs on after the call that started it, and a holder can take a
+// forward before its report, so a row that reads a report's counts or lines after such a handover
+// waits here first.
 func (r *hourRig) waitReported(role, name string, n int) {
 	r.t.Helper()
-	waitFor(r.t, fmt.Sprintf("%d lines %q for role %s", n, name, role), func() bool {
+	testwait.Eventually(r.t, fmt.Sprintf("%d lines %q for role %s", n, name, role), func() bool {
 		return len(r.lines(name, map[string]any{"role": role})) >= n
 	})
 }
@@ -68,9 +71,7 @@ func (r *hourRig) waitReported(role, name string, n int) {
 // the attempt'th time, under bus.KeptAttemptMsgID, and returns the copy the stream holds.
 func (r *hourRig) keepAttempt(role string, item contracts.Envelope, attempt int) laneCopy {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := r.client().PublishStoredAs(ctx, bus.KeptRoleSubject(role), item, bus.KeptAttemptMsgID(item.DedupeKey, role, attempt)); err != nil {
+	if err := r.client().PublishStoredAs(r.ctx, bus.KeptRoleSubject(role), item, bus.KeptAttemptMsgID(item.DedupeKey, role, attempt)); err != nil {
 		r.t.Fatalf("write attempt %d of event %s to role %s's kept lane: %v", attempt, item.EventID, role, err)
 	}
 	return r.copyOf(role, item.EventID)
@@ -105,14 +106,18 @@ func assertNoticeOf(t *testing.T, notice storedNotice, role string, held laneCop
 // dead letter: the person or session behind a Dispatch event sent no Envoy message. At legion main
 // the walk drops the copy and tells nobody.
 func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
+	t.Parallel()
 	t.Run("a each outbox copy dropped at the end of its hour stores one expiry notice naming its event, its role and its attempt", func(t *testing.T) {
+		t.Parallel()
 		rig := newHourRig(t)
 		const role = "hour-outbox-told"
 		first := rig.keep(role, outboxCopy(role, "ses_outbox_told_sender", "a Dispatch event routed to the role"))
 		again := rig.keepAttempt(role, outboxCopy(role, "ses_outbox_told_sender", "a Dispatch event kept again"), 2)
 		listened := rig.keep(role, listenerCopy(role, "ses_listener_told_sender", "a publish the listener kept"))
-		rig.startSweeps()
-		rig.letSweepsRun()
+		// Both listeners walk the lane together each time, so their walks race for its cursor and,
+		// once the clock is past the copies' hour, take each other's claims over.
+		rig.driveClocks()
+		rig.sweepTogether()
 		if notices := rig.expiryNotices(role); len(notices) != 0 {
 			t.Fatalf("inside the copies' hour the stream holds expiry notices %+v, want none", notices)
 		}
@@ -120,10 +125,11 @@ func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
 		before := rig.now()
 		rig.moveClock(time.Hour + time.Minute)
 		droppedAfter := before.Add(time.Hour)
+		rig.sweepTogether()
 		rig.waitPassed(role, listened.sequence)
 		rig.waitDeadLetter(listened)
 		rig.waitReported(role, expiryNoticeLine, 2)
-		rig.letSweepsRun()
+		rig.sweepTogether()
 		droppedBy := rig.now()
 
 		notices := rig.expiryNotices(role)
@@ -151,6 +157,7 @@ func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
 	})
 
 	t.Run("b an outbox copy no walk reached until its hour had ended more than an hour before is told to Dispatch all the same", func(t *testing.T) {
+		t.Parallel()
 		rig := newHourRig(t)
 		const role = "hour-outbox-stale"
 		held := rig.keep(role, outboxCopy(role, "ses_outbox_stale_sender", "a Dispatch event nobody walked"))
@@ -158,7 +165,7 @@ func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
 		// the listeners the moment it is written: the second listener's walk could take over the
 		// first walk's claim while that walk's publish is in flight, judge the copy claimed and so
 		// not stale, and the first walk's confirm would then lose to the moved cursor and report
-		// nothing. The second listener's guard is held for the whole row, so its sweep passes the
+		// nothing. The second listener's guard is held for the whole row, so its passes pass the
 		// lane over and one walk judges the copy, as rows (h) and (n) of
 		// TestAKeptRoleCopyIsForwardedOrReturned hold one.
 		release, taken := rig.listeners[1].cfg.roleKeepDrains.hold(context.Background(), role)
@@ -168,10 +175,10 @@ func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
 		defer release()
 		before := rig.now()
 		rig.moveClock(3 * time.Hour)
-		rig.startSweeps()
+		rig.sweep()
 		rig.waitPassed(role, held.sequence)
 		rig.waitReported(role, expiryNoticeLine, 1)
-		rig.letSweepsRun()
+		rig.sweep()
 		notices := rig.expiryNotices(role)
 		if len(notices) != 1 {
 			t.Fatalf("the stream holds %d expiry notices for the stale copy, want one: %+v", len(notices), notices)
@@ -199,14 +206,13 @@ const (
 // publishSeam (cfg.publishExpiryNotice) whose first call, made by the walk of listener stopping,
 // stops that walk where stop says and does not return until the test ends, as a listener stopped
 // there would never write again: its walk holds the role's guard on that listener, so that
-// listener's sweeps pass the lane over, and it makes no later write. Before it blocks, the call
+// listener's passes pass the lane over, and it makes no later write. Before it blocks, the call
 // lets the other listener walk the lane (released). Every later call publishes as main.go does.
-// A test installs it before it starts the sweeps, which copy the configuration they walk with.
+// A test installs it before the passes it makes, which copy the configuration they walk with.
 //
-// Cleanups run last-in first-out, and the sweeps' (hourRig.startSweeps) is registered after this
-// one, so when the test ends the sweeps are stopped first and the stopped walk is let go after
-// them. Nothing waits on the walk the seam holds meanwhile: a sweep does not wait for the
-// handovers it starts.
+// The pass whose walk it stops does not end while the test runs: a test that makes that pass runs
+// it on a goroutine of its own and waits for it in a cleanup it registered before this one, so that
+// cleanup runs after this one has let the walk go (cleanups run last-in first-out).
 func stoppingNotices(t *testing.T, rig *hourRig, role string, stop noticeStop, stopping int, released func()) *publishSeam {
 	t.Helper()
 	stopped := make(chan struct{})
@@ -252,6 +258,7 @@ func stoppingNotices(t *testing.T, rig *hourRig, role string, stop noticeStop, s
 // one message id, as these two walks do (internal/dispatch/outbox,
 // TestANoticeStoredAgainByTheWalkThatTookTheClaimOverReopensTheRowOnce).
 func TestAnExpiryNoticeReachesDispatchWhenAListenerStopsBetweenItsWrites(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name       string
 		stop       noticeStop
@@ -261,23 +268,51 @@ func TestAnExpiryNoticeReachesDispatchWhenAListenerStopsBetweenItsWrites(t *test
 		{"d a listener stopped after the notice and before the cursor moves", stopAfterNotice, 1},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newHourRig(t)
 			role := "hour-outbox-stopped-" + strconv.Itoa(int(row.stop))
 			held := rig.keep(role, outboxCopy(role, "ses_outbox_stopped_sender", "a Dispatch event whose notice a listener stops in"))
 			// The second listener walks first and stops; the first takes its claim over. The first
-			// listener's guard is held until the stop, so its sweeps pass the lane over until then.
+			// listener's guard is held until the stop, so its passes pass the lane over until then.
 			release, taken := rig.listeners[0].cfg.roleKeepDrains.hold(context.Background(), role)
 			if !taken {
 				t.Fatalf("take role %s's handover guard on the first listener", role)
 			}
+			// The second listener's pass is the one pass the row does not wait for: its walk stops
+			// for good. Its end is this cleanup's, registered before stoppingNotices' own, so it
+			// runs after that one has let the walk go, and it ends the pass's context, so the
+			// handover does not wait out the retry pause the walk's failed publish earns.
+			passCtx, endPass := context.WithCancel(rig.ctx)
+			var stoppedPass chan struct{}
+			t.Cleanup(func() {
+				endPass()
+				if stoppedPass != nil {
+					testwait.Receive(t, "the stopped listener's pass to end once its walk was let go", stoppedPass)
+				}
+			})
 			var once sync.Once
-			seam := stoppingNotices(t, rig, role, row.stop, 1, func() { once.Do(release) })
+			stopped := make(chan struct{})
+			seam := stoppingNotices(t, rig, role, row.stop, 1, func() {
+				once.Do(func() {
+					release()
+					close(stopped)
+				})
+			})
 			before := rig.now()
 			rig.moveClock(time.Hour + time.Minute)
-			rig.startSweeps()
+			stoppedPass = make(chan struct{})
+			stopping := rig.listeners[1].cfg
+			go func() {
+				defer close(stoppedPass)
+				sweepOnce(passCtx, stopping)
+			}()
+			testwait.Receive(t, "the second listener's walk to stop in the notice's publish", stopped)
+			// The first listener's pass takes the stopped walk's claim over; the second listener's
+			// passes the lane over, whose guard the stopped walk holds.
+			rig.sweep()
 			rig.waitPassed(role, held.sequence)
 			rig.waitReported(role, expiryNoticeLine, 1)
-			rig.letSweepsRun()
+			rig.sweep()
 
 			calls := seam.assertTakenOver(t, "expiry notice", held, row.heldBefore)
 			if calls[0].listener != 1 || calls[1].listener == 1 {
