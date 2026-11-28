@@ -4,10 +4,11 @@
 // A session is Oh My Pi's JSONL (session-loader.ts, session-entries.ts): an optional fixed-width
 // title slot line, the version 3 header, then one entry per line, each naming its parent. The
 // reader resolves the active leaf with the rules of resolveSessionLeafId (session-entries.ts).
-// It walks from that leaf to the root and builds the model context as buildSessionContext does
-// (session-context.ts). It shapes replay for the resumed model under the assumptions in Options
-// (transform-messages.ts). Like Oh My Pi it skips a line that is not JSON, including a torn last
-// record. Unlike Oh My Pi it refuses a well-formed record it does not know (conversation.ErrUnknownFormat).
+// It walks from that leaf to the root and builds the context from the session records
+// (session-context.ts). It projects the pinned Oh My Pi's replay rules onto the neutral model
+// for Anthropic Messages and OpenAI Responses. Options lists the limits of that projection.
+// Like Oh My Pi it skips a line that is not JSON, including a torn last record. It refuses a
+// well-formed record it does not know (conversation.ErrUnknownFormat).
 //
 // The caller supplies per-request context. The reader omits the system prompt and the date and
 // working-directory reminders Oh My Pi journals as date-cwd-reminder custom entries.
@@ -27,8 +28,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
-// Session is a session read: its conversation as Oh My Pi rebuilds it on resume, and what an
-// append after it needs.
+// Session holds the reader's reconstruction of a resumed conversation, within the limits
+// in Options, and the session state an append needs.
 type Session struct {
 	conversation.Conversation
 	// ID, Timestamp, Cwd and ParentSession are the session header's.
@@ -55,31 +56,40 @@ type Session struct {
 // the resumed agent will see it.
 func (s *Session) Answered(questionID string) bool { return s.answered[questionID] }
 
-// Options supplies the Anthropic endpoint's unsigned-thinking replay policy, which the session
-// does not record. The reader does not resolve the pin's model catalog or credentials.
-// In transform-messages.ts:
+// Options supplies endpoint policy the session does not record. Read applies the pin's Claude
+// classifier and thinking-prefix rules to the resumed model ID. It does not load models.yml,
+// provider discovery, or request overrides. An override makes no difference if it leaves the
+// inferred model and replay policy unchanged.
 //
-//   - foreignCredential does not drop thinking unless the target enforces Anthropic signatures
-//     and both credential IDs are known and different.
-//   - dropsForeignThinking leaves thinking alone for the same model, or when the target has
-//     neither modelRouter nor the classifierCotExtraction catalog policy.
-//   - With prefixBinding off, the pin has no rewrite gate. With it on, the pin drops thinking
-//     only if a preceding historyRewriteAt or prunedAt timestamp is at or after the turn's.
-//     It can also retain signatures on older, different-model turns in same-provider Anthropic
-//     replay where officialEndpoint is false.
-//   - targetReadsForeignThinking matches ReplayUnsignedThinking on Anthropic Messages.
-//     It is false on OpenAI Responses.
-//   - On the cross-model fallback path, carriesSameModelReasoning leaves the text fallback
-//     in place if the turn ended in error, targetHasReasoningSlot or carriesReasoning is false,
-//     or summary is not explicitly false.
+// The reader does not apply these request-time branches of transform-messages.ts:
+//
+//   - Credential-pattern redaction changes nothing when the caller has not enabled it, or
+//     when the replay contains no matching token. The session does not record that setting.
+//   - foreignCredential changes nothing unless the Anthropic target verifies signatures and
+//     both the recorded and current credential IDs are known and different. Read has no current ID.
+//   - Responses portable reasoning needs the effective target compat, including the per-call
+//     history filter, which Read does not receive. The text fallback is the same when the
+//     target has no compatible reasoning slot, the lineage is not portable, the source ended
+//     in error, or the block is not explicitly a full trace (summary: false).
+//   - The neutral conversation stores an OpenAI tool's call_id, not its item ID. It preserves
+//     provider-native Responses items on same-model replay. Block-only replay does not represent
+//     text item signatures or tool thought signatures. This loses no wire data on Anthropic,
+//     which does not encode either, or when the pin removes them on a model switch.
+//   - The Anthropic encoder's default ID normalizer always returns a valid ID for a nonblank
+//     call. The fallback for a caller-supplied normalizer that returns an invalid ID is unused.
+//   - Read refuses a server tool on its original Anthropic Messages provider. It also refuses a
+//     fallback boundary on Anthropic Messages, where even a request that does not send the
+//     boundary can use it to select thinking. The neutral model cannot carry these blocks.
+//     When the pin drops either block for the target, Read drops it too.
+//
+// Read refuses target APIs other than Anthropic Messages and OpenAI Responses.
 type Options struct {
-	// ReplayUnsignedThinking is an Anthropic-compatible endpoint that verifies no thinking
-	// signature and takes unsigned thinking replayed as thinking (Oh My Pi's
-	// compat.replayUnsignedThinking, which it sets for a reasoning model on an endpoint that is
-	// neither Anthropic's own API nor a known signing proxy). False, the zero value, is
-	// Anthropic's own API: thinking left unsigned is dropped from a turn of the same model and
-	// sent as text otherwise, and only that deployment's signatures are kept. OpenAI's API is
-	// read as its own either way.
+	// ReplayUnsignedThinking is true for an Anthropic-compatible reasoning endpoint that
+	// accepts unsigned thinking and does not verify signatures. False assumes the first-party
+	// policy: an official, signing endpoint that does not replay unsigned thinking natively.
+	// It does not describe proxies that verify signatures but are not official endpoints.
+	// The option makes no difference on OpenAI Responses, or on Anthropic Messages history
+	// with no thinking blocks or tool IDs that need normalization.
 	ReplayUnsignedThinking bool
 }
 

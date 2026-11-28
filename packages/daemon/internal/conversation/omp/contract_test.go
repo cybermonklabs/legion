@@ -163,6 +163,11 @@ func standInModelOf(api string) string {
 
 func newOMPRig(t *testing.T, api string, model *standIn, extraEnv ...string) *ompRig {
 	t.Helper()
+	return newOMPRigForModel(t, api, standInModelOf(api), model, extraEnv...)
+}
+
+func newOMPRigForModel(t *testing.T, api, modelID string, model *standIn, extraEnv ...string) *ompRig {
+	t.Helper()
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
 	rig := &ompRig{omp: omp, home: filepath.Join(dir, "home"), work: filepath.Join(dir, "work"), sessions: filepath.Join(dir, "sessions")}
@@ -174,9 +179,9 @@ func newOMPRig(t *testing.T, api string, model *standIn, extraEnv ...string) *om
 	}
 	for path, content := range map[string]string{
 		filepath.Join(agent, "models.yml"): "providers:\n  " + standInProvider + ":\n    baseUrl: " + baseURL +
-			"\n    auth: apiKey\n    api: " + api + "\n    apiKey: unused\n    models:\n      - id: " + standInModelOf(api) +
+			"\n    auth: apiKey\n    api: " + api + "\n    apiKey: unused\n    models:\n      - id: " + modelID +
 			"\n        name: Stand-in\n        reasoning: true\n",
-		filepath.Join(agent, "config.yml"):  "modelRoles:\n  default: " + standInProvider + "/" + standInModelOf(api) + "\n",
+		filepath.Join(agent, "config.yml"):  "modelRoles:\n  default: " + standInProvider + "/" + modelID + "\n",
 		filepath.Join(rig.work, "note.txt"): "plum\n",
 	} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -238,6 +243,7 @@ func firstRunReplies() []string {
 
 // anthropicRequest is the part of an Anthropic Messages request the tests compare.
 type anthropicRequest struct {
+	Model    string `json:"model"`
 	Messages []struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
@@ -621,6 +627,89 @@ func TestThePinnedOhMyPiResumesTheConversationTheReaderRebuilds(t *testing.T) {
 
 	rig.run(t, file, "What colour is the fruit?")
 	assertResumeMatches(t, before, sessionContent(t, file), model.lastAnthropic(t), "What colour is the fruit?")
+}
+
+func TestThePinnedOhMyPiDropsThinkingOnClaudeResume(t *testing.T) {
+	const visible = "The note says plum."
+	const thinking = "I read the note."
+	const followUp = "What colour is the fruit?"
+	for _, tc := range []struct {
+		name, modelID string
+		compaction    bool
+	}{
+		{name: "another Claude model", modelID: standInModel},
+		{name: "compaction rewrites the prefix", modelID: "claude-opus-5-5", compaction: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := newAnthropicStandIn(t, anthropicStream("msg_1", "end_turn", sseThinking(thinking, "c2ln"), sseRedacted("cmVk"), sseText(visible)))
+			rig := newOMPRigForModel(t, conversation.AnthropicMessages, tc.modelID, model)
+			rig.run(t, "", "What does the note say?")
+			file := rig.sessionFile(t)
+			first, err := ReadFile(file, standInEndpoint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			carriedOnce(t, readerTurns(t, first.Messages), func(_ wireTurn, b wireBlock) bool {
+				return b.Type == "thinking" && b.Text == thinking && b.Signature == "c2ln"
+			}, "the initial signed thinking")
+			now := time.Now()
+			if tc.compaction {
+				parsed, err := parseSession(sessionContent(t, file))
+				if err != nil {
+					t.Fatal(err)
+				}
+				kept := ""
+				for _, e := range parsed.entries {
+					if e.Type == "message" && e.Message.Role == "assistant" {
+						kept = e.ID
+					}
+				}
+				if kept == "" {
+					t.Fatal("the first session has no assistant entry to retain")
+				}
+				appendRaw(t, file, fmt.Sprintf(`{"type":"compaction","id":"d4000001","parentId":%q,"timestamp":%q,"summary":"The user asked about the note.","firstKeptEntryId":%q,"tokensBefore":1000}`+"\n",
+					first.Leaf, conversation.ISOTime(now), kept))
+			} else {
+				appendRaw(t, file, fmt.Sprintf(`{"type":"message","id":"d4000001","parentId":%q,"timestamp":%q,"message":{"role":"assistant","content":[{"type":"thinking","thinking":"Foreign reasoning.","thinkingSignature":"Zm9yZWlnbg=="},{"type":"redactedThinking","data":"Zm9yZWlnbg=="},{"type":"text","text":"Another model answered."}],"api":%q,"provider":%q,"model":"claude-sonnet-5","usage":%s,"stopReason":"stop","timestamp":%d}}`+"\n"+
+					`{"type":"model_change","id":"d4000002","parentId":"d4000001","timestamp":%q,"model":%q}`+"\n",
+					first.Leaf, conversation.ISOTime(now), conversation.AnthropicMessages, standInProvider, handWrittenUsage, now.UnixMilli(),
+					conversation.ISOTime(now), standInProvider+"/"+tc.modelID))
+			}
+			before, err := ReadFile(file, standInEndpoint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.run(t, file, followUp)
+			content := sessionContent(t, file)
+			request := model.lastAnthropic(t)
+			if request.Model != tc.modelID {
+				t.Fatalf("request model = %q, want %q", request.Model, tc.modelID)
+			}
+			got := request.turns(t, content)
+			kept, droppedText, droppedData := visible, thinking, "cmVk"
+			if !tc.compaction {
+				kept, droppedText, droppedData = "Another model answered.", "Foreign reasoning.", "Zm9yZWlnbg=="
+				carriedOnce(t, got, func(_ wireTurn, b wireBlock) bool {
+					return b.Type == "thinking" && b.Text == thinking && b.Signature == "c2ln"
+				}, "the resumed model's own signed thinking")
+			}
+			carriedOnce(t, got, func(turn wireTurn, b wireBlock) bool {
+				return turn.Role == "assistant" && b.Type == "text" && b.Text == kept
+			}, "the answer whose thinking is dropped")
+			for _, turn := range got {
+				for _, b := range turn.Blocks {
+					if strings.Contains(b.Text, droppedText) || b.Data == droppedData || b.Signature == droppedData {
+						t.Fatalf("pinned Oh My Pi kept thinking that transform-messages.ts drops: %+v\n%s", b, model.last(t))
+					}
+				}
+			}
+			resumed := resumedSession(t, before, content, standInEndpoint, followUp)
+			want := append(readerTurns(t, resumed.Messages), wireTurn{Role: "user", Blocks: []wireBlock{{Type: "text", Text: followUp}}})
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("Oh My Pi's resume request:\n%+v\nthe reader's conversation and the follow-up:\n%+v", got, want)
+			}
+		})
+	}
 }
 
 // The pinned Oh My Pi and the reader rebuild alike a session that, after a real first run, holds

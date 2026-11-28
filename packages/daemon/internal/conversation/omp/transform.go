@@ -2,12 +2,10 @@ package omp
 
 import (
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
-	"unicode"
-	"unicode/utf16"
 
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
@@ -18,18 +16,20 @@ type target struct {
 	provider, api, model string
 	// signing is an Anthropic endpoint that verifies thinking signatures and replays no unsigned
 	// thinking (Options).
-	signing bool
+	signing                   bool
+	classifier, prefixBinding bool
+	demotionClass             string
 }
 
-// toRequest is the pinned Oh My Pi's transformMessages for the target, then each message in the
-// neutral model: malformed tool calls dropped, each assistant turn's thinking kept, signed, demoted
-// to text or dropped as the target replays it, tool call ids as the target's request carries them,
-// every tool call followed by its result; and, on Anthropic, a "Continue." user turn between two
-// assistant turns, as Oh My Pi's encoder puts one.
+// toRequest projects the supported request-shaping rules in the pinned transform-messages.ts
+// onto the neutral conversation. It also inserts the Anthropic encoder's Continue. turn between
+// adjacent assistant turns. Options documents the replay inputs the reader does not have.
 func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) {
 	if t.api != conversation.AnthropicMessages && t.api != conversation.OpenAIResponses {
 		return nil, conversation.Unknown("the conversation runs on provider API %q, which the reader does not rebuild a request for", t.api)
 	}
+	t.demotionClass = replayModelClass(t.model)
+	t.classifier, t.prefixBinding = anthropicThinkingPolicy(t.provider, t.model, t.demotionClass)
 	messages = dropMalformedToolCalls(messages)
 	latest := -1
 	for i, m := range messages {
@@ -37,40 +37,43 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 			latest = i
 		}
 	}
-	// The ids an Anthropic request gives tool calls, by their own id and, for an OpenAI Responses
-	// call, by its call_id, which pairs a result whose item half differs.
-	idOf := map[string]string{}
+	ids := normalizedToolIDs{exact: map[string]string{}, responses: map[string]string{}}
 	out := make([]conversation.Message, len(messages))
+	var latestRewrite *float64
 	for i, m := range messages {
+		if t.prefixBinding && m.rewriteAt != nil && (latestRewrite == nil || *m.rewriteAt > *latestRewrite) {
+			latestRewrite = m.rewriteAt
+		}
 		var err error
 		switch m.role {
 		case "user":
 			out[i], err = userMessage(m)
 		case "assistant":
-			out[i], err = assistantMessage(m, t, i == latest, idOf)
+			rewritten := latestRewrite != nil && m.timestamp != nil && *m.timestamp <= *latestRewrite
+			out[i], err = assistantMessage(m, t, i == latest, rewritten, ids)
 		case "toolResult":
 			out[i], err = toolResultMessage(m)
+			if err == nil {
+				out[i].Content[0].ToolCallID = ids.result(m.toolCallID)
+			}
 		}
 		if err != nil {
 			return nil, err
 		}
 	}
-	for i, m := range messages {
-		if m.role != "toolResult" {
-			continue
+	pairingKey := toolPairingKey(messages, out)
+	deduplicateToolCalls(out, pairingKey)
+	paired := pairToolResults(messages, out, pairingKey)
+	if t.api == conversation.OpenAIResponses {
+		for _, m := range paired {
+			for i := range m.Content {
+				b := &m.Content[i]
+				if b.Type == conversation.ToolCall || b.Type == conversation.ToolResult {
+					b.ToolCallID = responsesCallID(b.ToolCallID)
+				}
+			}
 		}
-		result := &out[i].Content[0]
-		if t.api == conversation.OpenAIResponses {
-			result.ToolCallID = responsesCallID(m.toolCallID)
-		} else if id, ok := idOf[m.toolCallID]; ok {
-			result.ToolCallID = id
-		} else if id, ok := idOf[responsesCallID(m.toolCallID)]; ok && strings.Contains(m.toolCallID, "|") {
-			result.ToolCallID = id
-		}
-	}
-	paired, err := pairToolResults(messages, out)
-	if err != nil || t.api != conversation.AnthropicMessages {
-		return paired, err
+		return paired, nil
 	}
 	var continued []conversation.Message
 	for i, m := range paired {
@@ -129,7 +132,7 @@ func inputBlock(b block) (conversation.Block, bool, error) {
 
 // assistantMessage is an assistant turn as the target's request replays it: transformMessages'
 // first pass for the target, then the Anthropic encoder's rule for the turn's thinking.
-func assistantMessage(m llmMessage, t target, latest bool, idOf map[string]string) (conversation.Message, error) {
+func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normalizedToolIDs) (conversation.Message, error) {
 	msg := conversation.Message{Role: conversation.Assistant, Provider: m.provider, API: m.api, Model: m.model}
 	native, err := nativeHistory(m, t)
 	if err != nil {
@@ -140,18 +143,21 @@ func assistantMessage(m llmMessage, t target, latest bool, idOf map[string]strin
 	anthropicTarget := t.api == conversation.AnthropicMessages
 	anthropicReplay := anthropicTarget && m.api == conversation.AnthropicMessages
 	official := anthropicTarget && t.signing
-	sameDeployment := anthropicReplay && m.provider == t.provider && official
+	sameDeployment := anthropicReplay && m.provider == t.provider && (official || t.prefixBinding)
 	signingInvolved := (anthropicReplay && m.provider == "anthropic") || official
 	replaysUnsigned := anthropicTarget && !t.signing
 	failed := m.stopReason == "aborted" || m.stopReason == "error"
 	abandonedToolUse := !failed && m.stopReason != "toolUse" && hasToolCall(m.blocks)
 	crossProvider := m.provider != t.provider
+	dropThinking := (t.classifier && !sameModel) || rewritten
 
-	// Each source block's replay, nil when it is dropped; demoted marks thinking replayed as text.
+	// Each source block's replay, nil when it is dropped.
 	converted := make([]*conversation.Block, len(m.blocks))
-	demoted := make([]bool, len(m.blocks))
 	visibleThinking, survivingThinking := false, false
 	for i, b := range m.blocks {
+		if dropThinking && (b.Type == "thinking" || b.Type == "redactedThinking") {
+			continue
+		}
 		switch b.Type {
 		case "thinking":
 			visibleThinking = true
@@ -179,28 +185,36 @@ func assistantMessage(m llmMessage, t target, latest bool, idOf map[string]strin
 			case replaysUnsigned:
 				thinking.Signature = ""
 			default:
-				text, err := demotedThinking(t.model, thinking.Text)
-				if err != nil {
-					return conversation.Message{}, err
-				}
-				thinking = conversation.Block{Type: conversation.Text, Text: text}
-				demoted[i] = true
+				thinking = conversation.Block{Type: conversation.Text, Text: demotedThinking(t.demotionClass, thinking.Text)}
 			}
 			survivingThinking = true
 			converted[i] = &thinking
 		case "text":
 			converted[i] = &conversation.Block{Type: conversation.Text, Text: b.Text}
+		case "image":
+			// Assistant images are display blocks. Responses native history is handled above.
+			continue
+		case "anthropicServerTool":
+			if anthropicReplay && !crossProvider {
+				return conversation.Message{}, conversation.Unknown("a native Anthropic server tool block from provider %s", m.provider)
+			}
+		case "fallback":
+			if anthropicTarget {
+				return conversation.Message{}, conversation.Unknown("an Anthropic server-side fallback boundary")
+			}
 		case "toolCall":
 			id := b.ID
 			switch {
-			case t.api == conversation.OpenAIResponses:
-				id = responsesCallID(b.ID)
-			case !sameModel || official:
+			case anthropicTarget && (!sameModel || official):
 				id = anthropicToolCallID(b.ID)
-				idOf[b.ID] = id
-				if m.api == conversation.OpenAIResponses {
-					idOf[responsesCallID(b.ID)] = id
-				}
+			case t.api == conversation.OpenAIResponses && !sameModel:
+				id = normalizeResponsesReplayID(b.ID, crossProvider || m.api != t.api)
+			}
+			if id != b.ID {
+				ids.exact[b.ID] = id
+			}
+			if isResponsesFamily(m.api) && (!sameModel || official) {
+				ids.responses[responsesComponent(b.ID)] = id
 			}
 			arguments := b.Arguments
 			if len(arguments) == 0 || string(arguments) == "null" {
@@ -212,19 +226,10 @@ func assistantMessage(m llmMessage, t target, latest bool, idOf map[string]strin
 	// Redacted thinking replays only on Anthropic, beside the turn's visible thinking.
 	dropsAllVisible := anthropicReplay && sameModel && t.signing && visibleThinking && !survivingThinking
 	for i, b := range m.blocks {
-		if b.Type == "redactedThinking" && anthropicReplay && !dropsAllVisible &&
+		if !dropThinking && b.Type == "redactedThinking" && anthropicReplay && !dropsAllVisible &&
 			(sameModel || sameDeployment || (latest && !crossProvider) || replaysUnsigned) {
 			converted[i] = &conversation.Block{Type: conversation.RedactedThinking, Data: b.Data}
 		}
-	}
-	last := -1
-	for i, block := range converted {
-		if block != nil {
-			last = i
-		}
-	}
-	if last >= 0 && demoted[last] {
-		converted[last].Text = strings.TrimRightFunc(converted[last].Text, isJSSpace)
 	}
 	signed := false
 	for _, block := range converted {
@@ -249,11 +254,7 @@ func assistantMessage(m llmMessage, t target, latest bool, idOf map[string]strin
 				continue
 			}
 			if signed || !replaysUnsigned {
-				text, err := demotedThinking(t.model, block.Text)
-				if err != nil {
-					return conversation.Message{}, err
-				}
-				*block = conversation.Block{Type: conversation.Text, Text: text}
+				*block = conversation.Block{Type: conversation.Text, Text: demotedThinking(t.demotionClass, block.Text)}
 			} else {
 				block.Signature = ""
 			}
@@ -307,6 +308,11 @@ func anthropicToolCallID(id string) string {
 	if validAnthropicToolCallID.MatchString(id) {
 		return id
 	}
+	sanitized := sanitizeToolIDChars(id)
+	return sanitized[:min(len(sanitized), 64)]
+}
+
+func sanitizeToolIDChars(id string) string {
 	var b strings.Builder
 	for _, r := range id {
 		if r < 0x80 && (r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
@@ -319,11 +325,80 @@ func anthropicToolCallID(id string) string {
 			}
 		}
 	}
-	sanitized := b.String()
-	if len(sanitized) > 64 {
-		sanitized = sanitized[:64]
+	return b.String()
+}
+
+// anthropicThinkingPolicy uses the bounded tokens and namespace in
+// catalog/src/compat/rules/taxonomy/anthropic.kdl:1–16. The class rule
+// (classes/anthropic.kdl:26–30) suppresses foreign reasoning.
+func anthropicThinkingPolicy(provider, id, class string) (classifier, prefixBinding bool) {
+	id = strings.ToLower(strings.TrimFunc(id, isJSSpace))
+	bare := id[strings.LastIndexByte(id, '/')+1:]
+	if strings.EqualFold(provider, "nanogpt") {
+		switch bare {
+		case "gemma-4-31b-claude-4.6-opus-reasoning-distilled",
+			"qwen3.5-27b-claude-4.6-opus-reasoning-distilled-derestricted",
+			"qwen3.5-27b-claude-4.6-opus-reasoning-distilled-lite":
+			return true, false
+		}
 	}
-	return sanitized
+	classifier = class == "anthropic"
+	if !classifier {
+		return false, false
+	}
+	family := ""
+	tied := false
+	for _, candidate := range []string{"opus", "sonnet", "haiku", "fable", "mythos"} {
+		if strings.Contains(bare, candidate) {
+			if len(family) == len(candidate) {
+				tied = true
+			}
+			if len(candidate) > len(family) {
+				family, tied = candidate, false
+			}
+		}
+	}
+	_, tail, ok := strings.Cut(bare, "claude-")
+	if !ok || tied {
+		return true, false
+	}
+	first := strings.IndexAny(tail, "0123456789")
+	if first < 0 {
+		return true, false
+	}
+	major, minor := revisionComponents(tail[first:])
+	// classes/anthropic.kdl:113–125,247–281. A collapsed 55 is not revision 5.5.
+	switch family {
+	case "fable", "mythos":
+		prefixBinding = major > 5 || (major == 5 && minor >= 1)
+	case "opus", "sonnet", "haiku":
+		prefixBinding = major == 5 && minor >= 5
+	}
+	return true, prefixBinding
+}
+
+// revisionComponents reads the first two components, the only ones these rules compare.
+// The parser in revision.ts stops at a component over 255 or digits followed by a letter.
+func revisionComponents(tail string) (major, minor int) {
+	digits := func(s string) (int, int) {
+		i := 0
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		if i == 0 || (i < len(s) && s[i] >= 'a' && s[i] <= 'z') {
+			return 0, 0
+		}
+		n, err := strconv.ParseUint(s[:i], 10, 8)
+		if err != nil {
+			return 0, 0
+		}
+		return int(n), i
+	}
+	major, end := digits(tail)
+	if end > 0 && end+1 < len(tail) && (tail[end] == '.' || tail[end] == '-') {
+		minor, _ = digits(tail[end+1:])
+	}
+	return major, minor
 }
 
 // responsesCallID is the Responses API's call_id of a "call_id|item_id" tool call id: the part
@@ -334,23 +409,6 @@ func responsesCallID(id string) string {
 	}
 	return id
 }
-
-// demotedThinking is renderDemotedThinking: reasoning another model produced, as text in the
-// target model's own dialect. Claude models take it bare; OpenAI's harmony dialect in a <think>
-// block. Another family's dialect the reader does not render, and refuses.
-func demotedThinking(model, thinking string) (string, error) {
-	lower := strings.ToLower(model)
-	switch {
-	case strings.Contains(lower, "claude"):
-		return thinking, nil
-	case strings.HasPrefix(lower, "gpt") || strings.Contains(lower, "/gpt") || openaiReasoningModel.MatchString(lower):
-		return fmt.Sprintf("<think>\n%s\n</think>", thinking), nil
-	}
-	return "", conversation.Unknown("another model's reasoning demoted for model %q, whose dialect the reader does not render", model)
-}
-
-// openaiReasoningModel is an OpenAI o-series model id ("o3", "o4-mini").
-var openaiReasoningModel = regexp.MustCompile(`^o\d`)
 
 func blank(s string) bool { return strings.TrimFunc(s, isJSSpace) == "" }
 
@@ -372,9 +430,8 @@ func truncatedThinkingOnly(m llmMessage) bool {
 	return true
 }
 
-// dropMalformedToolCalls is sanitizeMalformedToolCalls: a tool call with a blank id, or a name no
-// provider could have declared, is dropped with the result answering it, and a turn left with no
-// content with it.
+// dropMalformedToolCalls removes invalid calls, the results paired with those occurrences,
+// and assistant turns left with no blocks (transform-messages.ts:434–493).
 func dropMalformedToolCalls(messages []llmMessage) []llmMessage {
 	malformed := false
 	for _, m := range messages {
@@ -426,35 +483,23 @@ func dropMalformedToolCalls(messages []llmMessage) []llmMessage {
 	return out
 }
 
+var validToolCallName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
+
 func malformedToolCall(b block) bool {
-	if blank(b.ID) || b.Name == "" {
-		return true
-	}
-	units := 0
-	for _, r := range b.Name {
-		units += utf16.RuneLen(r)
-		if units > 128 || isJSSpace(r) || unicode.Is(unicode.Cc, r) {
-			return true
-		}
-	}
-	return false
+	// catalog/src/compat/rules/providers/tool-call-names.kdl:3–5 gives both APIs this limit.
+	return blank(b.ID) || !validToolCallName.MatchString(b.Name)
 }
 
-// pairToolResults is transformMessages' second pass: each surviving tool call is followed at once
-// by exactly one result, its first real result after the call, pulled forward past other messages,
-// else a synthetic "No result provided" error. A result whose call is gone becomes a user note in
-// <stale-tool-result> (or is dropped while a call still waits for its result); a second result of
-// one call is dropped. Two tool calls sharing one id, which Oh My Pi renames apart, refuse the
-// session.
-func pairToolResults(source []llmMessage, messages []conversation.Message) ([]conversation.Message, error) {
+// pairToolResults preserves real results in their order inside a tool-use window.
+// At the next turn boundary it pulls forward any late results and fills missing slots.
+func pairToolResults(source []llmMessage, messages []conversation.Message, key func(string) string) []conversation.Message {
 	calls := map[string]bool{}
 	for _, m := range messages {
-		for _, b := range m.Content {
-			if m.Role == conversation.Assistant && b.Type == conversation.ToolCall {
-				if calls[b.ToolCallID] {
-					return nil, conversation.Unknown("two tool calls with id %s", b.ToolCallID)
+		if m.Role == conversation.Assistant {
+			for _, b := range m.Content {
+				if b.Type == conversation.ToolCall {
+					calls[key(b.ToolCallID)] = true
 				}
-				calls[b.ToolCallID] = true
 			}
 		}
 	}
@@ -465,12 +510,12 @@ func pairToolResults(source []llmMessage, messages []conversation.Message) ([]co
 	results := map[string][]*indexed{}
 	for i, m := range messages {
 		if m.Role == conversation.Tool {
-			id := m.Content[0].ToolCallID
+			id := key(m.Content[0].ToolCallID)
 			results[id] = append(results[id], &indexed{index: i})
 		}
 	}
 	take := func(id string, after int) (conversation.Message, bool) {
-		for _, r := range results[id] {
+		for _, r := range results[key(id)] {
 			if !r.consumed && r.index > after {
 				r.consumed = true
 				return messages[r.index], true
@@ -482,19 +527,21 @@ func pairToolResults(source []llmMessage, messages []conversation.Message) ([]co
 	resolved := map[string]bool{}
 	var pending []conversation.Block
 	pendingStart := -1
+	missingResult := ""
 	flush := func() {
 		for _, call := range pending {
-			if resolved[call.ToolCallID] {
+			callKey := key(call.ToolCallID)
+			if resolved[callKey] {
 				continue
 			}
-			resolved[call.ToolCallID] = true
+			resolved[callKey] = true
 			if result, ok := take(call.ToolCallID, pendingStart); ok {
 				out = append(out, result)
 				continue
 			}
 			out = append(out, conversation.Message{Role: conversation.Tool, Content: []conversation.Block{{
 				Type: conversation.ToolResult, ToolCallID: call.ToolCallID, ToolName: call.ToolName, IsError: true,
-				Content: []conversation.Block{{Type: conversation.Text, Text: "No result provided"}},
+				Content: []conversation.Block{{Type: conversation.Text, Text: missingResult}},
 			}}})
 		}
 		pending = nil
@@ -514,18 +561,23 @@ func pairToolResults(source []llmMessage, messages []conversation.Message) ([]co
 			}
 			if len(turnCalls) > 0 {
 				pending, pendingStart = turnCalls, i
+				missingResult = "No result provided"
+				if source[i].stopReason == "error" || source[i].stopReason == "aborted" {
+					missingResult = "aborted"
+				}
 			}
 			if len(m.Content) > 0 || m.Native != nil {
 				out = append(out, m)
 			}
 		case conversation.Tool:
 			result := m.Content[0]
-			if resolved[result.ToolCallID] {
+			resultKey := key(result.ToolCallID)
+			if resolved[resultKey] {
 				continue
 			}
-			if pendingHas(pending, result.ToolCallID) {
-				resolved[result.ToolCallID] = true
-				for _, r := range results[result.ToolCallID] {
+			if pendingHas(pending, resultKey, key) {
+				resolved[resultKey] = true
+				for _, r := range results[resultKey] {
 					if r.index == i {
 						r.consumed = true
 					}
@@ -533,10 +585,13 @@ func pairToolResults(source []llmMessage, messages []conversation.Message) ([]co
 				out = append(out, m)
 				continue
 			}
-			if calls[result.ToolCallID] {
+			if calls[resultKey] {
 				continue
 			}
-			if pendingUnresolved(pending, resolved) {
+			if pendingUnresolved(pending, resolved, key) {
+				continue
+			}
+			if source[i].notExecuted {
 				continue
 			}
 			var texts []string
@@ -563,13 +618,13 @@ func pairToolResults(source []llmMessage, messages []conversation.Message) ([]co
 		}
 	}
 	flush()
-	return out, nil
+	return out
 }
 
-func pendingHas(pending []conversation.Block, id string) bool {
-	return slices.ContainsFunc(pending, func(call conversation.Block) bool { return call.ToolCallID == id })
+func pendingHas(pending []conversation.Block, id string, key func(string) string) bool {
+	return slices.ContainsFunc(pending, func(call conversation.Block) bool { return key(call.ToolCallID) == id })
 }
 
-func pendingUnresolved(pending []conversation.Block, resolved map[string]bool) bool {
-	return slices.ContainsFunc(pending, func(call conversation.Block) bool { return !resolved[call.ToolCallID] })
+func pendingUnresolved(pending []conversation.Block, resolved map[string]bool, key func(string) string) bool {
+	return slices.ContainsFunc(pending, func(call conversation.Block) bool { return !resolved[key(call.ToolCallID)] })
 }

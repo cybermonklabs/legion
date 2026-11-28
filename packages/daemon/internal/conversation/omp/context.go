@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
@@ -14,8 +15,9 @@ import (
 // assistant or tool result message. A developer message is a user message here: both provider
 // APIs the reader rebuilds for send it as one.
 type llmMessage struct {
-	role   string // "user", "assistant" or "toolResult"
-	blocks []block
+	role                 string // "user", "assistant" or "toolResult"
+	blocks               []block
+	timestamp, rewriteAt *float64
 	// assistant
 	api, provider, model, stopReason string
 	payload                          json.RawMessage
@@ -24,6 +26,7 @@ type llmMessage struct {
 	toolCallID, toolName string
 	isError              bool
 	synthetic            bool
+	notExecuted          bool
 	// custom user message
 	customType string
 	// user: a compaction summary's provider-native replay
@@ -168,6 +171,32 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 		if err != nil {
 			return nil, err
 		}
+		retained := indexOf(path[:compactionIdx], compaction.FirstKeptEntryID)
+		if summary.native != nil && summary.native.Kind == conversation.AnthropicCompaction {
+			if retained < 0 && compaction.FirstKeptEntryID == "" && compaction.ProviderReplayThroughEntryID != "" {
+				if through := indexOf(path, compaction.ProviderReplayThroughEntryID); through >= 0 {
+					retained = through + 1
+				}
+			}
+			first := retained
+			if first < 0 || first >= compactionIdx {
+				first = compactionIdx + 1
+			}
+			if first < len(path) {
+				// session-context.ts:606–626 predates the rewrite marker to the retained tail.
+				// An exactTail payload uses the first message's time, not its entry's time.
+				var native struct{ ExactTail bool }
+				_ = json.Unmarshal(summary.native.Payload, &native)
+				at := entryMillis(path[first].Timestamp)
+				if native.ExactTail && path[first].Type == "message" {
+					at = path[first].Message.Timestamp
+				}
+				if at != nil {
+					predatesTail := *at - 1
+					summary.rewriteAt = &predatesTail
+				}
+			}
+		}
 		messages = append(messages, summary)
 		var details struct{ Kind string }
 		if json.Unmarshal(compaction.Details, &details) == nil && details.Kind == contextRolloverKind {
@@ -184,13 +213,6 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 			}
 		}
 		if remote == nil {
-			retained := indexOf(path[:compactionIdx], compaction.FirstKeptEntryID)
-			if retained < 0 && summary.native != nil && summary.native.Kind == conversation.AnthropicCompaction &&
-				compaction.FirstKeptEntryID == "" && compaction.ProviderReplayThroughEntryID != "" {
-				if i := indexOf(path, compaction.ProviderReplayThroughEntryID); i >= 0 {
-					retained = i + 1
-				}
-			}
 			if retained >= 0 && retained < compactionIdx {
 				if err := emitRange(retained, compactionIdx); err != nil {
 					return nil, err
@@ -441,7 +463,7 @@ func compactionSummary(c *entry) (summary llmMessage, remote *conversation.Nativ
 	if c.Method == handoffCompactionMethod {
 		template = handoffSummaryTemplate
 	}
-	summary = llmMessage{role: "user", blocks: []block{{Type: "text", Text: render(template, "{{summary}}", c.Summary)}}}
+	summary = llmMessage{role: "user", rewriteAt: entryMillis(c.Timestamp), blocks: []block{{Type: "text", Text: render(template, "{{summary}}", c.Summary)}}}
 	if raw, ok := c.PreserveData[openaiRemoteCompaction]; ok {
 		var candidate struct {
 			Provider           string            `json:"provider"`
@@ -491,6 +513,15 @@ func allObjects(items []json.RawMessage) bool {
 	return true
 }
 
+func entryMillis(stamp string) *float64 {
+	at, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		return nil
+	}
+	ms := float64(at.UnixMilli())
+	return &ms
+}
+
 // entryMessages is what one path entry contributes to the model context (appendMessage, then
 // convertToLlm): a message entry's message, a custom message, a branch summary; nothing for any
 // other entry.
@@ -515,7 +546,7 @@ func entryMessages(e *entry) ([]llmMessage, error) {
 		if e.Summary == "" {
 			return nil, nil
 		}
-		return []llmMessage{{role: "user", blocks: []block{{Type: "text", Text: render(branchSummaryTemplate, "{{summary}}", e.Summary)}}}}, nil
+		return []llmMessage{{role: "user", rewriteAt: entryMillis(e.Timestamp), blocks: []block{{Type: "text", Text: render(branchSummaryTemplate, "{{summary}}", e.Summary)}}}}, nil
 	}
 	return nil, nil
 }
@@ -532,7 +563,11 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 		if m.Role == "user" && m.Steering {
 			blocks = steeringBlocks(blocks)
 		}
-		return []llmMessage{{role: "user", blocks: blocks}}, nil
+		turn := llmMessage{role: "user", blocks: blocks}
+		if m.Role == "user" {
+			turn.rewriteAt = m.HistoryRewriteAt
+		}
+		return []llmMessage{turn}, nil
 	case "assistant":
 		continued := string(m.Continued) == "true"
 		if jsTruthy(m.RetryRecovery) && !continued {
@@ -548,11 +583,9 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 		for i := range blocks {
 			if blocks[i].Type == "toolCall" {
 				blocks[i].Name = stripXdPrefix(blocks[i].Name)
-			} else if blocks[i].Type == "fallback" {
-				return nil, conversation.Unknown("%s content block type %q", where, blocks[i].Type)
 			}
 		}
-		return []llmMessage{{role: "assistant", blocks: blocks, api: m.API, provider: m.Provider, model: m.Model, stopReason: m.StopReason, payload: m.ProviderPayload, continued: continued}}, nil
+		return []llmMessage{{role: "assistant", blocks: blocks, api: m.API, provider: m.Provider, model: m.Model, stopReason: m.StopReason, payload: m.ProviderPayload, continued: continued, timestamp: m.Timestamp}}, nil
 	case "toolResult":
 		blocks, err := parseBlocks(m.Content, inputBlocks, where)
 		if err != nil {
@@ -563,7 +596,9 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 		}
 		var details map[string]json.RawMessage
 		_ = json.Unmarshal(m.Details, &details)
-		return []llmMessage{{role: "toolResult", blocks: blocks, toolCallID: m.ToolCallID, toolName: stripXdPrefix(m.ToolName), isError: m.IsError, synthetic: string(details["__synthetic"]) == "true"}}, nil
+		synthetic := string(details["__synthetic"]) == "true"
+		return []llmMessage{{role: "toolResult", blocks: blocks, toolCallID: m.ToolCallID, toolName: stripXdPrefix(m.ToolName), isError: m.IsError,
+			synthetic: synthetic, notExecuted: synthetic && string(details["executed"]) == "false", rewriteAt: m.PrunedAt}}, nil
 	case "custom":
 		return customMessages(m.CustomType, m.Content, m.Attribution, where)
 	case "bashExecution", "pythonExecution":

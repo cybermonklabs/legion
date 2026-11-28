@@ -508,6 +508,32 @@ func TestReadReplaysOnlyTrustedFailedTurnSignatures(t *testing.T) {
 			result("call", "read", "tool not run", true),
 		})
 	})
+	t.Run("latest Anthropic abandoned tool use", func(t *testing.T) {
+		// Use a non-Claude model on Anthropic Messages so the classifier does not hide the
+		// distinction between restoring and stripping the signature.
+		for _, source := range []string{"anthropic", "other"} {
+			t.Run(source, func(t *testing.T) {
+				const id = "gpt-test"
+				turn := assistantEntry(source, conversation.AnthropicMessages, id, "stop",
+					`[{"type":"thinking","thinking":"plan","thinkingSignature":"c2ln"},{"type":"toolCall","id":"call","name":"read","arguments":{}}]`)
+				f := newFixture()
+				f.add(assistantEntry("anthropic", conversation.AnthropicMessages, id, "stop", `[{"type":"text","text":"earlier"}]`))
+				f.add(userEntry("continue"))
+				f.add(turn)
+				f.add(toolResultEntry("call", "read", "tool not run", true))
+				f.add(`{"type":"model_change","model":"anthropic/gpt-test"}`)
+				want := thinking("plan", "c2ln")
+				if source == "other" {
+					want = text("<think>\nplan\n</think>")
+				}
+				assertMessages(t, read(t, f.bytes()).Messages[2:], []conversation.Message{
+					{Role: conversation.Assistant, Provider: source, API: conversation.AnthropicMessages, Model: id,
+						Content: []conversation.Block{want, call("call", "read", `{}`)}},
+					result("call", "read", "tool not run", true),
+				})
+			})
+		}
+	})
 }
 
 // A tool call interrupted before its result is not replayed: the call is dropped from its turn and
@@ -738,8 +764,8 @@ func TestReadCarriesToolCallIDsAsTheTargetRequestDoes(t *testing.T) {
 	if got := s.Messages[1].Content[0].ToolCallID; got != anthropicID {
 		t.Errorf("Anthropic tool call id = %q, want %q", got, anthropicID)
 	}
-	if got := s.Messages[2]; got.Role != conversation.Tool || got.Content[0].ToolCallID != anthropicID {
-		t.Errorf("message after the call = %+v, want its result under %q", got, anthropicID)
+	if got := s.Messages[2]; !reflect.DeepEqual(got, result(anthropicID, "read", "out", false)) {
+		t.Errorf("message after the call = %+v, want the real result under %q", got, anthropicID)
 	}
 	if got := s.Messages[3]; got.Role != conversation.User || got.Content[0].Text != "Keep going." {
 		t.Errorf("message after the result = %+v, want the custom message", got)
@@ -751,10 +777,8 @@ func TestReadCarriesToolCallIDsAsTheTargetRequestDoes(t *testing.T) {
 	}
 }
 
-// An OpenAI Responses turn on the model the conversation resumes on carries its output items byte
-// for byte, reasoning items' ids and encrypted content included; its thinking block is the
-// summary. A reasoning summary from that model reaches Claude as plain text, and Claude's thinking
-// reaches an OpenAI model in a <think> block, each without its signature or redacted data.
+// OpenAI Responses preserves native reasoning and tool items on the same model. A Claude target
+// drops a foreign reasoning summary. An OpenAI target demotes foreign reasoning to text.
 func TestReadCarriesOpenAIReasoningNativeAndForeignReasoningAsText(t *testing.T) {
 	items := `[{"id":"rs_01","type":"reasoning","content":[],"encrypted_content":"gAAAAABq3krn+/=","summary":[{"type":"summary_text","text":"Weighing it."}]},` +
 		`{"id":"fc_01","type":"function_call","status":"completed","arguments":"{\"path\":\"x\"}","call_id":"call_01","name":"read"}]`
@@ -791,7 +815,7 @@ func TestReadCarriesOpenAIReasoningNativeAndForeignReasoningAsText(t *testing.T)
 	s = read(t, f.bytes())
 	assertMessages(t, s.Messages[1:2], []conversation.Message{{
 		Role: conversation.Assistant, Provider: "openai", API: conversation.OpenAIResponses, Model: "gpt-6.1",
-		Content: []conversation.Block{text("Weighing it."), call("call_01_fc_01", "read", `{"path":"x"}`)},
+		Content: []conversation.Block{call("call_01_fc_01", "read", `{"path":"x"}`)},
 	}})
 
 	f.add(`{"type":"model_change","model":"openai/gpt-6.1"}`)

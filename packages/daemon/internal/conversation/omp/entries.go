@@ -64,10 +64,12 @@ type entry struct {
 
 // message is a message entry's message, with the fields of every role the reader acts on.
 type message struct {
-	Role        string          `json:"role"`
-	Content     json.RawMessage `json:"content"`
-	Attribution string          `json:"attribution"`
-	Steering    bool            `json:"steering"`
+	Role             string          `json:"role"`
+	Content          json.RawMessage `json:"content"`
+	Attribution      string          `json:"attribution"`
+	Steering         bool            `json:"steering"`
+	Timestamp        *float64        `json:"timestamp"`
+	HistoryRewriteAt *float64        `json:"historyRewriteAt"`
 	// assistant
 	API             string          `json:"api"`
 	Provider        string          `json:"provider"`
@@ -200,9 +202,8 @@ func parseBlocks(raw json.RawMessage, allowed map[string]bool, where string) ([]
 
 // The block types each kind of content holds (pi-ai types.ts): a user, developer, custom or tool
 // result message holds text and images; an assistant message also thinking, redacted thinking
-// and tool calls. The reader drops fallback blocks with an otherwise empty error turn or an
-// uncontinued retry-recovered turn. It refuses other turns with fallback or anthropicServerTool blocks.
+// and tool calls. The transform checks whether native Anthropic blocks need replay.
 var (
 	inputBlocks     = map[string]bool{"text": true, "image": true}
-	assistantBlocks = map[string]bool{"text": true, "image": true, "thinking": true, "redactedThinking": true, "toolCall": true, "fallback": true}
+	assistantBlocks = map[string]bool{"text": true, "image": true, "thinking": true, "redactedThinking": true, "toolCall": true, "fallback": true, "anthropicServerTool": true}
 )
