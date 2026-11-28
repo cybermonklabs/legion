@@ -439,6 +439,30 @@ function fixtureBody(name: string): Record<string, unknown> {
   return body;
 }
 
+/** A state body as a caller below the slots-reading entry is served it: with no
+ * `admission.slots`, no `rank` or `rootRank` on an issue, and no `state` or `since` on a slot,
+ * the five keys shaping.go's withoutSlotsReading and withoutRanksAndSlotStates take off. It
+ * takes the keys off `state` itself, which the caller reads fresh from its file. */
+function servedBelowSlotsReadingContract(state: Record<string, unknown>): Record<string, unknown> {
+  if (isJsonObject(state.admission)) {
+    delete state.admission.slots;
+  }
+  if (isJsonObject(state.issues)) {
+    for (const issue of Object.values(state.issues)) {
+      if (!isJsonObject(issue)) {
+        continue;
+      }
+      delete issue.rank;
+      delete issue.rootRank;
+      if (isJsonObject(issue.slot)) {
+        delete issue.slot.state;
+        delete issue.slot.since;
+      }
+    }
+  }
+  return state;
+}
+
 /** The path of the first key the parse dropped: the first key present in `file` and absent from
  * `parsed`, descending objects by key and arrays by index. A Go field with no line in its schema
  * reads as its own path — `issues.LEGION-207.workers.implementer.claim.somethingNew` — rather
@@ -3475,7 +3499,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
   // claim view; and contract 275's, which takes `dispatchCredential` off the state. Above them
-  // stand five entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
+  // stand six entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
   // the `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`);
   // the state-seq entry's, entry 20261125174131's (dispatch://INFRA-3931), which takes `stateSeq`,
   // `stateId` and `stateRun` off the daemon block; the P0 start's, entry 20261125181047's, which
@@ -3483,7 +3507,9 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // its `p0Holders` and `p0Bound`; the repository correction's (dispatch://INFRA-3136), entry
   // 20261125181104's, which serves each issue without its `repoBefore`, `repoCorrectedAt`,
   // `repoChangePending` and `repoChangeReason`; and the claim-left entry's (dispatch://INFRA-3144),
-  // entry 20261127202231's, which serves each issue without its `claimLeft` (`withoutClaimLeft`).
+  // entry 20261127202231's, which serves each issue without its `claimLeft` (`withoutClaimLeft`);
+  // above those five, the slots-reading entry's, which takes off `admission.slots`, `rank`,
+  // `rootRank`, and each slot's `state` and `since`.
   // So the golden's issues, rows, claim views and daemon block are compared without them. One
   // value strip stands above 199 as well: `caches`, the source of the repository-cache-room row,
   // arrived at contract 213, so that row is served here without its `source`, every other field of
@@ -3508,7 +3534,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     dispatchCredential: _credential,
     intakeGiveUps: _giveUps,
     ...rest
-  } = fixtureBody("state.json");
+  } = servedBelowSlotsReadingContract(fixtureBody("state.json"));
   const daemon = rest.daemon as Record<string, unknown>;
   expect(Object.keys(daemon)).toEqual(expect.arrayContaining(["stateSeq", "stateId", "stateRun"]));
   const { stateSeq: _seq, stateId: _id, stateRun: _run, ...daemonBelowStateSeq } = daemon;

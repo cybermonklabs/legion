@@ -1,0 +1,46 @@
+[
+  {
+    "id": 1110291,
+    "issue_key": "ACME-1",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 102,
+    "type": "issue.pull_request_attribution_changed",
+    "actor": {
+      "kind": "system",
+      "id": "delivery-attribution"
+    },
+    "notify": false,
+    "created_at": "2026-11-24T11:12:07.653247Z",
+    "payload": {
+      "to": "ACME-1",
+      "url": "https://github.com/cybermonklabs/legion/pull/5293",
+      "from": null,
+      "repo": "cybermonklabs/legion",
+      "number": 5293,
+      "source": "branch"
+    }
+  },
+  {
+    "id": 1110377,
+    "issue_key": "ACME-2",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 15,
+    "type": "issue.pull_request_attribution_changed",
+    "actor": {
+      "kind": "system",
+      "id": "delivery-attribution"
+    },
+    "notify": false,
+    "created_at": "2026-11-24T11:13:47.507781Z",
+    "payload": {
+      "to": "ACME-2",
+      "url": "https://github.com/cybermonklabs/legion/pull/5330",
+      "from": null,
+      "repo": "cybermonklabs/legion",
+      "number": 5330,
+      "source": "external_link"
+    }
+  }
+]

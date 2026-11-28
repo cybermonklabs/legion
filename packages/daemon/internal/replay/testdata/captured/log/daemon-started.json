@@ -1,0 +1,18 @@
+[
+  {
+    "timestamp": "2026-11-21T02:01:27.895108090Z",
+    "jsonPayload": {
+      "address": "[::]:13370",
+      "admissionCap": 157,
+      "boot": 160,
+      "claims": 9084,
+      "level": "INFO",
+      "migrationsApplied": 0,
+      "msg": "legion daemon started",
+      "project": "ACME",
+      "runtime": "kubernetes",
+      "time": "2026-11-21T02:01:27.894781099Z",
+      "workerStream": "tcp://[::]:13371"
+    }
+  }
+]

@@ -16,7 +16,7 @@ import (
 // (dispatch://INFRA-175, the INFRA-138 architect's decision on implement handoff v1's third open
 // question). A member in accepting owned by a running sub-architect is told by that
 // sub-architect's news-only start, and the reconcile queues no such start while the sub-architect's
-// claim holds a task its worker has not taken (holdsUntakenTask): its news waits. So the summary
+// claim holds a task its worker has not taken (record.HoldsUntakenTask): its news waits. So the summary
 // does not say that a task tells it now. The control is the same tree once a turn has taken that
 // task: the reconcile queues the sub-architect's start, and the summary says a task tells it now.
 func TestTheRootArchitectsSummarySaysAMemberWaitsWhileItsSubArchitectHoldsAnUntakenTask(t *testing.T) {

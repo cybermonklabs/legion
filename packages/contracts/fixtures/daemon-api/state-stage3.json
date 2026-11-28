@@ -25,7 +25,39 @@
       "LEGION-209"
     ],
     "blocked": [],
-    "held": []
+    "held": [],
+    "slots": {
+      "inUse": 1,
+      "cap": 4,
+      "p0": 0,
+      "working": {
+        "count": 0
+      },
+      "stopped": {
+        "count": 0
+      },
+      "person": {
+        "count": 0
+      },
+      "issue": {
+        "count": 0
+      },
+      "idle": {
+        "count": 1,
+        "oldest": "2126-09-22T14:00:00Z"
+      },
+      "waitOnlyForSlot": {
+        "count": 0
+      },
+      "startedWithoutSlot": {
+        "count": 0
+      },
+      "belowFirstWaiting": {
+        "count": 0,
+        "first": "LEGION-209"
+      },
+      "line": "slots: 1 of 4 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2126-09-22T14:00Z). Started work without a slot: 0 wait only for a slot, 0 in all. 0 holders rank below LEGION-209, which waits for a slot."
+    }
   },
   "issues": {
     "LEGION-208": {
@@ -48,7 +80,9 @@
       ],
       "slot": {
         "index": 0,
-        "admittedAt": "2126-09-22T14:00:00Z"
+        "admittedAt": "2126-09-22T14:00:00Z",
+        "state": "idle",
+        "since": "2126-09-22T14:00:00Z"
       },
       "treeMovedAt": "2126-09-22T17:24:00Z",
       "quietHours": 0.10833333333333334
@@ -59,6 +93,8 @@
       "phase": "admitted",
       "status": "todo",
       "tree": "LEGION-209",
+      "rank": "00009",
+      "rootRank": "00009",
       "treeRuns": false,
       "repo": "sjawhar/legion-smoke",
       "defaultBranch": "main",

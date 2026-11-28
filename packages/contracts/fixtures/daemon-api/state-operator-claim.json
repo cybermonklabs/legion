@@ -18,7 +18,37 @@
     "waiting": [],
     "trees": [],
     "blocked": [],
-    "held": []
+    "held": [],
+    "slots": {
+      "inUse": 0,
+      "cap": 4,
+      "p0": 0,
+      "working": {
+        "count": 0
+      },
+      "stopped": {
+        "count": 0
+      },
+      "person": {
+        "count": 0
+      },
+      "issue": {
+        "count": 0
+      },
+      "idle": {
+        "count": 0
+      },
+      "waitOnlyForSlot": {
+        "count": 0
+      },
+      "startedWithoutSlot": {
+        "count": 0
+      },
+      "belowFirstWaiting": {
+        "count": 0
+      },
+      "line": "slots: 0 of 4 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 0 idle. Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+    }
   },
   "issues": {
     "AC91849371-900": {

@@ -66,9 +66,11 @@ func (w *workflowRuntime) unapplied(ctx context.Context, eventID string) bool {
 }
 
 // githubPullRequest is one pull request as GitHub answers GET /pulls/{number} and lists it in
-// GET /pulls: its number, state (open or closed), page, body, base branch, head branch and commit,
-// when it last changed, its nullable, lazily computed `mergeable`, which the list leaves out, and
-// `mergeable_state`, GitHub's own merge state for the head, which the list leaves out too. Merged
+// GET /pulls: its number, state (open or closed), page, body, base branch and the base commit the
+// answer names (`base.sha`, which the mergeability fact carries for the log of the read,
+// intake.PullRequestMergeability.BaseSHA), head branch and commit, when it last changed, its
+// nullable, lazily computed `mergeable`, which the list leaves out, and `mergeable_state`,
+// GitHub's own merge state for the head, which the list leaves out too. Merged
 // and MergeCommitSHA are whether GitHub merged it and the commit the merge made, which the
 // merge-queue read applies as the merge (outbox's mergeQueueRead): GitHub answers a merged pull
 // request `closed`, so State alone cannot tell a merge from a close. The list leaves Merged out,
@@ -85,6 +87,7 @@ type githubPullRequest struct {
 	Body    string `json:"body"`
 	Base    struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"base"`
 	Head struct {
 		Ref string `json:"ref"`

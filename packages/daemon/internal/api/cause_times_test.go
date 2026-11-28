@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -295,10 +296,16 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	// A caller below causeTimesContract is below dispatchCredentialContract too, the one frozen row
 	// above it, so its log holds the cause times' line first and the Dispatch credential's second,
 	// then the line of each band above them (narrowingsExpected), which is that band's test's to
-	// name. It reads carriedState, as TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does.
+	// name; the slots reading's band (slotsReadingContract) is among them. It reads carriedState, as
+	// TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does.
 	carried := carriedState(t)
 	_, narrowings := stateNarrowedStating(t, carried, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
+	const droppedSlotsReading = "admission.slots, the issues' rank and rootRank, and the slots' state and since"
+	if want := narrowingsExpected(carried, causeTimesContract-1); !slices.Contains(want, droppedSlotsReading) {
+		t.Errorf("a caller at %d expects the lines %v, want one that dropped %q among them",
+			causeTimesContract-1, want, droppedSlotsReading)
+	}
 	if len(narrowings) < 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" {
 		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q and one that dropped %q first",
 			narrowings, causeTimesContract-1, dropped, "dispatchCredential")

@@ -31,33 +31,6 @@ import (
 // nothing is told from it while such a reconcile is pending (readNewsRecorded).
 const designChangesAttempts = 3
 
-// toldKey names one told row: an audience of one issue (record.DesignTold).
-type toldKey struct {
-	issue    string
-	audience record.DesignAudience
-}
-
-// owedNewsItem is one item of a tree's owed news with the told row it is owed to.
-type owedNewsItem struct {
-	told toldKey
-	item record.NewsItem
-}
-
-// owedNewsItems is every item news owes, each with its told row: each member's to its holder row,
-// and the architect's to the tree root's architect row.
-func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
-	var items []owedNewsItem
-	for _, member := range news.Members {
-		for _, item := range member.Items {
-			items = append(items, owedNewsItem{told: toldKey{member.Issue, record.AudienceHolder}, item: item})
-		}
-	}
-	for _, item := range news.Architect {
-		items = append(items, owedNewsItem{told: toldKey{root, record.AudienceArchitect}, item: item})
-	}
-	return items
-}
-
 // designChanges runs one design_changes row: the reconcile of its tree's news of the approved
 // design (record.DesignNewsReconcile), whose issue is the tree's root. It does five things, in
 // order, each against the record as it stands when that step runs:
@@ -115,7 +88,7 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 		r.log.Info("outbox design_changes of a tree the record does not hold; finished without acting", "row", row.ID, "issue", row.Issue)
 		return nil
 	}
-	items := owedNewsItems(owed, root.Tree)
+	items := record.OwedNewsItems(owed, root.Tree)
 	if len(owed.Members) == 0 && !owed.ArchitectOwed() {
 		return nil
 	}
@@ -141,7 +114,7 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 				}
 			}
 			for key, versions := range baselines.fills {
-				if err := r.records.FillTold(ctx, tx, key.issue, key.audience, versions, at); err != nil {
+				if err := r.records.FillTold(ctx, tx, key.Issue, key.Audience, versions, at); err != nil {
 					return err
 				}
 			}
@@ -172,7 +145,7 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 // question the reconcile gave up on, to be recorded unread (unread); and every pair of versions the
 // items name once their versions are known (pairs), each once.
 type resolvedBaselines struct {
-	fills    map[toldKey]map[record.DesignStep]int
+	fills    map[record.ToldKey]map[record.DesignStep]int
 	answered []record.DesignHistoryQuestion
 	unread   []record.DesignHistoryUnread
 	pairs    []record.VersionPair
@@ -186,17 +159,17 @@ type resolvedBaselines struct {
 // item whose read failed names no pair and fills nothing. A failed read records its question
 // unread, or is returned beside what was read, as giveUpReason answers, and a failure is never
 // written as a version.
-func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, items []owedNewsItem) (resolvedBaselines, error) {
+func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, items []record.OwedNewsItem) (resolvedBaselines, error) {
 	type answer struct {
 		version int
 		err     error
 	}
 	answers := map[record.DesignHistoryQuestion]answer{}
-	resolved := resolvedBaselines{fills: map[toldKey]map[record.DesignStep]int{}}
+	resolved := resolvedBaselines{fills: map[record.ToldKey]map[record.DesignStep]int{}}
 	at := r.now().UTC()
 	var failed error
 	for _, owed := range items {
-		item := owed.item
+		item := owed.Item
 		pair, known := item.Pair()
 		if !known {
 			question := item.Question()
@@ -216,10 +189,10 @@ func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, ite
 			if got.err != nil {
 				continue
 			}
-			if resolved.fills[owed.told] == nil {
-				resolved.fills[owed.told] = map[record.DesignStep]int{}
+			if resolved.fills[owed.Told] == nil {
+				resolved.fills[owed.Told] = map[record.DesignStep]int{}
 			}
-			resolved.fills[owed.told][item.Step] = got.version
+			resolved.fills[owed.Told][item.Step] = got.version
 			pair = record.VersionPair{ArtifactID: item.ArtifactID, From: got.version, To: item.To}
 		}
 		if !slices.Contains(resolved.pairs, pair) {
@@ -467,16 +440,18 @@ func (n newsRecorded) change(item record.NewsItem) (workflow.NewsChange, bool) {
 //   - otherwise a member's news goes to the holder of its phase by a news-only start
 //     (record.SuperviseRequest.News), queued as a row of its own on the member's issue, unless one
 //     is queued for that claim already, or the claim holds a task its worker has not taken yet
-//     (holdsUntakenTask), or the claim is one a news-only start may not reach
-//     (recordedClaimTakesNews): none, behind the entry its phases row names — owed its phase start,
-//     which carries the news — retired, failed, or one a suspension that holds (the operator's or
-//     the controller's) is over, each of which the start that brings its agent back tells;
-//   - a member in accepting is held by the architect that owns it (newsClaims.holderOf, the owner
-//     walk over the architect claims the record holds: its own architect while that claim holds its
-//     role, else the nearest one above it whose claim does, else the tree root's), and its news
-//     goes to that architect's claim, in the holder form, by that claim's one news-only start;
-//   - a member no claim can be named for (newsClaims.holderOf) is logged and told at its next
+//     (record.HoldsUntakenTask), or the claim is one a news-only start may not reach
+//     (record.RecordedClaimTakesNews): none, behind the entry its phases row names — owed its
+//     phase start, which carries the news — retired, failed, or one a suspension that holds (the
+//     operator's or the controller's) is over, each of which the start that brings its agent back
+//     tells;
+//   - a member in accepting is held by the architect that owns it (record.NewsClaims.HolderOf, the
+//     owner walk over the architect claims the record holds: its own architect while that claim
+//     holds its role, else the nearest one above it whose claim does, else the tree root's), and
+//     its news goes to that architect's claim, in the holder form, by that claim's one news-only
 //     start;
+//   - a member no claim can be named for (record.NewsClaims.HolderOf) is logged and told at its
+//     next start;
 //   - the tree root's architect row is settled the same way, and its news goes by the root
 //     architect's news-only start, which also carries the holder form of each member in accepting
 //     the root architect owns;
@@ -495,7 +470,7 @@ func (n newsRecorded) change(item record.NewsItem) (workflow.NewsChange, bool) {
 func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree string) error {
 	now := r.now().UTC()
 	if err := r.settleUnderFacts(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		var queued []owedHolder
+		var queued []record.OwedHolder
 		raised := 0
 		root, err := r.records.Issue(ctx, tx, tree)
 		if err != nil || root == nil {
@@ -507,8 +482,8 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 		}
 		owed := record.OwedNews(facts)
 		var asks newsAsks
-		for _, item := range owedNewsItems(owed, root.Tree) {
-			asks.add(root.Tree, item.item)
+		for _, item := range record.OwedNewsItems(owed, root.Tree) {
+			asks.add(root.Tree, item.Item)
 		}
 		recorded, err := readNewsRecorded(ctx, tx, r.records, asks, r.now)
 		if err != nil {
@@ -516,7 +491,7 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 		}
 		// sendTo is each told row whose news goes by a news-only start, in the order the rows are
 		// settled. A row raised or left for later queues no start, so its holder is never read.
-		var sendTo []toldKey
+		var sendTo []record.ToldKey
 		for _, news := range owed.Members {
 			switch settlementOf(news.Items, recorded, record.ToldRow(facts.Told, news.Issue, record.AudienceHolder).OpeningOwed) {
 			case settleLater:
@@ -528,7 +503,7 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 				raised++
 				continue
 			}
-			sendTo = append(sendTo, toldKey{news.Issue, record.AudienceHolder})
+			sendTo = append(sendTo, record.ToldKey{Issue: news.Issue, Audience: record.AudienceHolder})
 		}
 		if owed.ArchitectOwed() {
 			switch settlementOf(owed.Architect, recorded, record.ToldRow(facts.Told, root.Key, record.AudienceArchitect).OpeningOwed) {
@@ -538,23 +513,23 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 				}
 				raised++
 			case settleSend:
-				sendTo = append(sendTo, toldKey{root.Key, record.AudienceArchitect})
+				sendTo = append(sendTo, record.ToldKey{Issue: root.Key, Audience: record.AudienceArchitect})
 			}
 		}
-		holders, err := readOwedHolders(ctx, tx, r.records, newNewsClaims(*root, &facts), sendTo)
+		holders, err := record.ReadOwedHolders(ctx, tx, r.records, record.NewNewsClaims(*root, &facts), sendTo)
 		if err != nil {
 			return err
 		}
-		var starts []owedHolder
-		owners := map[claim.Token]owedHolder{}
+		var starts []record.OwedHolder
+		owners := map[claim.Token]record.OwedHolder{}
 		for _, key := range sendTo {
 			holder, held := holders[key]
 			switch {
 			case !held:
 				r.log.Warn("outbox design_changes cannot name the claim that holds a told row owed news; it is told at its next start",
-					"row", row.ID, "issue", key.issue, "audience", key.audience)
-			case holder.role == claim.RoleArchitect:
-				owners[holder.token] = holder
+					"row", row.ID, "issue", key.Issue, "audience", key.Audience)
+			case holder.Role == claim.RoleArchitect:
+				owners[holder.Token] = holder
 			default:
 				starts = append(starts, holder)
 			}
@@ -563,14 +538,14 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			starts = append(starts, owners[owner])
 		}
 		for _, start := range starts {
-			if newsStartQueued(start.run) || holdsUntakenTask(start.run.Claim) || !recordedClaimTakesNews(start.run.Claim, start.entry) {
+			if record.NewsStartQueued(start.Run) || record.HoldsUntakenTask(start.Run.Claim) || !record.RecordedClaimTakesNews(start.Run.Claim, start.Entry) {
 				continue
 			}
-			request := record.SuperviseRequest{Op: "start", Tree: start.issue.Tree, Role: start.role, Generation: start.issue.Generation, News: true}
-			if start.role != claim.RoleArchitect {
-				request.Phase = start.issue.Phase
+			request := record.SuperviseRequest{Op: "start", Tree: start.Issue.Tree, Role: start.Role, Generation: start.Issue.Generation, News: true}
+			if start.Role != claim.RoleArchitect {
+				request.Phase = start.Issue.Phase
 			}
-			queue, err := record.NewOutboxRow(start.issue.Key, request, now)
+			queue, err := record.NewOutboxRow(start.Issue.Key, request, now)
 			if err != nil {
 				return err
 			}
@@ -581,7 +556,7 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 		}
 		store.OnCommit(ctx, func() {
 			for _, start := range queued {
-				r.log.Info("outbox design_changes queued a news-only start", "row", row.ID, "tree", tree, "issue", start.issue.Key, "role", start.role)
+				r.log.Info("outbox design_changes queued a news-only start", "row", row.ID, "tree", tree, "issue", start.Issue.Key, "role", start.Role)
 			}
 			if raised > 0 || len(queued) > 0 {
 				r.log.Info("outbox design_changes settled the news its tree is owed", "row", row.ID, "tree", tree, "raised", raised, "starts", len(queued))
@@ -657,17 +632,17 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 }
 
 // owedToClaim is what facts owe the claim token, of role on issue, speaks for, as a delivery
-// carries it: each told row owed news whose holder is that claim (newsClaims.holderOf, and
-// rootArchitect for the tree root's architect row). For a phase worker that is its member's holder
+// carries it: each told row owed news whose holder is that claim (record.NewsClaims.HolderOf, and
+// RootArchitect for the tree root's architect row). For a phase worker that is its member's holder
 // row while the role is the one the member's phase names; for an architect, its own summary when
 // issue is the tree root and its row is owed, and the holder form of each member in accepting it
 // owns. Which architect owns such a member is the owner walk over the machine's live view
-// (withLiveView, the outbox's holdsItsRole), as the outbox routes a notice of the member, so a
-// start carries a member's news to no architect a decision in flight is stopping. Each told row it
-// speaks for carries the opening too, where the row owes it and the standing gate is open. An
-// architect is never handed a worker's news, and a worker never an architect's. Where the tree's
-// root is not among its issues, nothing is carried, since every holder is named over the root's
-// record (newsClaims).
+// (record.NewsClaims.WithLiveView, the outbox's holdsItsRole), as the outbox routes a notice of the
+// member, so a start carries a member's news to no architect a decision in flight is stopping. Each
+// told row it speaks for carries the opening too, where the row owes it and the standing gate is
+// open. An architect is never handed a worker's news, and a worker never an architect's. Where the
+// tree's root is not among its issues, nothing is carried, since every holder is named over the
+// root's record (record.NewsClaims).
 func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFacts, issue record.Issue, role claim.Role,
 	token claim.Token) ([]record.DeliveryNewsItem, []record.DeliveryOpening, error) {
 	owed := record.OwedNews(facts)
@@ -688,8 +663,8 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 		return nil, nil, nil
 	}
 	root := facts.Members[rootAt]
-	claims := newNewsClaims(root, &facts).withLiveView(r.holdsItsRole)
-	if holder, held := claims.rootArchitect(); held && holder.token == token && owed.ArchitectOwed() {
+	claims := record.NewNewsClaims(root, &facts).WithLiveView(r.holdsItsRole)
+	if holder, held := claims.RootArchitect(); held && holder.Token == token && owed.ArchitectOwed() {
 		tell(root.Key, record.AudienceArchitect, owed.Architect)
 	}
 	for _, news := range owed.Members {
@@ -698,15 +673,15 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 		if role != claim.RoleArchitect && news.Issue != issue.Key {
 			continue
 		}
-		member, err := claims.member(ctx, tx, r.records, news.Issue)
+		member, err := claims.Member(ctx, tx, r.records, news.Issue)
 		if err != nil {
 			return nil, nil, err
 		}
-		holder, held, err := claims.holderOf(ctx, tx, r.records, member)
+		holder, held, err := claims.HolderOf(ctx, tx, r.records, member)
 		if err != nil {
 			return nil, nil, err
 		}
-		if held && holder.token == token {
+		if held && holder.Token == token {
 			tell(news.Issue, record.AudienceHolder, news.Items)
 		}
 	}

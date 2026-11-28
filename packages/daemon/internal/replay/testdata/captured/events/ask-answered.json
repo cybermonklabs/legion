@@ -1,0 +1,92 @@
+[
+  {
+    "id": 880495,
+    "issue_key": "ACME-29",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 40,
+    "type": "ask.answered",
+    "actor": {
+      "kind": "user",
+      "id": "person-1@example.invalid"
+    },
+    "notify": true,
+    "created_at": "2026-11-20T22:07:57.233851Z",
+    "payload": {
+      "anchor": null,
+      "answer": {
+        "at": "2026-11-20T22:07:57.233851Z",
+        "id": "b4",
+        "selected": ["text 4"],
+        "text": "text 3",
+        "user": "person-1@example.invalid"
+      },
+      "approval": {
+        "artifact_id": "00000000-0000-4000-8000-000000000009",
+        "documents": [
+          {
+            "artifact_id": "00000000-0000-4000-8000-000000000009",
+            "name": "spec.md",
+            "requested_version": 4,
+            "version": 4
+          },
+          {
+            "artifact_id": "00000000-0000-4000-8000-00000000000b",
+            "name": "verification.md",
+            "requested_version": 2,
+            "version": 2
+          }
+        ],
+        "name": "spec.md",
+        "requested_version": 4,
+        "version": 4
+      },
+      "approval_artifact": {
+        "project": "ACME",
+        "slug": "spec",
+        "name": "spec.md",
+        "primary": true
+      },
+      "artifact_id": null,
+      "asked_of": null,
+      "asked_of_at": null,
+      "asked_of_by": null,
+      "author": {
+        "id": "00000000-0000-4000-8000-00000000000c",
+        "kind": "session",
+        "origin": {
+          "cwd": "/legion/workspaces/cybermonklabs/legion/acme-29",
+          "host": "omp",
+          "machine": "legion-acme-daemon",
+          "session_title": "Legion architect · ACME-29"
+        }
+      },
+      "block_id": null,
+      "created_at": "2026-11-20T21:46:39.163352Z",
+      "edited_at": null,
+      "id": "00000000-0000-4000-8000-00000000000a",
+      "issue_key": "ACME-29",
+      "kind": "approval",
+      "multiple": false,
+      "opened_event_id": 879532,
+      "options": [
+        {
+          "description": "text 5",
+          "id": "b2",
+          "label": "text 6"
+        },
+        {
+          "description": "text 7",
+          "id": "b3",
+          "label": "text 4"
+        }
+      ],
+      "question": "text 8",
+      "referenced_by_count": 4,
+      "revision": 2,
+      "state": "answered",
+      "thread_logins": ["person-1@example.invalid"],
+      "urgency": "high"
+    }
+  }
+]

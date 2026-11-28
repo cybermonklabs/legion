@@ -1,0 +1,30 @@
+[
+  {
+    "id": 886533,
+    "issue_key": "ACME-29",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 58,
+    "type": "artifact.approved",
+    "actor": {
+      "kind": "user",
+      "id": "person-1@example.invalid"
+    },
+    "notify": true,
+    "created_at": "2026-11-21T00:17:12.362358Z",
+    "payload": {
+      "kind": "person",
+      "name": "spec.md",
+      "actor": {
+        "id": "person-1@example.invalid",
+        "kind": "user"
+      },
+      "ask_id": "00000000-0000-4000-8000-000000000008",
+      "reason": null,
+      "version": 5,
+      "artifact_id": "00000000-0000-4000-8000-000000000009",
+      "content_sha256": "5943c5dd42b684da77e06411fd768ec5b0660bcee0a8ae6529434d01e691e645",
+      "content_sha256_source": "insert"
+    }
+  }
+]

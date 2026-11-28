@@ -449,9 +449,13 @@ func listedPhases(rows []record.PhaseRow) []record.PhaseRow {
 // (source.State) Dispatch observes, read in one snapshot over the seeded store: both list the same
 // issues; each issue's key, phase, tree, slot index, wait, architect's claim state and each worker
 // role's claim state are the full view's; and the daemon block, the settings and the admission
-// block are the full state's own, the admission block byte for byte, since a reader takes an
-// issue's place in the line from its index in `admission.waiting`. Both reads answer the same
-// claims beside their view, which the route places its caller by.
+// block are the full state's own, the admission block byte for byte but for one key, since a
+// reader takes an issue's place in the line from its index in `admission.waiting`. The one key is
+// `admission.slots`, the slots reading, which only the full state serves: it is for `legion state`
+// alone, and reading it costs the holders' claims and the stranded judgement, which the observed
+// read leaves out on purpose since Dispatch reads the view often. So the full block is compared
+// with its `slots` taken off. Both reads answer the same claims beside their view, which the route
+// places its caller by.
 func TestTheObservedViewIsTheFullStatesObservedPart(t *testing.T) {
 	t.Parallel()
 	r := newObservedRig(t)
@@ -470,7 +474,12 @@ func TestTheObservedViewIsTheFullStatesObservedPart(t *testing.T) {
 
 	sameJSON(t, "the daemon block", full.Daemon, observed.Daemon)
 	sameJSON(t, "the settings", full.Settings, observed.Settings)
-	sameJSON(t, "the admission block", full.Admission, observed.Admission)
+	fullAdmission := full.Admission
+	if fullAdmission.Slots == nil {
+		t.Error("the full state serves no admission.slots: projection.Project sets it on every full state, so the comparison below takes nothing off")
+	}
+	fullAdmission.Slots = nil
+	sameJSON(t, "the admission block but its slots", fullAdmission, observed.Admission)
 	tokens := func(claims []supervise.Claim) []claim.Token {
 		listed := make([]claim.Token, len(claims))
 		for i, current := range claims {

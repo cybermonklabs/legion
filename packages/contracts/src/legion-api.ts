@@ -576,10 +576,17 @@ const legionGatedStepView = z.object({
   basis: legionGatedStepBasis.optional(),
 });
 
-/** `api.SlotView` — the admission slot the issue occupies and when it took it. */
+/** `api.SlotView` — the admission slot the issue occupies and when it took it, and what the issue
+ * is doing with it: `state`, the holder state the state's `admission.slots` counts it
+ * under (`working`, `stopped`, `person`, `issue` or `idle`, read as a plain string so a word a
+ * later daemon adds is read rather than refused), and `since`, when it entered that state, absent
+ * where the daemon's record holds no such time. A caller below the slots-reading entry is served neither
+ * (`withoutRanksAndSlotStates`), so both are optional. */
 const legionSlotView = z.object({
   index: z.number().int().nonnegative().optional(),
   admittedAt: timestamp.optional(),
+  state: nonEmptyString.optional(),
+  since: timestamp.optional(),
 });
 
 /** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 being first
@@ -894,6 +901,12 @@ const legionIssue = z.object({
    * `unrecorded`, an operator's claim), which stands in no tree, and absent from every issue of
    * the body the route serves a caller before 51 (`api.stateFor`, `withoutTrees`). */
   tree: issueKey.optional(),
+  /** The issue's own Dispatch rank and its tree root's, the two keys the waiting
+   * line orders its starting part by and `admission.slots` places a holder against the first issue
+   * that waits for a slot by. Carried by the issues of the daemon's own project alone, and by no
+   * issue of the body served a caller below the slots-reading entry (`withoutRanksAndSlotStates`). */
+  rank: nonEmptyString.optional(),
+  rootRank: nonEmptyString.optional(),
   /** Whether the tree this root roots runs under the workflow, as the daemon's own rule answers it
    * (`record.TreeRuns`, entry 20261125161152 (gate-basis)): its lifecycle stands open under the workflow, the root does
    * not linger, and the root does not wait in the line for that tree to be opened. On every root
@@ -1221,6 +1234,45 @@ const legionHeldIssue = z.object({
   heldBy: z.array(issueKey).optional(),
 });
 
+/** `record.StateCount` — how many slot holders, or members of the waiting line, one count of the
+ * slots reading names, and the oldest time among them, absent where the daemon knows none. */
+const legionStateCount = z.object({
+  count: z.number().int().nonnegative().optional(),
+  oldest: timestamp.optional(),
+});
+
+/** `api.SlotsReading` (`record.SlotsReading`) — what the slots in use are spent on:
+ * `inUse` of `cap`; `p0`, how many of those holders are P0, the count `admission.p0Holders` gives,
+ * which start outside the cap, so `inUse` can be more than `cap`; the holders counted by what each
+ * is doing (`working`, `stopped`, `person`, `issue`, `idle`), which add up to `inUse`, P0 holders
+ * included; the two readings of started work that waits without a slot,
+ * `waitOnlyForSlot` (the line's returned members holding no slot and in no row of `blocked`) and
+ * `startedWithoutSlot` (every returned member holding no slot); `belowFirstWaiting`, how many
+ * holders rank below the first issue that waits for a slot and that issue's key as `first`, absent
+ * where none waits; and `line`, the reading as the one sentence `legion state` prints after its
+ * admission count line and the tick notice carries too, which gives the P0 holders after the
+ * slots in use (`slots: 160 of 157 in use (3 P0): …`). A caller below the slots-reading entry is
+ * served no reading (`withoutSlotsReading`). */
+const legionSlotsReading = z.object({
+  inUse: z.number().int().nonnegative().optional(),
+  cap: z.number().int().nonnegative().optional(),
+  p0: z.number().int().nonnegative().optional(),
+  working: legionStateCount.optional(),
+  stopped: legionStateCount.optional(),
+  person: legionStateCount.optional(),
+  issue: legionStateCount.optional(),
+  idle: legionStateCount.optional(),
+  waitOnlyForSlot: legionStateCount.optional(),
+  startedWithoutSlot: legionStateCount.optional(),
+  belowFirstWaiting: z
+    .object({
+      count: z.number().int().nonnegative().optional(),
+      first: issueKey.optional(),
+    })
+    .optional(),
+  line: nonEmptyString.optional(),
+});
+
 /** `api.PauseActorView` — who paused the project or ended its pause (contract 178), and who set the
  * P0 bound while the daemon runs (the P0 start's contract entry): the controller, with the session it acted from,
  * or the operator, who acts from none. The daemon's store holds these two shapes and no other
@@ -1320,6 +1372,7 @@ const legionAdmission = z.object({
   trees: z.array(issueKey).optional(),
   blocked: z.array(legionBlockedIssue).optional(),
   held: z.array(legionHeldIssue).optional(),
+  slots: legionSlotsReading.optional(),
 });
 
 /** `api.ControllerLocator` — the record of the session registered as the project's controller: the
@@ -1736,10 +1789,13 @@ const legionObservedIssue = z.object({
  * full state would be.
  * `daemon`, `settings` and `admission` are the full state's own blocks: the same `stateSeq`,
  * `stateId` and `stateRun`, and the same admission block, unfiltered and in the same order, so an
- * issue's place in the line is its index in `admission.waiting` plus one. `issues` lists every
- * issue the full state lists. The daemon serves the view at the caller's contract with the full
- * state's own rule, so at each contract every member is the member the full state serves there:
- * a caller below the entry's number gets no `stateSeq`, `stateId` or `stateRun` in either answer.
+ * issue's place in the line is its index in `admission.waiting` plus one. The one key of the full
+ * state's admission block the view leaves out is `slots`, the slots reading, which only the full
+ * state serves: it is for `legion state` alone, and reading it would cost every observed read the
+ * holders' claims and the stranded judgement. `issues` lists every issue the full state lists. The
+ * daemon serves the view at the caller's contract with the full state's own rule, so at each
+ * contract every member is the member the full state serves there: a caller below the entry's
+ * number gets no `stateSeq`, `stateId` or `stateRun` in either answer.
  * A request that names no `view` gets the full state, and so does one whose `view` is anything but
  * one `observed` value, `observed` twice included; the daemon logs a warning for the latter at most
  * once a minute, whoever asks, because a later version may refuse such a request (`stateViewOf`
@@ -3185,6 +3241,9 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "capabilities[].status",
     "capabilities[].detail",
     "capabilities[].configLine",
+    // The summary prints the daemon's slots line right after its admission cap line. The line
+    // stays optional: the daemon strips the reading for a caller below the slots-reading entry.
+    "admission.slots.line",
     // The summary prints `legion state`'s line for each repository the live records name that
     // GitHub's last read did not name or a role App is not installed on (#4065), with the name it
     // is served under. The block and its entries stay optional: a reader that finds none prints no

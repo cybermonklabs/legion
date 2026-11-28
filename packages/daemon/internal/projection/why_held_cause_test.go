@@ -82,7 +82,7 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 	underLive.Parent, underLive.Ancestry = record.ParentOf("LEGION-100"), []string{"LEGION-100"}
 	ancestry := projectionStore{issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted), underLive}}
 	// The children-first rule reads the Dispatch children of a root under an open gate alone
-	// (record.ChildrenFirstCandidates), so the blocked fixture opens the root's gate as well.
+	// (record.SlotRule.ChildrenFirstCandidates), so the blocked fixture opens the root's gate as well.
 	ancestryWithChild := ancestry
 	ancestryWithChild.gates = map[string]map[record.DesignStep]record.DesignGate{"LEGION-101": openGate("LEGION-101", opened)}
 	ancestryWithChild.mirror = []record.DispatchIssueRow{{Key: "LEGION-102", Project: "LEGION", Status: "todo", Parent: "LEGION-101"}}

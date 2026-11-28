@@ -227,7 +227,7 @@ func assertTheSlotDeliversOnce(t *testing.T, pool *pgxpool.Pool, role claim.Role
 // worker one start, which waits for the issue's admission slot and for nothing else.
 //
 // The cap counts the issues whose change is still to write, so a worker's start into a phase that
-// keeps a slot (record.PhaseKeepsSlot) is the one thing a transition may not do before its issue
+// keeps a slot (record.SlotRule.PhaseKeepsSlot) is the one thing a transition may not do before its issue
 // holds a slot. Everything else is written in the fact's own transaction: the phase, the role's
 // phase entry and the work of it on its phases row, the Dispatch status and the notices. The
 // start is one row (StartOrOwe), which carries the worker's task and which the outbox holds

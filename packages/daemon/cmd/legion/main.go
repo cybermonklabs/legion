@@ -693,6 +693,12 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
+	// What the slots in use are spent on, as the daemon wrote it (api.Admission.Slots, its line):
+	// one sentence the tick notice carries too, printed as it stands so the two never differ. A
+	// daemon that serves no reading, one before the contract that added it, prints no line.
+	if slots := state.Admission.Slots; slots != nil {
+		fmt.Fprintln(stdout, slots.Line)
+	}
 	// The P0 issues, which hold their slots outside the cap, and the bound they hold them under
 	// (the P0 start's contract entry); a state served below that entry carries neither, and says nothing of them.
 	if line := p0AdmissionLine(state.Admission); line != "" {

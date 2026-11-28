@@ -18,7 +18,13 @@ import (
 // is what a promotion that opens a tree writes.
 func treeOpen(t *testing.T, pool *pgxpool.Pool, key string) bool {
 	t.Helper()
-	project, err := claim.ProjectToken(testProject)
+	return treeOpenForProject(t, pool, testProject, key)
+}
+
+// treeOpenForProject is treeOpen under a Dispatch project key of its own.
+func treeOpenForProject(t *testing.T, pool *pgxpool.Pool, dispatchProject, key string) bool {
+	t.Helper()
+	project, err := claim.ProjectToken(dispatchProject)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,10 +44,17 @@ func treeOpen(t *testing.T, pool *pgxpool.Pool, key string) bool {
 // there, with a tree of its own still to be opened.
 func carriedRoot(t *testing.T, pool *pgxpool.Pool, key string, carries phase.Phase, rank string) {
 	t.Helper()
+	carriedRootForProject(t, pool, testProject, key, carries, rank)
+}
+
+// carriedRootForProject is carriedRoot under a Dispatch project key of its own, handed over from
+// that project's issue 700.
+func carriedRootForProject(t *testing.T, pool *pgxpool.Pool, project, key string, carries phase.Phase, rank string) {
+	t.Helper()
 	putIssue(t, pool, record.Issue{Key: key, Tree: key, Repo: "acme/widgets", DefaultBranch: "main",
-		GitHubRepo: "acme/widgets", Project: testProject, Title: "a carried root", Phase: carries,
-		Generation: 2, Status: "todo", Rank: rank, HandedOver: true, HandedOverFrom: "LEGION-700"})
-	seedMirror(t, pool, key, "todo")
+		GitHubRepo: "acme/widgets", Project: project, Title: "a carried root", Phase: carries,
+		Generation: 2, Status: "todo", Rank: rank, HandedOver: true, HandedOverFrom: project + "-700"})
+	seedMirrorIn(t, pool, project, key, "todo")
 }
 
 // A handed-over root that carries a phase that keeps a slot takes a row, because a started issue

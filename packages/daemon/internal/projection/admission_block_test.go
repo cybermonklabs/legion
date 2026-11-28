@@ -40,7 +40,8 @@ func (s routeRecords) Issues(ctx context.Context, tx pgx.Tx) ([]record.Issue, er
 // The admission block has one assembly (blockers.AdmissionOf), which the state route serves over
 // its judgement (blockers.JudgeAdmission) and the admission pass's state event carries, both
 // judged from the pass's own read: the project's live records and its own slots. It holds the
-// block the state serves (Project) to the judgement's block as the event carries it
+// block the state serves (Project), but for its slots reading (api.Admission.Slots), which only the
+// full state serves and no event carries, to the judgement's block as the event carries it
 // (record.AdmissionBlock), over the store TestTheControllersClaimIsOnNoIssue projects and over one
 // holding what the two reads part on: done issues — a child, a child holding a slot still, a
 // parent on a member's chain, a root whose linger ran out — another project's slot, and a
@@ -66,7 +67,12 @@ func TestTheJudgedAdmissionBlockIsTheBlockTheStateServes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Project: %v", err)
 			}
-			served, err := json.Marshal(state.Admission)
+			if state.Admission.Slots == nil {
+				t.Fatal("the state serves no admission.slots, so leaving them out proves nothing")
+			}
+			admission := state.Admission
+			admission.Slots = nil
+			served, err := json.Marshal(admission)
 			if err != nil {
 				t.Fatalf("encode the served block: %v", err)
 			}

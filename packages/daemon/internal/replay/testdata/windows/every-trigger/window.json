@@ -1,0 +1,55 @@
+{
+  "format": 1,
+  "project": "ACME",
+  "from": "2001-03-05T09:00:00Z",
+  "to": "2001-03-05T16:00:00Z",
+  "before": "1h0m0s",
+  "caps": [
+    {
+      "at": "2001-03-05T09:00:00Z",
+      "cap": 2
+    }
+  ],
+  "parts": [
+    {
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T16:00:00Z",
+      "release": "fixture",
+      "commit": "bafd3618eb58722419c77f34174c1b77525c891b",
+      "rule": "legion-v22.14.1"
+    }
+  ],
+  "tickInterval": "1h0m0s",
+  "gateSteps": [],
+  "linger": "2h0m0s",
+  "reviewRoundCap": 3,
+  "stalledTreeNotice": "6h0m0s",
+  "workerSilence": "4h0m0s",
+  "workerBackground": "4h0m0s",
+  "experiments": [],
+  "lines": [
+    "admission gives a slot back to an issue whose wait ended",
+    "admission gives a slot back to an issue whose work came back",
+    "admission: an issue waits for the Dispatch children under it",
+    "admission: slot released",
+    "admission: slot taken",
+    "daemon: opening the store; a connection error that the next attempt can clear is tried again",
+    "supervise: a turn ended",
+    "supervise: a turn started",
+    "supervise: launched",
+    "workflow: design gate registered",
+    "workflow: issue left the workflow",
+    "workflow: linger closed the tree",
+    "workflow: phase changed",
+    "workflow: the root of this tree takes its slot and starts its own first phase",
+    "workflow: this child names no issue it waits on any longer, so it starts",
+    "workflow: tree lingers"
+  ],
+  "collector": "0d3786da536722f2eb26a793ab1b9827b6e90f47",
+  "files": {
+    "events/ACME-1.jsonl": "fe3f2d0b633894d9481ca668b993e599fcff6f354194bc32879a4f94a5f1ac7f",
+    "events/ACME-2.jsonl": "5d1b730404088d55bab8d97b7c07493156de952943598c862ef9ac2dfef51aa4",
+    "events/ACME-3.jsonl": "811f349a21cad02a5e0c9fdd657e05dab10d814d959095c5438366afec838362",
+    "log.jsonl": "1f9075bcc02f0d2e0462790e52e780aa4797e7e820604ece3a102e2000de14ac"
+  }
+}

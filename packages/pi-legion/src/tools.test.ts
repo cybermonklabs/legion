@@ -3677,6 +3677,73 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
   expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2126-09-22T09:17:56Z"]);
 });
 
+// What the controller reads of the slots in `read_state` with no field (spec R6): the slots line
+// the daemon wrote, on the line after the admission cap, and the legend naming it. A summary that
+// leaves the line out, or prints another, gives the controller another reading than the one
+// `legion state` prints and the tick notice carries. The state is the daemon's golden, read
+// through the client.
+test("read_state's summary prints the slots line", async () => {
+  const { admission } = daemonFixture("state.json") as {
+    readonly admission: { readonly slots: { readonly line: string } };
+  };
+  const lines = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+
+  const capLine = lines.indexOf("admission cap 6");
+  expect(capLine).toBeGreaterThan(0);
+  expect(lines[capLine + 1]).toBe(admission.slots.line);
+  expect(lines.filter((line) => line.startsWith("slots: "))).toEqual([admission.slots.line]);
+  // The legend says what each line of the summary is, the slots line among them.
+  expect(lines[0]).toContain("slots");
+});
+
+// The slots line gives the number of P0 holders after the slots in use (spec R6): every holder is
+// a slot in use, a P0 holder too, so a project can stand at `160 of 157 in use (3 P0)`. The
+// summary prints the daemon's line as it wrote it, so the number the controller reads is the
+// body's own: the line's P0 count, `admission.slots.p0` and `admission.p0Holders` are one number,
+// and the reader keeps `p0` rather than dropping a key it does not name.
+test("read_state's summary prints a slots line that counts its P0 holders, and slots in use above the cap", async () => {
+  const line =
+    "slots: 160 of 157 in use (3 P0): 100 working (oldest 2026-11-20T09:00Z), 1 stopped, 0 person, 0 issue, 59 idle (oldest 2026-11-20T08:00Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot.";
+  const state = legionState({
+    admission: {
+      cap: 157,
+      p0Holders: 3,
+      p0Bound: { bound: null },
+      active: [],
+      waiting: [],
+      blocked: [],
+      slots: {
+        inUse: 160,
+        cap: 157,
+        p0: 3,
+        working: { count: 100, oldest: "2026-11-20T09:00:00Z" },
+        stopped: { count: 1 },
+        person: { count: 0 },
+        issue: { count: 0 },
+        idle: { count: 59, oldest: "2026-11-20T08:00:00Z" },
+        waitOnlyForSlot: { count: 0 },
+        startedWithoutSlot: { count: 0 },
+        belowFirstWaiting: { count: 0 },
+        line,
+      },
+    },
+  });
+  expect(state.admission?.slots?.p0).toBe(3);
+
+  const { daemon } = recordingDaemon({ state });
+  const lines = await summaryLinesOf(daemon);
+  const capLine = lines.indexOf("admission cap 157");
+  expect(capLine).toBeGreaterThan(0);
+  expect(lines[capLine + 1]).toBe(line);
+  expect(lines[capLine + 1]).toContain("160 of 157 in use (3 P0):");
+  expect(lines[capLine + 2]).toBe("p0 holders 3 bound none");
+  expect(lines.filter((each) => each.startsWith("slots: "))).toEqual([line]);
+  // The P0 count the summary prints is the body's own `admission.p0Holders`.
+  const printedP0 = Number(/in use \((\d+) P0\)/.exec(lines[capLine + 1] ?? "")?.[1]);
+  expect(state.admission?.p0Holders).toBe(printedP0);
+  expect(state.admission?.slots?.p0).toBe(printedP0);
+});
+
 // What the controller reads of the intake's give-ups in `read_state` with no field: one line for
 // each consumer with open give-ups, with how many and the newest stream sequence among them, which
 // is the throughSeq of a replay or a discard of all of them, and one line saying none is open.

@@ -16,16 +16,44 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
+// conflictMovesBack is the act on a confirmed conflict that needs the merge, why, under a slot
+// rule whose conflicting head moves back (record.SlotRule.Conflict, conflictTrigger): the issue
+// moves back to implementing by that rule's trigger, through the rule's own row of the move on
+// the table of the issue's line (w.table, tableUnder), so the implementer is started on the
+// conflict at the head and the architect is told, as the releases that ran such a rule did. w is
+// the walk of the issue's run, which the caller read. It says whether it moved the issue. It moves
+// nothing under the daemon's own rule, whose conflicting head keeps its phase while the base is
+// merged forward (mergeForward), nor for an issue standing where that table has no such row — in
+// implementing already, held, or on a line with no implementing step — which is merged forward as
+// under the daemon's own.
+func (e *Engine) conflictMovesBack(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, pr *record.PullRequest,
+	why record.ConflictWhy,
+) (bool, error) {
+	trigger, moves := conflictTrigger(e.cfg.SlotRule)
+	if !moves {
+		return false, nil
+	}
+	snapshot := Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}
+	if _, found := w.row(issue.Phase, trigger, phase.Implementing, snapshot); !found {
+		return false, nil
+	}
+	reason := fmt.Sprintf("head %s of pull request #%d conflicts with its base %s (%s)", pr.HeadSHA, pr.Number, pr.Base, why)
+	return true, e.transition(ctx, tx, issue, trigger, phase.Implementing, record.PhaseRow{}, pr, reason)
+}
+
 // mergeForward is the daemon's act on a confirmed conflict that R0 found a reason to act on, why
 // (dispatch://INFRA-4374 R0, R1; classify.ConflictNeedsMerge): the issue keeps the phase it stands
 // in (record.StandsAt), no phase entry starts and no supervise row is written, so an issue past
-// its review takes no admission slot for the merge, and the role the phase asks
-// (record.MergeForwardAsker) is asked, on its own role topic, to merge the base forward onto the
-// head and push (record.MergeForwardAsk): the implementer before merging, and in merging the
-// merger, whose merge it is (cybermonklabs/legion#4979). Outside implementing it also tells the
-// worker of that phase (record.MergeForwardWorker: the planner, the tester, the reviewer or the
-// merger) that is not the role asked to stop writing the workspace the roles share while the merge
-// runs (record.MergeForwardHold), and the architect that owns the
+// its review takes no admission slot for the merge, and the role the phase asks under the slot
+// rule the engine runs (record.SlotRule.MergeForwardAsker, Config.SlotRule) is asked, on its own
+// role topic, to merge the base forward onto the head and push (record.MergeForwardAsk): under the
+// daemon's own rule the implementer before merging, and in merging the merger, whose merge it is
+// (cybermonklabs/legion#4979); under a rule whose conflict path asks the implementer past the
+// review (record.ConflictImplementerMergesForward, commit bafd3618) the implementer in every phase.
+// Outside implementing it also tells the worker of that phase (record.MergeForwardWorker: the
+// planner, the tester, the reviewer or the merger) that is not the role asked to stop writing the
+// workspace the roles share while the merge runs (record.MergeForwardHold), and the architect that
+// owns the
 // issue one checks-red notice whose phase is the phase the issue stays in and whose reason names
 // the head, the base, why, the role asked and that the issue stays in its phase; the outbox routes
 // that notice to the owning architect, as every notice of the issue is routed. In implementing
@@ -39,8 +67,8 @@ import (
 // (askMergerAtEntry). The one exception is an ask made in implementing, which covers implementing
 // only: an implementer that completes at that head without the merge leaves the issue's next
 // phase to ask again, with its hold and its notice, where a step of the task still runs there
-// before the merge, and the move into merging to ask the merger where none does
-// (mergeForwardOnEntry). Any other ask of the implementer that has not landed stays the
+// before the merge, and under the daemon's own rule the move into merging to ask the merger where
+// none does (mergeForwardOnEntry). Any other ask of the implementer that has not landed stays the
 // implementer's into each phase the issue moves to, and the worker that starts there is held
 // instead (mergeForwardOnEntry, holdStartedWorker).
 //
@@ -69,7 +97,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if pr.State != record.PullRequestOpen || !classify.MergeForwardStands(issue, line) {
 		return nil
 	}
-	asker := record.MergeForwardAsker(at)
+	asker := e.cfg.SlotRule.MergeForwardAsker(at)
 	if _, owed := owedAsk(issue, *pr); owed {
 		return nil
 	}
@@ -157,7 +185,9 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //     or an ask its role no longer owes there (owedTo: the ask of implementing outside
 //     implementing, the merger's ask outside merging, or a withdrawn one). At a head the record
 //     holds in a confirmed conflict (classify.ConflictRound), the move asks again where the merge
-//     is owed in the phase it entered. A move into merging asks the merger for
+//     is owed in the phase it entered, as the slot rule the engine runs has it
+//     (record.SlotRule.Conflict). Under the daemon's own rule
+//     (record.SlotRule.ConflictWaitsForMerging), a move into merging asks the merger for
 //     record.ConflictMergeNext: the merge comes next, GitHub merges no head that conflicts with
 //     its base, and the merge is the merger's (cybermonklabs/legion#4979). A move into a phase
 //     where a step of the task still runs before the merge (not classify.MergeComesNext) asks the
@@ -174,7 +204,13 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //     (reviewRound), is acted on there once every step of the task has run. With no open ask, a
 //     move into a step that follows the review or the acceptance asks nothing either: the conflict
 //     was decided by R0's reasons where it was confirmed, and the step goes on at the head as a
-//     tester or a reviewer after the implementer does.
+//     tester or a reviewer after the implementer does. Under a rule whose conflict path asks the
+//     implementer past the review (record.ConflictImplementerMergesForward), a move into
+//     accepting, retro or merging asks the implementer for the merge forward for
+//     record.ConflictMergeNext, as bafd3618's move did. Under a rule whose conflicting head moves
+//     back (conflictTrigger), such a move asks nothing: no merge forward is that rule's, and the
+//     next confirmed read of the head moves the issue back to implementing from where it stands
+//     (mergeability, conflictMovesBack).
 //   - Where the move leaves the implementer's open ask owed by nobody and nobody was asked again,
 //     the implementer is told once that the merge is no longer its work (withdrawUnowed), and the
 //     record keeps the ask, marked withdrawn, for its completion fence. A parent held before its
@@ -205,6 +241,15 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 	}
 	if classify.ConflictRound(*pr) {
 		switch {
+		case !e.cfg.SlotRule.ConflictWaitsForMerging() && record.StandsIn(issue, phase.Accepting, phase.Retro, phase.Merging):
+			// Past the review a rule other than the daemon's own acts by its own path: one whose
+			// conflicting head moves back asks nothing, and one that asks the implementer past the
+			// review asks it for the merge that comes next.
+			if _, moves := conflictTrigger(e.cfg.SlotRule); !moves {
+				if err := e.mergeForward(ctx, tx, issue, w.Line, pr, record.ConflictMergeNext); err != nil {
+					return err
+				}
+			}
 		case record.StandsIn(issue, phase.Merging):
 			if err := e.mergeForward(ctx, tx, issue, w.Line, pr, record.ConflictMergeNext); err != nil {
 				return err

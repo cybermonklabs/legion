@@ -1,0 +1,412 @@
+[
+  {
+    "sha": "651db8d54c55d5e78e092ece50a047c09108ebd7",
+    "node_id": "C_kwDORFy7dtoAKDY1MWRiOGQ1NGM1NWQ1ZTc4ZTA5MmVjZTUwYTA0N2MwOTEwOGViZDc",
+    "commit": {
+      "author": {
+        "name": "person-agent[bot]",
+        "email": "1+person-agent[bot]@users.noreply.github.com",
+        "date": "2026-11-20T05:36:33Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-11-20T05:36:33Z"
+      },
+      "message": "test(claude-envoy): captured commit message (#4516)\n\nCo-authored-by: person <person@example.invalid>",
+      "tree": {
+        "sha": "20b4d1414461e039102edab24c3cc448dcc8f822",
+        "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/20b4d1414461e039102edab24c3cc448dcc8f822"
+      },
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/commits/651db8d54c55d5e78e092ece50a047c09108ebd7",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\ncaptured\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 20b4d1414461e039102edab24c3cc448dcc8f822\nparent e967604ded2c6bcd03d676ad64e449f7275991c0\nauthor person-agent[bot] <1+person-agent[bot]@users.noreply.github.com> 1795152993 +0000\ncommitter GitHub <noreply@github.com> 1795152993 +0000\n\ntest(claude-envoy): captured commit message (#4516)\n\nCo-authored-by: person <person@example.invalid>",
+        "verified_at": "2026-11-20T05:45:07Z"
+      }
+    },
+    "url": "https://api.github.com/repos/cybermonklabs/legion/commits/651db8d54c55d5e78e092ece50a047c09108ebd7",
+    "html_url": "https://github.com/cybermonklabs/legion/commit/651db8d54c55d5e78e092ece50a047c09108ebd7",
+    "comments_url": "https://api.github.com/repos/cybermonklabs/legion/commits/651db8d54c55d5e78e092ece50a047c09108ebd7/comments",
+    "author": {
+      "login": "person-agent[bot]",
+      "id": 1,
+      "node_id": "BOT_capturedOne",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/person-agent%5Bbot%5D",
+      "html_url": "https://github.com/apps/person-agent",
+      "followers_url": "https://api.github.com/users/person-agent%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/person-agent%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/person-agent%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/person-agent%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/person-agent%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/person-agent%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/person-agent%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/person-agent%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/person-agent%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "e967604ded2c6bcd03d676ad64e449f7275991c0",
+        "url": "https://api.github.com/repos/cybermonklabs/legion/commits/e967604ded2c6bcd03d676ad64e449f7275991c0",
+        "html_url": "https://github.com/cybermonklabs/legion/commit/e967604ded2c6bcd03d676ad64e449f7275991c0"
+      }
+    ]
+  },
+  {
+    "sha": "e967604ded2c6bcd03d676ad64e449f7275991c0",
+    "node_id": "C_kwDORFy7dtoAKGU5Njc2MDRkZWQyYzZiY2QwM2Q2NzZhZDY0ZTQ0OWY3Mjc1OTkxYzA",
+    "commit": {
+      "author": {
+        "name": "legion-implementer[bot]",
+        "email": "343353655+legion-implementer[bot]@users.noreply.github.com",
+        "date": "2026-11-20T05:34:11Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-11-20T05:34:11Z"
+      },
+      "message": "fix(daemon): captured commit message (#4551)\n\nCo-authored-by: legion-implementer[bot] <343353655+legion-implementer[bot]@users.noreply.github.com>",
+      "tree": {
+        "sha": "b650a3d5f47fb603414b9e74d2fb079b4c020fc5",
+        "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/b650a3d5f47fb603414b9e74d2fb079b4c020fc5"
+      },
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/commits/e967604ded2c6bcd03d676ad64e449f7275991c0",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\ncaptured\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree b650a3d5f47fb603414b9e74d2fb079b4c020fc5\nparent 0d1bfb2da6a03ee24cd7f9d6a9bd6e2ad56bb79a\nauthor legion-implementer[bot] <343353655+legion-implementer[bot]@users.noreply.github.com> 1795152851 +0000\ncommitter GitHub <noreply@github.com> 1795152851 +0000\n\nfix(daemon): captured commit message (#4551)\n\nCo-authored-by: legion-implementer[bot] <343353655+legion-implementer[bot]@users.noreply.github.com>",
+        "verified_at": "2026-11-20T05:34:26Z"
+      }
+    },
+    "url": "https://api.github.com/repos/cybermonklabs/legion/commits/e967604ded2c6bcd03d676ad64e449f7275991c0",
+    "html_url": "https://github.com/cybermonklabs/legion/commit/e967604ded2c6bcd03d676ad64e449f7275991c0",
+    "comments_url": "https://api.github.com/repos/cybermonklabs/legion/commits/e967604ded2c6bcd03d676ad64e449f7275991c0/comments",
+    "author": {
+      "login": "legion-implementer[bot]",
+      "id": 343353655,
+      "node_id": "BOT_kgDOFHcpNw",
+      "avatar_url": "https://avatars.githubusercontent.com/u/2?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/legion-implementer%5Bbot%5D",
+      "html_url": "https://github.com/apps/legion-implementer",
+      "followers_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "0d1bfb2da6a03ee24cd7f9d6a9bd6e2ad56bb79a",
+        "url": "https://api.github.com/repos/cybermonklabs/legion/commits/0d1bfb2da6a03ee24cd7f9d6a9bd6e2ad56bb79a",
+        "html_url": "https://github.com/cybermonklabs/legion/commit/0d1bfb2da6a03ee24cd7f9d6a9bd6e2ad56bb79a"
+      }
+    ]
+  },
+  {
+    "sha": "0d1bfb2da6a03ee24cd7f9d6a9bd6e2ad56bb79a",
+    "node_id": "C_kwDORFy7dtoAKDBkMWJmYjJkYTZhMDNlZTI0Y2Q3ZjlkNmE5YmQ2ZTJhZDU2YmI3OWE",
+    "commit": {
+      "author": {
+        "name": "person",
+        "email": "person@example.invalid",
+        "date": "2026-11-20T05:29:02Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-11-20T05:29:02Z"
+      },
+      "message": "fix(daemon): captured commit message (#4552)",
+      "tree": {
+        "sha": "bce9f02fae93eef6720a2cd59f0f89dab05333d3",
+        "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/bce9f02fae93eef6720a2cd59f0f89dab05333d3"
+      },
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/commits/0d1bfb2da6a03ee24cd7f9d6a9bd6e2ad56bb79a",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\ncaptured\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree bce9f02fae93eef6720a2cd59f0f89dab05333d3\nparent 6d50ef31bf220fb231e46d9264eddd77ef921078\nauthor person <person@example.invalid> 1795152542 +0000\ncommitter GitHub <noreply@github.com> 1795152542 +0000\n\nfix(daemon): captured commit message (#4552)",
+        "verified_at": "2026-11-20T05:31:16Z"
+      }
+    },
+    "url": "https://api.github.com/repos/cybermonklabs/legion/commits/0d1bfb2da6a03ee24cd7f9d6a9bd6e2ad56bb79a",
+    "html_url": "https://github.com/cybermonklabs/legion/commit/0d1bfb2da6a03ee24cd7f9d6a9bd6e2ad56bb79a",
+    "comments_url": "https://api.github.com/repos/cybermonklabs/legion/commits/0d1bfb2da6a03ee24cd7f9d6a9bd6e2ad56bb79a/comments",
+    "author": {
+      "login": "person",
+      "id": 2,
+      "node_id": "U_capturedTwo",
+      "avatar_url": "https://avatars.githubusercontent.com/u/2?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/person",
+      "html_url": "https://github.com/person",
+      "followers_url": "https://api.github.com/users/person/followers",
+      "following_url": "https://api.github.com/users/person/following{/other_user}",
+      "gists_url": "https://api.github.com/users/person/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/person/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/person/subscriptions",
+      "organizations_url": "https://api.github.com/users/person/orgs",
+      "repos_url": "https://api.github.com/users/person/repos",
+      "events_url": "https://api.github.com/users/person/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/person/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "6d50ef31bf220fb231e46d9264eddd77ef921078",
+        "url": "https://api.github.com/repos/cybermonklabs/legion/commits/6d50ef31bf220fb231e46d9264eddd77ef921078",
+        "html_url": "https://github.com/cybermonklabs/legion/commit/6d50ef31bf220fb231e46d9264eddd77ef921078"
+      }
+    ]
+  },
+  {
+    "sha": "6d50ef31bf220fb231e46d9264eddd77ef921078",
+    "node_id": "C_kwDORFy7dtoAKDZkNTBlZjMxYmYyMjBmYjIzMWU0NmQ5MjY0ZWRkZDc3ZWY5MjEwNzg",
+    "commit": {
+      "author": {
+        "name": "legion-implementer[bot]",
+        "email": "343353655+legion-implementer[bot]@users.noreply.github.com",
+        "date": "2026-11-20T05:15:42Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-11-20T05:15:42Z"
+      },
+      "message": "fix(daemon,envoy): captured commit message (#4541)\n\nCo-authored-by: legion-implementer[bot] <343353655+legion-implementer[bot]@users.noreply.github.com>",
+      "tree": {
+        "sha": "2803b3a5d20168d81fcf112628c8c76bca5f9524",
+        "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/2803b3a5d20168d81fcf112628c8c76bca5f9524"
+      },
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/commits/6d50ef31bf220fb231e46d9264eddd77ef921078",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\ncaptured\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 2803b3a5d20168d81fcf112628c8c76bca5f9524\nparent 282a49f20ac5b24d9c30925646c9d0438905fd0e\nauthor legion-implementer[bot] <343353655+legion-implementer[bot]@users.noreply.github.com> 1795151742 +0000\ncommitter GitHub <noreply@github.com> 1795151742 +0000\n\nfix(daemon,envoy): captured commit message (#4541)\n\nCo-authored-by: legion-implementer[bot] <343353655+legion-implementer[bot]@users.noreply.github.com>",
+        "verified_at": "2026-11-20T05:31:15Z"
+      }
+    },
+    "url": "https://api.github.com/repos/cybermonklabs/legion/commits/6d50ef31bf220fb231e46d9264eddd77ef921078",
+    "html_url": "https://github.com/cybermonklabs/legion/commit/6d50ef31bf220fb231e46d9264eddd77ef921078",
+    "comments_url": "https://api.github.com/repos/cybermonklabs/legion/commits/6d50ef31bf220fb231e46d9264eddd77ef921078/comments",
+    "author": {
+      "login": "legion-implementer[bot]",
+      "id": 343353655,
+      "node_id": "BOT_kgDOFHcpNw",
+      "avatar_url": "https://avatars.githubusercontent.com/u/2?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/legion-implementer%5Bbot%5D",
+      "html_url": "https://github.com/apps/legion-implementer",
+      "followers_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "282a49f20ac5b24d9c30925646c9d0438905fd0e",
+        "url": "https://api.github.com/repos/cybermonklabs/legion/commits/282a49f20ac5b24d9c30925646c9d0438905fd0e",
+        "html_url": "https://github.com/cybermonklabs/legion/commit/282a49f20ac5b24d9c30925646c9d0438905fd0e"
+      }
+    ]
+  },
+  {
+    "sha": "282a49f20ac5b24d9c30925646c9d0438905fd0e",
+    "node_id": "C_kwDORFy7dtoAKDI4MmE0OWYyMGFjNWIyNGQ5YzMwOTI1NjQ2YzlkMDQzODkwNWZkMGU",
+    "commit": {
+      "author": {
+        "name": "person-agent[bot]",
+        "email": "1+person-agent[bot]@users.noreply.github.com",
+        "date": "2026-11-20T04:56:30Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-11-20T04:56:30Z"
+      },
+      "message": "test(launcher): captured commit message (#4577)\n\nCo-authored-by: person <person@example.invalid>",
+      "tree": {
+        "sha": "321495aa425c6c1818334500866510dbe9d748d6",
+        "url": "https://api.github.com/repos/cybermonklabs/legion/git/trees/321495aa425c6c1818334500866510dbe9d748d6"
+      },
+      "url": "https://api.github.com/repos/cybermonklabs/legion/git/commits/282a49f20ac5b24d9c30925646c9d0438905fd0e",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\ncaptured\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 321495aa425c6c1818334500866510dbe9d748d6\nparent e4584fae753a80a71074cd7d33aaaacb4c8660bf\nauthor person-agent[bot] <1+person-agent[bot]@users.noreply.github.com> 1795150590 +0000\ncommitter GitHub <noreply@github.com> 1795150590 +0000\n\ntest(launcher): captured commit message (#4577)\n\nCo-authored-by: person <person@example.invalid>",
+        "verified_at": "2026-11-20T05:31:14Z"
+      }
+    },
+    "url": "https://api.github.com/repos/cybermonklabs/legion/commits/282a49f20ac5b24d9c30925646c9d0438905fd0e",
+    "html_url": "https://github.com/cybermonklabs/legion/commit/282a49f20ac5b24d9c30925646c9d0438905fd0e",
+    "comments_url": "https://api.github.com/repos/cybermonklabs/legion/commits/282a49f20ac5b24d9c30925646c9d0438905fd0e/comments",
+    "author": {
+      "login": "person-agent[bot]",
+      "id": 1,
+      "node_id": "BOT_capturedOne",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/person-agent%5Bbot%5D",
+      "html_url": "https://github.com/apps/person-agent",
+      "followers_url": "https://api.github.com/users/person-agent%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/person-agent%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/person-agent%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/person-agent%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/person-agent%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/person-agent%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/person-agent%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/person-agent%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/person-agent%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "e4584fae753a80a71074cd7d33aaaacb4c8660bf",
+        "url": "https://api.github.com/repos/cybermonklabs/legion/commits/e4584fae753a80a71074cd7d33aaaacb4c8660bf",
+        "html_url": "https://github.com/cybermonklabs/legion/commit/e4584fae753a80a71074cd7d33aaaacb4c8660bf"
+      }
+    ]
+  }
+]

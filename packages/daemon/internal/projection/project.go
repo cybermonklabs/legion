@@ -39,7 +39,8 @@ type Inputs struct {
 	// intake give-ups the state lists.
 	Project string
 	// Cap is the deployment's admission cap (config.Config.AdmissionCap), which the admission
-	// block carries beside the lists judged under it (blockers.JudgeAdmission).
+	// block carries beside the lists judged under it (blockers.JudgeAdmission), and which the slots
+	// reading names beside the slots in use (record.SlotsReadingOf, api.Admission.Slots).
 	Cap int
 	// Steps are the design-gate steps the deployment gates (config.Gates.Steps). Each root's
 	// view answers the steps its tree is gated on, which these steps and the root's gate rows
@@ -70,12 +71,25 @@ type Inputs struct {
 	// Now is the instant the held rows are read at (record.Store.HeldRows) and their waits are
 	// measured from.
 	Now time.Time
+	// SlotRule is the slot rule the state is read under (record.SlotRule): the daemon's own, and
+	// a replay's under the rule it replays, so the line, the held words and the answer of `why`
+	// name each issue by the rule that placed it. The zero value is the daemon's own rule
+	// (record.SlotRule.OrMain).
+	SlotRule record.SlotRule
+	// HolderClaims are the project's claims as a slot holder's state reads them, read by the
+	// caller in this transaction through the statement the admission pass's tick reads them
+	// through (record.Store.HolderClaims), which is the one that holds when a suspended or a
+	// retired claim stopped. Nil is Claims as record.HolderClaimsOf reads them, which date a
+	// stranded claim by its failure alone: what a caller holding only whole claims gives.
+	HolderClaims []record.HolderClaim
 }
 
 // ObservedInputs are the facts the observed view's part of the state is built from (Observe): the
 // fields of Inputs that it reads, each the same fact as the field of Inputs of the same name. They
 // are a value of their own so that the parameter's type says what Observe reads, and the facts of
-// the full state alone (Inputs' Experiments, Stranded, Reports and Wakes) cannot reach it.
+// the full state alone (Inputs' Experiments, Stranded, Reports, Wakes and HolderClaims) cannot
+// reach it. It names no slot rule: the observed view is the daemon's alone, read under the
+// daemon's own rule (Inputs.SlotRule's zero value).
 type ObservedInputs struct {
 	Tx      pgx.Tx
 	Store   record.Store
@@ -423,14 +437,16 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			own = append(own, issue)
 		}
 	}
-	// The admission block is the one judgement of it (blockers.JudgeAdmission, which builds it with
-	// blockers.AdmissionOf), read in this transaction's snapshot like every other fact here.
-	// The line it judged, the mirror rows it judged the links from and the facts it read are what
-	// each issue's view below is read from, so a member's place and every issue's `why` come from
-	// the judgement whose lists the block serves. The block carries the P0 holders as well, the
-	// count admission's cap readers make (record.HoldersOf), so the number the state gives is the
-	// number the pass admitted under.
-	judged, err := blockers.JudgeAdmission(ctx, in.Tx, in.Store, in.Project, in.Steps, slots, in.Cap, in.Now)
+	// The admission block is the one judgement of it (blockers.JudgeAdmissionUnder, which builds it
+	// with blockers.AdmissionOf), read in this transaction's snapshot like every other fact here,
+	// under the rule the state is read under (Inputs.SlotRule, the daemon's own unless a replay
+	// names another), so the line, the held words and the answer of `why` below place each issue by
+	// the rule that placed it in the pass. The line it judged, the mirror rows it judged the links
+	// from and the facts it read are what each issue's view below is read from, so a member's place
+	// and every issue's `why` come from the judgement whose lists the block serves. The block
+	// carries the P0 holders as well, the count admission's cap readers make (record.HoldersOf), so
+	// the number the state gives is the number the pass admitted under.
+	judged, err := blockers.JudgeAdmissionUnder(ctx, in.Tx, in.Store, in.Project, in.Steps, in.SlotRule, slots, in.Cap, in.Now)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -461,6 +477,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	for _, entry := range line {
 		parts[bandPart{entry.Priority, entry.Part}]++
 	}
+	banded := in.SlotRule.OrMain().PriorityFirst
 	for i, entry := range line {
 		key := entry.Issue.Key
 		holds := entry.Holds
@@ -491,16 +508,62 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			since := entry.Since
 			view.WaitingLine.Since = &since
 		}
-		// The sentence a person reads (waitingLineReason), rendered from the entry itself, the
+		// The sentence a person reads (waitingLineReasonUnder), rendered from the entry itself, the
 		// length of the part of its band it stands in and the length of that band's other part,
 		// which is what a member of the starting part waits behind. The render reads those and
-		// nothing else, so the words have one source and a test of them needs no database.
+		// nothing else but whether the rule the state is read under bands the line by priority,
+		// so the words have one source and a test of them needs no database. Under a rule that
+		// does not, every entry carries NoPriority (record.LineEntry.Priority), so the counts above
+		// are of the whole part and the sentence names no priority.
 		other := bandPart{entry.Priority, record.PartReturned}
 		if entry.Part == record.PartReturned {
 			other.part = record.PartStarting
 		}
-		view.WaitingLine.Reason = waitingLineReason(entry, parts[standsIn], parts[other])
+		view.WaitingLine.Reason = waitingLineReasonUnder(banded, entry, parts[standsIn], parts[other])
 		projected.Issues[key] = view
+	}
+	// What the slots in use are spent on: each holder counted by what it is doing, the two
+	// readings of started work that waits without a slot, and the holders that rank below the
+	// first issue that waits for one, with the sentence `legion state` prints for them. It is read
+	// by the one assembly the admission pass's tick reads it by (blockers.SlotsReading), over the
+	// judgement, the line and the block's `blocked` and `held`, so the body, its line and the tick
+	// notice give one reading of one project. Each holder's `slot` carries the state it was counted
+	// under and when it entered it.
+	holderClaims := in.HolderClaims
+	if holderClaims == nil {
+		holderClaims = record.HolderClaimsOf(in.Claims)
+	}
+	reading, holders := blockers.SlotsReading(blockers.SlotsInputs{
+		Cap: in.Cap, Issues: judged.Issues, Slots: slots, Rows: rows, Facts: facts, Line: line,
+		Blocked: projected.Admission.Blocked, Held: projected.Admission.Held, Claims: holderClaims, Stranded: in.Stranded,
+	})
+	projected.Admission.Slots = &reading
+	for key, holder := range holders {
+		view, shown := projected.Issues[key]
+		if !shown || view.Slot == nil {
+			continue
+		}
+		slot := *view.Slot
+		slot.State, slot.Since = string(holder.State), holder.Since
+		view.Slot = &slot
+		projected.Issues[key] = view
+	}
+	// Each issue of the project carries its own Dispatch rank and its tree root's, the two keys
+	// the line orders its starting part by and the reading places a holder against the first
+	// issue that waits for a slot by, so the count of holders below that issue can be read off
+	// the body. An issue of another project, which the state lists for a claim's sake, is no
+	// issue the admission reading places and carries neither.
+	ownByKey := make(map[string]record.Issue, len(own))
+	for _, issue := range own {
+		ownByKey[issue.Key] = issue
+	}
+	for _, issue := range own {
+		view := projected.Issues[issue.Key]
+		view.Rank = issue.Rank
+		if root, recorded := ownByKey[issue.Tree]; recorded {
+			view.RootRank = root.Rank
+		}
+		projected.Issues[issue.Key] = view
 	}
 	// Why each issue that is not working now is not working, one rendered answer on its own view.
 	// It is decided here, after the line and `blocked` are both in hand, because three of the four
@@ -593,12 +656,14 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 // (api.StateSource.ObservedState), read through in.Tx, the caller's repeatable-read transaction:
 // all of that part but its daemon block and its settings, which the caller sets as it sets them on
 // the full state (Project). The admission block is the full state's own: the same judgement
-// (blockers.JudgeAdmission) over the same reads, unfiltered and in the same order. The issues are
-// every issue the full state lists, each with the members the definition of the full state's views
-// decides (listIssues), put on by the function that puts them on the full state's issues
-// (putListed), and each claim view as api.ClaimViewOf builds it. Every other member of an issue is
-// empty. It reads the issues, the project's phase rows in one statement, the slots and what the
-// admission judgement reads, and it makes no statement for any one issue.
+// (blockers.JudgeAdmission) over the same reads, unfiltered and in the same order, but for the
+// slots reading (api.Admission.Slots), which only the full state serves, since it is for `legion
+// state` alone and reads the holders' claims and the stranded judgement, which this read leaves
+// out. The issues are every issue the full state lists, each with the members the definition of
+// the full state's views decides (listIssues), put on by the function that puts them on the full
+// state's issues (putListed), and each claim view as api.ClaimViewOf builds it. Every other member
+// of an issue is empty. It reads the issues, the project's phase rows in one statement, the slots
+// and what the admission judgement reads, and it makes no statement for any one issue.
 func Observe(ctx context.Context, in ObservedInputs) (api.State, error) {
 	issues, err := in.Store.Issues(ctx, in.Tx)
 	if err != nil {

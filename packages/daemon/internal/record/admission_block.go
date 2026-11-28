@@ -19,7 +19,9 @@ import (
 // It is declared here, below both readers, because the admission pass that writes the event cannot
 // import api. Its JSON is the route's own: the keys api.Admission writes, in its order, and every
 // list an array, never null (MarshalJSON). The route's `p0Bound` is no key of it: the bound in
-// force is read beside the judgement (api.P0BoundStateTx) and is nothing Dispatch reads. P0Holders
+// force is read beside the judgement (api.P0BoundStateTx) and is nothing Dispatch reads. Nor is
+// the whole state's `slots`, the slots reading, which only the whole state serves, for `legion
+// state` alone (projection.Project). P0Holders
 // is the count of the holders admission treats as P0 (record.HoldersOf), which the Dispatch
 // board's header copies (dispatch://INFRA-5636), 0 included. No field holds a time, so a block
 // judged twice over the same records encodes the same. One word of the held list does read the
@@ -72,10 +74,11 @@ func (b AdmissionBlock) MarshalJSON() ([]byte, error) {
 // refused here. The event's row is built and checked (NewOutboxRow) before the upsert runs, so a
 // block whose event would be refused is not written either, and once the upsert returns a row it
 // goes in through the insert every outbox row takes (Enqueue), due at the time the upsert returned,
-// the transaction's own now(). A pass that leaves the block as it was runs the one statement. The
-// row's issue column is project, the bare Dispatch project key, so it runs on the project's one
-// state lane (LaneState) as a StateChange does (queueStateChange), and the commit trigger of
-// migration 20261126163320_state_events gives it its sequence and its time when tx commits.
+// the store's clock (stamp), the transaction's own now() for the daemon's own store. A pass that
+// leaves the block as it was runs the one statement. The row's issue column is project, the bare
+// Dispatch project key, so it runs on the project's one state lane (LaneState) as a StateChange
+// does (queueStateChange), and the commit trigger of migration 20261126163320_state_events gives
+// it its sequence and its time when tx commits.
 func (s *Postgres) QueueAdmissionBlock(ctx context.Context, tx pgx.Tx, project string, block AdmissionBlock) (bool, error) {
 	state := s.state.Load()
 	if state == nil {
@@ -92,7 +95,7 @@ func (s *Postgres) QueueAdmissionBlock(ctx context.Context, tx pgx.Tx, project s
 	err = tx.QueryRow(ctx, `insert into state_admission_blocks as stored (project, block) values ($1, $2::jsonb)
 		on conflict (project) do update set block = excluded.block
 			where stored.block is distinct from excluded.block
-		returning now()`, project, string(encoded)).Scan(&row.NextAt)
+		returning coalesce($3::timestamptz, now())`, project, string(encoded), s.stamp()).Scan(&row.NextAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

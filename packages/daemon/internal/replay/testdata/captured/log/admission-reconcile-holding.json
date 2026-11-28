@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-11-21T01:58:06.102610914Z",
+    "jsonPayload": {
+      "ack_floor": 7496142,
+      "count": 2174,
+      "level": "INFO",
+      "msg": "admission reconcile: holding roots for the Dispatch consumer to reach a stream position",
+      "target": 7496674,
+      "time": "2026-11-21T01:58:06.102382984Z"
+    }
+  }
+]

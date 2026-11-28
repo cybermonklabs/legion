@@ -365,14 +365,19 @@ func (rig *readRig) lines(t *testing.T, msg string) []map[string]any {
 	return loggedMessages(t, rig.logs.String(), msg)
 }
 
-// GitHub answers for pull request 86 at head code: `mergeable` null (unknown), false (conflicting)
-// or true (clean), with the merge state that goes with each; a 502 (unavailable); and refusedPull,
-// GitHub's answer once the implement App installation's REST budget is spent: 403, with the
-// budget's remaining count at 0.
+// answeredBase is the base commit GitHub's answers for pull request 86 name: the `base.sha` of
+// unknownPull, conflictingPull and cleanPull, and the `baseRefOid` of each pull request a batch's
+// query answers (batchNode, graphQLAnswerOf).
+const answeredBase = "main-tip"
+
+// GitHub answers for pull request 86 at head code on main at answeredBase: `mergeable` null
+// (unknown), false (conflicting) or true (clean), with the merge state that goes with each; a 502
+// (unavailable); and refusedPull, GitHub's answer once the implement App installation's REST budget
+// is spent: 403, with the budget's remaining count at 0.
 var (
-	unknownPull     = pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":null,"mergeable_state":"unknown"}`}
-	conflictingPull = pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":false,"mergeable_state":"dirty"}`}
-	cleanPull       = pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"clean"}`}
+	unknownPull     = pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main","sha":"` + answeredBase + `"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":null,"mergeable_state":"unknown"}`}
+	conflictingPull = pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main","sha":"` + answeredBase + `"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":false,"mergeable_state":"dirty"}`}
+	cleanPull       = pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main","sha":"` + answeredBase + `"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"clean"}`}
 	unavailablePull = pullAnswer{status: http.StatusBadGateway, body: `{"message":"Server Error"}`}
 	refusedPull     = pullAnswer{status: http.StatusForbidden, header: http.Header{"X-Ratelimit-Remaining": {"0"}},
 		body: `{"message":"API rate limit exceeded for installation ID 171972716.","documentation_url":"https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api"}`}

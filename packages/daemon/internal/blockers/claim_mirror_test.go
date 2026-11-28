@@ -134,8 +134,8 @@ func TestTheBootListingAndTheTickReReadWriteTheClaim(t *testing.T) {
 }
 
 // A claim that names no actor is unknown wherever the daemon reads it: Dispatch's listing showing
-// one leaves the stored claim, as an issue event carrying the same claim does (intake's
-// issueEventClaim), rather than writing it as nobody.
+// one leaves the stored claim, as an issue event carrying the same claim does
+// (intake.IssueEventClaim), rather than writing it as nobody.
 func TestAClaimNamingNoActorIsUnknownOnAReadAsOnAnEvent(t *testing.T) {
 	actorless := map[string]any{"actor": map[string]any{"kind": "user"}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

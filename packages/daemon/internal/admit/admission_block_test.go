@@ -81,8 +81,10 @@ func outboxEvents[E record.OutboxPayload](t *testing.T, pool *pgxpool.Pool, what
 }
 
 // servedBlock is the admission block GET /legion/v1/state serves of the store now, under the
-// admission's cap and gate steps, decoded: the state route's own projection (projection.Project,
-// in the repeatable-read snapshot the route reads in), its block encoded as the route encodes it.
+// admission's cap and gate steps, decoded, but for its slots reading (api.Admission.Slots), which
+// only the full state serves and no state event carries: the state route's own projection
+// (projection.Project, in the repeatable-read snapshot the route reads in), its block encoded as
+// the route encodes it.
 func servedBlock(t *testing.T, pool *pgxpool.Pool, admission *Admission) any {
 	t.Helper()
 	ctx := context.Background()
@@ -95,7 +97,12 @@ func servedBlock(t *testing.T, pool *pgxpool.Pool, admission *Admission) any {
 		if err != nil {
 			return err
 		}
-		encoded, err = json.Marshal(state.Admission)
+		if state.Admission.Slots == nil {
+			t.Error("the state serves no admission.slots, so leaving them out proves nothing")
+		}
+		admission := state.Admission
+		admission.Slots = nil
+		encoded, err = json.Marshal(admission)
 		return err
 	}); err != nil {
 		t.Fatalf("project the state: %v", err)

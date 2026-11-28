@@ -1,0 +1,991 @@
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"daemon: opening the store; a connection error that the next attempt can clear is tried again","attempts":10,"attemptLimit":"10s","firstWait":"1s","longestWait":"16s","longestTotal":"3m15s"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-1","slots":1,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-1-architect","generation":1,"incarnation":"5e0c1a01","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-1-architect","generation":1,"delivery":"outbox:1"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-2","slots":2,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-2-architect","generation":1,"incarnation":"5e0c1a02","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-2-architect","generation":1,"delivery":"outbox:2"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-3","slots":3,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-3-architect","generation":1,"incarnation":"5e0c1a03","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-3-architect","generation":1,"delivery":"outbox:3"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-4","slots":4,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-4-architect","generation":1,"incarnation":"5e0c1a04","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-4-architect","generation":1,"delivery":"outbox:4"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-5","slots":5,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-5-architect","generation":1,"incarnation":"5e0c1a05","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-5-architect","generation":1,"delivery":"outbox:5"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-6","slots":6,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-6-architect","generation":1,"incarnation":"5e0c1a06","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-6-architect","generation":1,"delivery":"outbox:6"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-7","slots":7,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-7-architect","generation":1,"incarnation":"5e0c1a07","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-7-architect","generation":1,"delivery":"outbox:7"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-8","slots":8,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-8-architect","generation":1,"incarnation":"5e0c1a08","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-8-architect","generation":1,"delivery":"outbox:8"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-9","slots":9,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-9-architect","generation":1,"incarnation":"5e0c1a09","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-9-architect","generation":1,"delivery":"outbox:9"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-10","slots":10,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-10-architect","generation":1,"incarnation":"5e0c1a0a","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-10-architect","generation":1,"delivery":"outbox:10"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-11","slots":11,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-11-architect","generation":1,"incarnation":"5e0c1a0b","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-11-architect","generation":1,"delivery":"outbox:11"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-12","slots":12,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-12-architect","generation":1,"incarnation":"5e0c1a0c","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-12-architect","generation":1,"delivery":"outbox:12"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-13","slots":13,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-13-architect","generation":1,"incarnation":"5e0c1a0d","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-13-architect","generation":1,"delivery":"outbox:13"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-14","slots":14,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-14-architect","generation":1,"incarnation":"5e0c1a0e","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-14-architect","generation":1,"delivery":"outbox:14"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-15","slots":15,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-15-architect","generation":1,"incarnation":"5e0c1a0f","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-15-architect","generation":1,"delivery":"outbox:15"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-16","slots":16,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-16-architect","generation":1,"incarnation":"5e0c1a10","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-16-architect","generation":1,"delivery":"outbox:16"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-17","slots":17,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-17-architect","generation":1,"incarnation":"5e0c1a11","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-17-architect","generation":1,"delivery":"outbox:17"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-18","slots":18,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-18-architect","generation":1,"incarnation":"5e0c1a12","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-18-architect","generation":1,"delivery":"outbox:18"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-19","slots":19,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-19-architect","generation":1,"incarnation":"5e0c1a13","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-19-architect","generation":1,"delivery":"outbox:19"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-20","slots":20,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-20-architect","generation":1,"incarnation":"5e0c1a14","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-20-architect","generation":1,"delivery":"outbox:20"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-21","slots":21,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-21-architect","generation":1,"incarnation":"5e0c1a15","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-21-architect","generation":1,"delivery":"outbox:21"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-22","slots":22,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-22-architect","generation":1,"incarnation":"5e0c1a16","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-22-architect","generation":1,"delivery":"outbox:22"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-23","slots":23,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-23-architect","generation":1,"incarnation":"5e0c1a17","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-23-architect","generation":1,"delivery":"outbox:23"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-24","slots":24,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-24-architect","generation":1,"incarnation":"5e0c1a18","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-24-architect","generation":1,"delivery":"outbox:24"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-25","slots":25,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-25-architect","generation":1,"incarnation":"5e0c1a19","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-25-architect","generation":1,"delivery":"outbox:25"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-26","slots":26,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-26-architect","generation":1,"incarnation":"5e0c1a1a","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-26-architect","generation":1,"delivery":"outbox:26"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-27","slots":27,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-27-architect","generation":1,"incarnation":"5e0c1a1b","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-27-architect","generation":1,"delivery":"outbox:27"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-28","slots":28,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-28-architect","generation":1,"incarnation":"5e0c1a1c","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-28-architect","generation":1,"delivery":"outbox:28"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-29","slots":29,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-29-architect","generation":1,"incarnation":"5e0c1a1d","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-29-architect","generation":1,"delivery":"outbox:29"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-30","slots":30,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-30-architect","generation":1,"incarnation":"5e0c1a1e","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-30-architect","generation":1,"delivery":"outbox:30"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-31","slots":31,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-31-architect","generation":1,"incarnation":"5e0c1a1f","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-31-architect","generation":1,"delivery":"outbox:31"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-32","slots":32,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-32-architect","generation":1,"incarnation":"5e0c1a20","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-32-architect","generation":1,"delivery":"outbox:32"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-33","slots":33,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-33-architect","generation":1,"incarnation":"5e0c1a21","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-33-architect","generation":1,"delivery":"outbox:33"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-34","slots":34,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-34-architect","generation":1,"incarnation":"5e0c1a22","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-34-architect","generation":1,"delivery":"outbox:34"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-35","slots":35,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-35-architect","generation":1,"incarnation":"5e0c1a23","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-35-architect","generation":1,"delivery":"outbox:35"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-36","slots":36,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-36-architect","generation":1,"incarnation":"5e0c1a24","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-36-architect","generation":1,"delivery":"outbox:36"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-37","slots":37,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-37-architect","generation":1,"incarnation":"5e0c1a25","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-37-architect","generation":1,"delivery":"outbox:37"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-38","slots":38,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-38-architect","generation":1,"incarnation":"5e0c1a26","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-38-architect","generation":1,"delivery":"outbox:38"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-39","slots":39,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-39-architect","generation":1,"incarnation":"5e0c1a27","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-39-architect","generation":1,"delivery":"outbox:39"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-40","slots":40,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-40-architect","generation":1,"incarnation":"5e0c1a28","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-40-architect","generation":1,"delivery":"outbox:40"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-41","slots":41,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-41-architect","generation":1,"incarnation":"5e0c1a29","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-41-architect","generation":1,"delivery":"outbox:41"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-42","slots":42,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-42-architect","generation":1,"incarnation":"5e0c1a2a","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-42-architect","generation":1,"delivery":"outbox:42"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-43","slots":43,"cap":43}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-43-architect","generation":1,"incarnation":"5e0c1a2b","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-43-architect","generation":1,"delivery":"outbox:43"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-1-architect","generation":1,"delivery":"outbox:1"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-1","artifact":"00000000-0000-4000-8000-0000000000a1","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-1","tree":"ACME-1","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-1"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-1-planner","generation":1,"incarnation":"5e0c1a2c","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-1-planner","generation":1,"delivery":"outbox:44"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-2-architect","generation":1,"delivery":"outbox:2"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-2","artifact":"00000000-0000-4000-8000-0000000000a2","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-2","tree":"ACME-2","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-2"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-2-planner","generation":1,"incarnation":"5e0c1a2d","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-2-planner","generation":1,"delivery":"outbox:45"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-3-architect","generation":1,"delivery":"outbox:3"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-3","artifact":"00000000-0000-4000-8000-0000000000a3","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-3","tree":"ACME-3","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-3"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-3-planner","generation":1,"incarnation":"5e0c1a2e","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-3-planner","generation":1,"delivery":"outbox:46"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-4-architect","generation":1,"delivery":"outbox:4"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-4","artifact":"00000000-0000-4000-8000-0000000000a4","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-4","tree":"ACME-4","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-4"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-4-planner","generation":1,"incarnation":"5e0c1a2f","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-4-planner","generation":1,"delivery":"outbox:47"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-5-architect","generation":1,"delivery":"outbox:5"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-5","artifact":"00000000-0000-4000-8000-0000000000a5","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-5","tree":"ACME-5","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-5"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-5-planner","generation":1,"incarnation":"5e0c1a30","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-5-planner","generation":1,"delivery":"outbox:48"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-6-architect","generation":1,"delivery":"outbox:6"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-6","artifact":"00000000-0000-4000-8000-0000000000a6","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-6","tree":"ACME-6","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-6"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-6-planner","generation":1,"incarnation":"5e0c1a31","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-6-planner","generation":1,"delivery":"outbox:49"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-7-architect","generation":1,"delivery":"outbox:7"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-7","artifact":"00000000-0000-4000-8000-0000000000a7","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-7","tree":"ACME-7","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-7"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-7-planner","generation":1,"incarnation":"5e0c1a32","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-7-planner","generation":1,"delivery":"outbox:50"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-8-architect","generation":1,"delivery":"outbox:8"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-8","artifact":"00000000-0000-4000-8000-0000000000a8","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-8","tree":"ACME-8","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-8"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-8-planner","generation":1,"incarnation":"5e0c1a33","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-8-planner","generation":1,"delivery":"outbox:51"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-9-architect","generation":1,"delivery":"outbox:9"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-9","artifact":"00000000-0000-4000-8000-0000000000a9","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-9","tree":"ACME-9","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-9"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-9-planner","generation":1,"incarnation":"5e0c1a34","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-9-planner","generation":1,"delivery":"outbox:52"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-10-architect","generation":1,"delivery":"outbox:10"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-10","artifact":"00000000-0000-4000-8000-0000000000aa","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-10","tree":"ACME-10","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-10"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-10-planner","generation":1,"incarnation":"5e0c1a35","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-10-planner","generation":1,"delivery":"outbox:53"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-11-architect","generation":1,"delivery":"outbox:11"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-11","artifact":"00000000-0000-4000-8000-0000000000ab","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-11","tree":"ACME-11","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-11"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-11-planner","generation":1,"incarnation":"5e0c1a36","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-11-planner","generation":1,"delivery":"outbox:54"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-12-architect","generation":1,"delivery":"outbox:12"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-12","artifact":"00000000-0000-4000-8000-0000000000ac","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-12","tree":"ACME-12","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-12"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-12-planner","generation":1,"incarnation":"5e0c1a37","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-12-planner","generation":1,"delivery":"outbox:55"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-13-architect","generation":1,"delivery":"outbox:13"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-13","artifact":"00000000-0000-4000-8000-0000000000ad","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-13","tree":"ACME-13","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-13"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-13-planner","generation":1,"incarnation":"5e0c1a38","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-13-planner","generation":1,"delivery":"outbox:56"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-14-architect","generation":1,"delivery":"outbox:14"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-14","artifact":"00000000-0000-4000-8000-0000000000ae","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-14","tree":"ACME-14","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-14"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-14-planner","generation":1,"incarnation":"5e0c1a39","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-14-planner","generation":1,"delivery":"outbox:57"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-15-architect","generation":1,"delivery":"outbox:15"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-15","artifact":"00000000-0000-4000-8000-0000000000af","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-15","tree":"ACME-15","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-15"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-15-planner","generation":1,"incarnation":"5e0c1a3a","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-15-planner","generation":1,"delivery":"outbox:58"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-16-architect","generation":1,"delivery":"outbox:16"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-16","artifact":"00000000-0000-4000-8000-0000000000b0","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-16","tree":"ACME-16","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-16"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-16-planner","generation":1,"incarnation":"5e0c1a3b","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-16-planner","generation":1,"delivery":"outbox:59"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-17-architect","generation":1,"delivery":"outbox:17"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-17","artifact":"00000000-0000-4000-8000-0000000000b1","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-17","tree":"ACME-17","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-17"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-17-planner","generation":1,"incarnation":"5e0c1a3c","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-17-planner","generation":1,"delivery":"outbox:60"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-18-architect","generation":1,"delivery":"outbox:18"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-18","artifact":"00000000-0000-4000-8000-0000000000b2","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-18","tree":"ACME-18","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-18"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-18-planner","generation":1,"incarnation":"5e0c1a3d","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-18-planner","generation":1,"delivery":"outbox:61"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-19-architect","generation":1,"delivery":"outbox:19"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-19","artifact":"00000000-0000-4000-8000-0000000000b3","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-19","tree":"ACME-19","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-19"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-19-planner","generation":1,"incarnation":"5e0c1a3e","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-19-planner","generation":1,"delivery":"outbox:62"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-20-architect","generation":1,"delivery":"outbox:20"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-20","artifact":"00000000-0000-4000-8000-0000000000b4","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-20","tree":"ACME-20","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-20"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-20-planner","generation":1,"incarnation":"5e0c1a3f","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-20-planner","generation":1,"delivery":"outbox:63"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-21-architect","generation":1,"delivery":"outbox:21"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-21","artifact":"00000000-0000-4000-8000-0000000000b5","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-21","tree":"ACME-21","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-21"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-21-planner","generation":1,"incarnation":"5e0c1a40","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-21-planner","generation":1,"delivery":"outbox:64"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-22-architect","generation":1,"delivery":"outbox:22"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-22","artifact":"00000000-0000-4000-8000-0000000000b6","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-22","tree":"ACME-22","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-22"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-22-planner","generation":1,"incarnation":"5e0c1a41","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-22-planner","generation":1,"delivery":"outbox:65"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-23-architect","generation":1,"delivery":"outbox:23"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-23","artifact":"00000000-0000-4000-8000-0000000000b7","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-23","tree":"ACME-23","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-23"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-23-planner","generation":1,"incarnation":"5e0c1a42","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-23-planner","generation":1,"delivery":"outbox:66"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-24-architect","generation":1,"delivery":"outbox:24"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-24","artifact":"00000000-0000-4000-8000-0000000000b8","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-24","tree":"ACME-24","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-24"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-24-planner","generation":1,"incarnation":"5e0c1a43","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-24-planner","generation":1,"delivery":"outbox:67"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-25-architect","generation":1,"delivery":"outbox:25"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-25","artifact":"00000000-0000-4000-8000-0000000000b9","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-25","tree":"ACME-25","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-25"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-25-planner","generation":1,"incarnation":"5e0c1a44","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-25-planner","generation":1,"delivery":"outbox:68"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-26-architect","generation":1,"delivery":"outbox:26"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-26","artifact":"00000000-0000-4000-8000-0000000000ba","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-26","tree":"ACME-26","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-26"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-26-planner","generation":1,"incarnation":"5e0c1a45","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-26-planner","generation":1,"delivery":"outbox:69"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-27-architect","generation":1,"delivery":"outbox:27"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-27","artifact":"00000000-0000-4000-8000-0000000000bb","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-27","tree":"ACME-27","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-27"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-27-planner","generation":1,"incarnation":"5e0c1a46","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-27-planner","generation":1,"delivery":"outbox:70"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-28-architect","generation":1,"delivery":"outbox:28"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-28","artifact":"00000000-0000-4000-8000-0000000000bc","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-28","tree":"ACME-28","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-28"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-28-planner","generation":1,"incarnation":"5e0c1a47","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-28-planner","generation":1,"delivery":"outbox:71"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-29-architect","generation":1,"delivery":"outbox:29"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-29","artifact":"00000000-0000-4000-8000-0000000000bd","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-29","tree":"ACME-29","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-29"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-29-planner","generation":1,"incarnation":"5e0c1a48","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-29-planner","generation":1,"delivery":"outbox:72"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-30-architect","generation":1,"delivery":"outbox:30"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-30","artifact":"00000000-0000-4000-8000-0000000000be","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-30","tree":"ACME-30","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-30"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-30-planner","generation":1,"incarnation":"5e0c1a49","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-30-planner","generation":1,"delivery":"outbox:73"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-31-architect","generation":1,"delivery":"outbox:31"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-31","artifact":"00000000-0000-4000-8000-0000000000bf","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-31","tree":"ACME-31","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-31"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-31-planner","generation":1,"incarnation":"5e0c1a4a","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-31-planner","generation":1,"delivery":"outbox:74"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-32-architect","generation":1,"delivery":"outbox:32"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-32","artifact":"00000000-0000-4000-8000-0000000000c0","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-32","tree":"ACME-32","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-32"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-32-planner","generation":1,"incarnation":"5e0c1a4b","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-32-planner","generation":1,"delivery":"outbox:75"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-33-architect","generation":1,"delivery":"outbox:33"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-33","artifact":"00000000-0000-4000-8000-0000000000c1","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-33","tree":"ACME-33","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-33"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-33-planner","generation":1,"incarnation":"5e0c1a4c","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-33-planner","generation":1,"delivery":"outbox:76"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-34-architect","generation":1,"delivery":"outbox:34"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-34","artifact":"00000000-0000-4000-8000-0000000000c2","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-34","tree":"ACME-34","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-34"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-34-planner","generation":1,"incarnation":"5e0c1a4d","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-34-planner","generation":1,"delivery":"outbox:77"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-35-architect","generation":1,"delivery":"outbox:35"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-35","artifact":"00000000-0000-4000-8000-0000000000c3","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-35","tree":"ACME-35","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-35"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-35-planner","generation":1,"incarnation":"5e0c1a4e","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-35-planner","generation":1,"delivery":"outbox:78"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-36-architect","generation":1,"delivery":"outbox:36"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-36","artifact":"00000000-0000-4000-8000-0000000000c4","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-36","tree":"ACME-36","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-36"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-36-planner","generation":1,"incarnation":"5e0c1a4f","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-36-planner","generation":1,"delivery":"outbox:79"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-37-architect","generation":1,"delivery":"outbox:37"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-37","artifact":"00000000-0000-4000-8000-0000000000c5","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-37","tree":"ACME-37","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-37"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-37-planner","generation":1,"incarnation":"5e0c1a50","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-37-planner","generation":1,"delivery":"outbox:80"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-38-architect","generation":1,"delivery":"outbox:38"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-38","artifact":"00000000-0000-4000-8000-0000000000c6","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-38","tree":"ACME-38","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-38"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-38-planner","generation":1,"incarnation":"5e0c1a51","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-38-planner","generation":1,"delivery":"outbox:81"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-39-architect","generation":1,"delivery":"outbox:39"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-39","artifact":"00000000-0000-4000-8000-0000000000c7","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-39","tree":"ACME-39","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-39"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-39-planner","generation":1,"incarnation":"5e0c1a52","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-39-planner","generation":1,"delivery":"outbox:82"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-40-architect","generation":1,"delivery":"outbox:40"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-40","artifact":"00000000-0000-4000-8000-0000000000c8","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-40","tree":"ACME-40","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-40"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-40-planner","generation":1,"incarnation":"5e0c1a53","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-40-planner","generation":1,"delivery":"outbox:83"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-41-architect","generation":1,"delivery":"outbox:41"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-41","artifact":"00000000-0000-4000-8000-0000000000c9","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-41","tree":"ACME-41","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-41"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-41-planner","generation":1,"incarnation":"5e0c1a54","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-41-planner","generation":1,"delivery":"outbox:84"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-42-architect","generation":1,"delivery":"outbox:42"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-42","artifact":"00000000-0000-4000-8000-0000000000ca","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-42","tree":"ACME-42","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-42"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-42-planner","generation":1,"incarnation":"5e0c1a55","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-42-planner","generation":1,"delivery":"outbox:85"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-1-planner","generation":1,"delivery":"outbox:44"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-1","tree":"ACME-1","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-1-implementer","generation":1,"incarnation":"5e0c1a56","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-1-implementer","generation":1,"delivery":"outbox:86"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-2-planner","generation":1,"delivery":"outbox:45"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-2","tree":"ACME-2","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-2-implementer","generation":1,"incarnation":"5e0c1a57","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-2-implementer","generation":1,"delivery":"outbox:87"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-3-planner","generation":1,"delivery":"outbox:46"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-3","tree":"ACME-3","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-3-implementer","generation":1,"incarnation":"5e0c1a58","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-3-implementer","generation":1,"delivery":"outbox:88"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-4-planner","generation":1,"delivery":"outbox:47"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-4","tree":"ACME-4","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-4-implementer","generation":1,"incarnation":"5e0c1a59","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-4-implementer","generation":1,"delivery":"outbox:89"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-5-planner","generation":1,"delivery":"outbox:48"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-5","tree":"ACME-5","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-5-implementer","generation":1,"incarnation":"5e0c1a5a","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-5-implementer","generation":1,"delivery":"outbox:90"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-6-planner","generation":1,"delivery":"outbox:49"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-6","tree":"ACME-6","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-6-implementer","generation":1,"incarnation":"5e0c1a5b","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-6-implementer","generation":1,"delivery":"outbox:91"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-7-planner","generation":1,"delivery":"outbox:50"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-7","tree":"ACME-7","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-7-implementer","generation":1,"incarnation":"5e0c1a5c","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-7-implementer","generation":1,"delivery":"outbox:92"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-8-planner","generation":1,"delivery":"outbox:51"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-8","tree":"ACME-8","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-8-implementer","generation":1,"incarnation":"5e0c1a5d","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-8-implementer","generation":1,"delivery":"outbox:93"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-9-planner","generation":1,"delivery":"outbox:52"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-9","tree":"ACME-9","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-9-implementer","generation":1,"incarnation":"5e0c1a5e","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-9-implementer","generation":1,"delivery":"outbox:94"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-10-planner","generation":1,"delivery":"outbox:53"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-10","tree":"ACME-10","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-10-implementer","generation":1,"incarnation":"5e0c1a5f","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-10-implementer","generation":1,"delivery":"outbox:95"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-11-planner","generation":1,"delivery":"outbox:54"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-11","tree":"ACME-11","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-11-implementer","generation":1,"incarnation":"5e0c1a60","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-11-implementer","generation":1,"delivery":"outbox:96"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-12-planner","generation":1,"delivery":"outbox:55"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-12","tree":"ACME-12","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-12-implementer","generation":1,"incarnation":"5e0c1a61","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-12-implementer","generation":1,"delivery":"outbox:97"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-13-planner","generation":1,"delivery":"outbox:56"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-13","tree":"ACME-13","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-13-implementer","generation":1,"incarnation":"5e0c1a62","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-13-implementer","generation":1,"delivery":"outbox:98"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-14-planner","generation":1,"delivery":"outbox:57"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-14","tree":"ACME-14","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-14-implementer","generation":1,"incarnation":"5e0c1a63","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-14-implementer","generation":1,"delivery":"outbox:99"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-15-planner","generation":1,"delivery":"outbox:58"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-15","tree":"ACME-15","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-15-implementer","generation":1,"incarnation":"5e0c1a64","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-15-implementer","generation":1,"delivery":"outbox:100"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-16-planner","generation":1,"delivery":"outbox:59"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-16","tree":"ACME-16","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-16-implementer","generation":1,"incarnation":"5e0c1a65","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-16-implementer","generation":1,"delivery":"outbox:101"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-17-planner","generation":1,"delivery":"outbox:60"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-17","tree":"ACME-17","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-17-implementer","generation":1,"incarnation":"5e0c1a66","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-17-implementer","generation":1,"delivery":"outbox:102"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-18-planner","generation":1,"delivery":"outbox:61"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-18","tree":"ACME-18","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-18-implementer","generation":1,"incarnation":"5e0c1a67","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-18-implementer","generation":1,"delivery":"outbox:103"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-19-planner","generation":1,"delivery":"outbox:62"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-19","tree":"ACME-19","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-19-implementer","generation":1,"incarnation":"5e0c1a68","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-19-implementer","generation":1,"delivery":"outbox:104"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-20-planner","generation":1,"delivery":"outbox:63"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-20","tree":"ACME-20","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-20-implementer","generation":1,"incarnation":"5e0c1a69","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-20-implementer","generation":1,"delivery":"outbox:105"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-21-planner","generation":1,"delivery":"outbox:64"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-21","tree":"ACME-21","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-21-implementer","generation":1,"incarnation":"5e0c1a6a","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-21-implementer","generation":1,"delivery":"outbox:106"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-22-planner","generation":1,"delivery":"outbox:65"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-22","tree":"ACME-22","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-22-implementer","generation":1,"incarnation":"5e0c1a6b","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-22-implementer","generation":1,"delivery":"outbox:107"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-23-planner","generation":1,"delivery":"outbox:66"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-23","tree":"ACME-23","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-23-implementer","generation":1,"incarnation":"5e0c1a6c","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-23-implementer","generation":1,"delivery":"outbox:108"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-24-planner","generation":1,"delivery":"outbox:67"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-24","tree":"ACME-24","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-24-implementer","generation":1,"incarnation":"5e0c1a6d","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-24-implementer","generation":1,"delivery":"outbox:109"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-25-planner","generation":1,"delivery":"outbox:68"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-25","tree":"ACME-25","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-25-implementer","generation":1,"incarnation":"5e0c1a6e","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-25-implementer","generation":1,"delivery":"outbox:110"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-26-planner","generation":1,"delivery":"outbox:69"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-26","tree":"ACME-26","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-26-implementer","generation":1,"incarnation":"5e0c1a6f","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-26-implementer","generation":1,"delivery":"outbox:111"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-27-planner","generation":1,"delivery":"outbox:70"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-27","tree":"ACME-27","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-27-implementer","generation":1,"incarnation":"5e0c1a70","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-27-implementer","generation":1,"delivery":"outbox:112"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-28-planner","generation":1,"delivery":"outbox:71"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-28","tree":"ACME-28","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-28-implementer","generation":1,"incarnation":"5e0c1a71","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-28-implementer","generation":1,"delivery":"outbox:113"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-29-planner","generation":1,"delivery":"outbox:72"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-29","tree":"ACME-29","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-29-implementer","generation":1,"incarnation":"5e0c1a72","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-29-implementer","generation":1,"delivery":"outbox:114"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-30-planner","generation":1,"delivery":"outbox:73"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-30","tree":"ACME-30","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-30-implementer","generation":1,"incarnation":"5e0c1a73","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-30-implementer","generation":1,"delivery":"outbox:115"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-31-planner","generation":1,"delivery":"outbox:74"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-31","tree":"ACME-31","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-31-implementer","generation":1,"incarnation":"5e0c1a74","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-31-implementer","generation":1,"delivery":"outbox:116"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-32-planner","generation":1,"delivery":"outbox:75"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-32","tree":"ACME-32","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-32-implementer","generation":1,"incarnation":"5e0c1a75","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-32-implementer","generation":1,"delivery":"outbox:117"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-33-planner","generation":1,"delivery":"outbox:76"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-33","tree":"ACME-33","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-33-implementer","generation":1,"incarnation":"5e0c1a76","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-33-implementer","generation":1,"delivery":"outbox:118"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-34-planner","generation":1,"delivery":"outbox:77"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-34","tree":"ACME-34","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-34-implementer","generation":1,"incarnation":"5e0c1a77","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-34-implementer","generation":1,"delivery":"outbox:119"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-35-planner","generation":1,"delivery":"outbox:78"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-35","tree":"ACME-35","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-35-implementer","generation":1,"incarnation":"5e0c1a78","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-35-implementer","generation":1,"delivery":"outbox:120"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-36-planner","generation":1,"delivery":"outbox:79"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-36","tree":"ACME-36","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-36-implementer","generation":1,"incarnation":"5e0c1a79","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-36-implementer","generation":1,"delivery":"outbox:121"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-37-planner","generation":1,"delivery":"outbox:80"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-37","tree":"ACME-37","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-37-implementer","generation":1,"incarnation":"5e0c1a7a","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-37-implementer","generation":1,"delivery":"outbox:122"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-38-planner","generation":1,"delivery":"outbox:81"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-38","tree":"ACME-38","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-38-implementer","generation":1,"incarnation":"5e0c1a7b","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-38-implementer","generation":1,"delivery":"outbox:123"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-39-planner","generation":1,"delivery":"outbox:82"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-39","tree":"ACME-39","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-39-implementer","generation":1,"incarnation":"5e0c1a7c","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-39-implementer","generation":1,"delivery":"outbox:124"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-40-planner","generation":1,"delivery":"outbox:83"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-40","tree":"ACME-40","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-40-implementer","generation":1,"incarnation":"5e0c1a7d","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-40-implementer","generation":1,"delivery":"outbox:125"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-41-planner","generation":1,"delivery":"outbox:84"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-41","tree":"ACME-41","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-41-implementer","generation":1,"incarnation":"5e0c1a7e","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-41-implementer","generation":1,"delivery":"outbox:126"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-42-planner","generation":1,"delivery":"outbox:85"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-42","tree":"ACME-42","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-42-implementer","generation":1,"incarnation":"5e0c1a7f","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-42-implementer","generation":1,"delivery":"outbox:127"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-43-architect","generation":1,"delivery":"outbox:43"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-43","artifact":"00000000-0000-4000-8000-0000000000cb","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-43","tree":"ACME-43","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-43"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-43-planner","generation":1,"incarnation":"5e0c1a80","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:20:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-43-planner","generation":1,"delivery":"outbox:128"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-1-implementer","generation":1,"delivery":"outbox:86"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-1","tree":"ACME-1","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-1-tester","generation":1,"incarnation":"5e0c1a81","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-1-tester","generation":1,"delivery":"outbox:129"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-2-implementer","generation":1,"delivery":"outbox:87"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-2","tree":"ACME-2","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-2-tester","generation":1,"incarnation":"5e0c1a82","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-2-tester","generation":1,"delivery":"outbox:130"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-3-implementer","generation":1,"delivery":"outbox:88"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-3","tree":"ACME-3","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-3-tester","generation":1,"incarnation":"5e0c1a83","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-3-tester","generation":1,"delivery":"outbox:131"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-4-implementer","generation":1,"delivery":"outbox:89"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-4","tree":"ACME-4","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-4-tester","generation":1,"incarnation":"5e0c1a84","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-4-tester","generation":1,"delivery":"outbox:132"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-5-implementer","generation":1,"delivery":"outbox:90"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-5","tree":"ACME-5","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-5-tester","generation":1,"incarnation":"5e0c1a85","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-5-tester","generation":1,"delivery":"outbox:133"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-6-implementer","generation":1,"delivery":"outbox:91"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-6","tree":"ACME-6","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-6-tester","generation":1,"incarnation":"5e0c1a86","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-6-tester","generation":1,"delivery":"outbox:134"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-7-implementer","generation":1,"delivery":"outbox:92"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-7","tree":"ACME-7","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-7-tester","generation":1,"incarnation":"5e0c1a87","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-7-tester","generation":1,"delivery":"outbox:135"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-8-implementer","generation":1,"delivery":"outbox:93"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-8","tree":"ACME-8","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-8-tester","generation":1,"incarnation":"5e0c1a88","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-8-tester","generation":1,"delivery":"outbox:136"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-9-implementer","generation":1,"delivery":"outbox:94"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-9","tree":"ACME-9","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-9-tester","generation":1,"incarnation":"5e0c1a89","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-9-tester","generation":1,"delivery":"outbox:137"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-10-implementer","generation":1,"delivery":"outbox:95"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-10","tree":"ACME-10","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-10-tester","generation":1,"incarnation":"5e0c1a8a","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-10-tester","generation":1,"delivery":"outbox:138"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-11-implementer","generation":1,"delivery":"outbox:96"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-11","tree":"ACME-11","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-11-tester","generation":1,"incarnation":"5e0c1a8b","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-11-tester","generation":1,"delivery":"outbox:139"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-12-implementer","generation":1,"delivery":"outbox:97"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-12","tree":"ACME-12","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-12-tester","generation":1,"incarnation":"5e0c1a8c","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-12-tester","generation":1,"delivery":"outbox:140"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-13-implementer","generation":1,"delivery":"outbox:98"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-13","tree":"ACME-13","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-13-tester","generation":1,"incarnation":"5e0c1a8d","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-13-tester","generation":1,"delivery":"outbox:141"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-14-implementer","generation":1,"delivery":"outbox:99"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-14","tree":"ACME-14","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-14-tester","generation":1,"incarnation":"5e0c1a8e","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-14-tester","generation":1,"delivery":"outbox:142"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-15-implementer","generation":1,"delivery":"outbox:100"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-15","tree":"ACME-15","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-15-tester","generation":1,"incarnation":"5e0c1a8f","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-15-tester","generation":1,"delivery":"outbox:143"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-16-implementer","generation":1,"delivery":"outbox:101"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-16","tree":"ACME-16","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-16-tester","generation":1,"incarnation":"5e0c1a90","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-16-tester","generation":1,"delivery":"outbox:144"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-17-implementer","generation":1,"delivery":"outbox:102"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-17","tree":"ACME-17","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-17-tester","generation":1,"incarnation":"5e0c1a91","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-17-tester","generation":1,"delivery":"outbox:145"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-18-implementer","generation":1,"delivery":"outbox:103"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-18","tree":"ACME-18","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-18-tester","generation":1,"incarnation":"5e0c1a92","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-18-tester","generation":1,"delivery":"outbox:146"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-19-implementer","generation":1,"delivery":"outbox:104"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-19","tree":"ACME-19","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-19-tester","generation":1,"incarnation":"5e0c1a93","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-19-tester","generation":1,"delivery":"outbox:147"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-20-implementer","generation":1,"delivery":"outbox:105"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-20","tree":"ACME-20","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-20-tester","generation":1,"incarnation":"5e0c1a94","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-20-tester","generation":1,"delivery":"outbox:148"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-21-implementer","generation":1,"delivery":"outbox:106"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-21","tree":"ACME-21","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-21-tester","generation":1,"incarnation":"5e0c1a95","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-21-tester","generation":1,"delivery":"outbox:149"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-22-implementer","generation":1,"delivery":"outbox:107"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-22","tree":"ACME-22","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-22-tester","generation":1,"incarnation":"5e0c1a96","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-22-tester","generation":1,"delivery":"outbox:150"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-23-implementer","generation":1,"delivery":"outbox:108"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-23","tree":"ACME-23","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-23-tester","generation":1,"incarnation":"5e0c1a97","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-23-tester","generation":1,"delivery":"outbox:151"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-24-implementer","generation":1,"delivery":"outbox:109"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-24","tree":"ACME-24","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-24-tester","generation":1,"incarnation":"5e0c1a98","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-24-tester","generation":1,"delivery":"outbox:152"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-25-implementer","generation":1,"delivery":"outbox:110"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-25","tree":"ACME-25","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-25-tester","generation":1,"incarnation":"5e0c1a99","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-25-tester","generation":1,"delivery":"outbox:153"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-26-implementer","generation":1,"delivery":"outbox:111"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-26","tree":"ACME-26","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-26-tester","generation":1,"incarnation":"5e0c1a9a","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-26-tester","generation":1,"delivery":"outbox:154"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-27-implementer","generation":1,"delivery":"outbox:112"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-27","tree":"ACME-27","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-27-tester","generation":1,"incarnation":"5e0c1a9b","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-27-tester","generation":1,"delivery":"outbox:155"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-28-implementer","generation":1,"delivery":"outbox:113"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-28","tree":"ACME-28","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-28-tester","generation":1,"incarnation":"5e0c1a9c","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-28-tester","generation":1,"delivery":"outbox:156"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-29-implementer","generation":1,"delivery":"outbox:114"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-29","tree":"ACME-29","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-29-tester","generation":1,"incarnation":"5e0c1a9d","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-29-tester","generation":1,"delivery":"outbox:157"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-30-implementer","generation":1,"delivery":"outbox:115"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-30","tree":"ACME-30","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-30-tester","generation":1,"incarnation":"5e0c1a9e","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-30-tester","generation":1,"delivery":"outbox:158"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-31-implementer","generation":1,"delivery":"outbox:116"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-31","tree":"ACME-31","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-31-tester","generation":1,"incarnation":"5e0c1a9f","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-31-tester","generation":1,"delivery":"outbox:159"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-32-implementer","generation":1,"delivery":"outbox:117"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-32","tree":"ACME-32","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-32-tester","generation":1,"incarnation":"5e0c1aa0","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-32-tester","generation":1,"delivery":"outbox:160"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-33-implementer","generation":1,"delivery":"outbox:118"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-33","tree":"ACME-33","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-33-tester","generation":1,"incarnation":"5e0c1aa1","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-33-tester","generation":1,"delivery":"outbox:161"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-34-implementer","generation":1,"delivery":"outbox:119"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-34","tree":"ACME-34","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-34-tester","generation":1,"incarnation":"5e0c1aa2","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-34-tester","generation":1,"delivery":"outbox:162"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-35-implementer","generation":1,"delivery":"outbox:120"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-35","tree":"ACME-35","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-35-tester","generation":1,"incarnation":"5e0c1aa3","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-35-tester","generation":1,"delivery":"outbox:163"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-36-implementer","generation":1,"delivery":"outbox:121"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-36","tree":"ACME-36","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-36-tester","generation":1,"incarnation":"5e0c1aa4","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-36-tester","generation":1,"delivery":"outbox:164"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-37-implementer","generation":1,"delivery":"outbox:122"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-37","tree":"ACME-37","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-37-tester","generation":1,"incarnation":"5e0c1aa5","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-37-tester","generation":1,"delivery":"outbox:165"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-38-implementer","generation":1,"delivery":"outbox:123"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-38","tree":"ACME-38","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-38-tester","generation":1,"incarnation":"5e0c1aa6","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-38-tester","generation":1,"delivery":"outbox:166"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-39-implementer","generation":1,"delivery":"outbox:124"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-39","tree":"ACME-39","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-39-tester","generation":1,"incarnation":"5e0c1aa7","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-39-tester","generation":1,"delivery":"outbox:167"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-40-implementer","generation":1,"delivery":"outbox:125"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-40","tree":"ACME-40","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-40-tester","generation":1,"incarnation":"5e0c1aa8","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-40-tester","generation":1,"delivery":"outbox:168"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-41-implementer","generation":1,"delivery":"outbox:126"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-41","tree":"ACME-41","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-41-tester","generation":1,"incarnation":"5e0c1aa9","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-41-tester","generation":1,"delivery":"outbox:169"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-42-implementer","generation":1,"delivery":"outbox:127"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-42","tree":"ACME-42","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-42-tester","generation":1,"incarnation":"5e0c1aaa","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-42-tester","generation":1,"delivery":"outbox:170"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-1-tester","generation":1,"delivery":"outbox:129"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-1","tree":"ACME-1","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-1-reviewer","generation":1,"incarnation":"5e0c1aab","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-1-reviewer","generation":1,"delivery":"outbox:171"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-2-tester","generation":1,"delivery":"outbox:130"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-2","tree":"ACME-2","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-2-reviewer","generation":1,"incarnation":"5e0c1aac","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-2-reviewer","generation":1,"delivery":"outbox:172"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-3-tester","generation":1,"delivery":"outbox:131"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-3","tree":"ACME-3","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-3-reviewer","generation":1,"incarnation":"5e0c1aad","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-3-reviewer","generation":1,"delivery":"outbox:173"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-4-tester","generation":1,"delivery":"outbox:132"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-4","tree":"ACME-4","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-4-reviewer","generation":1,"incarnation":"5e0c1aae","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-4-reviewer","generation":1,"delivery":"outbox:174"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-5-tester","generation":1,"delivery":"outbox:133"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-5","tree":"ACME-5","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-5-reviewer","generation":1,"incarnation":"5e0c1aaf","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-5-reviewer","generation":1,"delivery":"outbox:175"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-6-tester","generation":1,"delivery":"outbox:134"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-6","tree":"ACME-6","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-6-reviewer","generation":1,"incarnation":"5e0c1ab0","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-6-reviewer","generation":1,"delivery":"outbox:176"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-7-tester","generation":1,"delivery":"outbox:135"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-7","tree":"ACME-7","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-7-reviewer","generation":1,"incarnation":"5e0c1ab1","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-7-reviewer","generation":1,"delivery":"outbox:177"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-8-tester","generation":1,"delivery":"outbox:136"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-8","tree":"ACME-8","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-8-reviewer","generation":1,"incarnation":"5e0c1ab2","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-8-reviewer","generation":1,"delivery":"outbox:178"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-9-tester","generation":1,"delivery":"outbox:137"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-9","tree":"ACME-9","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-9-reviewer","generation":1,"incarnation":"5e0c1ab3","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-9-reviewer","generation":1,"delivery":"outbox:179"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-10-tester","generation":1,"delivery":"outbox:138"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-10","tree":"ACME-10","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-10-reviewer","generation":1,"incarnation":"5e0c1ab4","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-10-reviewer","generation":1,"delivery":"outbox:180"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-11-tester","generation":1,"delivery":"outbox:139"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-11","tree":"ACME-11","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-11-reviewer","generation":1,"incarnation":"5e0c1ab5","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-11-reviewer","generation":1,"delivery":"outbox:181"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-12-tester","generation":1,"delivery":"outbox:140"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-12","tree":"ACME-12","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-12-reviewer","generation":1,"incarnation":"5e0c1ab6","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-12-reviewer","generation":1,"delivery":"outbox:182"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-13-tester","generation":1,"delivery":"outbox:141"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-13","tree":"ACME-13","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-13-reviewer","generation":1,"incarnation":"5e0c1ab7","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-13-reviewer","generation":1,"delivery":"outbox:183"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-14-tester","generation":1,"delivery":"outbox:142"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-14","tree":"ACME-14","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-14-reviewer","generation":1,"incarnation":"5e0c1ab8","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-14-reviewer","generation":1,"delivery":"outbox:184"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-15-tester","generation":1,"delivery":"outbox:143"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-15","tree":"ACME-15","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-15-reviewer","generation":1,"incarnation":"5e0c1ab9","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-15-reviewer","generation":1,"delivery":"outbox:185"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-16-tester","generation":1,"delivery":"outbox:144"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-16","tree":"ACME-16","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-16-reviewer","generation":1,"incarnation":"5e0c1aba","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-16-reviewer","generation":1,"delivery":"outbox:186"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-17-tester","generation":1,"delivery":"outbox:145"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-17","tree":"ACME-17","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-17-reviewer","generation":1,"incarnation":"5e0c1abb","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-17-reviewer","generation":1,"delivery":"outbox:187"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-18-tester","generation":1,"delivery":"outbox:146"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-18","tree":"ACME-18","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-18-reviewer","generation":1,"incarnation":"5e0c1abc","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-18-reviewer","generation":1,"delivery":"outbox:188"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-19-tester","generation":1,"delivery":"outbox:147"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-19","tree":"ACME-19","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-19-reviewer","generation":1,"incarnation":"5e0c1abd","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-19-reviewer","generation":1,"delivery":"outbox:189"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-20-tester","generation":1,"delivery":"outbox:148"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-20","tree":"ACME-20","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-20-reviewer","generation":1,"incarnation":"5e0c1abe","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-20-reviewer","generation":1,"delivery":"outbox:190"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-21-tester","generation":1,"delivery":"outbox:149"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-21","tree":"ACME-21","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-21-reviewer","generation":1,"incarnation":"5e0c1abf","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-21-reviewer","generation":1,"delivery":"outbox:191"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-22-tester","generation":1,"delivery":"outbox:150"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-22","tree":"ACME-22","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-22-reviewer","generation":1,"incarnation":"5e0c1ac0","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-22-reviewer","generation":1,"delivery":"outbox:192"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-23-tester","generation":1,"delivery":"outbox:151"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-23","tree":"ACME-23","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-23-reviewer","generation":1,"incarnation":"5e0c1ac1","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-23-reviewer","generation":1,"delivery":"outbox:193"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-24-tester","generation":1,"delivery":"outbox:152"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-24","tree":"ACME-24","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-24-reviewer","generation":1,"incarnation":"5e0c1ac2","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-24-reviewer","generation":1,"delivery":"outbox:194"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-25-tester","generation":1,"delivery":"outbox:153"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-25","tree":"ACME-25","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-25-reviewer","generation":1,"incarnation":"5e0c1ac3","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-25-reviewer","generation":1,"delivery":"outbox:195"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-26-tester","generation":1,"delivery":"outbox:154"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-26","tree":"ACME-26","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-26-reviewer","generation":1,"incarnation":"5e0c1ac4","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-26-reviewer","generation":1,"delivery":"outbox:196"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-27-tester","generation":1,"delivery":"outbox:155"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-27","tree":"ACME-27","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-27-reviewer","generation":1,"incarnation":"5e0c1ac5","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-27-reviewer","generation":1,"delivery":"outbox:197"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-28-tester","generation":1,"delivery":"outbox:156"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-28","tree":"ACME-28","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-28-reviewer","generation":1,"incarnation":"5e0c1ac6","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-28-reviewer","generation":1,"delivery":"outbox:198"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-29-tester","generation":1,"delivery":"outbox:157"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-29","tree":"ACME-29","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-29-reviewer","generation":1,"incarnation":"5e0c1ac7","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-29-reviewer","generation":1,"delivery":"outbox:199"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-30-tester","generation":1,"delivery":"outbox:158"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-30","tree":"ACME-30","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-30-reviewer","generation":1,"incarnation":"5e0c1ac8","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-30-reviewer","generation":1,"delivery":"outbox:200"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-31-tester","generation":1,"delivery":"outbox:159"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-31","tree":"ACME-31","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-31-reviewer","generation":1,"incarnation":"5e0c1ac9","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-31-reviewer","generation":1,"delivery":"outbox:201"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-32-tester","generation":1,"delivery":"outbox:160"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-32","tree":"ACME-32","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-32-reviewer","generation":1,"incarnation":"5e0c1aca","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-32-reviewer","generation":1,"delivery":"outbox:202"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-33-tester","generation":1,"delivery":"outbox:161"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-33","tree":"ACME-33","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-33-reviewer","generation":1,"incarnation":"5e0c1acb","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-33-reviewer","generation":1,"delivery":"outbox:203"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-34-tester","generation":1,"delivery":"outbox:162"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-34","tree":"ACME-34","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-34-reviewer","generation":1,"incarnation":"5e0c1acc","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-34-reviewer","generation":1,"delivery":"outbox:204"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-35-tester","generation":1,"delivery":"outbox:163"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-35","tree":"ACME-35","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-35-reviewer","generation":1,"incarnation":"5e0c1acd","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-35-reviewer","generation":1,"delivery":"outbox:205"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-36-tester","generation":1,"delivery":"outbox:164"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-36","tree":"ACME-36","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-36-reviewer","generation":1,"incarnation":"5e0c1ace","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-36-reviewer","generation":1,"delivery":"outbox:206"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-37-tester","generation":1,"delivery":"outbox:165"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-37","tree":"ACME-37","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-37-reviewer","generation":1,"incarnation":"5e0c1acf","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-37-reviewer","generation":1,"delivery":"outbox:207"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-38-tester","generation":1,"delivery":"outbox:166"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-38","tree":"ACME-38","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-38-reviewer","generation":1,"incarnation":"5e0c1ad0","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-38-reviewer","generation":1,"delivery":"outbox:208"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-39-tester","generation":1,"delivery":"outbox:167"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-39","tree":"ACME-39","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-39-reviewer","generation":1,"incarnation":"5e0c1ad1","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-39-reviewer","generation":1,"delivery":"outbox:209"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-40-tester","generation":1,"delivery":"outbox:168"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-40","tree":"ACME-40","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-40-reviewer","generation":1,"incarnation":"5e0c1ad2","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-40-reviewer","generation":1,"delivery":"outbox:210"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-41-tester","generation":1,"delivery":"outbox:169"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-41","tree":"ACME-41","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-41-reviewer","generation":1,"incarnation":"5e0c1ad3","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-41-reviewer","generation":1,"delivery":"outbox:211"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-42-tester","generation":1,"delivery":"outbox:170"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-42","tree":"ACME-42","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-42-reviewer","generation":1,"incarnation":"5e0c1ad4","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-42-reviewer","generation":1,"delivery":"outbox:212"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-1-reviewer","generation":1,"delivery":"outbox:171"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-1","tree":"ACME-1","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-2-reviewer","generation":1,"delivery":"outbox:172"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-2","tree":"ACME-2","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-3-reviewer","generation":1,"delivery":"outbox:173"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-3","tree":"ACME-3","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-4-reviewer","generation":1,"delivery":"outbox:174"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-4","tree":"ACME-4","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-5-reviewer","generation":1,"delivery":"outbox:175"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-5","tree":"ACME-5","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-6-reviewer","generation":1,"delivery":"outbox:176"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-6","tree":"ACME-6","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-7-reviewer","generation":1,"delivery":"outbox:177"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-7","tree":"ACME-7","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-8-reviewer","generation":1,"delivery":"outbox:178"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-8","tree":"ACME-8","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-9-reviewer","generation":1,"delivery":"outbox:179"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-9","tree":"ACME-9","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-10-reviewer","generation":1,"delivery":"outbox:180"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-10","tree":"ACME-10","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-11-reviewer","generation":1,"delivery":"outbox:181"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-11","tree":"ACME-11","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-12-reviewer","generation":1,"delivery":"outbox:182"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-12","tree":"ACME-12","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-13-reviewer","generation":1,"delivery":"outbox:183"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-13","tree":"ACME-13","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-14-reviewer","generation":1,"delivery":"outbox:184"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-14","tree":"ACME-14","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-15-reviewer","generation":1,"delivery":"outbox:185"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-15","tree":"ACME-15","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-16-reviewer","generation":1,"delivery":"outbox:186"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-16","tree":"ACME-16","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-17-reviewer","generation":1,"delivery":"outbox:187"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-17","tree":"ACME-17","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-18-reviewer","generation":1,"delivery":"outbox:188"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-18","tree":"ACME-18","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-19-reviewer","generation":1,"delivery":"outbox:189"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-19","tree":"ACME-19","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-20-reviewer","generation":1,"delivery":"outbox:190"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-20","tree":"ACME-20","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-21-reviewer","generation":1,"delivery":"outbox:191"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-21","tree":"ACME-21","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-22-reviewer","generation":1,"delivery":"outbox:192"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-22","tree":"ACME-22","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-23-reviewer","generation":1,"delivery":"outbox:193"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-23","tree":"ACME-23","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-24-reviewer","generation":1,"delivery":"outbox:194"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-24","tree":"ACME-24","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-25-reviewer","generation":1,"delivery":"outbox:195"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-25","tree":"ACME-25","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-26-reviewer","generation":1,"delivery":"outbox:196"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-26","tree":"ACME-26","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-27-reviewer","generation":1,"delivery":"outbox:197"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-27","tree":"ACME-27","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-28-reviewer","generation":1,"delivery":"outbox:198"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-28","tree":"ACME-28","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-29-reviewer","generation":1,"delivery":"outbox:199"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-29","tree":"ACME-29","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-30-reviewer","generation":1,"delivery":"outbox:200"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-30","tree":"ACME-30","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-31-reviewer","generation":1,"delivery":"outbox:201"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-31","tree":"ACME-31","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-32-reviewer","generation":1,"delivery":"outbox:202"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-32","tree":"ACME-32","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-33-reviewer","generation":1,"delivery":"outbox:203"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-33","tree":"ACME-33","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-34-reviewer","generation":1,"delivery":"outbox:204"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-34","tree":"ACME-34","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-35-reviewer","generation":1,"delivery":"outbox:205"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-35","tree":"ACME-35","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-36-reviewer","generation":1,"delivery":"outbox:206"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-36","tree":"ACME-36","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-37-reviewer","generation":1,"delivery":"outbox:207"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-37","tree":"ACME-37","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-38-reviewer","generation":1,"delivery":"outbox:208"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-38","tree":"ACME-38","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-39-reviewer","generation":1,"delivery":"outbox:209"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-39","tree":"ACME-39","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-40-reviewer","generation":1,"delivery":"outbox:210"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-40","tree":"ACME-40","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-41-reviewer","generation":1,"delivery":"outbox:211"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-41","tree":"ACME-41","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-42-reviewer","generation":1,"delivery":"outbox:212"}
+{"time":"2001-03-05T09:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-42","tree":"ACME-42","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T10:00:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-43-planner","generation":1,"delivery":"outbox:128"}
+{"time":"2001-03-05T10:00:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-43","tree":"ACME-43","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T10:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-43-implementer","generation":1,"incarnation":"5e0c1ad5","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T10:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-43-implementer","generation":1,"delivery":"outbox:213"}
+{"time":"2001-03-05T11:00:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-43-implementer","generation":1,"delivery":"outbox:213"}
+{"time":"2001-03-05T11:00:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-43","tree":"ACME-43","from":"implementing","to":"testing","trigger":"implementation_ready","status":"testing"}
+{"time":"2001-03-05T11:00:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-43-tester","generation":1,"incarnation":"5e0c1ad6","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T11:00:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-43-tester","generation":1,"delivery":"outbox:214"}
+{"time":"2001-03-05T11:30:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-43-tester","generation":1,"delivery":"outbox:214"}
+{"time":"2001-03-05T11:30:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-43","tree":"ACME-43","from":"testing","to":"reviewing","trigger":"tester_passed","status":"needs_review"}
+{"time":"2001-03-05T11:30:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-43-reviewer","generation":1,"incarnation":"5e0c1ad7","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T11:30:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-43-reviewer","generation":1,"delivery":"outbox:215"}
+{"time":"2001-03-05T11:50:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-43-reviewer","generation":1,"delivery":"outbox:215"}
+{"time":"2001-03-05T11:50:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-43","tree":"ACME-43","from":"reviewing","to":"accepting","trigger":"review_approved","status":"needs_review"}
+{"time":"2001-03-05T11:50:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-43-architect","generation":1,"delivery":"outbox:216"}

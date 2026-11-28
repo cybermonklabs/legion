@@ -48,7 +48,37 @@
               ]
             }
           ],
-          "held": []
+          "held": [],
+          "slots": {
+            "inUse": 0,
+            "cap": 1,
+            "p0": 0,
+            "working": {
+              "count": 0
+            },
+            "stopped": {
+              "count": 0
+            },
+            "person": {
+              "count": 0
+            },
+            "issue": {
+              "count": 0
+            },
+            "idle": {
+              "count": 0
+            },
+            "waitOnlyForSlot": {
+              "count": 0
+            },
+            "startedWithoutSlot": {
+              "count": 0
+            },
+            "belowFirstWaiting": {
+              "count": 0
+            },
+            "line": "slots: 0 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 0 idle. Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+          }
         },
         "issues": {
           "LEGION-2": {
@@ -57,6 +87,8 @@
             "phase": "admitted",
             "status": "todo",
             "tree": "LEGION-2",
+            "rank": "B",
+            "rootRank": "B",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -94,6 +126,8 @@
             "phase": "done",
             "status": "done",
             "tree": "LEGION-3",
+            "rank": "C",
+            "rootRank": "C",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -392,7 +426,38 @@
               ]
             }
           ],
-          "held": []
+          "held": [],
+          "slots": {
+            "inUse": 1,
+            "cap": 1,
+            "p0": 0,
+            "working": {
+              "count": 0
+            },
+            "stopped": {
+              "count": 0
+            },
+            "person": {
+              "count": 0
+            },
+            "issue": {
+              "count": 0
+            },
+            "idle": {
+              "count": 1,
+              "oldest": "2026-11-18T16:01:00Z"
+            },
+            "waitOnlyForSlot": {
+              "count": 0
+            },
+            "startedWithoutSlot": {
+              "count": 0
+            },
+            "belowFirstWaiting": {
+              "count": 0
+            },
+            "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:01Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+          }
         },
         "issues": {
           "LEGION-1": {
@@ -401,6 +466,8 @@
             "phase": "admitted",
             "status": "in_progress",
             "tree": "LEGION-1",
+            "rank": "A",
+            "rootRank": "A",
             "treeRuns": true,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -414,7 +481,9 @@
             ],
             "slot": {
               "index": 0,
-              "admittedAt": "2026-11-18T16:01:00Z"
+              "admittedAt": "2026-11-18T16:01:00Z",
+              "state": "idle",
+              "since": "2026-11-18T16:01:00Z"
             },
             "treeMovedAt": "2026-11-18T16:01:00Z",
             "quietHours": 5.555555555555555e-7
@@ -425,6 +494,8 @@
             "phase": "admitted",
             "status": "todo",
             "tree": "LEGION-2",
+            "rank": "B",
+            "rootRank": "B",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -462,6 +533,8 @@
             "phase": "done",
             "status": "done",
             "tree": "LEGION-3",
+            "rank": "C",
+            "rootRank": "C",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -760,7 +833,37 @@
               ]
             }
           ],
-          "held": []
+          "held": [],
+          "slots": {
+            "inUse": 1,
+            "cap": 1,
+            "p0": 0,
+            "working": {
+              "count": 1
+            },
+            "stopped": {
+              "count": 0
+            },
+            "person": {
+              "count": 0
+            },
+            "issue": {
+              "count": 0
+            },
+            "idle": {
+              "count": 0
+            },
+            "waitOnlyForSlot": {
+              "count": 0
+            },
+            "startedWithoutSlot": {
+              "count": 0
+            },
+            "belowFirstWaiting": {
+              "count": 0
+            },
+            "line": "slots: 1 of 1 in use (0 P0): 1 working, 0 stopped, 0 person, 0 issue, 0 idle. Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+          }
         },
         "issues": {
           "LEGION-1": {
@@ -769,6 +872,8 @@
             "phase": "admitted",
             "status": "in_progress",
             "tree": "LEGION-1",
+            "rank": "A",
+            "rootRank": "A",
             "treeRuns": true,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -788,7 +893,8 @@
             ],
             "slot": {
               "index": 0,
-              "admittedAt": "2026-11-18T16:01:00Z"
+              "admittedAt": "2026-11-18T16:01:00Z",
+              "state": "working"
             },
             "treeMovedAt": "2026-11-18T16:01:00Z",
             "quietHours": 0.016667222222222222
@@ -799,6 +905,8 @@
             "phase": "admitted",
             "status": "todo",
             "tree": "LEGION-2",
+            "rank": "B",
+            "rootRank": "B",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -836,6 +944,8 @@
             "phase": "done",
             "status": "done",
             "tree": "LEGION-3",
+            "rank": "C",
+            "rootRank": "C",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -1134,7 +1244,37 @@
               ]
             }
           ],
-          "held": []
+          "held": [],
+          "slots": {
+            "inUse": 1,
+            "cap": 1,
+            "p0": 0,
+            "working": {
+              "count": 1
+            },
+            "stopped": {
+              "count": 0
+            },
+            "person": {
+              "count": 0
+            },
+            "issue": {
+              "count": 0
+            },
+            "idle": {
+              "count": 0
+            },
+            "waitOnlyForSlot": {
+              "count": 0
+            },
+            "startedWithoutSlot": {
+              "count": 0
+            },
+            "belowFirstWaiting": {
+              "count": 0
+            },
+            "line": "slots: 1 of 1 in use (0 P0): 1 working, 0 stopped, 0 person, 0 issue, 0 idle. Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+          }
         },
         "issues": {
           "LEGION-1": {
@@ -1143,6 +1283,8 @@
             "phase": "admitted",
             "status": "in_progress",
             "tree": "LEGION-1",
+            "rank": "A",
+            "rootRank": "A",
             "treeRuns": true,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -1162,7 +1304,8 @@
             ],
             "slot": {
               "index": 0,
-              "admittedAt": "2026-11-18T16:01:00Z"
+              "admittedAt": "2026-11-18T16:01:00Z",
+              "state": "working"
             },
             "treeMovedAt": "2026-11-18T16:01:00Z",
             "quietHours": 0.03333388888888889
@@ -1173,6 +1316,8 @@
             "phase": "admitted",
             "status": "todo",
             "tree": "LEGION-2",
+            "rank": "B",
+            "rootRank": "B",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -1210,6 +1355,8 @@
             "phase": "done",
             "status": "done",
             "tree": "LEGION-3",
+            "rank": "C",
+            "rootRank": "C",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -1508,7 +1655,38 @@
               ]
             }
           ],
-          "held": []
+          "held": [],
+          "slots": {
+            "inUse": 1,
+            "cap": 1,
+            "p0": 0,
+            "working": {
+              "count": 0
+            },
+            "stopped": {
+              "count": 0
+            },
+            "person": {
+              "count": 0
+            },
+            "issue": {
+              "count": 0
+            },
+            "idle": {
+              "count": 1,
+              "oldest": "2026-11-18T16:01:00Z"
+            },
+            "waitOnlyForSlot": {
+              "count": 0
+            },
+            "startedWithoutSlot": {
+              "count": 0
+            },
+            "belowFirstWaiting": {
+              "count": 0
+            },
+            "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:01Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+          }
         },
         "issues": {
           "LEGION-1": {
@@ -1517,6 +1695,8 @@
             "phase": "admitted",
             "status": "in_progress",
             "tree": "LEGION-1",
+            "rank": "A",
+            "rootRank": "A",
             "treeRuns": true,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -1536,7 +1716,9 @@
             ],
             "slot": {
               "index": 0,
-              "admittedAt": "2026-11-18T16:01:00Z"
+              "admittedAt": "2026-11-18T16:01:00Z",
+              "state": "idle",
+              "since": "2026-11-18T16:01:00Z"
             },
             "treeMovedAt": "2026-11-18T16:01:00Z",
             "quietHours": 0.050000555555555555
@@ -1547,6 +1729,8 @@
             "phase": "admitted",
             "status": "todo",
             "tree": "LEGION-2",
+            "rank": "B",
+            "rootRank": "B",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -1584,6 +1768,8 @@
             "phase": "done",
             "status": "done",
             "tree": "LEGION-3",
+            "rank": "C",
+            "rootRank": "C",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -1882,7 +2068,38 @@
               ]
             }
           ],
-          "held": []
+          "held": [],
+          "slots": {
+            "inUse": 1,
+            "cap": 1,
+            "p0": 0,
+            "working": {
+              "count": 0
+            },
+            "stopped": {
+              "count": 0
+            },
+            "person": {
+              "count": 1,
+              "oldest": "2026-11-18T16:05:00Z"
+            },
+            "issue": {
+              "count": 0
+            },
+            "idle": {
+              "count": 0
+            },
+            "waitOnlyForSlot": {
+              "count": 0
+            },
+            "startedWithoutSlot": {
+              "count": 0
+            },
+            "belowFirstWaiting": {
+              "count": 0
+            },
+            "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 1 person (oldest 2026-11-18T16:05Z), 0 issue, 0 idle. Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+          }
         },
         "issues": {
           "LEGION-1": {
@@ -1891,6 +2108,8 @@
             "phase": "awaiting_person",
             "status": "in_progress",
             "tree": "LEGION-1",
+            "rank": "A",
+            "rootRank": "A",
             "treeRuns": true,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -1910,7 +2129,9 @@
             ],
             "slot": {
               "index": 0,
-              "admittedAt": "2026-11-18T16:01:00Z"
+              "admittedAt": "2026-11-18T16:01:00Z",
+              "state": "person",
+              "since": "2026-11-18T16:05:00Z"
             },
             "waitingOn": {
               "kind": "ask",
@@ -1926,6 +2147,8 @@
             "phase": "admitted",
             "status": "todo",
             "tree": "LEGION-2",
+            "rank": "B",
+            "rootRank": "B",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -1963,6 +2186,8 @@
             "phase": "done",
             "status": "done",
             "tree": "LEGION-3",
+            "rank": "C",
+            "rootRank": "C",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -2262,7 +2487,38 @@
               ]
             }
           ],
-          "held": []
+          "held": [],
+          "slots": {
+            "inUse": 1,
+            "cap": 1,
+            "p0": 0,
+            "working": {
+              "count": 0
+            },
+            "stopped": {
+              "count": 0
+            },
+            "person": {
+              "count": 0
+            },
+            "issue": {
+              "count": 0
+            },
+            "idle": {
+              "count": 1,
+              "oldest": "2026-11-18T16:01:00Z"
+            },
+            "waitOnlyForSlot": {
+              "count": 0
+            },
+            "startedWithoutSlot": {
+              "count": 0
+            },
+            "belowFirstWaiting": {
+              "count": 0
+            },
+            "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:01Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+          }
         },
         "issues": {
           "LEGION-1": {
@@ -2271,6 +2527,8 @@
             "phase": "awaiting_person",
             "status": "in_progress",
             "tree": "LEGION-1",
+            "rank": "A",
+            "rootRank": "A",
             "treeRuns": true,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -2290,7 +2548,9 @@
             ],
             "slot": {
               "index": 0,
-              "admittedAt": "2026-11-18T16:01:00Z"
+              "admittedAt": "2026-11-18T16:01:00Z",
+              "state": "idle",
+              "since": "2026-11-18T16:01:00Z"
             },
             "waitingLine": {
               "place": 1,
@@ -2323,6 +2583,8 @@
             "phase": "admitted",
             "status": "todo",
             "tree": "LEGION-2",
+            "rank": "B",
+            "rootRank": "B",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -2360,6 +2622,8 @@
             "phase": "done",
             "status": "done",
             "tree": "LEGION-3",
+            "rank": "C",
+            "rootRank": "C",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -2659,7 +2923,38 @@
               ]
             }
           ],
-          "held": []
+          "held": [],
+          "slots": {
+            "inUse": 1,
+            "cap": 1,
+            "p0": 0,
+            "working": {
+              "count": 0
+            },
+            "stopped": {
+              "count": 0
+            },
+            "person": {
+              "count": 0
+            },
+            "issue": {
+              "count": 0
+            },
+            "idle": {
+              "count": 1,
+              "oldest": "2026-11-18T16:07:00Z"
+            },
+            "waitOnlyForSlot": {
+              "count": 0
+            },
+            "startedWithoutSlot": {
+              "count": 0
+            },
+            "belowFirstWaiting": {
+              "count": 0
+            },
+            "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:07Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+          }
         },
         "issues": {
           "LEGION-1": {
@@ -2668,6 +2963,8 @@
             "phase": "awaiting_person",
             "status": "in_progress",
             "tree": "LEGION-1",
+            "rank": "A",
+            "rootRank": "A",
             "treeRuns": true,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -2687,7 +2984,9 @@
             ],
             "slot": {
               "index": 0,
-              "admittedAt": "2026-11-18T16:07:00Z"
+              "admittedAt": "2026-11-18T16:07:00Z",
+              "state": "idle",
+              "since": "2026-11-18T16:07:00Z"
             },
             "waitingLine": {
               "place": 1,
@@ -2720,6 +3019,8 @@
             "phase": "admitted",
             "status": "todo",
             "tree": "LEGION-2",
+            "rank": "B",
+            "rootRank": "B",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -2757,6 +3058,8 @@
             "phase": "done",
             "status": "done",
             "tree": "LEGION-3",
+            "rank": "C",
+            "rootRank": "C",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -3056,7 +3359,38 @@
               ]
             }
           ],
-          "held": []
+          "held": [],
+          "slots": {
+            "inUse": 1,
+            "cap": 1,
+            "p0": 0,
+            "working": {
+              "count": 0
+            },
+            "stopped": {
+              "count": 0
+            },
+            "person": {
+              "count": 0
+            },
+            "issue": {
+              "count": 0
+            },
+            "idle": {
+              "count": 1,
+              "oldest": "2026-11-18T16:07:00Z"
+            },
+            "waitOnlyForSlot": {
+              "count": 0
+            },
+            "startedWithoutSlot": {
+              "count": 0
+            },
+            "belowFirstWaiting": {
+              "count": 0
+            },
+            "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:07Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+          }
         },
         "issues": {
           "LEGION-1": {
@@ -3065,6 +3399,8 @@
             "phase": "awaiting_person",
             "status": "in_progress",
             "tree": "LEGION-1",
+            "rank": "A",
+            "rootRank": "A",
             "treeRuns": true,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -3084,7 +3420,9 @@
             ],
             "slot": {
               "index": 0,
-              "admittedAt": "2026-11-18T16:07:00Z"
+              "admittedAt": "2026-11-18T16:07:00Z",
+              "state": "idle",
+              "since": "2026-11-18T16:07:00Z"
             },
             "waitingLine": {
               "place": 1,
@@ -3117,6 +3455,8 @@
             "phase": "admitted",
             "status": "todo",
             "tree": "LEGION-2",
+            "rank": "B",
+            "rootRank": "B",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -3153,6 +3493,7 @@
             "generation": 1,
             "phase": "done",
             "status": "done",
+            "rank": "C",
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "workers": {}
@@ -3444,7 +3785,38 @@
               ]
             }
           ],
-          "held": []
+          "held": [],
+          "slots": {
+            "inUse": 1,
+            "cap": 1,
+            "p0": 0,
+            "working": {
+              "count": 0
+            },
+            "stopped": {
+              "count": 0
+            },
+            "person": {
+              "count": 0
+            },
+            "issue": {
+              "count": 0
+            },
+            "idle": {
+              "count": 1,
+              "oldest": "2026-11-18T16:07:00Z"
+            },
+            "waitOnlyForSlot": {
+              "count": 0
+            },
+            "startedWithoutSlot": {
+              "count": 0
+            },
+            "belowFirstWaiting": {
+              "count": 0
+            },
+            "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:07Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+          }
         },
         "issues": {
           "LEGION-1": {
@@ -3453,6 +3825,8 @@
             "phase": "awaiting_person",
             "status": "in_progress",
             "tree": "LEGION-1",
+            "rank": "A",
+            "rootRank": "A",
             "treeRuns": true,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -3472,7 +3846,9 @@
             ],
             "slot": {
               "index": 0,
-              "admittedAt": "2026-11-18T16:07:00Z"
+              "admittedAt": "2026-11-18T16:07:00Z",
+              "state": "idle",
+              "since": "2026-11-18T16:07:00Z"
             },
             "waitingLine": {
               "place": 1,
@@ -3505,6 +3881,8 @@
             "phase": "admitted",
             "status": "todo",
             "tree": "LEGION-2",
+            "rank": "B",
+            "rootRank": "B",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -3541,6 +3919,7 @@
             "generation": 1,
             "phase": "done",
             "status": "done",
+            "rank": "C",
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "workers": {}
@@ -3846,7 +4225,38 @@
               ]
             }
           ],
-          "held": []
+          "held": [],
+          "slots": {
+            "inUse": 1,
+            "cap": 1,
+            "p0": 0,
+            "working": {
+              "count": 0
+            },
+            "stopped": {
+              "count": 0
+            },
+            "person": {
+              "count": 0
+            },
+            "issue": {
+              "count": 0
+            },
+            "idle": {
+              "count": 1,
+              "oldest": "2026-11-18T16:07:00Z"
+            },
+            "waitOnlyForSlot": {
+              "count": 0
+            },
+            "startedWithoutSlot": {
+              "count": 0
+            },
+            "belowFirstWaiting": {
+              "count": 0
+            },
+            "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:07Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+          }
         },
         "issues": {
           "LEGION-1": {
@@ -3855,6 +4265,8 @@
             "phase": "awaiting_person",
             "status": "in_progress",
             "tree": "LEGION-1",
+            "rank": "A",
+            "rootRank": "A",
             "treeRuns": true,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -3874,7 +4286,9 @@
             ],
             "slot": {
               "index": 0,
-              "admittedAt": "2026-11-18T16:07:00Z"
+              "admittedAt": "2026-11-18T16:07:00Z",
+              "state": "idle",
+              "since": "2026-11-18T16:07:00Z"
             },
             "waitingLine": {
               "place": 1,
@@ -3907,6 +4321,8 @@
             "phase": "admitted",
             "status": "todo",
             "tree": "LEGION-2",
+            "rank": "B",
+            "rootRank": "B",
             "treeRuns": false,
             "repo": "acme/widgets",
             "defaultBranch": "main",
@@ -3943,6 +4359,7 @@
             "generation": 1,
             "phase": "done",
             "status": "done",
+            "rank": "C",
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "workers": {}

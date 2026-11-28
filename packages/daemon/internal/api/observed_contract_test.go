@@ -18,10 +18,11 @@ func observedContracts() []int {
 }
 
 // observedMembers is the part of a whole state body the observed view carries, read from the
-// whole body's own JSON: the daemon block, the settings and the admission block whole, and each
-// issue's `key`, `phase`, `tree`, `slot.index`, `waitingOn`, `architect.state` and each worker's
-// `claim.state`, each absent where the whole body's is absent, and `workers` absent where the whole
-// body's is empty (api.ObservedIssue).
+// whole body's own JSON: the daemon block, the settings and the admission block whole but for
+// `admission.slots`, the slots reading, which only the whole state serves, and each issue's `key`,
+// `phase`, `tree`, `slot.index`, `waitingOn`, `architect.state` and each worker's `claim.state`,
+// each absent where the whole body's is absent, and `workers` absent where the whole body's is
+// empty (api.ObservedIssue).
 func observedMembers(t *testing.T, body []byte) map[string]any {
 	t.Helper()
 	var whole map[string]any
@@ -53,14 +54,18 @@ func observedMembers(t *testing.T, body []byte) map[string]any {
 		}
 		issues[key] = member
 	}
+	if admission, carried := whole["admission"].(map[string]any); carried {
+		delete(admission, "slots")
+	}
 	return map[string]any{
 		"daemon": whole["daemon"], "settings": whole["settings"], "admission": whole["admission"], "issues": issues,
 	}
 }
 
 // observedPart is state with only the members the observed view carries: its daemon block, its
-// settings, its admission block, and each issue's key, phase, tree, wait, slot index, architect's
-// claim state and each worker's claim state. It is the narrowest State an observed read can answer
+// settings, its admission block but for its slots reading (Admission.Slots, which only the whole
+// state serves), and each issue's key, phase, tree, wait, slot index, architect's claim state and
+// each worker's claim state. It is the narrowest State an observed read can answer
 // (StateSource.ObservedState), so a view served from it is read from those members and nothing else.
 func observedPart(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
@@ -80,7 +85,9 @@ func observedPart(state State) State {
 		}
 		issues[key] = issue
 	}
-	return State{Daemon: state.Daemon, Settings: state.Settings, Admission: state.Admission, Issues: issues}
+	admission := state.Admission
+	admission.Slots = nil
+	return State{Daemon: state.Daemon, Settings: state.Settings, Admission: admission, Issues: issues}
 }
 
 // The observed view follows the whole state's rule (stateSeqContract's entry, shaping.go's

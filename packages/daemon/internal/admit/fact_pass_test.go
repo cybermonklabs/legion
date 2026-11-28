@@ -192,6 +192,34 @@ func TestACatchUpReleaseAPauseHeldBackIsOwedThePassAfterTheResume(t *testing.T) 
 	assertWaiting(t, pool, nil)
 }
 
+// A fact named by UsePassFacts runs the pass whatever its transaction wrote, and a fact not named
+// by it keeps the pass rule: with no record written, the named fact reads the project's live
+// records once and admits the waiting root, while another fact reads nothing.
+func TestARegisteredPassFactRunsThePassWithNoRecordWritten(t *testing.T) {
+	pool := migratedPool(t)
+	admission, reads := passCounted(t, 1)
+	seedWaiting(t, pool, "LEGION-ROOT", "A")
+	admission.UsePassFacts(func(fact intake.Fact) bool {
+		_, ok := fact.(intake.BasePush)
+		return ok
+	})
+
+	applyAsTheDaemon(t, pool, admission, "github", "push", intake.Push{Repo: "acme/widgets", Branch: "legion/LEGION-UNRECORDED",
+		Before: "1111111", After: "2222222", Pusher: "someone", Sender: "someone"}, admission.engine)
+	if reads.live != 0 {
+		t.Fatalf("the unnamed push read the project's live records %d times, want 0", reads.live)
+	}
+	assertSlots(t, pool, nil)
+
+	applyAsTheDaemon(t, pool, admission, "github", "base-push", intake.BasePush{Repo: "acme/widgets", Branch: "main",
+		After: "3333333"}, admission.engine)
+	if reads.live != 1 {
+		t.Fatalf("the registered pass fact read the project's live records %d times, want 1", reads.live)
+	}
+	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-ROOT", Index: 0, AdmittedAt: fixedNow}})
+	assertWaiting(t, pool, nil)
+}
+
 // pushRecorded says whether the record of issue's pull request holds a push that left its branch
 // at sha.
 func pushRecorded(t *testing.T, pool *pgxpool.Pool, issue, sha string) bool {

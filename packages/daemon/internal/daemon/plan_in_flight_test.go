@@ -364,7 +364,7 @@ func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, sta
 	exec("the design gate of "+key, `insert into design_gates (issue, artifact_id, latest_version, approved_version, ever_opened, step)
 		values ($1, $2, 1, 1, true, 'spec')`, key, "spec-"+key)
 	order := slices.Index(phase.Order, seeded)
-	if record.PhaseKeepsSlot(seeded) {
+	if record.MainRule.PhaseKeepsSlot(seeded) {
 		exec("the slot of "+key, `insert into slots (issue, index, admitted_at) values ($1, $2, now() - interval '1 day')`,
 			key, slices.Index(inFlightTitles, issue.title)+1)
 	}

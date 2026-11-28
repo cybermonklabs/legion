@@ -339,8 +339,9 @@ func TestIssueRecordGolden(t *testing.T) {
 
 // The observed view's golden (observed-state.json): what `GET /legion/v1/state?view=observed`
 // answers over the state state.json holds (observedOf), the same daemon block, settings and
-// admission block, and each issue with the members Dispatch observes (ObservedIssue), so
-// `legion-api.test.ts` holds the observed schema to the body a deployment with this state serves.
+// admission block but for the admission's `slots`, which only the full state serves, and each
+// issue with the members Dispatch observes (ObservedIssue), so `legion-api.test.ts` holds the
+// observed schema to the body a deployment with this state serves.
 func TestObservedStateGolden(t *testing.T) {
 	stateGolden(t, "observed-state.json", observedOf(populatedState(t)))
 }

@@ -42,7 +42,7 @@ func TestWaitingLinePartAndKeyReachTheProjectedView(t *testing.T) {
 			lineIssue("LEGION-11", "LEGION-10", "todo", phase.Admitted, "N"),
 			// The member that owes its worker a start stands at testing and not in accepting,
 			// retro or merging, which need none of the cap's slots and so stand in no line
-			// (record.PhaseKeepsSlot), as internal/record's own fixture has it.
+			// (record.SlotRule.PhaseKeepsSlot), as internal/record's own fixture has it.
 			lineIssue("LEGION-12", "LEGION-10", "in_progress", phase.Testing, "O"),
 			p0Root,
 			answered,

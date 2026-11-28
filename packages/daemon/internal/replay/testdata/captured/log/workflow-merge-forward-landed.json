@@ -1,0 +1,16 @@
+[
+  {
+    "timestamp": "2026-11-21T19:34:32.405520633Z",
+    "jsonPayload": {
+      "head": "16b96e0b0f194a3ab167b848bda3d4ade635e5a8",
+      "issue": "ACME-1",
+      "landed": "6a076c1c6cde9960725a5a23689bab9aa3446a97",
+      "level": "INFO",
+      "msg": "workflow: the merge forward landed",
+      "phase": "implementing",
+      "pullRequest": 3513,
+      "time": "2026-11-21T19:34:32.405321293Z",
+      "tree": "ACME-1"
+    }
+  }
+]

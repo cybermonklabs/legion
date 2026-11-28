@@ -735,9 +735,10 @@ func (r *admissionStateRig) publishedBlocks(t *testing.T) []any {
 	return blocks
 }
 
-// servedBlock is the `admission` GET /legion/v1/state serves now, decoded, without its `p0Bound`:
-// the route reads the P0 bound in force beside the judgement (api.P0BoundStateTx), and no state
-// event carries it (record.AdmissionBlock).
+// servedBlock is the `admission` GET /legion/v1/state serves now, decoded, without its `p0Bound`
+// and its `slots`: the route reads the P0 bound in force beside the judgement
+// (api.P0BoundStateTx), and the slots reading is the full state's alone, for `legion state`, so no
+// state event carries either (record.AdmissionBlock).
 func (r *admissionStateRig) servedBlock(t *testing.T) any {
 	t.Helper()
 	body := r.getState(t)
@@ -752,7 +753,11 @@ func (r *admissionStateRig) servedBlock(t *testing.T) any {
 	if _, served := admission["p0Bound"]; !served {
 		t.Fatalf("the state's admission %s carries no p0Bound, so leaving it out proves nothing", state["admission"])
 	}
+	if _, served := admission["slots"]; !served {
+		t.Fatalf("the state's admission %s carries no slots, so leaving them out proves nothing", state["admission"])
+	}
 	delete(admission, "p0Bound")
+	delete(admission, "slots")
 	block, err := json.Marshal(admission)
 	if err != nil {
 		t.Fatalf("encode the state's admission: %v", err)

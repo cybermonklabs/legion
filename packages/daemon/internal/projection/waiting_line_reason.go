@@ -1,7 +1,8 @@
 // Package projection: this file holds the waiting line's own sentence — what every member of
 // the line is told about its place in it (api.WaitingLineView.Reason) — and the two helpers
 // that count in English for it. The fill of the line is its one caller (Project, project.go),
-// and waiting_line_reason_test.go beside it renders the entries themselves and reads no
+// through waitingLineReasonUnder under the rule the state is read under, and
+// waiting_line_reason_test.go beside it renders the entries themselves and reads no
 // database. The sentences of `why` are the file next to it (why.go).
 package projection
 
@@ -33,8 +34,26 @@ import (
 // issue (record.LineWaitingOnIssue) is told it waits its turn (waitsItsTurn) only while its
 // entry still names a wait (record.LineEntry.Waits); with none left, the sentence says the wait
 // has ended and ends on the clause the rest of the returned part reads.
+//
+// This is the sentence under the daemon's own rule, which bands the line by priority; the fill
+// renders it under the rule the state is read under (waitingLineReasonUnder).
 func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string {
-	placed, band := priorityPlaced(entry), bandWords(entry.Priority)
+	return waitingLineReasonUnder(true, entry, partLength, otherPart)
+}
+
+// waitingLineReasonUnder is waitingLineReason under a rule that bands the line by priority, or
+// under one that does not (banded, record.SlotRule.PriorityFirst). The daemon's own rule bands
+// it, and the sentence names the priority that placed the member and counts within its band,
+// which is waitingLineReason. Under a rule that does not, no priority placed a member
+// (record.LineEntry.Priority is NoPriority on every entry), so the sentence names none and counts
+// within the member's part of the whole line.
+func waitingLineReasonUnder(banded bool, entry record.LineEntry, partLength, otherPart int) string {
+	// placed opens the place clause and band follows each count, each with the space that joins
+	// it, so a sentence under a rule that bands nothing reads without either.
+	placed, band := "", ""
+	if banded {
+		placed, band = priorityPlaced(entry)+" ", " "+bandWords(entry.Priority)
+	}
 	switch entry.Part {
 	case record.PartReturned:
 		came := ""
@@ -60,7 +79,7 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 			came += ", and that wait has ended"
 		}
 		// The priority sentence opens the place clause, so every return below carries it.
-		place := fmt.Sprintf("%s It is %s of %s %s whose work came back",
+		place := fmt.Sprintf("%sIt is %s of %s%s whose work came back",
 			placed, englishOrdinal(entry.PartPlace), issuesCounted(partLength), band)
 		if entry.Holds {
 			return came + ". " + place + "." + holdsItsSlot
@@ -77,7 +96,7 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 		}
 		// Within its band the returned part goes first; every band of a higher priority goes
 		// before it, so the clause names what it goes before and nothing more.
-		return fmt.Sprintf("%s. %s, and %s the free slots before the issues %s that have not started.", came, place, takes, band)
+		return fmt.Sprintf("%s. %s, and %s the free slots before the issues%s that have not started.", came, place, takes, band)
 	case record.PartStarting:
 		rank := ""
 		switch entry.Kind {
@@ -92,7 +111,7 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 		if partLength == 1 {
 			started = "has"
 		}
-		place := fmt.Sprintf("%s It is %s of %s %s that %s not started, by %s",
+		place := fmt.Sprintf("%sIt is %s of %s%s that %s not started, by %s",
 			placed, englishOrdinal(entry.PartPlace), issuesCounted(partLength), band, started, rank)
 		switch {
 		case entry.Holds:
@@ -106,7 +125,7 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 		}
 		// The returned part of its own band alone stands ahead of it there: otherPart counts
 		// that band's returned part and no other band's.
-		return fmt.Sprintf("It has not started. %s, and %s %s whose work came back %s ahead of all of them.",
+		return fmt.Sprintf("It has not started. %s, and %s%s whose work came back %s ahead of all of them.",
 			place, issuesCounted(otherPart), band, stand)
 	}
 	// Every entry the line builds stands in one of the two parts, set where the line places it

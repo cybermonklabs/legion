@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-11-21T04:55:47.676470347Z",
+    "jsonPayload": {
+      "cap": 157,
+      "issue": "ACME-14",
+      "level": "INFO",
+      "msg": "admission: slot taken",
+      "slots": 157,
+      "time": "2026-11-21T04:55:47.676326318Z"
+    }
+  }
+]

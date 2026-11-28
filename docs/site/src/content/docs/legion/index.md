@@ -62,6 +62,8 @@ flowchart LR
   and merge its pull request, and read what each Dispatch status means.
 - [Running Legion](/legion/legion/running-legion/): what an operator needs to run the Legion daemon
   on Kubernetes, how to configure, start, upgrade and watch it.
+- [Replaying a recorded window](/legion/legion/replay/): a developer's tool that replays a daemon's
+  recorded window under a slot rule you name, and what its measures and assumptions mean.
 - [Troubleshooting](/legion/legion/troubleshooting/): the failures Legion reports, and the command
   that shows each one.
 - [Walkthrough](/legion/legion/walkthrough/): an issue going through Legion, end to end.

@@ -115,7 +115,7 @@ func (r *outbox) endMergeForwardAsk(ctx context.Context, row record.OutboxRow, p
 			return err
 		}
 		launch = 0
-		if held := r.supervisedClaim(token); !claimEnded(held.State) {
+		if held := r.supervisedClaim(token); !record.ClaimEnded(held.State) {
 			launch = held.Generation
 		}
 		var err error

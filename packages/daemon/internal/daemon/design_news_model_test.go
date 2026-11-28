@@ -625,13 +625,13 @@ func (m *newsModel) storedClaims() ([]supervise.Claim, map[claim.Token]*supervis
 // toldRows is every told row of the tree as every reader reads it (record.Store.TreeTold), by its
 // issue and audience: a row the record does not hold reads as the zero row, as newsPathRig.toldOf
 // answers it. A check and a trace line each read it once.
-func (m *newsModel) toldRows() map[toldKey]record.DesignTold {
+func (m *newsModel) toldRows() map[record.ToldKey]record.DesignTold {
 	m.t.Helper()
-	rows := map[toldKey]record.DesignTold{}
+	rows := map[record.ToldKey]record.DesignTold{}
 	m.r.inTx(func(tx pgx.Tx) error {
 		told, err := m.r.records.TreeTold(m.r.ctx, tx, m.r.root)
 		for _, row := range told {
-			rows[toldKey{row.Issue, row.Audience}] = row
+			rows[record.ToldKey{Issue: row.Issue, Audience: row.Audience}] = row
 		}
 		return err
 	})
@@ -758,7 +758,7 @@ func (m *newsModel) state() string {
 	rows := m.toldRows()
 	parts := []string{fmt.Sprintf("approved %d", m.latest)}
 	for _, row := range m.rows() {
-		told := rows[toldKey{row.issue, row.audience}]
+		told := rows[record.ToldKey{Issue: row.issue, Audience: row.audience}]
 		took, known := told.Took(record.DesignStepSpec)
 		links, _ := m.standing(row, stored)
 		parts = append(parts, fmt.Sprintf("%s took %s owed %t (opening %d); run %d base %d final %v standing %v",

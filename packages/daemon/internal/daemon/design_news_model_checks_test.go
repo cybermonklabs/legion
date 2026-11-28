@@ -219,7 +219,7 @@ func (m *newsModel) check() {
 	told := m.toldRows()
 	ambiguous := false
 	for _, row := range m.rows() {
-		if m.checkRow(row, stored, told[toldKey{row.issue, row.audience}]) {
+		if m.checkRow(row, stored, told[record.ToldKey{Issue: row.issue, Audience: row.audience}]) {
 			ambiguous = true
 		}
 	}

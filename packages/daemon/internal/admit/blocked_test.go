@@ -644,12 +644,12 @@ func TestAChildThatRanLabelledAsAnOrphanRootIsCheckedUnlessItCarriesItsRun(t *te
 			assertSlots(t, pool, nil)
 			assertWaiting(t, pool, []string{child})
 			inTx(t, pool, func(tx pgx.Tx) {
-				_, blocked, _, err := admission.tickRows(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) })
+				read, err := admission.tickRead(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) })
 				if err != nil {
 					t.Fatalf("read what is blocked: %v", err)
 				}
-				if want := []record.BlockedIssue{{Issue: child, BlockedBy: []string{blocker}}}; !reflect.DeepEqual(blocked, want) {
-					t.Fatalf("blocked = %#v, want %#v", blocked, want)
+				if want := []record.BlockedIssue{{Issue: child, BlockedBy: []string{blocker}}}; !reflect.DeepEqual(read.blocked, want) {
+					t.Fatalf("blocked = %#v, want %#v", read.blocked, want)
 				}
 			})
 
@@ -775,12 +775,12 @@ func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 	assertBlocked := func(when string, want []record.BlockedIssue) {
 		t.Helper()
 		inTx(t, pool, func(tx pgx.Tx) {
-			_, got, _, err := admission.tickRows(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) })
+			read, err := admission.tickRead(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) })
 			if err != nil {
 				t.Fatalf("read what is blocked %s: %v", when, err)
 			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("blocked %s = %#v, want %#v", when, got, want)
+			if !reflect.DeepEqual(read.blocked, want) {
+				t.Fatalf("blocked %s = %#v, want %#v", when, read.blocked, want)
 			}
 		})
 	}
@@ -822,7 +822,7 @@ func (s *countingStore) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []
 // Promotion judges every candidate from one read of the project's mirror, however many candidates
 // the waiting line holds: the rows are read before the loop, not inside it. The tick the test
 // drives judges the line once and no more — promotion's own pass, whose judgement the tick's wake
-// reads at the pass's end (Admission.tickRows, finalJudgement) since the pass wrote nothing a
+// reads at the pass's end (Admission.tickRead, finalJudgement) since the pass wrote nothing a
 // judgement reads after it — whether or not a controller is registered to be told, so it reads
 // the mirror once and never once for each candidate, which three blocked roots would show.
 func TestPromotionReadsTheMirrorOnceWhateverTheNumberOfBlockedRoots(t *testing.T) {

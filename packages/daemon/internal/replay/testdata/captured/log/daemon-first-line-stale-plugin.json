@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-11-21T01:54:55.884632109Z",
+    "jsonPayload": {
+      "level": "INFO",
+      "msg": "daemon: stale-plugin relaunches install",
+      "piEnvoy": "17.44.2",
+      "piLegion": "19.41.3",
+      "source": "binary",
+      "time": "2026-11-21T01:54:55.881009799Z"
+    }
+  }
+]

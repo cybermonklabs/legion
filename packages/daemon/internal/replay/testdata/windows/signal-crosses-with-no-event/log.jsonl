@@ -1,0 +1,20 @@
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"daemon: opening the store; a connection error that the next attempt can clear is tried again","attempts":10,"attemptLimit":"10s","firstWait":"1s","longestWait":"16s","longestTotal":"3m15s"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-1","slots":1,"cap":3}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-1-architect","generation":1,"incarnation":"5e0c1a01","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:10:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-1-architect","generation":1,"delivery":"outbox:1"}
+{"time":"2001-03-05T09:25:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-1-architect","generation":1,"delivery":"outbox:1"}
+{"time":"2001-03-05T09:25:00Z","level":"INFO","msg":"workflow: design gate registered","issue":"ACME-1","artifact":"00000000-0000-4000-8000-0000000000a1","step":"spec","version":1,"open":true,"changes_requested":false,"gated_steps":[]}
+{"time":"2001-03-05T09:25:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-1","tree":"ACME-1","from":"admitted","to":"planning","trigger":"gate_opened","status":"in_progress"}
+{"time":"2001-03-05T09:25:00Z","level":"INFO","msg":"workflow: the root of this tree takes its slot and starts its own first phase","issue":"ACME-1"}
+{"time":"2001-03-05T09:25:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-1-planner","generation":1,"incarnation":"5e0c1a04","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:25:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-1-planner","generation":1,"delivery":"outbox:2"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-acme-acme-1-planner","generation":1,"delivery":"outbox:2"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"workflow: phase changed","issue":"ACME-1","tree":"ACME-1","from":"planning","to":"implementing","trigger":"planner_completed","status":"in_progress"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-1-implementer","generation":1,"incarnation":"5e0c1a05","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:40:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-1-implementer","generation":1,"delivery":"outbox:3"}
+{"time":"2001-03-05T10:31:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-2","slots":2,"cap":3}
+{"time":"2001-03-05T10:31:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-2-architect","generation":1,"incarnation":"5e0c1a02","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T10:31:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-2-architect","generation":1,"delivery":"outbox:4"}
+{"time":"2001-03-05T10:31:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-3","slots":3,"cap":3}
+{"time":"2001-03-05T10:31:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-3-architect","generation":1,"incarnation":"5e0c1a03","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T10:31:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-3-architect","generation":1,"delivery":"outbox:5"}

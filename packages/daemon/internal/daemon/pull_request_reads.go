@@ -116,8 +116,9 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // applies an intake.PullRequestMergeability fact: GitHub's lazily computed mergeability, its own
 // merge state for the head, the base it names - this read is the one that records the base, both
 // for a pull request whose record has none and as the answer to a push onto its base, which
-// GitHub recomputed the mergeability for and sent no event about - and the moment the answer was
-// in hand (intake.PullRequestMergeability.ReadAt).
+// GitHub recomputed the mergeability for and sent no event about - the base commit it names, which
+// the workflow logs with the read and records nowhere (intake.PullRequestMergeability.BaseSHA),
+// and the moment the answer was in hand (intake.PullRequestMergeability.ReadAt).
 //
 // A read GitHub answered `mergeable: false` (record.MergeabilityConflicting) also reads the base's
 // rules for its required status checks (readBaseRules), with github, the implement App's client
@@ -180,7 +181,7 @@ func (w *workflowRuntime) applyMergeability(ctx context.Context, github githubre
 		pull, readAt = w.readWholeAnswer(ctx, pr, pull, readAt)
 	}
 	base, mergeable, state := pull.Base.Ref, pull.mergeability(), pull.mergeState()
-	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, HeadSHA: pull.Head.SHA,
+	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, BaseSHA: pull.Base.SHA, HeadSHA: pull.Head.SHA,
 		Mergeable: mergeable, MergeState: state, ReviewsRequested: pull.reviewsRequested(), ReadAt: readAt}
 	if pull.batch != nil {
 		fact.HeadChecks = pull.batch.checks

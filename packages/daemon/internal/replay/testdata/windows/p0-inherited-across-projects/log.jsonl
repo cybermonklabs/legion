@@ -1,0 +1,4 @@
+{"time":"2001-03-05T09:00:00Z","level":"INFO","msg":"daemon: opening the store; a connection error that the next attempt can clear is tried again","attempts":10,"attemptLimit":"10s","firstWait":"1s","longestWait":"16s","longestTotal":"3m15s"}
+{"time":"2001-03-05T09:05:00Z","level":"INFO","msg":"admission: slot taken","issue":"ACME-1","slots":1,"cap":1}
+{"time":"2001-03-05T09:05:00Z","level":"INFO","msg":"supervise: launched","claim":"legion-acme-acme-1-architect","generation":1,"incarnation":"5e0c1a01","resumed":false,"resumedBy":"none"}
+{"time":"2001-03-05T09:05:00Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-acme-acme-1-architect","generation":1,"delivery":"outbox:1"}

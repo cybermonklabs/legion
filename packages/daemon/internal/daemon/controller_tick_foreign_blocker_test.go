@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -20,7 +21,7 @@ import (
 
 // foreignProject is the Dispatch project of the blocker these tests wait on, which is not the
 // daemon's own ("CAPTURE"): a key names its project (`<PROJECT>-<number>`), as the daemon reads
-// it everywhere (workflowRuntime.ownDispatchKey).
+// it everywhere (blockers.OwnKey).
 const (
 	foreignProject = "OTHER"
 	foreignBlocker = "OTHER-7"
@@ -44,8 +45,8 @@ func TestTheTurnReadsABlockerOutsideTheProject(t *testing.T) {
 		// The project's own waiting set, far enough above the bound that the turn lists the
 		// project instead of reading each of those keys, and the listing says they are all open
 		// so that nothing of this project competes for the one slot.
-		seedBlockedRoots(t, pool, blockerReadFanout)
-		for i := 1; i <= blockerReadFanout; i++ {
+		seedBlockedRoots(t, pool, blockers.ReadFanout)
+		for i := 1; i <= blockers.ReadFanout; i++ {
 			client.summaries = append(client.summaries,
 				dispatch.IssueSummary{Key: ownBlocker(i), Status: "in_progress", LastSeq: 1})
 		}

@@ -1,0 +1,2 @@
+{"time":"2001-03-05T09:40:00Z","pod":"legion-acme-acme-1","text":"launcher: memory guard: ended pid=100 role=architect size=9000000000 reading=9000000000 counter=1 limit=8589934592"}
+{"time":"2001-03-05T09:50:00Z","pod":"legion-acme-acme-1","text":"launcher: memory guard: ended pid=101 role=architect size=9000000000 reading=9000000000 counter=1 limit=8589934592"}

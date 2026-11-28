@@ -127,11 +127,13 @@ const (
 // or a report asked for — the tester's fail, a review's request for changes, a role's or the
 // architect's backward move — ends it failed and returns the work to the step the issue moves
 // into, which the record names. Every other move ends the step passed and returns nowhere. A head
-// that conflicts with its base moves no issue (dispatch://INFRA-4374), so it ends no step: the
-// run goes on through the merge forward.
+// that conflicts with its base moves no issue under the daemon's own slot rule
+// (#4464), so it ends no step: the run goes on through the merge forward. Under a
+// rule whose conflicting head moves back (conflictMovesBack: TriggerConflict, TriggerChecksRed)
+// that move is a move back like the others, and ends the step failed as they do.
 func endOf(trigger TriggerKind) (result StepResult, returns bool) {
 	switch trigger {
-	case TriggerTesterFailed, TriggerReviewRejected, TriggerBackward:
+	case TriggerTesterFailed, TriggerReviewRejected, TriggerBackward, TriggerConflict, TriggerChecksRed:
 		return ResultFailed, true
 	}
 	return ResultPassed, false

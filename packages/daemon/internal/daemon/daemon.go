@@ -4018,10 +4018,17 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if s.wakes != nil {
 		held = s.wakes()
 	}
+	// The slots reading names the cap beside the slots in use, and reads each holder's claims
+	// through the statement the tick's own reading reads them through, the one that holds when a
+	// suspended or a retired claim stopped (record.Store.HolderClaims).
+	holderClaims, err := records.HolderClaims(ctx, tx, s.projectToken)
+	if err != nil {
+		return api.State{}, nil, err
+	}
 	state, err := projection.Project(ctx, projection.Inputs{
 		Tx: tx, Store: records, Project: s.project, Cap: s.admissionCap, Steps: s.gatedSteps,
 		Experiments: s.experiments, Claims: claims, Stranded: stranded, Reports: s.reports(),
-		Wakes: api.WakesWaitingOf(held, paced), Now: now,
+		Wakes: api.WakesWaitingOf(held, paced), Now: now, HolderClaims: holderClaims,
 	})
 	if err != nil {
 		return api.State{}, nil, err
@@ -4155,7 +4162,7 @@ func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []sup
 	observed.Daemon = s.daemonInfo(version, boots, firstBootAt, published)
 	observed.Settings = s.settings
 	// The observed view's admission block is the full state's (api.ObservedState), the P0 bound in
-	// force included.
+	// force included, and its slots reading alone left out: only the full state serves that.
 	if observed.Admission.P0Bound, err = s.p0BoundView(ctx, tx); err != nil {
 		return api.State{}, nil, err
 	}

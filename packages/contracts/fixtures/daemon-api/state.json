@@ -83,7 +83,40 @@
           "LEGION-208"
         ]
       }
-    ]
+    ],
+    "slots": {
+      "inUse": 6,
+      "cap": 6,
+      "p0": 1,
+      "working": {
+        "count": 2
+      },
+      "stopped": {
+        "count": 3,
+        "oldest": "2126-09-19T10:20:00Z"
+      },
+      "person": {
+        "count": 0
+      },
+      "issue": {
+        "count": 0
+      },
+      "idle": {
+        "count": 1,
+        "oldest": "2126-09-22T08:01:30Z"
+      },
+      "waitOnlyForSlot": {
+        "count": 0
+      },
+      "startedWithoutSlot": {
+        "count": 0
+      },
+      "belowFirstWaiting": {
+        "count": 5,
+        "first": "LEGION-211"
+      },
+      "line": "slots: 6 of 6 in use (1 P0): 2 working, 3 stopped (oldest 2126-09-19T10:20Z), 0 person, 0 issue, 1 idle (oldest 2126-09-22T08:01Z). Started work without a slot: 0 wait only for a slot, 0 in all. 5 holders rank below LEGION-211, which waits for a slot."
+    }
   },
   "issues": {
     "LEGION-207": {
@@ -340,7 +373,8 @@
       ],
       "slot": {
         "index": 0,
-        "admittedAt": "2126-09-21T18:42:11Z"
+        "admittedAt": "2126-09-21T18:42:11Z",
+        "state": "working"
       },
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
@@ -468,7 +502,8 @@
       ],
       "slot": {
         "index": 1,
-        "admittedAt": "2126-09-21T19:05:26Z"
+        "admittedAt": "2126-09-21T19:05:26Z",
+        "state": "stopped"
       },
       "why": {
         "state": "claim_stopped",
@@ -493,6 +528,8 @@
       "phase": "implementing",
       "status": "todo",
       "tree": "LEGION-211",
+      "rank": "00011",
+      "rootRank": "00011",
       "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
@@ -594,7 +631,9 @@
       ],
       "slot": {
         "index": 2,
-        "admittedAt": "2126-09-22T08:01:30Z"
+        "admittedAt": "2126-09-22T08:01:30Z",
+        "state": "idle",
+        "since": "2126-09-22T08:01:30Z"
       },
       "waitingLine": {
         "place": 1,
@@ -665,6 +704,8 @@
       "phase": "admitted",
       "status": "todo",
       "tree": "LEGION-215",
+      "rank": "00015",
+      "rootRank": "00015",
       "treeRuns": false,
       "repo": "sjawhar/legion",
       "defaultBranch": "main",
@@ -694,6 +735,8 @@
       "phase": "admitted",
       "status": "todo",
       "tree": "LEGION-216",
+      "rank": "00016",
+      "rootRank": "00016",
       "treeRuns": false,
       "repo": "acme/gadgets",
       "defaultBranch": "main",
@@ -813,7 +856,9 @@
       ],
       "slot": {
         "index": 3,
-        "admittedAt": "2126-09-22T08:14:52Z"
+        "admittedAt": "2126-09-22T08:14:52Z",
+        "state": "stopped",
+        "since": "2126-09-22T08:40:00Z"
       },
       "why": {
         "state": "claim_stopped",
@@ -919,7 +964,9 @@
       ],
       "slot": {
         "index": 4,
-        "admittedAt": "2126-09-19T10:27:44Z"
+        "admittedAt": "2126-09-19T10:27:44Z",
+        "state": "stopped",
+        "since": "2126-09-19T10:20:00Z"
       },
       "why": {
         "state": "claim_stopped",
@@ -1000,7 +1047,8 @@
       },
       "slot": {
         "index": 5,
-        "admittedAt": "2126-09-22T07:52:18Z"
+        "admittedAt": "2126-09-22T07:52:18Z",
+        "state": "working"
       },
       "memoryGroup": "memory",
       "memoryDrawMode": "random",

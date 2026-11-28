@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-11-21T04:11:33.472823855Z",
+    "jsonPayload": {
+      "generation": 1,
+      "issues": 1,
+      "level": "INFO",
+      "msg": "workflow: linger closed the tree",
+      "time": "2026-11-21T04:11:33.472588175Z",
+      "tree": "ACME-5"
+    }
+  }
+]

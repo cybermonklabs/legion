@@ -362,24 +362,36 @@ func issuedSecretsLogin(t *testing.T) *cipher.Client {
 
 // seeding is one cloned database of this package's template, written through the stores' own
 // writers, and the one record store every writer of the seed writes through and the state reads.
+// stamp is the moment the claim store stamps the seed's writes at (store.UseClock, claimAt): the
+// wall clock while it is zero, which every write but a stopped claim's is stamped at, since no
+// fixture serves those stamps.
 type seeding struct {
 	t       *testing.T
 	ctx     context.Context
 	st      *store.Store
 	records *record.Postgres
+	stamp   time.Time
 }
 
 // newSeeding is a seeding over a clone of this package's template (testpg.CloneStore), which
 // skips the test where LEGION_TEST_PG_DSN names no server. Under -update it fails there instead:
 // internal/api's goldens are written from state.json after this test writes it
 // (apifixture.StateFixturesRewrite), so a skip that exits 0 would leave them written from the old
-// state.json, and the rewrite would look done.
+// state.json, and the rewrite would look done. Its store reads the seeding's stamp as its clock
+// (store.UseClock), so a seed can write a claim at a moment of its story (claimAt).
 func newSeeding(t *testing.T) *seeding {
 	t.Helper()
 	if *updateStateFixtures && os.Getenv("LEGION_TEST_PG_DSN") == "" {
 		t.Fatal("-update composes the state fixtures over a seeded database, and none can be cloned, so it would write nothing: " + testdb.SkipMessage)
 	}
-	return &seeding{t: t, ctx: context.Background(), st: testpg.CloneStore(t, "legion_state_fixtures"), records: record.NewStore()}
+	s := &seeding{t: t, ctx: context.Background(), st: testpg.CloneStore(t, "legion_state_fixtures"), records: record.NewStore()}
+	s.st.UseClock(func() time.Time {
+		if s.stamp.IsZero() {
+			return time.Now()
+		}
+		return s.stamp
+	})
+	return s
 }
 
 // in runs write in one transaction of the store, as the workflow's own writes run (store.Transact).
@@ -498,6 +510,18 @@ func (s *seeding) claimAs(c supervise.Claim) supervise.Claim {
 		}
 	}
 	return c
+}
+
+// claimAt is claimAs with the claim store's stamps of the writes at at (seeding.stamp), the
+// wall clock again after them: the moment the claim's machine last persisted it. A claim written
+// into suspended or retired keeps that moment as when it stopped (the claim store's stopped_at),
+// which the state dates a slot holder's `stopped` by (record.Store.HolderClaims). A zero at
+// stamps the writes with the wall clock, as claimAs does.
+func (s *seeding) claimAt(at time.Time, c supervise.Claim) supervise.Claim {
+	s.t.Helper()
+	s.stamp = at
+	defer func() { s.stamp = time.Time{} }()
+	return s.claimAs(c)
 }
 
 // enqueue queues payload for issue due at nextAt (record.Store.Enqueue), as the writer of that

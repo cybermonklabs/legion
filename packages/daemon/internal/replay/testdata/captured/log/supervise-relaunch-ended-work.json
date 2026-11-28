@@ -1,0 +1,19 @@
+[
+  {
+    "timestamp": "2026-11-21T06:01:02.075758625Z",
+    "jsonPayload": {
+      "background": true,
+      "cause": "it was suspended (daemon)",
+      "claim": "legion-acme-acme-4-merger",
+      "delivery": "",
+      "generation": 4,
+      "kinds": ["async-job"],
+      "level": "WARN",
+      "msg": "supervise: the relaunch ended work the agent had running",
+      "reported": true,
+      "taskTurn": false,
+      "time": "2026-11-21T06:01:02.075455815Z",
+      "turn": false
+    }
+  }
+]

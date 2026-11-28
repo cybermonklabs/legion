@@ -335,14 +335,24 @@ func startedIssues(issues []record.Issue, slots []record.Slot, facts record.Line
 // phase waits for (record.LineFacts.ChildWaits, in that judgement's order), each named once. The
 // second is the same judgement the line holds an unstarted parent by: a started parent waits for
 // its children exactly as one that never started does, and only the slot it holds differs.
+// Each counts under the slot rule the facts carry (record.LineFacts.Rule) only where that rule's
+// wait gives the slot back (record.SlotRule.LinkWaitGivesBack, ChildrenWaitGivesBack): a rule
+// whose wait keeps the slot has its started issue hold its row through the wait, so no release
+// frees it, no mark is written and the line places it in no record.LineWaitingOnIssue entry.
+// Under the daemon's own rule both waits give it back. Under a rule whose wait gives the slot
+// back only after a grace (record.SlotRule.WaitGrace) neither counts for a slot holder whose wait
+// is younger than the grace (record.LineFacts.InWaitGrace): it keeps its row through the wait for
+// now, which is a wait it keeps its slot through (KeptWaits) and whose start the pass marks on
+// the slot (admit's markSlotWaits), and the first pass at or after that start plus the grace
+// finds both counting and gives the row back.
 //
-// An issue whose phase keeps no slot (record.KeepsSlot: accepting, retro, merging or
-// awaiting_children, done, or out of the workflow) waits on nothing here, whatever its links say.
-// The wait this answers is the one a started issue gives its row back for, and such an issue
-// holds no row to give back, so the rule that states the wait term states the phase term too: the
-// release for a wait (admit's releaseSlotsForWaits) frees no row of it and marks it with no
-// release, the line places it in no entry of record.LineWaitingOnIssue, and none of that rests on
-// the order the admission pass runs its releases in.
+// An issue whose phase keeps no slot (record.LineFacts.KeepsSlot: accepting, retro, merging or
+// awaiting_children, done, or out of the workflow, under the facts' rule) waits on nothing here,
+// whatever its links say. The wait this answers is the one a started issue gives its row back for,
+// and such an issue holds no row to give back, so the rule that states the wait term states the
+// phase term too: the release for a wait (admit's releaseSlotsForWaits) frees no row of it and
+// marks it with no release, the line places it in no entry of record.LineWaitingOnIssue, and none
+// of that rests on the order the admission pass runs its releases in.
 //
 // Three started issues wait on neither, though a rule names them. A root waiting on a person
 // (awaiting_person, answered or not) is waiting on that person and nothing else, and the slot it
@@ -358,9 +368,19 @@ func startedIssues(issues []record.Issue, slots []record.Slot, facts record.Line
 // Exempt is not read here: that rule is the promotion's, about what a candidate may start in
 // spite of its links, and this one is about what a started issue holds a slot for, so an issue
 // carrying a run gives its row back like any other.
+//
+// Under a rule whose start may take a cover (record.TakeCover), a covered waiter
+// (record.LineFacts.Covers) gave its row to the issue that holds it for the wait, so it waits as
+// an issue that gave its row back, on every wait a cover reads of it (CoverWaits), whatever the
+// rule says of a wait that keeps the row: its release frees a row it still holds, and the line
+// places it in a record.LineWaitingOnIssue entry the promotion passes over, since its slot comes
+// back with the cover's end and never from the line.
 func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []string {
-	if !record.KeepsSlot(issue) {
+	if !facts.KeepsSlot(issue) {
 		return nil
+	}
+	if _, covered := facts.Covers[issue.Key]; covered {
+		return CoverWaits(rows, issue, facts)
 	}
 	if issue.AwaitingPerson() {
 		return nil
@@ -371,10 +391,60 @@ func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []
 	if record.QueuedRoot(issue, facts.Lifecycles[issue.Tree], facts.Gates[issue.Tree]) {
 		return nil
 	}
-	waits := Unfinished(rows, issue.Key)
+	if facts.InWaitGrace(issue.Key) {
+		return nil
+	}
+	rule := facts.Rule.OrMain()
+	var waits []string
+	if rule.LinkWaitGivesBack {
+		waits = Unfinished(rows, issue.Key)
+	}
+	if !rule.ChildrenWaitGivesBack {
+		return waits
+	}
 	for _, child := range facts.ChildWaits[issue.Key].Open {
 		if !slices.Contains(waits, child.Key) {
 			waits = append(waits, child.Key)
+		}
+	}
+	return waits
+}
+
+// CoverWaits is what a started issue waits on as a rule whose start may take a cover reads a wait
+// (record.TakeCover, admit's covers), each once: the Dispatch issues it is blocked by that are not
+// done (Unfinished), the open children its first phase waits for (record.LineFacts.ChildWaits),
+// the open children of a parent whose phases have started (record.LineFacts.StartedParentWaits,
+// which such a rule reads with its wait stopping no phase, record.SlotRule.StartedParents), and,
+// in accepting, retro or merging, the issues beneath it its close waits for — a held sign-off, or
+// a merge whose close waits for them (record.LineFacts.BeneathWaits). A blocked_by link of an
+// issue in one of those phases (record.InSlotlessPhase, the daemon's own rule's complement, which
+// is the phases after the review of the default steps every recorded window ran) is no wait there:
+// it holds no start and gives no cover, as the
+// rule's spec states. A root that waits on a person and a root that arrived carrying the row of
+// the tree it left wait on nothing here, as waitsOf exempts them from the release; a tree's own
+// root whose design gate has never opened is a waiter, so what its design waits on can start on
+// its slot.
+func CoverWaits(rows map[string]Row, issue record.Issue, facts record.LineFacts) []string {
+	if !record.InWorkflow(issue) || issue.AwaitingPerson() || record.QueuedRoot(issue, facts.Lifecycles[issue.Tree], facts.Gates[issue.Tree]) {
+		return nil
+	}
+	var waits []string
+	if !record.InSlotlessPhase(issue) {
+		waits = Unfinished(rows, issue.Key)
+	}
+	for _, child := range facts.ChildWaits[issue.Key].Open {
+		if !slices.Contains(waits, child.Key) {
+			waits = append(waits, child.Key)
+		}
+	}
+	for _, child := range facts.StartedParentWaits[issue.Key].Open {
+		if !slices.Contains(waits, child.Key) {
+			waits = append(waits, child.Key)
+		}
+	}
+	for _, beneath := range facts.BeneathWaits[issue.Key] {
+		if !slices.Contains(waits, beneath) {
+			waits = append(waits, beneath)
 		}
 	}
 	return waits
@@ -422,7 +492,8 @@ func startedWaits(rows map[string]Row, issues []record.Issue, started map[string
 // filled, so the release, the promotion, the architect's notice and the state's `blocked` all
 // answer from the one judgement.
 // slots is the caller's own read of the slots table, which record.Waiting reads as the set of
-// issues already holding one.
+// issues already holding one, and which a rule whose wait gives the slot back only after a grace
+// reads each holder's wait start from (record.LineFacts.SlotWaits).
 //
 // The held rows are what the line left behind, with the word for why (record.Waiting's second
 // answer, which C2 of dispatch://INFRA-3107 asks the pass for, so that a reader cannot take a
@@ -431,10 +502,12 @@ func startedWaits(rows map[string]Row, issues []record.Issue, started map[string
 // tick read them, and so does the admission pass's stalled-tree measure (admit's
 // tellStalledTrees), which takes the words of this judgement rather than walking the project's
 // issues again; every other caller takes the value and ignores it. now is the caller's
-// own clock, and the one thing it decides is one of those words: the tree_closed word asks
+// own clock, and it decides two things: one of those words, since the tree_closed word asks
 // whether a root's linger is still running at it (record.Lingering), so that a parked root's
-// member reads tree_parked once that root's linger has run out. It reaches the judgement as
-// record.LineFacts.Now, which the line's own placement reads nowhere.
+// member reads tree_parked once that root's linger has run out; and, under a rule whose wait
+// gives the slot back only after a grace, whether a holder's grace has run out
+// (record.LineFacts.InWaitGrace). It reaches the judgement as record.LineFacts.Now, which the
+// line's own placement reads nowhere.
 //
 // It is the one place the line is judged: admission's own pass (admit's promoteHolds), the
 // projected state and the controller tick's read of what the project waits on all come through
@@ -444,6 +517,7 @@ func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project strin
 	slots []record.Slot, facts record.LineFacts, rows map[string]Row, now time.Time,
 ) (map[string]Row, record.LineFacts, []record.LineEntry, []record.HeldIssue, error) {
 	facts.Now = now
+	facts.SlotWaits = slotWaits(slots, facts.Rule)
 	if rows == nil {
 		rows = map[string]Row{}
 	}
@@ -464,6 +538,21 @@ func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project strin
 	line, held := record.Waiting(issues, slots, facts)
 	rows, err = loadMissing(ctx, tx, store, project, Judged(issues, record.WaitingIssues(line)), rows)
 	return rows, facts, line, held, err
+}
+
+// slotWaits is each holder of slots by key with the moment its wait on another issue began while
+// it kept its slot (record.Slot.WaitsSince), under a rule whose wait gives the slot back only
+// after a grace (record.SlotRule.WaitGrace), which reads the grace against it
+// (record.LineFacts.SlotWaits, InWaitGrace); nil under every other rule, which reads none.
+func slotWaits(slots []record.Slot, rule record.SlotRule) map[string]*time.Time {
+	if rule.OrMain().WaitGrace <= 0 {
+		return nil
+	}
+	waits := make(map[string]*time.Time, len(slots))
+	for _, slot := range slots {
+		waits[slot.Issue] = slot.WaitsSince
+	}
+	return waits
 }
 
 // loadMissing adds to rows the mirror rows of the keys among keys whose row it does not already

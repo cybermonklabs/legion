@@ -140,6 +140,8 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 	tick(t, pool, admission, "tick-held")
 
 	notice, _ := tickNoticeOf(t, pool, testProject)
+	// The tick's slots reading is TestTickNoticeCarriesTheSlotsLine's to hold.
+	notice.Slots = nil
 	want := record.ControllerNotice{
 		Kind:             record.TickNotice,
 		OpenCapabilities: []string{"secrets"},

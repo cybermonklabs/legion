@@ -19,9 +19,12 @@ import (
 // the live trees each member's quiet measure is shown for.
 type AdmissionJudgement struct {
 	Block record.AdmissionBlock
-	Line  []record.LineEntry
-	Rows  map[string]Row
-	Facts record.LineFacts
+	// Issues are the project's live records the line was judged from, which the slots reading
+	// reads its holders, its line's members and their tree roots from (SlotsInputs.Issues).
+	Issues []record.Issue
+	Line   []record.LineEntry
+	Rows   map[string]Row
+	Facts  record.LineFacts
 	// Live is the roots of the live trees (record.LiveRoots), which Block.Trees lists by key.
 	Live map[string]struct{}
 }
@@ -43,11 +46,22 @@ type AdmissionJudgement struct {
 func JudgeAdmission(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep,
 	slots []record.Slot, cap int, now time.Time,
 ) (AdmissionJudgement, error) {
+	return JudgeAdmissionUnder(ctx, tx, store, project, steps, record.SlotRule{}, slots, cap, now)
+}
+
+// JudgeAdmissionUnder is JudgeAdmission for a reader that judges under rule, as
+// record.ReadLineFactsUnder is record.ReadLineFacts for one: the facts are read with rule set on
+// them, so the line, the waits and the held words of the block are rule's. The state projection
+// judges under the rule it was handed (projection.Inputs.SlotRule), which for the daemon is its
+// own, and JudgeAdmission judges under the daemon's own.
+func JudgeAdmissionUnder(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep,
+	rule record.SlotRule, slots []record.Slot, cap int, now time.Time,
+) (AdmissionJudgement, error) {
 	issues, err := store.LiveIssues(ctx, tx, project)
 	if err != nil {
 		return AdmissionJudgement{}, fmt.Errorf("judge the admission of %s: %w", project, err)
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, store, project, issues, steps)
+	facts, err := record.ReadLineFactsUnder(ctx, tx, store, project, issues, steps, rule)
 	if err != nil {
 		return AdmissionJudgement{}, fmt.Errorf("judge the admission of %s: %w", project, err)
 	}
@@ -92,9 +106,10 @@ func AdmissionOf(issues []record.Issue, slots []record.Slot, rows map[string]Row
 			Blocked:   Blocked(rows, issues, line, facts),
 			Held:      record.HeldList(issues, slots, line, dropped, facts),
 		},
-		Line:  line,
-		Rows:  rows,
-		Facts: facts,
-		Live:  live,
+		Issues: issues,
+		Line:   line,
+		Rows:   rows,
+		Facts:  facts,
+		Live:   live,
 	}
 }

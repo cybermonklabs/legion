@@ -227,7 +227,7 @@ func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operat
 		if row == nil || !claim.KeyOfProject(project, issue) {
 			return nil
 		}
-		if _, err := insertOutboxRow(ctx, tx, project, issue, *row); err != nil {
+		if _, err := insertOutboxRow(ctx, tx, project, issue, *row, s.stamp()); err != nil {
 			return err
 		}
 		finish.Told = true

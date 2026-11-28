@@ -92,7 +92,7 @@ func leaseStart(t *testing.T, pool *pgxpool.Pool, issue string) {
 // on no row of the cap's at all. The cap counts the issues whose change is still to
 // write, and the sign-off, the retro and the merge write no more of it (record.KeepsSlot), so the
 // start of each of those phases waits for no row (workflow.StartOrOwe reads
-// record.PhaseKeepsSlot) and is claimable the moment it is written.
+// record.SlotRule.PhaseKeepsSlot) and is claimable the moment it is written.
 //
 // The cap is full throughout, which is what tells the two kinds of start apart: in the same
 // reading, the start of an issue at work that holds no row stays unclaimable, and so does the
@@ -162,7 +162,7 @@ func TestAcceptingRetroAndMergingRunWithNoSlot(t *testing.T) {
 
 	// An issue whose architect sends the work back from accepting to implementing writes the
 	// change again, so its start waits for a row, as the start of a worker in any phase that
-	// keeps one does (record.PhaseKeepsSlot).
+	// keeps one does (record.SlotRule.PhaseKeepsSlot).
 	const sentBack = "LEGION-400"
 	slotlessRoot(t, pool, sentBack, phase.Accepting, "needs_review", "E")
 

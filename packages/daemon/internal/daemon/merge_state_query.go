@@ -51,18 +51,19 @@ func (w *workflowRuntime) chunkSize() int {
 }
 
 // pullRequestFields is what a read of a base's batch asks GitHub of each pull request: its
-// number, whether it is open, its head, the base it sits on now, GitHub's lazily computed
-// mergeability and merge state for that head, which a GET /pulls/{number} answers as `state`,
-// `head`, `base`, `mergeable` and `mergeable_state` (graphQLPull.githubPullRequest), and the rest
-// of the answer the round reads for a `blocked` head (classify.MergeOutcomeOf): how many review
-// requests it holds open, and the head commit's `statusCheckRollup`, its check runs and its commit
-// statuses counted by state, which say whether one of them still runs. The counts are asked with
-// `contexts(first: 0)`, so the answer carries no context itself and needs no page: GitHub counts
-// every context of the commit; the rollup's own state is not asked, since GitHub answers it
-// FAILURE while other contexts still run. The REST read asks the same query of the one pull request
-// it read when that read answers `blocked` and MERGEABLE (readWholeAnswer), and takes the verdict
-// and the count of review requests from this answer too, so all three are one response's.
-const pullRequestFields = "number state headRefOid headRefName baseRefName mergeable mergeStateStatus " +
+// number, whether it is open, its head, the base it sits on now and the base commit GitHub names
+// for it, GitHub's lazily computed mergeability and merge state for that head, which a GET
+// /pulls/{number} answers as `state`, `head`, `base`, `mergeable` and `mergeable_state`
+// (graphQLPull.githubPullRequest), and the rest of the answer the round reads for a `blocked` head
+// (classify.MergeOutcomeOf): how many review requests it holds open, and the head commit's
+// `statusCheckRollup`, its check runs and its commit statuses counted by state, which say whether
+// one of them still runs. The counts are asked with `contexts(first: 0)`, so the answer carries no
+// context itself and needs no page: GitHub counts every context of the commit; the rollup's own
+// state is not asked, since GitHub answers it FAILURE while other contexts still run. The REST
+// read asks the same query of the one pull request it read when that read answers `blocked` and
+// MERGEABLE (readWholeAnswer), and takes the verdict and the count of review requests from this
+// answer too, so all three are one response's.
+const pullRequestFields = "number state headRefOid headRefName baseRefName baseRefOid mergeable mergeStateStatus " +
 	"reviewRequests { totalCount } commits(last: 1) { nodes { commit { oid statusCheckRollup { " +
 	"contexts(first: 0) { checkRunCountsByState { state count } statusContextCountsByState { state count } } } } } }"
 
@@ -94,6 +95,7 @@ type graphQLPull struct {
 	HeadRefOid       string `json:"headRefOid"`
 	HeadRefName      string `json:"headRefName"`
 	BaseRefName      string `json:"baseRefName"`
+	BaseRefOid       string `json:"baseRefOid"`
 	Mergeable        string `json:"mergeable"`
 	MergeStateStatus string `json:"mergeStateStatus"`
 	ReviewRequests   *struct {
@@ -122,12 +124,13 @@ type stateCount struct {
 
 // githubPullRequest is p as GET /pulls/{number} answers the same pull request, the shape
 // applyMergeability reads: GitHub's GraphQL `state` OPEN is the REST `open`, and CLOSED and MERGED
-// are its `closed`; its `mergeable` MERGEABLE, CONFLICTING and UNKNOWN are the REST `mergeable`
-// true, false and null; and its `mergeStateStatus` is the REST `mergeable_state` in capitals
-// (CLEAN, BLOCKED, BEHIND, DIRTY, DRAFT, HAS_HOOKS, UNSTABLE, UNKNOWN). A state outside those reads
-// as unknown, as a REST one does (githubPullRequest.mergeState). The count of review requests and
-// the head's rollup, which no REST field of the pull request carries as such, ride beside it as
-// the batch's own read (batchRead).
+// are its `closed`; its `baseRefOid` is the REST `base.sha`; its `mergeable` MERGEABLE, CONFLICTING
+// and UNKNOWN are the REST `mergeable` true, false and null; and its `mergeStateStatus` is the REST
+// `mergeable_state` in capitals (CLEAN, BLOCKED, BEHIND, DIRTY, DRAFT, HAS_HOOKS, UNSTABLE,
+// UNKNOWN). A state outside those reads as unknown, as a REST one does
+// (githubPullRequest.mergeState). The count of review requests and the head's rollup, which no
+// REST field of the pull request carries as such, ride beside it as the batch's own read
+// (batchRead).
 func (p graphQLPull) githubPullRequest() githubPullRequest {
 	read := &batchRead{checks: p.headChecks()}
 	if p.ReviewRequests != nil {
@@ -139,7 +142,7 @@ func (p graphQLPull) githubPullRequest() githubPullRequest {
 	if p.State == "OPEN" {
 		pull.State = "open"
 	}
-	pull.Base.Ref, pull.Head.Ref, pull.Head.SHA = p.BaseRefName, p.HeadRefName, p.HeadRefOid
+	pull.Base.Ref, pull.Base.SHA, pull.Head.Ref, pull.Head.SHA = p.BaseRefName, p.BaseRefOid, p.HeadRefName, p.HeadRefOid
 	switch p.Mergeable {
 	case "MERGEABLE":
 		mergeable := true

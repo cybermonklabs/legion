@@ -135,8 +135,9 @@ type PauseRequest struct {
 // *AlreadyPausedError naming the pause that stands, writes the pause row, reads the project's live
 // claims — every claim of the project that is not suspended, failed or retired, the controller's
 // claim excepted (claim.IsController) — and writes for each one stop row and one `pause_stop`
-// outbox row (req.StopRow), then queues the controller's notice when req.Notice is given. It
-// answers the pause and the claims it asked to stop, in token order.
+// outbox row (req.StopRow), then queues the controller's notice when req.Notice is given. The
+// outbox rows are due at the store's clock (insertOutboxRow). It answers the pause and the claims
+// it asked to stop, in token order.
 func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStopClaim, error) {
 	if err := req.By.validate(); err != nil {
 		return Pause{}, nil, fmt.Errorf("pause %s: %w", req.Project, err)
@@ -153,6 +154,7 @@ func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStop
 	}
 	var pause Pause
 	var stops []PauseStopClaim
+	queued := s.stamp()
 	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		pause, stops = Pause{}, nil
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
@@ -178,13 +180,13 @@ func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStop
 			if _, err := OpenPauseStopTx(ctx, tx, pause, stop, req.At); err != nil {
 				return err
 			}
-			if err := queuePauseStopRow(ctx, tx, pause, stop, req.StopRow); err != nil {
+			if err := queuePauseStopRow(ctx, tx, pause, stop, req.StopRow, queued); err != nil {
 				return err
 			}
 			stops = append(stops, stop)
 		}
 		if req.Notice != nil {
-			return queuePauseNotice(ctx, tx, pause, req.Notice)
+			return queuePauseNotice(ctx, tx, pause, req.Notice, queued)
 		}
 		return nil
 	})
@@ -195,12 +197,13 @@ func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStop
 }
 
 // queuePauseStopRow queues pause's `pause_stop` outbox row of one claim, built by stopRow
-// (PauseRequest.StopRow), under the key the builder gave it, which runs it in that key's
-// lifecycle lane: the claim's issue, or the pause's project for a claim of another project's
-// issue. A row keyed by anything else would be run by no daemon's outbox or by another's, so it
-// is refused, and so is a row keyed by another project's issue (insertOutboxRow,
+// (PauseRequest.StopRow), due at queued (insertOutboxRow), under the key the builder gave it,
+// which runs it in that key's lifecycle lane: the claim's issue, or the pause's project for a claim
+// of another project's issue. A row keyed by anything else would be run by no daemon's outbox or by
+// another's, so it is refused, and so is a row keyed by another project's issue (insertOutboxRow,
 // claim.KeyOfProject).
-func queuePauseStopRow(ctx context.Context, tx pgx.Tx, pause Pause, stop PauseStopClaim, stopRow func(Pause, PauseStopClaim) (PauseRow, error)) error {
+func queuePauseStopRow(ctx context.Context, tx pgx.Tx, pause Pause, stop PauseStopClaim, stopRow func(Pause, PauseStopClaim) (PauseRow, error),
+	queued *time.Time) error {
 	row, err := stopRow(pause, stop)
 	if err != nil {
 		return fmt.Errorf("build the stop of %s: %w", stop.Claim, err)
@@ -208,7 +211,7 @@ func queuePauseStopRow(ctx context.Context, tx pgx.Tx, pause Pause, stop PauseSt
 	if row.Issue != stop.Issue && row.Issue != pause.Project {
 		return fmt.Errorf("the stop of %s is keyed by %q, neither its issue %s nor the project %s", stop.Claim, row.Issue, stop.Issue, pause.Project)
 	}
-	_, err = insertOutboxRow(ctx, tx, pause.Project, row.Issue, IdleReleaseRow{Kind: row.Kind, Payload: row.Payload})
+	_, err = insertOutboxRow(ctx, tx, pause.Project, row.Issue, IdleReleaseRow{Kind: row.Kind, Payload: row.Payload}, queued)
 	return err
 }
 
@@ -227,7 +230,7 @@ func (s *Store) AskPauseStops(ctx context.Context, pause int64, claims []PauseSt
 		if err != nil {
 			return err
 		}
-		asked, err = askPauseStopsTx(ctx, tx, held, claims, at, stopRow)
+		asked, err = askPauseStopsTx(ctx, tx, held, claims, at, stopRow, s.stamp())
 		return err
 	})
 	if err != nil {
@@ -257,7 +260,7 @@ func (s *Store) AskLivePauseStops(ctx context.Context, pause int64, at time.Time
 		if err != nil {
 			return err
 		}
-		asked, err = askPauseStopsTx(ctx, tx, held, live, at, stopRow)
+		asked, err = askPauseStopsTx(ctx, tx, held, live, at, stopRow, s.stamp())
 		return err
 	})
 	if err != nil {
@@ -266,14 +269,15 @@ func (s *Store) AskLivePauseStops(ctx context.Context, pause int64, at time.Time
 	return asked, nil
 }
 
-// askPauseStopsTx opens held's stop of each of claims at at and queues its `pause_stop` row, and
-// answers the claims it did. It asks nothing of a pause that has ended, since its stops would
-// finish without acting (decision 4), and it passes over a claim of which held already has a
-// stop, open or ended: an open one has its row queued already, and an ended one is a stop this
-// pause already made, which a second row would only ask again. The caller has locked held's row
-// for share (LockPauseTx), so a resume of it waits for this transaction.
+// askPauseStopsTx opens held's stop of each of claims at at and queues its `pause_stop` row, due
+// at queued (insertOutboxRow), and answers the claims it did. It asks nothing of a pause that has
+// ended, since its stops would finish without acting (decision 4), and it passes over a claim of
+// which held already has a stop, open or ended: an open one has its row queued already, and an
+// ended one is a stop this pause already made, which a second row would only ask again. The
+// caller has locked held's row for share (LockPauseTx), so a resume of it waits for this
+// transaction.
 func askPauseStopsTx(ctx context.Context, tx pgx.Tx, held Pause, claims []PauseStopClaim, at time.Time,
-	stopRow func(Pause, PauseStopClaim) (PauseRow, error)) ([]PauseStopClaim, error) {
+	stopRow func(Pause, PauseStopClaim) (PauseRow, error), queued *time.Time) ([]PauseStopClaim, error) {
 	if held.Ended() {
 		return nil, nil
 	}
@@ -294,7 +298,7 @@ func askPauseStopsTx(ctx context.Context, tx pgx.Tx, held Pause, claims []PauseS
 		if !opened {
 			continue
 		}
-		if err := queuePauseStopRow(ctx, tx, held, stop, stopRow); err != nil {
+		if err := queuePauseStopRow(ctx, tx, held, stop, stopRow, queued); err != nil {
 			return nil, err
 		}
 		asked = append(asked, stop)
@@ -342,7 +346,8 @@ type Resumed struct {
 // of the project's issues and those keyed by the project itself, the stops of claims of another
 // project's issue, since the split_part of a project key is that key — ends the pause's open stop
 // rows `cancelled`, sets the stuck clock of the project's open resumes to the resume's moment
-// (SetProjectResumeClocksTx), and queues the controller's notice when req.Notice is given.
+// (SetProjectResumeClocksTx), and queues the controller's notice, due at the store's clock
+// (insertOutboxRow), when req.Notice is given.
 func (s *Store) Resume(ctx context.Context, req ResumeRequest) (Resumed, error) {
 	if err := req.By.validate(); err != nil {
 		return Resumed{}, fmt.Errorf("resume %s: %w", req.Project, err)
@@ -393,7 +398,7 @@ func (s *Store) Resume(ctx context.Context, req ResumeRequest) (Resumed, error) 
 			return err
 		}
 		if req.Notice != nil {
-			return queuePauseNotice(ctx, tx, out.Pause, req.Notice)
+			return queuePauseNotice(ctx, tx, out.Pause, req.Notice, s.stamp())
 		}
 		return nil
 	})
@@ -404,9 +409,9 @@ func (s *Store) Resume(ctx context.Context, req ResumeRequest) (Resumed, error) 
 }
 
 // queuePauseNotice queues the controller's notice of a pause or a resume under the project's key,
-// the issue column a project-level controller notice carries (record.OutboxRow.Issue); a notice
-// its builder keyed otherwise is refused.
-func queuePauseNotice(ctx context.Context, tx pgx.Tx, pause Pause, notice func(Pause) (PauseRow, error)) error {
+// the issue column a project-level controller notice carries (record.OutboxRow.Issue), due at
+// queued (insertOutboxRow); a notice its builder keyed otherwise is refused.
+func queuePauseNotice(ctx context.Context, tx pgx.Tx, pause Pause, notice func(Pause) (PauseRow, error), queued *time.Time) error {
 	row, err := notice(pause)
 	if err != nil {
 		return fmt.Errorf("build the controller's notice of pause %d: %w", pause.ID, err)
@@ -414,7 +419,7 @@ func queuePauseNotice(ctx context.Context, tx pgx.Tx, pause Pause, notice func(P
 	if row.Issue != pause.Project {
 		return fmt.Errorf("the controller's notice of pause %d is keyed by %q, not the project %s", pause.ID, row.Issue, pause.Project)
 	}
-	_, err = insertOutboxRow(ctx, tx, pause.Project, row.Issue, IdleReleaseRow{Kind: row.Kind, Payload: row.Payload})
+	_, err = insertOutboxRow(ctx, tx, pause.Project, row.Issue, IdleReleaseRow{Kind: row.Kind, Payload: row.Payload}, queued)
 	return err
 }
 

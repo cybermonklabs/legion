@@ -32,9 +32,17 @@ func putWorkerClaim(t *testing.T, pool *pgxpool.Pool, root, key string, role cla
 	state supervise.ClaimState, by supervise.SuspendSource,
 ) claim.Token {
 	t.Helper()
-	project, err := claim.ProjectToken(testProject)
+	return putWorkerClaimForProject(t, pool, testProject, root, key, role, generation, state, by)
+}
+
+// putWorkerClaimForProject is putWorkerClaim under a Dispatch project key of its own.
+func putWorkerClaimForProject(t *testing.T, pool *pgxpool.Pool, dispatchProject, root, key string, role claim.Role,
+	generation uint64, state supervise.ClaimState, by supervise.SuspendSource,
+) claim.Token {
+	t.Helper()
+	project, err := claim.ProjectToken(dispatchProject)
 	if err != nil {
-		t.Fatalf("project token of %s: %v", testProject, err)
+		t.Fatalf("project token of %s: %v", dispatchProject, err)
 	}
 	token, err := claim.NewToken(project, key, role)
 	if err != nil {
@@ -159,8 +167,16 @@ func owedStarts(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart 
 // because the state it is in is the one thing its own rows are about.
 func seedTreeAndMember(t *testing.T, pool *pgxpool.Pool, root, key string, stands phase.Phase, generation uint64, lingers bool) {
 	t.Helper()
+	seedTreeAndMemberForProject(t, pool, testProject, root, key, stands, generation, lingers)
+}
+
+// seedTreeAndMemberForProject is seedTreeAndMember under a Dispatch project key of its own.
+func seedTreeAndMemberForProject(t *testing.T, pool *pgxpool.Pool, project, root, key string, stands phase.Phase,
+	generation uint64, lingers bool,
+) {
+	t.Helper()
 	tree := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: "the root of " + key, Tree: root, Phase: phase.Accepting,
+		Project: project, Title: "the root of " + key, Tree: root, Phase: phase.Accepting,
 		Generation: generation, Status: "needs_review", DispatchStatus: "needs_review", Rank: root,
 		HandedOver: true, LastDispatchSeq: 1}
 	if lingers {
@@ -168,10 +184,10 @@ func seedTreeAndMember(t *testing.T, pool *pgxpool.Pool, root, key string, stand
 		tree.Phase, tree.Status, tree.DispatchStatus, tree.LingerUntil = phase.Done, "in_progress", "in_progress", &until
 	}
 	putIssue(t, pool, tree)
-	seedLifecycle(t, pool, root)
+	seedLifecycleForProject(t, pool, project, root)
 	parent := root
 	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: "the member " + key, Tree: root, Parent: &parent, Phase: stands,
+		Project: project, Title: "the member " + key, Tree: root, Parent: &parent, Phase: stands,
 		Generation: generation, Status: "in_progress", DispatchStatus: "in_progress", Rank: key, LastDispatchSeq: 2})
 }
 
@@ -418,7 +434,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 				tasked := got
 				role := phase.RoleFor(row.stands)
 				if tasked[0].role != role || !tasked[0].needsSlot {
-					t.Fatalf("the start %s carries a task on after the pass = %+v, want the %s's, held for the issue's own slot: the repair starts the worker of the phase the issue stands in, and its task waits for the slot, as the start of a worker in a phase that keeps one does (record.PhaseKeepsSlot)",
+					t.Fatalf("the start %s carries a task on after the pass = %+v, want the %s's, held for the issue's own slot: the repair starts the worker of the phase the issue stands in, and its task waits for the slot, as the start of a worker in a phase that keeps one does (record.SlotRule.PhaseKeepsSlot)",
 						row.key, tasked[0], role)
 				}
 				if want := seededEntryTask(row.key); tasked[0].task != want {

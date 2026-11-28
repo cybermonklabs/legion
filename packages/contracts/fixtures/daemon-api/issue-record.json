@@ -165,7 +165,8 @@
   ],
   "slot": {
     "index": 0,
-    "admittedAt": "2126-09-21T18:42:11Z"
+    "admittedAt": "2126-09-21T18:42:11Z",
+    "state": "working"
   },
   "memoryGroup": "memory",
   "memoryDrawMode": "random",

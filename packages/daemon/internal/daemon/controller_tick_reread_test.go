@@ -134,7 +134,7 @@ func TestThePeriodicTurnWakesTheControllerWhenTheDispatchReadFails(t *testing.T)
 	}
 }
 
-// The fan-out is bounded on both sides: up to blockerReadFanout distinct blocker keys are read
+// The fan-out is bounded on both sides: up to blockers.ReadFanout distinct blocker keys are read
 // one at a time, and above it the project is listed once instead — one request rather than the
 // twenty-six single reads the waiting set would otherwise ask for.
 func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T) {
@@ -143,22 +143,22 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{}
 		w := tickRuntime(t, pool, client)
-		seedBlockedRoots(t, pool, blockerReadFanout)
+		seedBlockedRoots(t, pool, blockers.ReadFanout)
 
 		w.applyControllerTick(context.Background(), time.Now())
 
-		if asked, listings := client.asked(), client.listings(); len(asked) != blockerReadFanout || listings != 0 {
-			t.Fatalf("the turn made %d single reads and %d listings, want %d and none", len(asked), listings, blockerReadFanout)
+		if asked, listings := client.asked(), client.listings(); len(asked) != blockers.ReadFanout || listings != 0 {
+			t.Fatalf("the turn made %d single reads and %d listings, want %d and none", len(asked), listings, blockers.ReadFanout)
 		}
 	})
 	t.Run("above the bound, one listing", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{}
-		for i := 1; i <= blockerReadFanout+1; i++ {
+		for i := 1; i <= blockers.ReadFanout+1; i++ {
 			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: ownBlocker(i), Status: "done", LastSeq: 7})
 		}
 		w := tickRuntime(t, pool, client)
-		seedBlockedRoots(t, pool, blockerReadFanout+1)
+		seedBlockedRoots(t, pool, blockers.ReadFanout+1)
 
 		w.applyControllerTick(context.Background(), time.Now())
 
@@ -166,7 +166,7 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 			t.Fatalf("the turn made %d single reads and %d listings, want none and one", len(asked), listings)
 		}
 		mirrored := tickMirrored(t, pool)
-		for i := 1; i <= blockerReadFanout+1; i++ {
+		for i := 1; i <= blockers.ReadFanout+1; i++ {
 			key := ownBlocker(i)
 			if row := mirrored[key]; row.Status != "done" || row.Seq != 7 {
 				t.Fatalf("the mirror holds %s at %q seq %d, want the listing's own reading (done, 7)", key, row.Status, row.Seq)
@@ -198,11 +198,11 @@ func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
 	t.Run("the listing", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{}
-		for i := 1; i <= blockerReadFanout+1; i++ {
+		for i := 1; i <= blockers.ReadFanout+1; i++ {
 			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: ownBlocker(i), Status: "in_progress", LastSeq: 7, ClaimedBy: "user:alice"})
 		}
 		w := tickRuntime(t, pool, client)
-		seedBlockedRoots(t, pool, blockerReadFanout+1)
+		seedBlockedRoots(t, pool, blockers.ReadFanout+1)
 
 		w.applyControllerTick(context.Background(), time.Now())
 

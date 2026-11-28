@@ -191,7 +191,7 @@ func (s *Store) DeclineIssueRelease(ctx context.Context, project, issue string, 
 	}
 	var told bool
 	cancelled, err := s.cancelIssueRelease(ctx, project, issue, woken, outOfWorkflow, paused, func(tx pgx.Tx) (err error) {
-		told, err = recordDecline(ctx, tx, project, issue, decline)
+		told, err = recordDecline(ctx, tx, project, issue, decline, s.stamp())
 		return err
 	})
 	cancelled.Told = told && cancelled.Declined
@@ -339,12 +339,13 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, w
 		if !standing.live {
 			roles = nil
 		}
+		queued := s.stamp()
 		for _, r := range roles {
 			row, err := woken(r.role, standing.generation, dropped[r.role])
 			if err != nil {
 				return err
 			}
-			if _, err := insertOutboxRow(ctx, tx, project, issue, row); err != nil {
+			if _, err := insertOutboxRow(ctx, tx, project, issue, row, queued); err != nil {
 				return err
 			}
 			cancelled.Resumed = append(cancelled.Resumed, r.role)

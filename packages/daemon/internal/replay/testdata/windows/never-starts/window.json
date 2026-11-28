@@ -1,0 +1,51 @@
+{
+  "format": 1,
+  "project": "ACME",
+  "from": "2001-03-05T09:00:00Z",
+  "to": "2001-03-05T14:00:00Z",
+  "before": "1h0m0s",
+  "caps": [
+    {
+      "at": "2001-03-05T09:00:00Z",
+      "cap": 2
+    }
+  ],
+  "parts": [
+    {
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T14:00:00Z",
+      "release": "fixture",
+      "commit": "0d3786da536722f2eb26a793ab1b9827b6e90f47",
+      "rule": "keep-past-review"
+    }
+  ],
+  "tickInterval": "1h0m0s",
+  "gateSteps": [],
+  "linger": "2h0m0s",
+  "reviewRoundCap": 3,
+  "stalledTreeNotice": "6h0m0s",
+  "workerSilence": "4h0m0s",
+  "workerBackground": "4h0m0s",
+  "experiments": [],
+  "lines": [
+    "admission: slot released",
+    "admission: slot taken",
+    "daemon: opening the store; a connection error that the next attempt can clear is tried again",
+    "supervise: a turn ended",
+    "supervise: a turn started",
+    "supervise: launched",
+    "workflow: design gate registered",
+    "workflow: issue left the workflow",
+    "workflow: phase changed",
+    "workflow: the root of this tree takes its slot and starts its own first phase",
+    "workflow: tree lingers"
+  ],
+  "collector": "0d3786da536722f2eb26a793ab1b9827b6e90f47",
+  "files": {
+    "events/ACME-1.jsonl": "614e5349b87c8d1df95d5ce2c6a91ae9890bea146edf89e38d5fde49bc33e953",
+    "events/ACME-2.jsonl": "b2aabd69cdb09e0bd69a685a55e0783b0863e858dc8436ae86c3ead34afbae09",
+    "events/ACME-3.jsonl": "8a394ba46c6291329590ec225761dcc2d11f7500ee1f0c6c0cf36fd88fe46e8d",
+    "events/ACME-4.jsonl": "62477e9445e3bb237009ec381a5a0a001ea1172a39dff478d90f49732f3029d6",
+    "log.jsonl": "0a451f0b94c3a6b95e620be5c16c997ac867e937490e3b4982f3ded8aa1a0962"
+  }
+}

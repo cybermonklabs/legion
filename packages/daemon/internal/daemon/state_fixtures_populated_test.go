@@ -446,6 +446,21 @@ func populatedClaims(s *seeding, rows populatedRows) {
 	tasked := at(22, 9, 2, 0)
 	round := "pod:" + populatedPods["LEGION-208"]
 	implementerLocator := populatedPodLocator(implementer208, "LEGION-208", 5)
+	// When each claim that stands stopped stopped in this story, which its write is stamped at
+	// (seeding.claimAt) and a slot holder's `stopped` is dated by: LEGION-208's planner, suspended
+	// for the pod's replacement after it answered the round at 09:06:30; LEGION-211's implementer,
+	// at its pod's release; LEGION-212's tester, retired while its issue stood in its phase;
+	// LEGION-218's tree architect, suspended by the operator after its run took its slot at
+	// 08:14:52; and LEGION-219's tree architect, retired at the close of its run before this one,
+	// which took its slot at 10:27:44 on the 19th. Every other claim's write is stamped with the
+	// wall clock, which no fixture serves.
+	stopped := map[claim.Token]time.Time{
+		planner208: at(22, 9, 6, 40),
+		token("LEGION-211", claim.RoleImplementer): at(22, 8, 55, 0),
+		token("LEGION-212", claim.RoleTester):      at(22, 8, 52, 0),
+		token("LEGION-218", claim.RoleArchitect):   at(22, 8, 40, 0),
+		token("LEGION-219", claim.RoleArchitect):   at(19, 10, 20, 0),
+	}
 	for _, c := range []supervise.Claim{
 		// The pacing holds this claim's relaunch onto this daemon's plugin: its process registered
 		// at the fleet's floor.
@@ -537,7 +552,7 @@ func populatedClaims(s *seeding, rows populatedRows) {
 			Generation: 3, State: supervise.StateIdle, Session: "ses_reviewer_219", GivenEntry: 2,
 			Locator: populatedPodLocator(token("LEGION-219", claim.RoleReviewer), "LEGION-219", 3), PluginContract: api.ServingFloor},
 	} {
-		s.claimAs(c)
+		s.claimAt(stopped[c.Token], c)
 	}
 	// The release of LEGION-211's pod in LEGION-200's tree (store.Store.RecordPodRelease), which
 	// suspended its implementer as `released`. A release takes only a pod whose workspace held

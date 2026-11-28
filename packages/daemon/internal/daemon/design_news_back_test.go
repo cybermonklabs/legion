@@ -93,7 +93,7 @@ func TestTheAcceptingAnswerReadsTheTasksStepsBeforeTheAcceptance(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), newNewsClaims(*root, nil))
+				drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), record.NewNewsClaims(*root, nil))
 				return err
 			})
 			for _, draft := range drafts {
