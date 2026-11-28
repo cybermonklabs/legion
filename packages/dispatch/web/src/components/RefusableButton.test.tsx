@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useState } from "react";
+import { type MouseEvent, type ReactNode, useState } from "react";
 
 import { pressHeld } from "../__tests__/held-press";
 import { RefusableButton } from "./RefusableButton";
@@ -84,6 +84,42 @@ test("a busy button keeps the focus, and a press of it does nothing and is no re
     expect(remove.textContent).toBe("Removing…");
     expect(remove.hasAttribute("disabled")).toBe(false);
     expect(refusedPresses).toBe(0);
+  } finally {
+    cleanup();
+  }
+});
+
+// A host that keeps the focus where it is (main's #6046: the live view's composer keeps the
+// phone's keyboard up) hears the press start through `onMouseDown` and prevents its default. A
+// held button - busy, or refused - still hands that event on, so the focus the host keeps stays
+// put through a press of a held button too.
+test("a held button still hands its mousedown to the host, so a host that keeps the focus keeps it", async () => {
+  const user = userEvent.setup();
+  const pressStarts: string[] = [];
+  const keepFocus = (event: MouseEvent<HTMLButtonElement>) => {
+    pressStarts.push(event.currentTarget.textContent ?? "");
+    event.preventDefault();
+  };
+  render(
+    <>
+      <textarea aria-label="Message" />
+      <RefusableButton busy="Sending…" onMouseDown={keepFocus} refusal={null}>
+        Send
+      </RefusableButton>
+      <RefusableButton onMouseDown={keepFocus} refusal="Nothing to send.">
+        Steer
+      </RefusableButton>
+    </>
+  );
+
+  try {
+    const message = screen.getByRole("textbox", { name: "Message" });
+    await user.click(message);
+    await user.click(screen.getByRole("button", { name: "Sending…" }));
+    expect(document.activeElement).toBe(message);
+    await user.click(screen.getByRole("button", { name: "Steer" }));
+    expect(document.activeElement).toBe(message);
+    expect(pressStarts).toEqual(["Sending…", "Steer"]);
   } finally {
     cleanup();
   }
