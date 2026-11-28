@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -1495,6 +1496,334 @@ func TestTheEndOfATreesLastRetroLeavesTheRootArchitectToTheWakeQueuedForIt(t *te
 			}
 			if len(suspends) != tc.suspends {
 				t.Fatalf("suspensions of the root architect at the end of the tree's last retro = %+v, want %d", suspends, tc.suspends)
+			}
+		})
+	}
+}
+
+// hourAfterRetros is a tree inside its linger whose last retro after a close ended (P6, P7). The
+// rig's linger is 72 hours, as the default's, so the hour after that end passes well inside it. The
+// root LEGION-208 closes while its child LEGION-209, whose run started the root's, still works in
+// implementing, so the root's own retro is the tree's one open retro, and the root architect's
+// claim is the one the close suspended, as the daemon's own. ended is when the root's report ended
+// that retro, and stop and id are the fact of the linger_close row that end queued for the hour
+// after it and the end's own event it applies under (LingerAfterRetrosEventID), as the outbox
+// applies it.
+type hourAfterRetros struct {
+	*retroRig
+	ended time.Time
+	stop  intake.LingerExpired
+	id    string
+}
+
+// newHourAfterRetros is that tree. With wake, a finding of the root's retro wakes the architect
+// before the root's report, and the wake's start is still queued when the report ends the retro,
+// which leaves the architect to that wake; without, the report suspends the architect. Either way
+// the end queues one linger_close row, due the hour after the end, naming that end.
+func newHourAfterRetros(t *testing.T, wake bool) *hourAfterRetros {
+	t.Helper()
+	h := &hourAfterRetros{retroRig: newRetroRig(t)}
+	h.engine.cfg.Pods = wakePods(t, h.pool)
+	h.engine.cfg.Linger = 72 * time.Hour
+	h.root(t, phase.Implementing)
+	h.member(t, "LEGION-209", "LEGION-208", phase.Admitted, 43)
+	h.runTo(t, "LEGION-209", phase.Implementing)
+	h.person(t, "LEGION-208", "done")
+	lingering(t, h.pool, "LEGION-208")
+	seedRunClaim(t, h.pool, "LEGION-208", claim.RoleArchitect, 1, "suspended", "daemon", "session-architect")
+	if wake {
+		h.wakeArchitect(t, "finding")
+	}
+	mark := h.mark(t)
+	if result := h.report(t, "LEGION-208", 1); result.Refusal != nil {
+		t.Fatalf("the report of the root's retro was refused: %+v", result.Refusal)
+	}
+	ended, found := runRetroOf(t, h.pool, "LEGION-208", 1)
+	if !found || ended.ended == nil {
+		t.Fatalf("the root's run_retros row after its report = %+v (found %t), want it ended", ended, found)
+	}
+	if row, found := runRetroOf(t, h.pool, "LEGION-209", 3); found && row.open() {
+		t.Fatalf("LEGION-209's run_retros row = %+v, want no retro of it open: the root's was the tree's last", row)
+	}
+	h.ended = *ended.ended
+	queued := rowsSince(t, h.pool, "LEGION-208", string(record.OutboxKindLingerClose), mark)
+	if len(queued) != 1 || !queued[0].nextAt.Equal(h.ended.Add(pods.RetroWakeWindow)) {
+		t.Fatalf("linger_close rows at the end of the tree's last retro, inside its linger = %+v, want one due the hour after the end, %s",
+			queued, h.ended.Add(pods.RetroWakeWindow))
+	}
+	var payload record.LingerClose
+	if err := json.Unmarshal(queued[0].payload, &payload); err != nil || payload.Generation != 1 || payload.RetrosEnded == nil || !payload.RetrosEnded.Equal(h.ended) {
+		t.Fatalf("the linger_close row = %s (%v), want generation 1 naming the retro's end %s", queued[0].payload, err, h.ended)
+	}
+	h.stop = intake.LingerExpired{Issue: "LEGION-208", Generation: 1, RetrosEnded: payload.RetrosEnded}
+	h.id = LingerAfterRetrosEventID("LEGION-208", 1, *payload.RetrosEnded)
+	return h
+}
+
+// after moves the rig's clock to d past the end of the tree's last retro.
+func (h *hourAfterRetros) after(d time.Duration) { h.clock.now = h.ended.Add(d) }
+
+// fromOutbox applies fact under id as the outbox applies a row's fact, and answers its error.
+func (h *hourAfterRetros) fromOutbox(id string, fact intake.Fact) error {
+	_, err := intake.ApplyFact(context.Background(), h.pool, "outbox", id, fact, h.engine, admissionStub{})
+	return err
+}
+
+// applyStop applies the fact of the linger_close row the end queued.
+func (h *hourAfterRetros) applyStop() error { return h.fromOutbox(h.id, h.stop) }
+
+// wakeArchitect is a message to the root architect's role topic while no live session holds it,
+// as the listener reports it (report names the report), and fails unless it queues one start of
+// a retro's wake of the architect.
+func (h *hourAfterRetros) wakeArchitect(t *testing.T, report string) {
+	t.Helper()
+	mark := h.mark(t)
+	h.apply(report, intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: treeRoleToken(t, "LEGION-208", claim.RoleArchitect),
+		At: h.clock.now, Report: report})
+	var wakes int
+	for _, request := range supervisesSince(t, h.pool, "LEGION-208", mark) {
+		if request.Op == "start" && request.RetroWake {
+			wakes++
+		}
+	}
+	if wakes != 1 {
+		t.Fatalf("retro wakes of the root architect for %s = %d, want one", report, wakes)
+	}
+}
+
+// ranWake stands for the outbox having run the queued start of a retro's wake of the architect:
+// its row is gone, as the outbox deletes a row it ran.
+func (h *hourAfterRetros) ranWake(t *testing.T) {
+	t.Helper()
+	tag, err := h.pool.Exec(t.Context(), `delete from outbox where issue = 'LEGION-208' and kind = 'supervise'
+		and payload->>'op' = 'start' and coalesce((payload->>'retroWake')::boolean, false)`)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("run the start of the retro's wake of the root architect: %d rows, %v; want its one queued start", tag.RowsAffected(), err)
+	}
+}
+
+// architectAt records the root architect's claim in state (suspended by suspendedBy), holding the
+// task of a retro's wake (supervise.RetroWakeTaskID) where wakeTask is set, and no task otherwise.
+func (h *hourAfterRetros) architectAt(t *testing.T, state, suspendedBy string, wakeTask bool) {
+	t.Helper()
+	seedRunClaim(t, h.pool, "LEGION-208", claim.RoleArchitect, 1, state, suspendedBy, "session-architect")
+	token := treeRoleToken(t, "LEGION-208", claim.RoleArchitect)
+	if _, err := h.pool.Exec(t.Context(), `delete from pending_task_deliveries where claim_token = $1`, token); err != nil {
+		t.Fatalf("clear the root architect's task: %v", err)
+	}
+	if !wakeTask {
+		return
+	}
+	if _, err := h.pool.Exec(t.Context(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at) values ($1, $2, $3, now())`,
+		token, supervise.RetroWakeTaskID("outbox-delivery:wake"), retroArchitectWakeTask(token)); err != nil {
+		t.Fatalf("seed the task of the retro's wake on the root architect's claim: %v", err)
+	}
+}
+
+// stopsSince is the rows newer than mark that stop the root architect, and the root's
+// issue_suspend rows newer than mark.
+func (h *hourAfterRetros) stopsSince(t *testing.T, mark int64) ([]record.SuperviseRequest, int) {
+	t.Helper()
+	return stopsOf(supervisesSince(t, h.pool, "LEGION-208", mark), claim.RoleArchitect),
+		len(rowsSince(t, h.pool, "LEGION-208", string(record.OutboxKindIssueSuspend), mark))
+}
+
+// closesSince is the root's close rows newer than mark: its tree_close rows of each role, and its
+// workspace removals under "workspace".
+func (h *hourAfterRetros) closesSince(t *testing.T, mark int64) map[string]int {
+	t.Helper()
+	got := map[string]int{}
+	for _, request := range supervisesSince(t, h.pool, "LEGION-208", mark) {
+		if request.Op == "tree_close" {
+			got[string(request.Role)]++
+		}
+	}
+	if removals := len(rowsSince(t, h.pool, "LEGION-208", string(record.OutboxKindWorkspaceRemove), mark)); removals > 0 {
+		got["workspace"] = removals
+	}
+	return got
+}
+
+// lingerEnds applies the linger's own end, under the linger's event (LingerEventID), as the
+// outbox applies the row the root's close queued, and answers the root's close rows it wrote; the
+// clock moves past the deadline first.
+func (h *hourAfterRetros) lingerEnds(t *testing.T) map[string]int {
+	t.Helper()
+	root := issueRecord(t, h.pool, "LEGION-208")
+	if root == nil || root.LingerUntil == nil {
+		t.Fatalf("the root = %+v, want it lingering", root)
+	}
+	h.clock.now = root.LingerUntil.Add(time.Minute)
+	mark := h.mark(t)
+	if err := h.fromOutbox(LingerEventID("LEGION-208", 1), intake.LingerExpired{Issue: "LEGION-208", Generation: 1}); err != nil {
+		t.Fatalf("the linger's end = %v, want it applied", err)
+	}
+	return h.closesSince(t, mark)
+}
+
+// everyRootClose is closesSince's count of the whole root's close: one tree_close of each role and
+// one removal of its workspace.
+func everyRootClose() map[string]int {
+	want := map[string]int{"workspace": 1}
+	for _, role := range claim.Roles {
+		want[string(role)] = 1
+	}
+	return want
+}
+
+// The reviewer's case of P7 (review thread PRRT_kwDORFy7ds69BE_B). For the hour after the end of the
+// last retro after a close of a tree inside its linger, at T, the root's pod is the architect's,
+// whose idle release stops it once its turn ends. After that hour, the idle rule keeps the pod for
+// the linger's close. So a root architect that a retro's wake brought back, and whose turn ended
+// after T+50m, or that a message woke again at T+55m, kept its pod until the linger's end, 72 hours
+// on, and the root's IssueSuspend waited as long. The end now queues a linger_close row due at T
+// plus the hour (suspendArchitectAfterRetros). That row waits while the hour has not passed, and
+// while the architect's claim holds the task of a retro's wake, which its turn holds until it ends.
+// It then suspends the architect and queues the root's IssueSuspend while the linger still runs.
+// It applies under the end's own event, never the linger's, so the linger's end still applies at
+// its deadline after it and closes the tree.
+func TestAWokenRootArchitectIsStoppedOnceTheHourAfterItsTreesLastRetroHasPassed(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// wake is whether a finding wakes the architect before the report, which then leaves the
+		// architect to that wake; without, the report suspends it and a message wakes it at T+55m.
+		wake bool
+	}{
+		{name: "the architect's turn on the finding ends after T+50m", wake: true},
+		{name: "a message wakes the architect again at T+55m"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHourAfterRetros(t, tc.wake)
+			if tc.wake {
+				h.ranWake(t)
+				h.architectAt(t, "working", "", true)
+				h.after(50 * time.Minute)
+				mark := h.mark(t)
+				if err := h.applyStop(); !errors.Is(err, wait.ErrWaiting) {
+					t.Fatalf("the stop before the hour after the retro's end has passed = %v, want a wait", err)
+				}
+				if stops, suspensions := h.stopsSince(t, mark); len(stops) != 0 || suspensions != 0 {
+					t.Fatalf("before the hour has passed the stop wrote stops %+v and %d issue_suspend rows of the root, want none", stops, suspensions)
+				}
+				h.after(51 * time.Minute)
+				h.architectAt(t, "idle", "", false)
+			} else {
+				h.after(55 * time.Minute)
+				h.wakeArchitect(t, "finding-again")
+				h.ranWake(t)
+				h.architectAt(t, "working", "", true)
+				h.after(pods.RetroWakeWindow + time.Minute)
+				mark := h.mark(t)
+				if err := h.applyStop(); !errors.Is(err, wait.ErrWaiting) {
+					t.Fatalf("the stop once the hour has passed, the architect's turn on the wake still running = %v, want a wait", err)
+				}
+				if stops, suspensions := h.stopsSince(t, mark); len(stops) != 0 || suspensions != 0 {
+					t.Fatalf("while the architect's turn on the wake runs the stop wrote stops %+v and %d issue_suspend rows of the root, want none", stops, suspensions)
+				}
+				h.after(pods.RetroWakeWindow + 5*time.Minute)
+				h.architectAt(t, "idle", "", false)
+			}
+
+			h.after(pods.RetroWakeWindow + 6*time.Minute)
+			mark := h.mark(t)
+			if err := h.applyStop(); err != nil {
+				t.Fatalf("the stop once the hour has passed and the architect's turn has ended = %v, want it applied", err)
+			}
+			stops, suspensions := h.stopsSince(t, mark)
+			if len(stops) != 1 || stops[0].Op != "suspend" || stops[0].Generation != 1 {
+				t.Fatalf("stops of the root architect once the hour has passed = %+v, want one suspend", stops)
+			}
+			if suspensions != 1 {
+				t.Fatalf("issue_suspend rows of the root once the hour has passed = %d, want one", suspensions)
+			}
+			root := issueRecord(t, h.pool, "LEGION-208")
+			if root == nil || !record.Lingering(*root, h.clock.now) {
+				t.Fatalf("the root once its architect was stopped = %+v, want its linger still running at %s", root, h.clock.now)
+			}
+			if got, want := h.lingerEnds(t), everyRootClose(); !maps.Equal(got, want) {
+				t.Fatalf("close rows of the root at the linger's end after the stop = %v, want %v: the linger's own end still applies and closes the tree", got, want)
+			}
+		})
+	}
+}
+
+// The linger can end within the hour after its tree's last retro after a close ended, and the stop
+// that end queued for that hour then comes due past the linger's deadline (suspendAfterRetros is
+// for a tree inside its linger). It is then the close a tree past its linger owes
+// (closeAfterRetros), and while the linger's own end has not applied it changes nothing and spends
+// its own event: that end closes the whole tree, the root with it, when it applies.
+func TestAStopDuePastTheLingersDeadlineLeavesTheTreeToTheLingersEnd(t *testing.T) {
+	t.Parallel()
+	h := newHourAfterRetros(t, true)
+	h.ranWake(t)
+	h.architectAt(t, "idle", "", false)
+	if _, err := h.pool.Exec(t.Context(), `update issues set linger_until = $1 where key = 'LEGION-208'`, h.ended.Add(30*time.Minute)); err != nil {
+		t.Fatalf("bring the root's linger deadline to half an hour after the retro's end: %v", err)
+	}
+	h.after(pods.RetroWakeWindow + time.Minute)
+	mark := h.mark(t)
+	if err := h.applyStop(); err != nil {
+		t.Fatalf("the stop past the linger's deadline, before the linger's end applied = %v, want it applied", err)
+	}
+	if stops, suspensions := h.stopsSince(t, mark); len(stops) != 0 || suspensions != 0 {
+		t.Fatalf("the stop past the linger's deadline wrote stops %+v and %d issue_suspend rows of the root, want none: the linger's end closes the tree", stops, suspensions)
+	}
+	if got, want := h.lingerEnds(t), everyRootClose(); !maps.Equal(got, want) {
+		t.Fatalf("close rows of the root at the linger's end = %v, want %v", got, want)
+	}
+}
+
+// The stop at the end of the hour after a lingering tree's last retro after a close
+// (suspendAfterRetros) stops nothing while the tree still holds the root architect. A retro of the
+// tree that opened again before the hour's end decides again when it ends, so the row finishes. A
+// retro wake's start that is still queued, or a retro wake's task that the architect's claim holds,
+// makes the row wait and run again: the claim holds such a task until the turn that took it ends. A
+// claim that runs nothing has nothing to stop, so the row finishes, even though that claim keeps a
+// retro wake's task it never took.
+func TestARootArchitectIsNotStoppedAtTheHoursEndWhileItsTreeStillHoldsIt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		arrange func(t *testing.T, h *hourAfterRetros)
+		waits   bool
+	}{
+		{name: "a retro of the tree opened again before the hour's end", arrange: func(t *testing.T, h *hourAfterRetros) {
+			h.ranWake(t)
+			h.architectAt(t, "idle", "", false)
+			h.after(30 * time.Minute)
+			h.person(t, "LEGION-209", "done")
+			if row, found := runRetroOf(t, h.pool, "LEGION-209", 3); !found || !row.open() {
+				t.Fatalf("LEGION-209's run_retros row after its close = %+v (found %t), want its retro after the close open", row, found)
+			}
+		}},
+		{name: "the start of a retro's wake of the architect is still queued", waits: true, arrange: func(*testing.T, *hourAfterRetros) {}},
+		{name: "the architect's claim holds the task of a retro's wake its turn took", waits: true, arrange: func(t *testing.T, h *hourAfterRetros) {
+			h.ranWake(t)
+			h.architectAt(t, "working", "", true)
+		}},
+		{name: "the architect's claim runs nothing, a retro wake's task kept on it", arrange: func(t *testing.T, h *hourAfterRetros) {
+			h.ranWake(t)
+			h.architectAt(t, "suspended", "daemon", true)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHourAfterRetros(t, true)
+			tc.arrange(t, h)
+			h.after(pods.RetroWakeWindow + time.Minute)
+			mark := h.mark(t)
+			err := h.applyStop()
+			want := "it applied"
+			if tc.waits {
+				want = "a wait"
+			}
+			if tc.waits && !errors.Is(err, wait.ErrWaiting) || !tc.waits && err != nil {
+				t.Fatalf("the stop once the hour has passed = %v, want %s", err, want)
+			}
+			if stops, suspensions := h.stopsSince(t, mark); len(stops) != 0 || suspensions != 0 {
+				t.Fatalf("the stop wrote stops %+v and %d issue_suspend rows of the root, want none", stops, suspensions)
 			}
 		})
 	}

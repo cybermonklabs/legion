@@ -1672,9 +1672,11 @@ type ReparentSeed struct {
 func (ReparentSeed) OutboxKind() OutboxKind { return OutboxKindReparentSeed }
 
 // LingerClose records the issue generation whose linger should close. RetrosEnded, set, makes it
-// the close a tree past its linger still owes once the hour after its last retro after a close
-// ended (at RetrosEnded) has passed: the end of that retro queues it, due then, and it closes what
-// the linger's end left to the tree's retros (the workflow's closeTreeAfterRetros and
+// the hour after the end of the tree's last retro after a close (at RetrosEnded) coming due: the
+// end of that retro queues it, due then. In a tree whose linger still runs it stops the root
+// architect a retro's wake brought back, and the root's pod with it (the workflow's
+// suspendArchitectAfterRetros and suspendAfterRetros); in a tree past its linger it closes what the
+// linger's end left to the tree's retros (the workflow's closeTreeAfterRetros and
 // closeAfterRetros). A row with none is the linger's own end.
 type LingerClose struct {
 	Generation  uint64     `json:"generation"`

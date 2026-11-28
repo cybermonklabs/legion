@@ -3482,7 +3482,9 @@ It adds the columns `claims.serving_retro_run` and `pending_task_deliveries.retr
 It writes the outbox's kind check (`outbox_kind_check`) again, as the list of `20261126163320_state_events` with `retro_bound` added, so the three state kinds, `merge_holds_changed` and every other kind of that list, of each of which a database the release before migrated can hold a pending row, stay in it.
 Its version stands above that list's, and so above the lists of `20261126110259_merge_holds_changed`, `20261122154643_outbox_kinds_with_the_basis_seeds`, `20261119203047_design_news`, `20261119003157_conflict_reads_and_merge_forward`, `20261117023932_outbox_kinds_with_the_plan_record` and `20261117000528_outbox_kinds_with_the_step_record`, none of which names `retro_bound`, so it writes the check last on any database.
 A `retro_bound` row ends a retro after a close that nobody reported at its bound, a `supervise` start that carries `retroRun` hands the retro's task to its agent, and one that carries `retroWake` wakes the architect of a closed tree's root for a message to its role topic while a retro of that tree is open or within the hour after the last one ended.
-A `linger_close` row that carries `retrosEnded` is the close a tree past its linger owes once the hour after its last retro after a close ended has passed: the claims and the workspace of each issue whose retro its linger's end left open, and of the root architect a finding woke.
+A `linger_close` row that carries `retrosEnded` comes due once the hour after the last retro after a close of a tree ended has passed.
+In a tree whose linger still runs, it suspends the root architect that a finding woke, and it deletes the root's pod.
+In a tree past its linger, it is the close that the tree owes: the claims and the workspace of each issue whose retro its linger's end left open, and of the root architect that a finding woke.
 
 **Those queued rows must go before the earlier image is pinned.**
 The release before decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields` in `record/outbox.go`) and knows neither the kind `retro_bound`, nor a `supervise` row's `retroRun` or `retroWake`, nor a `linger_close` row's `retrosEnded`.
@@ -3504,7 +3506,7 @@ commit;
 
 The header of `20261126164240_run_retros.up.sql` carries this same block as its last paragraph, which `migrations.WayBack` returns.
 The three deletes of queued rows are owed to the release before.
-Each row they delete is a bound, a retro's task or a root architect's wake, which a release that runs no retro after a close owes nobody, or the close a tree past its linger owes the hour after its last retro after a close ended.
+Each row they delete is a bound, a retro's task or a root architect's wake, which a release that runs no retro after a close owes nobody, or the stop or the close that a tree owes the hour after its last retro after a close ended.
 The drops and the delete of the version row are owed to the roll-forward.
 With them gone, `store.apply` finds no row of this version and runs the file again, which fills `run_retros` from the issues as they stand then.
 The kind check keeps `retro_bound` beside every kind of the list of `20261126163320_state_events`, the three state kinds among them, so it admits every kind the release before writes, and the block needs no statement for it.
@@ -3512,6 +3514,7 @@ The kind check keeps `retro_bound` beside every kind of the list of `20261126163
 **What the rollback costs.**
 What the way back costs is each retro after a close that is open at the rollback: the roll-forward opens none again, and its agent's next completion is refused as one on a `done` issue.
 It costs as well the close of what a tree's linger left to its retros after a close: a tree whose linger ended while one was open, or whose last one ended within the hour before the rollback, keeps the claims and the workspace of each such retro's issue, and its Sandbox, until a `todo` on its root re-admits the tree and its next linger ends.
+A tree whose linger still runs, and whose last retro after a close ended within the hour before the rollback, keeps the root architect that a finding woke, and the root's pod, until its linger ends.
 While the release before runs, an issue that closes with no retro in its last run gets no retro.
 
 **Every daemon sharing the database moves together.**

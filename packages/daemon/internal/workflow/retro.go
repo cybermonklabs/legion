@@ -46,10 +46,13 @@ func LingerEventID(root string, generation uint64) string {
 	return fmt.Sprintf("linger:%s:%d", root, generation)
 }
 
-// LingerAfterRetrosEventID is the event id of the close a tree past its linger owes once the hour
-// after the end of its last retro after a close, at ended, has passed (intake.LingerExpired with
-// RetrosEnded, closeAfterRetros): one for each such end, so a tree a later retro reopened after
-// one such close is closed again by the next.
+// LingerAfterRetrosEventID is the event id of the hour after the end of a tree's last retro after a
+// close, at ended, coming due (intake.LingerExpired with RetrosEnded): in a tree whose linger still
+// runs, the stop of the root architect a retro's wake brought back (suspendAfterRetros), and in a
+// tree past its linger, the close that tree owes (closeAfterRetros). It is one for each such end,
+// so a tree that a later retro reopened is stopped or closed again by the next end. It is never the
+// linger's own event (LingerEventID): a stop applied while the linger runs leaves the linger's end
+// to apply at its deadline, and closeTreeAfterRetros still reads that end as still to come.
 func LingerAfterRetrosEventID(root string, generation uint64, ended time.Time) string {
 	return fmt.Sprintf("%s:retros-ended:%s", LingerEventID(root, generation), ended.UTC().Format(time.RFC3339Nano))
 }
@@ -453,10 +456,13 @@ func (e *Engine) nameRetroEnd(ctx context.Context, tx pgx.Tx, issue record.Issue
 // (retroWakeOwed), is not suspended: the retro's agent publishes its finding and then reports, so
 // that wake can stand behind the very report that ends the tree's last open retro, and a
 // suspension written now would stand above its start and stop the architect before it took the
-// task. Its idle release stops it once its turn on the finding ends (pods.IdleView.RetroHolds); the
-// root's IssueSuspend still goes, and waits while the architect's process runs
-// (store.IssueSuspension). A tree past its linger closes again once the hour after its last retro's
-// end has passed (closeTreeAfterRetros).
+// task. While the tree takes a retro's wake, its idle release stops it once its turn on the finding
+// ends (pods.IdleView.RetroHolds); the root's IssueSuspend still goes, and waits while the
+// architect's process runs (store.IssueSuspension). That hold ends an hour after this end, and a
+// wake within that hour can bring an architect suspended here back too, so in a tree inside its
+// linger the end, whichever of the two it took, also queues the stop of the root architect for the
+// end of that hour (suspendArchitectAfterRetros). A tree past its linger closes again once the hour
+// after its last retro's end has passed (closeTreeAfterRetros).
 func (e *Engine) finishRetroAfterClose(ctx context.Context, tx pgx.Tx, issue record.Issue, ended record.RunRetro) error {
 	if InWorkflow(issue) {
 		return nil
@@ -489,6 +495,9 @@ func (e *Engine) finishRetroAfterClose(ctx context.Context, tx pgx.Tx, issue rec
 			return err
 		}
 	}
+	if ended.EndedAt == nil {
+		return fmt.Errorf("finish the retro after the close of %s run %d: the record names no end", issue.Key, ended.Generation)
+	}
 	if len(open) == 0 && record.Stopped(*root) {
 		owed, err := e.retroWakeOwed(ctx, tx, *root)
 		if err != nil {
@@ -501,21 +510,101 @@ func (e *Engine) finishRetroAfterClose(ctx context.Context, tx pgx.Tx, issue rec
 			return err
 		}
 		if root.Key != issue.Key {
-			rootCheck, err := e.store.ProductionCheck(ctx, tx, root.Key)
-			if err != nil {
+			if err := e.suspendRootPod(ctx, tx, *root); err != nil {
 				return err
 			}
-			if rootCheck == nil || !rootCheck.Open() {
-				if err := e.enqueue(ctx, tx, root.Key, record.IssueSuspend{Tree: root.Tree, Generation: root.Generation, TreeGeneration: root.Generation}); err != nil {
-					return err
-				}
-			}
+		}
+		if err := e.suspendArchitectAfterRetros(ctx, tx, *root, *ended.EndedAt); err != nil {
+			return err
 		}
 	}
-	if ended.EndedAt == nil {
-		return fmt.Errorf("finish the retro after the close of %s run %d: the record names no end", issue.Key, ended.Generation)
-	}
 	return e.closeTreeAfterRetros(ctx, tx, *root, open, *ended.EndedAt)
+}
+
+// suspendRootPod queues the IssueSuspend of root's pod, unless a production check of root is
+// open: that check's close writes the suspension.
+func (e *Engine) suspendRootPod(ctx context.Context, tx pgx.Tx, root record.Issue) error {
+	check, err := e.store.ProductionCheck(ctx, tx, root.Key)
+	if err != nil {
+		return err
+	}
+	if check != nil && check.Open() {
+		return nil
+	}
+	return e.enqueue(ctx, tx, root.Key, record.IssueSuspend{Tree: root.Tree, Generation: root.Generation, TreeGeneration: root.Generation})
+}
+
+// suspendArchitectAfterRetros leaves the stop of root's architect, in a tree inside its linger, to
+// the hour after the end of its last open retro after a close, at ended, as the record holds it.
+// For that hour the tree takes a retro's wake (RetroWakeStands), and the root's pod is the
+// architect's (pods.IdleView.RetroHolds): a wake can bring the architect back, and its idle release
+// stops it once its turn ends. After that hour the idle rule keeps the root's pod for the linger's
+// close (LeftPodClose), and an architect whose turn ended after the hour would keep its pod until
+// the linger's end. So the end queues a linger_close row that names it (record.LingerClose with
+// RetrosEnded), due once the hour has passed, which suspends the architect then (suspendAfterRetros).
+// A tree whose linger has already ended is closeTreeAfterRetros's, and a root that left the
+// workflow without a linger has no linger row to run.
+func (e *Engine) suspendArchitectAfterRetros(ctx context.Context, tx pgx.Tx, root record.Issue, ended time.Time) error {
+	if !record.Lingering(root, e.now()) {
+		return nil
+	}
+	due := ended.Add(pods.RetroWakeWindow)
+	e.logOnCommit(ctx, "workflow: the last open retro after a close of a lingering tree ended; the root architect is stopped once the hour Envoy keeps a finding's message has passed",
+		"tree", root.Key, "generation", root.Generation, "due", due)
+	return e.enqueueAt(ctx, tx, root.Key, record.LingerClose{Generation: root.Generation, RetrosEnded: &ended}, due)
+}
+
+// suspendAfterRetros is the stop of root's architect coming due, in a tree inside its linger, the
+// hour after its last retro after a close ended, at ended (suspendArchitectAfterRetros). P7 holds
+// after that hour as at the end: the architect is suspended for the daemon, its session kept, and
+// the root's pod goes with it where no production check of the root is open (suspendRootPod).
+// Nothing is stopped while a retro of the tree is open again, since its end decides again, nor
+// for an end that a later one followed, since the later end queued its own stop. The stop waits
+// while its hour has not passed, as the engine's clock reads it, and while the architect still
+// takes a retro's wake: the wake's start is queued (the outbox drops it once the hour has passed:
+// RetroWakeStands), or a claim that runs holds the wake's task, which the send drops after the
+// hour unless a turn took it, and the claim then holds it until that turn ends. An architect whose
+// claim runs nothing (suspended, retired or failed, or with no claim at all) has nothing to stop,
+// and its pod went with the act that stopped it. A turn that runs another task is not cut either:
+// the machine holds the daemon's suspension until the turn ends (supervise's holdSuspension), and
+// the IssueSuspend waits for the process (store.IssueSuspension).
+func (e *Engine) suspendAfterRetros(ctx context.Context, tx pgx.Tx, root record.Issue, ended time.Time) (intake.Result, error) {
+	open, err := e.store.OpenRetrosOfTree(ctx, tx, root.Tree)
+	if err != nil || len(open) > 0 {
+		return intake.Result{}, err
+	}
+	since, err := e.store.RetrosOfTreeEndedSince(ctx, tx, root.Tree, ended)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if len(since) > 0 && since[len(since)-1].EndedAt.After(ended) {
+		return intake.Result{}, nil
+	}
+	if due := ended.Add(pods.RetroWakeWindow); e.now().Before(due) {
+		return intake.Result{}, wait.Until(due, fmt.Sprintf("the stop of the root architect of tree %s waits for the hour after its last retro after a close ended, at %s",
+			root.Key, ended.UTC().Format(time.RFC3339)))
+	}
+	run, err := e.architectRun(ctx, tx, root)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	switch {
+	case retroWakeQueued(run):
+		return intake.Result{}, wait.Errorf("the stop of the root architect of tree %s waits for the start of a retro's wake of it, still queued", root.Key)
+	case run.Claim == nil || supervise.IsGone(run.Claim.State):
+		return intake.Result{}, nil
+	case retroWakeHeld(run):
+		return intake.Result{}, wait.Errorf("the stop of the root architect of tree %s waits for the task of a retro's wake its claim holds", root.Key)
+	}
+	if err := e.suspend(ctx, tx, root, claim.RoleArchitect, fmt.Sprintf("the hour after the last retro after a close of the tree of %s ended has passed", root.Key)); err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.suspendRootPod(ctx, tx, root); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, "workflow: the hour after the last retro after a close of a lingering tree ended has passed; its root architect is suspended",
+		"tree", root.Key, "generation", root.Generation, "state", run.Claim.State)
+	return intake.Result{}, nil
 }
 
 // closeTreeAfterRetros leaves the close of root's tree, past its linger, to the hour after the end
@@ -562,8 +651,16 @@ func (e *Engine) closeTreeAfterRetros(ctx context.Context, tx pgx.Tx, root recor
 // of each one's workspace (closeTreeRows). A retro of the tree open again is left to close the tree
 // itself when it ends, and a close queued for an end that a later one followed is left to the
 // later one's, so each end of the tree's last open retro closes the tree once. A close that comes
-// before its hour has passed, as the engine's clock reads it, waits for it.
+// before its hour has passed, as the engine's clock reads it, waits for it. The stop of the root
+// architect that an end inside the linger queued (suspendArchitectAfterRetros) comes here once the
+// linger has ended before that stop's hour did; while the linger's own end has not applied, it
+// changes nothing, since that end closes the whole tree when it does, as closeTreeAfterRetros
+// leaves such a tree to it.
 func (e *Engine) closeAfterRetros(ctx context.Context, tx pgx.Tx, root record.Issue, ended time.Time) (intake.Result, error) {
+	expired, err := e.store.Processed(ctx, tx, "outbox", LingerEventID(root.Key, root.Generation))
+	if err != nil || !expired {
+		return intake.Result{}, err
+	}
 	open, err := e.store.OpenRetrosOfTree(ctx, tx, root.Tree)
 	if err != nil || len(open) > 0 {
 		return intake.Result{}, err
@@ -612,15 +709,20 @@ func (e *Engine) closeAfterRetros(ctx context.Context, tx pgx.Tx, root record.Is
 // architectBack is whether the architect of root holds a claim that has not retired: one a retro's
 // wake relaunched in the tree's lifecycle after the linger's end retired it (retroWake).
 func (e *Engine) architectBack(ctx context.Context, tx pgx.Tx, root record.Issue) (bool, error) {
-	token, err := stepClaim(root, root.Key, claim.RoleArchitect)
-	if err != nil {
-		return false, err
-	}
-	run, err := e.store.RoleRun(ctx, tx, token, root.Key, claim.RoleArchitect, root.Generation)
+	run, err := e.architectRun(ctx, tx, root)
 	if err != nil {
 		return false, err
 	}
 	return run.Claim != nil && run.Claim.State != supervise.StateRetired, nil
+}
+
+// architectRun is the queued rows and the claim of root's own architect at root's generation.
+func (e *Engine) architectRun(ctx context.Context, tx pgx.Tx, root record.Issue) (record.RoleRun, error) {
+	token, err := stepClaim(root, root.Key, claim.RoleArchitect)
+	if err != nil {
+		return record.RoleRun{}, err
+	}
+	return e.store.RoleRun(ctx, tx, token, root.Key, claim.RoleArchitect, root.Generation)
 }
 
 // retroWake wakes the architect of a tree root whose claim the tree's close suspended, or the
@@ -652,7 +754,7 @@ func (e *Engine) retroWake(ctx context.Context, tx pgx.Tx, held supervise.Claim)
 	if err != nil {
 		return err
 	}
-	if slices.ContainsFunc(run.Queued, retroWakeStart) {
+	if retroWakeQueued(run) {
 		return nil
 	}
 	wake := wakeRow(*root, claim.RoleArchitect, pods.WakeRoleMessage, string(token), 0, retroArchitectWakeTask(string(token)))
@@ -693,21 +795,26 @@ func RetroWakeStands(ctx context.Context, records record.Store, tx pgx.Tx, root 
 }
 
 // retroWakeOwed is whether root's architect has a retro's wake still to take: its start queued
-// (retroWakeStart), or its task held by the architect's claim, taken by a turn or not
-// (supervise.Delivery.RetroWake), which the claim holds until the turn that took it ends.
+// (retroWakeQueued), or its task held by the architect's claim, taken by a turn or not
+// (retroWakeHeld).
 func (e *Engine) retroWakeOwed(ctx context.Context, tx pgx.Tx, root record.Issue) (bool, error) {
-	token, err := stepClaim(root, root.Key, claim.RoleArchitect)
+	run, err := e.architectRun(ctx, tx, root)
 	if err != nil {
 		return false, err
 	}
-	run, err := e.store.RoleRun(ctx, tx, token, root.Key, claim.RoleArchitect, root.Generation)
-	if err != nil {
-		return false, err
-	}
-	if slices.ContainsFunc(run.Queued, retroWakeStart) {
-		return true, nil
-	}
-	return run.Claim != nil && run.Claim.Pending != nil && run.Claim.Pending.RetroWake(), nil
+	return retroWakeQueued(run) || retroWakeHeld(run), nil
+}
+
+// retroWakeQueued is whether a start of a retro's wake of the architect whose run this is waits in
+// the outbox (retroWakeStart).
+func retroWakeQueued(run record.RoleRun) bool {
+	return slices.ContainsFunc(run.Queued, retroWakeStart)
+}
+
+// retroWakeHeld is whether the claim of run holds the task of a retro's wake
+// (supervise.Delivery.RetroWake), which it holds until the turn that took it ends.
+func retroWakeHeld(run record.RoleRun) bool {
+	return run.Claim != nil && run.Claim.Pending != nil && run.Claim.Pending.RetroWake()
 }
 
 // retroArchitectWakeTask is the task of a root architect woken for a message to its role topic

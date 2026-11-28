@@ -1897,9 +1897,10 @@ type CatchUpApplied struct {
 
 func (f CatchUpApplied) namedIssue() (string, bool) { return f.Issue, true }
 
-// LingerExpired records the generation whose post-close linger elapsed. RetrosEnded, set, is the
-// close of what that linger's end left to the tree's retros after a close coming due, the hour
-// after the last of them ended (at RetrosEnded) having passed (record.LingerClose.RetrosEnded).
+// LingerExpired records the generation whose post-close linger elapsed. RetrosEnded, set, is
+// instead the hour after the last retro after a close of the tree ended (at RetrosEnded) having
+// passed (record.LingerClose.RetrosEnded): while the linger runs, the stop of the root architect a
+// retro's wake brought back, and past it, the close of what the linger's end left to those retros.
 type LingerExpired struct {
 	Issue       string
 	Generation  uint64

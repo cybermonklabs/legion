@@ -3246,7 +3246,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// back, which leaves the issue in the workflow and its start a start. It is the issue's own
 		// status and not its root's, because a child carried into a tree of its own stands in the
 		// workflow while the tree it left lingers, and the tree is what the guard below reads. A
-		// production check's look is exempt — it is the one start an issue out of the workflow
+		// production check's look is exempt — it is a start an issue out of the workflow
 		// still runs — which the enclosing payload.CheckLook == 0 gives it, and so are the starts
 		// of the retro after a close (retroStart), which runs after the close too: its record, which
 		// fenced the row above, holds it to an issue out of the workflow.
@@ -5060,9 +5060,11 @@ func (r *outbox) reparentBasisVersion(ctx context.Context, parent string) (int, 
 // linger is a tree's linger coming due (record.LingerClose): the expiry is applied once, under the
 // event workflow.LingerEventID names, which the end of the last retro after a close of a tree past
 // its linger reads to tell an expiry that already closed the tree from one still to come. A row
-// that names RetrosEnded is the close that end left until the hour after it had passed, applied
-// under an event of that end's own (workflow.LingerAfterRetrosEventID), so a retro that reopens the
-// tree after one such close is closed again by its own.
+// that names RetrosEnded is the hour after such an end coming due — the stop of the root architect
+// a retro's wake brought back while the linger runs, or past it the close that end left — applied
+// under an event of that end's own (workflow.LingerAfterRetrosEventID) and never the linger's, so
+// the linger's end still applies after such a stop, and a retro that reopens the tree after one is
+// stopped or closed again by its own.
 func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload record.LingerClose) error {
 	id := workflow.LingerEventID(row.Issue, payload.Generation)
 	if payload.RetrosEnded != nil {

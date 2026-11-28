@@ -82,7 +82,7 @@
 -- supervise row's retroRun or retroWake, nor a linger_close row's retrosEnded, so it would fail
 -- each such row at every attempt, and its issue's lifecycle lane behind it. Each deleted row is a
 -- bound or a retro task or a root architect's wake that a release which runs no retro after a close
--- owes nobody, or the close a tree past its linger owes the hour after its last retro after a close
+-- owes nobody, or the stop or the close that a tree owes the hour after its last retro after a close
 -- ended. That release names neither the table nor the two columns in any read or write, so it boots
 -- with them standing: the drops and the delete of this version's row are owed to the roll-forward.
 -- With them gone, store.apply finds no row of this version and runs this file again, which fills
@@ -91,11 +91,13 @@
 -- refused as one on a done issue. It costs as well the close of what a tree's linger left to its
 -- retros after a close: a tree whose linger ended while one was open, or whose last one ended within
 -- the hour before the rollback, keeps the claims and the workspace of each such retro's issue, and
--- its Sandbox, until a todo on its root re-admits the tree and its next linger ends. The kind check
--- keeps retro_bound beside every kind of 20261126163320's list, the three state kinds among them,
--- so it admits every kind the release before writes. The outbox, claims and pending_task_deliveries
--- hold the rows of every project that shares the database, so every daemon of one database moves
--- back, and forward, together.
+-- its Sandbox, until a todo on its root re-admits the tree and its next linger ends. A tree whose
+-- linger still runs, and whose last retro after a close ended within the hour before the rollback,
+-- keeps the root architect that a finding woke, and the root's pod, until its linger ends. The
+-- kind check keeps retro_bound beside every kind of 20261126163320's list, the three state kinds
+-- among them, so it admits every kind the release before writes. The outbox, claims and
+-- pending_task_deliveries hold the rows of every project that shares the database, so every daemon
+-- of one database moves back, and forward, together.
 --
 -- begin;
 -- delete from outbox where kind = 'retro_bound';

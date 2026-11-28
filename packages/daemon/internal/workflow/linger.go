@@ -630,11 +630,18 @@ func (e *Engine) handOver(ctx context.Context, tx pgx.Tx, root, child record.Iss
 // finding of it wakes (retroWake), which the close retired. The end of the tree's last open retro
 // writes the close of what is left once the hour Envoy keeps a finding's message has passed
 // (closeTreeAfterRetros): a fact naming RetrosEnded is that close coming due (closeAfterRetros). A
-// tree whose root was reopened, or that lingers at a later generation, changes nothing.
+// fact naming RetrosEnded while the linger still runs is the stop of the root architect that the
+// end of the tree's last retro after a close inside the linger left to that hour
+// (suspendArchitectAfterRetros, suspendAfterRetros): it deletes no member's Sandbox, so no open
+// production check of a member holds it. A tree whose root was reopened, or that lingers at a later
+// generation, changes nothing.
 func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.LingerExpired) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Generation != fact.Generation || !issue.Lingers() {
 		return intake.Result{}, err
+	}
+	if fact.RetrosEnded != nil && record.Lingering(*issue, e.now()) {
+		return e.suspendAfterRetros(ctx, tx, *issue, *fact.RetrosEnded)
 	}
 	open, err := e.store.OpenProductionChecksOfTree(ctx, tx, issue.Tree)
 	if err != nil {
