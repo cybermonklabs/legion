@@ -5263,14 +5263,22 @@ late_child_ready() {
 }
 wait_for "the child part to re-exec and install its cleanup trap" late_child_ready
 
-# The writer has no pidfile. With the old cleanup it can only leave its hold once the child
-# exits, so its write recreates the removed directory before the assertion reads it.
+# The writer has no pidfile. After its TERM it holds while the child's tmp is there, for at most
+# 20 naps of 0.1 s (2 s, below cleanup_term_seconds), and only then writes. A cleanup that waits
+# for it keeps that tmp until the writer has written and ended, and then removes both. A cleanup
+# that does not wait removes the tmp at once, and the write makes it again, every time.
 env CLUSTER_TEST_MARK="$late_mark" bash -ec '
   trap ": >\"\$2/term\"" TERM
   : >"$2/ready"
   while [ ! -e "$2/term" ] && kill -0 "$1" 2>/dev/null; do
     "$4" 0.1 || :
   done
+  if [ -e "$2/term" ]; then
+    for ((i = 0; i < 20; i++)); do
+      [ -d "$3" ] || break
+      "$4" 0.1 || :
+    done
+  fi
   mkdir -p -- "$3/root-late/run"
 ' bash "$late_pid" "$late_dir" "$late_tmp" "$real_sleep" &
 late_writer=$!
