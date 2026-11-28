@@ -499,7 +499,7 @@ host.test(
     const work = join(dir, "trapped");
     mkdirSync(work);
     const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilExecDone(marked, "sleep");
+    await untilExecDone(marked, "sleep", waits.end());
     // A walk of a busy machine always meets a batch of entries with no match, which xargs reports
     // as 123, and only then does the walk hand a status out through its `exit`. The row's proc root
     // fits one batch that matches, so a grep that prints what the real one prints and then answers
