@@ -7,11 +7,12 @@ import {
   withoutOwnerRule,
   zodSchemaApi,
 } from "@legion/contracts";
+import { isHttpUrl } from "@legion/contracts/log-text";
 import { canonicalRepo } from "@legion/contracts/repo";
 import { z } from "zod";
 import { commandName } from "../dispatch-command";
 import type { ActiveDispatchConfig } from "../dispatch-config";
-import { defaultExec, type ExecFn, resolveCwdRepo } from "../dispatch-cwd";
+import { defaultExec, resolveCwdRepo } from "../dispatch-cwd";
 import { type ParsedDispatchRef, parseDispatchRef } from "../dispatch-owner";
 import { localPictures, parseAgentArtifactRef } from "../dispatch-picture-tools";
 import { formatZodIssues } from "../tool-input-errors";
@@ -20,13 +21,13 @@ import {
   asObject,
   type CheckedCall,
   type DispatchCallCheckInput,
-  type ExecutorEnvironment,
   type OwnerResolution,
   optionalBoolean,
   optionalNumber,
   optionalString,
   stringArg,
   type ToolArguments,
+  type WhoamiOriginsFn,
 } from "./context";
 import { dispatchRefFromUrl } from "./links";
 import {
@@ -450,20 +451,70 @@ function toolSchema(tool: string): z.ZodType {
   toolSchemas.set(tool, schema);
   return schema;
 }
+
+/**
+ * The dispatch:// form of `refArgument` at the first of `bases` it is a dashboard URL of, or
+ * undefined when it is one of none. A base that is no string, which a server's JSON answer may
+ * hold, is passed over.
+ */
+function dispatchRefAtFirst(refArgument: string, bases: readonly unknown[]): string | undefined {
+  for (const base of bases) {
+    if (typeof base !== "string") continue;
+    const resolved = dispatchRefFromUrl(refArgument, base);
+    if (resolved !== undefined) return resolved;
+  }
+  return undefined;
+}
+
+/**
+ * `refArgument` in its dispatch:// form where it is a dashboard URL of the server this command
+ * calls (R10 of INFRA-5491): first of `dashboardUrls`, the addresses the command is configured
+ * with, and where none of them matches an absolute http or https URL, of any origin the server
+ * names in one `whoami` read (`GET /api/v1/whoami`'s `origins`: its canonical, served and former
+ * addresses). No client setting holds a copy of that list. A `whoami` that fails, or an answer
+ * with no `origins` (a server older than the lists, or one that lists no second address), leaves
+ * the link as it is, so the caller refuses it as it refuses a link at any other address.
+ */
+async function resolveDashboardRef(
+  refArgument: string,
+  dashboardUrls: readonly string[],
+  whoami: WhoamiOriginsFn | undefined
+): Promise<string> {
+  const configured = dispatchRefAtFirst(refArgument, dashboardUrls);
+  if (configured !== undefined) return configured;
+  if (whoami === undefined || !isHttpUrl(refArgument)) return refArgument;
+  let origins: unknown;
+  try {
+    origins = (await whoami()).origins;
+  } catch {
+    return refArgument;
+  }
+  if (!Array.isArray(origins)) return refArgument;
+  return dispatchRefAtFirst(refArgument, origins) ?? refArgument;
+}
+
+/** What `resolveOwnerArguments` reads beside a call's arguments: the checkout and environment the
+ *  command runs in (`LEGION_ISSUE`, and the repository a bare issue number is on; `process.env`
+ *  and `defaultExec` where the caller names none), the Dispatch addresses a dashboard-URL `ref`
+ *  may be on, and the server's own list of its origins (`whoami`), where the caller reads it. */
+export type OwnerContext = Pick<
+  DispatchCallCheckInput,
+  "cwd" | "env" | "exec" | "serverUrls" | "whoami"
+>;
+
 /**
  * Fills the owner (issue or project) from the arguments, the ref, or LEGION_ISSUE, pushing
  * every defect onto `problems` and continuing so the caller reports them all at once.
- * A `ref` given as a dashboard URL on any of `dashboardUrls` (the API's own address, then the
- * public dashboard when there is one) is rewritten to its dispatch:// form.
+ * A `ref` given as a dashboard URL on any of `context.serverUrls` (the API's own address, then the
+ * public dashboard when there is one), or, where none of them matches, on any origin
+ * `context.whoami` names for the server, is rewritten to its dispatch:// form
+ * (`resolveDashboardRef`).
  * `ownerMissing` is set at each exit that pushes a missing-owner problem (see `OwnerResolution`).
  */
 export async function resolveOwnerArguments(
   tool: string,
   input: ToolArguments,
-  cwd: string,
-  env: ExecutorEnvironment,
-  exec: ExecFn,
-  dashboardUrls: readonly string[],
+  context: OwnerContext,
   problems: string[]
 ): Promise<OwnerResolution> {
   if (issueFreeTools[tool] === true) return { args: input, ref: null, owner: null };
@@ -471,10 +522,7 @@ export async function resolveOwnerArguments(
   let ref: ParsedDispatchRef | null = null;
   let args = input;
   if (typeof refArgument === "string") {
-    const refText =
-      dashboardUrls
-        .map((dashboard) => dispatchRefFromUrl(refArgument, dashboard))
-        .find((ref) => ref !== undefined) ?? refArgument;
+    const refText = await resolveDashboardRef(refArgument, context.serverUrls, context.whoami);
     if (refText !== refArgument) args = { ...input, ref: refText };
     const agentArtifact = parseAgentArtifactRef(refText);
     if (agentArtifact !== null) {
@@ -616,7 +664,7 @@ export async function resolveOwnerArguments(
   if (tool === "dispatch_spec_form" && typeof args["root"] === "string") {
     return { args, ref, owner: null };
   }
-  const legionIssue = env.LEGION_ISSUE;
+  const legionIssue = (context.env ?? process.env).LEGION_ISSUE;
   if (!legionIssue) {
     problems.push(ownerRequiredProblem);
     return { args, ref, owner: null, ownerMissing: true };
@@ -631,7 +679,7 @@ export async function resolveOwnerArguments(
     );
     return { args, ref, owner: null, ownerMissing: true };
   }
-  const repo = await resolveCwdRepo(cwd, exec);
+  const repo = await resolveCwdRepo(context.cwd, context.exec ?? defaultExec);
   if (!repo) {
     problems.push("issue is required; LEGION_ISSUE needs a GitHub repository in cwd");
     return { args, ref, owner: null, ownerMissing: true };
@@ -683,15 +731,7 @@ export function dispatchServerUrls(
 export async function checkDispatchCall(input: DispatchCallCheckInput): Promise<CheckedCall> {
   const { tool, args, cwd } = input;
   const problems: string[] = [];
-  const owner = await resolveOwnerArguments(
-    tool,
-    args,
-    cwd,
-    input.env ?? process.env,
-    input.exec ?? defaultExec,
-    input.serverUrls,
-    problems
-  );
+  const owner = await resolveOwnerArguments(tool, args, input, problems);
   // Judged on the caller's own arguments, before the ref filled any: the ref as resolved, read
   // back from a dashboard URL when it was one.
   const conflicts =

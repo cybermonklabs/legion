@@ -80,8 +80,7 @@ tok() { printf '%s%s%s%s%s' "$bt" "$1" "$h" "$2" "$bt"; }
 # playwright.config.ts, run.sh and tool.py each hold a comment marker inside a string ahead of
 # a name; guard.test.ts, note.tsx, tool.py, scan.go and ci.yaml hold the shapes each language's
 # case reads; push.sh holds a case arm no message of it holds, whose command its usage line
-# names too, and roots.test.ts a list entry whose file name another string holds, as
-# release-push.sh and skills-guard.test.ts do.
+# names too, and roots.test.ts holds a list entry whose file name another string holds.
 fixture() {
   local root="$work/$1"
   mkdir -p "$root/.github/scripts" "$root/.github/ci-notes" "$root/.github/docker" "$root/.github/workflows" \

@@ -44,6 +44,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -90,15 +91,17 @@ func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
 }
 
 // withDocumentService is input with a document service of the test's own, for a test that needs
-// none of its own making: one over the input's store, event broker, identity and server URL,
-// shut down once the test ends, after every cleanup registered later (a server's wait among
-// them). An input with no broker gets one, which the API and the service then share.
+// none of its own making: one over the input's store, event broker and identity, reading links at
+// the origins NewDeps reads them at (text.ServerOrigins of the input's ServerURL, ServedOrigins and
+// FormerOrigins), shut down once the test ends, after every cleanup registered later (a server's
+// wait among them). An input with no broker gets one, which the API and the service then share.
 func withDocumentService(t testing.TB, input DepsInput) DepsInput {
 	t.Helper()
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
-	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, ServerURL: input.ServerURL})
+	origins := text.ServerOrigins(input.ServerURL, input.ServedOrigins, input.FormerOrigins)
+	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, Origins: origins})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut the document service down: %v", err)
@@ -129,6 +132,11 @@ type testServerOptions struct {
 	// empty is the deployment that names none, whose form gate covers no document.
 	specRoots string
 	testHooks bool
+	// servedOrigins and formerOrigins are DepsInput.ServedOrigins and DepsInput.FormerOrigins: the
+	// other addresses the server serves beside testServerURL, and those it served before. Nil and
+	// nil is the deployment at one address.
+	servedOrigins []string
+	formerOrigins []string
 	// store is the database the server runs on; nil opens one of its own (storetest.Open). A
 	// test that counts a read's round trips passes a traced store (storetest.Traced).
 	store *store.Store
@@ -252,6 +260,10 @@ type testServerOptions struct {
 	// answered gives that lookup a bound no run reaches, so a loaded machine cannot turn the
 	// answer into an unanswered lookup.
 	mentionLookupBound func(target string) time.Duration
+	// afterIssueLoad is the hold writeIssue runs once it has read the issue it writes under that
+	// issue's owner lock (server.afterIssueLoad); nil holds nothing, as every server the
+	// deployment builds does.
+	afterIssueLoad func(ctx context.Context, key string)
 	// relatedBound is the related-item check's meaning allowance and its wait for the
 	// cross-project leg, with the check's own allowance past them (server.withRelatedBound);
 	// zero keeps production's. A case whose verdict is what the check's meaning stage found
@@ -292,12 +304,17 @@ const testTakeoverWindow = 750 * time.Millisecond
 // writes names, and what a DPoP proof's 'htu' is checked against (broker_token_test.go).
 const testServerURL = "https://dispatch.example"
 
+// testOrigins is testServerURL as the one origin dashboard links are read at: what a server built
+// with that ServerURL and neither list reads them with (Deps.Origins), for a test that builds a
+// reader of links without a server.
+var testOrigins = text.NewOrigins(testServerURL)
+
 // testSigningKey is the one-key set the package's session cookies are signed with.
 var testSigningKey = auth.SingleSigningKey("signing-key")
 
 // headerIdentity is the test header identity that records each named person in the database.
 func headerIdentity(database *store.Store) identity.HeaderIdentity {
-	return identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
+	return identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
 }
 
 // seedPeople records emails as people who have signed in: the assignee picker's options.
@@ -380,11 +397,15 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
+	origins := text.ServerOrigins(testServerURL, options.servedOrigins, options.formerOrigins)
 	var socketIdentity identity.Identity
 	if options.documentSocket {
 		socketIdentity = headerIdentity(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle, Identity: socketIdentity})
+	documentService := docs.New(docs.Deps{
+		Store: database, Persistence: documentPersistence, Events: broker, Settle: settle, Identity: socketIdentity,
+		Origins: origins,
+	})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -412,8 +433,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		AgentTokens:      sharedAgentTokens(t, "agent-token"),
 		NewIssueLabel:    options.newIssueLabel,
 		NewIssueSession:  options.newIssueSession,
-		SpecForm:         specFormOn(t, options.specRoots, testServerURL, documentService),
+		SpecForm:         specFormOn(t, options.specRoots, origins, documentService),
 		ServerURL:        testServerURL,
+		ServedOrigins:    options.servedOrigins,
+		FormerOrigins:    options.formerOrigins,
 		Docs:             documentService,
 		Events:           broker,
 		Renames:          options.renames,
@@ -467,6 +490,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	served.duplicateBound = options.duplicateBound
 	served.inboxStatementBound = options.inboxStatementBound
 	served.mentionLookupBound = options.mentionLookupBound
+	served.afterIssueLoad = options.afterIssueLoad
 	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
@@ -1053,6 +1077,10 @@ func TestEventNotifyRules(t *testing.T) {
 		{name: "user thread state", event: model.Event{Type: "user_thread_state.updated", Actor: user}, want: false},
 		{name: "user decision kept", event: model.Event{Type: "decision.kept", Actor: user}, want: false},
 		{name: "user priority write", event: model.Event{Type: "priority.updated", Actor: user, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}}, want: false},
+		// J3 of dispatch://INFRA-5793: an issue.updated whose changed names only the resolved
+		// priority fields is what a write to another issue appends on an issue whose resolved
+		// priority it moved. It wakes nobody, whoever wrote, since nobody asked that issue anything.
+		{name: "user resolved priority of another write", event: model.Event{Type: "issue.updated", Actor: user, Payload: model.IssueEventPayload{Changed: []string{"resolved_priority"}}}, want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := broker.Notify(test.event); got != test.want {

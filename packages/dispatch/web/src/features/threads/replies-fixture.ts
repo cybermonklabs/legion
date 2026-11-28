@@ -29,6 +29,8 @@ export function replyRow(
     unread: true,
     unread_count: 1,
     version: 3,
+    priority_from: null,
+    resolved_priority: null,
     ...overrides,
   };
 }
@@ -51,6 +53,8 @@ export function agentRow(
     unread,
     unread_count,
     unread_reply_ids: [reply.id],
+    priority_from: null,
+    resolved_priority: null,
     ...overrides,
   };
 }

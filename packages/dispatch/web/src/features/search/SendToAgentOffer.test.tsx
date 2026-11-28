@@ -79,6 +79,8 @@ function issueDetails(
     plan_artifact_id: "",
     primary_artifact_id: "artifact-1",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     progress: { children: null, tasks: null },
     project: "CORE",
     rank: "U",

@@ -1,0 +1,54 @@
+-- pgmigrate:non-transactional
+-- 20261124011835_embeddings_window_unembedded_since.up.sql — the index of the window rows with no
+-- vector of their current text, keyed so that the coverage counts read the oldest lacking one
+-- from its first entry, built concurrently.
+--
+-- Why it exists. The coverage route reads kept counts now (20261124011834_search_coverage_counts),
+-- but its oldest lacking age is no count: it is the earliest pending_since of a window item that
+-- is neither current nor dead. Every such row is in one of the two halves the window indexes
+-- split the items into (20261118011208_embeddings_window_embedded and
+-- 20261118011258_embeddings_window_unembedded). This index holds the half with no vector of the
+-- row's current text, which is never current: for each window kind the route takes the first entry
+-- of `kind = k and not dead`, one probe, whatever the corpus holds.
+-- 20261124011836_embeddings_window_embedded_since holds the other half, keyed by model too.
+--
+-- Why it replaces embeddings_window_unembedded. The predicate is that index's word for word, so
+-- what the planner proves of the one it proves of the other: the coverage statement of the release
+-- before this one, which ORs the two halves' predicates (embedqueue's coverageQuery), reads its
+-- window rows through a BitmapOr of this index and 20261124011836's during a roll, and the old
+-- index is dropped after both are built (20261124011838). The key, (kind, dead, pending_since),
+-- is the probe's: kind and dead are its conditions and pending_since its order. The predicate must
+-- stay the coverage statement's word for word (embedqueue's windowUnembedded, built from
+-- windowCoverageKinds and somethingToEmbed); 20261118011258 says why the kind is a regex and what a
+-- predicate that drifts costs. Postgres evaluates the regexes at each insert and update of a row,
+-- not at each read, so the blank test stays exact.
+--
+-- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment runs
+-- one replica under a Kubernetes Deployment's `strategy: Recreate`
+-- (packages/envoy/infra/README.md), so the old pod has stopped before this build starts and the
+-- build's time is downtime. The build reads the rows 20261118011258's read, which took 7.5 to
+-- 10.6 s on a synthetic corpus of production's size on the builds Job scripts/coverage-scale.sh
+-- runs (8 CPUs, 16 GiB, 2026-11-18); this index stores dead and pending_since in each entry beside
+-- kind, so it is larger and its build writes more. TestCoverageStatementScale (embedqueue) builds
+-- the window indexes from their migration files at each scale it measures and logs each build's
+-- time.
+--
+-- Why it is exempt from the census's size limit. A migration whose first line is
+-- `-- pgmigrate:non-transactional` holding exactly one non-unique
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS - this one - runs outside the runner's transaction and
+-- is exempt from the size limit (pgmigrate/nontransactional.go, concurrentIndex, and
+-- pgmigrate/census.go, Census). What the build takes on embeddings is SHARE UPDATE EXCLUSIVE,
+-- which no ordinary read or write of the table waits on; what it costs instead is two passes
+-- over the table and a wait for every older snapshot between them.
+--
+-- What a failed build leaves. CREATE INDEX CONCURRENTLY commits its catalog rows before it scans,
+-- so a build that fails, is cancelled or is killed leaves an index of this name marked invalid,
+-- which the planner ignores and Postgres still maintains on each write once the build reached its
+-- second phase. Nothing has to be repaired by hand: the version is recorded only after a build
+-- that finished, so the next boot runs this migration again, and the runner drops an invalid index
+-- of this name on this table with DROP INDEX CONCURRENTLY and builds it again
+-- (pgmigrate/nontransactional.go, ExecNonTransactional and dropOwnLeftover). While it is invalid,
+-- the probe reads the half's rows another way and answers the same age, slower.
+create index concurrently if not exists embeddings_window_unembedded_since
+    on embeddings (kind, dead, pending_since)
+    where kind ~ '^(document_block|comment_block|message_block|ask_part)$' and text_snapshot ~ '[^[:space:]]' and (embedding is null or embedded_hash is distinct from content_hash);

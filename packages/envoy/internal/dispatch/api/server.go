@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -106,9 +107,17 @@ type Deps struct {
 	// DISPATCH_SPEC_ROOTS names, under which the form gate judges the spec and the Verification
 	// document of each issue, and each root's terms.md. The zero SpecForm names no root and covers
 	// no document.
-	SpecForm  SpecForm
-	ServerURL string
-	Docs      docs.API
+	SpecForm SpecForm
+	// Origins is the server's web origins, canonical first (text.ServerOrigins of DepsInput's
+	// ServerURL, ServedOrigins and FormerOrigins): a dashboard URL of any of them that a text or a
+	// request writes is read as the reference its page names.
+	Origins text.Origins
+	Docs    docs.API
+	// WhoamiOrigins is the server's origins as GET /api/v1/whoami names them: the router's one
+	// origin table's list (routes: hostOrigins.origins), the list GET /auth/whoami names, so the
+	// dispatch command reads the list the page reads and the API keeps no copy of the settings it
+	// is built from. nil, where neither list is set or no router built the API, names none.
+	WhoamiOrigins []string
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
@@ -283,7 +292,16 @@ type DepsInput struct {
 	// Nil builds one that names no root, through NewSpecForm, on Docs.
 	SpecForm  *SpecForm
 	ServerURL string
-	EnvoyURL  string
+	// ServedOrigins are the other addresses the server serves beside ServerURL
+	// (DISPATCH_SERVED_ORIGINS), and FormerOrigins the addresses it served before
+	// (DISPATCH_FORMER_ORIGINS): Deps.Origins reads dashboard URLs of both, so a link written at a
+	// former address keeps its target. Which address a request is answered at is the router's.
+	ServedOrigins []string
+	FormerOrigins []string
+	// WhoamiOrigins is the router's list of the origins GET /api/v1/whoami names; see
+	// Deps.WhoamiOrigins.
+	WhoamiOrigins []string
+	EnvoyURL      string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -395,9 +413,14 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if input.Docs == nil {
 		return Deps{}, errors.New("api.NewDeps: Docs is required: the caller builds the document service and shuts it down once its server is done with it")
 	}
+	// The API reads links against this one list of origins, and so does the form of The Spec that
+	// NewDeps builds where input.SpecForm is nil. A form the caller passes (DepsInput.SpecForm)
+	// reads the list it was built with. The main of cmd/dispatch passes one, which it builds from
+	// the document service's own list.
+	origins := text.ServerOrigins(input.ServerURL, input.ServedOrigins, input.FormerOrigins)
 	specForm := input.SpecForm
 	if specForm == nil {
-		built, err := NewSpecForm("", input.ServerURL, input.Docs)
+		built, err := NewSpecForm("", origins, input.Docs)
 		if err != nil {
 			return Deps{}, err
 		}
@@ -449,7 +472,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
 		SpecForm:               *specForm,
-		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
+		Origins:                origins,
+		WhoamiOrigins:          input.WhoamiOrigins,
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,
@@ -498,6 +522,12 @@ type server struct {
 	// directly has none unless the test sets it (directServer sets context.Background()).
 	lifetime   context.Context
 	routeIndex []routeIndexEntry
+	// searchLogKey is the key a search's request line hashes its request under
+	// (searchRequestKey): 32 bytes from crypto/rand that register makes once, kept here and never
+	// logged or written, so no setting names it and no deploy can pin it, and a reader of the log
+	// cannot rebuild the hash of a guessed query. A server register did not build has none and
+	// hashes under the empty key, which only a test's server does.
+	searchLogKey []byte
 	// specReads keeps the check runs, the spec files and the jobs of the workflow files the
 	// results route reads of GitHub for the life of the process (spec_results.go).
 	specReads specResultReads
@@ -533,6 +563,13 @@ type server struct {
 	// test sets it: it is how a case commits a write between the decision and the list, to read
 	// that the list answers the snapshot the decision read.
 	betweenPersonPageReads func()
+	// afterIssueLoad runs in writeIssue once the write has read the issue it writes (loadIssue),
+	// holding that issue's owner lock and every lock it took before it, with the issue's key; nil,
+	// which every server the deployment builds leaves it, runs nothing. Only a test sets it
+	// (testServerOptions' afterIssueLoad): it is how a case holds one write there, its locks
+	// held, while it sends a second write, to read whether the second waits for the first
+	// (TestTwoPriorityWritesOnOneTreeEndWithRightEvents).
+	afterIssueLoad func(ctx context.Context, key string)
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
@@ -926,6 +963,10 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
+	// The search log key, made once for this server: crypto/rand.Read answers no error, since it
+	// ends the process when the system's source fails.
+	s.searchLogKey = make([]byte, 32)
+	_, _ = rand.Read(s.searchLogKey)
 	s.liveKinds = map[string]liveKind{
 		liveEventsView: {resumes: true, start: s.startEventsView},
 		liveAgentView:  {start: s.startAgentView},
@@ -2519,15 +2560,6 @@ func refuseClosed(open bool, write closedWrite) error {
 		return errIssueClosed
 	}
 	return nil
-}
-
-// A version event is built by docs.ArtifactVersionEventPayload wherever it is appended; a
-// document's creation is the one other artifact payload, and it states what the write moved
-// through the same helper, so both shapes spell the reference keys once.
-func artifactCreatedEventPayload(artifact model.Artifact, changes model.ReferenceChanges) map[string]any {
-	payload := map[string]any{"artifact": artifact}
-	model.NameReferenceChanges(payload, changes)
-	return payload
 }
 
 // namedVersionDiff is the diff a named version's event carries: from the version before it to it.

@@ -28,14 +28,23 @@ func registryRoleKV(t *testing.T, registry *store.Registry) natsgo.KeyValue {
 
 func setRegistryRoleKV(t *testing.T, registry *store.Registry, kv natsgo.KeyValue) {
 	t.Helper()
+	// The replacement keeps the bucket's jetstream handle, which every scan of it goes through.
+	swapRegistryRoleHandle(t, registry, func(base bus.KeyValue) bus.KeyValue {
+		return bus.NewKeyValue(kv, base.WatchHandle(), base.Streams())
+	})
+}
+
+// swapRegistryRoleHandle is setRegistryRoleKV for a test whose stand-in needs the handle it
+// replaces, such as one that makes each read from the stream's leader through it
+// (leaderReadCount): registry reads the role bucket through what swap returns over that handle.
+func swapRegistryRoleHandle(t *testing.T, registry *store.Registry, swap func(bus.KeyValue) bus.KeyValue) {
+	t.Helper()
 	mu := registryRoleKVMutex(registry)
 	mu.Lock()
 	defer mu.Unlock()
 	field := reflect.ValueOf(registry).Elem().FieldByName("roleKV")
 	current := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
-	// The replacement keeps the bucket's jetstream handle, which every scan of it goes through.
-	base := current.Interface().(bus.KeyValue)
-	current.Set(reflect.ValueOf(bus.NewKeyValue(kv, base.WatchHandle(), base.Streams())))
+	current.Set(reflect.ValueOf(swap(current.Interface().(bus.KeyValue))))
 }
 
 // registryRoleKVMutex is the mutex store.Registry guards its roleKV field with (kvMu).

@@ -96,19 +96,22 @@ type listenerDeliveryHandlerConfig struct {
 	// roleKeptExpired counts the kept role copies a walk dropped at the end of their hour
 	// (envoy_role_kept_expired_total, keptRoleDroppedReport), whether or not a session held the
 	// role, under two labels: kept_by, listener or dispatch_outbox for a copy Dispatch's outbox
-	// kept (isOutboxCopy), and stale, true for a copy no walk had claimed whose hour ended more
+	// kept (bus.KeptCopyOutbox), and stale, true for a copy no walk had claimed whose hour ended more
 	// than an hour before the walk that dropped it (roleKeepStaleAge). A listener copy dropped
-	// with stale false is one whose sender is sent a dead letter when its publish named one, so
+	// with stale false is one whose sender is sent a dead letter when its publish named one, or
+	// Dispatch an expiry notice for a copy of its delivery of a post (bus.KeptCopyDispatchDelivery), so
 	// a reading that climbs says messages kept for roles go unread by any holder in their hour.
 	roleKeptExpired *metrics.Counter
 	// roleDeadLetters counts the dead letters a walk sent the sender of a kept copy it dropped
 	// (envoy_role_dead_letters_total, endKeptCopyWithDeadLetter), under the label result: stored
 	// for one the stream took, refused for one it refused for good, which is not sent again.
 	roleDeadLetters *metrics.Counter
-	// roleKeptExpiryNotices counts the expiry notices a walk sent Dispatch for a copy Dispatch's
-	// outbox kept that it dropped at the end of its hour (envoy_role_kept_expiry_notices_total,
-	// endKeptCopyWithExpiryNotice), under the label result: stored for one the stream took, refused for
-	// one it refused for good, which is not sent again.
+	// roleKeptExpiryNotices counts the expiry notices a walk sent Dispatch for a copy Dispatch
+	// answers for that it dropped (envoy_role_kept_expiry_notices_total,
+	// endKeptCopyWithExpiryNotice): a copy Dispatch's outbox kept, at the end of its hour, and a
+	// copy of Dispatch's delivery of a post, at the end of its hour or when the role's live holder
+	// does not take its delivery mode. It counts under the label result: stored for one the stream
+	// took, refused for one it refused for good, which is not sent again.
 	roleKeptExpiryNotices *metrics.Counter
 	// roleKeptUndecodable counts the kept copies a walk ended because no read can decode them
 	// (envoy_role_kept_undecodable_total, judgeKeptRoleCopy).
@@ -137,20 +140,22 @@ type listenerDeliveryHandlerConfig struct {
 	// while a test that must fail a dead letter's publish alone, with the cursor's writes going
 	// through, replaces it on its copy.
 	publishDeadLetter func(ctx context.Context, subject string, item contracts.Envelope, msgID string) error
-	// publishExpiryNotice stores notice, the expiry notice of a copy Dispatch's outbox kept whose
-	// hour ended, on its role's expiry subject under the copy's own message id, and returns the
-	// stream's refusal or failure; a duplicate the stream drops is no error
-	// (endKeptCopyWithExpiryNotice). main.go sets it to client.PublishKeptCopyExpiry, and so does
-	// every test that builds a config, while a test that stops a walk at the notice - before it, or
-	// after it and before the confirm - replaces it on its copy.
+	// publishExpiryNotice stores notice, the expiry notice of a copy Dispatch answers for that a
+	// walk dropped (an outbox copy, or a copy of Dispatch's delivery of a post), on its role's
+	// expiry subject under the copy's own message id, and returns the stream's refusal or
+	// failure; a duplicate the stream drops is no error (endKeptCopyWithExpiryNotice). main.go
+	// sets it to client.PublishKeptCopyExpiry, and so does every test that builds a config, while
+	// a test that stops a walk at the notice - before it, or after it and before the confirm -
+	// replaces it on its copy.
 	publishExpiryNotice func(ctx context.Context, notice bus.KeptCopyExpiry) error
 	// unplaceableRetryWindow is the one wait a message on the agent subject of a session with no
-	// record takes before this listener reports the session's wake (noRecordAgentDelivery). It is
-	// also the wait a message takes before it comes back after a read of the record that did not
-	// answer, or after a wake report the stream did not store. main.go reads it from
-	// ENVOY_UNPLACEABLE_RETRY_WINDOW, defaulting to defaultUnplaceableRetryWindow. A window at or
-	// below zero - what a caller that does not set this field asks for - is no wait: the wake is
-	// reported at the first delivery (agentWait).
+	// record takes before this listener decides it (noRecordAgentDelivery,
+	// decideNoRecordAgentMessage): hands it to a stopped Legion agent's daemon, or reports the
+	// session's wake. It is also the wait a message takes before it comes back after a read of the
+	// record that did not answer, or after a wake report the stream did not store. main.go reads it
+	// from ENVOY_UNPLACEABLE_RETRY_WINDOW, defaulting to defaultUnplaceableRetryWindow. A window at
+	// or below zero - what a caller that does not set this field asks for - is no wait: the message
+	// is decided at the first delivery (agentWait).
 	unplaceableRetryWindow time.Duration
 	// deferredUnplaceable is the set of agent messages this listener holds back for that wait
 	// right now, the budget unplaceableDeferralCap bounds. It is required: main.go makes one and
@@ -168,6 +173,15 @@ type listenerDeliveryHandlerConfig struct {
 	// main.go makes one and sets it once, so every handler and every route built from that config
 	// guards one set of roles. A test that builds a config sets its own.
 	roleKeepDrains *roleKeepGuards
+	// handoff hands an agent-subject message with no session record to the stopped Legion agent's
+	// daemon in place of its wake (decideNoRecordAgentMessage); nil hands nothing off.
+	handoff *legionHandoff
+	// handoffGiveUpWindow bounds one hand-off that decision makes (offerAgentDeliveryToLegion):
+	// its registry reads and its publish, retries of an id still in process included. A test that
+	// runs a give-up out to its window shortens it on its copy; at or below zero it is
+	// legionHandoffGiveUpWindow (handoffWindow), the bound main.go and the tests' delivery harness
+	// (newListenerDeliveryHarnessOn) set.
+	handoffGiveUpWindow time.Duration
 	// now is the listener's clock, which a kept copy's age and the end of its hour are measured
 	// by, against the time the stream stored the copy: the keep's answer (storeKeptRoleCopy), the
 	// handovers the claim route, the keep and a registration that makes a holder live again
@@ -302,6 +316,12 @@ func (message deliveryMessage) finalizeAfter(delay time.Duration) {
 func jetStreamDeliveryHandler(cfg listenerDeliveryHandlerConfig) nats.MsgHandler {
 	handler := listenerDeliveryHandler(cfg)
 	return func(msg *nats.Msg) {
+		// A hand-off (notifications.legion.<project>.agents.<session>) is the Legion daemon's to
+		// read, and holds no envelope, so every listener's durable acknowledges it unread.
+		if isLegionHandoffSubject(msg.Subject) {
+			_ = msg.Ack()
+			return
+		}
 		message := deliveryMessage{data: msg.Data, mode: durableDelivery, msg: msg}
 		if metadata, err := msg.Metadata(); err == nil {
 			message.metadata = metadata
@@ -856,10 +876,12 @@ const deliverySessionReadTimeout = 2 * time.Second
 // interest row and record, and it acts on what session.HandleAgentMessage answers. A session
 // another listener's row names is that listener's to decide, so this one acknowledges the message
 // silently. A session with a record is acknowledged as a skip. A session with no record waits
-// once and then gets one wake report (noRecordAgentDelivery). That holds also when the session's
-// row names this listener, as a released Legion role's row does until the reaper deletes it. A
-// read of the record that did not answer sends the message back for the wait
-// (unreadAgentDelivery).
+// once and is then decided (noRecordAgentDelivery, decideNoRecordAgentMessage): a stopped Legion
+// agent the Legion agent registry names, whose project answers, has the message handed to its
+// daemon with no wake, and any other session gets one wake report. That holds also when the
+// session's row names this listener, as a released Legion role's row does until the reaper
+// deletes it. A read of the record that did not answer sends the message back for the wait, and
+// the stream's last delivery decides it as one with no record (unreadAgentDelivery).
 func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
 	sessionID := agentSubjectSession(item.Topic)
 	if cfg.dedupeCache.Seen(item.DedupeKey, sessionID) {

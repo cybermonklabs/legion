@@ -192,6 +192,10 @@ var readsWithoutAViewer = map[string]string{
 		"may not see would leave that issue open under a done parent, and a move check that skipped one would let a writer " +
 		"take that issue by moving the issue above it; the plan names the issues it will move or unlink to the caller who " +
 		"asked to move or unlink them, in its dry run, its answer and its 403 PROJECT_SCOPE",
+	"IssueInheritingDescendantRows": "every caller is a rule of a write - the issues whose resolved priority a write of " +
+		"an issue's own priority or its parent moves, each of which takes its priority from that issue in whatever project " +
+		"it is in - and a set that skipped an issue its writer may not see would leave that issue's resolved priority, to " +
+		"every reader that keeps one from its events, as it was before the write; it names none of them to the writer",
 	"IssueRepository":  noNode,
 	"ItemBlockAt":      nodeDetail,
 	"ItemsOwedWindows": serverWork,
@@ -329,7 +333,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	}
 	for _, kind := range nodeKinds {
 		record("TargetNames", "TargetNames of kind "+kind, func() error {
-			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}}, "")
+			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}}, text.Origins{})
 			return err
 		})
 		record("Node", "Node of kind "+kind, func() error {
@@ -354,7 +358,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		})
 	}
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
-		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec", "")
+		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec", text.Origins{})
 		return err
 	})
 	// A message's blocks record no revisions, so no block of one is ever removed and
@@ -374,7 +378,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("Closure", "Closure of CORE-1", func() error {
-		_, err := Closure(ctx, recorder, who, "CORE-1", "")
+		_, err := Closure(ctx, recorder, who, "CORE-1", text.Origins{})
 		return err
 	})
 	record("Outgoing", "Outgoing of a document", func() error {
@@ -408,7 +412,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
 	} {
 		record("ResolvePrefixes", fmt.Sprintf("ResolvePrefixes of kind %s in %+v", asked.Kind, asked.Scope), func() error {
-			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked}, "")
+			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked}, text.Origins{})
 			return err
 		})
 	}
@@ -417,11 +421,11 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	// statement that resolves it is the read of the graph the census holds it to.
 	const shortComment = "See dispatch://CORE-1/comment/00000000."
 	record("NewReader", "NewReader's resolution of a short comment id", func() error {
-		NewReader(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", "https://dispatch.example").Mentions(shortComment)
+		NewReader(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", text.NewOrigins("https://dispatch.example")).Mentions(shortComment)
 		return nil
 	})
 	record("NewReaderInScope", "NewReaderInScope's resolution of a short comment id", func() error {
-		NewReaderInScope(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", "https://dispatch.example", nil).Mentions(shortComment)
+		NewReaderInScope(ctx, recorder, who, "comment", "00000000-0000-4000-8000-000000000002", text.NewOrigins("https://dispatch.example"), nil).Mentions(shortComment)
 		return nil
 	})
 	// A document's own scope is its id, answered with no statement; the three kinds whose scope
@@ -477,8 +481,8 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "source", Type: "paragraph", From: 0, To: len(source)},
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
-	located := text.ExtractAt(markdown, "https://dispatch.example")
-	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil, "")
+	located := text.ExtractAt(markdown, text.NewOrigins("https://dispatch.example"))
+	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil, text.Origins{})
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)
 	}
