@@ -282,7 +282,21 @@ export function createControllerSession(
     startedBy: ClaimStarter
   ): Promise<void> => {
     const supervised = daemonLaunchedController(process.env);
-    if (!supervised) return claimWith(context, false, progress, startedBy);
+    if (!supervised) {
+      // The session the claim reads first, which a refusal before the send leaves unmarked.
+      const claimed = context.sessionManager.getSessionId();
+      try {
+        await claimWith(context, false, progress, startedBy);
+      } catch (error) {
+        // Refused before the send, whichever command or session change ran the claim: the start
+        // `session_start` marked due is not coming from it, so the mark goes, and the Envoy entry,
+        // which reads an unsent mark again every second for up to 30 s, stops holding the
+        // session's startup cards for it at its next read.
+        if (!startMessageSent) clearStartupTurn(claimed);
+        throw error;
+      }
+      return;
+    }
     try {
       await claimWith(context, true, progress, startedBy);
     } catch (error) {
@@ -399,7 +413,16 @@ export function createControllerSession(
       } else {
         markStartupTurnSent(sessionID);
         startTurnSession = sessionID;
-        pi.sendUserMessage(startMessage);
+        // A send the host fails (a prompt it drops before dispatch, or refuses) starts no run, so
+        // no `agent_start` clears the mark: it goes here, so no check the Envoy entry makes after
+        // this holds the session's startup cards for a start that never ran, where a sent mark
+        // holds them for 30 s from the send. Oh My Pi's `sendUserMessage` returns a promise that
+        // rejects when the send fails (`agent-session.ts`), which `PiApi` types as `void`, so the
+        // answer is taken as whatever it is: a promise's rejection clears the mark, and nothing
+        // else does. The host logs the failure itself.
+        void Promise.resolve(pi.sendUserMessage(startMessage)).catch(() =>
+          clearStartupTurn(sessionID)
+        );
       }
       startMessageSent = true;
     }
@@ -555,10 +578,13 @@ export function createControllerSession(
    * (`markStartupTurnPending`) and claims nothing: the Envoy entry opens the session's agent
    * subject at its own `session_start`, and a card that arrives from here until the start command
    * sends the start finds the mark, so it takes no turn and its wake waits for the start turn
-   * (`packages/pi-envoy/src/card-wake.ts`). The send marks it sent; the session's first
-   * `agent_start` (an operator turn started before the command, after which the start message
-   * goes as a follow-up) and its shutdown clear it, and so does the start command's claim when it
-   * fails before the send or hands over to a new session.
+   * (`packages/pi-envoy/src/card-wake.ts`), for at most 30 s from the Envoy entry's first read of
+   * the unsent mark. The send marks it sent, which holds them for at most 30 s from the send; the
+   * session's first `agent_start` (an operator turn started before the command, after which the
+   * start message goes as a follow-up) and its shutdown clear it, and so do a claim that fails
+   * before the send or hands over to a new session (`claimOnce`) and a send the host fails. A start
+   * that never comes (a claim that never answers, a start command that never runs) holds the cards
+   * back once, for those 30 s.
    */
   const handleSessionStart = async (context: SessionContext): Promise<void> => {
     if (!daemonLaunchedController(process.env)) {
@@ -618,8 +644,6 @@ export function createControllerSession(
         );
         return;
       }
-      // The session the claim reads first, which a refusal before the send leaves unmarked.
-      const claimed = context.sessionManager.getSessionId();
       try {
         await claimOnce(context, { registered: false }, "typed");
       } catch (error) {
@@ -628,9 +652,6 @@ export function createControllerSession(
         if (stopped.signal.aborted) return;
         const message = messageFor(error);
         logger.error(`[legion] the controller claim failed: ${message}`);
-        // Refused before the send: the start `session_start` marked due is not coming, so the
-        // Envoy entry is not left holding its startup cards for it.
-        if (!startMessageSent) clearStartupTurn(claimed);
         context.ui.notify(
           startMessageSent
             ? `legion: the controller claim failed after the start message was sent: ${message}. The start turn has the controller's registration; run /legion-claim-controller to claim the controller role and its wakes again.`

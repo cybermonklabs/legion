@@ -507,7 +507,7 @@ const LABELED_WORD = String.raw`(?:[^ "'\\)\]}>,;:.!?]|[\\)\]}>,;:.!?]+[^ "'\\)\
  * the daemon's RE2 does not, and a start inside a run its first segment reads through would read
  * that run once per start.
  */
-const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
+export const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
   [/(?<![a-z0-9+.-])([0-9+.-]*[a-z][a-z0-9+.-]*:\/\/)[^ /?#]+@/gi, "$1***@"],
   [
     /([?&](?:token|key|secret|password|access_token|accesstoken|refresh_token|id_token|auth_token|private_token|api_key|apikey|client_secret|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)=)[^ &#"'<>]+/gi,
@@ -558,15 +558,28 @@ const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
 /** The most passes `redactCredentials` makes: the daemon's `maxRedactionPasses`. */
 const MAX_REDACTION_PASSES = 8;
 
+/**
+ * The characters the passes of `CREDENTIAL_RULES` have been handed in this process, counted where
+ * they are spent (`redactCredentials`), so a test holds `cleanDetail`'s work to the length of the
+ * detail rather than to the time it took. A step a regular expression takes inside one pass is not
+ * counted, since JavaScriptCore counts none.
+ */
+let ruleCharactersHanded = 0;
+
+/** How many characters the passes of `CREDENTIAL_RULES` have been handed in this process. */
+export function credentialRuleCharacters(): number {
+  return ruleCharactersHanded;
+}
+
 /** `text` with every `CREDENTIAL_RULES` match replaced, rule by rule, pass after pass until a pass
  * changes nothing (at most `MAX_REDACTION_PASSES`), as the daemon's `redactCredentials` does. */
 function redactCredentials(text: string): string {
   let line = text;
   for (let pass = 0; pass < MAX_REDACTION_PASSES; pass++) {
-    const next = CREDENTIAL_RULES.reduce(
-      (redacted, [pattern, replacement]) => redacted.replace(pattern, replacement),
-      line
-    );
+    const next = CREDENTIAL_RULES.reduce((redacted, [pattern, replacement]) => {
+      ruleCharactersHanded += redacted.length;
+      return redacted.replace(pattern, replacement);
+    }, line);
     if (next === line) break;
     line = next;
   }

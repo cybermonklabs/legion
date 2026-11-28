@@ -52,12 +52,12 @@ export interface EnvoyPluginInterface {
    * it sent right before `claims/ready`, after which the daemon sends its start prompt. A start
    * message queued as a follow-up behind a turn the operator already started marks nothing, since
    * that session's first run has already started and its `agent_start` cleared an unsent mark. It
-   * is cleared once that session's first run starts or the session shuts down, and an unsent mark
-   * once the start command's claim fails before the send or hands over to a new session. The Envoy
-   * entry reads it (`packages/pi-envoy/src/card-wake.ts`): while it names the Envoy entry's own
-   * live session, sent less than 30 s ago, or unsent and first read by that entry less than 30 s
-   * ago, a card that arrived while that session started takes no turn, and its wake waits for the
-   * start turn.
+   * is cleared once that session's first run starts or the session shuts down, an unsent mark
+   * once a controller claim fails before the send or hands over to a new session, and a sent mark
+   * once the host fails the send. The Envoy entry reads it (`packages/pi-envoy/src/card-wake.ts`):
+   * while it names the Envoy entry's own live session, sent less than 30 s ago, or unsent and
+   * first read by that entry less than 30 s ago, a card that arrived while that session started
+   * takes no turn, and its wake waits for the start turn.
    */
   startupTurn: { readonly session: string; readonly sentAt: number | undefined } | undefined;
 }
