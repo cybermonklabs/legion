@@ -1,5 +1,8 @@
-import type { LegionModelRequestBody } from "@legion/contracts/legion-api";
-import { LEGION_MAX_MODEL_REQUESTS } from "@legion/contracts/legion-api";
+import {
+  LEGION_MAX_MODEL_REQUESTS,
+  LegionModelRequest,
+  type LegionModelRequestBody,
+} from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   daemonUnreachable,
@@ -15,12 +18,11 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * each subagent's it starts, and the controller's — is reported to the daemon with the moment it
  * ended and its uncached input tokens, which the provider's headroom counts.
  *
- * **Which host event carries a request.** Measured on the pinned host
- * (`v18.18.6-sami.20261125-164517`) in RPC mode against an Anthropic-shaped stand-in, with an
- * extension that logged every event: each request the session's agent loop sends ends in exactly
- * one `message_end` of an assistant message, which carries the request's `usage` (`input`,
- * `cacheRead`, `cacheWrite`), its `model`, the provider's `responseId` and the moment the session
- * stamped it ended (`completedAt`, `session/agent-session.ts:5807-5810`). A request a limit
+ * **Which host event carries a request.** Measured on the host in RPC mode against an
+ * Anthropic-shaped stand-in, with an extension that logged every event: each request the session's
+ * agent loop sends ends in exactly one `message_end` of an assistant message, which carries the
+ * request's `usage` (`input`, `cacheRead`, `cacheWrite`), its `model`, the provider's `responseId`
+ * and the moment the session stamped it ended (`completedAt`). A request a limit
  * answered with HTTP 429 that the session retries itself ends in its own `message_end` too —
  * `stopReason: "error"`, `errorStatus: 429`, no `responseId`, every usage member 0 — before the
  * host's `auto_retry_start`, and its retry ends in a `message_end` of its own. A `task` subagent
@@ -38,14 +40,14 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * of its answer.
  *
  * **When it is sent.** One pending batch per reporter. One timer is armed for the earliest
- * deadline pending, and never for before a failed call's hold ends. A request's deadline is its
- * end plus `MODEL_REQUEST_DUE_AFTER_MS`, which is `MODEL_REQUEST_SEND_MARGIN_MS` short of
- * `MODEL_REQUEST_REPORT_BOUND_MS`: a timer fires late, never early, and the call that carries the
- * report starts only once it has fired, so a timer armed for the bound itself would send the
- * report after it. A request that joins the batch moves no request's deadline: it moves the timer
- * only where its own deadline comes before the one the timer is armed for, as a request read late
- * does, which then goes by its own deadline. The turn's end (`agent_end`) sends what is pending at
- * once and drops the timer. A send the timer or the turn's end makes goes at once, whatever report
+ * deadline pending. A request's deadline is its end plus `MODEL_REQUEST_DUE_AFTER_MS`, which is
+ * `MODEL_REQUEST_SEND_MARGIN_MS` short of `MODEL_REQUEST_REPORT_BOUND_MS`: a timer fires late,
+ * never early, and the call that carries the report starts only once it has fired, so a timer
+ * armed for the bound itself would send the report after it. A request that joins the batch moves
+ * no request's deadline: it moves the timer only where its own deadline comes before the one the
+ * timer is armed for, as a request read late does, which then goes by its own deadline. The turn's
+ * end (`agent_end`, and `session_shutdown`) sends what is pending at once and drops the timer,
+ * whatever failed before. A send the timer or the turn's end makes goes at once, whatever report
  * is on its way, and waits for no answer: each report is a call of its own, aborted where the
  * daemon has not answered it within `MODEL_REQUEST_REPORT_TIMEOUT_MS`, 10 s, and carries only
  * requests that no report on its way carries, at most `LEGION_MAX_MODEL_REQUESTS` of them and all
@@ -54,11 +56,14 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * their answers arrive in either order: each answer puts back only its own report's requests, and
  * the daemon takes a request again by its id and keeps the later end, so a crossing changes
  * nothing it decides. A request the daemon's answer does not name as held goes again under the
- * same id. A call that fails — the daemon unreachable or failing, no answer within the 10 s, or a
- * report the client refuses before it leaves — holds every send until a bound after it ends, and a
- * call's end only arms the timer, so a failing daemon is never called in a loop. A request older
- * than an hour is dropped with a warning.
- * A report the daemon refuses (a 4xx) is dropped with a warning, as a turn outcome's is.
+ * same id. A failed call holds the requests it put back — whether the daemon was unreachable or
+ * failing, gave no answer within the 10 s, or the call failed before it left: each is due a bound
+ * after that call ends, and goes then or with an earlier send, which takes everything pending,
+ * while every other request keeps its own deadline. Only a deadline or the turn's end makes a
+ * send, and a call's end only arms the timer, so a failing daemon is never called in a loop. A
+ * request the contract refuses is dropped at `messageEnded` with a warning, so it never shares a
+ * batch. A request older than an hour is dropped with a warning. A report the daemon refuses (a
+ * 4xx) is dropped with a warning, as a turn outcome's is.
  * Nothing of the session waits on any of it: the hooks return at once.
  *
  * The turn's outcome report (`./turn-outcome`) is a separate route and is unchanged by this one.
@@ -158,23 +163,20 @@ export function createModelRequestsReporter(
   let cancelTimer: (() => void) | undefined;
   /** When the armed timer fires, while `cancelTimer` is set. */
   let armedAt = 0;
-  let retryAt = 0;
 
-  /** Arms the timer for the earliest deadline pending, and never for before a failed call's hold
-   * ends (`retryAt`): again, where a timer is armed for later. */
+  /** Arms the timer for the earliest deadline pending: again, where a timer is armed for later. */
   const arm = (): void => {
     const first = earliestPending();
     if (first === undefined) return;
-    const at = Math.max(first.due, retryAt);
-    if (cancelTimer !== undefined && armedAt <= at) return;
+    if (cancelTimer !== undefined && armedAt <= first.due) return;
     disarm();
-    armedAt = at;
+    armedAt = first.due;
     cancelTimer = deps.schedule(
       () => {
         cancelTimer = undefined;
         send();
       },
-      Math.max(0, at - deps.now())
+      Math.max(0, first.due - deps.now())
     );
   };
 
@@ -198,16 +200,11 @@ export function createModelRequestsReporter(
   };
 
   /** Sends every pending request now, as "When it is sent" (above) says, the earliest deadline's
-   * report first, each in a call of its own (`report`), unless a failed call holds sends
-   * (`retryAt`): then it arms the timer for when that hold ends. It takes every batch out of
-   * `pending` before it reports any: a call that fails before it leaves puts its batch back at
-   * once, and this send must not take that batch again. */
+   * report first, each in a call of its own (`report`). It takes every batch out of `pending`
+   * before it reports any: a call that fails before it leaves puts its batch back at once, and this
+   * send must not take that batch again. */
   const send = (): void => {
     const now = deps.now();
-    if (now < retryAt) {
-      arm();
-      return;
-    }
     disarm();
     const cutoff = now - MODEL_REQUEST_KEEP_MS;
     pending = pending.filter(({ owner, request }) => {
@@ -238,15 +235,10 @@ export function createModelRequestsReporter(
   };
 
   /** Puts `batch`, which no other report carries, on its way in a call of its own. The call's end
-   * sends nothing: it arms the timer for what is pending, and after a failed call holds every
-   * send until a bound after that end (`retryAt`). */
+   * sends nothing: it arms the timer for what is pending. */
   const report = (owner: ModelRequestCredential, batch: readonly Pending[]): void => {
-    const onItsWay: Promise<void> = post(owner, batch).then((answered) => {
+    const onItsWay: Promise<void> = post(owner, batch).then(() => {
       onTheWay.delete(onItsWay);
-      if (!answered) {
-        retryAt = deps.now() + MODEL_REQUEST_REPORT_BOUND_MS;
-        disarm();
-      }
       arm();
     });
     onTheWay.add(onItsWay);
@@ -254,13 +246,9 @@ export function createModelRequestsReporter(
 
   /** Makes one report of `batch`, in a call aborted at `MODEL_REQUEST_REPORT_TIMEOUT_MS` on the
    * reporter's clock, and puts back under the same id each request of it the daemon did not say it
-   * holds, due a bound after the call ends, but none of a report the daemon refused (a 4xx). It
-   * answers false for a call that failed, an aborted one among them. Its answer can cross
-   * another report's ("When it is sent", above). */
-  const post = async (
-    owner: ModelRequestCredential,
-    batch: readonly Pending[]
-  ): Promise<boolean> => {
+   * holds, due a bound after the call ends, but none of a report the daemon refused (a 4xx). Its
+   * answer can cross another report's ("When it is sent", above). */
+  const post = async (owner: ModelRequestCredential, batch: readonly Pending[]): Promise<void> => {
     const call = new AbortController();
     const cancelTimeout = deps.schedule(() => {
       call.abort(
@@ -300,7 +288,7 @@ export function createModelRequestsReporter(
           requests: batch.length,
           error: messageFor(error),
         });
-        return true;
+        return;
       }
       deps.log.warn("legion: a report of model requests did not reach the daemon; it goes again", {
         claimToken: owner.claimToken,
@@ -314,7 +302,6 @@ export function createModelRequestsReporter(
     const unheld = batch.filter((entry) => kept?.has(entry.request.id) !== true);
     for (const entry of unheld) entry.due = again;
     pending = [...unheld, ...pending];
-    return kept !== undefined;
   };
 
   return {
@@ -332,16 +319,28 @@ export function createModelRequestsReporter(
       if (message.responseId === undefined && counted === 0) return;
       if (message.model === undefined || message.model === "") return;
       const endedAt = message.completedAt ?? deps.now();
-      const request: LegionModelRequestBody = {
-        id: deps.newId(),
+      const id = deps.newId();
+      const endedDate = new Date(endedAt);
+      const parsed = LegionModelRequest.safeParse({
+        id,
         session: where.session,
         model: message.model,
-        endedAt: new Date(endedAt).toISOString(),
+        endedAt: Number.isNaN(endedDate.getTime()) ? undefined : endedDate.toISOString(),
         ...(usage === undefined
           ? {}
           : { uncachedInputTokens: tokens(usage.input) + tokens(usage.cacheWrite) }),
-      };
-      pending.push({ owner, request, due: endedAt + MODEL_REQUEST_DUE_AFTER_MS });
+      });
+      if (!parsed.success) {
+        deps.log.warn("legion: dropped a model request the contract refuses", {
+          claimToken: owner.claimToken,
+          id,
+          reason: parsed.error.issues
+            .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+            .join("; "),
+        });
+        return;
+      }
+      pending.push({ owner, request: parsed.data, due: endedAt + MODEL_REQUEST_DUE_AFTER_MS });
       arm();
     },
     turnEnded: () => {
