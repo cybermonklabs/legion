@@ -38,9 +38,10 @@ import {
 import { parseNodeReference, referenceHref } from "../../refs/routes";
 import { useKeymap } from "../../shell/keymap";
 import { conversationPath } from "../decisions-filter/decisions-parts";
+import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, IssueTree, landOnRow, useReleaseFocus } from "../IssueTree";
-import { chipName, heldBy, type NodeChip, type TreeNode } from "../issue-tree";
+import { heldBy, type NodeChip, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { lineOrKindWord, useNodeLine } from "../node-line";
 import type { FailedRead, OutlineReads } from "../outline-reads";
@@ -457,7 +458,7 @@ function useTaskLine(task: TreeNode): {
  *  a tie's chip names it (`NodeRow.tsx`'s `Chip`): a block whose words the chip's reading holds by
  *  the line the names store projects from that reading (`namesBlockByLine`,
  *  `KnownReferences.lines`), and any other target by the name the store holds for it - a task or
- *  a statement whose words hold none by the page's word for its kind (`tree-drafts.ts`'s
+ *  a statement whose words hold none by the page's word for its kind (`target-naming.ts`'s
  *  `treeContext`) - each cut as a chip cuts it (`chipName`). Nothing for a chip the tree has not
  *  named (no `reading`), and nothing while the store holds no name for it. The reading list's
  *  `node-row-chip` (`DISPATCH_READING_SURFACES`) says why a chip draws its words so. */
@@ -1062,7 +1063,7 @@ function BarRow({
   onFocus: () => void;
   /** How the page names each target its batched read answered (`PublishedReferences.readings`):
    *  the reading the statement the row is drawn under is named by, as the tree's chip of it would
-   *  carry it (`issue-tree.ts`'s `targetNaming`). */
+   *  carry it (`target-naming.ts`'s `targetNaming`). */
   readings: PublishedReferences["readings"];
   tabStop: boolean;
 }): ReactNode {

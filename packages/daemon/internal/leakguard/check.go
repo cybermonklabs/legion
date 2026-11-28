@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -36,8 +37,10 @@ const (
 	checkWantsStdin    = 4 // the gh call reads standard input; buffer it and ask again
 )
 
-// whyNoCheck is the setup failure of a call that found no shared check at all.
-const whyNoCheck = "the shared public leak check could not be found"
+// WhyNoCheck is the setup failure of a call that found no shared check at all. It is exported
+// so that a caller that resolves the machine's check itself, and finds none, refuses the call
+// with the same words before the guard is handed any check.
+const WhyNoCheck = "the shared public leak check could not be found"
 
 // whyOtherCheck is the setup failure of a call whose check is found and is not the deployment's
 // (CheckerVar): its manifest digest (Manifest) is another one, or cannot be read.
@@ -62,11 +65,12 @@ const pointerFile = "public-leak-check/path"
 // Resolve is the shared public leak check's path, found the way the check itself says to find
 // it: CheckVar, then public-leak-check.sh on PATH, then the pointer file under the
 // configuration home, whose content is the path of the script. The guard's own Check option
-// stands in front of all three, and is how a test hands the guard a stand-in. Where none of the
-// three names a check at all — CheckVar unset, nothing of the check's name on any PATH entry, and
-// no pointer file — the error is a noneNamed, which sharedCheck reads apart from a broken setup
-// (brokenCheck): a check that is named and is no executable file, a file of the check's name on
-// PATH that is no executable, and a pointer file that cannot be read or names nothing.
+// stands in front of all three: a caller that resolves the check itself hands it there, and a
+// test hands the guard a stand-in. Where none of the three names a check at all — CheckVar unset,
+// nothing of the check's name on any PATH entry, and no pointer file — the error is a noneNamed,
+// which sharedCheck reads apart from a broken setup (brokenCheck): a check that is named and is
+// no executable file, a file of the check's name on PATH that is no executable, and a pointer file
+// that cannot be read or names nothing.
 //
 // A file of the check's name on PATH that does not run hides nothing behind it: the pointer file
 // is still read, and a check it names is the answer. For a dangling link or a directory there,
@@ -190,10 +194,11 @@ type sharedRun struct {
 
 // remove removes the private copy, where there is one. Every entry point defers it as soon as
 // sharedCheck answers, so the copy goes whatever the check answered: cleared, refused, a setup
-// failure, or a run the caller's bound stopped. A copy a killed process leaves is in the role's
-// own private directory, which the role's launcher clears before it starts the role's next
-// generation (internal/launcher's writeFiles). The role can write that directory, so removal
-// follows no link and waits on no fifo (rolefile.RemoveTree).
+// failure, or a run the caller's bound stopped. A copy a killed process leaves stays where it was
+// made (privateCopy): in the role's own private directory, which the role's launcher clears before
+// it starts the role's next generation (internal/launcher's writeFiles), under /tmp where that
+// directory is not there, or under the caller's Options.PrivateCopyBase. The copy's own user can
+// write each of those, so removal follows no link and waits on no fifo (rolefile.RemoveTree).
 func (r sharedRun) remove() {
 	if r.dir != "" {
 		_ = rolefile.RemoveTree(r.dir)
@@ -205,16 +210,17 @@ func (r sharedRun) remove() {
 // deployment that runs no shared leak check of its own (Setting.Configured) refuses no write for
 // the check's absence, and the write gets the rest of the guard, the visibility read and the
 // private-name pass. Under a deployment that names one, and wherever a check is named but cannot
-// be resolved, the answer is the setup failure whyNoCheck, which refuses the write.
+// be resolved, the answer is the setup failure WhyNoCheck, which refuses the write.
 //
 // Under a deployment's manifest digest the check found must be that check too: the manifest digest
 // of its four files (readHeldCheck: the launcher script, the program, the must-pass lines and the
 // README beside it) must be CheckerVar, or the answer is the setup failure whyOtherCheck, naming
 // both digests. The write then runs those very bytes, written into a copy only this role can reach
-// (privateCopy), and never the directory they were read from: a pod's install is on the issue's
-// scratch, which every role of the pod can write, since they all run as one user, so a file
-// replaced there between the read and the run would otherwise be the check that judges the write.
-// So a role runs every write under the one check its deployment named, whatever
+// (privateCopy, under the role's private directory, /tmp where that is not there, or the caller's
+// Options.PrivateCopyBase), and never the directory they were read from: a pod's install is on
+// the issue's scratch, which every role of the pod can write, since they all run as one user, so
+// a file replaced there between the read and the run would otherwise be the check that judges the
+// write. So a role runs every write under the one check its deployment named, whatever
 // PUBLIC_LEAK_CHECK, PATH or the pointer file found, and a launcher script edited beside an
 // unchanged program is another check.
 //
@@ -228,7 +234,7 @@ func (g *Guard) sharedCheck(what string) (sharedRun, error) {
 		if NoneNamed(err) && checker == "" {
 			return sharedRun{}, nil
 		}
-		return sharedRun{}, &SetupFailure{What: what, Why: whyNoCheck, Err: err}
+		return sharedRun{}, &SetupFailure{What: what, Why: WhyNoCheck, Err: err}
 	}
 	if checker == "" {
 		return sharedRun{path: check}, nil
@@ -242,7 +248,7 @@ func (g *Guard) sharedCheck(what string) (sharedRun, error) {
 		return sharedRun{}, &SetupFailure{What: what, Why: whyOtherCheck,
 			Err: fmt.Errorf("%s=%s, and the check at %s has the manifest digest %s", CheckerVar, checker, shownText(check), held.digest)}
 	}
-	dir, err := held.privateCopy(PrivateCopyBase, privateCopyFallback)
+	dir, err := held.privateCopy(g.privateBase, g.privateFallback)
 	if err != nil {
 		return sharedRun{}, &SetupFailure{What: what, Why: "the shared public leak check could not be copied where only this role can reach it",
 			Err: fmt.Errorf("the check at %s, of the manifest digest %s=%s: %w", shownText(check), CheckerVar, checker, err)}
@@ -399,7 +405,7 @@ func modeArgv(path, mode string, args ...string) []string {
 	if len(args) == 0 {
 		return []string{path, mode}
 	}
-	return append(append(make([]string, 0, 3+len(args)), path, mode, "--"), args...)
+	return slices.Concat([]string{path, mode, "--"}, args)
 }
 
 // child is one process this package runs: the shared check in one of its shapes, a read of a
@@ -414,11 +420,14 @@ type child struct {
 	dir string
 	// env is what the child's environment carries beyond the guard's own (Guard.env).
 	env []string
-	// inherit, where it is not nil, is which names of the base environment the child keeps;
-	// the guard's own names and env go on top either way. Nil keeps the whole base, which is
-	// what every child keeps but the visibility read made with no credential (Guard.lsRemote)
-	// and the read through curl (Guard.CurlGet).
-	inherit func(name string) bool
+	// inherit, where it is not nil, makes from the base environment Guard.command reads for this
+	// child which of that base's entries the child keeps, each read as its name and its value,
+	// which Guard.env splits once. It is made from the whole base because what one entry may keep
+	// can depend on another, as ALL_PROXY does on what HTTPS_PROXY names (TokenChildKeeps). The
+	// guard's own names and env go on top either way. Nil keeps the whole base, which is what
+	// every child keeps but the visibility read made with no credential (Guard.lsRemote) and the
+	// read through curl (Guard.CurlGet).
+	inherit func(base []string) func(name, value string) bool
 	// stdin is the child's standard input, nil for none.
 	stdin io.Reader
 	// files are the child's descriptors from 3 up, as exec.Cmd.ExtraFiles takes them.
@@ -473,8 +482,8 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 // killed answer of procgroup.Configure for it: whether the end of ctx stopped it. Its standard
 // output and error are the caller's to set.
 func (g *Guard) command(ctx context.Context, c child) (*exec.Cmd, func() bool) {
-	// One read of the base environment for the child, which both the program lookup and the
-	// child's own environment are built from.
+	// One read of the base environment for the child, which the program lookup, the child's
+	// inherit predicate and the child's own environment are all built from.
 	base := g.base()
 	cmd := exec.CommandContext(ctx, program(base, c.argv[0]), c.argv[1:]...)
 	cmd.Dir = c.dir

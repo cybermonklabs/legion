@@ -547,6 +547,7 @@
   - TestARoomChangeAfterAWritesReadCostsItsVersionNoRender  # 0.7 s
   - TestARoomCloseCompactionFoldsOnlyTheRowsOlderThanTheTail  # 0.5 s
   - TestARoomFailingDuringAJoinedWriteFailsTheWrite  # 0.6 s
+  - TestARoomFailureIsLoggedWithItsCause  # 0.1 s
   - TestARoomIsReloadedOnceAKeystrokeLandsOnAHistoryACompactionFolded  # 1.4 s
   - TestARoomLoadedOntoAKeptRecordTakesTheStoredEditSource  # 0.8 s
   - TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout  # 3.0 s
@@ -805,6 +806,7 @@
   - TestABlockAskingTheSameQuestionWithOtherOptionsUnderTheSameIDOpensItsOwnAsk  # 0.9 s
   - TestABrowserAppendOnAClosedIssueIsRefusedWithoutItsNotification  # 0.8 s
   - TestABrowserEditAfterAVersionsCaptureStaysOwed  # 0.7 s
+  - TestABrowsersUpdateWaitsOnTheFirstSlotAndTakesNone
   - TestACaptureNeverReusesARenderingTheForkHasMovedPast  # 321.8 s
   - TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing  # 0.8 s
   - TestACloseOfAReplacedHistoryClosesOnlyTheRoomItChecked  # 1.0 s
@@ -862,6 +864,7 @@
   - TestARefusedRoomAppendsRollbackIsBoundedOnAHalfOpenLink  # 20.7 s
   - TestARefusedSeedLeavesNoRoom  # 0.6 s
   - TestAReopenForgetsTheKeptEditorOfADocumentThatOwesNothing  # 0.9 s
+  - TestARepairsUpdateWaitsForItsOwnWriterBehindAnotherWritersSlot
   - TestAReplaceKeepsTheAnchorOverItsWholeCurrentExtent  # 9.0 s
   - TestAReplacedRoomThatIsAnotherClosesIsAnAnswerForTheCatchUp  # 2.3 s
   - TestARestorationOfACopysSourceSettlesTheCopyAgain  # 5.4 s
@@ -897,6 +900,7 @@
   - TestAShareReturnsTheOtherProcessesInFlightAppend  # 0.9 s
   - TestAStaleExcerptLeftByABuildThatStoresNoneIsMarkedAndCutAgain  # 0.5 s
   - TestAStaleWriteCannotAssertAParentANewerEditReplaced  # 26.0 s
+  - TestAStampIsStoredAfterTwoWritersCommittedOutOfTheirSlotsOrder
   - TestATargetsChangeReachesStoredPointersAtOnce  # 0.3 s
   - TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReopen  # 0.7 s
   - TestAVersionThePreviousReleaseWritesBeforeTheNextBuildStartsReachesTheStore  # 2.3 s
@@ -987,6 +991,7 @@
   - TestCutDecisionBlocksEqualsAcrossAnswersAndDiffersOnAParagraph  # 0.0 s
   - TestDocumentOwnerReadsServeARowWithNoProject  # 0.9 s
   - TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched  # 46.5 s
+  - TestEachUpdateTakesItsOwnWritersSuppressionSlot
   - TestEditAskOptionsOfADecisionHoldingTwoListsWaitForTheQuestion  # 0.8 s
   - TestEditAskRefusalOfAnEmptyQuestionNamesAPathThatApplies  # 0.7 s
   - TestEditAskRepairsAnEmptyQuestion  # 1.2 s
@@ -1045,7 +1050,7 @@
   - TestRenderReuseANilOriginCommitCreditsNoOne  # 64.3 s
   - TestRenderReuseARecoveredReplicaRendersThePublish  # 24.6 s
   - TestRenderReuseAnAnchoredCommentRendersNothingTwice  # 25.3 s
-  - TestRenderReuseGivesTheLogPackageItsOutputBack  # 51.1 s
+  - TestCaptureWarningsGivesTheLogPackageItsOutputBack  # 51.1 s
   - TestRepeatedAwarenessFloodsDoNotGrowARoomsAwarenessWithoutLimit  # 4.7 s
   - TestReplaceTextTakesAReplacementNamingNoTokenAndChecksANamedOne  # 0.7 s
   - TestReplaceTextUpdatesLiveDocumentAndSettlesVersion  # 0.7 s

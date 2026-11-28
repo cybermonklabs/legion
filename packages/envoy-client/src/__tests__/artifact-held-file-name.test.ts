@@ -4,8 +4,11 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
+import { routeAnswer } from "../../test/route-answers";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
+import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 // `dispatch artifact` under a name its owner already holds is refused before the upload is sent,
 // and the refusal names only a remedy Dispatch takes and prints no token. The command checks a
@@ -119,6 +122,9 @@ function kindOf(mime: string, bytes: Uint8Array): Kind {
 const refusal = (status: number, code: string, error: string) =>
   Response.json({ code, error }, { status });
 
+/** The upload's route, whose declared answer each stored upload serves (`routeAnswer`). */
+const UPLOAD = "POST /api/v1/issues/{key}/artifacts";
+
 /** One upload, answered as Dispatch answers it. */
 function store(name: string, kind: Kind, bytes: Uint8Array, mime: string, precondition: unknown) {
   uploads.push({ name, precondition });
@@ -137,10 +143,14 @@ function store(name: string, kind: Kind, bytes: Uint8Array, mime: string, precon
     };
     held.push(created);
     return Response.json(
-      {
-        artifact: artifactOf(created),
-        version: versionOf(created, created.versions[0] as StoredVersion),
-      },
+      routeAnswer(
+        UPLOAD,
+        {
+          artifact: artifactOf(created),
+          version: versionOf(created, created.versions[0] as StoredVersion),
+        },
+        201
+      ),
       { status: 201 }
     );
   }
@@ -174,14 +184,17 @@ function store(name: string, kind: Kind, bytes: Uint8Array, mime: string, precon
   const next: StoredVersion = { number: (standing?.number ?? 0) + 1, bytes, mime, hashed: true };
   target.versions.push(next);
   return Response.json(
-    { artifact: artifactOf(target), version: versionOf(target, next) },
+    routeAnswer(UPLOAD, { artifact: artifactOf(target), version: versionOf(target, next) }, 201),
     { status: 201 }
   );
 }
 
-const stubDispatch = (async (input: string | URL | Request, init?: RequestInit) => {
+/** Dispatch's routes as this test serves them, before the keyed layer (`stubDispatch`). */
+const answerDispatch = async (input: string | URL | Request, init?: RequestInit) => {
   const request = new Request(input, init);
   const { pathname } = new URL(request.url);
+  // Every read command reads whoami first (`whoami-stand-in.ts`).
+  if (asksWhoami(pathname)) return Response.json(WHOAMI_NO_CUT);
   if (request.method === "GET" && pathname === "/api/v1/issues/DSP-1/artifacts") {
     return Response.json(held.map(artifactOf));
   }
@@ -230,6 +243,12 @@ const stubDispatch = (async (input: string | URL | Request, init?: RequestInit) 
     );
   }
   return refusal(404, "NOT_FOUND", "not found");
+};
+
+// Behind Dispatch's keyed layer: each answer of the upload route, its refusals among them, names the
+// upload's key back, as Dispatch's do; the router's 404 for a route it has not names none.
+const stubDispatch = keyedLayer(answerDispatch, {
+  judged: (response) => response.status !== 404,
 }) as typeof fetch;
 
 beforeEach(() => {

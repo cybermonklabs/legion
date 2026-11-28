@@ -272,11 +272,12 @@ func (c *client) doProof(ctx context.Context, signer proofSigner, method, path s
 // doProofStatus is doProof, also answering the 2xx status (doStatus).
 //
 // A signer that can register itself again (reenroller) gets exactly one retry when the broker
-// says the enrollment its proof named is not live. Nothing renews a sign-in's or a machine's own
-// session enrollment otherwise, so after BROKER_LEASE_SECONDS every call on that box would fail
-// with the dead id still in its record, and only signing in again would cure it — making a
-// second box key and a second sign-in on the person's list. One retry, because a second refusal
-// is the broker saying no to the enrollment this call just made, which no further retry changes.
+// says the enrollment its proof named is not live. A sign-in's enrollment its renewer did not keep
+// (signin_renewer.go), and a machine's own session enrollment, end after BROKER_LEASE_SECONDS, and
+// every call on that box would then fail with the dead id still in its record, and only signing
+// in again would cure it — making a second box key and a second sign-in on the person's list. One
+// retry, because a second refusal is the broker saying no to the enrollment this call just made,
+// which no further retry changes.
 func (c *client) doProofStatus(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, []byte, error) {
 	return c.doProofBuilt(ctx, signer, method, path, func(bool) ([]byte, error) { return body, nil })
 }

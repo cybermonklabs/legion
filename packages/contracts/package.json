@@ -67,14 +67,17 @@
   },
   "main": "dist/index.js",
   "types": "src/index.ts",
+  "//": [
+    "test: --timeout 20000 is at least twice the slowest row or hook that runs under it without a guard of its own. #4437 read this package under 8 busy loops on 2 CPUs (its package.json at 439c866a9c67; at its round-4 tree 24b2e96b28, three runs in builds Job g4b-co-first, legion-load-run-8zsvp, 2026-11-21, each hook timed by a preload the Job's patch added, since Bun prints no hook times): no row took longer than 9,109.10 ms, gen-api > a hand-edit of packages/contracts/src/dispatch-api.generated.ts makes --check fail, naming it (a row main has since replaced), so 20000 holds twice every row that run read; the slowest hook, the row-deadline preload's afterEach, 78.17 ms. At main 91e57a4886 with this change (two runs of this command in an issue pod, 2 CPUs, beside the pod's other agents with no load added, the junit report's row times), the slowest row without a guard of its own, legion-api.test.ts's every Go-written fixture parses to a value equal to the file, read 187.55 and 169.72 ms. No row of this package waits through @legion/test-fixtures/wait. These rows keep the guard of their own that main gave them, because each runs real programs with no time limit per command: gen-api.test.ts's three rows that run the generator (openapi-typescript) their 120,000 ms and its row on a jj merge its 60,000 ms, gen-go.test.ts's rows (the generator, through gofmt) their 120,000 ms, adopt-api-layout.test.ts's rows (the script, git and jj) their 60,000 ms, and build-entries.test.ts's two build rows (bun build) their 60,000 ms. In those two runs they read at most 1,826.00, 941.95, 653.80, 1,209.18 and 194.51 ms."
+  ],
   "scripts": {
     "gen:go": "bun run scripts/gen-go.ts",
     "check:go": "bun run scripts/gen-go.ts --check",
     "gen:api": "bun run scripts/gen-api.ts",
     "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/go-blank.ts src/legion-api.ts src/trailing-slash.ts src/log-text.ts src/held-secrets.ts src/daemon-contract.ts src/daemon-api-records.ts src/http-status.ts --root src --outdir dist --target bun --format esm",
-    "build:dispatch": "bun build src/index.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/http-status.ts --root src --outdir dist --target bun --format esm",
+    "build:dispatch": "bun build src/index.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/http-status.ts src/legion-api.ts --root src --outdir dist --target bun --format esm",
     "typecheck": "bun scripts/gen-api.ts && bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 20000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/ schemas/"
   },
   "dependencies": {

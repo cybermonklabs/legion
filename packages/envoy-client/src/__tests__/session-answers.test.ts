@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import {
   existsSync,
   linkSync,
@@ -9,10 +9,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { SessionAnswer } from "@legion/contracts";
+import {
+  DISPATCH_AS_OF_ABSENT_HEADER,
+  DISPATCH_AS_OF_HEADER,
+  type SessionAnswer,
+} from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { turn } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
 import { type FakeDispatchCall, fakeDispatchFetch } from "../../test/fake-dispatch";
 import { bearerCredential } from "../bearer";
 import type { ActiveDispatchConfig } from "../dispatch-config";
@@ -23,7 +29,6 @@ import {
   renderSessionAnswerItem,
   renderSessionAnswers,
   renderSessionAnswersList,
-  SESSION_ANSWERS_DEADLINE_MS,
   SESSION_ANSWERS_MARKER,
   type SessionAnswersRead,
   sessionAnswersChanged,
@@ -39,6 +44,14 @@ const SINCE = hoursAgo(72);
 const stateDir = temporaryDirectories("session-answers");
 /** The Dispatch bearer each test's Dispatch is reached with. */
 const TOKEN = fixtureSecret("dsp");
+
+// A row on Bun's fake clock reads what a read did after one turn of the event loop (`turn`, whose
+// `setImmediate` Bun's fake timers leave real): the stand-in Dispatch answers in promise jobs alone
+// and the cache is written synchronously, so by then a read has gone as far as it can without the
+// clock. Such a row that fails part way would leave the next row on that clock.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 function message(id: string, at: string, text: string): SessionAnswer {
   return {
@@ -903,6 +916,8 @@ describe("readSessionAnswers", () => {
       env: envAt(stateDir()),
       fetchImpl,
       now: () => NOW,
+      // The read's own timeout (`READ_TIMEOUT_MS` in session-answers.ts, 10 s): the call waits as
+      // long as the read itself runs, so what it reports is the read's own end.
       deadlineMs: 10_000,
     });
     // The error the read was given named the password's tail, so the check below can fail.
@@ -911,7 +926,7 @@ describe("readSessionAnswers", () => {
       `Dispatch at the configured Dispatch URL ${URL_NOT_PRINTED} is unreachable: `
     );
     expect(JSON.stringify(read).toLowerCase()).not.toContain(tail.toLowerCase());
-  }, 30_000);
+  });
 
   test("a cached list carried after Dispatch's no-route 404 never names `dispatch answers`, its left-out line included", async () => {
     // Twelve items of about 1,000 characters each: the cap leaves the oldest out.
@@ -1086,16 +1101,14 @@ describe("readSessionAnswers", () => {
     expect((await readSessionAnswers(options)).source).toBe("cache");
   });
 
-  // The deadline is a real timer in the code under test, so this row waits on real time, but it
-  // reads no clock: the answer its two reads must not wait for never comes, and the second read's
-  // own deadline is 120 s, four times the row's 30 s limit, so a read that waited on either fails
-  // the row by that limit instead of by what the machine cost. The limit is that discriminator
-  // rather than a bound on work: measured in a 2-CPU pod the row costs 0.06 s idle and, under 16
-  // busy loops (8 x nproc), 0.45 s at most in a whole-suite run and 0.10 s with this file alone.
-  // The 30 s stays on the row rather than taking the suite's default, because the row's claim is
-  // that number. The second read's own reason says which path answered it: a read that answers by
-  // another path fails on that reason, and a read that waits still fails by the limit.
+  // The deadline is a real timer in the code under test, so the row runs the reads that wait on it
+  // on Bun's fake clock, and reads what each one answered at the moments it moves the clock to.
+  // The answer they wait on never comes until the row gives it: the first read gives up when the
+  // clock reaches its 50 ms, and the second, whose own deadline is 120 s, answers with the clock
+  // not moved at all, which a read that waited on the one in flight could not do. Its reason says
+  // which path answered it.
   test("waits at most the deadline, does not wait again on a read past it, and the late answer fills the cache", async () => {
+    jest.useFakeTimers();
     const session = newSession();
     const dispatch = dispatchAt();
     const hung = deferred<Response>();
@@ -1103,7 +1116,16 @@ describe("readSessionAnswers", () => {
     const { calls, fetchImpl } = fakeDispatchFetch({ handler: () => respond() });
     const options = { session, dispatch, env: envAt(stateDir()), fetchImpl, now: () => NOW };
 
-    const first = await readSessionAnswers({ ...options, deadlineMs: 50 });
+    let first: SessionAnswersRead | undefined;
+    void readSessionAnswers({ ...options, deadlineMs: 50 }).then((read) => {
+      first = read;
+    });
+    await turn();
+    jest.advanceTimersByTime(49);
+    await turn();
+    expect(first).toBeUndefined();
+    jest.advanceTimersByTime(1);
+    await turn();
     expect(first).toEqual({
       text: sessionAnswersFailureLine("Dispatch did not answer within 50 ms"),
       source: "failure",
@@ -1111,16 +1133,25 @@ describe("readSessionAnswers", () => {
     });
 
     // The read in flight already cost one request its deadline: the next does not wait on it.
-    const second = await readSessionAnswers({ ...options, deadlineMs: 120_000 });
-    expect(second.source).toBe("failure");
-    expect(second.reason).toBe("an earlier read is still waiting on Dispatch");
+    let second: SessionAnswersRead | undefined;
+    void readSessionAnswers({ ...options, deadlineMs: 120_000 }).then((read) => {
+      second = read;
+    });
+    await turn();
+    expect(second?.source).toBe("failure");
+    expect(second?.reason).toBe("an earlier read is still waiting on Dispatch");
     expect(calls).toHaveLength(1);
 
-    // The background read answers, and the cache holds its list.
+    // The background read answers, and the cache holds its list. No deadline is in play from
+    // here, so the row is back on the real clock.
+    jest.useRealTimers();
     hung.resolve(listed(recent));
-    await sessionAnswersSettled(session);
+    await settled("the background read", sessionAnswersSettled(session));
     respond = () => json({ code: "INTERNAL", error: "database is down" }, 500);
-    const third = await readSessionAnswers({ ...options, deadlineMs: 2_000 });
+    const third = await settled(
+      "a read that the cache answers",
+      readSessionAnswers({ ...options, deadlineMs: 2_000 })
+    );
     expect(calls).toHaveLength(2);
     expect(third.source).toBe("cache");
     expect(third.text).toBe(
@@ -1129,7 +1160,7 @@ describe("readSessionAnswers", () => {
         cached: { readAt: new Date(NOW).toISOString(), reason: "INTERNAL: database is down" },
       })
     );
-  }, 30_000);
+  });
 
   test("the request's own abort ends its wait at once, and the shared read goes on", async () => {
     const session = newSession();
@@ -1202,26 +1233,33 @@ describe("readSessionAnswers", () => {
     expect(calls).toHaveLength(2);
   });
 
+  // On the request path the read's client asks once and lets that answer through: the read's
+  // own 5-minute back-off is its answer to a release rolling out, so no request waits out
+  // attempts of a route this Dispatch has not got. The read's deadline and the client's wait
+  // before an attempt again are both timers in the code under test, so the row runs the read on
+  // Bun's fake clock and never moves it: the read answers with the clock where it started, which
+  // a read that waited for its deadline or for a second attempt could not do. No fake sleep here:
+  // the client's own wait is the one on the clock.
   test("Dispatch's own no-route 404 is unavailable within the deadline, from one ask", async () => {
-    // On the request path the read's client asks once and lets that answer through: the read's
-    // own 5-minute back-off is its answer to a release rolling out, so no request waits out
-    // attempts of a route this Dispatch has not got. No fake clock and no fake sleep here.
+    jest.useFakeTimers();
     const dispatch = dispatchAt();
     const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
-    const startedAt = Date.now();
-    const read = await readSessionAnswers({
+    let read: SessionAnswersRead | undefined;
+    void readSessionAnswers({
       session: newSession(),
       dispatch,
       env: envAt(stateDir()),
       fetchImpl,
+    }).then((answered) => {
+      read = answered;
     });
+    await turn();
     expect(read).toEqual({
       text: undefined,
       source: "unavailable",
       reason: NO_ANSWERS_ROUTE_REASON,
       notice: noRouteNotice(dispatch.url),
     });
-    expect(Date.now() - startedAt).toBeLessThan(SESSION_ANSWERS_DEADLINE_MS);
     expect(calls).toHaveLength(1);
   });
 
@@ -1396,5 +1434,324 @@ describe("readSessionAnswers", () => {
     expect(JSON.parse(readFileSync(file, "utf-8")).items).toEqual(recent);
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(readdirSync(directory).sort()).toEqual(["answers.json", "answers.old"]);
+  });
+});
+
+// A replayed agent runs under a read-only broker token that carries a cut, and Dispatch answers
+// its host's answers read at that cut whatever the read sends: the answer names the cut in
+// `Dispatch-As-Of` and leaves out the question of an ask whose wording the records at the cut
+// cannot give (`/items/N/ask/question`). The host never sent `as_of`, so it learns the cut from the
+// answer, keeps it with the list, and prints such a question as left out, on the fresh list and on
+// every list carried from it, never throwing.
+describe("readSessionAnswers under a token that carries a cut", () => {
+  /** The cut the token carries, as Dispatch names it. */
+  const CUT = "2026-10-27T09:00:00.000000Z";
+  /** An answer whose ask's question the answer at the cut left out. */
+  const unworded = { ...answer, ask: { id: "ask-1" } } as unknown as SessionAnswer;
+  /** Dispatch's answer at the cut: one item, its question named absent. */
+  const atCut = () =>
+    new Response(JSON.stringify({ session_id: "ses", since: SINCE, total: 1, items: [unworded] }), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        [DISPATCH_AS_OF_HEADER]: CUT,
+        [DISPATCH_AS_OF_ABSENT_HEADER]: "/items/0/ask/question",
+      },
+    });
+
+  test("the fresh list and the list carried from it print the question as left out at the cut", async () => {
+    const root = stateDir();
+    const session = newSession();
+    const dispatch = dispatchAt();
+    let fail = false;
+    const { paths, fetchImpl } = fakeDispatchFetch({
+      handler: () => (fail ? json({ code: "INTERNAL", error: "database is down" }, 500) : atCut()),
+    });
+    const options = { session, dispatch, env: envAt(root), fetchImpl, now: () => NOW };
+
+    const fresh = await readSessionAnswers(options);
+    expect(fresh.source).toBe("fresh");
+    expect(fresh.text).toContain(`Question: left out at ${CUT}`);
+    expect(fresh.text).not.toContain("undefined");
+    // The read sent no cut: the token's cut is Dispatch's to apply. It asked by this host's clock,
+    // not knowing the cut yet; the answer named it, and the read asked once more, at once, with no
+    // `since`, so Dispatch answers the 72 hours before the cut.
+    expect(paths).toEqual([
+      `/api/v1/agents/${session}/answers?since=${encodeURIComponent(SINCE)}&max_chars=8000`,
+      `/api/v1/agents/${session}/answers?max_chars=8000`,
+    ]);
+    expect(JSON.parse(readFileSync(cacheFile(root, session), "utf-8")).as_of).toBe(CUT);
+
+    fail = true;
+    const carried = await readSessionAnswers(options);
+    expect(carried.source).toBe("cache");
+    expect(carried.text).toContain(`Question: left out at ${CUT}`);
+
+    // A process with no list in memory carries the list answers.json kept, its cut with it.
+    const restarted = newSession();
+    mkdirSync(join(root, "sessions", restarted), { recursive: true });
+    writeFileSync(cacheFile(root, restarted), readFileSync(cacheFile(root, session)));
+    const reloaded = await readSessionAnswers({ ...options, session: restarted });
+    expect(reloaded.source).toBe("cache");
+    expect(reloaded.text).toContain(`Question: left out at ${CUT}`);
+  });
+
+  test("a named omission neither shows another cut's list nor overwrites its cache", async () => {
+    const root = stateDir();
+    const session = newSession();
+    const dispatch = dispatchAt();
+    const later = "2026-10-27T11:30:00.000000Z";
+    const missing = { session_id: session, since: "2026-10-24T11:30:00Z" };
+    let respond = atCut;
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: () => respond() });
+    const options = { session, dispatch, env: envAt(root), fetchImpl, now: () => NOW };
+
+    expect((await readSessionAnswers(options)).text).toContain(unworded.text);
+    const file = cacheFile(root, session);
+    const before = readFileSync(file, "utf8");
+    expect(JSON.parse(before).as_of).toBe(CUT);
+    const omission = (absent: string) =>
+      Response.json(missing, {
+        headers: {
+          [DISPATCH_AS_OF_HEADER]: later,
+          [DISPATCH_AS_OF_ABSENT_HEADER]: absent,
+        },
+      });
+    // A nested pointer alone cannot explain missing list members. Keep the ordinary bad-list
+    // behavior, including its cache fallback and error text.
+    respond = () => omission("/items/*/ask/question");
+    const malformed = await readSessionAnswers(options);
+    expect(malformed.source).toBe("cache");
+    expect(malformed.reason).toBe("Dispatch answered with something that is not an answers list");
+
+    respond = () => omission("/items,/total");
+    expect(await readSessionAnswers(options)).toEqual({
+      text: `${SESSION_ANSWERS_MARKER}\n\nThe list was left out at ${later}. Do not use an earlier list as the answer at this cut.`,
+      source: "omitted",
+    });
+    expect(calls).toHaveLength(4); // Two for the first cut, then one per read at the later cut.
+    expect(calls.at(-1)?.url.searchParams.has("since")).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  test("a fresh omission learns its cut in two requests, and the next read asks at it in one", async () => {
+    const root = stateDir();
+    const session = newSession();
+    const dispatch = dispatchAt();
+    const later = "2026-10-27T11:30:00.000000Z";
+    const missing = { session_id: session, since: "2026-10-24T11:30:00Z" };
+    let respond = () =>
+      Response.json(missing, {
+        headers: {
+          [DISPATCH_AS_OF_HEADER]: later,
+          [DISPATCH_AS_OF_ABSENT_HEADER]: "/items,/total",
+        },
+      });
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: () => respond() });
+    const options = { session, dispatch, env: envAt(root), fetchImpl, now: () => NOW };
+    const sinces = () => calls.map((call) => call.url.searchParams.get("since"));
+    const omitted: SessionAnswersRead = {
+      text: `${SESSION_ANSWERS_MARKER}\n\nThe list was left out at ${later}. Do not use an earlier list as the answer at this cut.`,
+      source: "omitted",
+    };
+
+    // No list was read, so the read asked by this host's clock; the answer named the cut, and the
+    // read asked once more, with no `since`.
+    expect(await readSessionAnswers(options)).toEqual(omitted);
+    expect(sinces()).toEqual([SINCE, null]);
+
+    // The omission kept no list, but the read remembers it was answered at a cut: one request.
+    expect(await readSessionAnswers(options)).toEqual(omitted);
+    expect(sinces()).toEqual([SINCE, null, null]);
+    expect(existsSync(cacheFile(root, session))).toBe(false);
+
+    // The token now reads the present: the read asks again by this host's clock, and the list it
+    // keeps names no cut, so the next read asks by that clock at once.
+    respond = () => listed(recent);
+    expect((await readSessionAnswers(options)).source).toBe("fresh");
+    expect(sinces()).toEqual([SINCE, null, null, null, SINCE]);
+    await readSessionAnswers(options);
+    expect(sinces()).toEqual([SINCE, null, null, null, SINCE, SINCE]);
+  });
+
+  test("an answers.json that names no cut still renders, its left-out question as left out by Dispatch", async () => {
+    const root = stateDir();
+    const session = newSession();
+    const dispatch = dispatchAt();
+    mkdirSync(join(root, "sessions", session), { recursive: true });
+    writeFileSync(
+      cacheFile(root, session),
+      JSON.stringify({
+        dispatch_url: dispatch.url,
+        read_at: hoursAgo(0.5),
+        total: 1,
+        items: [unworded],
+      })
+    );
+    const { fetchImpl } = fakeDispatchFetch({
+      handler: () => json({ code: "INTERNAL", error: "database is down" }, 500),
+    });
+    const read = await readSessionAnswers({
+      session,
+      dispatch,
+      env: envAt(root),
+      fetchImpl,
+      now: () => NOW,
+    });
+    expect(read.source).toBe("cache");
+    expect(read.text).toContain("Question: left out by Dispatch");
+  });
+
+  // A replay reader (R10 of dispatch://INFRA-3786) runs an agent under such a token on a host
+  // whose clock is its own, days past the cut: no `now` is given, so the read runs on `Date.now`.
+  // Dispatch answers the read at the cut whatever it sends: a `since` more than 7 days before the
+  // cut is refused, and otherwise it sends the items written from `since` up to the cut, so a
+  // `since` after the cut gets none.
+  test("a cut 10 days before the host's clock: the read counts its 72 hours back from the cut, and the next read asks for them at once", async () => {
+    const hour = 3_600_000;
+    const cutAt = Date.now() - 240 * hour;
+    /** The cut as Dispatch names it: UTC, six fractional digits. */
+    const cut = `${new Date(cutAt).toISOString().slice(0, -1)}000Z`;
+    /** Where the window of a read at the cut starts: 72 hours before it. */
+    const cutSince = new Date(cutAt - 72 * hour).toISOString();
+    const written = message(
+      "m-before-cut",
+      new Date(cutAt - 5 * hour).toISOString(),
+      "Hold the release until the audit closes."
+    );
+    const older = message(
+      "m-past-window",
+      new Date(cutAt - 100 * hour).toISOString(),
+      "Words from before the window."
+    );
+    const session = newSession();
+    const sinces: (string | null)[] = [];
+    const { fetchImpl } = fakeDispatchFetch({
+      handler: (call) => {
+        const asked = call.url.searchParams.get("since");
+        sinces.push(asked);
+        const since = asked === null ? cutAt - 72 * hour : Date.parse(asked);
+        if (since < cutAt - 7 * 24 * hour) {
+          return json(
+            { code: "INVALID_QUERY", error: "since must be no more than 7 days before the cut" },
+            400
+          );
+        }
+        const items = [written, older].filter(
+          (item) => Date.parse(item.at) >= since && Date.parse(item.at) <= cutAt
+        );
+        const body = { session_id: session, since: asked, total: items.length, items };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json", [DISPATCH_AS_OF_HEADER]: cut },
+        });
+      },
+    });
+    const options = { session, dispatch: dispatchAt(), env: envAt(stateDir()), fetchImpl };
+    const atCut: SessionAnswersRead = {
+      text: renderSessionAnswers([written], { now: cutAt, asOf: cut }),
+      source: "fresh",
+      readAt: expect.any(String),
+      words: sessionAnswersWords([written]),
+      since: cutSince,
+    };
+
+    const first = await readSessionAnswers(options);
+    expect(first).toEqual(atCut);
+    expect(first.text).toContain(written.text);
+    // The read did not know the cut when it asked, so it asked by the host's clock, after the
+    // cut, and got nothing; the answer named the cut, and the read asked once more, at once, with
+    // no `since`, which Dispatch answers for the 72 hours before the cut.
+    expect(sinces).toHaveLength(2);
+    expect(Date.parse(sinces[0] ?? "")).toBeGreaterThan(cutAt);
+    expect(sinces[1]).toBeNull();
+
+    // The list kept the cut, so the next read sends no `since`: one request.
+    const second = await readSessionAnswers(options);
+    expect(second).toEqual(atCut);
+    expect(sinces.slice(2)).toEqual([null]);
+  });
+
+  // answers.json outlives a token, so the cut a list kept need not be the session's token's. The
+  // read at a cut sends no `since`, so Dispatch answers the 72 hours before the cut the token
+  // reads at, whatever cut the list kept; only an answer of the present makes the read ask again,
+  // by this host's clock.
+  test("a kept cut that is not the token's: a later cut is read in one request, the present in two", async () => {
+    const hour = 3_600_000;
+    const now = Date.now();
+    const firstCutAt = now - 240 * hour;
+    const laterCutAt = firstCutAt + 120 * hour;
+    const named = (at: number) => `${new Date(at).toISOString().slice(0, -1)}000Z`;
+    const atFirst = message(
+      "m-first",
+      new Date(firstCutAt - 5 * hour).toISOString(),
+      "Words then."
+    );
+    const atLater = message(
+      "m-later",
+      new Date(laterCutAt - 5 * hour).toISOString(),
+      "Words later."
+    );
+    const recent = message("m-recent", new Date(now - hour).toISOString(), "Words now.");
+    const session = newSession();
+    const sinces: (string | null)[] = [];
+    /** The cut the session's token reads at, or undefined for the present. */
+    let tokenCut: number | undefined = firstCutAt;
+    const { fetchImpl } = fakeDispatchFetch({
+      handler: (call) => {
+        const asked = call.url.searchParams.get("since");
+        sinces.push(asked);
+        const end = tokenCut ?? Date.now();
+        const since = asked === null ? end - 72 * hour : Date.parse(asked);
+        if (since < end - 7 * 24 * hour) {
+          return json({ code: "INVALID_QUERY", error: "since is more than 7 days back" }, 400);
+        }
+        const items = [atFirst, atLater, recent].filter(
+          (item) => Date.parse(item.at) >= since && Date.parse(item.at) <= end
+        );
+        const body = { session_id: session, since: asked, total: items.length, items };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            ...(tokenCut === undefined ? {} : { [DISPATCH_AS_OF_HEADER]: named(tokenCut) }),
+          },
+        });
+      },
+    });
+    const options = { session, dispatch: dispatchAt(), env: envAt(stateDir()), fetchImpl };
+
+    const first = await readSessionAnswers(options);
+    expect(first.text).toContain(atFirst.text);
+
+    // The token now reads at a cut 5 days later: one request with no `since`, answered for the 72
+    // hours before that cut.
+    tokenCut = laterCutAt;
+    sinces.length = 0;
+    const later = await readSessionAnswers(options);
+    expect(later.source).toBe("fresh");
+    expect(later.text).toContain(atLater.text);
+    expect(later.text).not.toContain(atFirst.text);
+    expect(later.since).toBe(new Date(laterCutAt - 72 * hour).toISOString());
+    expect(sinces).toEqual([null]);
+
+    // The token now reads the present: the answer names no cut, so the read asks again by this
+    // host's clock.
+    tokenCut = undefined;
+    sinces.length = 0;
+    const present = await readSessionAnswers(options);
+    expect(present.source).toBe("fresh");
+    expect(present.text).toContain(recent.text);
+    expect(present.text).not.toContain(atLater.text);
+    expect(sinces).toHaveLength(2);
+    expect(sinces[0]).toBeNull();
+    expect(Date.parse(sinces[1] ?? "")).toBeGreaterThan(laterCutAt);
+
+    // The present's list kept no cut, so the next read asks by the host's clock at once.
+    sinces.length = 0;
+    const again = await readSessionAnswers(options);
+    expect(again.text).toContain(recent.text);
+    expect(sinces).toHaveLength(1);
+    expect(sinces[0]).not.toBeNull();
   });
 });

@@ -195,7 +195,8 @@ func TestAPromptThatRanNoTurnIsChargedWhenItsResultSaysSo(t *testing.T) {
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 7})
 	first := h.wantPrompts(1)[0].DeliveryID
 
-	h.must(StreamPromptResult{Claim: testToken, DeliveryID: first, AgentInvoked: false, Error: "the command ran locally"})
+	h.must(StreamPromptResult{Claim: testToken, DeliveryID: first, AgentInvoked: false, Error: "the command ran locally",
+		Outcome: runtime.OutcomeNoTurnRun})
 
 	h.wantBudgets(Budgets{PromptFailures: 1})
 	p := h.pending()
@@ -211,15 +212,14 @@ func TestAPromptThatRanNoTurnIsChargedWhenItsResultSaysSo(t *testing.T) {
 }
 
 // Oh My Pi answers a prompt it acknowledged with a result that ran no turn and names a turn of
-// its own: "Agent is already processing". That is the busy answer `refused` and `lateRefused`
-// already read, arriving on the third path a prompt can fail on, and it says the agent is
-// working rather than refusing the work. Charged, it drove a loop in production: a relaunch
-// resumes the session, the resume starts a turn, the next task meets that turn, three such
-// answers retire the claim, and the retirement launches again — a full session resume per cycle,
-// five of them in three minutes on one root. The task waits unread, charged nothing, and the
-// turn's end sends it.
+// its own, by the busy code, which the stream mints as OutcomeAgentBusy. That is the
+// busy answer `refused` and `lateRefused` already read, arriving on the third path a prompt can
+// fail on, and it says the agent is working rather than refusing the work. Charged, it drove a
+// loop in production: a relaunch resumes the session, the resume starts a turn, the next task
+// meets that turn, three such answers retire the claim, and the retirement launches again — a
+// full session resume per cycle, five of them in three minutes on one root. The task waits
+// unread, charged nothing, and the turn's end sends it.
 func TestABusyResultOfAnAcknowledgedPromptIsChargedNothingAndItsTurnsEndSendsTheTask(t *testing.T) {
-	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	h := newHarness(t)
 	h.reach(StateReady)
 	base := len(h.prompts())
@@ -228,7 +228,8 @@ func TestABusyResultOfAnAcknowledgedPromptIsChargedNothingAndItsTurnsEndSendsThe
 	for sent := 1; sent <= 4; sent++ {
 		prompt := h.wantPrompts(base + sent)[base+sent-1]
 
-		h.must(StreamPromptResult{Claim: testToken, DeliveryID: prompt.DeliveryID, AgentInvoked: false, Error: busy})
+		h.must(StreamPromptResult{Claim: testToken, DeliveryID: prompt.DeliveryID, AgentInvoked: false, Error: busyWords,
+			Outcome: runtime.OutcomeAgentBusy})
 
 		h.wantBudgets(Budgets{})
 		h.wantCalls("Suspend", 0)
@@ -273,7 +274,7 @@ func TestAnAgentWhoseResultsRunNoTurnAndNameNoTurnOfItsOwnIsStillRetired(t *test
 	for sent := 1; sent <= 3; sent++ {
 		prompt := h.wantPrompts(base + sent)[base+sent-1]
 		h.must(StreamPromptResult{Claim: testToken, DeliveryID: prompt.DeliveryID, AgentInvoked: false,
-			Error: "No API key found for provider anthropic"})
+			Error: "No API key found for provider anthropic", Outcome: runtime.OutcomeNoTurnRun})
 		if sent < 3 {
 			h.wantBudgets(Budgets{PromptFailures: sent})
 			h.wantCalls("Suspend", 0)

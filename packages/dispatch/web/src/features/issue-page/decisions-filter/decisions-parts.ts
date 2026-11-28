@@ -10,6 +10,7 @@ import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
 import { type ChangeComment, inReviewList } from "../decision-review";
+import { presetPath } from "../issue-address";
 import { type ParentLine, parentLineOf, type TreeAsk, type TreeNode } from "../issue-tree";
 import { type DecisionState, isReader } from "../page-words";
 
@@ -195,10 +196,11 @@ export interface DecisionsParts {
 export type DecisionsAsk = Pick<TreeAsk, "id" | "resolution">;
 
 /**
- * The address of `node` in the conversation: an ask's own, and for a block of a document the
- * issue's own address with the block as its fragment, which opens the outline on that block's
- * node (`issue-address.ts`). A decision's own address opens `decisions.md` at its heading,
- * which is the document and not the conversation.
+ * The address of `node` in the conversation: an ask's own, and for a block of a document
+ * Conversation's own address (`presetPath`, `/conversation`) with the block as its fragment,
+ * which opens the outline on that block's node (`issue-address.ts`,
+ * dispatch://INFRA-5702/spec#b-r-new-page). A decision's own address opens `decisions.md` at
+ * its heading, which is the document and not the conversation.
  */
 export function conversationPath(node: Pick<TreeNode, "reference">): string | undefined {
   const route = node.reference === undefined ? undefined : parseNodeReference(node.reference);
@@ -209,19 +211,7 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
   const block = "block" in route ? route.block : undefined;
   return block === undefined
     ? undefined
-    : `${buildIssuePath({ key: route.key, kind: "issue" })}${blockFragment(block.id)}`;
-}
-
-/**
- * Every entry that waits on the reader, in the filter's order: each open question whose turn
- * is the reader's, then each decision of the review list. It is what the header's count of
- * what waits walks: each press goes to the next of them (R13, the tester's F12).
- */
-export function waitingOrder(parts: DecisionsParts): readonly string[] {
-  return [
-    ...parts.open_questions.filter((entry) => entry.node.waiting).map((entry) => entry.node.id),
-    ...parts.review.map((entry) => entry.node.id),
-  ];
+    : `${presetPath(route.key, "conversation")}${blockFragment(block.id)}`;
 }
 
 /**

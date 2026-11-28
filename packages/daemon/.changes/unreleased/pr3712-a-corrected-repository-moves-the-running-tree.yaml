@@ -1,0 +1,33 @@
+kind: Changed
+body: |-
+  An issue's repository in Legion's record follows the repository Dispatch resolves it to, in the
+  pass that reads the change: a live event, the boot listing, or a hand-over. The daemon replaces
+  the issue's pod, and each worker's next task names both repositories. A correction reads
+  GitHub at that event (both Apps' installation, the spelling and the default branch) and never
+  writes from an earlier read. A repository a role App is not installed on waits on the record,
+  with its reason, and the issue is told what a person can do; the change is applied at the issue's
+  next event or at the next boot, since the daemon reads no repository mapping any more. The boot's
+  listing reads no GitHub, so it leaves each change it finds to one pass after the boot, which
+  writes the corrections it has read within its bound and reads the issues it did not reach at its
+  next pass. A correction whose reads GitHub does not answer writes nothing and says nothing, and
+  the daemon reads that issue again from Dispatch's listing until GitHub answers, with no event of
+  the issue and no restart: at once unless a read already owed covers it, and otherwise at the
+  latest at the next run of one backoff all owed reads share, 30 s doubling to 10 min, which starts
+  again at 30 s only once no read is owed. A correction read before another pass moved the record
+  (a hand-over, or an event that arrives late, after a pass over Dispatch's listing at the same
+  sequence) writes nothing either, and the daemon owes that issue the same read, so the record ends
+  on what Dispatch resolves then. A worker's task names
+  in its `Working copy:` line the directory of the repository the process it is sent to was started
+  on, written at each send and recorded at each launch: after a correction a tmux pane goes on in
+  the old repository's workspace until it is launched again, and a pod's roles until the update
+  round's relaunch, so the line names the old workspace until that launch and the new one after
+  it, and a role launched into a live pod is told that pod's workspace.
+  Every phase task now opens with its `Working copy:` line, ahead of the Dispatch title, so no
+  title can hide the line or be rewritten in its place. The line ends with a line break, and the
+  continue line follows on the next line; each send replaces the line up to that line break, so a
+  directory that holds a full stop followed by a space is written whole. The daemon refuses at load
+  a `state_dir` that holds a line break, since under tmux the line names a directory under it. A
+  task an earlier release composed and kept across the upgrade holds the line after its continue
+  line, where the send finds it as before, and a title that repeats that continue line's own
+  ending can still hide the line in such a task; where the directory a send would write holds a
+  full stop followed by a space, the send leaves such a task's line as it was kept.

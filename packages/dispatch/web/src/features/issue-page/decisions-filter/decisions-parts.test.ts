@@ -1,26 +1,24 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import type { ArtifactBlock, Decision, DecisionLink, DisplayTree } from "../../../api/types";
+import { decision, decisionRef, KEY } from "../../decision-card/decision-fixture";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { parentLinkWords } from "../projection-fixture";
-import { nodeIdOf as issueNodeIdOf } from "../tree-drafts";
+import { nodeIdOf as issueNodeIdOf } from "../statement-rules";
 import {
   AGENT,
   answeredAsk,
   ask,
   closing,
   DECISIONS_DOCUMENT,
-  decision,
   decisionNode,
-  decisionRef,
   decisionsRead,
   issueDetails,
   issueTree,
-  KEY,
   node,
   openAsk,
   READER,
@@ -35,7 +33,6 @@ import {
   type DecisionsAsk,
   type DecisionsParts,
   decisionsParts,
-  waitingOrder,
 } from "./decisions-parts";
 
 /**
@@ -48,7 +45,7 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-/** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). */
+/** How this issue addresses a node, which is the page's own rule (`statement-rules.ts`). */
 const nodeIdOf = issueNodeIdOf(issueDetails());
 
 /** The decisions document's blocks as the blocks read answers them: each decision's own block,
@@ -374,7 +371,6 @@ test("a decision the reader asked to change leaves the review list and carries t
   expect(
     inReviewList(decision("asked", { links: [shaped(specRef("s1"))] }), isStatement, true)
   ).toBe(false);
-  expect(waitingOrder(parts)).toEqual([D("stale"), D("waits")]);
 });
 
 // R2: a declined ask reads as a question the person declined, never as an answer: the entry
@@ -540,19 +536,19 @@ test("a decision that shaped three statements is one entry that reaches all thre
     {
       id: statement("s1").id,
       line: "The first statement holds.",
-      path: `/issues/${KEY}#b-s1`,
+      path: `/issues/${KEY}/conversation#b-s1`,
       stale: false,
     },
     {
       id: statement("s2").id,
       line: "The page draws s2.",
-      path: `/issues/${KEY}#b-s2`,
+      path: `/issues/${KEY}/conversation#b-s2`,
       stale: true,
     },
     {
       id: statement("s3").id,
       line: "The page draws s3.",
-      path: `/issues/${KEY}#b-s3`,
+      path: `/issues/${KEY}/conversation#b-s3`,
       stale: false,
     },
   ]);
@@ -583,14 +579,16 @@ test("each entry carries its address in the conversation and its parent's line",
   const under = parts.review.find((entry) => entry.node.id === D("under"));
   expect(under).toMatchObject({
     parent: { id: "q1", type: "ask" },
-    path: `/issues/${KEY}#b-under`,
+    path: `/issues/${KEY}/conversation#b-under`,
   });
   expect(under?.parent === undefined ? undefined : parentLinkWords(under.parent)).toBe(
     "On a phone, where does the box sit?"
   );
   expect(parts.review.find((entry) => entry.node.id === D("top"))?.parent).toBeUndefined();
 
-  expect(conversationPath({ reference: decisionRef("d1") })).toBe(`/issues/${KEY}#b-d1`);
+  expect(conversationPath({ reference: decisionRef("d1") })).toBe(
+    `/issues/${KEY}/conversation#b-d1`
+  );
   expect(conversationPath({})).toBeUndefined();
   expect(conversationPath({ reference: `dispatch://${KEY}` })).toBeUndefined();
 });
@@ -706,26 +704,6 @@ test("the parts hold the nodes the filter's view left", () => {
   });
   // The tie is still read against the whole tree: the view holds no statement at all.
   expect(partsOf(children, made, [], view).review[0]?.shapes).toHaveLength(1);
-});
-
-// R13, the tester's F12: the count of what waits on the reader walks the things that wait, in
-// the filter's order: each open question whose turn is the reader's, then each decision of the
-// review list.
-test("what waits is each open question of the reader's, then each decision to review", () => {
-  const made = [decision("review", { links: [shaped(specRef("s1"))] })];
-  const both = partsOf(
-    [statement("s1"), decisionNode("review"), openAsk("q-agent", false), openAsk("q-mine")],
-    made
-  );
-  expect(waitingOrder(both)).toEqual(["q-mine", D("review")]);
-
-  const review = partsOf(
-    [statement("s1"), decisionNode("review"), openAsk("q-agent", false)],
-    made
-  );
-  expect(waitingOrder(review)).toEqual([D("review")]);
-
-  expect(waitingOrder(partsOf([openAsk("q-agent", false)]))).toEqual([]);
 });
 
 // The tree draws from the reads that have answered: before the decisions read and the asks

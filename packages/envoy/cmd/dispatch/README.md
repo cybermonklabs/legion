@@ -219,10 +219,10 @@ The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
 
-No broker-issued token a machine holds has the OAuth scope `approve` or `p0`, whatever its project scope: one acting for its person holds `person` alone, a Legion daemon's own token holds `legion-status` alone (below), and every other holds none (`brokerTokenActor`).
-Each such token is made from a file on the machine that holds it, a machine login or a person's sign-in, so whoever copies that file holds it, and `approve` settles what only the person settles.
+No broker-issued token a machine holds has the OAuth scope `approve`, whatever its project scope, and of them only a Dispatch sign-in's may hold `p0`: one acting for its person holds `person` alone, a Dispatch sign-in holds only the consentable scopes its person approved (`person` and `p0`, each where its person ticked it, possibly neither), a Legion daemon's own token holds `legion-status` alone (below), and every other holds none (`brokerTokenActor`).
+Each such token is made from a file on the machine that holds it, a machine login, a person's sign-in or a Dispatch sign-in, so whoever copies that file holds it, and `approve` settles what only the person settles.
 So every route whose `scopes` name `approve` (`GET /api/v1`; `x-oauth-scopes` in `dispatch-openapi.json`) refuses each of those tokens at its scope gate (`gateRouteScopes`), before the handler runs and before anything is relayed to the broker:
-`403 OAUTH_SCOPE_REQUIRED` naming `approve` for a token acting for its person, naming `person` for one that holds no scope, and `403 READ_ONLY_TOKEN` for a read-only token (below).
+`403 OAUTH_SCOPE_REQUIRED` naming `approve` for a token acting for its person, naming `person` for one that does not hold `person` (one that holds no scope, or a Dispatch sign-in's holding `p0` alone), and `403 READ_ONLY_TOKEN` for a read-only token (below).
 The one broker-issued token that approves is an approve-only token (below), which no machine holds.
 The answer to an approval request (`POST /api/v1/asks/{id}/answer`) needs only `person` at that gate, because the ask's kind is known only once its row is read, so a token that holds no scope and a read-only token are refused there as above;
 a token acting for its person passes the gate and is refused inside the answer's transaction (`answerAsk`), once the ask's kind is read and before anything is written, with the same `403 OAUTH_SCOPE_REQUIRED` naming `approve`, and the request stays open.
@@ -237,19 +237,22 @@ A person's browser sign-in holds `person`, `approve` and `p0`.
 A personal token holds `p0` only where its maker gave it, at the mint or at a later change of its scopes, and may hold it alone.
 A mint that names no scopes gives every scope its maker holds except `p0`, for a browser and for a token alike.
 While the release that brings `p0` rolls, a server of the release before gives a mint that names no scopes its caller's whole set, so such a mint by a token that holds `p0` gives the new token `p0` too: no credential gets a scope its maker does not hold, and this ends when the last server of the release before stops.
-No broker-issued token, shared token or service-account token holds `p0`.
+A Dispatch sign-in's broker-issued token holds `p0` only where its person ticked it on the machine-login page, which starts it unticked.
+No other broker-issued token, and no shared token or service-account token, holds `p0`.
 
 A read-only token is any token that holds `read`, and it may only read.
 The broker mints it from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`): that token holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
-The broker also narrows any trade that asks for `read`: that token keeps the session, the person or the service, and the projects the same trade would have named, under the narrowed project scope `read-named`, `read-person` or `read-none`, and it may carry a cut (`as_of`), the past time it reads at.
+The broker also narrows any trade that asks for `read`, but a result entry's, which it refuses `invalid_scope` (a results token below is never narrowed): that token keeps the session, the person or the service, and the projects the same trade would have named, under the narrowed project scope `read-named`, `read-person` or `read-none`, and it may carry a cut (`as_of`), the past time it reads at.
 `brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with its cut (`model.Credential.Cut`).
 A `read-person` token that names its person holds the `person` scope alone, never `approve` or `p0`, and every other read-only broker token holds no OAuth scope.
 A personal token minted with `read` is read-only too (`/api/v1/me/agent-tokens`, below).
 Dispatch serves a read-only token on the reads of its read class and on no other route.
 Every GET route's declaration states one read class (`routeDecl.Read`, `internal/dispatch/api/read_classes.go` for what a class is): a read, which writes nothing but the record of the token's use and caches Dispatch rebuilds from what it holds, or a GET that writes.
 `register` refuses to mount a table with a GET row that has no class.
-Every other route of the table, and `GET /ws/live`, answers a read-only token `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
-Every read but `GET /api/v1/whoami` answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`), naming the cut: this build answers no read at a past time, and it does not answer one with the present.
+Every other route of the table, and `GET /ws/live`, answers a read-only token `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseLimitedToken`).
+A read-only token that carries a cut reads at that cut (Reads at a past time, below).
+A read that answers `as_of` answers it as of its cut, and `GET /api/v1/whoami` names the cut.
+Every other read, and `GET /ws/live`, answer it `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`) instead, naming the cut, rather than answer it with the present.
 Both refusals come before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the record of the token's use: a broker token's spent DPoP proof, which the token's verification records before the refusal, or a personal token's last use.
 `GET /api/v1/issues/{key}/results` is a read: a read-only token's read of it asks GitHub exactly what a writer's read made at the same moment asks, answers what that read answers on the rows stored then, and stores no pull request head, no branch commit and no event.
 It keeps no answer after its request: it reads the writer's claims and settles of a commit's pull requests, the unseen holds and the default-branch cache without writing any of them, and each of its reads of the stored heads runs the writer's own statement over the stored rows with that request's own answers laid on.
@@ -257,7 +260,8 @@ What it changes in the process is what a writer's read changes there the same wa
 So every read at the present time asks GitHub what a writer's read at that moment asks.
 For each result commit that no stored head and no writer's claim or settle covers, it makes one pulls read (`GET /repos/{owner}/{repo}/commits/{sha}/pulls`), and for each pull request that read names whose title, body, branch and links name no issue Dispatch holds, it reads the commit messages, one to five pages of 100 (`GET /repos/{owner}/{repo}/pulls/{number}/commits`, `delivery.fetchCommitMessagesWithToken`).
 It makes one compare read for each step of an `after_merge` or `default_branch` walk that no fresh stored branch row and no unseen hold answers, the check-runs read of a check CI proves at the issue's newest pull request head (one page of 100, and the next while a page comes full) on every read, and the repository's default-branch read wherever the process's cache entry is older than five minutes.
-A read by a token that carries a cut is refused `403 AS_OF_TOKEN_NOT_SERVED` before the handler and reads nothing from GitHub, and a read that names a commit with `?at=` asks GitHub only for the check runs of a check CI proves.
+A read at a cut, by `as_of` or by a token that carries one, asks GitHub nothing: it answers the results as they stood at the cut and refuses `?at=` with `400 AS_OF_NOT_SERVED` (Reads at a past time, below).
+A read at the present time that names a commit with `?at=` asks GitHub only for the check runs of a check CI proves.
 Those reads spend the GitHub App installation's rate limit, the one the writers' reads and both reconciles spend; GitHub gives an installation at least 5,000 REST requests an hour (its `X-RateLimit-Limit`, which Dispatch does not read).
 A poll every N seconds of an issue whose read makes R of those reads costs R × 3600 / N of them an hour: an issue with one uncovered result commit whose pull request's title names it (`TestAReadOnlyResultsReadAnswersAsAWriterInEveryState`, rows 2 and 3) makes two, the pulls read and the default-branch read, so a poll every 10 seconds spends 720 an hour, and a read whose issue has 300 uncovered result commits makes at least 300 pulls reads, one for each, so 17 such reads spend 5,000.
 When GitHub answers a request as rate-limited, the client records the limit until `Retry-After`, else `X-RateLimit-Reset` where no request is left, else a minute, and at most an hour (`githubapp.Client.request`), and until then it sends no request on that installation's token for any caller in any process (`githubapp.Client.send`; the App's own installation lookups and token mints are not held).
@@ -291,11 +295,20 @@ The other mounts outside the table read no broker token: `/ws/doc/{room}` answer
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only broker token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
+A results token is the token the broker mints from a result entry's grant (`BROKER_EXCHANGE_RESULT_WORKFLOWS`) for one GitHub Actions run.
+The run itself holds only the broker's proxy placeholder: the broker's airlock proxy puts the token, with a DPoP proof of the broker's own key, into each write the proxy block of the profile `DISPATCH_RESULTS_TOKEN` allows, so the job holds no Dispatch credential.
+The token holds the OAuth scope `results` alone and the project scope `results`, and names a person, one project, the session of its workflow and the run (`ci`).
+That person stays inside Dispatch: the result such a token writes names the run's session and principal as its recorder and no person, and the access log names the run's session as the caller.
+`brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesResults` set too, so Dispatch accepts such a token and marks its credential results-only with the run (`model.Credential.ResultsOnly`, `model.Credential.CI`), with no OAuth scope.
+Dispatch serves it on the routes whose declaration states `ResultsScope` (`routeDecl.ResultsScope`, in each route's file under `internal/dispatch/api`), today `POST /api/v1/projects/{key}/results` alone, where a CI job writes the result of a check of the spec files at its commit.
+Every other route of the table, and `GET /ws/live`, answers it `403 RESULTS_ONLY_TOKEN` with no `WWW-Authenticate` challenge (`refuseLimitedToken`), before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler.
+A service whose verifier does not set that switch, the Envoy listener among them, answers a results token `401`.
+
 An approve-only token is the token the secrets broker mints for a person's approve grant: a session on a box where the person signed in trades that sign-in for the grant, holds only a placeholder, and sends each approval through the broker's proxy, which puts in the token, bound to the broker pod's own key, and never releases it.
 It holds the OAuth scope `approve` alone and the project scope `person`, and names a person and a session and no service and no project.
 `brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesApproveOnly` set, so Dispatch accepts such a token as its person with the scopes `person` and `approve`, never `p0`, and marks its credential approve-only (`model.Credential.ApproveOnly`).
 Dispatch serves it on the routes whose declaration states `ApproveOnly` (`routeDecl.ApproveOnly`, in each route's file under `internal/dispatch/api`): every route that needs `approve` less the mint and the change of a personal token (`POST /api/v1/me/agent-tokens`, `PATCH /api/v1/me/agent-tokens/{id}`), whose token would be an approve credential on the box, and with the answer of an approval request.
-Every other route of the table, and `GET /ws/live`, answers it `403 APPROVE_ONLY_TOKEN` (`contracts.DispatchApproveOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseApproveOnlyToken`), before the route's scopes and everything else it does.
+Every other route of the table, and `GET /ws/live`, answers it `403 APPROVE_ONLY_TOKEN` (`contracts.DispatchApproveOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseLimitedToken`), before the route's scopes and everything else it does.
 The answer route serves every kind of ask, so `answerAsk` refuses such a token the answer of any ask that is not an approval request with the same `403 APPROVE_ONLY_TOKEN`, once the ask's kind is read inside the answer's transaction and before anything is written: a question's answer, its free text among it, is no approval.
 A service whose verifier does not set the switch answers such a token `401`, and the NATS auth service refuses it as `not_a_session`.
 
@@ -657,8 +670,9 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
 - Requests are serial, as GitHub asks a poller for, and queries and REST reads are paced apart by the two budgets GitHub keeps them under.
   After each query the pass waits a third of what that query took, so its queries never take more than 45 seconds of a minute, inside GitHub's secondary limit of 60 seconds of GraphQL processing a minute for the whole App.
   Before each REST request it leaves the gap it set itself: the requests the last pass learned this one will take — the pages of each listing of each head a query could not answer, and one identity read for each repository the pass covers — divided into nine tenths of its own deadline.
-  That gap is never below `cireconcile.FastestRequestPace` (100ms, ten requests a second, inside GitHub's secondary limit of 900 points a minute) and never above `cireconcile.RequestPace` (500ms), which is the pace a deployment configures and the slowest the pass reads.
-  The first pass of a process knows of no work and reads at the floor, and the pass after it knows the real count.
+  The Dispatch executable sets the ceiling to `cireconcile.RequestPace` (500ms), with a normal floor of `cireconcile.FastestRequestPace` (100ms, ten requests a second, inside GitHub's secondary limit of 900 points a minute).
+  A caller that sets a positive `Reconciler.Pace` below the normal floor reads at that `Pace` on every pass.
+  The first pass knows of no work and reads at the floor capped by its ceiling, and the pass after it knows the real count.
   The passes after a pass that its own deadline ended before it reached a head — read one whole or gave one up — read at the floor until one reaches a head.
   In a process's first cycle such a pass learned no page of any head it listed, so the arithmetic would set the passes after it at the ceiling, and under a short deadline a pass at the ceiling can reach no head either, so no cycle would ever close; later, where the `Reconciler` holds pages from earlier passes, the floor is only the faster of the two answers, never a slower one.
   Every other way a pass ends with no head reached leaves that floor as it was: a rate limit, even one GitHub answers as the deadline falls; its caller's cancellation or deadline; an order with no head in it.
@@ -691,8 +705,9 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
 - Every pass also records itself in `ci_reconcile_passes`, which is that line in a table anyone can read a day later, and one thing the line does not carry: how the pass ended.
   A container log rotates — the production pod's reached back 45 minutes, nine passes — and the question a person asks is usually about a head read hours ago, so the counts live in Postgres as well.
   The pass writes its row when it starts, with its process's `server_processes` instance id and the moment it started, and fills the rest in when it ends: the end time, the eight counts its line carries (`graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `records`, `heads`, `heads_known`), how it ended (`complete`, `deadline`, `rate_limit` or `cancelled`, which are the whole set the column's check allows) and where it left the cursor.
-  The end write runs on a bounded context of its own, never the pass's, exactly as a lease's own statements do (`duty.LeaseCall`): the pass's context is the thing that has just expired for the pass this record matters most for, and a write made on it would land nowhere.
+  The start and end writes both run on a bounded context of their own, never the pass's, exactly as a lease's own statements do (`duty.LeaseCall`): the pass's context is the thing that has just expired for the pass this record matters most for, a write made on it would land nowhere, and a shutdown that cancelled the start write's read of the row's id would part the pass from a row Postgres had already committed.
   A pass whose process is not registered yet writes no row at all, which is the first pass or two of a process: the loops start before `processes.Register` returns, since registration waits out a live peer whose signing keys do not match.
+  A pass whose start write gets no connection from the shared pool within `duty.LeaseCall`'s 5 seconds writes no row either and logs `ci reconcile pass recorded no start`: the bound that keeps the start write off the pass's context also limits the wait for a connection, which could previously take up to the pass's own bound.
   A pass its process's shutdown cancelled records `cancelled`, which its own line does not say (`deadline_reached` names the pass's own bound and nothing else) and the `dispatch duty: leased pass cut short by shutdown` line beside it says only while the log still holds it: the row is read a day later, and a reader of it must not take an interrupted pass for a finished one.
   The pass that ends deletes every row older than 48 hours, so one pass every five minutes leaves about 576 rows and the prune needs no loop of its own.
   `GET /api/v1/ci-reconcile/passes` answers the last 24 hours of them, newest first (Routes, below).
@@ -1193,7 +1208,7 @@ What the two processes share, and what each keeps to itself:
   A holder that stops sends nothing more, records what NATS already answered, releases the rest of each batch in flight and then the hold, which wakes the standby at once;
   a graceful stop waits for that before it closes the database pool, up to `outboxStopBudget` after its shutdown starts.
   One that is killed is replaced once its hold lapses, six seconds after its last renewal;
-  one whose NATS stays down for three seconds, or whose failed sends meet a connection that does not answer a probe, releases the hold too.
+  one whose NATS stays down for three seconds, or whose failed sends meet a connection that does not answer a probe, or whose expiry pass finds by a probe a connection that does not answer (a probe made two seconds after the last one that answered, or as the pass ends when the pass reports a failure or ran two seconds or longer), or whose handover of a kept copy, in a scan batch or the fallback pass, fails a read or its forward and finds by a probe a connection that does not answer, with no failed send needed for either, releases the hold too.
   One that finds its hold lost releases it as well, which stops its renewal and deletes the row only while the row still names it.
   One that is alive but whose renewal is not confirmed within four seconds of the last one that was stops publishing at that moment, and no standby may take the name while its row stands: until its release, right after the line that ends the turn, deletes the row, or until the row lapses two seconds later when that release cannot reach the database first;
   the line that ends the turn carries `stopped` and `stopped_by`, the moment it stopped bounded from below and from above rather than dated by the moment the line was written, and one value, the hold's deadline, whenever the turn ended there;
@@ -1411,10 +1426,10 @@ Postgres is the only channel between the rooms (`docs/room_sync.go`), so the mes
   The append is refused when its room took the edit more than 2 seconds (`closeMargin`) after the close committed.
   An edit that the room took before then is stored, even when its append reaches the database after the close.
   The document's next settlement saves it, whether or not the issue is closed.
-  A close through `PATCH` stamps `closed_at` again as its last statement before it commits, so the 2 seconds count from the commit.
+  A close through `PATCH` stamps `closed_at` again after it has written the blocks of the asks it withdraws, just before its events and its commit, so the 2 seconds count from about the commit.
   An edit typed while the close's transaction runs is stored, however long the close takes to withdraw the issue's open asks.
-  The `issue.closed` event carries the earlier stamp, from the start of the close's transaction.
-  The response and every later read carry the stored one.
+  The `issue.closed` event takes `closed_at` from the row, so it carries the stored stamp, and so do the response and every later read.
+  A close written before this change carries in its `issue.closed` the earlier stamp, from the start of the close's transaction.
   A close made through the earlier build stamps `closed_at` only at the start of its transaction, so for that close the 2 seconds count from that start.
 
 - **Questions about a room.**
@@ -1556,8 +1571,8 @@ So for each surface the two builds share, this is what build N+1 may change whil
   A new element is readable one release before it is creatable, unless the page admission below gates it: `legion-envoy-v29.1.0` first declares `requirement`, `plan_task` and `check`, at manifest version 3, and this build gives them `since` 3 and `creatable_since` 3 (Generations and holds, below).
   A server-side write (an agent's edit, a settlement, an import) is bound by this build's manifest alone, so one can still add such an element during a roll; a build of this manifest at an earlier version then answers `409 DOC_NEWER_CONTENT` for that document (the release before the manifest: Generations and holds, below).
   Every write path refuses an element this build reads but may not create yet (`pmdoc`, `refuseUncreatable`), unless the document already holds it, and the editor offers only the elements it may create.
-  This build reads `check`'s `subject` and `program` from manifest version 6 and creates them from version 7.
-  It refuses a write that adds either attribute to a document not already holding that attribute.
+  This build reads and creates `check`'s `subject` and `program`, which manifest version 6 reads and version 7 creates.
+  It reads `plan_task`'s `parent` from version 7 and creates it from version 8, so it refuses a write that adds `parent` to a document not already holding it.
   An element stays readable while stored documents may hold it: no release removes a readable element from the manifest.
   A build that still meets an element it does not know answers `409 DOC_NEWER_CONTENT` for that document, and its document socket closes with `4425` (Document errors, below).
   No route repairs, replaces or rebuilds such a document, since each of those would delete the element;
@@ -1790,6 +1805,8 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   Each is read from version 6 and created from version 7.
   It moves every block type to version 6, which `pmdoc/schema/blocks.json` declares.
   Like `20261123080000`, it uses bounded writes alone.
+  Migration `20261127114415` adds `plan_task`'s `parent` attribute node, read from version 7 and created from version 8, and moves every block type to version 7, the version `pmdoc/schema/blocks.json` declares, in the same shape.
+  It sorts above `20261125125703_btree_gin`, so it needs a store where `btree_gin` is applied already: its release follows the release that first holds `btree_gin`, as that migration's release note requires of every later migration, and `TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema` takes the census of each type migration with the migrations through `btree_gin` applied first.
   Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
   A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
   A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
@@ -2231,6 +2248,9 @@ A refusal of the applied text reads `version <v> is recorded as <identity>, whic
 The runner gives the key back between that judgment and each migration, so another process can record any version in between: before it applies a migration, the runner judges every row again against its whole set, and applies nothing while any row is refused, in either apply mode.
 Such a refusal reads `apply migration <version>: check migration: version …`, and the migrations the boot applied before it stay applied.
 A lock timeout, or a failed read or write of the table, reads `read or record what schema_migrations records, none applied: …` instead, and asks for no reset.
+The runner takes that step only for a migration the judgment above did not read as recorded.
+A version that judgment read, in the transaction that judged every row of the table against the whole set, is applied, so the runner takes no locked transaction or connection of its own for it, where before it took one for every migration of the set: a boot of a migrated database now takes the prepare's transaction alone, and a deployment's boot takes it plus the migrations the release brings.
+A migration the judgment did not read as recorded still goes through the whole path above, so a version another process records in between is still found there (`TestABootJudgesOnlyTheMigrationsItsPrepareDidNotReadAsRecorded` counts the judgments, and `TestMigrateAppliesNothingWhileAnotherBootRecordsAConflictingVersion` holds the refusal).
 What the operator does:
 
 - A database that ran another branch's or an earlier commit's migration, or an edit of one, such as a development database or a preview stack's, holds a schema this build never wrote: reset it, by dropping the database, creating it empty, and starting the server, which migrates it from the first file.
@@ -2764,6 +2784,18 @@ Through the index the lateral reads the issue's moves backwards from the newest 
 It is built `concurrently` too, after `20261125125703`, and a start applies it before it serves, so its build adds to the time the server is down at the deploy that carries it.
 Its census answers `0`.
 
+Migration `20261125143901_issues_last_event_at` adds two nullable columns to `issues`, `last_event_at` (`timestamptz`) and `last_event_at_seq` (`bigint`), with no default and no check: the time and the seq of the issue's newest event.
+An event append writes both in the `update issues` that advances `last_seq` (`QueueAppendWithLogins` in `internal/dispatch/events/broker.go`), and `GET /api/v1/priorities` takes each member issue's newest event from them where `last_event_at_seq` equals `last_seq` (`priorityReadQuery` in `internal/dispatch/api/priority_queries.go`), reading no event.
+Where the two differ or the pair is null, the read probes the event of `last_seq` through `events_issue_key_seq_key`, so its answer is the same before the fill, in a roll and after a rollback.
+Its `alter table` writes only the catalog: it reads no row and rewrites none, and holds `ACCESS EXCLUSIVE` on `issues` for the catalog write alone, under the runner's `lock_timeout`.
+The release before names its own columns of `issues`, so it serves on this schema; an event it appends leaves the pair behind `last_seq`, and the read probes that row.
+Its census answers `0`.
+
+Migration `20261125144002_issues_last_event_at_backfill` fills that pair once, in one `update`, on each issue whose `last_seq` names an event and whose pair does not name it, from the issue's event of `last_seq`.
+It takes a row lock on each issue it writes, and skips each row another transaction holds (`for no key update skip locked`), so it waits on no request's write and is in no deadlock cycle with one.
+A row it skipped keeps its pair as it was, and the read probes that row until the row's next append fills the pair.
+Its census answers `0`: it writes only the two columns `20261125143901` adds in the same release, so it changes no value any reader had, and it cannot name them, since they do not exist when the census is taken.
+
 Migration `0147_message_deliveries_session_created` created `message_deliveries_session_created` on `message_deliveries (session_id, created_at desc) include (message_id)` where `state` is `sent`, for the same route's read of the session's sent message deliveries created since an hour before its window, and `20261114081436_drop_message_deliveries_session_created` drops it:
 the route reads queued deliveries too now and takes that window through `message_deliveries_session_taken` (`20261114081435`, below) instead.
 `message_deliveries_session` (`0051`) keys `session_id` alone, so through it that read fetched the session's whole delivery history and filtered it by time:
@@ -3219,6 +3251,12 @@ Nothing updates a row — another run is another row — and a table check refus
 `check_results_check` serves the Verification tab's read of one check's results newest first, and `check_results_issue` an issue's own reads.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
+Migration `20261116094741_spec_check_results` creates `spec_check_results`, one row per result a CI job wrote for a check of the spec files at the commit it tested (`POST /api/v1/projects/{key}/results`).
+A row names the project, the repository, the check, the commit, the check's procedure digest, the job and the leg read from the run's check run, the check run, the workflow run and its attempt, the verdict (`pass`, `fail` or `could_not_run`), the in-toto statement the read answers, the session of the token and `recorded_at`, and `seq`, Dispatch's record order, which the read orders by.
+Nothing updates or deletes a row: another run, attempt or leg is another row, and the table has no foreign key, so no delete of another table removes one.
+`spec_check_results_commit` on `(project_key, commit_sha, check_id)` serves the read of one project's results at one commit.
+A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+
 Migration `20261117093000_check_results_commit_repo` adds the nullable column `check_results.commit_repo`: the repository the record route took a result's commit to be of, written only where that is a repository the check's issue links a pull request in rather than the one the issue resolves to, and null for every other row, the rows before it included.
 Such a repository is one with an open or merged linked pull request that GitHub said holds the commit, and no other: where a linked read did not answer and no repository is shown to hold the commit, no result is stored at all (`502 GITHUB_UNREADABLE`).
 The results read compares an `after_merge` or `default_branch` result with that repository's branches where the column names one, and reads a `before_merge` result's pull requests through it.
@@ -3497,6 +3535,7 @@ Where the new name gives a row the key of another row, the row under the new nam
 The pass logs each field it writes at INFO with `field`, `from`, `to` and `rows`, and each line that fails at ERROR with its field, and it then goes on to the next line.
 It writes no other column, `updated_at` included, and appends no event.
 It never writes `repo_projects`, the event log, or the text of documents, comments, asks and messages, which keep their words.
+Nor does it write `spec_check_results`: each row records one CI run with its repository as the run's results token named it, which the row's in-toto statement holds too, nothing updates or deletes a row, and no read selects or compares by that column.
 After its writes it counts the rows of those fields that still name an old name.
 It also counts them before its writes, and where that count finds none, it runs no line.
 A failure of that first count is not a failure of the pass, which then runs every line.
@@ -4450,7 +4489,8 @@ The keyword fill writes the rows from the event log while Dispatch serves (Backg
 `store.TextVersionsAt(ctx, cut)` answers `store.TextVersions`, the relation of the version of each item that held at the cut.
 A statement joins it as `from <SQL()> v` and matches, ranks and cuts snippets in itself, as the arms of the present search do over the items' own tables.
 `TextVersionsAt` refuses a cut that the fill has not reached with `*store.TextVersionsNotReachedError`, which names the reach (`internal/dispatch/store/README.md`).
-The relation's `deleted_at` is the post's own delete mark on every version of a deleted comment or message, at every cut, so a reader gives no deleted post's words; no route searches at a past time yet.
+The relation's `deleted_at` is the post's own delete mark on every version of a deleted comment or message, at every cut, so a reader gives no deleted post's words, and a search at a cut finds no post deleted after the cut.
+`GET /api/v1/search` and `GET /api/v1/search/results` search at a past time through the relation (Reads at a past time, below).
 
 Meaning search embeds with Cohere Embed v4 at the place `DISPATCH_EMBEDDER` names:
 AWS Bedrock (`bedrock`, the default, on the AWS SDK's own region and credentials) or Azure AI Foundry (`azure`, the `DISPATCH_AZURE_*` settings, with the deployment's API key or a keyless sign-in that exchanges a federated token with Microsoft Entra).
@@ -4698,7 +4738,7 @@ a failed fetch, an attempt silent too long, a 5xx, a 408, a 429 and a `409 KEY_I
 No route requires the header: a write without one runs as it always did, unkeyed, so a script or the Legion daemon's outbox keeps working.
 `PUT` and `DELETE` take no key, being idempotent already.
 A key is 1 to 128 letters, digits, `.`, `_`, `:` and `-`, bare or double-quoted, and belongs to the caller who sent it:
-a person's canonical login (from the dashboard or through a personal token), a service token's subject, or the shared agent token.
+a person's canonical login (from the dashboard or through a personal token), a CI job's run for its results token (`ci-run:<repository>#<check run>`, since the person its result entry names sent nothing), a service token's subject, or the shared agent token.
 Dispatch keeps each key's answer for 24 hours (`request_keys`, migration `0137`; the maintenance sweep deletes older rows, Background loops above).
 
 A keyed write finishes on the server whatever its client does.
@@ -4805,7 +4845,7 @@ Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - n
 A check tells a Dispatch that runs this layer from one that ignores the header, and would run a retried write a second time, by one or the other: the deploy check reads `/healthz` (`scripts/e2e/lib/dispatch-keyed-comment.ts`).
 The agents' client reads no `/healthz`: every Dispatch that carries `b1c42d1d7d` runs this layer on every write route, so it sends a failed write again under its key and asks nothing first, whatever the echo says.
 It reads the echo to settle a refusal: a fresh 4xx, or a `422 KEY_REUSED`, that echoes exactly its key is final (`answerEvent`, `packages/envoy-client/README.md`), so a change that drops or moves the echo turns such a refusal back into an unsettled write.
-It also reads the echo to judge a 2xx: once an answer of the same write echoed the key, a 2xx without exactly that key is something in Dispatch's place, so a change that drops the echo from a 2xx alone turns that write's success into an unsettled write.
+It also reads the echo to judge a 2xx: a 2xx without exactly the write's key is something in Dispatch's place, so a change that drops the echo from a 2xx turns every write's success into an unsettled write.
 
 ## Access log
 
@@ -4893,6 +4933,262 @@ Three answers are given before any route runs and write none:
 the `403` a cookie request from another origin gets, the `421` a request for another host gets on a server with local sign-in, and the `307` redirect Go's router gives an unclean path (`/api/v1//issues`) or a prefix route called without its trailing slash (`/api/github/rest`).
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
 The line is one synchronous write to stderr per request, so a log pipe that blocks stalls requests.
+
+## Reads at a past time
+
+A read route of kind *answers* takes `as_of`, a past time, and answers what existed at that time, the cut, from the records that Dispatch keeps.
+`as_of` is an RFC 3339 time with a date, a time and an offset, with or without a fraction of a second, such as `2026-11-10T12:00:00Z`.
+A fraction of a second follows a period: RFC 3339 does not allow a comma there, though Go's `time.Parse` reads one.
+The time in UTC is in the year 1 or later: PostgreSQL does not read an earlier year in a `timestamptz` literal.
+Dispatch rounds it down to the microsecond, the precision of PostgreSQL (`asof.ParseCut`).
+The description of each GET row in `GET /api/v1` and in the OpenAPI document says how the route answers `as_of` and a token that carries a cut (`asOfDescription`, `internal/dispatch/api/read_classes.go`).
+For a route of kind answers it also says what the route answers at a cut (`readEntry.AtACut`), and names each member that its answer can leave out.
+A route that is not a GET row says nothing of `as_of`, and refuses it (below).
+
+**Each GET row has one of three kinds** (`readEntry.AsOf`, `internal/dispatch/api/read_classes.go`), which the route's own declaration states in its read class (`routeDecl.Read`, in the route's file).
+`register` refuses to mount a GET row whose declaration leaves the kind unset, as it refuses a row with no read class.
+It also refuses `asOfCaller` on each row but `GET /api/v1/whoami`, a row of kind answers whose read class has no `AtACut`, and a row of another kind whose read class has one.
+
+- *Answers* (`asOfAnswers`): the route answers `as_of` and the cut of a read-only token.
+  These are the routes that the list "The members an answer can leave out at a cut" names, below.
+  Each declares `as_of` on its query struct (`internal/dispatch/api/routes_shapes.go`), but `GET /api/v1/search`.
+  A client sends a search at a cut to `GET /api/v1/search/results`, as it sends there each member that `GET /api/v1/search` does not declare (`everyBuildReadsSearch`, `packages/contracts/src/dispatch-api-search.ts`).
+  `TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument` holds the committed OpenAPI document to these declarations.
+
+- *No history* (`asOfNoHistory`): each other GET row but whoami.
+  Such a route answers the present only, and refuses `as_of` with `400 AS_OF_NOT_SERVED` before its handler runs.
+  A read of this kind (`readWritesNothing`) refuses a read-only token that carries a cut with `403 AS_OF_TOKEN_NOT_SERVED`.
+  A GET that writes refuses each read-only token with `403 READ_ONLY_TOKEN`, a token that carries a cut too.
+  The reference graph (`GET /api/v1/references`, `GET /api/v1/issues/{key}/references`), an issue's coverage, the live sessions (`GET /api/v1/agents`), the credential requests, the read marks (`GET /api/v1/me/replies`) and the search coverage are of this kind, because no record keeps their past.
+
+- *Caller* (`asOfCaller`): `GET /api/v1/whoami` alone.
+  It describes the caller now, and refuses `as_of` with `400 AS_OF_NOT_SERVED`, except from a read-only token that carries a cut, whose `as_of` Dispatch does not read.
+  It answers a read-only token that carries a cut, and its `cut` member names that cut.
+
+A route of the route table that is not a GET row refuses `as_of` with `400 AS_OF_NOT_SERVED` too.
+`GET /ws/live` and `/ws/doc/{room}` are not rows of the table, and `asOfGate` does not read their `as_of`.
+A token that may read a route may send `as_of` to it, a read-only token with no cut included.
+
+**How a read at a cut runs.**
+`asOfGate` (`internal/dispatch/api/server.go`) is the one reader of `as_of`.
+It runs inside the read-only gate, and outside the row's scopes, the prefix layer, the stored-text check and the keyed layer.
+On a route of kind answers it reads the database's `now()` once, and refuses a cut later than that time.
+It resolves the caller before it puts the cut on the context, because a resolution can write the caller's own bookkeeping.
+The route then runs its present statements under the cut (`asof.WithCut`), and the store binds each statement to the cut (`store.Pool` and `asof.Bind`, `internal/dispatch/store/README.md`).
+So a read at a cut applies the filters, the joins, the order and the pages of the read at the present, and the `person` scope holds it in the same way.
+Each statement that the shared pool binds at a cut must be a read: `asof.Bind` refuses any other statement, and the pool refuses at a cut each connection that it hands out and each copy (`RefusedAtCutError`).
+The database holds each of them to reading too: the shared pool runs every statement at a cut in a read-only transaction, so PostgreSQL refuses a read that calls a function that writes, such as `nextval`, which `asof.Bind` passes.
+That costs a statement of `Query`, `QueryRow` or `Exec` two round trips more, and a batch one round trip for each of its statements (`internal/dispatch/store/README.md`).
+The separate pools `Rooms`, `RoomAppends`, `Compaction` and `Horizon` check no cut, and send their SQL as the caller wrote it (`internal/dispatch/store/README.md`).
+A read at a cut reads a table outside the shadows only where that table is a base table that a shadow reads, or where `asof.MachineryTables` or `asof.CutReadTables` lists it with its reason: `TestAPastTimeStatementReadsNoShadowedTableDirectly` fails on any other table.
+A source that is not SQL (the live document room, the route roster, the Envoy listener, GitHub, the embedder) is read at a cut only through a branch of the route that reads it.
+Which nodes the reader may see is read as it stands now (`refs.VisibleKind` and `refs.VisibleEnd` over `graph_nodes`, which keeps no history), so an answer at a cut gives no node that the reader may not see today.
+At a cut, `GET /api/v1/issues/{key}/results` also reads nothing from GitHub, and writes no pull request head, no branch commit and no event.
+
+**The headers of an answer at a cut.**
+Each answer (a `2xx` or a `304`) of a route of kind answers to a request at a cut carries `Dispatch-As-Of: <cut>` (`contracts.DispatchAsOfHeader`), the cut in UTC with six fractional digits.
+A refusal carries no such header.
+A build before this change ignores a query parameter that it does not know, and answers the present with no `Dispatch-As-Of`.
+So a client refuses an answer to a request with `as_of` that does not carry the header (`AsOfNotAnswered`, `packages/envoy-client/src/dispatch-http.ts`).
+An answer that leaves out members names each one once in `Dispatch-As-Of-Absent` (`contracts.DispatchAsOfAbsentHeader`), sorted, for example `/open_asks/*/referenced_by_count,/route_status` (`asof.HeaderValue`).
+An answer that leaves out no member carries no such header.
+The value is a comma-separated list of RFC 6901 JSON Pointers, in which `*` stands for each member of an array.
+The answer leaves such a member out of its object, and never writes it as `null`, because `null` already means "none" on these answers.
+A member whose payload key an older event does not have, because its column held nothing at that time, is not left out: the answer gives its default.
+
+**The members an answer can leave out at a cut**, by route.
+`asof.AbsentFields` (`internal/dispatch/asof/absent.go`) holds them, each with its reason.
+A route names no other member: `asof.WriteHeaders` finds the pointer of each member that a handler leaves out (`asof.AbsentPointer`).
+A member that the table does not hold for the route is a programming error (`misnamedAbsent`, `internal/dispatch/api/as_of_answer.go`).
+So is an answer whose members `asof.OmitAbsent` cannot take out of its body, and a member that the handler names after the answer's status was decided.
+A test fails on each of them.
+A server logs each of them, and answers `500 INTERNAL` with none of the handler's body, because that body can hold the present value of a member that the records at the cut do not give.
+Where the answer's status already went out, the server sends no more of the body and drops the connection, so that the client cannot read a part of the answer as the whole answer.
+`TestTheGuideNamesTheMembersEachAnswersRouteCanLeaveOut` holds this list to that table.
+An answer names a member only when it leaves that member out.
+
+- `GET /api/v1/issues/{key}`: `/route_status`, `/route_holder`, `/route_status_reason`, `/holder_state`, `/last_seen`, `/takeable_at`, `/design_gates`, `/referenced_by_count`, `/open_asks/*/referenced_by_count`, `/components/ids`, `/components/unknown`, `/open_asks/*/revision`, `/open_asks/*/options/*/id`, `/open_asks/*/answer/id`, `/open_asks/*/waiting_on_person`, `/open_asks/*/approval/documents`, `/artifacts/*/approval/documents`, `/open_asks/*/question`, `/open_asks/*/options`, `/open_asks/*/multiple`, `/open_asks/*/urgency`, `/open_asks/*/question_tree`, `/artifacts/*/approval/content_sha256`, `/artifacts/*/approval/content_sha256_source`, `/open_asks/*/anchor/block_id`.
+
+- `GET /api/v1/issues`, whose answer without a page is an array and whose page holds the issues under `issues`: `/*/route_status`, `/*/route_holder`, `/*/route_status_reason`, `/*/components/ids`, `/*/components/unknown`, `/issues/*/route_status`, `/issues/*/route_holder`, `/issues/*/route_status_reason`, `/issues/*/components/ids`, `/issues/*/components/unknown`.
+
+- `GET /api/v1/issues/resolve`, `GET /api/v1/comments/{id}/history`, `GET /api/v1/messages/{id}/history` and `GET /api/v1/artifacts/{id}/versions/{number}` leave out no member.
+
+- `GET /api/v1/issues/{key}/events`, `GET /api/v1/artifacts/{id}/events` and `GET /api/v1/events/log`: `/*/payload/referenced_by_count`, `/*/payload/revision`, `/*/payload/options/*/id`, `/*/payload/answer/id`, `/*/payload/body`.
+
+- `GET /api/v1/issues/{key}/comments` and `GET /api/v1/artifacts/{id}/comments`: `/*/body`, `/*/reply_block/text`, `/*/reply_block/removed`, `/*/reply_block/text_tree`, `/*/deliveries/*/state`, `/*/deliveries/*/reply_id`, `/*/deliveries/*/envelope_id`, `/*/deliveries/*/resolve_error`, `/*/deliveries/*/created_at`, `/*/deliveries/*/delivery`, `/*/deliveries/*/session_id`, `/*/anchor/orphaned`, `/*/anchor/block_id`.
+
+- `GET /api/v1/comments/{id}`: `/comment/body`, `/comment/reply_block/text`, `/comment/reply_block/removed`, `/comment/reply_block/text_tree`, `/comment/deliveries/*/state`, `/comment/deliveries/*/reply_id`, `/comment/deliveries/*/envelope_id`, `/comment/deliveries/*/resolve_error`, `/comment/deliveries/*/created_at`, `/comment/deliveries/*/delivery`, `/comment/deliveries/*/session_id`, `/comment/anchor/orphaned`, `/replies/*/body`, `/replies/*/reply_block/text`, `/replies/*/reply_block/removed`, `/replies/*/reply_block/text_tree`, `/replies/*/deliveries/*/state`, `/replies/*/deliveries/*/reply_id`, `/replies/*/deliveries/*/envelope_id`, `/replies/*/deliveries/*/resolve_error`, `/replies/*/deliveries/*/created_at`, `/replies/*/deliveries/*/delivery`, `/replies/*/deliveries/*/session_id`, `/replies/*/anchor/orphaned`, `/comment/anchor_block`, `/comment/anchor/block_id`, `/replies/*/anchor/block_id`.
+
+- `GET /api/v1/issues/{key}/messages`: `/*/message/body`, `/*/message/reply_block/text`, `/*/message/reply_block/removed`, `/*/message/reply_block/text_tree`, `/*/message/deliveries/*/state`, `/*/message/deliveries/*/reply_id`, `/*/message/deliveries/*/envelope_id`, `/*/message/deliveries/*/created_at`, `/*/message/deliveries/*/requested_by`, `/*/message/deliveries/*/delivery`, `/*/message/deliveries/*/session_id`, `/*/replies/*/body`, `/*/replies/*/reply_block/text`, `/*/replies/*/reply_block/removed`, `/*/replies/*/reply_block/text_tree`, `/*/replies/*/deliveries/*/state`, `/*/replies/*/deliveries/*/reply_id`, `/*/replies/*/deliveries/*/envelope_id`, `/*/replies/*/deliveries/*/created_at`, `/*/replies/*/deliveries/*/requested_by`, `/*/replies/*/deliveries/*/delivery`, `/*/replies/*/deliveries/*/session_id`.
+
+- `GET /api/v1/issues/{key}/messages/{id}` and `GET /api/v1/messages/{id}`: `/message/body`, `/message/reply_block/text`, `/message/reply_block/removed`, `/message/reply_block/text_tree`, `/message/deliveries/*/state`, `/message/deliveries/*/reply_id`, `/message/deliveries/*/envelope_id`, `/message/deliveries/*/created_at`, `/message/deliveries/*/requested_by`, `/message/deliveries/*/delivery`, `/message/deliveries/*/session_id`, `/replies/*/body`, `/replies/*/reply_block/text`, `/replies/*/reply_block/removed`, `/replies/*/reply_block/text_tree`, `/replies/*/deliveries/*/state`, `/replies/*/deliveries/*/reply_id`, `/replies/*/deliveries/*/envelope_id`, `/replies/*/deliveries/*/created_at`, `/replies/*/deliveries/*/requested_by`, `/replies/*/deliveries/*/delivery`, `/replies/*/deliveries/*/session_id`.
+
+- `GET /api/v1/issues/{key}/asks`, whose `?thread=1` gives each ask its thread: `/*/referenced_by_count`, `/*/revision`, `/*/options/*/id`, `/*/answer/id`, `/*/waiting_on_person`, `/*/approval/documents`, `/*/question`, `/*/options`, `/*/multiple`, `/*/urgency`, `/*/question_tree`, `/*/thread/route_status`, `/*/thread/route_holder`, `/*/thread/route_status_reason`, `/*/thread/replies/*/body`, `/*/thread/replies/*/reply_block/text`, `/*/thread/replies/*/reply_block/removed`, `/*/thread/replies/*/reply_block/text_tree`, `/*/thread/replies/*/deliveries/*/state`, `/*/thread/replies/*/deliveries/*/reply_id`, `/*/thread/replies/*/deliveries/*/envelope_id`, `/*/thread/replies/*/deliveries/*/resolve_error`, `/*/thread/replies/*/deliveries/*/created_at`, `/*/thread/replies/*/deliveries/*/delivery`, `/*/thread/replies/*/deliveries/*/session_id`, `/*/thread/replies/*/anchor/orphaned`, `/*/anchor/block_id`, `/*/thread/replies/*/anchor/block_id`.
+
+- `GET /api/v1/artifacts/{id}/asks`: `/*/referenced_by_count`, `/*/revision`, `/*/options/*/id`, `/*/answer/id`, `/*/waiting_on_person`, `/*/approval/documents`, `/*/question`, `/*/options`, `/*/multiple`, `/*/urgency`, `/*/question_tree`, `/*/anchor/block_id`.
+
+- `GET /api/v1/asks/{id}`: `/ask/referenced_by_count`, `/ask/revision`, `/ask/options/*/id`, `/ask/answer/id`, `/ask/waiting_on_person`, `/ask/approval/documents`, `/ask/question`, `/ask/options`, `/ask/multiple`, `/ask/urgency`, `/ask/question_tree`, `/route_status`, `/route_holder`, `/route_status_reason`, `/replies/*/body`, `/replies/*/reply_block/text`, `/replies/*/reply_block/removed`, `/replies/*/reply_block/text_tree`, `/replies/*/deliveries/*/state`, `/replies/*/deliveries/*/reply_id`, `/replies/*/deliveries/*/envelope_id`, `/replies/*/deliveries/*/resolve_error`, `/replies/*/deliveries/*/created_at`, `/replies/*/deliveries/*/delivery`, `/replies/*/deliveries/*/session_id`, `/replies/*/anchor/orphaned`, `/ask/anchor_block`, `/ask/anchor/block_id`, `/replies/*/anchor/block_id`.
+
+- `GET /api/v1/asks/open`: `/asks/*/waiting_on_person`.
+
+- `GET /api/v1/inbox`: `/*/snoozed_until`, `/*/referenced_by_count`, `/*/revision`, `/*/options/*/id`, `/*/answer/id`, `/*/waiting_on_person`, `/*/approval/documents`, `/*/question`, `/*/options`, `/*/multiple`, `/*/urgency`, `/*/question_tree`, `/*/thread/route_status`, `/*/thread/route_holder`, `/*/thread/route_status_reason`, `/*/thread/replies/*/body`, `/*/thread/replies/*/reply_block/text`, `/*/thread/replies/*/reply_block/removed`, `/*/thread/replies/*/reply_block/text_tree`, `/*/thread/replies/*/deliveries/*/state`, `/*/thread/replies/*/deliveries/*/reply_id`, `/*/thread/replies/*/deliveries/*/envelope_id`, `/*/thread/replies/*/deliveries/*/resolve_error`, `/*/thread/replies/*/deliveries/*/created_at`, `/*/thread/replies/*/deliveries/*/delivery`, `/*/thread/replies/*/deliveries/*/session_id`, `/*/thread/replies/*/anchor/orphaned`, `/*/anchor/block_id`, `/*/thread/replies/*/anchor/block_id`.
+
+- `GET /api/v1/agents/{session_id}/answers`: `/items/*/ask/question`, `/items`, `/total`.
+
+- `GET /api/v1/issues/{key}/artifacts` and `GET /api/v1/projects/{key}/artifacts`: `/*/approval/documents`, `/*/approval/content_sha256`, `/*/approval/content_sha256_source`.
+
+- `GET /api/v1/issues/{key}/artifacts/{slug}`, `GET /api/v1/projects/{key}/artifacts/{slug}`, `GET /api/v1/agents/{session_id}/artifacts/{slug}` and `GET /api/v1/artifacts/{id}`: `/approval/documents`, `/approval/content_sha256`, `/approval/content_sha256_source`.
+
+- `GET /api/v1/artifacts/{id}/text`, whose `?blocks=true` gives the blocks as the block routes give them: `/token`, `/blocks/*/token`, `/blocks/*/embedding`, `/blocks/*/id`, `/blocks/*/table/rows/*/id`, `/blocks/*/table/rows/*/cells/*/id`, `/blocks/*/references`.
+
+- `GET /api/v1/issues/{key}/artifacts/{slug}/blocks` and `GET /api/v1/projects/{key}/artifacts/{slug}/blocks`: `/*/token`, `/*/embedding`, `/*/id`, `/*/table/rows/*/id`, `/*/table/rows/*/cells/*/id`, `/*/references`.
+
+- `GET /api/v1/issues/{key}/results`: `/checks/*/compared_with`, `/checks/*/compared_nothing`, `/checks/*/pass_stands`, `/checks/*/ci`, `/checks/*/results/*/commit_stands`, `/checks/*/results/*/currency`, `/checks/*/results/*/not_counted`, `/checks/*/version`, `/checks/*/sha256`, `/checks/*/results/*/check_words_moved`.
+
+- `GET /api/v1/search` and `GET /api/v1/search/results`: `/query/broadened`, `/results/*/href`, `/results/*/snippet`, `/results/*/snippet_tree`.
+
+The reasons, which `asof.AbsentFields` gives for each member:
+
+- The route roster and the Envoy listener keep no past state, so a route's status and holder and a claim holder's liveness are left out.
+
+- The reference graph keeps no history, so the counts of nodes that reference an item, the references of a block, and the link of an ask hit whose block is in a document that changed after the cut are left out.
+
+- The component model keeps no history, so the members of an explicit component attachment are left out.
+
+- No event records the field: the design gates, the snoozes, a block's token, embedding and place, the id of an untyped block of a version that `document_indexed_versions` does not hold, the ids of a table's rows and cells, a document version's token where Dispatch stored none (all before 2026-11-03), and the state of a delivery attempt that no receipt or reply event dates.
+
+- No event dates the orphaning of a comment's anchor that an accept or a reject of a suggestion recorded before its `409 ANCHOR_ORPHANED` appended a `comment.anchor_refreshed` of its own, or that a delete of the suggestion recorded: only an anchor refresh event dates an orphaning (`asof.CommentAnchorsOrphanedNotGivenStatement`).
+  So whether the anchor's mark was gone is left out at a cut where the comment's newest event gives the anchor as not orphaned and the record shows it orphaned before the comment's next event, with no refresh that dates it.
+  A delete that orphaned the anchor itself has the field left out too at each cut before it: the record does not tell it from an older `409` before the delete.
+
+- The backfill of anchor blocks (`backfill-anchor-blocks`, `docs.Service.BackfillAnchorBlocks`) writes the block id into a comment's or an ask's anchor that names none, an anchor written before anchors named their block, with no event.
+  So where the anchor of the item's newest event at the cut names no block, the record next after the cut decides: the item's first state event after the cut, or its row where no such event follows (`asof.CommentAnchorBlocksNotGivenStatement`, `asof.AskAnchorBlocksNotGivenStatement`).
+  Where that record names a block, the anchor's `block_id` is left out at the cut, and so is the `anchor_block` that the read of one comment or one ask gives, which depends on it.
+  Where it names none, the answer keeps the unpinned anchor from the event at the cut.
+  A `block_id` that the newest event at the cut names is given as that event holds it, and no answer at a cut reads the id from the row.
+  An event log's events keep the anchor that each event wrote, which is each event's own record.
+
+- The boot fill of review hashes (`docs.FillReviewContentHashes`) writes `content_sha256`, and `content_sha256_source` as `backfill`, into a review written before reviews held the hash of the bytes they approve, with no event.
+  No record gives the time of the fill, so no record gives whether the review held its hash at a cut.
+  So where the source of a document's latest review is `backfill`, an answer at any cut, before the fill or after it, leaves both out of the document's approval.
+  An approval whose review its insert pinned (`insert`) gives both at a cut, and one whose review holds no hash gives neither.
+  `GET /api/v1/artifacts/{id}/reviews` answers no `as_of`, and an event log's review events keep their own payload, which the fill does not change.
+
+- The restore of a decided ask's wording (`docs.Service.RestoreDecidedWordings`) writes its question, options, `multiple` and urgency with no event.
+  So these four are left out at a cut where the wording of the ask's newest event at the cut is not the wording just after it by the record: the previous wording of its next edit, the wording of its next other event, or the row's (`asof.AsksWordingUnknownStatement`).
+  So is each member that an answer draws from that wording: the question's tree, which an answer carries for a request that sends `Dispatch-Trees: 1` (the trees of the options go out with the options), the question of the ask that an agent's answer is on, and the snippet of an ask hit of a search, with its tree.
+  An event log's ask events keep their wording, which is each event's own record.
+  `GET /api/v1/asks/open` leaves out no wording: the restore writes only an ask decided before the edit that it undoes, so the record gives the wording of each ask open at the cut.
+
+- A check's version and digest, and whether a check's words moved after a result, come from the block index, which can be written after the version is saved: a write leaves it to the block-index reconciliation for a version of more than 2,000 blocks or whose tree does not render as its markdown, and the reconciliation re-indexes a version in place.
+  No record gives the time of that write, so an answer at any cut leaves out each check's `version` and `sha256` and each result's `check_words_moved`, whatever the block index holds.
+
+- An ask's part ids and revision: no writer stores them in an ask's events, so no record gives them at a cut.
+  So every answer at a cut that gives an ask, and an event log's ask events, leave them out, whether or not the ask changed after the cut.
+
+- The person an ask waits on comes from a project default from before the first event of that default.
+
+- A migration filled an approval request's documents with no event, for an ask whose newest event at the cut is older than 2026-11-04T16:42Z.
+
+- The body of a post that its author deleted after the cut, and a body that its event cut at 32,000 UTF-16 units and that an edit replaced after the cut, before `post_body_history` began.
+
+- The block that a reply names: its text, whether it is removed, and the tree of its text, which an answer carries for a request that sends `Dispatch-Trees: 1`.
+  The block index keeps no record of the blocks of a comment or a message at the cut, and the block-index reconciliation rewrites them with no event (`refs.IndexOwedItemBlocks`), dated by the post's own last edit.
+  So these three are left out for a reply to a comment or a message, whether or not the post changed after the cut.
+  The block of a post deleted at any time reads removed with no text, and none of the three is left out.
+  A reply to a part of an ask leaves the three out too, since no record gives an ask's part ids and revision at a cut (above).
+
+- An agent's answers at a cut count an event that a person wrote in the window the request asks for, and whose `published_destinations` hold the session's topic, only where the event's `published_at` is at or before the cut.
+  The outbox records when it settled an event (`published_at`), not when it published the event to each topic, so no record gives whether the session's topic had an event that the outbox settled after the cut, or has not settled.
+  Where the window holds such an event, the answer leaves out both `items` and `total`, and names `/items` and `/total` (`sessionanswers.ErrPublicationAtCutUnknown`).
+
+- A GitHub read now: what each check is compared with, whether a pass stands, the CI result, and where a result's commit stands.
+
+- The program's current deploy, read now: whether a result of a check of production or of the graph, read after merge or on the default branch, counts (`not_counted`).
+
+- Broadening reads the present text, so a search at a cut does not broaden.
+
+**A read-only token that carries a cut** (`model.Credential.Cut`, the broker's `as_of`) reads at that cut.
+On a route of kind answers, Dispatch answers as of the token's cut, whatever `as_of` the request sends (none, an earlier one or a later one), and reads no `as_of`.
+It does not compare the token's cut with `now()`, because the broker refuses a cut later than the trade.
+`GET /api/v1/whoami` answers the token and names its cut.
+Each other read of the read class, and `GET /ws/live`, answer `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`) before the handler runs, with the message `this token reads Dispatch as of <cut>; <route> holds no past answer`.
+The live socket checks the cut before it gives `READ_ONLY_TOKEN`.
+A route outside the read class answers the token `403 READ_ONLY_TOKEN`, as it answers each read-only token.
+
+**The errors and their codes**, each generated from `packages/contracts`:
+
+- `400 INVALID_AS_OF` (`contracts.DispatchInvalidAsOf`): an `as_of` that is not an RFC 3339 time with a date, a time and an offset, a comma before the fraction of a second, a time before the year 1 in UTC, a cut later than the database's `now()`, or an `as_of` that the request sends more than once.
+  A query that names `as_of` (a pair whose key, as sent or decoded, is `as_of`) and does not decode is refused the same, because the pair that `url.ParseQuery` drops can be the `as_of`.
+  Examples are `as_of=%zz`, an `as_of` whose value ends in a `%` that escapes nothing, and an `as_of` pair that holds a semicolon.
+  A route that does not answer `as_of` refuses such a query with `400 AS_OF_NOT_SERVED`, as it refuses every `as_of`.
+  A query that names no `as_of` is served as before, whatever else in it does not decode.
+
+- `400 AS_OF_NOT_SERVED` (`contracts.DispatchAsOfNotServed`): an `as_of` sent to a route that does not answer it, with the message `as_of: <route> holds no history; it answers the present only`.
+  A route of kind answers gives the same code for a filter that the records at the cut cannot evaluate, and names that filter: `route_status` and `pinned` on `GET /api/v1/issues`, whatever their value, and `at` on `GET /api/v1/issues/{key}/results`.
+  `GET /api/v1/issues/{key}/asks`, `GET /api/v1/issues/{key}/comments` and `GET /api/v1/issues/{key}/messages` give it for `order`, whatever its value, because a page of threads (`?order=activity`) is answered at the present only (`refuseThreadPageAtCut`).
+
+- `403 AS_OF_TOKEN_NOT_SERVED`: a read-only token that carries a cut, on a read that holds no past answer (above).
+
+- `409 AS_OF_SEARCH_NOT_FILLED` (`contracts.DispatchAsOfSearchNotFilled`): a search at a cut that the fill of the keyword table has not reached (below).
+
+**A search at a cut.**
+`GET /api/v1/search` and `GET /api/v1/search/results` run a past-time statement of their own at a cut (`search.go`).
+The keyword legs of issues, comments, messages and asks read the keyword table of past text through `store.TextVersionsAt` (Search, above), and rank and cut snippets from the text at the cut.
+The document leg reads each document's newest `artifact_versions` row at the cut and tests the `search` vector of that row.
+It reads a document whose newest version at the cut is its newest version now through `document_search`.
+The meaning legs use the window of an item only when the item did not change after the cut, and the window was embedded at or before the cut with the query's model.
+A post deleted after the cut gives no hit and no snippet.
+An ask whose wording at the cut no record gives, because a restore of its decided wording changed it with no event (above), is found by the keyword leg by the wording of its newest event at the cut.
+Its hit leaves out its `snippet`, and its `snippet_tree` for a request that sends `Dispatch-Trees: 1`, and names them in `Dispatch-As-Of-Absent`.
+The meaning leg keeps the window of an ask only where the ask's text at the cut is its present text, so it does not find such an ask while its present text is the wording that the restore gave back.
+A search at a cut does not broaden a query that matches nothing, because the term statistics count only the present text.
+Before the fill of the keyword table reaches the cut, a search at that cut is `409 AS_OF_SEARCH_NOT_FILLED`, and it reads no row.
+Where the fill has reached a time, its message names that time, and so does the `Dispatch-As-Of-Filled-Through` header (`contracts.DispatchAsOfFilledThroughHeader`).
+Where the fill has reached no time yet, its message says so, and the answer carries no such header.
+While the fill's cursor row records rules older than `store.TextVersionsRules` (2), the fill has reached no time: the fill first reads again the `message.edited`, `comment.deleted` and `message.deleted` events that the first rules passed.
+
+**Windows count from the cut.**
+At a cut, `GET /api/v1/agents/{session_id}/answers` takes `since` as 72 hours before the cut when the request sends none.
+It refuses a `since` more than 7 days before the cut with `400 INVALID_QUERY`, and answers no item for a `since` after the cut.
+An agent host's own poll sends `since` 72 hours before the present (`packages/envoy-client/src/session-answers.ts`).
+So under a token that carries a cut, that poll gets the items from that time to the cut, which are none when the cut is more than 72 hours old, and it is never refused.
+At a cut, `GET /api/v1/asks/open` counts each `age_seconds` from the cut.
+
+**Two members already named `as_of`** keep their meaning: the database time at which the answer stands.
+`GET /api/v1/asks/open` answers `as_of`, and at a cut that member is the cut.
+`GET /api/v1/me/replies` answers `as_of`, the time of the snapshot that Mark all read passes back, and that route keeps no history and refuses the parameter `as_of`.
+Neither member tells a client that Dispatch read at a cut, because a build before this change sends them too.
+Only `Dispatch-As-Of` does.
+
+**The error of a cut.**
+Nothing records when a transaction committed.
+So the cut compares the time at which the transaction of each record began: `events.created_at`, and the `created_at` of each append-only table, each the `now()` of the transaction that wrote the row.
+Dispatch answers a cut at or before the database's `now()` whatever transactions are still open, so a write that began before the cut and committed after it reads as made at its start.
+A priority tuple's `at` is its handler's clock, a time later than the start of its transaction, so its error is the length of that transaction.
+Three measurements of production (INFRA-4620's plan, 2026-11-19) bound the error of a cut by the length of one write transaction.
+The longest write request in a sample of the access log took 46,578 ms (`POST /api/v1/issues/{key}/results`), and a request's time bounds its transaction's time.
+The sample was the write requests of at least 1 s from 2026-11-16 00:55Z to 2026-11-19 21:22Z, 20,000 lines, which is the most that Cloud Logging gives one read.
+In the whole event log, the largest amount by which an event was older than an event with a lower id was 249 s (2026-10-26, `artifact.version`).
+Within one issue, the largest amount by which an event was older than an event with a lower `seq` was 8.9 s.
+
+At a cut, an issue's `closed_at` is the one that its newest `issue.created`, `issue.updated` or `issue.closed` at the cut gives, never the row's, and at a cut inside a close's own transaction it can be later than the cut.
+A close written by a release older than the first one that answers `as_of` records there the start of its transaction, earlier than the stamp its row held by at most the length of that transaction, which is the error of a cut, so the answer does not leave `closed_at` out.
+
+**What a read at a cut costs.**
+`TestAsOfCostOnACorpusCopy` (`internal/dispatch/api/as_of_cost_test.go`) times the statements of the past-time reads against a copy of production's events, and skips unless `DISPATCH_ASOF_CORPUS_URL` names one.
+`TestAsOfMeaningCostOnASyntheticCorpus` (`as_of_meaning_cost_test.go`) times a search with meaning on a corpus it makes up at production's counts, 1,647,646 windows of random vectors among them, and skips unless `DISPATCH_ASOF_SYNTHETIC_URL` names an empty database.
+Each opens its database with `jit` off, as Cloud SQL runs: with `jit` on, compiling a search with meaning at a cut took 7.5 s of 8.3 s.
+On a copy of 1,307,926 events in a gVisor pod (to 2026-11-27T09:05Z), the listing of every issue at a cut took, on its first run, 2.9 s at 2026-10-26T12:00Z (1,410 issues), 4.9 s at 2026-11-10T00:00Z (5,465 issues) and 12.7 s at the copy's newest event (14,289 issues), where the present listing of the 14,289 issues took 1.5 s, and 0.8 s as the median of three.
+The listing names `issues` in about 11 places, and each reads the state of every issue through the shadow: its newest state payload, its claim, its `last_seq` and `updated_at` from its other events, and, through two recursive walks up its parents at the cut, its components and its repository, so its time grows with the issues at the cut.
+The read of the issue with the most events took 1.3 s to 2.9 s on its first run at a cut, and 0.6 s to 0.8 s as the median of three where it ran three times, where the present read took 0.8 s on its first run and 0.2 s as the median.
+A search at a cut ranks the matches of each kind of post on their rank first, and reads the post and its issue at the cut only for the rows that can enter the kind's first 100 (`searchAsOfBoundedPosts`); a filter of status, author or time, a query of excluded words alone, and a query whose plain words are all stop words read every match.
+On a copy of 1,127,985 events in the pod, with PostgreSQL restarted before each query and the copy in the pod's page cache, a keyword search for the commonest word at the copy's newest event took 6.3 s on its first run and 5.7 s warm, a common word 2.9 s and 2.6 s, and no past-time first run took more than 6.3 s.
+With the copy out of the page cache, each first run read its pages from the pod's disk and took up to 15.1 s, as the present search for the commonest word took 16.6 s there, against 4.8 s with the copy in the page cache.
+A query of excluded words alone at the copy's newest event, which matches nearly every post, took 19 s warm.
+On the synthetic corpus, on 16 vCPUs, vacuumed and analyzed as production's tables are, with each statement at a cut in a read-only transaction of its own, a search with meaning at a cut took at most 3.4 s on its first run after a restart of PostgreSQL and at most 2.9 s warm, against at most 8.3 s and 8.0 s at the present.
+On its first run right after the build it took at most 2.9 s, and the present search at most 7.5 s.
+Random vectors spread the HNSW graph unlike production's embeddings, so that is no measure of production's meaning arms, and the copy of the events holds no document text, so the document leg was timed on empty text.
 
 ## Routes
 
@@ -5224,6 +5520,8 @@ Each item below names a path with its method and identity, then its purpose.
   or `dismissed`, what they dismissed out of it, newest dismissal first, 200 rows at a time from `cursor`, which is the `next_cursor` the page before it answered.
   `limit` or `offset` under `dismissed`, and `cursor` under any other state, are each `400 INVALID_QUERY`.
   A row names the thread, its owner, its issue's priority, its project, its subject, its root's deep link, the newest reply's author, first line and time, the caller's read mark, whether it is unread, how many writes they have not read, and its dismissal mark when it has been dismissed.
+  A row of kind `ask`, `comment` or `message` also carries `root_author`, the actor who wrote the thread's root in the shape of the reply's `author`: the ask's asker, the root comment's author or the root message's author, as it is stored, so a root the Legion daemon wrote reads as its session, `legion-daemon:<PROJECT>`.
+  An `agent` row carries none.
   `issue` or `artifact` narrows to one owner (both is `400 INVALID_QUERY`, and either leaves out every agent row, which has neither).
   An absent `limit` is every row, which is what the Inbox reads; a `limit` the caller names is 1–200.
   The answer carries `as_of`, the database time of the one snapshot every row was read in, which is what Mark all read passes back as its read mark.
@@ -5459,8 +5757,9 @@ Each item below names a path with its method and identity, then its purpose.
   `sign_in_required` is true where Dispatch refuses every write of the credential `403 SIGN_IN_REQUIRED` until a person signs in on its machine, which is a machine's broker-issued token, and false for every other credential, a job's token and an exchange entry's account token and every read-only credential among them; it is the decision the sign-in check makes, and an older Dispatch omits it).
   A token that names a project also writes other projects' objects, as a credential that names none does, except in a private project it does not name.
   `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none, with `read` after them for a read-only credential, and every caller is answered it.
-  A person at a browser is answered `["person", "approve", "p0"]`, a personal token the set its row names, a broker-issued token acting for its person `["person"]`, and the shared token, a service-account token and every other broker-issued token `[]`.
-  A read-only token that carries a cut is answered here, and refused `403 AS_OF_TOKEN_NOT_SERVED` on every other read.
+  A person at a browser is answered `["person", "approve", "p0"]`, a personal token the set its row names, a broker-issued token acting for its person `["person"]`, a Dispatch sign-in's token the scopes its person approved, sorted (`["p0", "person"]`, `["person"]`, `["p0"]` or `[]`), and the shared token, a service-account token and every other broker-issued token `[]`.
+  A read-only token that carries a cut is answered here.
+  A route that answers `as_of` answers such a token as of its cut, and every other read refuses it `403 AS_OF_TOKEN_NOT_SERVED` (Reads at a past time, above).
   A Legion daemon's own broker token answers `["legion-status"]`: with `DISPATCH_LEGION_STATUS_SCOPE` on, that scope or `person` lets a credential make the three writes of a Legion issue that `/api/v1/issues/{key}` (PATCH) and `/api/v1/issues/{key}/status-change` (POST) refuse to any other, but for the owning architect's status write (`/api/v1/issues/{key}` (PATCH), below).
 
 - `/api/v1/dashboard/builds` (GET; cookie, trusted header, or bearer)
@@ -5967,13 +6266,15 @@ Each item below names a path with its method and identity, then its purpose.
 
   A `reply_to` naming a comment its author deleted is `409 POST_DELETED`, the refusal every write that would add to a deleted post takes, read from the parent the create already locks and so before the named block is looked for;
   a reply written before the delete keeps its text and its place.
-  A reply or error callback on `POST /api/v1/comments/{id}/reply` or `POST /api/v1/messages/{id}/reply` is accepted from the session the attempt names, and, for an attempt sent for a `role:` route, from the session the role's claim names when the reply arrives while the listener's role lookup (`GET /v1/roles/<role>`) calls it live: the session that took the role from the one Dispatch sent to, which the listener hands what that session had not read.
-  For an attempt sent to a `session:` route, a person's direct message or a mention of a session, it is accepted as well from a session the listener's successor read (`GET /v1/sessions/<session>/successors`) names for the attempt's session: one whose claim named that session as the one it replaces, or that replaced such a session in turn, while each last registered as the principal the attempt's session did, which the listener hands that session's unread messages, each copy keeping its delivery.
-  The read also names that principal (`principal`), and a reply on a credential that proves the replying session, a broker token, is accepted only where the token's principal is that principal (`actsForSuccessorPrincipal`), in the form that names the token's kind and scope (`internal/ciphertoken/principal.go`): a session run on another principal's token before a registration recorded it may not answer the earlier principal's deliveries, and an agent's token that an operator's entry gave a person for a project may not answer that person's own session's.
-  The listener names that principal to Dispatch's own identity alone (`ENVOY_DISPATCH_PRINCIPAL`), and names no successor while its known-session bucket is not open.
-  A credential that proves no session (the shared agent token, a personal token, a service account's token) can name the attempt's own session anyway, so nothing more is asked of it.
-  Dispatch asks the listener before the reply's transaction opens, and only when the attempt names another session; a lookup or a successor read the listener does not answer is `503 ENVOY_UNAVAILABLE`, and any other session, or the role's holder while it is not live, is `403 REPLY_FORBIDDEN`.
-  The attempt's first stored reply stays its reply, and a later reply is answered as any second reply is (the stored reply; a message reply with `follow_up` is posted under the first).
+
+  - A reply or error callback on `POST /api/v1/comments/{id}/reply` or `POST /api/v1/messages/{id}/reply` is accepted from the session the attempt names, and, for an attempt sent for a `role:` route, from the session the role's claim names when the reply arrives while the listener's role lookup (`GET /v1/roles/<role>`) calls it live: the session that took the role from the one Dispatch sent to, which the listener hands what that session had not read.
+    For an attempt sent to a `session:` route, a person's direct message or a mention of a session, it is accepted as well from a session the listener's successor read (`GET /v1/sessions/<session>/successors`) names for the attempt's session: one whose claim named that session as the one it replaces, or that replaced such a session in turn, while each last registered as the principal the attempt's session did, which the listener hands that session's unread messages, each copy keeping its delivery.
+    The read also names that principal (`principal`), and a reply on a credential that proves the replying session, a broker token, is accepted only where the token's principal is that principal (`actsForSuccessorPrincipal`), in the form that names the token's kind and scope (`internal/ciphertoken/principal.go`): a session run on another principal's token before a registration recorded it may not answer the earlier principal's deliveries, an agent's token that an operator's entry gave a person for a project may not answer that person's own session's, and a session run on one of that person's Dispatch sign-ins, whose principal is that sign-in's own (`consented:<person>:<sign-in>`) and neither `person:<person>` nor another sign-in's, may answer neither that person's own session's nor another sign-in's.
+    The listener names that principal to Dispatch's own identity alone (`ENVOY_DISPATCH_PRINCIPAL`), and names no successor while its known-session bucket is not open.
+    A credential that proves no session (the shared agent token, a personal token, a service account's token) can name the attempt's own session anyway, so nothing more is asked of it.
+    Dispatch asks the listener before the reply's transaction opens, and only when the attempt names another session; a lookup or a successor read the listener does not answer is `503 ENVOY_UNAVAILABLE`, and any other session, or the role's holder while it is not live, is `403 REPLY_FORBIDDEN`.
+    The attempt's first stored reply stays its reply, and a later reply is answered as any second reply is (the stored reply; a message reply with `follow_up` is posted under the first).
+
   A comment's record in its document's margin - its body and replies, or a suggestion's and its replacement - holds at most 256 KiB of text, and a document's margin 1 MiB:
   a comment, reply or suggestion that would leave either past its bound and bigger is `413 CAP_EXCEEDED`, naming the bound and both sizes.
   A quote anchor that would leave the marks on the document's text carrying more than 1 MiB of ids and authors, and more than they carried, is `413 CAP_EXCEEDED` too, as for an ask's.
@@ -6128,6 +6429,7 @@ Each item below names a path with its method and identity, then its purpose.
   GET lists the Verification document's `check` blocks in document order as `{issue, verification_artifact_id, checks}`.
   Each check carries its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`, `subject`, `program`).
   It also carries the version its words last changed in, their digest, and every recorded result, newest first.
+  A check whose block's `serves` attribute names statements carries `serves`, those references each as the block writes it, in the block's order; a check whose block names none carries no `serves`.
 
   - A check's results come newest first by `created_at`, the time the recording transaction began, with `id` descending breaking a tie, and a client that reads one result per check reads the first of them;
     `dispatch results` prints every one of them, each with the reading its role recorded.
@@ -7039,6 +7341,8 @@ go vet ./...
 `internal/dispatch/api` alone takes close to `go test`'s default ten-minute package deadline (about 600 s), so it runs first and on its own, with 20 minutes, as CI's `envoy-go` job runs it (`docs/testing.md`, "Go's package deadline").
 
 `./scripts/dev-postgres.sh` prints the database URL to set (Local Postgres, above).
+Its server preloads `pg_stat_statements` (`-c shared_preload_libraries=pg_stat_statements`), which the priorities read's bound test, `TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan`, reads each statement's database time from; that test stops where the server does not preload the module.
+When `dispatch-pg` already exists on the pinned image, the script reads `shared_preload_libraries` from its server; where `pg_stat_statements` is missing (a container created before the script passed that argument), the script refuses it and prints the move-aside commands that dump its databases and restore them into a new container with the module preloaded.
 One test: `go test -run TestName ./internal/dispatch/api`, which needs no deadline of its own.
 
 Three suites build only under a tag, and the commands above run none of them.

@@ -154,12 +154,14 @@ export function createControllerSession(
   /**
    * Makes the context's session the controller: it registers on the claim route with the
    * capability `legion controller start` fetched in place of a boot token, then claims the role
-   * token the registration names (`legion-<project>-controller`), then follows that project's
-   * controller topic (`notifications.legion.<project>.controller`, `notify.ControllerTopic` in
-   * the daemon, which lists what it carries) for as long as it holds the role: a later `legion
-   * controller start` takes the role, and Envoy drops the topic from this session's interest row
-   * and its consumer's filter at its next heartbeat. The project is `LEGION_PROJECT`, and it must
-   * be the daemon's, or the topic would be one nobody publishes on. Both are settled before
+   * token the registration names (`legion-<project>-controller`), on whose role topic the Go
+   * daemon publishes every controller notice once this registered session holds the role live
+   * (the daemon's outbox, `controllerNotice`, which lists what it carries), then follows that
+   * project's controller topic (`notifications.legion.<project>.controller`), where a daemon of an
+   * earlier release publishes them, for as long as it holds the role: a later `legion controller
+   * start` takes the role, and Envoy drops the topic from this session's interest row and its
+   * consumer's filter at its next heartbeat. The project is `LEGION_PROJECT`, and it must be the
+   * daemon's, or the role and the topic would be ones nobody publishes on. Both are settled before
    * registering, since a registration replaces the running controller's session and secret: an unset
    * `LEGION_PROJECT` stops the claim, and so does one whose controller role is not that of the
    * project `GET /healthz` names (`legionProjectToken`, the rule the daemon applies to its
@@ -202,15 +204,18 @@ export function createControllerSession(
    * claim after a failure past the send, and a later `/legion-claim-controller` in the same
    * session, send nothing more.
    *
-   * The controller topic is no live wake: this session receives what its own JetStream consumer
-   * delivers and nothing else (INFRA-771), and the registration above puts the topic in that
-   * consumer's filter, so a notice published while this session was away is delivered when it
-   * registers again. A notice published before any session followed the topic reaches none — a
-   * consumer new to it starts at the stream's end — and the controller skill reads the daemon's
-   * state (the `legion` tool's `read_state`) and Dispatch's triage listing at boot for what it
-   * missed. Its grants are minted with the registration's own secret, which a later
-   * `legion controller start` revokes. Nothing re-runs on a role regain: the daemon holds nothing
-   * for a controller, and the Envoy heartbeat keeps the role itself. A refusal is logged and
+   * Neither the role nor the controller topic is a live wake: this session receives what its own
+   * JetStream consumer delivers and nothing else (INFRA-771). A role notice is stored on this
+   * session's own agent subject, which that consumer follows from the session's first
+   * registration, so a notice the listener stored for this session while it was away is
+   * delivered when it registers again; once the role is another session's, the listener hands
+   * the next holder what this one did not read. A notice published to the controller topic
+   * before any session followed it reaches none — a consumer new to it starts at the stream's
+   * end — and the controller skill reads the daemon's state (the `legion` tool's `read_state`)
+   * and Dispatch's triage listing at boot for what it missed. Its grants are minted with the
+   * registration's own secret, which a later `legion controller start` revokes. Nothing re-runs on
+   * a role regain: the daemon publishes what it held for the controller once this session holds
+   * the role live again, and the Envoy heartbeat keeps the role itself. A refusal is logged and
    * propagates without exiting — the operator started this session and reads it; a refused
    * capability was replaced by a later start. The transcript is reported on every claim, a
    * takeover's included, because the route requires one; the daemon records only the session.
@@ -277,7 +282,24 @@ export function createControllerSession(
     startedBy: ClaimStarter
   ): Promise<void> => {
     const supervised = daemonLaunchedController(process.env);
-    if (!supervised) return claimWith(context, false, progress, startedBy);
+    if (!supervised) {
+      // The session the claim reads first, which a refusal before the send leaves unmarked.
+      const claimed = context.sessionManager.getSessionId();
+      try {
+        await claimWith(context, false, progress, startedBy);
+      } catch (error) {
+        // Refused before the send, whichever command or session change ran the claim: the start
+        // `session_start` marked due is not coming from it, so the mark goes, and the Envoy entry,
+        // which reads an unsent mark again every second for up to 30 s, stops holding the
+        // session's startup cards for it at its next read. While another claim waits behind this
+        // one (`serialised` counts this claim and each claim queued after it until it ends), the
+        // mark stays: that claim may still send the start, and a card the cleared mark let take an
+        // idle turn would run ahead of it.
+        if (!startMessageSent && claimsQueued <= 1) clearStartupTurn(claimed);
+        throw error;
+      }
+      return;
+    }
     try {
       await claimWith(context, true, progress, startedBy);
     } catch (error) {
@@ -390,11 +412,24 @@ export function createControllerSession(
         return;
       }
       if (context.isIdle?.() === false) {
-        pi.sendUserMessage(startMessage, { deliverAs: "followUp" });
+        // A follow-up is never marked sent, so a send the host fails clears nothing here; the host
+        // logs the failure itself, and the rejection is taken so that it is not left unhandled.
+        void Promise.resolve(pi.sendUserMessage(startMessage, { deliverAs: "followUp" })).catch(
+          () => undefined
+        );
       } else {
         markStartupTurnSent(sessionID);
         startTurnSession = sessionID;
-        pi.sendUserMessage(startMessage);
+        // A send the host fails (a prompt it drops before dispatch, or refuses) starts no run, so
+        // no `agent_start` clears the mark: it goes here, so no check the Envoy entry makes after
+        // this holds the session's startup cards for a start that never ran, where a sent mark
+        // holds them for 30 s from the send. Oh My Pi's `sendUserMessage` returns a promise that
+        // rejects when the send fails (`agent-session.ts`), which `PiApi` types as `void`, so the
+        // answer is taken as whatever it is: a promise's rejection clears the mark, and nothing
+        // else does. The host logs the failure itself.
+        void Promise.resolve(pi.sendUserMessage(startMessage)).catch(() =>
+          clearStartupTurn(sessionID)
+        );
       }
       startMessageSent = true;
     }
@@ -550,10 +585,14 @@ export function createControllerSession(
    * (`markStartupTurnPending`) and claims nothing: the Envoy entry opens the session's agent
    * subject at its own `session_start`, and a card that arrives from here until the start command
    * sends the start finds the mark, so it takes no turn and its wake waits for the start turn
-   * (`packages/pi-envoy/src/card-wake.ts`). The send marks it sent; the session's first
-   * `agent_start` (an operator turn started before the command, after which the start message
-   * goes as a follow-up) and its shutdown clear it, and so does the start command's claim when it
-   * fails before the send or hands over to a new session.
+   * (`packages/pi-envoy/src/card-wake.ts`), for at most 30 s from the Envoy entry's first read of
+   * the unsent mark. The send marks it sent, which holds them for at most 30 s from the send; the
+   * session's first `agent_start` (an operator turn started before the command, after which the
+   * start message goes as a follow-up) and its shutdown clear it, and so do a claim that fails
+   * before the send with no other claim queued behind it (`claimOnce`), a claim that hands over to
+   * a new session (`claimWith`), and a send the host fails (`claimWith`). A start that never comes
+   * (a claim that never answers, a start command that never runs) holds the cards back once, for
+   * those 30 s.
    */
   const handleSessionStart = async (context: SessionContext): Promise<void> => {
     if (!daemonLaunchedController(process.env)) {
@@ -578,8 +617,9 @@ export function createControllerSession(
    * controller's whole claim (`claim`), which sends the start message right before the role
    * claim. A refusal anywhere in it is logged and shown to the operator as one warning, which says
    * what the claim left: refused before the send, nothing was sent, the unsent `startupTurn` mark
-   * `session_start` set is cleared, and `/legion-claim-controller` claims again and sends the
-   * start message once that claim succeeds; refused after it (the role
+   * `session_start` set is cleared unless another claim waits behind this one (`claimOnce`), and
+   * `/legion-claim-controller` claims again and sends the start message once that claim succeeds;
+   * refused after it (the role
    * claim or the subscription), the start turn runs holding the registration, and
    * `/legion-claim-controller` claims the role and its wakes again. The command itself never fails
    * past that notice. A refusal that comes once the session's stop has begun (`stop`) is neither
@@ -613,8 +653,6 @@ export function createControllerSession(
         );
         return;
       }
-      // The session the claim reads first, which a refusal before the send leaves unmarked.
-      const claimed = context.sessionManager.getSessionId();
       try {
         await claimOnce(context, { registered: false }, "typed");
       } catch (error) {
@@ -623,9 +661,6 @@ export function createControllerSession(
         if (stopped.signal.aborted) return;
         const message = messageFor(error);
         logger.error(`[legion] the controller claim failed: ${message}`);
-        // Refused before the send: the start `session_start` marked due is not coming, so the
-        // Envoy entry is not left holding its startup cards for it.
-        if (!startMessageSent) clearStartupTurn(claimed);
         context.ui.notify(
           startMessageSent
             ? `legion: the controller claim failed after the start message was sent: ${message}. The start turn has the controller's registration; run /legion-claim-controller to claim the controller role and its wakes again.`

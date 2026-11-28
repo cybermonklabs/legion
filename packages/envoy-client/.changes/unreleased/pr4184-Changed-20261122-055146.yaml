@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  `test/ci-results-stack.ts`, the local stack a CI job writes its result on, runs two secrets
+  brokers on one database behind two `dev-proxy-stands front`s, one for their API ports and one
+  for their proxy ports, with the airlock's authority that `dev-proxy-stands` writes. Dispatch's
+  public URL is `https://dispatch.ci-results.test`, which only the airlock's proxy reaches: each
+  broker sends the bound host's allowed writes to Dispatch's own loopback port, its private
+  destination. The container that played Dispatch's TLS front is gone with its helper file, and
+  the stack needs neither Docker nor a fixed port. `jobCommand(argv)` runs a command under
+  `agent-secrets result-grant`, and `logMark()`, `linesSince(mark)`, `endResultGrants(checkRunId)`,
+  `resultTokenBindings(checkRunId)` and `introspect(token)` read what the brokers and Dispatch did.
+  `ci-results.live.test.ts` runs each CI job's command under `agent-secrets result-grant` and adds
+  rows A1 to A7, which hold the airlock itself on the live stack.
+time: 2026-11-22T05:51:46Z
+custom:
+    Issue: pr4184

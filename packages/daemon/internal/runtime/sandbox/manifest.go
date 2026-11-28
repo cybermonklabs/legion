@@ -121,10 +121,11 @@ const podUser = 1000
 // (Runtime.specOwned), and CheckPod refuses a runtime-owned one, or an exchange or broker one where
 // the deployment names the audience or sets the broker, in the operator's pod — a composed one is
 // the operator's to set, since composing is what the runtime does with it. The image probe's
-// container sets none of its own. The two CLAUDE_* names and claudelaunch.SessionVariable are told
-// a Claude role alone, as the controller's Slack channels are the controller's, and owned in every
-// pod: an operator that could place a Claude Code worker's configuration directory, let the clock
-// prompt it or name another session for its launcher to keep would be undoing the launch
+// container sets one variable of its own, which no worker carries, so it is in probeOwned and not
+// here. The two CLAUDE_* names and claudelaunch.SessionVariable are told a Claude role alone, as
+// the controller's Slack channels are the controller's, and owned in every pod: an operator that
+// could place a Claude Code worker's configuration directory, let the clock prompt it or name
+// another session for its launcher to keep would be undoing the launch
 // (claudelaunch.Environment). CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, CLAUDE_CODE_USE_FOUNDRY and
 // the rest of Claude Code's own variables are not here, and stay the operator's to set.
 // runtime.SessionExclusiveVariable is told a launch that resumes a recorded Oh My Pi session alone,
@@ -389,8 +390,8 @@ type launch struct {
 	// of the kind its labels name (podKindOf).
 	roles []claim.Role
 	// workspace is the launchers' working directory (podKind.prepare): an issue pod's workspace,
-	// which workspace-init provisions on the issue's volume (workspace.Location under TreeRoot), or
-	// the root of the controller's own volume, TreeRoot.
+	// which workspace-init provisions on the issue's volume (WorkspaceDir), or the root of
+	// the controller's own volume, TreeRoot.
 	workspace string
 	// secrets are the claim's launch credentials, each reaching the agent as a `<NAME>_FILE`
 	// pointer into its generation's private directory: the boot token, the spec's but the providers
@@ -2068,8 +2069,8 @@ func GitConfigPairs() [][2]string { return slices.Clone(gitConfigPairs) }
 // LEGION_GH_OWNERS_DIR (ghAgentEnv), and a fork of a repository of such an owner, whose own owner
 // has no directory, from the directory of the fork's parent or else its source, which it reads
 // from GitHub with GH_CONFIG_DIR's token; `legion gh` adds its own entry after these
-// (withGitHubUseHTTPPath, cmd/legion/gh.go). Exported for rolegitconfig, which prints it for a Job
-// that runs no daemon.
+// (withGitHubUseHTTPPath, cmd/legion/gh_child.go). Exported for rolegitconfig, which prints it
+// for a Job that runs no daemon.
 func GitConfigEnv() []corev1.EnvVar {
 	env := []corev1.EnvVar{{Name: "GIT_CONFIG_COUNT", Value: strconv.Itoa(len(gitConfigPairs))}}
 	for i, pair := range gitConfigPairs {

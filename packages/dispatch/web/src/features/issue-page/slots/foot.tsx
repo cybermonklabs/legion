@@ -7,7 +7,6 @@ import { type BoxPlace, IssueComposer, useComposerShown } from "../IssueComposer
 import { IssueReadMark } from "../IssueReadMark";
 import { issueAddress } from "../issue-address";
 import { useOutlineReads } from "../outline-reads";
-import { isFilter } from "../presets";
 import type { SlotProps } from "../slot-props";
 
 /**
@@ -40,14 +39,15 @@ import type { SlotProps } from "../slot-props";
  * lower: the dwell reads where it is moved to, so it reaches the screen exactly once the last row
  * is clear of the box, and 1rem clear of the floats above it while they show (`End` leaves that
  * row 8 px above the box), and on an outline shorter than the screen at once. It is drawn while
- * the address names no view and no document, whose end is not the conversation's.
+ * the address names Conversation and no document, the one place the conversation's outline ends:
+ * a view, Dashboard among them (dispatch://INFRA-5702/spec#b-r-new-page), draws no outline.
  */
 export function FootSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const place: BoxPlace = {
     documentOpen: address.document !== undefined,
-    viewOn: isFilter(address.preset),
+    viewOn: address.preset !== "conversation",
   };
   // The issue's one tree, read as the outline reads it (`useOutlineReads`, as the view row does),
   // so it costs no request: the box reads off it which entries and statements a draft it keeps
@@ -56,8 +56,15 @@ export function FootSlot({ issue, route }: SlotProps): ReactNode {
   // gone meanwhile.
   const { namesHeld, readsHeld, root } = useOutlineReads(issue);
   const shown = useComposerShown(place);
+  // Threads draws neither the box nor the issue's read mark, at rest or with a held target
+  // (dispatch://INFRA-5704/spec#b-r-joins, R16): a record opened there has a box of its own, and
+  // the read mark would move the issue's last read while the reader reads the list, which clears
+  // the marks of its rows (R7). A view on keeps the read mark out already (`place.viewOn`), and a
+  // held target still draws the box under every other view (`useComposerShown`), so under
+  // Threads the slot mounts no box at all.
+  const threads = address.preset === "threads";
   const wrapper = useRef<HTMLDivElement>(null);
-  useFootInset(wrapper, shown, "page");
+  useFootInset(wrapper, shown && !threads, "page");
   return (
     <>
       {place.viewOn || place.documentOpen ? null : (
@@ -65,18 +72,20 @@ export function FootSlot({ issue, route }: SlotProps): ReactNode {
           <IssueReadMark issueKey={issue.key} />
         </div>
       )}
-      <div
-        className="sticky bottom-0 z-[15] order-1 mx-auto mt-auto w-full max-w-[1000px] min-w-0 max-[761px]:-mx-1 max-[761px]:w-auto"
-        ref={wrapper}
-      >
-        <IssueComposer
-          documentOpen={place.documentOpen}
-          isClosed={issue.closed_at !== null}
-          issueKey={issue.key}
-          tree={readsHeld && namesHeld ? root : undefined}
-          viewOn={place.viewOn}
-        />
-      </div>
+      {threads ? null : (
+        <div
+          className="sticky bottom-0 z-[15] order-1 mx-auto mt-auto w-full max-w-[1000px] min-w-0 max-[761px]:-mx-1 max-[761px]:w-auto"
+          ref={wrapper}
+        >
+          <IssueComposer
+            documentOpen={place.documentOpen}
+            isClosed={issue.closed_at !== null}
+            issueKey={issue.key}
+            tree={readsHeld && namesHeld ? root : undefined}
+            viewOn={place.viewOn}
+          />
+        </div>
+      )}
     </>
   );
 }

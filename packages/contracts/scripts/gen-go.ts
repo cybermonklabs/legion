@@ -3,17 +3,25 @@ import { dirname, relative, resolve } from "node:path";
 
 import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
+  BROKER_REQUEST_REASON_MAX,
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_THREAD_PAGE_LIMIT,
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
   DISPATCH_APPROVE_ONLY_TOKEN,
+  DISPATCH_AS_OF_ABSENT_HEADER,
+  DISPATCH_AS_OF_FILLED_THROUGH_HEADER,
+  DISPATCH_AS_OF_HEADER,
+  DISPATCH_AS_OF_NOT_SERVED,
+  DISPATCH_AS_OF_SEARCH_NOT_FILLED,
   DISPATCH_AS_OF_TOKEN_NOT_SERVED,
   DISPATCH_EVENT_TYPES,
+  DISPATCH_INVALID_AS_OF,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
   DISPATCH_READ_ONLY_TOKEN,
   DISPATCH_SIGN_IN_REQUIRED,
+  DISPATCH_SIGN_IN_SCOPES,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
   DOCUMENT_NEWER_CONTENT_CLOSE_CODE,
@@ -58,6 +66,10 @@ import {
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_OR,
   SEARCH_OPERATOR_PHRASE,
+  SPEC_CHECK_OBSERVED_CUT_NOTE,
+  SPEC_CHECK_OBSERVED_END,
+  SPEC_CHECK_OBSERVED_MAX,
+  SPEC_CHECK_OBSERVED_START,
   STORE_UNCONFIRMED_CAUSE,
   TEXT_REFUSAL_HEADER,
 } from "../src/dispatch-api";
@@ -566,6 +578,18 @@ const MaxIssueComponents = ${MAX_ISSUE_COMPONENTS}
 const MaxIssuePageLimit = ${MAX_ISSUE_PAGE_LIMIT}
 const DefaultIssuePageLimit = ${DEFAULT_ISSUE_PAGE_LIMIT}
 
+// SpecCheckObservedMax is the most runes of what a CI job observed that a result of a spec check
+// keeps. A longer text is kept as its first SpecCheckObservedStart runes, then
+// SpecCheckObservedCutNote, which says that the middle was cut, then its last
+// SpecCheckObservedEnd runes, SpecCheckObservedMax runes in all. Generated from
+// SPEC_CHECK_OBSERVED_MAX, SPEC_CHECK_OBSERVED_START, SPEC_CHECK_OBSERVED_CUT_NOTE and
+// SPEC_CHECK_OBSERVED_END in packages/contracts, so the text Dispatch keeps and the text
+// \`dispatch result --project\` sends are cut by one rule.
+const SpecCheckObservedMax = ${SPEC_CHECK_OBSERVED_MAX}
+const SpecCheckObservedStart = ${SPEC_CHECK_OBSERVED_START}
+const SpecCheckObservedCutNote = ${JSON.stringify(SPEC_CHECK_OBSERVED_CUT_NOTE)}
+const SpecCheckObservedEnd = ${SPEC_CHECK_OBSERVED_END}
+
 // MaxThreadPageLimit is the most threads one page of an issue's threads holds, and
 // DefaultThreadPageLimit the page size when a caller names no limit: GET
 // /api/v1/issues/{key}/comments, GET /api/v1/issues/{key}/messages and GET
@@ -615,6 +639,20 @@ const DispatchEventBodyMax = ${DISPATCH_EVENT_BODY_MAX}
 var DispatchEventTypes = []string{
 ${DISPATCH_EVENT_TYPES.map((type) => `\t${JSON.stringify(type)},`).join("\n")}
 }
+
+// DispatchSignInScopes are the Dispatch scopes a person may approve for a Dispatch sign-in, in the
+// order a page lists them. Generated from DISPATCH_SIGN_IN_SCOPES in packages/contracts, so the
+// broker that takes a sign-in's scopes, the verifier that reads its tokens and the clients and
+// page that ask for them hold one list.
+var DispatchSignInScopes = []string{
+${DISPATCH_SIGN_IN_SCOPES.map((scope) => `\t${JSON.stringify(scope)},`).join("\n")}
+}
+
+// BrokerRequestReasonMax is the most characters, counted as Unicode code points, the reason of a
+// request to the secrets broker may carry. Generated from BROKER_REQUEST_REASON_MAX in
+// packages/contracts, so the broker's refusal (record.MaxReasonRunes) and each client's check
+// before it asks hold one bound.
+const BrokerRequestReasonMax = ${BROKER_REQUEST_REASON_MAX}
 
 // DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
 // POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in
@@ -788,6 +826,46 @@ const IdempotencyAnswerNotKept = ${JSON.stringify(IDEMPOTENCY_ANSWER_NOT_KEPT)}
 const IdempotencyKeyTTL = ${IDEMPOTENCY_KEY_TTL_MS} * time.Millisecond
 const IdempotencyLease = ${IDEMPOTENCY_LEASE_MS} * time.Millisecond
 
+// DispatchAsOfNotServed is the code of the 400 for an as_of that a route cannot answer. A route
+// that holds no history answers only the present, and it refuses every as_of with this code. A
+// route that answers as_of refuses with this code a filter parameter that it cannot evaluate at
+// that time. The message names that parameter. Generated from DISPATCH_AS_OF_NOT_SERVED in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchAsOfNotServed = ${JSON.stringify(DISPATCH_AS_OF_NOT_SERVED)}
+
+// DispatchInvalidAsOf is the code of the 400 for an as_of that Dispatch cannot read: a value that
+// is not an RFC 3339 time, a time later than the server's present time, or an as_of that the
+// request sends more than once. Generated from DISPATCH_INVALID_AS_OF in packages/contracts so the
+// server's refusal and every client's reading of it cannot drift apart.
+const DispatchInvalidAsOf = ${JSON.stringify(DISPATCH_INVALID_AS_OF)}
+
+// DispatchAsOfSearchNotFilled is the code of the 409 for a search at a past time that the fill of
+// the keyword table has not reached. Where the fill has reached a time, the message and
+// DispatchAsOfFilledThroughHeader name that time; where it has reached no time yet, the message
+// says so and the answer has no such header. Generated from DISPATCH_AS_OF_SEARCH_NOT_FILLED in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchAsOfSearchNotFilled = ${JSON.stringify(DISPATCH_AS_OF_SEARCH_NOT_FILLED)}
+
+// DispatchAsOfHeader is the response header on every answer that Dispatch gives as of a past time
+// (the cut), for an as_of in the request or for a token that carries a cut. The value is the cut
+// in RFC 3339, with six fractional digits, in UTC. Generated from DISPATCH_AS_OF_HEADER in
+// packages/contracts so the server and every client name the header once.
+const DispatchAsOfHeader = ${JSON.stringify(DISPATCH_AS_OF_HEADER)}
+
+// DispatchAsOfAbsentHeader is the response header that names each member that a past-time answer
+// omits because the records at the cut cannot give it. The value is a comma-separated list of
+// RFC 6901 JSON Pointers, in which a segment * stands for every member of an array, such as
+// /open_asks/*/referenced_by_count. Generated from DISPATCH_AS_OF_ABSENT_HEADER in
+// packages/contracts so the server and every client name the header once.
+const DispatchAsOfAbsentHeader = ${JSON.stringify(DISPATCH_AS_OF_ABSENT_HEADER)}
+
+// DispatchAsOfFilledThroughHeader is the response header on a 409 DispatchAsOfSearchNotFilled when
+// the fill of the keyword table has reached a time. The value is that time, in RFC 3339; a refusal
+// whose fill has reached no time yet has no such header. Generated from
+// DISPATCH_AS_OF_FILLED_THROUGH_HEADER in packages/contracts so the server and every client name
+// the header once.
+const DispatchAsOfFilledThroughHeader = ${JSON.stringify(DISPATCH_AS_OF_FILLED_THROUGH_HEADER)}
+
 // SessionHeartbeat is how often a pane's pi-envoy plugin refreshes its listener registration, and
 // SessionLiveWindow how long a session's last registration keeps it live to the listener. Three
 // heartbeats plus one whole listener call fit inside the live window, so two refreshes may fail
@@ -856,10 +934,11 @@ const DispatchReadOnlyToken = ${JSON.stringify(DISPATCH_READ_ONLY_TOKEN)}
 const DispatchApproveOnlyToken = ${JSON.stringify(DISPATCH_APPROVE_ONLY_TOKEN)}
 
 // DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
-// carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at
-// a past time yet, so the route ran nothing rather than answer with the present. Generated from
-// DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so the server's refusal and every
-// client's reading of it cannot drift apart.
+// carries a cut (as_of) to a read that holds no past answer: GET /ws/live, and each read route
+// that does not answer as_of except GET /api/v1/whoami. A route that answers as_of answers such a
+// token as of its cut, and GET /api/v1/whoami names the cut. The route ran nothing rather than
+// answer with the present. Generated from DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so
+// the server's refusal and every client's reading of it cannot drift apart.
 const DispatchAsOfTokenNotServed = ${JSON.stringify(DISPATCH_AS_OF_TOKEN_NOT_SERVED)}
 
 func NowMillis() int64 {

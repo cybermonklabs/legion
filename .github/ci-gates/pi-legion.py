@@ -7,9 +7,27 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
     script_run("packages/pi-legion/scripts/skill-scenarios/label-texts.sh",
                'go test -c -o "$bin/" ./internal/workflow ./internal/daemon ./internal/api',
-               "`label-texts.sh build`, which rig.sh batch-scored runs in a build pod's scored Job (scored-job.sh); "
-               f"in {at('pi-legion', 'Test pi-legion')}, label-texts.test.ts runs this line with a planted go, and no row compiles the three packages",
+               "`label-texts.sh build`, which rig.sh batch-scored runs in a build pod's scored Job (scored-job.sh), "
+               f"and in {at('pi-legion', 'Test pi-legion')} for each of the two batches of "
+               "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#a kept notice`; label-texts.test.ts runs this line with a planted go",
                DAEMON, ["./internal/workflow", "./internal/daemon", "./internal/api"], mode="test"),
+    # The kept-notice row runs a child owner's whole run through rig.sh: each batch builds the
+    # Envoy listener and runs the connections program, and each run starts its own Dispatch
+    # server through run-server.sh, all three of the envoy module.
+    script_run("packages/pi-legion/scripts/skill-scenarios/rig.sh",
+               '(cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)',
+               "rig.sh's listener_up, which each batch's services_up runs: "
+               f"`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#a kept notice` runs two batches in {at('pi-legion', 'Test pi-legion')}",
+               ENVOY, ["./cmd/listener"], mode="build"),
+    script_run("packages/pi-legion/scripts/skill-scenarios/rig.sh",
+               'per_run=$(cd "$root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections -process) &&',
+               "rig.sh's connections_needed, which each batch's services_up runs: "
+               f"`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#a kept notice` runs two batches in {at('pi-legion', 'Test pi-legion')}",
+               ENVOY, ["./internal/dispatch/store/cmd/connections"], mode="build"),
+    script_run(RUN_SERVER, DISPATCH_SERVER_BUILD,
+               "started by rig.sh's start_dispatch for each run's own Dispatch, each run of "
+               f"`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#a kept notice` in {at('pi-legion', 'Test pi-legion')}",
+               ENVOY, ["./cmd/dispatch"], mode="build"),
 ], reads=reads(
     ("packages/pi-legion/**", f"{at('pi-legion', 'Test pi-legion')} in packages/pi-legion"),
     ("packages/pi-envoy/**", "`packages/pi-legion/extensions/legion.test.ts#envoyEntryDefault` and `packages/pi-legion/extensions/legion.test.ts#envoyEntry` and `packages/pi-legion/extensions/legion-role-claim.test.ts#envoyEntryDefault` and `packages/pi-legion/extensions/legion-role-claim.test.ts#envoyEntry` import ../../pi-envoy/extensions/envoy; `packages/pi-shared/test/omp-harness.ts#runLegionPane` loads it"),
@@ -21,6 +39,9 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                                                        "imports @legion/envoy-client/test/subscribe-answer, and "
                                                        "`packages/pi-shared/test/omp-harness.ts#consumerDelivery`, which this "
                                                        "package's omp tests drive, imports it too"),
+    ("packages/envoy-client/test/keyed-layer.ts", "`packages/pi-shared/test/omp-harness.ts#keyedLayer`, which this package's "
+                                                  "omp tests drive and its typecheck compiles, serves its stand-in "
+                                                  "behind keyedLayer"),
     ("packages/envoy-client/test/fake-dispatch.ts", "`packages/pi-legion/src/tools.test.ts#fakeDispatchFetch` imports "
                                                      "it from @legion/envoy-client/test/fake-dispatch"),
     # envoy-client's sources, and cipher-client's with them, are the shared read below.
@@ -39,7 +60,8 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     ("packages/dispatch/web/src/api/types.ts", "`packages/dispatch/e2e/api.ts#../web/src/api/types`"),
     ("packages/dispatch/web/src/api/paths.ts", "`packages/dispatch/e2e/api.ts#../web/src/api/paths` imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Result from it, since that client is keyed on the generated document's path patterns"),
     ("skills/**", "`packages/pi-legion/src/skills-guard.test.ts#stageSkills` and `packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` stages them, and that test reads the roots it lists, skills/legion-controller among them; `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#ste runs omp in the directory on its prompt, no plugins, asd-ste100 alone, the pinned model` and `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout`; prepack stages skills"),
-    ("scripts/pi-plugin-prepack.sh", "`packages/pi-shared/test/skills-guard.ts#PREPACK_SCRIPT` and `packages/pi-shared/test/skills-guard.ts#stageSkills`"),
+    ("scripts/pi-plugin-prepack.sh", "`packages/pi-shared/test/skills-guard.ts#PREPACK_SCRIPT` and `packages/pi-shared/test/skills-guard.ts#stageSkills`; `packages/pi-legion/package.json#prepack`, which the pack of `packages/pi-legion/scripts/prepack.test.ts#packs from a copy` runs"),
+    ("scripts/daemon-contract.sh", "`scripts/e2e/lib/pack-plugin.sh#$root/scripts/daemon-contract.sh` writes its number into the packed manifest, which `packages/pi-legion/scripts/prepack.test.ts#packs from a copy` holds to `daemonContract`"),
     ("scripts/third-party-notices.ts", "`scripts/pi-plugin-prepack.sh#$root/scripts/third-party-notices.ts`"),
     (f"{DAEMON}/internal/**", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
                               '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "packages/daemon/internal")`'
@@ -59,7 +81,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     ("README.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
                   '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "README.md")`'
                   " sweeps it, a root of that test's list"),
-    ("scripts/e2e/lib/**", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#scriptFunctions`, imported from scripts/e2e/lib/script-functions, and `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#loopbackDsn`, which the services_up row sources; `packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/scripts/e2e/lib/rig.sh` sources scripts/e2e/lib/rig.sh"),
+    ("scripts/e2e/lib/**", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#scriptFunctions`, imported from scripts/e2e/lib/script-functions, and `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#loopbackDsn`, which the services_up row sources; `packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/scripts/e2e/lib/rig.sh` sources scripts/e2e/lib/rig.sh; `packages/pi-legion/scripts/prepack.test.ts#scripts/e2e/lib/pack-plugin.sh` packs with it"),
     ("packages/envoy/scripts/lib/pg-url.sh", "`packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/packages/envoy/scripts/lib/pg-url.sh` sources it for pg_sql and safe_url; "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#safe_url drops the password of a URL and keeps the rest` and "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#refuses a URL the runs cannot use before psql runs or the URL is written` source it, "

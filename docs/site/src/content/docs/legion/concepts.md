@@ -28,9 +28,10 @@ section can use the words without stopping to explain them.
   issue's repository. Each issue targets one repository, the one Dispatch resolves for it (its
   own, else its nearest ancestor's in its own project, else the project's default repository,
   which is set in Dispatch), which Legion records, with that repository's default branch as GitHub
-  names it, when it first records the issue, and keeps. This release's one-time pass is the one
-  exception: it writes a configured rename's new name (`repository_renames`) over the old one on
-  the records.
+  names it, when it first records the issue. The record then follows Dispatch: a later change of
+  the issue's repository moves it onto the new one when GitHub answers, at that moment, that both
+  role Apps are installed there ([The project's repositories](/legion/legion/running-legion/#the-projects-repositories)),
+  and a configured rename's pass writes the new name (`repository_renames`) over the old one.
   Legion acts there through two GitHub Apps, so the account that reviews a change is never the one
   that wrote it. The daemon creates a root's branch at the recorded default branch (`main`,
   `develop` or `release/v7.1` alike) when it admits the root, before its architect starts, and a
@@ -44,7 +45,7 @@ section can use the words without stopping to explain them.
 One Legion deployment can work issues across several GitHub repositories, under several owners,
 with exactly one repository per issue — never two.
 A change that spans repositories uses child issues, each in one repository.
-Several children may share a repository, each child's own `--repo` fixed when the daemon records it.
+Several children may share a repository, and each child's record follows the repository Dispatch resolves for it.
 An issue may name any `owner/name`, and the account that installs a role's GitHub App decides what that role reaches.
 Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
 is installed on.
@@ -245,12 +246,17 @@ its earlier owner gave: at its first step Legion deletes that plan, logs
 `plan-not-taken` notice, which version it did not take and which plan the step runs instead, the
 new owner's or the default steps.
 An issue that a project's experiment drew into a group whose issues run the project's default
-steps (an arm's `plan: default`) takes no plan from its owner: once the daemon records it, the
-owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, naming the group, and
-a plan its owner or an earlier owner gave before is deleted at its first step, logged for each
-version as `workflow: a plan is not taken: the issue's group runs the project's default steps`,
-never as an earlier owner's line above, and told in the same `plan-not-taken` notice, which names
-each version and the group and offers no `register_plan`.
+steps (an arm's `plan: default`) runs the task `default`.
+Its owner can give a version that changes nothing but the text of that running task, which Legion
+takes as for any issue.
+Once the daemon records the issue, every other `register_plan` of its owner and every `stop_task`
+are answered `409 PLAN_NOT_TAKEN`, naming the group.
+A plan its owner or an earlier owner gave before the issue's first step is deleted at that step.
+Each version it deletes is logged as
+`workflow: a plan is not taken: the issue's group runs the project's default steps`.
+It is not logged as an earlier owner's plan.
+The step tells them in one `plan-not-taken` notice, which names each version and the group and
+offers no `register_plan`.
 
 A step a plan leaves out hands its duty on. With no tester step, the implementer's own results
 against the issue's checks are the evidence, and a reviewer step refuses to approve while any of
@@ -815,6 +821,25 @@ board then shows the phase the issue ends in. Starting the worker's claim in a f
 does the same at the cost of that session. A restart, the root set to `backlog` and then to
 `todo`, runs the whole tree over as a new generation, which is the move for a tree that must start
 from its architect.
+
+**The Dispatch claim of a session the daemon leaves behind.** A fresh session leaves the claim's
+old session behind, and so does a retry or any other start of the claim in a new session. The
+daemon then releases the Dispatch claim that the old session holds on the claim's issue, so the
+new session can claim the issue. It leaves that claim where the operator holds the issue's tree
+(an operator's root spawn opened the tree under its root's key, and the tree's cleanup is not yet
+confirmed), and the issue's record says why (`operator-tree`). It also leaves the claim, and writes
+nothing, where the workflow does not record the issue: an operator can put a claim on such an
+issue with `legion claims spawn`. A move of an issue out of the workflow, to `backlog`, `icebox` or
+`triage`, releases the Dispatch claim that a session of the issue's tree holds: the current
+session of a claim of the tree, or a session that such a claim left behind. Dispatch keeps a claim
+while it reads the holder as live, and refuses the release with 409 `ISSUE_CLAIMED`. The daemon
+tries again for up to an hour. A release that leaves the claim of an issue the workflow records
+writes why into the issue's record, and the `legion` tool's `read_record` returns it as
+`claimLeft`: the holder, the reason and the time. The reason is one word, such as `person` (a
+person holds the claim), `other-tree` (a session of another tree holds it) or `held-an-hour`
+(Dispatch refused the release for an hour).
+[Contract entry 20261127202231 (claim-left)](https://github.com/cybermonklabs/legion/blob/main/packages/daemon/internal/api/contract_20261127202231_claim-left.go)
+lists all eleven reasons.
 
 A launch failure that is charged is spaced from the next try by a backoff: 2 s after the first,
 doubling after each further one, each wait drawn between half its step and the whole of it. A

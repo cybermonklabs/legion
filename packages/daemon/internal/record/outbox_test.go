@@ -81,6 +81,10 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
 		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(false)}, {Step: DesignStepSpec, ArtifactID: "artifact-208", Holds: new(true)}}},
 		RoleHoldersPublish{Issue: "LEGION-208"},
+		// The move out of the workflow's release, and the release of a session the daemon left
+		// behind, which names that session (store's putClaim queues it).
+		ClaimRelease{},
+		ClaimRelease{Session: "ses-1"},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
@@ -494,6 +498,24 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a re-parent seed of no reason", payload: ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300"}, reason: "a re-parent seed names"},
 		{name: "a decision on an architect's notice", payload: Notice{Kind: "design-approved", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
 		{name: "a root on an architect's notice", payload: Notice{Kind: "design-approved", Root: "LEGION-1"}, reason: "only a parked-decision controller notice does"},
+		{name: "a review's document on a phase-finished notice",
+			payload: Notice{Kind: "phase-finished", Artifact: "artifact-1"},
+			reason:  "only a design-approved or design-changes-requested notice does"},
+		{name: "a review's document on a carried gate's opening",
+			payload: Notice{Kind: "carried-gate-opened", Version: 3, Actor: "user:a",
+				Ref: "dispatch://LEGION-1/spec", Artifact: "artifact-1"},
+			reason: "only a design-approved or design-changes-requested notice does"},
+		{name: "a review's mark on a tick",
+			payload: ControllerNotice{Kind: TickNotice, Review: EventMark{Seq: 7}},
+			reason:  "relaying a design approval or changes request does"},
+		{name: "a review's document on a held notice to the controller",
+			payload: ControllerNotice{Kind: "held", Artifact: "artifact-1"},
+			reason:  "relaying a design approval or changes request does"},
+		{name: "a review's document on a relayed answer",
+			payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered,
+				Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a",
+				Artifact: "artifact-1"},
+			reason: "relaying a design approval or changes request does"},
 		{name: "a parked decision with no root", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a"}, reason: "a parked-decision notice needs"},
 		{name: "a parked decision with no ref", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Root: "LEGION-1", Actor: "user:a"}, reason: "a parked-decision notice needs"},
 		{name: "a parked decision by no person", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "session:s"}, reason: "a parked-decision notice needs"},
@@ -849,7 +871,7 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a conflict confirm with an unknown field", row: OutboxRow{ID: 63, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de","firstReadAt":"2026-09-23T00:59:00Z","base":"main"}`)}, reason: "unknown field"},
 		{name: "a merge-forward message of an unknown step", row: OutboxRow{ID: 64, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"merge","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next"}`)}, reason: "is an ask, a hold, a landed or a review"},
 		{name: "a merge-forward message with an unknown field", row: OutboxRow{ID: 65, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"ask","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next","task":"Merge main."}`)}, reason: "unknown field"},
-		{name: "a claim release with a field", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
+		{name: "a claim release naming an issue", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
 		{name: "a retro's stored reason without its rating", row: OutboxRow{ID: 62, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
 			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating_reason":"The plan put the tests after the review."}`)},
 			reason: "its reason or neither"},
@@ -869,6 +891,12 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 				t.Fatalf("DecodeOutboxPayload error = %v, want row %d and %q", err, tc.row.ID, tc.reason)
 			}
 		})
+	}
+	// The one field a claim release carries, the session the daemon left behind, decodes beside the
+	// refused row above.
+	row := OutboxRow{ID: 67, Kind: OutboxKindClaimRelease, Issue: "LEGION-208", Payload: json.RawMessage(`{"session":"ses-1"}`)}
+	if got, err := DecodeOutboxPayload(row); err != nil || got != (ClaimRelease{Session: "ses-1"}) {
+		t.Fatalf("a claim release naming its session decodes as %#v, %v; want %#v", got, err, ClaimRelease{Session: "ses-1"})
 	}
 }
 
@@ -1092,6 +1120,48 @@ func TestAParkedDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
 		row, err := NewOutboxRow("LEGION-1", payload, now)
 		if err != nil {
 			t.Fatalf("NewOutboxRow(%#v): %v", payload, err)
+		}
+		got, err := DecodeOutboxPayload(row)
+		if err != nil || !reflect.DeepEqual(got, payload) {
+			t.Fatalf("decoded %#v, %v; want %#v", got, err, payload)
+		}
+	}
+}
+
+// A person's review of a design document travels as Dispatch recorded it, its mark and the
+// document reviewed, on the notices that carry one: the design-approved and
+// design-changes-requested notices that report it, the basis-changes-requested notice that reports
+// a changes request on an ancestor's document, which the outbox asks again as it asks a
+// design-changes-requested one (ChangesRequest), and the parked-decision controller notice that
+// relays either spec decision as the notice did, whose publish asks again whether the review stands
+// when it relays a changes request. Every other kind is refused them
+// (TestNewOutboxRowRefusesInvalidPayloads).
+func TestAReviewsMarkAndDocumentTravelOnTheNoticesOfAReview(t *testing.T) {
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	review := EventMark{Seq: 8, At: now.Add(-time.Hour)}
+	spec, reason, document := "dispatch://LEGION-1/spec", "name the rollback path", "artifact-1"
+	for _, payload := range []OutboxPayload{
+		Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: spec, Review: review,
+			Artifact: document},
+		Notice{Kind: "design-changes-requested", Version: 3, Reason: reason, Actor: "user:alice",
+			Ref: spec, Review: review, Artifact: document},
+		Notice{Kind: "basis-changes-requested", Role: claim.RoleArchitect, Version: 3, Reason: reason,
+			Actor: "user:alice", Ref: spec, Review: review, Artifact: document},
+		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionDesignChangesRequested,
+			Root: "LEGION-1", Ref: spec, Actor: "user:alice", Version: 3, Reason: reason,
+			Review: review, Artifact: document},
+		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionDesignApproved,
+			Root: "LEGION-1", Ref: spec, Actor: "user:alice", Version: 3, Review: review,
+			Artifact: document},
+	} {
+		row, err := NewOutboxRow("LEGION-1", payload, now)
+		if err != nil {
+			t.Fatalf("NewOutboxRow(%#v): %v", payload, err)
+		}
+		encoded := string(row.Payload)
+		if !strings.Contains(encoded, `"artifact":"artifact-1"`) ||
+			!strings.Contains(encoded, `"review":`) {
+			t.Fatalf("payload %s, want the review's mark and document in it", row.Payload)
 		}
 		got, err := DecodeOutboxPayload(row)
 		if err != nil || !reflect.DeepEqual(got, payload) {
@@ -1347,7 +1417,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "child-not-recorded", Role: claim.RoleArchitect, Reason: "LEGION-209 was not recorded under your tree: the review App is not installed on acme/gadgets; the daemon said so on the issue. Set a repository both Legion Apps are installed on, spelled as GitHub spells it (dispatch issue-update --repo owner/name), then release it again."},
 		{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: paced, PacedFrom: answered,
 			Reason: "the tree of LEGION-208 at generation 3 as the daemon records it now; start or resume it as your role says",
-			CatchUp: &CatchUp{Generation: 3, Launch: 2,
+			CatchUp: &CatchUp{Generation: 3, Launch: 2, CatchUpTree: CatchUpTree{
 				// The spec step on a person's approval, and two steps on an ancestor's basis, one
 				// open on its approval and one waiting on its request (dispatch://INFRA-3320, R2).
 				Gates: []CatchUpGate{
@@ -1357,7 +1427,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 					{Step: DesignStepDecisions, Gated: true, Artifact: "artifact-208-decisions", Version: 1, Pending: true,
 						Basis: &CatchUpBasis{Issue: "LEGION-100", Artifact: "artifact-100-decisions", Version: 2, Ask: "ask-100"}},
 				},
-				Issues: []CatchUpIssue{{Key: "LEGION-208", Title: "The outbox's notices", Phase: phase.Implementing, Status: "in_progress"}}}},
+				Issues: []CatchUpIssue{{Key: "LEGION-208", Title: "The outbox's notices", Phase: phase.Implementing, Status: "in_progress"}}}}},
 		{Kind: "checks-red", Role: claim.RoleArchitect, Phase: phase.Testing, Reason: "CI is red at head: pytest"},
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},

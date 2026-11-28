@@ -5,7 +5,7 @@
 // draw and what today's model holds are recorded in `issue-layout-seed.ts`'s doc comment.
 
 import type { Actor } from "../web/src/api/types";
-import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
+import { checkStanding } from "../web/src/features/issue-page/statement-rules";
 import { setInterests, setLiveSessions } from "./agents";
 import {
   answerAsk,
@@ -101,7 +101,7 @@ function wantedState(state: SeededCheckState, repositoryInstalled: boolean): str
 
 /** Waits until every check of the issue reads the state its seeding implies, so a fixture that
  *  came out in four states fails here and not inside the test that reads the fifth. The state is
- *  read with the page's own rule (`checkStanding` in `web/src/features/issue-page/tree-drafts.ts`), so
+ *  read with the page's own rule (`checkStanding` in `web/src/features/issue-page/statement-rules.ts`), so
  *  the seed waits for what the page draws and never for a copy of that rule that has fallen
  *  behind it. With `only`, it waits for the checks seeded in that one state alone. */
 export async function awaitSeededCheckStates(

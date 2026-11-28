@@ -12,6 +12,7 @@ function machineRecord(decided: RecordResponse["decided"] = null): RecordRespons
   return {
     approver: "sami",
     decided,
+    dispatch_scopes: null,
     enrollment: null,
     expires_at: "2026-09-27T01:00:00Z",
     identifiers: ["worker-7.example.com"],

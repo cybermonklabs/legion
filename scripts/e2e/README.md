@@ -480,6 +480,15 @@ Each item below names a script, then what it proves.
   with Dispatch stopped the write fails and the completion is refused `DISPATCH_READ_FAILED`, and once it is back both land and the issue's handoff list holds the record.
   No GitHub, no cluster
 
+- `left-session-claims.sh`
+
+  the daemon releases the Dispatch claim of a session it has left behind, a move out of the workflow releases the claim of its tree's session, and a release that leaves a claim says why in the issue's record (dispatch://INFRA-3144's `c-live-proof`), driven against the real Dispatch server and the real Envoy listener this checkout builds, on a database of its own with its events and the listener on a `nats-server` of the run's own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names, through the real `dispatch` CLI:
+  after the controller's `fresh_session`, an architect session the listener has dropped loses its claim of the root to an `issue.released` under the daemon's own session;
+  a move to `backlog` releases the claim of the tree's session the same way, and the issue's record names no `claimLeft`;
+  a move to `backlog` leaves a person's claim, and the record names `claimLeft` with holder `user:smoke` and reason `person`, which the record route serves no caller below the `claim-left` contract entry.
+  Run with `--base-commit <rev>` from a full checkout, it is the change's negative control.
+  No GitHub, no cluster
+
 - `register-gate-basis.sh`
 
   a root architect's own `legion` tool makes the registration that opens its design-gate step on an ancestor's approval (dispatch://INFRA-3320's k8, R1), driven against the real Dispatch server this checkout builds, on a database of its own with its events on a `nats-server` of the run's own, and the daemon in the driver's process reading them, over a PostgreSQL the caller names, through `packages/pi-legion`'s tool under bun with the plugin's own daemon client and envoy-client's `DispatchClient`:
@@ -1249,7 +1258,7 @@ The checks:
 - `stop-hook-reminds-the-open-phase`: told to answer in one line of prose and call nothing, the implementer ends a turn with `implementing` still open, so the pane's `legion` MCP server answers Claude Code's `Stop` hook with `{"decision":"block","reason":…}` (`legion_phase_hook`, the hook entries of `packages/claude-envoy/legion/hooks/hooks.json`, the endpoint `packages/claude-envoy/src/legion-phase-hook.ts`).
   The transcript holds that reason as one `Stop
   hook feedback` user turn carrying the reminder's own wording
-  — "Your turn ended with your Legion phase still open", a fragment of `REMINDER` in `packages/pi-shared/src/phase-stall.ts`, so a later rewording of the rest of that paragraph does not break the proof silently
+  — "This reminder repeats at the end of every turn", a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry, so a later rewording of the rest of either text does not break the proof silently
   — and an assistant turn follows that feedback, so the block carried the turn on in the same session rather than ending it.
   The run moves no `LEGION_STALL_*` number:
   this first reminder of a run is the hook's own answer as the turn settles, not a timer's, and the instruction before it resets the run of reminders, so no wait here rides on those four delays.
@@ -1386,11 +1395,12 @@ The checks, in order, which is the tmux proof's:
   and the `--mcp-config` it names is a file of this generation's private directory, which the launcher wrote there.
 
 - `stop-hook-reminds-the-open-phase`: while the implementer still holds its phase
-  — open since the daemon's start task, an assignment (`packages/claude-envoy/src/legion-phase-hook.ts`), and not yet completed
+  — open in the daemon's record since its start task, and not yet completed
   — it is told to answer in one line of prose, to call nothing and to begin no line with WAITING, so it ends a turn with that phase open and the pod's `legion` MCP server answers Claude Code's `Stop` hook with `{"decision":"block","reason":…}`.
-  The instruction is an Envoy delivery, which puts an open phase's run of reminders back at zero but never reopens a closed one (the `inbound-event` case of `packages/pi-shared/src/phase-stall.ts`):
-  that is why this check runs before `claude-implementer-handoff` closes the phase, never after.
-  The transcript holds the block's reason as one `Stop hook feedback` user turn carrying the reminder's own wording, "Your turn ended with your Legion phase still open" (a fragment of `REMINDER` in `packages/pi-shared/src/phase-stall.ts`, so a later rewording of the rest of that paragraph does not break the proof silently), and an assistant turn follows that feedback, so the block carried the turn on in the same session.
+  The instruction is an Envoy delivery, which puts the run of reminders back at zero (the `inbound` case of `packages/pi-shared/src/phase-stall.ts`).
+  Once the daemon has the phase's completion, it answers that the claim owes nothing and no reminder comes:
+  that is why this check runs before `claude-implementer-handoff` completes the phase, never after.
+  The transcript holds the block's reason as one `Stop hook feedback` user turn carrying the reminder's own wording, "This reminder repeats at the end of every turn" (a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry, so a later rewording of the rest of either text does not break the proof silently), and an assistant turn follows that feedback, so the block carried the turn on in the same session.
   The run moves no `LEGION_STALL_*` number.
 
 - `claude-implementer-handoff`: told through Dispatch to make the spec's one-file change, push it, write its handoff with `dispatch handoff-write` and call the `legion` tool's `handoff_complete`, it does:
@@ -1689,7 +1699,7 @@ No key exists on the devbox; the release is written to no file and appears in no
 the script copies `testdata/previouslayout/live_app_test.go.txt` over that commit's `live_app_test.go` before it builds it, so it mints from the same `LEGION_E2E_IMPLEMENT_APP_TOKEN_COMMAND`, which its environment carries on.
 
 The `plugins` step packs this checkout's own `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` for `stale-plugin-install`'s own Resume through `lib/pack-plugin.sh`, as every proof that installs a branch-built plugin does:
-it rewrites each package's `omp.extensions` to its built `dist` bundle exactly as the release workflow does before publishing (`scripts/pi-plugin-prepack.sh` packs no other manifest), runs `bun pm pack` with the prepack's build report on stderr, restores the committed manifest on every exit of its own, and prints the tarball's path alone (the checkout needs `bun install --frozen-lockfile` first, since the bundle resolves `@legion/*` through the root's `node_modules`).
+it points a staged copy of each package's manifest at its built `dist` bundle exactly as the release workflow does before publishing (`scripts/pi-plugin-prepack.sh` packs no other manifest), runs `bun pm pack` in that copy with the prepack's build report on stderr, writes nothing in the checkout, and prints the tarball's path alone (the checkout needs `bun install --frozen-lockfile` first, since the bundle resolves `@legion/*` through the root's `node_modules`).
 That checkpoint's negative control packs nothing of its own:
 it names the published `@sjawhar/pi-legion@9.6.1` by exact version, which the daemon-rendered install script resolves to `@sjawhar/pi-legion@9.6.1` for `bun add` and bun fetches from the registry inside the pod.
 
@@ -2564,13 +2574,9 @@ set all four to distinct values and two runs proceed at once, on the same devbox
   once the daemon answers `/healthz`, both ports must be held by that daemon's process, or the boot fails naming the holder.
   A `/healthz` answer alone could come from another daemon on the same address.
 
-**Two lanes need separate checkouts, not just distinct identities above.**
-The controller checkpoint packs both of this checkout's plugins, `@sjawhar/pi-envoy` (`packages/pi-envoy`) and `@sjawhar/pi-legion` (`packages/pi-legion`) ([`lib/pack-plugin.sh`](#libpack-pluginsh)), each rewriting its own `package.json` in place for the few seconds its pack takes, under its own flock on that one file:
-pi-envoy's pack and pi-legion's pack take separate locks, each serializing two lanes' packs of that one plugin against each other (whichever holds it waits its turn, as `release.yaml` and every other branch-built install already rely on);
-neither protects a lane's own [`lib/built-from.sh`](#libbuilt-fromsh)
-— called in `prerequisites` and again before the build — whose `jj diff`/`jj log` read the shared working copy directly, with no lock of their own.
-A second lane's pack landing mid-read reads as this lane's own tree having changed, failing `prerequisites` or the build's own revision check for a reason that has nothing to do with the change under test.
-Run concurrent lanes from separate checkouts (`jj workspace add`, or separate clones) of the same commit.
+**The plugin packs do not need separate checkouts.**
+The controller checkpoint packs both of this checkout's plugins, `@sjawhar/pi-envoy` (`packages/pi-envoy`) and `@sjawhar/pi-legion` (`packages/pi-legion`), through [`lib/pack-plugin.sh`](#libpack-pluginsh), which packs a staged copy of each package and writes nothing in the checkout.
+So a second lane's pack cannot change what a lane's own [`lib/built-from.sh`](#libbuilt-fromsh) reads with `jj diff`/`jj log` in `prerequisites` and again before the build.
 
 **Two lanes can race for the cluster's capacity, and that is a finding, not a bug to fix here.**
 `preflight` reads the room on the nodes the run's pods may use (`run_pod_room`) before either lane has placed a pod, and refuses, BLOCKED, only where admission refuses the run's pods: it counts no NodePool's limits and runs on a cluster with no node for those pods now, so it never refuses for want of room for `run_pods_at_once` pods (4, the cap:
@@ -2754,7 +2760,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   Tree 3 is then set todo, and the state reads the cap full of the four issues the daemon has started — tree 1's root, both its children and tree 2's root — with tree 3 alone in `admission.waiting`: a slot is one issue the daemon has started, so one tree's children fill a cap beside another tree's root.
   Tree 1's planner is then told to plan.
   Tree 2's planner has held for the driver: a tree 2 that left planning before the driver sent it anything fails here by name.
-  The proof's instructions tell every phase worker that the daemon's task line (`Continue <title>. Issue: <key>. Phase: <phase>.`) is not the driver's instruction.
+  The proof's instructions tell every phase worker that the daemon's task line (its `Working copy:` line, on a line of its own, then `Continue <title>. Issue: <key>. Phase: <phase>.` on the next line) is not the driver's instruction.
   The memory hog, the pod watch's negative control, runs on the root's node and is OOMKilled by its own 64Mi limit
 
 - `child-release`
@@ -2909,7 +2915,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `completion-closed`
 
   each phase worker of tree 1 — planner, implementer, tester, reviewer
-  — stays live once its phase ends: it goes idle on the session and in the pod (by uid) it first registered with, and its live session answers every `handoff_complete` call of the legion tool, holds one success for each assignment it completed, and records the phase stall `closed` after that call, with no phase reminder after its last success:
+  — stays live once its phase ends: it goes idle on the session and in the pod (by uid) it first registered with, and its live session answers every `handoff_complete` call of the legion tool, holds one success for each assignment it completed, and holds no phase reminder after that success and before the next assignment, nor after its last success:
   the 4b.13b acceptance's stall check (`stage3-4b13b-acceptance.sh`'s `phase-stall-follow-up`), which a stop inside the call fails (LEGION-283).
   The sessions and each verdict are kept as `completion-<role>.jsonl` and `completion-<role>-verdict.json`.
   Its control: the planner's session cut at its `handoff_complete` call, the transcript such a stop leaves, is refused
@@ -3887,7 +3893,7 @@ those are matched as the complete literal sentence, with the run's own repositor
 Dispatch takes a bearer session's actor id from the request body, so that id is the message's claimed author:
 whoever holds the project's Dispatch bearer can post the same text.
 Such a note shows what Dispatch holds, never who posted it.
-Two such sentences are quoted below with their file:line.
+Two such sentences are quoted below, each with the symbols of the source that writes it.
 
 ```sh
 export LEGION_E2E_REPO_T=<owner>/<toolchain repo> LEGION_E2E_REPO_C=<owner>/<consumer repo>
@@ -4008,7 +4014,7 @@ Each item below names an observation, then what it judges; an item that names no
 - `negative no-repo <KEY>`
 
   `.issues | has(<KEY>)` is `false` (refusing outright, never vacuously passing, when `.issues` is not even an object), Dispatch's own `.resolved_repo` is still `null`, and the **latest** repository note among the messages claiming the daemon's actor (`{kind:"session", id:"legion-daemon:<PROJECT>"}`) is the exact no-repository admission refusal, word for word, with the daemon's outbox marker
-  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project <PROJECT>, in Dispatch, and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:119-120`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
+  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project <PROJECT>, in Dispatch, and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`RefuseRecording` in `packages/daemon/internal/workflow/repository.go`, and `messageSeparator`, `messageMarkerOpen` and `messageMarkerClose` in `packages/daemon/internal/record/outbox.go`).
   Dispatch takes a bearer session's actor id from the request body (`packages/envoy/internal/dispatch/api/server.go`, `bearerSessionActor`), so the note shows what Dispatch holds, never who posted it;
   what shows the daemon declined the issue is its own state read.
   A message its author deleted reads with `deleted_at` set and no body (dispatch://INFRA-1523), and is no note ([`lib/multi-repo-none-note.jq`](lib/multi-repo-none-note.jq), tested by `bun test scripts/e2e/lib`).
@@ -4016,12 +4022,17 @@ Each item below names an observation, then what it judges; an item that names no
 - `negative repo-edit before|after <run id>? <child>`
 
   a two-call baseline protocol (the paragraph after this list).
+  Its precondition: `LEGION_E2E_REPO_X` is a repository Legion does not serve for the project, because a GitHub App is not installed on it.
+  When both Apps are installed on X, the daemon moves the record onto X, and the control fails.
   `before` captures the daemon's recorded repository and refuses outright if Dispatch already resolves the issue to X.
   `after` requires: the daemon's record unchanged;
   Dispatch's own `.repo` for the issue now reading X;
   an `issue.updated` event whose `.seq` is above the baseline's own last-seen `.seq` with `.payload.repo` equal to X (Dispatch's own sequence cursor, never a wall-clock comparison, and never merely "any `issue.updated`", which the daemon's own routine status writes also emit);
-  and the daemon's exact kept-repository message, word for word, with its claimed actor id and outbox marker (as for `negative no-repo`), built from Dispatch's own resolved spelling of X (`dispatch_repo_now`, read back from the API) rather than the operator's `LEGION_E2E_REPO_X` spelling, since the daemon's real message echoes whatever case Dispatch itself stored
-  — `"Legion keeps <repo> as this issue's repository; the change to <X> in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for <X> instead."` (`packages/daemon/internal/workflow/repository.go:94`).
+  and the daemon's kept-repository message, with its claimed actor id and outbox marker (as for `negative no-repo`) (`noteRepositoryChangeWaits` in `packages/daemon/internal/workflow/repository.go`).
+  The message names why X is not served and what a person can do, and ends with when Legion moves the issue itself, so the check matches word for word the opening every variant shares, `"Legion did not move this issue off <repo>: "`, with the baseline's own spelling of the kept repository, and the closing sentence just before the outbox marker.
+  The closing is `"Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on <X>."`, whose `<X>` is Dispatch's spelling and is compared with `LEGION_E2E_REPO_X` case-insensitively.
+  Since dispatch://INFRA-4401 (#4493) the daemon reads no repository mapping, so a mapped X is told that closing too, and a message with another closing, the one a mapped X was told before (`"Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."`) among them, fails the check.
+  The check accepts each refusal the daemon writes between them: `the <role> App is not installed on <X>.` or `the implement and review Apps are not installed on <X>.`, then `Install it on <X>, or set another repository (…).`.
   A message its author deleted is no note ([`lib/multi-repo-kept-note.jq`](lib/multi-repo-kept-note.jq), tested by `bun test scripts/e2e/lib`).
 
 **The two-call baseline protocol** (`negative pr-in-x`, `negative repo-edit`):
@@ -4962,7 +4973,7 @@ Each pane's Oh My Pi overlay sets `retry.enabled: false`, so the host walks no c
 | step | driven by | read back as |
 | :--- | :--- | :--- |
 | `step1-a-529-keeps-the-task-and-walks-the-30-60-120-ladder` | nothing: the task the planner's claim has held since the daemon booted, whose stand-in answers 529 | the daemon's own first send of it, read off the delivery's read mark, then its five re-sends of that same task to that same session, each at its own armed wait (30 s, 60 s and 120 s of wall clock, then the two driven ones), the claim neither failed nor empty-handed, the issue not held, and the stand-in asked once per send for a request carrying the task itself |
-| `step2-the-sixth-turn-in-a-row-tells-the-controller` | nothing: the sixth turn of that run | exactly one `provider-errors` notice on the project's controller topic, naming the run of six turns, with the issue still in its phase — the notice ends no run, and no attempt limit holds the issue |
+| `step2-the-sixth-turn-in-a-row-tells-the-controller` | nothing: the sixth turn of that run | exactly one `provider-errors` notice on the project's controller's role topic (`notifications.role.legion-<project>-controller`), naming the run of six turns, with the issue still in its phase — the notice ends no run, and no attempt limit holds the issue |
 | `step3-a-content-filter-carries-no-status-and-the-task-goes-again` | one task delivered to the implementer once it has answered the warm-up task its seed left pending, with its stand-in then armed to end every turn with a content filter | the turn reported with no HTTP status at all, the task sent again after 30 s, the claim still holding it, the issue still `implementing` and its architect told nothing |
 | `step4-an-error-that-cannot-clear-fails-the-claim-and-holds-the-issue` | one task delivered to the tester once it has answered its own warm-up task, with its stand-in then armed to answer 400 | the turn reported with status 400, the claim failed and the issue held for its architect |
 | `step5-the-operator-stops-retries-and-reads-the-claims` | `legion claims stop`, then `legion claims retry --fresh-session`, then `legion claims list`, and the same retry of the claim step 4 failed, each the built `legion` against that daemon | the stopped planner retired, its retry running in a session that is not the one it recorded, the task its ladder kept sent to that fresh session, and the failed tester's claim running again |
@@ -5021,7 +5032,7 @@ Step 1 reads both back out of the pane's own Oh My Pi under the pane's own overl
 | :--- | :--- | :--- |
 | `step1-the-panes-run-the-deployments-overlays-and-a-short-session-can-be-compacted` | `omp config get` and `omp models --json` under a pane's own home, profile and `PI_CONFIG_FILES` | `compaction.keepRecentTokens` the operator overlay's 1, and the claim's one model among the models the pane's Oh My Pi serves |
 | `step2-the-operator-compacts-a-phase-worker-the-ladder-holds` | `legion claims compact --claim <token>`, the built binary against that daemon, at an idle planner a 529 left on the ladder's first rung | `compacted; whatever task the claim owed has gone again`; the daemon's own line that the operator asked; the claim in the session and the transcript it had; that transcript's compaction entry a text document of method `handoff`; and the owed task's next turn after the compaction ended, once by the daemon's count of the turns it ran, with the ladder's wait having sent nothing in between |
-| `step3-the-controller-compacts-and-the-run-of-errors-is-told-a-second-time` | six refused turns at the implementer, then `POST /legion/v1/claims/compact` with a controller grant naming the issue and the role, then six more | one `provider-errors` notice on the project's controller topic, the daemon's own line that the controller asked, the run of provider-error turns back to zero with the owed task sent again, and a second notice after the six that follow — which only a compaction that ran allows |
+| `step3-the-controller-compacts-and-the-run-of-errors-is-told-a-second-time` | six refused turns at the implementer, then `POST /legion/v1/claims/compact` with a controller grant naming the issue and the role, then six more | one `provider-errors` notice on the project's controller's role topic (`notifications.role.legion-<project>-controller`), the daemon's own line that the controller asked, the run of provider-error turns back to zero with the owed task sent again, and a second notice after the six that follow — which only a compaction that ran allows |
 | `step4-a-root-architect-that-owes-no-task-is-sent-nothing-and-says-already-compacted` | the operator's compaction of an idle root architect, then the controller's of the same session | the first compacted and the architect still owing nothing and running no turn for three seconds after either; the second answered 200 with `compacted: false` and Oh My Pi's own `Nothing to hand off (already compacted)` |
 | `step5-a-held-summary-outlasts-the-rpc-timeout-and-refuses-a-fresh-session` | `legion claims compact` at a tester whose stand-in holds every handoff answer for 35 s | the caller's real answer after about 35 s, past `worker_rpc_timeout_seconds` and past 30 s; a `fresh_session` asked for during it refused `CLAIM_IN_A_TURN` through both doors and a second compaction refused in its own words; the ladder's own 30 s rung come due inside the compaction having sent nothing; and the owed task gone at the compaction's end, once |
 | `step6-every-refusal-gets-its-own-message-through-both-doors` | a handoff the endpoint refuses every time, a worker in a turn, a role `worker_backends` runs on Claude Code, role `controller`, and a suspended, a stopped and a failed worker | the refused handoff reported 200 `compacted: false` with Oh My Pi's own `Handoff generation failed`, the owed task sent again and no run reset; and `CLAIM_IN_A_TURN`, `CLAIM_NOT_ON_OMP`, `INVALID_ROLE` and `CLAIM_NOT_RUNNING` each word for word through both doors |
@@ -5335,6 +5346,59 @@ the Apps' tokens are placeholders; Envoy's listener is the package's `noticeList
 and no agent runs: each claim is launched by the package's fake runtime, which provisions its own workspace.
 The issues, pull requests, slots and the claims the boot relaunches are seeded through the store, as every daemon test seeds its fixture.
 `HANDOFF_RECORDS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## left-session-claims.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/left-session-claims.sh     # → "left session claims e2e: PASS in <n>s", exit 0
+LEGION_TEST_PG_DSN=… \
+  bash scripts/e2e/left-session-claims.sh --base-commit <rev>     # → "left session claims negative control: PASS in <n>s", exit 0
+```
+
+dispatch://INFRA-3144's check `c-live-proof` (its R1, R2 and R5): the daemon releases the Dispatch claim of a session it has left behind, a move out of the workflow releases the claim of its tree's session, and a release that leaves a claim on purpose says why in the issue's record.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)), and `tar` for the negative control — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required and means what it means for [`handoff-records.sh`](#handoff-recordssh): the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`, and its host must be loopback.
+The script starts no database, and the broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh).
+Most of a run is building Dispatch, the listener and the driver.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules` (`require_dispatch_cli`), and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch and the listener from and runs the CLI out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestLeftSessionClaimsLive` (`internal/daemon/left_session_claims_live_test.go`, `-tags e2e`) |
+| `proof` | the three steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>`, or `FAIL <name> at <assertion>` |
+
+The rig is the person-handover proofs' (`internal/daemon/person_handover_scratch_dispatch_test.go`), as [`register-gate-basis.sh`](#register-gate-basissh) runs it, with `newPersonHandoverRigOn` at the script's broker and checkout:
+the real Dispatch server `packages/envoy` builds, with the agent token the daemon's `dispatch_token_file` carries, the trusted identity header a person's act goes through, its events on the broker and a database of its own;
+and the daemon in the driver's process, booted through `run` with `dispatch_url` at that server, reading those events, on a database of its own, with a cap of three and the design gate off, so a root's architect's own registration of its design opens its tree and starts its planning.
+Dispatch judges a session's claim by that session's record in the Envoy registry, which it reads from the listener by id, and refuses to judge one whose listener does not answer (`claimBlockedBy` and `fetchHolderLiveness` in `packages/envoy/internal/dispatch/api/issue_claim.go`).
+So the driver starts the Envoy listener `packages/envoy` builds on the same broker first (`startSessionsListener`, as [`approved-version-news.sh`](#approved-version-newssh)'s part two starts it), and starts Dispatch with `ENVOY_URL` at it.
+A session comes up as a pane's plugins bring it up: registered with the daemon (`POST /legion/v1/claims/register`) under a session the step names, then with the listener (`POST /v1/interests/subscribe`, asking for its own consumer), which then reads it `live`.
+Its process ends with that registration: `DELETE /v1/sessions/<id>`, which a plugin sends at its stop and the daemon's clean stop sends for a role whose process it found gone, after which `GET /v1/registry/<id>?include=unresponsive`, the read Dispatch makes, answers 404, and Dispatch reads the session gone.
+Each claim of a session is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts`) run as that session, as [`handoff-records.sh`](#handoff-recordssh) runs it;
+a person's claim and each move are Dispatch's own routes under the trusted identity header, the person `smoke`;
+the controller's `fresh_session` is `POST /legion/v1/claims/fresh-session` under a controller grant minted with the operator's bearer.
+Each step runs as a subtest of its own, so a step that fails ends there, printing the assertion it failed at, and the next one runs.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `a-fresh-session-releases-the-left-session` | a session creates a root with the `legion` label, the person sets it todo, the daemon admits it and launches its architect, which comes up as session S1 and registers the root's primary document, so the root plans; S1 claims the root with `dispatch claim`; S1's registration on the listener ends; the controller's `fresh_session` on the root's architect; the daemon launches it again and it comes up as session S2, which claims nothing | the claim records S2; Dispatch's events of the root hold an `issue.released` whose actor is the daemon's own session `legion-daemon:<PROJECT>` and whose previous claim is S1's (`released`), waited for two minutes at most; `dispatch read --issue <root>` prints `Claimed by: nobody` (`claimed-by-nobody`) |
+| `a-move-releases-its-trees-claim` | a second root brought to planning the same way, its architect on session S3, which claims it; S3's registration ends; the person moves the root to `backlog` and leaves it there, and the daemon records it out of the workflow | the same `issue.released`, by the daemon's session of S3's claim (`released`); `Claimed by: nobody` (`claimed-by-nobody`); `GET /legion/v1/issues/<key>/record` names no `claimLeft` (`no-claim-left`); Dispatch still shows the root in `backlog` (`left-in-backlog`) |
+| `a-persons-claim-stays-with-its-reason` | a third root brought to planning the same way; the person claims it (`POST /api/v1/issues/<key>/claim`) and moves it to `backlog` | the record names `claimLeft` with holder `user:smoke`, reason `person` and an `at` between the move and the read, read as plain JSON, as a role's `read_record` hands it on (`claim-left`), waited for two minutes at most; for three seconds after that Dispatch shows the person's claim, its events hold no `issue.released`, and `dispatch read` prints `Claimed by: smoke since <at>` (`claim-stays`); stating `Legion-Plugin-Contract` at the number this build gives the `claim-left` entry, read at run time from `api.NumberedEntries` as `legion version --contracts` prints it, the record names `claimLeft` (`served-at-the-entry`), and stating the number just below it, it names none (`none-below-the-entry`) |
+
+What the proof stands in for lies outside the release:
+GitHub is one REST stand-in (`blockersGitHub`), the Apps' tokens are placeholders, and the package's fake runtime launches every claim, so no agent runs.
+The daemon's own Envoy address is the rig's default, not the run's listener, so its notices and clean stops are no part of what Dispatch reads here.
+
+`--base-commit <rev>` is the change's negative control, run by hand from a full checkout: it takes `<rev>` from this repository's own history, which a shallow CI checkout carries none of, so `e2e.yaml`'s hosted job runs the proof without it.
+It takes the tree of that commit with `git archive` into a directory of the run's own under `TMPDIR`, lays this checkout's driver file over it, gives it node_modules of its own with `bun install --frozen-lockfile`, and makes the same four checks there in a subshell whose root is that tree, so the daemon, the driver, Dispatch, the listener and the CLI are the base's.
+The driver names no Go symbol the base lacks: it reads `claimLeft` from the record route as plain JSON and the `claim-left` entry's number at run time, so it builds over the base.
+That run must fail, and the script's `negative-control` check reads its `proof.log` for `a-fresh-session-releases-the-left-session` failing at `released` and `a-persons-claim-stays-with-its-reason` at `claim-left`, and prints what `a-move-releases-its-trees-claim` did there as it came.
+An empty `<rev>` is refused with exit 2; the DSN is read with the same loopback guard before the tree is taken, and a refusal of the base run (exit 2) is the script's own exit 2; and a `proof.log` an earlier run left in the evidence directory is removed before the base run, so only that run's steps are read.
+`LEFT_SESSION_CLAIMS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own (`daemon.log`, its JSON log at debug), Dispatch's (`dispatch.log`), the listener's (`listener.log`) and the driver's output, and with `--base-commit` the base run's and the negative control's own transcript.
 
 ## register-gate-basis.sh
 
@@ -6157,7 +6221,7 @@ Each attempt of a run stages its own world and reads one row off it:
 | `<arm>-<n> try <k> seed` | the staged issue through [`packages/dispatch/e2e/api.ts`](../../packages/dispatch/e2e/api.ts): a spec, a `plan.md` of one task or two, as `--tasks` says, at eight versions carrying the first three designs above, six `plan` handoff records (the first citing plan.md version 1, the sixth version 8), the plan review's approvals of version 1 and version 6, and the session's own task line, which the seed writes from its own constants and its own list of the staged tasks — an edit of `plan.md` the server answers `503 DOC_SERVICE_UNAVAILABLE`, which its document service does between states, is made again, up to five times and a second apart, and that retry matches the status and the code together, so another status whose body quotes the code stands at its first answer |
 | `<arm>-<n> try <k> prompt` | the arm's prompt, composed as above |
 | `<arm>-<n> try <k> dispatch-cli` | the real `dispatch` CLI reads the staged plan from the session's own environment before the session relies on it: `dispatch read --issue <key> --artifact plan-md` must print `Versions: 8` and an `Approval: approved v6 by …` line |
-| `<arm>-<n> try <k> task` | the task line the seed wrote, printed, whose `Handoff:` sentence is byte for byte the shape the daemon renders (`task`, [`packages/daemon/internal/workflow/effects.go`](../../packages/daemon/internal/workflow/effects.go)), and which names one file for each task the staged plan holds, one more for the `implement` handoff body, no plan version other than that line's, and nowhere says the plan can have moved |
+| `<arm>-<n> try <k> task` | the task line the seed wrote, printed, whose `Handoff:` sentence is the one the daemon renders (`task`, [`packages/daemon/internal/workflow/effects.go`](../../packages/daemon/internal/workflow/effects.go)), read from the daemon's copy of it ([`packages/daemon/internal/workflow/handoff_line_extract.txt`](../../packages/daemon/internal/workflow/handoff_line_extract.txt), which `TestTheHandoffLineExtractIsTheSentenceTheTaskWrites` holds to what `task` writes): the accepted version's command beside the command that reads the `plan` record's newest version and the sentence that a newer version is its writer's correction, and which names one file for each task the staged plan holds, one more for the `implement` handoff body, no plan version other than that line's, and nowhere says the plan document `plan.md` can have moved |
 | `<arm>-<n> try <k> session` | one real headless session, `omp -p --session-dir`, started as a process of the script's own and bounded by `timeout`, so an interrupt stops it at once and the teardown stops its whole tree, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `GH_*`, `GITHUB_*`, `PG*`, `OMP_SESSION_*`, `PI_SESSION_*` and `PI_TOOL_CALL_ID` variable of the caller's shell unset, `OMP_SESSION_STORAGE=file` (which is what writes the transcript), `GH_CONFIG_DIR` an empty directory of the run's own, so the session's own `gh` reads no login of the operator's, the staged server as its Dispatch beside an Envoy address nothing listens on, and the watcher beside it writing plan.md version 9 — the last design change, with the plan review's approval of it when `--mid-approval` is `approved` — the moment the session's first read of the plan's text reaches a transcript, or at its bound when no such read does |
 | `<arm>-<n> try <k> row` | the attempt's row, from every transcript under the session directory, the session's own and each subagent's, and from the file of each task the session wrote |
 | `<arm>-<n> try <k> teardown` | that attempt's Dispatch stopped and its database dropped, before the next attempt or the next arm starts |
@@ -6419,7 +6483,7 @@ Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 ref
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Thirteen call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Fourteen call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
 Seven are proofs of their own:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
 The eighth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
@@ -6435,6 +6499,7 @@ The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative
 The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds or extracts anything, through that same copy.
 The twelfth is the skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, which reads a batch's `SKILL_SCENARIOS_POSTGRES_URL` with `require_loopback_env` in `services_up`, checks there with `run_database_url_env` that a run's connection string can carry it, and gives each run's Dispatch the string `run_database_url` rebuilds, in `own_dispatch`, through the copy [`lib/rig.sh`](#librigsh) sources.
 The thirteenth is `hook-prompt-two-builds.sh`'s `prerequisites` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it takes the base commit's tree, sourcing [`lib/loopback-dsn.sh`](#libloopback-dsnsh) itself.
+The fourteenth is [`left-session-claims.sh`](#left-session-claimssh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it takes the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources, as [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s does.
 `require_loopback_env` takes the variable's name rather than its value and hands the value to `require_loopback_dsn` with the shell's xtrace off, so a run under `bash -x` traces no DSN, where a caller's own line that passed the DSN would trace it.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database, through `run_database_url_env`, which takes the variable's name in the same way.
 They create and drop that database with `psql_env`, which takes the name in the same way too, and hand Dispatch the connection string `run_database_url_env` rebuilt from a subshell that turns xtrace off before it expands that string, so a run of either under `bash -x` traces no part of the DSN.
@@ -6447,7 +6512,7 @@ A caller clears `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` before its first c
 psql reads `PGHOSTADDR`, and `PGSERVICE` with `PGSERVICEFILE` name an entry of `~/.pg_service.conf` that can set `hostaddr`.
 Measured with an exported entry that sets `hostaddr=127.0.0.2`: psql connected to 127.0.0.2, and the helper printed `127.0.0.1` for the same DSN.
 Each of the nine proofs those eight call sites serve drops the three before its first connection: six in the sweep of the environment it does not inherit, the two two-builds proofs through [`lib/two-builds.sh`](#libtwo-buildssh), and `plan-pointer-drive.sh` in an `unset` of its own.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) unsets the three in `prerequisites`, before its own call, and [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh) and [`approved-version-news.sh`](#approved-version-newssh) unset them before their own calls.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) unsets the three in `prerequisites`, before its own call, and [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), [`left-session-claims.sh`](#left-session-claimssh) and [`approved-version-news.sh`](#approved-version-newssh) unset them before their own calls.
 The skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, drops the three in the sweep of the environment it does not inherit, before its own calls in `services_up` and `own_dispatch`.
 
 `loopback-dsn.py NAME WHAT` reads the DSN from the environment variable NAME, never from the command line, so no process list holds its password.
@@ -6490,12 +6555,13 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
 A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing, and a fourth, `psql_env`, runs `psql` on the DSN a variable holds.
-[`lib/rig.sh`](#librigsh) sources this file, which is how eight of the thirteen call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts have it: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth (pi-legion's skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`).
+[`lib/rig.sh`](#librigsh) sources this file, which is how eight of the fourteen call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts have it: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth (pi-legion's skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`).
 The sixth, [`envoy-session-delivery.sh`](#envoy-session-deliverysh), sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
 The ninth, [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), sources it on its own too, and calls `require_loopback_env` in `prerequisites` for each proof that makes its run.
 The tenth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_env` itself once more, for its negative control.
 The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it through that file too, and calls `require_loopback_env` in its own `arguments` check as well, before it builds or extracts anything.
 The thirteenth, `hook-prompt-two-builds.sh`, sources it on its own, and calls `require_loopback_env` in its `prerequisites` check, before it takes the base commit's tree.
+The fourteenth, [`left-session-claims.sh`](#left-session-claimssh), has it through [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), and calls `require_loopback_env` itself once more, for its negative control, as the tenth does.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
@@ -6665,36 +6731,25 @@ any other is refused, since the other workspace packages are not plugins.
 `<out dir>` is created when missing, and refused inside the checkout (jj would snapshot the tarball) or when it already holds a `.tgz`.
 Stdout is exactly one line, the tarball's path; every step's own output goes to stderr.
 
-The steps are the release's, run in the checkout
-— a copy of the package cannot build, because the prepack copies the repository's `skills/` and the bundle resolves `@legion/*` through the root's `node_modules`:
+The steps are the release's, run in a staged copy of the checkout under the run's `mktemp -d` directory, never in the checkout itself:
+a test of this checkout that reads the committed manifest while a pack runs beside it (`bun test --parallel`, where a skill-scenario rig row builds a profile from this checkout) would otherwise read the rewrite, as `packages/pi-legion/src/daemon-api-version.test.ts` did in two merge groups.
 
-1. save the package's `package.json` and arm an `EXIT` trap that copies it back byte-identical (`.github/workflows/release.yaml`'s `pi_envoy_build` and `pi_legion_build` jobs rewrite the manifest in "Point extensions at the packed bundle" and discard their tree, so only this script restores);
+1. stage the package: its own files copied with their modes (the prepack takes group and other write from what it ships), its `node_modules` linked, its `dist/` left out, and every other top-level entry of the checkout and every other package a symlink to the checkout's, so the prepack's `../../scripts`, its `skills/` and the bundle's `@legion/*` imports resolve as they do in the checkout (this script's own need: the checkout is read, never written);
 
-2. rewrite `omp.extensions` to `["dist/<entry>.js"]` with `jq`, where `extensions/<entry>.ts` is the committed manifest's one entry (the same step, and the `jq '.omp.extensions = …'` line of `packages/daemon/docker/worker.Dockerfile`'s plugin `RUN` for that package);
+2. rewrite the staged manifest's `omp.extensions` to `["dist/<entry>.js"]` with `jq`, where `extensions/<entry>.ts` is the committed manifest's one entry, and for `pi-legion` its `legion.daemonApiVersion` to the tree's contract (`scripts/daemon-contract.sh`) (`.github/workflows/release.yaml`'s `pi_envoy_build` and `pi_legion_build` jobs, "Point extensions at the packed bundle", and the `jq '.omp.extensions = …'` line of `packages/daemon/docker/worker.Dockerfile`'s plugin `RUN` for that package);
 
-3. `bun pm pack --destination <out dir>`, whose `prepack` builds `dist/` (the release's "Pack extension" step, `scripts/pi-plugin-prepack.sh`);
-   the bundle inlines `package.json`, so it is built while the manifest names the packed bundle, as the release builds it;
-
-4. copy the saved manifest back and check it byte for byte (this script's own need: the checkout is reused, where the release's build job tree is discarded).
+3. `bun pm pack --destination <out dir>` in the staged copy, whose `prepack` builds the copy's `dist/` (the release's "Pack extension" step, `scripts/pi-plugin-prepack.sh`);
+   the bundle inlines `package.json`, so it is built while the staged manifest names the packed bundle, as the release builds it.
 
 Each step cites its source by what it runs, never by line number: the lines move with every edit above them.
 The release's version bump (its "Set release version" step) is not a step: the tarball carries the checkout's own version.
-The saved manifest is written to the run's `mktemp -d` directory, never beside `package.json`, so an interrupted run strands no `tmp.json` in the checkout.
 
-The manifest is rewritten only for as long as the pack takes.
-The trap copies it back on every other way out
-— a failed step, `SIGHUP`/`SIGINT`/`SIGTERM` (each routed through `exit`) — so a pack that dies halfway never leaves the rewrite for jj to snapshot.
-The script ignores SIGPIPE, so this holds when whoever read its stderr has gone too:
-bash's `Terminated` notice for an interrupted pack would otherwise kill it before the trap ran.
-It keeps the run's status; if the copy back itself fails, it says where the saved bytes are, leaves them there, and exits non-zero.
-Afterwards `jj status` is as it was before the run: `dist/` is gitignored, and nothing else is written inside the checkout.
-
-Runs in one checkout take turns at each package's manifest from the save to the copy back, under a `flock` on the manifest itself (rewritten and restored in place, so the lock's inode lasts the whole window);
-a run that has to wait says so on stderr.
-Without the lock, a run that starts while another has the manifest rewritten saves that rewrite as its "before" and puts it back at its own exit:
-both runs exit 0 and jj snapshots the rewritten `package.json`.
-Two stage proofs in one checkout, or a stage proof and the skill-scenario rig, can pack at the same time, and the lock takes them in turn;
-the two packages' packs never wait on each other.
+The tarball holds the files, modes, manifest, notices and skills an in-place pack makes, and the bundles' code is the same.
+Only bun's source-path comments above each inlined module differ: bun writes them from the stage to the module's real path, so they name the checkout by its absolute path.
+The stage is removed on every way out, `SIGHUP`/`SIGINT`/`SIGTERM` included (each routed through `exit`), and the script ignores SIGPIPE, so this holds when whoever read its stderr has gone too.
+The run's exit status is the pack's own: a stage the script cannot remove leaves a message on stderr and does not change it.
+Nothing is written inside the checkout, so `jj status` is as it was before the run, and two runs in one checkout need no lock.
+`packages/pi-legion/scripts/prepack.test.ts`'s row "packs from a copy" holds the checkout's manifest to its bytes and its change time across a pack.
 
 ## lib/install-plugin-profile.sh
 
@@ -6746,7 +6801,7 @@ Stdout is exactly one line, the installed manifest's path as `HOME=<home> OMP_PR
 for `pi-legion` that is the manifest the daemon's contract gate reads under the same profile (`pluginManifestPath`, `packages/daemon/internal/daemon/bootgate.go`).
 Every step's own output goes to stderr.
 
-The plugin is packed by [`lib/pack-plugin.sh`](#libpack-pluginsh), the release's pack steps run in the checkout, into the run's `mktemp -d` directory (never beside `package.json`, so an interrupted run strands no `.tgz` in the checkout).
+The plugin is packed by [`lib/pack-plugin.sh`](#libpack-pluginsh), the release's pack steps run in a staged copy of the checkout, into the run's `mktemp -d` directory (never beside `package.json`, so an interrupted run strands no `.tgz` in the checkout).
 Then:
 
 1. unpack the tarball into `<dir>` (`worker.Dockerfile`'s `mkdir -p /out/<package>` and `tar xzf ./*.tgz -C /out/<package> --strip-components=1`);
@@ -7244,11 +7299,12 @@ It also drives the script, both parts and `--control`, from a branch merged forw
 
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
-Eight of the thirteen call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts source it too, for [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s two helpers, which this file sources for them: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth, pi-legion's skill-scenario rig.
+Eight of the fourteen call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts source it too, for [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s two helpers, which this file sources for them: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth, pi-legion's skill-scenario rig.
 `envoy-session-delivery.sh` is the sixth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) is the ninth: it sources `lib/loopback-dsn.sh` on its own, and sources no rig.
 `busy-relaunch-delivery.sh` is the tenth and `approved-version-news.sh` the eleventh: each has those helpers through `lib/live-daemon-proof.sh`, which it sources, and sources no rig.
 `hook-prompt-two-builds.sh` is the thirteenth: it sources `lib/loopback-dsn.sh` on its own, and sources no rig.
+`left-session-claims.sh` is the fourteenth: it has those helpers through `lib/live-daemon-proof.sh`, which it sources, and sources no rig.
 
 ```sh
 . "$root/scripts/e2e/lib/rig.sh"     # sourced, never run
@@ -8124,7 +8180,7 @@ all of it) and fails when it cannot read them:
 the tmux proof `tail`s its local file, the sandbox proof runs the same `tail` in the pod's `roles` container (`roles_exec`).
 Every predicate here reads the transcript through it alone.
 The caller also sets `issue` and `stall_offset` (the transcript's size when it told the implementer to stall), and defines `note`; `role_handoff` is `lib/workflow.sh`'s.
-The file sets `stall_reminder_needle`, the opening of `REMINDER` in `packages/pi-shared/src/phase-stall.ts` ("Your turn ended with your Legion phase still open"), which the caller's notes name.
+The file sets `stall_reminder_needle`, a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry ("This reminder repeats at the end of every turn"), which the caller's notes name.
 
 | function | does |
 | :--- | :--- |
@@ -8218,13 +8274,15 @@ The run a whole-daemon live proof makes around its driver.
 Every entry script that sources this file differs from the others only in what its driver proves, so each sets its own values and makes this run.
 [`approved-version-news.sh`](#approved-version-newssh) makes it twice, once for each of its parts, each in a subshell rather than as its last command, since it reads each run's outcome and the driver's output to count the checks and the runs and to judge its negative control.
 `busy-relaunch-delivery.sh --base-commit <rev>` makes it once over a `git archive` of that commit instead, in a subshell whose `root` is that tree, so the run's exit trap is the subshell's and the script goes on to read the run's `proof.log`.
+`left-session-claims.sh --base-commit <rev>` makes it the same way.
 
 ```sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"     # sourced, never run
 live_daemon_proof LABEL SLUG TEST EVIDENCE [TIMEOUT [DRIVER [STAMP]]]    # the script's last command, or a subshell's, as above
 ```
 
-An entry script whose driver runs this checkout's `dispatch` CLI (`handoff-records.sh`, `step-records.sh`, `plan-ratings.sh`) calls `require_dispatch_cli` between the two lines above: it refuses a host with no `bun` on PATH or no `node_modules` at the checkout's root with `FAIL prerequisites: …` and exit 1, before the run builds or starts anything, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
+An entry script whose driver runs this checkout's `dispatch` CLI (`handoff-records.sh`, `left-session-claims.sh`, `step-records.sh`, `plan-ratings.sh`) calls `require_dispatch_cli` between the two lines above: it refuses a host with no `bun` on PATH or no `node_modules` at the checkout's root with `FAIL prerequisites: …` and exit 1, before the run builds or starts anything, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
+`left-session-claims.sh --base-commit <rev>` calls it inside the subshell of its base run, once `root` names the base tree, so the base run builds Dispatch and the listener from that tree and runs its CLI.
 
 `build_daemon_driver OUT [STAMP]` builds every proof's driver, the daemon package's `-tags e2e` test binary, from `root`'s `packages/daemon` into `OUT` (`go test -c -tags e2e ./internal/daemon`).
 With a `STAMP`, the merge order `scripts/daemon-contract-order.sh --stamp` prints, it adds `-ldflags "-X github.com/sjawhar/legion/daemon/internal/api.contractOrder=<STAMP>"`; with none, or an empty one, it adds no flag and the binary numbers its entries by id.
@@ -8249,10 +8307,10 @@ A run that ended before its last check with status 0 says so on the line before,
 
 | argument | is |
 | :--- | :--- |
-| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `register gate basis`, `parent waits`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `owner steps`, `owner steps client`, `experiment`, `approved version news part one`, `approved version news part two`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion`, `sub architect` |
+| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `left session claims`, or `left session claims at <sha12>` for its negative control's base run, `register gate basis`, `parent waits`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `owner steps`, `owner steps client`, `experiment`, `approved version news part one`, `approved version news part two`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion`, `sub architect` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and, where the `driver` check builds one, the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`, and a `part-one.*` or `part-two.*` directory inside `APPROVED_VERSION_NEWS_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LEFT_SESSION_CLAIMS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`, and a `part-one.*` or `part-two.*` directory inside `APPROVED_VERSION_NEWS_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 | `TIMEOUT` | the driver's own deadline (`-test.timeout`), `20m` when it is not given or is empty; `approved-version-news.sh` gives part two 9 minutes for each run its pick makes and 20 more, since the driver bounds each run at eight minutes, and counts no base run of `a4` or `answers` in a run that picks no arm |
 | `DRIVER` | a driver the caller built with `build_daemon_driver` before the run, which the `driver` check notes and does not build again, and which the run does not remove; not given, or empty, the check builds one into the work directory; `approved-version-news.sh` hands both its parts the driver its `plan` check built, in a run of both parts, and every other entry script gives none |
 | `STAMP` | the merge order the check builds the driver with (`build_daemon_driver OUT STAMP`); not given, or empty, the driver numbers its entries by id; [`owner-steps-client.sh`](#owner-steps-clientsh) alone gives one, and a handed `DRIVER` is built with the order its caller chose |
@@ -8265,6 +8323,7 @@ the Dispatch board stand-in (`liveDispatch`, in `internal/daemon/dispatch_board_
 the store; the seeding of a tree into the next free admission slots (`admit`);
 and the envelope, `processed_events` and notice reads and writes a step makes, the notices read by the issue whose architect they tell (`architectNotices`), and GitHub's merge of a pull request (`publishMergeOf`).
 `register-gate-basis.sh`'s driver takes the two variables alone from that file and runs on the person-handover rig of `internal/daemon/person_handover_scratch_dispatch_test.go` instead, which `newPersonHandoverRigOn` points at the script's broker and checkout.
+`left-session-claims.sh`'s driver runs on that rig too, beside the Envoy listener `startSessionsListener` starts (in `internal/daemon/approved_version_news_sessions_setup_live_test.go`), and runs the CLI through `handoff-records.sh`'s `liveCLICheckout`, `cliShell` and `dispatchCLI`.
 The drivers of one issue on an open pull request (`behind-entry-fence.sh`'s, `conflict-no-takeover.sh`'s, `conflict-merger.sh`'s, `phase-entry-converge.sh`'s and `parent-waits.sh`'s) share more of it (`liveIssueProof`), in `internal/daemon/live_issue_proof_test.go`, which carries `//go:build e2e` because no untagged test calls it: that issue's seed and the daemon's boot over the fake runtime, each role's registered session and the turns a step plays on its connection (`liveSession`, `liveClaimant`), GitHub's stand-in for the pull request at the head last pushed (`liveGitHub`), and the envelopes of a push to the issue's branch, GitHub's synchronize and a push onto the base.
 `conflict-no-takeover.sh`'s and `conflict-merger.sh`'s drivers share more again (`conflictLive`), in `internal/daemon/conflict_live_test.go`: the daemon's log kept in memory as it is written, what each role topic of the issue took since a step's baseline, the wait for the outbox to have published every message of the issue, the read of a role's connection that must stay silent, and the base branch's rules GitHub answers for a conflicting head.
 `review-range.sh`'s driver embeds `handoff-records.sh`'s rig, in `internal/daemon/handoff_records_live_test.go`: Dispatch started and its project made (`startOnDispatch`), the issues created and seeded (`createIssue`, `seedIssues`), the daemon booted (`boot`), and each claim brought to ready and driven over the worker stream (`handoffClaimant`).

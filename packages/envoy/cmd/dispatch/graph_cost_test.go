@@ -209,7 +209,7 @@ type costReading struct {
 // percentile is the nearest-rank percentile of this reading's runs: the ceil(q*n)th of them
 // sorted, so p50 of 200 readings is the hundredth and p99 the 198th. No interpolation, so every
 // number printed is a run that happened - the rule api/inbox_dismissed_scale_test.go's
-// percentileOfDismissedScale states, which these two measurements follow.
+// nearestRank states, which these two measurements follow.
 func (r costReading) percentile(quantile float64) time.Duration {
 	if len(r.runs) == 0 {
 		return 0

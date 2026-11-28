@@ -614,8 +614,10 @@ test("k enters a band at its last row instead of its heading", async () => {
 function secretRequest(overrides: Partial<CredentialPendingRow> = {}): CredentialPendingRow {
   return {
     approve_url: "https://secrets.example.com/approve/record-1",
+    dispatch_scopes: null,
     identifiers: ["DEMO_API_KEY"],
     kind: "agent_secret",
+    reason: "",
     record_id: "record-1",
     requested_at: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
     session: { enrollment: null, request: null },
@@ -628,6 +630,7 @@ test("a credential request alone is listed and on the banner, and nothing says n
   mocks.getCredentialPending.mockResolvedValue({ pending: [secretRequest()] });
   // A listed request names what the broker can still offer; this one needs no machine code.
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
   const { unmount } = renderInbox();
@@ -658,6 +661,7 @@ test("an expired credential request alone is listed with Dismiss, and the Inbox 
     ],
   });
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
   const { unmount } = renderInbox();
@@ -689,6 +693,7 @@ test("the banner counts credential requests beside the asks waiting on you, olde
   });
   // A listed request names what the broker can still offer; this one needs no machine code.
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
   const { unmount } = renderInbox();
@@ -4497,15 +4502,12 @@ test("the answer keys act on the selected decision block, not the first one in t
       (within(firstCard).getByRole("radio", { name: "Ship" }) as HTMLInputElement).checked
     ).toBe(false);
 
-    // One Enter opens the selected card's own note disclosure - the first block's stays shut -
-    // and leaves the reader in the box it reveals, because the card focuses the field its own
-    // render draws (`AskCard.tsx`). `fireEvent` flushes that render inside the press, as a
-    // browser does not, so this row cannot prove the browser case: the proof is the e2e row
-    // `Enter opens the selected decision block's note field and puts the focus in it`.
+    // One Enter puts the caret in the selected card's own answer box, which stands in place -
+    // not in the first block's, which stands in place too.
     await user.keyboard("{Enter}");
     const answerBox = selectedCard.querySelector("[data-ask-answer]");
     expect(answerBox).not.toBeNull();
-    expect(firstCard.querySelector("[data-ask-answer]")).toBeNull();
+    expect(firstCard.querySelector("[data-ask-answer]")).not.toHaveFocus();
     expect(answerBox).toHaveFocus();
   } finally {
     unmount();
