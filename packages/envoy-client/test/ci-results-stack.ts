@@ -14,7 +14,7 @@ import {
   loggedLine,
   type ReadyBudget,
   records,
-  spawnLogged,
+  startServer,
   stopProcess,
   wholeLinesEnd,
 } from "./envoy-stack";
@@ -464,17 +464,18 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     const signInSecret = path.join(work, "signin-client-secret");
     writeFileSync(signInSecret, randomBytes(32).toString("hex"), { mode: 0o600 });
     const issuerLog = path.join(work, "issuer.log");
-    issuer = spawnLogged(
-      [
+    issuer = startServer({
+      command: [
         path.join(bin, "dev-oidc-issuer"),
         "--token",
         `${CLUSTER_AUDIENCE}=${DISPATCH_ACCOUNT}=${accountToken}`,
         "--code-flow",
         `${SIGNIN_CLIENT}=${signInSecret}=http://127.0.0.1/signin/callback`,
       ],
-      { PATH: SHELL_PATH, HOME: work },
-      issuerLog
-    );
+      env: { PATH: SHELL_PATH, HOME: work },
+      log: issuerLog,
+      cwd: ENVOY_MODULE,
+    });
     let issuerUrl = "";
     await awaitReady("dev-oidc-issuer", issuer, issuerLog, BROKER_READY, async () => {
       issuerUrl = /issuer listening url=(\S+)/.exec(readFileSync(issuerLog, "utf8"))?.[1] ?? "";
@@ -487,12 +488,13 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     const standsDir = path.join(work, "stands");
     const standsJson = path.join(work, "stands.json");
     const standsLog = path.join(work, "stands.log");
-    const standsChild = spawnLogged(
-      [stands, "--dir", standsDir],
-      { PATH: SHELL_PATH, HOME: work },
-      standsLog,
-      standsJson
-    );
+    const standsChild = startServer({
+      command: [stands, "--dir", standsDir],
+      env: { PATH: SHELL_PATH, HOME: work },
+      log: standsLog,
+      out: standsJson,
+      cwd: ENVOY_MODULE,
+    });
     try {
       await awaitReady("dev-proxy-stands", standsChild, standsLog, FRONT_READY, async () =>
         readFileSync(standsLog, "utf8").includes("stands listening records=")
@@ -509,12 +511,13 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       const backends = path.join(work, `${name}-backends`);
       const report = path.join(work, `${name}-front.json`);
       const log = path.join(work, `${name}-front.log`);
-      const child = spawnLogged(
-        [stands, "front", "--listen", "127.0.0.1:0", "--backends-file", backends],
-        { PATH: SHELL_PATH, HOME: work },
+      const child = startServer({
+        command: [stands, "front", "--listen", "127.0.0.1:0", "--backends-file", backends],
+        env: { PATH: SHELL_PATH, HOME: work },
         log,
-        report
-      );
+        out: report,
+        cwd: ENVOY_MODULE,
+      });
       fronts.push(child);
       await awaitReady(`the ${name} front`, child, log, FRONT_READY, async () =>
         readFileSync(log, "utf8").includes("front listening addr=")
@@ -622,7 +625,14 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     for (let n = 1; n <= BROKER_COUNT; n++) {
       const log = path.join(work, `broker${n}.log`);
       brokerLogs.push(log);
-      brokers.push(spawnLogged([path.join(bin, "cipherd")], brokerEnv, log));
+      brokers.push(
+        startServer({
+          command: [path.join(bin, "cipherd")],
+          env: brokerEnv,
+          log,
+          cwd: ENVOY_MODULE,
+        })
+      );
     }
     const apiAddresses: string[] = [];
     const proxyAddresses: string[] = [];

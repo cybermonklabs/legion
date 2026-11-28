@@ -3627,7 +3627,9 @@ the session state rig 88 s, claude-envoy's stall 77 s, the broker credential tes
 mention 17 s, the design-gate advice 9 s, the keyed resend 8 s and the moved-approval advice 7 s.
 The three that joined the job after that probe are placed by their walls in job 140859710731:
 the CI-result suite 56.3 s, queued after claude-envoy's stall, and the role topics 16.4 s and the
-refused result 17.0 s, queued after the comment mention.
+refused result 17.0 s, queued after the comment mention. The two suites of a check an issue's
+ci_check gives to a CI job, its result 24.6 s and its refused result 22.1 s in job 141046039355,
+are queued after pi-envoy's stall and before the comment mention.
 
 ## What the refill live proof shows
 

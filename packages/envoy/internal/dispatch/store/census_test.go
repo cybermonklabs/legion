@@ -1307,44 +1307,45 @@ func TestCensusRefusesTheAnswersIndexBesideItsPendingExtension(t *testing.T) {
 	t.Parallel()
 	report, entries := eventsIndexCensus(t, 20261125005337, answersDestinationsIndexVersion, answersDestinationsIndexVersion)
 	entry := entries[answersDestinationsIndexVersion]
-	extension, want, refused := sizeRefusalBesideBtreeGin(t, report, entry.Refusals, "events",
-		"which can run code of its own on the concurrent index build")
-	if entry.ConcurrentIndex || !refused {
-		t.Fatalf("%s beside the pending %s: concurrent index %v, refusals %q; want no exemption and a refusal on the size of events that holds each of %q",
-			entry.Migration.Name, extension, entry.ConcurrentIndex, entry.Refusals, want)
+	if entry.ConcurrentIndex {
+		t.Errorf("%s beside the pending btree_gin migration takes the concurrent index exemption; want none", entry.Migration.Name)
 	}
+	requireSizeRefusalBesideBtreeGin(t, report, entry, "events", "which can run code of its own on the concurrent index build")
 }
 
-// sizeRefusalBesideBtreeGin is how a test reads the census's refusal of a migration that touches
-// table, above a limit of 1 byte, because btreeGinVersion's create extension is pending before it
-// and takes its exemption (pgmigrate's takesLaterExemptions). It answers the name of btree_gin's
-// migration in report, the texts such a refusal holds (each of also after the three every one
-// holds), and whether one reason of refusals holds each of those texts. It fails the test when
-// btree_gin's migration is not pending in report.
-func sizeRefusalBesideBtreeGin(t *testing.T, report *pgmigrate.Report, refusals []string, table string, also ...string) (extension string, want []string, refused bool) {
+// requireSizeRefusalBesideBtreeGin fails the test unless entry, the census's judgment of a
+// migration that touches table above a limit of 1 byte, refuses it on the size of table because
+// btreeGinVersion's create extension is pending before it and takes its exemption (pgmigrate's
+// takesLaterExemptions): one reason of entry.Refusals holds the three texts every such refusal
+// holds, and each of also. It fails the test at once when btree_gin's migration is not pending in
+// report. Each caller checks its own exemption beside it.
+func requireSizeRefusalBesideBtreeGin(t *testing.T, report *pgmigrate.Report, entry *pgmigrate.MigrationCensus, table string, also ...string) {
 	t.Helper()
-	for _, entry := range report.Pending {
-		if entry.Migration.Version == btreeGinVersion {
-			extension = entry.Migration.Name
+	var extension string
+	for _, pending := range report.Pending {
+		if pending.Migration.Version == btreeGinVersion {
+			extension = pending.Migration.Name
 		}
 	}
 	if extension == "" {
 		t.Fatalf("%d is not pending; report:\n%s", btreeGinVersion, reportText(report))
 	}
-	want = append([]string{
+	want := append([]string{
 		table + " is ",
 		"above the 1 bytes a table a migration touches may be",
 		"the earlier pending migration " + extension + " creates or alters an extension",
 	}, also...)
-	refused = slices.ContainsFunc(refusals, func(reason string) bool {
+	if !slices.ContainsFunc(entry.Refusals, func(reason string) bool {
 		for _, text := range want {
 			if !strings.Contains(reason, text) {
 				return false
 			}
 		}
 		return true
-	})
-	return extension, want, refused
+	}) {
+		t.Errorf("%s beside the pending %s: refusals %q; want a refusal on the size of %s that holds each of %q",
+			entry.Migration.Name, extension, entry.Refusals, table, want)
+	}
 }
 
 // Neither index migration of events creates an extension. btree_gin, which the answers index needs,

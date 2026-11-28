@@ -59,11 +59,11 @@ func TestCensusRefusesTheResultsCoverageTriggersBesideBtreeGin(t *testing.T) {
 	t.Parallel()
 	report, entry := resultsCoverageCensus(t,
 		[]int{ciCheckResultsVersion, attributionInputsVersion, coverageCountsVersion}, []int{btreeGinVersion})
-	extension, want, refused := sizeRefusalBesideBtreeGin(t, report, entry.Refusals, "check_results")
-	if entry.TableSizeExemption != "" || !refused {
-		t.Errorf("%s beside the pending %s: exemption %q, refusals %q; want no exemption and a refusal on the size of check_results that holds each of %q",
-			entry.Migration.Name, extension, entry.TableSizeExemption, entry.Refusals, want)
+	if entry.TableSizeExemption != "" {
+		t.Errorf("%s beside the pending btree_gin migration takes the catalog-only exemption %q; want none",
+			entry.Migration.Name, entry.TableSizeExemption)
 	}
+	requireSizeRefusalBesideBtreeGin(t, report, entry, "check_results")
 }
 
 // resultsCoverageCensus takes the census, at a table limit of one byte, of the embedded migrations

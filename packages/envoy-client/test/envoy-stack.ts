@@ -124,33 +124,40 @@ export async function buildGoBinaries(build: GoBuild): Promise<void> {
 }
 
 /** How a stack starts one of its servers. */
-interface ServerStart {
+export interface ServerStart {
   readonly command: readonly string[];
   readonly env: Readonly<Record<string, string>>;
-  /** The file the server's output is appended to. */
+  /** The file the server's errors are appended to, and its output where `out` is unset. */
   readonly log: string;
+  /** The file the server's standard output is appended to, where it is not `log`. */
+  readonly out?: string;
   readonly cwd?: string;
 }
 
 /**
- * Starts a stack's server with its output appended to `start.log`. With `held`, the server
- * inherits the descriptor `held.fd` as its own descriptor 3, which `held.fdEnv` names.
+ * Starts a stack's server with its errors appended to `start.log` and its output to `start.out`,
+ * or to `start.log` where that is unset, and with `start.env` and nothing else as its environment.
+ * With `held`, the server inherits the descriptor `held.fd` as its own descriptor 3, which
+ * `held.fdEnv` names.
  */
-function startServer(
+export function startServer(
   start: ServerStart,
   held?: { readonly fd: number; readonly fdEnv: string }
 ): Subprocess {
-  const out = openSync(start.log, "a");
+  const errors = openSync(start.log, "a");
+  const output =
+    start.out === undefined || start.out === start.log ? errors : openSync(start.out, "a");
   try {
     return Bun.spawn([...start.command], {
       // Left out when unset: claude-envoy compiles this file with exactOptionalPropertyTypes.
       ...(start.cwd === undefined ? {} : { cwd: start.cwd }),
       // stdio entry 3 is the server's descriptor 3.
       env: held === undefined ? { ...start.env } : { ...start.env, [held.fdEnv]: "3" },
-      stdio: held === undefined ? ["ignore", out, out] : ["ignore", out, out, held.fd],
+      stdio: held === undefined ? ["ignore", output, errors] : ["ignore", output, errors, held.fd],
     });
   } finally {
-    closeSync(out);
+    closeSync(errors);
+    if (output !== errors) closeSync(output);
   }
 }
 
@@ -296,7 +303,7 @@ export function records(text: string): Record<string, unknown>[] {
   return out;
 }
 
-/** The first record of the broker's JSON log whose message is `message` and whose fields hold
+/** The first record of the JSON log at `log` whose message is `message` and whose fields hold
  *  `fields`, or undefined while there is none. */
 export function loggedLine(
   log: string,
@@ -314,24 +321,6 @@ export function loggedLine(
       record["message"] === message &&
       Object.entries(fields).every(([name, value]) => record[name] === value)
   );
-}
-
-/** A child process writing its output to `log`, or its standard output to `out` and its errors to
- *  `log`, started with `env` and nothing else. */
-export function spawnLogged(
-  command: readonly string[],
-  env: Record<string, string>,
-  log: string,
-  out: string = log
-): Subprocess {
-  const errors = openSync(log, "a");
-  const output = out === log ? errors : openSync(out, "a");
-  try {
-    return Bun.spawn([...command], { cwd: ENVOY_MODULE, env, stdout: output, stderr: errors });
-  } finally {
-    closeSync(errors);
-    if (output !== errors) closeSync(output);
-  }
 }
 
 /** The byte offset after the last whole line of `file`, 0 for a file not there yet. */

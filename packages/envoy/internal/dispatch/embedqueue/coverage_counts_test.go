@@ -897,17 +897,10 @@ func TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff(t *testing.T) {
 				insertComponent(t, q, project, "written-with-its-triggers-off", 907)
 			})
 			withTableTriggersOff(t, database, "check_results", func(q querier) {
-				mustExec(t, q, `insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
-						check_version, check_sha256, role, commit_sha, verdict, actor)
-					values ('OFFT-1', 'OFFT-1', $1::uuid, 'k1', 1, 'a-check-sha', 'tester', repeat('a', 40), 'pass', '{"kind":"user","id":"alice"}'::jsonb)`,
-					document)
+				roleResults(t, q, "OFFT-1", document, 1)
 			})
 			withTableTriggersOff(t, database, "ci_check_results", func(q querier) {
-				mustExec(t, q, `insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
-						check_version, check_sha256, run, commit_sha, branch, verdict, attestation, session, actor)
-					values ('OFFT-1', 'OFFT-1', $1::uuid, 'k1', 1, 'a-check-sha', 'go-checks', repeat('b', 40), 'legion/OFFT-1', 'pass',
-					        '{}'::jsonb, 'ci-job', '{"kind":"session","id":"ci-job"}'::jsonb)`,
-					document)
+				jobResults(t, q, "OFFT-1", document, 1)
 			})
 			withTableTriggersOff(t, database, "handoffs", func(q querier) {
 				mustExec(t, q, `insert into handoffs (issue_key, phase, version, body, author)
@@ -964,23 +957,8 @@ func TestBothResultsTablesKeepTheResultCount(t *testing.T) {
 		returning id::text`, project).Scan(&document); err != nil {
 		t.Fatalf("seed the document the results are of: %v", err)
 	}
-	roleResults := func(q querier, issue string, rows int) {
-		t.Helper()
-		mustExec(t, q, `insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
-				check_version, check_sha256, role, commit_sha, verdict, actor)
-			select $1, $1, $2::uuid, 'k' || g, 1, 'a-check-sha', 'tester', repeat('a', 40), 'pass', '{"kind":"user","id":"alice"}'::jsonb
-			from generate_series(1, $3::int) g`, issue, document, rows)
-	}
-	jobResults := func(q querier, issue string, rows int) {
-		t.Helper()
-		mustExec(t, q, `insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
-				check_version, check_sha256, run, commit_sha, branch, verdict, attestation, session, actor)
-			select $1, $1, $2::uuid, 'k' || g, 1, 'a-check-sha', 'go-checks', repeat('b', 40), 'legion/' || $1, 'pass',
-			       '{}'::jsonb, 'ci-job', '{"kind":"session","id":"ci-job"}'::jsonb
-			from generate_series(1, $3::int) g`, issue, document, rows)
-	}
-	roleResults(q, "RSLT-1", 1)
-	jobResults(q, "RSLT-1", 1)
+	roleResults(t, q, "RSLT-1", document, 1)
+	jobResults(t, q, "RSLT-1", document, 1)
 	fillCounts(t, database)
 	requireResultsKept(t, database, "after the fill", 1, 1)
 
@@ -989,18 +967,18 @@ func TestBothResultsTablesKeepTheResultCount(t *testing.T) {
 		run       func(q querier)
 		role, job int64
 	}{
-		{"a CI job's two results inserted in one statement", func(q querier) { jobResults(q, "RSLT-2", 2) }, 1, 3},
+		{"a CI job's two results inserted in one statement", func(q querier) { jobResults(t, q, "RSLT-2", document, 2) }, 1, 3},
 		{"a CI job's result deleted", func(q querier) {
 			mustExec(t, q, `delete from ci_check_results where id = (select id from ci_check_results where issue_key = 'RSLT-2' limit 1)`)
 		}, 1, 2},
 		{"an issue's delete, which cascades to a result of each table", func(q querier) {
 			mustExec(t, q, `delete from issues where key = 'RSLT-1'`)
 		}, 0, 1},
-		{"a role's two results inserted", func(q querier) { roleResults(q, "RSLT-2", 2) }, 2, 1},
+		{"a role's two results inserted", func(q querier) { roleResults(t, q, "RSLT-2", document, 2) }, 2, 1},
 		{"a truncate of ci_check_results while check_results holds rows", func(q querier) {
 			mustExec(t, q, `truncate ci_check_results cascade`)
 		}, 2, 0},
-		{"a CI job's two results inserted after the truncate", func(q querier) { jobResults(q, "RSLT-2", 2) }, 2, 2},
+		{"a CI job's two results inserted after the truncate", func(q querier) { jobResults(t, q, "RSLT-2", document, 2) }, 2, 2},
 		{"a truncate of check_results while ci_check_results holds rows", func(q querier) {
 			mustExec(t, q, `truncate check_results cascade`)
 		}, 0, 2},
@@ -1017,6 +995,27 @@ func TestBothResultsTablesKeepTheResultCount(t *testing.T) {
 		t.Fatalf("recount: %v", err)
 	}
 	requireResultsKept(t, database, "after one recount", 0, 2)
+}
+
+// roleResults inserts, through q, rows results a role recorded on issue, of checks k1 to k<rows>
+// of document: rows of check_results.
+func roleResults(t *testing.T, q querier, issue, document string, rows int) {
+	t.Helper()
+	mustExec(t, q, `insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
+			check_version, check_sha256, role, commit_sha, verdict, actor)
+		select $1, $1, $2::uuid, 'k' || g, 1, 'a-check-sha', 'tester', repeat('a', 40), 'pass', '{"kind":"user","id":"alice"}'::jsonb
+		from generate_series(1, $3::int) g`, issue, document, rows)
+}
+
+// jobResults inserts, through q, rows results a CI job recorded on issue's branch, of checks k1 to
+// k<rows> of document: rows of ci_check_results.
+func jobResults(t *testing.T, q querier, issue, document string, rows int) {
+	t.Helper()
+	mustExec(t, q, `insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
+			check_version, check_sha256, run, commit_sha, branch, verdict, attestation, session, actor)
+		select $1, $1, $2::uuid, 'k' || g, 1, 'a-check-sha', 'go-checks', repeat('b', 40), 'legion/' || $1, 'pass',
+		       '{}'::jsonb, 'ci-job', '{"kind":"session","id":"ci-job"}'::jsonb
+		from generate_series(1, $3::int) g`, issue, document, rows)
 }
 
 // requireResultsKept fails the test unless check_results holds role rows and ci_check_results job
