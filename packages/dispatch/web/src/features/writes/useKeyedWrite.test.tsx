@@ -8,12 +8,12 @@ import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keptTab } from "../../__tests__/kept-sends-harness";
 import { renderOnQueue } from "../../__tests__/query-provider";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, type WriteBounds, type WriteRequest } from "../../api/client";
 import { DispatchQueryClient } from "../../api/query-client";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SEND_DEADLINE_MS, SendStoppedError } from "./keyed-write";
 import { useKeyedWrite } from "./useKeyedWrite";
-import { writesOf } from "./write-store";
+import { defineWriteKind, writesOf } from "./write-store";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -216,6 +216,94 @@ test("a stopped press the store's Retry lands is the hook's stopped press no lon
   } finally {
     hook.unmount();
     answerAsk.mockRestore();
+    tab.close();
+    realClock();
+  }
+});
+
+/** A write of a priority's title over a list of texts, as far as the hook is concerned, and the
+ *  same title over one text, the form a build of Dispatch from before the list reads. */
+const overList: WriteRequest = {
+  body: { expected: { title: ["Old", "Mine"] }, title: "Mine, more" },
+  method: "PATCH",
+  path: "/api/v1/priorities/p1",
+};
+const overOne: WriteRequest = {
+  ...overList,
+  body: { expected: { title: "Old" }, title: "Mine, more" },
+};
+
+/** A write whose record says whether its request names a list: one such Dispatch refuses
+ *  `400 INVALID_JSON` its kind makes again over one text (`WriteKind.fallback`). */
+const listWrite = defineWriteKind<{ readonly list: boolean }>({
+  fallback: (detail, refusal) =>
+    detail.list && refusal instanceof ApiError && refusal.code === "INVALID_JSON"
+      ? { detail: { list: false }, request: overOne }
+      : undefined,
+  kept: (value): value is { readonly list: boolean } =>
+    typeof value === "object" && value !== null && typeof Reflect.get(value, "list") === "boolean",
+  name: "test-hook-list",
+});
+
+// The same where the shell's Retry of the stopped press meets an older build, which refuses its
+// list: the write its kind makes in its place goes under a key of its own (`WriteKind.fallback`),
+// and lands. The hook follows the write to that landing, so it holds the press no longer and its
+// error goes.
+test("a stopped press the store's Retry lands after its kind made another write in its place is the hook's stopped press no longer", async () => {
+  jest.useFakeTimers();
+  const tab = keptTab();
+  const keys: string[] = [];
+  let answer = (_request: WriteRequest): Promise<unknown> => Promise.reject(refusal);
+  const send = spyOn(api, "send").mockImplementation(((
+    request: WriteRequest,
+    bounds: WriteBounds
+  ) => {
+    keys.push(bounds.key);
+    bounds.sent?.(request);
+    return answer(request);
+  }) as typeof api.send);
+  const { client, hook } = renderOnQueue(() =>
+    useKeyedWrite({
+      detail: () => ({ list: true }),
+      kind: listWrite,
+      label: () => "Rename the priority",
+      request: () => overList,
+      target: () => "priority:p1",
+    })
+  );
+
+  try {
+    act(() => hook.result.current.mutate());
+    await stopTheLateWrite(client);
+    expect(hook.result.current.error).toBeInstanceOf(SendStoppedError);
+    const [row] = writesOf(client).rows();
+    const stoppedKey = row?.key;
+
+    answer = (request) =>
+      request === overList
+        ? Promise.reject(
+            new ApiError(400, {
+              code: "INVALID_JSON",
+              error: "the body is not the JSON it should be",
+            })
+          )
+        : Promise.resolve({ id: "p1" });
+    const tries = send.mock.calls.length;
+    act(() => writesOf(client).retry(row?.id ?? 0));
+    await tick(0);
+
+    expect(send.mock.calls.slice(tries).map(([request]) => request)).toEqual([overList, overOne]);
+    expect(keys.at(-2)).toBe(stoppedKey);
+    expect(keys.at(-1)).not.toBe(stoppedKey);
+    expect(writesOf(client).rows(), "the store's Retry did not land").toEqual([]);
+    expect(hook.result.current.error, "the landed press still ends stopped").toBeNull();
+    expect(
+      hook.result.current.stopped(() => true),
+      "the hook still holds the landed press"
+    ).toBe(undefined);
+  } finally {
+    hook.unmount();
+    send.mockRestore();
     tab.close();
     realClock();
   }
