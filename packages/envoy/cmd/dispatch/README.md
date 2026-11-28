@@ -5073,7 +5073,7 @@ The reasons, which `asof.AbsentFields` gives for each member:
   `GET /api/v1/artifacts/{id}/reviews` answers no `as_of`, and an event log's review events keep their own payload, which the fill does not change.
 
 - The restore of a decided ask's wording (`docs.Service.RestoreDecidedWordings`) writes its question, options, `multiple` and urgency with no event.
-  So these four are left out, with the ask's part ids and revision, at a cut where the wording of the ask's newest event at the cut is not the wording just after it by the record: the previous wording of its next edit, the wording of its next other event, or the row's (`asof.AsksChangedAfterStatement`).
+  So these four are left out at a cut where the wording of the ask's newest event at the cut is not the wording just after it by the record: the previous wording of its next edit, the wording of its next other event, or the row's (`asof.AsksChangedAfterStatement`).
   So is each member that an answer draws from that wording: the question's tree, which an answer carries for a request that sends `Dispatch-Trees: 1` (the trees of the options go out with the options), the question of the ask that an agent's answer is on, and the snippet of an ask hit of a search, with its tree.
   An event log's ask events keep their wording, which is each event's own record.
   `GET /api/v1/asks/open` leaves out no wording: the restore writes only an ask decided before the edit that it undoes, so the record gives the wording of each ask open at the cut.
@@ -5081,10 +5081,8 @@ The reasons, which `asof.AbsentFields` gives for each member:
 - A check's version and digest, and whether a check's words moved after a result, come from the block index, which can be written after the version is saved: a write leaves it to the block-index reconciliation for a version of more than 2,000 blocks or whose tree does not render as its markdown, and the reconciliation re-indexes a version in place.
   No record gives the time of that write, so an answer at any cut leaves out each check's `version` and `sha256` and each result's `check_words_moved`, whatever the block index holds.
 
-- An ask's part ids and revision come from the block index now, which raises the revision with no event when it re-indexes the ask's parts.
-  So they stand only for an ask that did not change after the cut, whose wording at the cut a record gives, and whose newest event at the cut, as the event log stores it, holds that same revision and the part id of each of its options and of its answer (`asof.AskPartsAtTheCutStatement`).
-  This holds for every answer that gives an ask, and for an event log's ask events, whose payloads a read fills with the ask's parts now.
-  No writer stores a revision or a part id in an ask's event yet, so an answer at a cut leaves out the parts of every ask.
+- An ask's part ids and revision: no writer stores them in an ask's events, so no record gives them at a cut.
+  So every answer at a cut that gives an ask, and an event log's ask events, leave them out, whether or not the ask changed after the cut.
 
 - The person an ask waits on comes from a project default from before the first event of that default.
 
@@ -5096,7 +5094,7 @@ The reasons, which `asof.AbsentFields` gives for each member:
   The block index keeps no record of the blocks of a comment or a message at the cut, and the block-index reconciliation rewrites them with no event (`refs.IndexOwedItemBlocks`), dated by the post's own last edit.
   So these three are left out for a reply to a comment or a message, whether or not the post changed after the cut.
   The block of a post deleted at any time reads removed with no text, and none of the three is left out.
-  A part of an ask is given where the ask's part ids and revision are given (above).
+  A reply to a part of an ask leaves the three out too, since no record gives an ask's part ids and revision at a cut (above).
 
 - An agent's answers at a cut count an event that a person wrote in the window the request asks for, and whose `published_destinations` hold the session's topic, only where the event's `published_at` is at or before the cut.
   The outbox records when it settled an event (`published_at`), not when it published the event to each topic, so no record gives whether the session's topic had an event that the outbox settled after the cut, or has not settled.

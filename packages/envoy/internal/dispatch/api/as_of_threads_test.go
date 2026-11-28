@@ -4,14 +4,13 @@
 // shows, a message edited before and after the cut, a post's history at a cut, an older build's
 // long edit, a delivery attempt no event dates, the inbox's asks at a cut, an answers poll later
 // than the cut, the block a reply names, a post's block that a re-index rewrote with no event, an
-// ask's parts that its newest event at the cut stored or did not, an anchored block's place, an
-// ask's route reach, an old approval request's documents and its turn after a version moved it,
-// and a direct thread's session rule.
+// ask's parts, which every cut leaves out, an anchored block's place, an ask's route reach, an old
+// approval request's documents and its turn after a version moved it, and a direct thread's
+// session rule.
 package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
@@ -27,7 +26,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // asOfThreadWorld is a server for one test of this file, with its project and issue written.
@@ -192,11 +190,6 @@ type shownAskParts struct {
 	answer   string
 }
 
-// same reports whether parts and other are one part state.
-func (parts shownAskParts) same(other shownAskParts) bool {
-	return parts.revision == other.revision && slices.Equal(parts.options, other.options) && parts.answer == other.answer
-}
-
 // partsShownBy is the part state that ask, an ask object of a decoded answer, shows.
 func partsShownBy(ask map[string]any) shownAskParts {
 	var parts shownAskParts
@@ -215,9 +208,10 @@ func partsShownBy(ask map[string]any) shownAskParts {
 	return parts
 }
 
-// askPartsNow is the part state that the present read of ask id gives: its revision and the part
-// id of each of its options and of its answer, each of which it must give.
-func askPartsNow(t *testing.T, handler http.Handler, id string) shownAskParts {
+// requireAskPartsNow fails t unless the present read of ask id gives its revision and the part id
+// of each of its options and of its answer: an answer at a cut that leaves them out then leaves
+// out what the present gives.
+func requireAskPartsNow(t *testing.T, handler http.Handler, id string) {
 	t.Helper()
 	target := "/api/v1/asks/" + id
 	response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
@@ -229,52 +223,6 @@ func askPartsNow(t *testing.T, handler http.Handler, id string) shownAskParts {
 	parts := partsShownBy(ask)
 	if _, answered := ask["answer"].(map[string]any); parts.revision <= 0 || slices.Contains(parts.options, "") || answered && parts.answer == "" {
 		t.Fatalf("the present read of ask %s shows the parts %+v, want its revision and each part id: %s", id, parts, abbreviateValue(ask))
-	}
-	return parts
-}
-
-// storeAskParts writes parts into the payload of the newest state event of ask id
-// (asof.AskStateTypes) in the event log, as a writer that stores an ask's part state would: the
-// revision where it is not 0, the id of each option that parts names, and the id of the answer
-// where it is not "". No writer of this build stores them (asof.AskPartsAtTheCutStatement), so a
-// test whose answer at a cut gives an ask's parts writes them here, before the cut.
-func storeAskParts(t *testing.T, database *store.Store, id string, parts shownAskParts) {
-	t.Helper()
-	ctx := context.Background()
-	var event int64
-	var payload map[string]any
-	if err := database.Pool.QueryRow(ctx, `
-		select e.id, e.payload from public.events e
-		where e.payload->>'id' = $1 and e.type = any($2::text[])
-		order by e.id desc limit 1
-	`, id, asof.AskStateTypes()).Scan(&event, &payload); err != nil {
-		t.Fatalf("read the newest state event of ask %s: %v", id, err)
-	}
-	if parts.revision != 0 {
-		payload["revision"] = parts.revision
-	}
-	options, _ := payload["options"].([]any)
-	if len(parts.options) > len(options) {
-		t.Fatalf("the newest state event of ask %s holds %d options, fewer than the %d ids to store", id, len(options), len(parts.options))
-	}
-	for index, optionID := range parts.options {
-		if option, _ := options[index].(map[string]any); option != nil && optionID != "" {
-			option["id"] = optionID
-		}
-	}
-	if parts.answer != "" {
-		answer, _ := payload["answer"].(map[string]any)
-		if answer == nil {
-			t.Fatalf("the newest state event of ask %s holds no answer to store the id %s in", id, parts.answer)
-		}
-		answer["id"] = parts.answer
-	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("encode the newest state event of ask %s: %v", id, err)
-	}
-	if tag, err := database.Pool.Exec(ctx, `update events set payload = $2::jsonb where id = $1`, event, encoded); err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("store the parts of ask %s in its event %d: %s, %v", id, event, tag, err)
 	}
 }
 
@@ -852,20 +800,16 @@ func TestAnAnswersPollWithASinceAfterTheCutAnswersNothing(t *testing.T) {
 	})
 }
 
-// TestAReplyBlockAtACutReadsTheBlockThen: the block a reply names reads at the cut as the block
-// index holds it now only where a record at the cut gives it: a part of an ask that did not
-// change after the cut and whose newest event at the cut stores the revision and the part ids
-// that the index holds now, which is how the part stood at the cut: its text and that it is not
-// removed. The block index keeps no record of the blocks of a comment or a message at the cut,
-// and no record keeps the parts of an ask that changed after the cut (an ask answered), so every
-// route that shows a reply to such a block leaves out the block's text and whether it is removed,
-// and names both absent (reason E), for a comment or a message edited after the cut and for a
-// comment that was not. A read with display trees leaves out the tree of that text too, and names
-// it absent, so no word written after the cut reaches the answer through the tree; a read with
-// none gives no tree and names none. The block's node and id are the reply's own, and are given.
-// No writer stores an ask's part state in its events yet, so the test stores the kept ask's in
-// its newest event as such a writer would (storeAskParts).
-func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
+// TestAReplyBlockAtACutIsLeftOut: no record gives at a cut the block a reply names. The block
+// index keeps no record of the blocks of a comment or a message at the cut, and no writer stores
+// an ask's revision or part ids in its events, so no record gives a part of an ask either, whether
+// or not the ask changed after the cut (one ask answered after it, one not). So every route that
+// shows a reply to such a block leaves out the block's text and whether it is removed, and names
+// both absent (reason E), for a comment or a message edited after the cut and for a comment that
+// was not. A read with display trees leaves out the tree of that text too, and names it absent,
+// so no word written after the cut reaches the answer through the tree; a read with none gives no
+// tree and names none. The block's node and id are the reply's own, and are given.
+func TestAReplyBlockAtACutIsLeftOut(t *testing.T) {
 	world, takeCut := newAsOfThreadWorld(t, "ASOB")
 	handler := world.handler
 	edited := world.comment(t, map[string]any{"body": "Alpha.\n\nBeta."})
@@ -883,7 +827,6 @@ func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
 	})).ID
 	onKeptAsk := world.comment(t, map[string]any{"body": "Thursday works.", "ask_id": keptAsk, "reply_to_block": "b2"})
 	world.settle(t)
-	storeAskParts(t, world.served.deps.Store, keptAsk, askPartsNow(t, handler, keptAsk))
 	cut := takeCut()
 	time.Sleep(5 * time.Millisecond)
 	asOfWrite(t, handler, http.MethodPatch, "/api/v1/comments/"+edited, map[string]any{"body": "Alpha.\n\nBeta, rewritten after the cut."}, "alice")
@@ -893,22 +836,22 @@ func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
 
 	issue := "/api/v1/issues/" + world.issue
 	for _, read := range []struct {
-		target         string
-		leftOut, given []string
+		target  string
+		leftOut []string
 	}{
-		{issue + "/comments", []string{onEdited, onKept, onAsk}, []string{onKeptAsk}},
-		{"/api/v1/comments/" + onEdited, []string{onEdited}, nil},
-		{"/api/v1/comments/" + edited, []string{onEdited}, nil},
-		{"/api/v1/comments/" + kept, []string{onKept}, nil},
-		{"/api/v1/comments/" + onAsk, []string{onAsk}, nil},
-		{"/api/v1/comments/" + onKeptAsk, nil, []string{onKeptAsk}},
-		{issue + "/messages", []string{onMessage}, nil},
-		{issue + "/messages/" + onMessage, []string{onMessage}, nil},
-		{"/api/v1/messages/" + message, []string{onMessage}, nil},
-		{"/api/v1/asks/" + ask, []string{onAsk}, nil},
-		{"/api/v1/asks/" + keptAsk, nil, []string{onKeptAsk}},
-		{issue + "/asks?thread=1", []string{onAsk}, []string{onKeptAsk}},
-		{"/api/v1/inbox", []string{onAsk}, []string{onKeptAsk}},
+		{issue + "/comments", []string{onEdited, onKept, onAsk, onKeptAsk}},
+		{"/api/v1/comments/" + onEdited, []string{onEdited}},
+		{"/api/v1/comments/" + edited, []string{onEdited}},
+		{"/api/v1/comments/" + kept, []string{onKept}},
+		{"/api/v1/comments/" + onAsk, []string{onAsk}},
+		{"/api/v1/comments/" + onKeptAsk, []string{onKeptAsk}},
+		{issue + "/messages", []string{onMessage}},
+		{issue + "/messages/" + onMessage, []string{onMessage}},
+		{"/api/v1/messages/" + message, []string{onMessage}},
+		{"/api/v1/asks/" + ask, []string{onAsk}},
+		{"/api/v1/asks/" + keptAsk, []string{onKeptAsk}},
+		{issue + "/asks?thread=1", []string{onAsk, onKeptAsk}},
+		{"/api/v1/inbox", []string{onAsk, onKeptAsk}},
 	} {
 		t.Run(read.target, func(t *testing.T) {
 			doc, absent := world.readAt(t, read.target, cut)
@@ -937,21 +880,6 @@ func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
 					if !namedAbsent(treesAbsent, pointerJoin(place, member)) {
 						t.Errorf("the answer at the cut with display trees names %v absent, want %s", treesAbsent, pointerJoin(place, member))
 					}
-				}
-			}
-			for _, id := range read.given {
-				place, block := replyBlockIn(t, doc, id, "b2")
-				_, present := replyBlockIn(t, world.readNow(t, read.target), id, "b2")
-				// The header names a pointer for every reply of a list at once, so the block of a
-				// part that the ask's stored parts give shows that it is given by carrying both members.
-				text, _ := present["text"].(string)
-				if text == "" || block["text"] != text || block["removed"] != false {
-					t.Errorf("%s at the cut is %s, want the part as the kept ask's stored parts give it, %s", place, abbreviateValue(block), abbreviateValue(present))
-				}
-				place, block = replyBlockIn(t, treesDoc, id, "b2")
-				if tree := block["text_tree"]; tree == nil || len(stringsHolding(tree, text)) == 0 {
-					t.Errorf("%s/text_tree at the cut with display trees is %s, want the tree of the text the part holds, %s",
-						place, abbreviateValue(tree), text)
 				}
 			}
 			for _, held := range append(stringsHolding(doc, "rewritten after the cut"), stringsHolding(treesDoc, "rewritten after the cut")...) {
@@ -1088,27 +1016,19 @@ func TestAPostsReplyBlockIsLeftOutAtACutThoughNoEventFollowsIt(t *testing.T) {
 	}
 }
 
-// TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem: an ask's revision and the part
-// ids of its options and of its answer come from the block index now, which keeps no earlier
-// state with its time and raises the revision with no event when the block-index reconciliation
-// re-indexes the ask's parts (refs.IndexOwedItemBlocks). So an answer at a cut gives them only
-// where the ask did not change after the cut and its newest state event at the cut, as the event
-// log stores it, holds the same positive revision and the same part id of each option and of the
-// answer; an ask with no option and no answer stands on its revision alone. The parts of every
-// other ask are left out and named absent: from each route that gives the ask (its own read, the
-// issue's ask list, the issue read's open asks and the inbox) and from each of its events in the
-// issue's event log, whose payloads the read fills with the present parts. So is the text of the
-// block of a reply to one of its parts, whether the block is removed and, with display trees, the
-// text's tree. No writer stores an ask's part state in its events yet, so the test stores it as
-// such a writer would (storeAskParts): an event that stores none, the revision alone, another id
-// of an option, or no id of the answer gives nothing, and neither does an ask whose revision a
-// re-index raised after the cut, nor one whose newest event at the cut stores none though an older
-// event stored the parts the index holds now. A re-index after the cut that changes nothing keeps
-// the parts given. No write changed a wording with no event, so each ask's read gives its wording.
-func TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem(t *testing.T) {
+// TestAnAsksPartsAreLeftOutAtEveryCut: an ask's revision and the part ids of its options and of
+// its answer come from the block index now, and no writer stores them in an ask's events, so no
+// record gives them at a cut. An answer at a cut leaves them out and names them absent (reason P)
+// for every ask, also for one that did not change after the cut: an ask with options, one with no
+// option, and one answered before the cut. Each route that gives the ask leaves them out (its own
+// read, the issue's ask list, the issue read's open asks and the inbox), and so does each of its
+// events in the issue's event log, whose payloads the read fills with the present parts. So is
+// the text of the block of a reply to one of its parts, whether the block is removed and, with
+// display trees, the text's tree. The present read gives each ask's parts (requireAskPartsNow).
+// No write changed a wording with no event, so each ask's read gives its wording.
+func TestAnAsksPartsAreLeftOutAtEveryCut(t *testing.T) {
 	world, takeCut := newAsOfThreadWorld(t, "ASOK")
-	handler, database := world.handler, world.served.deps.Store
-	ctx := context.Background()
+	handler := world.handler
 	issue := "/api/v1/issues/" + world.issue
 	open := func(question string, options ...string) string {
 		t.Helper()
@@ -1122,17 +1042,10 @@ func TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem(t *testing.T
 		}
 		return decodeBody[model.Ask](t, asOfSessionWrite(t, handler, http.MethodPost, issue+"/asks", body)).ID
 	}
-	stored := open("Which day do we ship?", "Monday", "Tuesday")
-	unstored := open("Which day do we test?", "Monday", "Tuesday")
-	revisionOnly := open("Which day do we plan?", "Monday", "Tuesday")
-	otherID := open("Which day do we demo?", "Monday", "Tuesday")
-	reindexed := open("Which day do we freeze?", "Monday", "Tuesday")
+	withOptions := open("Which day do we ship?", "Monday", "Tuesday")
 	questionOnly := open("Do we ship this week?")
 	answered := open("Which day do we review?", "Monday", "Tuesday")
-	answerUnnamed := open("Which day do we close?", "Monday", "Tuesday")
-	handedOn := open("Which day do we launch?", "Monday", "Tuesday")
-	all := []string{stored, unstored, revisionOnly, otherID, reindexed, questionOnly, answered, answerUnnamed, handedOn}
-	given := map[string]bool{stored: true, questionOnly: true, answered: true}
+	all := []string{withOptions, questionOnly, answered}
 	// A reply to a part of each ask: its first option, b2, or the question, b1, of the ask that has
 	// no option.
 	replies, parts := map[string]string{}, map[string]string{}
@@ -1143,103 +1056,24 @@ func TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem(t *testing.T
 		}
 		replies[id] = world.comment(t, map[string]any{"body": "On one of its parts.", "ask_id": id, "reply_to_block": parts[id]})
 	}
-	for _, id := range []string{answered, answerUnnamed} {
-		asOfWrite(t, handler, http.MethodPost, "/api/v1/asks/"+id+"/answer", map[string]any{"selected": []string{"Monday"}}, "alice")
-	}
+	asOfWrite(t, handler, http.MethodPost, "/api/v1/asks/"+answered+"/answer", map[string]any{"selected": []string{"Monday"}}, "alice")
 	world.settle(t)
-
-	// What the newest event of each ask at the cut stores of its parts: all of them, nothing, the
-	// revision alone, another id of an option, or no id of the answer. The handed-on ask's event
-	// that stores them is not its newest at the cut: the hand-on below follows it.
-	before := map[string]shownAskParts{}
 	for _, id := range all {
-		before[id] = askPartsNow(t, handler, id)
-	}
-	other := before[otherID]
-	other.options = []string{other.options[0], "b9"}
-	unnamed := before[answerUnnamed]
-	unnamed.answer = ""
-	for id, stores := range map[string]shownAskParts{
-		stored:        before[stored],
-		revisionOnly:  {revision: before[revisionOnly].revision},
-		otherID:       other,
-		reindexed:     before[reindexed],
-		questionOnly:  {revision: before[questionOnly].revision},
-		answered:      before[answered],
-		answerUnnamed: unnamed,
-		handedOn:      before[handedOn],
-	} {
-		storeAskParts(t, database, id, stores)
-	}
-	// A hand-on appends a state event that stores no part state and changes no part.
-	asOfWrite(t, handler, http.MethodPut, "/api/v1/asks/"+handedOn+"/asked-of", map[string]any{"asked_of": "alice"}, "alice")
-	var handOnNewest bool
-	if err := database.Pool.QueryRow(ctx, `
-		select e.type = 'ask.asked_of' and not (e.payload ? 'revision') from public.events e
-		where e.payload->>'id' = $1 and e.type = any($2::text[])
-		order by e.id desc limit 1
-	`, handedOn, asof.AskStateTypes()).Scan(&handOnNewest); err != nil || !handOnNewest {
-		t.Fatalf("the newest state event of ask %s is its hand-on, with no revision = %t (%v), want true", handedOn, handOnNewest, err)
+		requireAskPartsNow(t, handler, id)
 	}
 	cut := takeCut()
 	time.Sleep(5 * time.Millisecond)
-	// Two re-indexes by the block-index reconciliation after the cut, neither of which appends an
-	// event: of the stored ask, owed an index as rebuild-refs owes every ask one, which changes
-	// nothing; and of the reindexed ask, whose parts an older build summed another way, which
-	// raises the revision and keeps every part id.
-	for _, reindex := range []struct{ id, statement string }{
-		{stored, `update ask_block_state set owed_at = now() where ask_id = $1::uuid`},
-		{reindexed, `update ask_block_state set owed_at = now(), body_sha256 = 'an older build''s sum' where ask_id = $1::uuid`},
-	} {
-		if tag, err := database.Pool.Exec(ctx, reindex.statement, reindex.id); err != nil || tag.RowsAffected() != 1 {
-			t.Fatalf("owe ask %s its block index: %s, %v", reindex.id, tag, err)
-		}
-		if indexed, err := refs.IndexOwedItemBlocks(ctx, database.Pool, refs.OwedItemBlock{Kind: refs.ItemAsk, ID: reindex.id}, "https://dispatch.example"); err != nil || !indexed {
-			t.Fatalf("the reconciliation indexed ask %s = %v (%v), want it indexed", reindex.id, indexed, err)
-		}
-	}
-	world.settle(t)
-	present := map[string]shownAskParts{}
-	for _, id := range all {
-		present[id] = askPartsNow(t, handler, id)
-	}
-	if !present[stored].same(before[stored]) {
-		t.Fatalf("a re-index that changed nothing moved the parts of ask %s from %+v to %+v", stored, before[stored], present[stored])
-	}
-	if present[reindexed].revision <= before[reindexed].revision || !slices.Equal(present[reindexed].options, before[reindexed].options) {
-		t.Fatalf("the re-index of parts an older build summed moved the parts of ask %s from %+v to %+v, want a later revision and the same part ids",
-			reindexed, before[reindexed], present[reindexed])
-	}
-	// The older event's parts would confirm the ask's parts now, so only the newest event's
-	// storing none leaves them out.
-	if !present[handedOn].same(before[handedOn]) {
-		t.Fatalf("the hand-on moved the parts of ask %s from %+v to %+v", handedOn, before[handedOn], present[handedOn])
-	}
 
-	// requireParts holds object, the ask id at place in an answer at the cut whose
-	// Dispatch-As-Of-Absent names absent, to the rule: the present parts where the ask's are
-	// given, and none of them, each named absent, where they are not.
-	requireParts := func(t *testing.T, id, place string, object map[string]any, absent []string) {
+	// requireParts holds object, an ask at place in an answer at the cut whose
+	// Dispatch-As-Of-Absent names absent, to the rule: none of its parts, each named absent.
+	requireParts := func(t *testing.T, place string, object map[string]any, absent []string) {
 		t.Helper()
-		_, holdsAnswer := object["answer"].(map[string]any)
-		if given[id] {
-			want := present[id]
-			// An event written before the answer holds none.
-			if !holdsAnswer {
-				want.answer = ""
-			}
-			if shown := partsShownBy(object); !shown.same(want) {
-				t.Errorf("%s at the cut shows the parts %+v of ask %s, want %+v: its newest event at the cut stored them, and the index holds them now",
-					place, shown, id, want)
-			}
-			return
-		}
 		members := []string{"revision"}
 		options, _ := object["options"].([]any)
 		for index := range options {
 			members = append(members, "options/"+strconv.Itoa(index)+"/id")
 		}
-		if holdsAnswer {
+		if _, holdsAnswer := object["answer"].(map[string]any); holdsAnswer {
 			members = append(members, "answer/id")
 		}
 		requireNamedAbsent(t, place, object, absent, members...)
@@ -1261,15 +1095,12 @@ func TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem(t *testing.T
 						t.Errorf("the read of ask %s at the cut names %v absent, %s among them: no write changed its wording with no event", id, absent, member)
 					}
 				}
-				if given[id] && (namedAbsent(absent, "/ask/revision") || namedAbsent(absent, "/ask/options/0/id") || namedAbsent(absent, "/ask/answer/id")) {
-					t.Errorf("the read of ask %s at the cut names %v absent, which its newest event at the cut stored", id, absent)
-				}
-			} else if len(objects[stored]) == 0 || len(objects[unstored]) == 0 {
-				t.Fatalf("the answer at the cut holds the asks %v, want both open asks %s and %s among them", slices.Sorted(maps.Keys(objects)), stored, unstored)
+			} else if len(objects[withOptions]) == 0 || len(objects[questionOnly]) == 0 {
+				t.Fatalf("the answer at the cut holds the asks %v, want both open asks %s and %s among them", slices.Sorted(maps.Keys(objects)), withOptions, questionOnly)
 			}
 			for _, id := range all {
 				for _, ask := range objects[id] {
-					requireParts(t, id, ask.path, ask.object, absent)
+					requireParts(t, ask.path, ask.object, absent)
 				}
 			}
 		})
@@ -1279,7 +1110,6 @@ func TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem(t *testing.T
 		t.Run(target+" reply blocks", func(t *testing.T) {
 			doc, absent := world.readAt(t, target, cut)
 			treesDoc, treesAbsent := world.readTreesAt(t, target, cut)
-			current := world.readNow(t, target)
 			alone := strings.HasPrefix(target, "/api/v1/asks/")
 			for _, id := range all {
 				reply := replies[id]
@@ -1287,23 +1117,9 @@ func TestAnAsksPartsAtACutAreGivenOnlyWhereItsNewestEventStoredThem(t *testing.T
 					continue
 				}
 				place, block := replyBlockIn(t, doc, reply, parts[id])
-				_, now := replyBlockIn(t, current, reply, parts[id])
+				requireNamedAbsent(t, place, block, absent, "text", "removed")
 				treesPlace, treesBlock := replyBlockIn(t, treesDoc, reply, parts[id])
-				if !given[id] {
-					requireNamedAbsent(t, place, block, absent, "text", "removed")
-					requireNamedAbsent(t, treesPlace, treesBlock, treesAbsent, "text", "removed", "text_tree")
-					continue
-				}
-				text, _ := now["text"].(string)
-				if text == "" || block["text"] != text || block["removed"] != false {
-					t.Errorf("%s at the cut is %s, want the part of ask %s as its stored parts give it, %s", place, abbreviateValue(block), id, abbreviateValue(now))
-				}
-				if tree := treesBlock["text_tree"]; tree == nil || len(stringsHolding(tree, text)) == 0 {
-					t.Errorf("%s/text_tree at the cut with display trees is %s, want the tree of the part's text, %s", treesPlace, abbreviateValue(tree), text)
-				}
-				if alone && (namedAbsent(absent, place+"/text") || namedAbsent(treesAbsent, treesPlace+"/text_tree")) {
-					t.Errorf("the read of ask %s at the cut names %v absent, and with display trees %v: its reply's block is given", id, absent, treesAbsent)
-				}
+				requireNamedAbsent(t, treesPlace, treesBlock, treesAbsent, "text", "removed", "text_tree")
 			}
 		})
 	}

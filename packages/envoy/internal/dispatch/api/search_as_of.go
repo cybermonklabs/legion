@@ -705,7 +705,7 @@ func (s *server) searchAsksAtTheCut(ctx context.Context, results []model.SearchR
 	if err != nil {
 		return fmt.Errorf("read which asks' block documents changed after the cut: %w", err)
 	}
-	_, wordingUnknown, err := s.asksChangedAfterTheCut(ctx, asks, cut)
+	wordingUnknown, err := s.asksWordingUnknownAtTheCut(ctx, asks, cut)
 	if err != nil {
 		return fmt.Errorf("read which asks of a search have no wording at the cut: %w", err)
 	}

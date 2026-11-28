@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
@@ -38,26 +37,14 @@ func (s *server) newestEventIDAtTheCut(ctx context.Context) (int64, error) {
 	return *newest, nil
 }
 
-// pageAsk is an ask event of a page at a cut: the place of its payload in the answer, the id of
-// the ask, the number of options that the payload holds, and whether it holds an answer.
-type pageAsk struct {
-	place    string
-	id       string
-	options  int
-	answered bool
-}
-
 // eventPageAtTheCut names what a page of an event log at the cut ctx carries leaves out of
 // events, the events of the answer at /0, /1 and on (decision 5):
 //   - of each ask event, referenced_by_count: the reference graph gives it now, and keeps no
 //     history (reason G). A read at a cut reads no count (queueAskDetails);
 //   - of each event of an ask, the revision of its parts, the id of each option and the id of the
 //     answer, which the read adds to the payload from the present ask_blocks (attachAskEventFields,
-//     reason P), unless the records at the cut give the ask's parts (askPartsGivenAtTheCut): the
-//     ask's newest state event at the cut, as public.events stores it and never as this read
-//     filled it, holds the revision and the part ids that the index holds now, and the ask did not
-//     change after the cut, which an ask whose wording at the cut no record gives did. An event's
-//     own wording is the payload its write stored, so the answer gives it;
+//     reason P): no writer stores them in an ask's events, so no record gives them at the cut. An
+//     event's own wording is the payload its write stored, so the answer gives it;
 //   - of each event of a comment or a message that its author deleted after the cut, the body,
 //     which attachPostMarks took out with the present delete of the post (reason T, decision 14).
 //     An event of a post deleted at or before the cut gave no body at the cut either, so nothing
@@ -70,8 +57,6 @@ func (s *server) eventPageAtTheCut(ctx context.Context, events []model.Event) er
 	if !atCut {
 		return nil
 	}
-	var asks []pageAsk
-	var ids []string
 	at := elementsOf("")
 	for index := range events {
 		kind := events[index].Type
@@ -97,7 +82,6 @@ func (s *server) eventPageAtTheCut(ctx context.Context, events []model.Event) er
 			continue
 		}
 		var ask struct {
-			ID      string     `json:"id"`
 			Options []struct{} `json:"options"`
 			Answer  *struct{}  `json:"answer"`
 		}
@@ -105,30 +89,15 @@ func (s *server) eventPageAtTheCut(ctx context.Context, events []model.Event) er
 			return fmt.Errorf("decode %s payload: %w", kind, err)
 		}
 		leaveOut(ctx, place+"/"+model.ReferencedByCountKey)
-		asks = append(asks, pageAsk{place: place, id: ask.ID, options: len(ask.Options), answered: ask.Answer != nil})
-		ids = append(ids, ask.ID)
-	}
-	if len(asks) == 0 {
-		return nil
-	}
-	// A page can hold many events of one ask; each statement reads each ask once.
-	slices.Sort(ids)
-	given, err := s.askPartsGivenAtTheCut(ctx, slices.Compact(ids), cut)
-	if err != nil {
-		return fmt.Errorf("read which asks of an event page stored their parts at the cut: %w", err)
-	}
-	for _, ask := range asks {
-		if !given[ask.id] {
-			leaveOutAskParts(ctx, ask.place, ask.options, ask.answered)
-		}
+		leaveOutAskParts(ctx, place, len(ask.Options), ask.Answer != nil)
 	}
 	return nil
 }
 
-// leaveOutAskParts names the parts of the ask at place that the present ask_blocks give, for an
-// ask whose parts the records at the cut do not give (reason P): its revision, the id of each of
-// its options options, and the id of its answer when it is answered. Every answer that gives an
-// ask's parts at a cut names them through it.
+// leaveOutAskParts names the parts of the ask at place, which the present ask_blocks give and no
+// record gives at a cut, since no writer stores them in an ask's events (reason P): its revision,
+// the id of each of its options options, and the id of its answer when it is answered. Every
+// answer that gives an ask at a cut names them through it.
 func leaveOutAskParts(ctx context.Context, place string, options int, answered bool) {
 	leaveOut(ctx, place+"/revision")
 	option := elementsOf(place + "/options")

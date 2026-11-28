@@ -3,13 +3,11 @@ package api
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strconv"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // Comments and messages at a cut. The comment and message routes run their present statements
@@ -87,8 +85,8 @@ func (s *server) idsReadAtTheCut(ctx context.Context, statement string, ids []st
 //     comment whose body at the cut no record holds (reason T,
 //     asof.CommentBodiesNotGivenStatement). The shadow gives each of them the empty body;
 //   - the text of the block that the comment replies to, whether it is removed and, where the
-//     answer carries display trees (trees), the text's tree, unless the records at the cut give
-//     the block (replyBlocksAtTheCut);
+//     answer carries display trees (trees), the text's tree, which no record gives at the cut but
+//     of a deleted post (replyBlocksAtTheCut);
 //   - the members of each delivery attempt that no event at the cut dates (undatedCommentAttempt);
 //   - whether the mark of the comment's anchor was gone, where the shadow gives the anchor as not
 //     orphaned and a write with no event that dates it may have orphaned the anchor before the cut
@@ -128,9 +126,7 @@ func (s *server) commentsAtTheCut(ctx context.Context, comments []model.Comment,
 		blocks[index] = comment.ReplyBlock
 		leaveOutUndatedAttempts(ctx, place, comment.Deliveries, func(attempt model.CommentDelivery) string { return attempt.State }, undatedCommentAttempt)
 	}
-	if err := s.replyBlocksAtTheCut(ctx, cut, blocks, at, trees); err != nil {
-		return nil, err
-	}
+	replyBlocksAtTheCut(ctx, blocks, at, trees)
 	if len(anchored) > 0 {
 		undated, err := s.idsReadAtTheCut(ctx, asof.CommentAnchorsOrphanedNotGivenStatement, anchored, cut)
 		if err != nil {
@@ -200,57 +196,26 @@ func (s *server) messagesAtTheCut(ctx context.Context, reads []messageRead, at f
 			visit(replyAt(reply), shaped.Message)
 		}
 	}
-	return s.replyBlocksAtTheCut(ctx, cut, blocks, func(index int) string { return places[index] }, trees)
+	replyBlocksAtTheCut(ctx, blocks, func(index int) string { return places[index] }, trees)
+	return nil
 }
 
 // replyBlocksAtTheCut names, of each post whose reply block is blocks[index] (nil for a post that
 // replies to no block) at the place at(index), the block's text, whether it is removed and, where
-// the answer carries display trees (trees), the tree of its text (newReplyBlockRead), unless the
-// records at the cut give them. No record gives a block of a comment or of a message at the cut,
-// whether or not an event of the post follows the cut: the block index keeps no state of the
-// blocks with its time, and the block-index reconciliation rewrites them with no event, dating
-// what it writes from the post's own last edit (refs.IndexOwedItemBlocks), so a re-index after the
-// cut of a post that no event changed after it reads as written before the cut. Nor does any
-// record give the block of a node of no shape this build reads (reason E). A part of an
-// ask is given where the ask's parts are (askPartsGivenAtTheCut): its newest state event at the
-// cut stored the revision and the part ids that the index holds now, and the ask did not change
-// after the cut, so the index holds the part as it stood at the cut. The tree is read from the
-// text the index holds now, so it goes out with the text. The block of a post deleted at any time
-// reads removed with no text, as the post reads deleted at the cut (decision 14), and nothing of
-// it is left out. The block's node, id and reference are the reply's own, which no write changes,
-// and its post's edit time and delete mark are the shadow's. Only the blocks of asks send a
-// statement.
-func (s *server) replyBlocksAtTheCut(ctx context.Context, cut asof.Cut, blocks []*model.ReplyBlock, at func(index int) string, trees bool) error {
-	// askOf is the id of the ask that block is a part of, and "" for a block of any other item.
-	askOf := func(block *model.ReplyBlock) string {
-		if kind, item, _, ok := refs.ParseItemBlockNode(block.Node); ok && kind == refs.ItemAsk {
-			return item
-		}
-		return ""
-	}
-	var asks []string
-	for _, block := range blocks {
-		if block == nil || block.DeletedAt != nil {
-			continue
-		}
-		if ask := askOf(block); ask != "" {
-			asks = append(asks, ask)
-		}
-	}
-	var given map[string]bool
-	if len(asks) > 0 {
-		// Several replies can name parts of one ask; each statement reads each ask once.
-		slices.Sort(asks)
-		var err error
-		if given, err = s.askPartsGivenAtTheCut(ctx, slices.Compact(asks), cut); err != nil {
-			return fmt.Errorf("read which asks of reply blocks stored their parts at the cut: %w", err)
-		}
-	}
+// the answer carries display trees (trees), the tree of its text (newReplyBlockRead). No record
+// gives a block of a comment or of a message at the cut, whether or not an event of the post
+// follows the cut: the block index keeps no state of the blocks with its time, and the
+// block-index reconciliation rewrites them with no event, dating what it writes from the post's
+// own last edit (refs.IndexOwedItemBlocks), so a re-index after the cut of a post that no event
+// changed after it reads as written before the cut. Nor does any record give a part of an ask:
+// no writer stores an ask's revision or part ids in its events (reason P). The tree is read from
+// the text the index holds now, so it goes out with the text. The block of a post deleted at any
+// time reads removed with no text, as the post reads deleted at the cut (decision 14), and nothing
+// of it is left out. The block's node, id and reference are the reply's own, which no write
+// changes, and its post's edit time and delete mark are the shadow's.
+func replyBlocksAtTheCut(ctx context.Context, blocks []*model.ReplyBlock, at func(index int) string, trees bool) {
 	for index, block := range blocks {
 		if block == nil || block.DeletedAt != nil {
-			continue
-		}
-		if ask := askOf(block); ask != "" && given[ask] {
 			continue
 		}
 		place := at(index) + "/reply_block"
@@ -259,24 +224,24 @@ func (s *server) replyBlocksAtTheCut(ctx context.Context, cut asof.Cut, blocks [
 			leaveOut(ctx, place+"/text_tree")
 		}
 	}
-	return nil
 }
 
 // anchorAtTheCut reports whether ctx carries a cut, at which the single read of a comment or an
-// ask (getComment, getAsk) reads no document for its anchor's block: the place of the block at
-// place/anchor_block is left out where the anchor names a block (reason E). The block path is
-// computed from a document tree (pmdoc.BlockPathOf), and a stored version is markdown, which
-// holds the id of a typed block only: the tree of the version at the cut does not hold the id of
-// an untyped block, nor of the blocks that hold a typed one, so no record gives the path at the
-// cut. Where the anchor at the cut names no block, the read gives no place, unless the anchor's
-// block id is itself one that no record gives at the cut (commentsAtTheCut, askAtTheCut): then
-// whether the anchor named a block at the cut is unknown, and the read leaves the place out with
-// it. At no cut the caller reads the place from the live document.
-func anchorAtTheCut(ctx context.Context, anchor *model.Anchor, place string) bool {
+// ask (getComment, getAsk) reads no document for its anchor's block. There it leaves out the
+// place of the block at place/anchor_block (reason E) where the anchor names a block, and where
+// blockUnknown says that no record gives the anchor's block id at the cut (commentsAtTheCut,
+// askFieldsAtTheCut): then whether the anchor named a block at the cut is unknown. The block
+// path is computed from a document tree (pmdoc.BlockPathOf), and a stored version is markdown,
+// which holds the id of a typed block only: the tree of the version at the cut does not hold the
+// id of an untyped block, nor of the blocks that hold a typed one, so no record gives the path at
+// the cut. Where the anchor at the cut names no block and its block id is known, the read gives
+// no place. At no cut it leaves out nothing, and the caller reads the place from the live
+// document.
+func anchorAtTheCut(ctx context.Context, anchor *model.Anchor, place string, blockUnknown bool) bool {
 	if _, atCut := asof.CutFrom(ctx); !atCut {
 		return false
 	}
-	if anchor != nil && !anchorNamesNoBlock(anchor) {
+	if blockUnknown || anchor != nil && !anchorNamesNoBlock(anchor) {
 		leaveOut(ctx, place+"/anchor_block")
 	}
 	return true

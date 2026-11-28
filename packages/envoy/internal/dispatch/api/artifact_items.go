@@ -32,7 +32,7 @@ func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
 	}
 	// At a cut each ask leaves out what the records at the cut do not give of it.
 	trees := wantsDisplayTrees(r)
-	if err := s.leaveOutPastAskFields(r.Context(), asks, elementsOf(""), trees); err != nil {
+	if _, err := s.askFieldsAtTheCut(r.Context(), asks, elementsOf(""), trees); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

@@ -275,26 +275,20 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if !anchorAtTheCut(r.Context(), comments[0].Anchor, "/comment") {
-		comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), comments[0].Anchor)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
 	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "reply_to", comment.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// At a cut one call reads the comment and its replies: the comment at /comment, each reply
-	// at /replies/<n>. The place of the comment's anchored block is left out with its block id,
-	// where no record gives that id at the cut (anchorAtTheCut).
+	// at /replies/<n>. It answers whether no record gives the block id of the comment's anchor at
+	// the cut, which anchorAtTheCut takes to leave out the place of the comment's block.
 	trees := wantsDisplayTrees(r)
+	var undatedBlocks map[string]bool
 	if _, atCut := asof.CutFrom(r.Context()); atCut {
 		thread := append([]model.Comment{comments[0]}, replies...)
 		reply := elementsOf("/replies")
-		undatedBlocks, err := s.commentsAtTheCut(r.Context(), thread, func(index int) string {
+		undatedBlocks, err = s.commentsAtTheCut(r.Context(), thread, func(index int) string {
 			if index == 0 {
 				return "/comment"
 			}
@@ -304,8 +298,12 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if undatedBlocks[comments[0].ID] {
-			leaveOut(r.Context(), "/comment/anchor_block")
+	}
+	if !anchorAtTheCut(r.Context(), comments[0].Anchor, "/comment", undatedBlocks[comments[0].ID]) {
+		comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), comments[0].Anchor)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
 		}
 	}
 	reader := s.readDisplayTrees(r.Context(), trees)

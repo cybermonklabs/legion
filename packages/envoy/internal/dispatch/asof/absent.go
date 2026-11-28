@@ -33,7 +33,7 @@ const (
 		"No event records when the outbox reached that topic."
 	// E, for the block that a reply names.
 	reasonReplyBlock = "Dispatch keeps no record of the blocks of a comment or a message at the cut: the block index rewrites them with no event. " +
-		"It gives a part of an ask only where the ask did not change after the cut and its newest event at the cut stores the revision and the part ids that the block index holds now."
+		"No writer stores an ask's revision or part ids in its events, so no record gives a part of an ask at the cut either."
 	// E, for the place of an anchored block.
 	reasonAnchorBlock = "A stored document version records the id of a typed block only. " +
 		"No record gives the place of this block in the document at the cut."
@@ -59,8 +59,7 @@ const (
 	reasonReviewHashFill = "The fill at boot pinned the content hash of this review with no event. " +
 		"No record gives the time of the fill, so no record gives whether the review held the hash at the cut."
 	// P
-	reasonParts = "Dispatch gives an ask's revision and part ids only where the ask did not change after the cut " +
-		"and its newest event at the cut stores the revision and the part ids that the block index holds now."
+	reasonParts = "No writer stores an ask's revision or part ids in its events, so at a cut no record gives them."
 	// D
 	reasonProjectDefault = "The person comes from a project default from before the first event of that default."
 	// B
@@ -133,10 +132,9 @@ var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/artifacts/{id}/events": eventLogFields(),
 	"GET /api/v1/events/log":            eventLogFields(),
 
-	// A post gives no ask's wording: a comment gives only the id of the ask whose thread holds it.
-	// The text of a reply's block is left out but where the block is a part of an ask whose parts
-	// the records at the cut give, and an ask whose wording is unknown gives none
-	// (AskPartsAtTheCutStatement, AsksChangedAfterStatement).
+	// A post gives no ask's wording: a comment gives only the id of the ask whose thread holds it,
+	// and the text of the block that a reply names, a part of an ask too, is left out at every cut
+	// (reasonReplyBlock).
 	"GET /api/v1/issues/{key}/comments":   commentFields("/*"),
 	"GET /api/v1/artifacts/{id}/comments": commentFields("/*"),
 	"GET /api/v1/comments/{id}": slices.Concat(commentFields("/comment"), commentFields("/replies/*"), []AbsentField{

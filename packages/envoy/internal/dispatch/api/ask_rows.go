@@ -297,7 +297,7 @@ func applyAskBacklinkCounts(asks []*model.Ask, counts map[string]int) {
 // declares no counting arms for is refused as the count is queued, which queues nothing and
 // answers nothing itself, so the apply reports that refusal. A read at a cut, which ctx carries,
 // queues no count and stamps none: the reference graph keeps no history, and a past-time answer
-// leaves the count out (leaveOutPastAskFields).
+// leaves the count out (askFieldsAtTheCut).
 func queueAskDetails(ctx context.Context, b *pgx.Batch, who model.Actor, asks []*model.Ask) func() error {
 	askIDs := distinctAskIDs(asks)
 	openedEventIDs := make(map[string]int64, len(askIDs))

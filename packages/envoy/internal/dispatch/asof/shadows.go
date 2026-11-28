@@ -261,12 +261,12 @@ var MachineryTables = map[string]string{
 // test of the shadows admits these tables with no shadow; each read of one of them at a cut
 // must apply its predicate.
 var CutReadTables = map[string]string{
-	"ask_block_state": "Only the revision of an ask that did not change after the cut (AsksChangedAfterStatement) " +
-		"and whose newest state event at the cut stored that revision and the part id of each of its options and of its answer (AskPartsAtTheCutStatement), " +
-		"which the read of its ask_blocks reads with it; an answer leaves out the revision of every other ask.",
+	"ask_block_state": "None of it: no writer stores an ask's revision in its events, " +
+		"so an answer leaves out the revision of every ask, which the read of its ask_blocks reads with it.",
 	"ask_block_texts": "Only the texts of the parts that a meaning hit covers, of an ask whose text did not change after the cut.",
-	"ask_blocks": "Only the parts of an ask whose revision ask_block_state gives at the cut; " +
-		"an answer leaves out the part ids and the revision of every other ask, and the text of each of its parts that a reply names, and whether it is removed.",
+	"ask_blocks": "Only the node and the id of the part that a reply names, which the reply's own row names: " +
+		"no writer stores an ask's part ids in its events, so an answer leaves out the part ids of every ask, " +
+		"and the text of each part that a reply names, and whether it is removed.",
 	"comment_block_texts": "Only the texts of the blocks that a meaning hit covers, of a comment whose text did not change after the cut.",
 	"comment_blocks": "Only the node and the id of the block that a reply names, which the reply's own row names, " +
 		"and the blocks of a comment deleted at any time, whose blocks read removed with no text as the comment reads deleted at the cut: " +

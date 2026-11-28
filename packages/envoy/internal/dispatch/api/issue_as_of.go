@@ -61,7 +61,7 @@ func refuseThreadPageAtCut(w http.ResponseWriter, r *http.Request) bool {
 // holds no member). Progress follows decision 9 (tasksAtTheCut). The documents leave out the
 // documents of an approval request whose newest event at the cut holds none (reason B,
 // approvalAtTheCut), and the open asks what the records at the cut do not give of them
-// (leaveOutPastAskFields). trees is whether the read carries display trees.
+// (askFieldsAtTheCut). trees is whether the read carries display trees.
 func (s *server) issueAtTheCut(ctx context.Context, read *issueDetail, trees bool) error {
 	leaveOut(ctx, "/design_gates", "/"+model.ReferencedByCountKey)
 	leaveOutRouteReach(ctx, read.Route, "")
@@ -88,7 +88,8 @@ func (s *server) issueAtTheCut(ctx context.Context, read *issueDetail, trees boo
 			approvalAtTheCut(ctx, &approval.ArtifactApproval, artifact(index))
 		}
 	}
-	return s.leaveOutPastAskFields(ctx, asks, elementsOf("/open_asks"), trees)
+	_, err = s.askFieldsAtTheCut(ctx, asks, elementsOf("/open_asks"), trees)
+	return err
 }
 
 // issueSummariesAtTheCut completes the listing at the cut ctx carries, each issue at the place
@@ -172,21 +173,17 @@ func (s *server) tasksAtTheCut(ctx context.Context, keys []string) (map[string]*
 	return tasks, rows.Err()
 }
 
-// leaveOutPastAskFields names what a past-time answer leaves out of each of asks, the ask at the
+// askFieldsAtTheCut names what a past-time answer leaves out of each of asks, the ask at the
 // place at(index) names in the answer (decision 5):
 //   - referenced_by_count, which the reference graph gives now (reason G);
 //   - revision, each option's id and the answer's id, the ask's parts as the present tables hold
-//     them (reason P), unless the ask did not change after the cut (asof.AsksChangedAfterStatement)
-//     and its newest state event at the cut, as public.events stores it, holds that revision and
-//     those part ids (asof.AskPartsAtTheCutStatement, askPartsThen.confirms). The read gives each
-//     ask the revision and the part ids of the present tables, at a cut too (queueAskDetails), so
-//     what the stored event confirms is what the answer shows. The stored parts are read only for
-//     the asks that did not change and to which the read gives a revision;
+//     them (reason P), of every ask: no writer stores them in an ask's events, so no record gives
+//     them at the cut. The read gives each ask the revision and the part ids of the present
+//     tables, at a cut too (queueAskDetails);
 //   - the question, the options, multiple and the urgency, and the question's tree where the
 //     answer carries display trees (trees), for an ask whose wording at the cut no record gives:
 //     a restore changed it with no event, at a time no record gives (reason E,
-//     asof.AsksChangedAfterStatement). Such an ask counts as changed, so its parts are left out
-//     too;
+//     asof.AsksChangedAfterStatement);
 //   - waiting_on_person where the records at the cut give no person: no one handed the ask on,
 //     its issue held nobody, and its project's default assignee is unknown at the cut, which the
 //     projects shadow gives as null (reason D); the read then gives no person;
@@ -196,13 +193,10 @@ func (s *server) tasksAtTheCut(ctx context.Context, keys []string) (map[string]*
 //     the backfill of anchor blocks may have written its block id before the cut with no event
 //     (reason E, asof.AskAnchorBlocksNotGivenStatement). The statement is sent only where an ask
 //     holds such an anchor.
-func (s *server) leaveOutPastAskFields(ctx context.Context, asks []model.Ask, at func(index int) string, trees bool) error {
-	_, err := s.askFieldsAtTheCut(ctx, asks, at, trees)
-	return err
-}
-
-// askFieldsAtTheCut is leaveOutPastAskFields, and answers the ids of the asks whose anchor's block
-// id it left out: the read of one ask leaves out the place of that ask's block too (askAtTheCut).
+//
+// It answers the ids of the asks whose anchor's block id it left out: the read of one ask leaves
+// out the place of that ask's block too (getAsk, anchorAtTheCut). A request at no cut leaves out
+// nothing.
 func (s *server) askFieldsAtTheCut(ctx context.Context, asks []model.Ask, at func(index int) string, trees bool) (map[string]bool, error) {
 	cut, atCut := asof.CutFrom(ctx)
 	if !atCut || len(asks) == 0 {
@@ -216,21 +210,9 @@ func (s *server) askFieldsAtTheCut(ctx context.Context, asks []model.Ask, at fun
 			unpinned = append(unpinned, asks[index].ID)
 		}
 	}
-	changed, wordingUnknown, err := s.asksChangedAfterTheCut(ctx, ids, cut)
+	wordingUnknown, err := s.asksWordingUnknownAtTheCut(ctx, ids, cut)
 	if err != nil {
-		return nil, fmt.Errorf("read which asks changed after the cut: %w", err)
-	}
-	var unchanged []string
-	for index := range asks {
-		if !changed[asks[index].ID] && asks[index].Revision > 0 {
-			unchanged = append(unchanged, asks[index].ID)
-		}
-	}
-	var stored map[string]askPartsThen
-	if len(unchanged) > 0 {
-		if stored, err = s.askPartsAtTheCut(ctx, unchanged, cut); err != nil {
-			return nil, fmt.Errorf("read the parts that the asks' events at the cut stored: %w", err)
-		}
+		return nil, fmt.Errorf("read which asks have no wording at the cut: %w", err)
 	}
 	var undatedBlocks map[string]bool
 	if len(unpinned) > 0 {
@@ -241,9 +223,7 @@ func (s *server) askFieldsAtTheCut(ctx context.Context, asks []model.Ask, at fun
 	for index, ask := range asks {
 		place := at(index)
 		leaveOut(ctx, place+"/"+model.ReferencedByCountKey)
-		if changed[ask.ID] || !stored[ask.ID].confirms(ask) {
-			leaveOutAskParts(ctx, place, len(ask.Options), ask.Answer != nil)
-		}
+		leaveOutAskParts(ctx, place, len(ask.Options), ask.Answer != nil)
 		if wordingUnknown[ask.ID] {
 			leaveOutAskWording(ctx, place, trees)
 		}

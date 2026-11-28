@@ -14,8 +14,7 @@ var askStateTypes = []string{
 // the partial index events_ask_state (migration 20261120004316) names exactly these types, in
 // this order, so that the planner can prove that the index serves that read: a change here needs
 // a new index. That predicate also holds created_at is not null, so each read of the index
-// compares created_at with the cut, as asksShadow, AsksChangedAfterStatement and
-// AskPartsAtTheCutStatement do.
+// compares created_at with the cut, as asksShadow and AsksChangedAfterStatement do.
 func AskStateTypes() []string { return slices.Clone(askStateTypes) }
 
 // AsksChangedAfterStatement reads which asks changed after a cut, and which of them hold a
@@ -24,9 +23,8 @@ func AskStateTypes() []string { return slices.Clone(askStateTypes) }
 // wording at the cut is unknown (wording_unknown). An ask changed after the cut where an event of
 // its state (AskStateTypes) is later than the cut, or where its wording at the cut is unknown: a
 // write with no event changed that wording, and that write can be later than the cut. A
-// past-time answer gives an ask's revision and its part ids from the present tables only for an
-// ask that did not change after the cut and whose newest state event at the cut stored them
-// (AskPartsAtTheCutStatement), and leaves them out for every other ask (reason P).
+// past-time answer reads of it only which asks hold a wording that no record gives (api's
+// asksWordingUnknownAtTheCut).
 //
 // The wording is the question, the options, multiple and the urgency. The restore of a decided
 // ask's wording (docs' decidedWordingRestore, at boot and at a document's settlement) writes them
@@ -42,9 +40,8 @@ func AskStateTypes() []string { return slices.Clone(askStateTypes) }
 //
 // Where that wording is not w, a write with no event changed the wording after w's event, at a
 // time the records do not give. The wording at the cut is then unknown, and the answer leaves out
-// the four members (reason E), and the parts too, since the present parts are those of another
-// wording. The options are compared with no part id: a payload's options carry each option's part
-// id, and the row's options and an edit's previous options do not.
+// the four members (reason E). The options are compared with no part id: a payload's options
+// carry each option's part id, and the row's options and an edit's previous options do not.
 //
 // It names public.events and public.asks by their schema, so that the store's binding at a cut
 // does not read a shadow in their place (Bind). The partial index events_ask_state serves each
@@ -74,41 +71,6 @@ var AsksChangedAfterStatement = `select x.id, x.wording_unknown from (
 		and r.id = (case when pg_input_is_valid(a.id, 'uuid') then a.id::uuid end)
 ) x
 where x.later is not null or x.wording_unknown`
-
-// AskPartsAtTheCutStatement reads the part state that the newest state event of each ask at a cut
-// stored. Of the asks whose ids $1 holds (text[]), it answers the id of each ask whose newest event
-// of its state (AskStateTypes) at or before the cut $2 (timestamptz) stores a JSON number as its
-// revision, and beside it what that event holds as public.events stores it: its revision
-// (revision), its options (options) and its answer (answer), each a JSON value, null where the
-// payload holds none. The follower events carry no ask and are no state event (AskFollowerTypes),
-// so it reads none. The part ids it answers are the ones the event's write stored, never the ones a
-// read adds to the payload from the present tables (api's attachAskEventFields).
-//
-// A past-time answer gives an ask's revision and its part ids from the present tables only where
-// that payload holds the same positive revision as the block index holds now, and the same part
-// id for each of its options and for its answer, and the ask did not change after the cut
-// (AsksChangedAfterStatement); it leaves them out for every other ask (reason P). The revision goes
-// up at each change of the ask's parts, also at a change that writes no event: a re-index by the
-// block-index reconciliation, and a restore of a decided ask's wording. So a part state that the
-// newest event at the cut stored and that the index holds now is the part state at the cut. No
-// writer of this build stores a revision or a part id, so today the answer leaves out the parts of
-// every ask.
-//
-// The revision is tested on the newest event alone, after the lateral read picks it: an older
-// event's revision would stand for a part state that a newer event may have changed.
-//
-// It names public.events by its schema, so that the store's binding at a cut does not read a
-// shadow in its place (Bind). The partial index events_ask_state serves the read of each ask's
-// events, as it serves AsksChangedAfterStatement's.
-var AskPartsAtTheCutStatement = `select a.id, s.payload->'revision' as revision, s.payload->'options' as options, s.payload->'answer' as answer
-	from unnest($1::text[]) as a(id)
-	cross join lateral (
-		select e.payload from public.events e
-		where e.payload->>'id' = a.id and e.type in ` + askStateList + `
-			and e.created_at <= $2::timestamptz
-		order by e.id desc limit 1
-	) s
-	where jsonb_typeof(s.payload->'revision') = 'number'`
 
 // askWording is the wording of an ask as four SQL expressions: its question, its options (a JSON
 // array), whether it takes several options, and its urgency.

@@ -37,12 +37,11 @@ body: |-
   names, and its `text_tree` under `Dispatch-Trees: 1`, and names them in
   `Dispatch-As-Of-Absent`, whether or not the post changed after the cut: the block index keeps
   no record of a post's blocks at the cut, and its reconciliation rewrites them with no event. A
-  reply to a post deleted at any time still reads the block removed with no text. An ask's
-  `revision`, and the `id` of each of its options and of its answer, in every answer that gives
-  the ask and in an event log's ask events, are given at a cut only where the ask did not change
-  after the cut and its newest event at the cut stores that same revision and those ids; so is
-  the block of a reply to a part of the ask. No event stores them yet, so an answer at a cut
-  leaves them out for every ask.
+  reply to a post deleted at any time still reads the block removed with no text. No writer
+  stores an ask's `revision`, or the `id` of its options and of its answer, in the ask's events,
+  so at every cut every answer that gives an ask, and an event log's ask events, leave them out
+  and name them in `Dispatch-As-Of-Absent`. So a reply to a part of an ask leaves out the part's
+  `text` and `removed` too, as a reply to a post does.
 
   An agent's answers at a cut count an event that a person wrote in the window the request asks
   for, and that the outbox published to the session's topic, only where the event's

@@ -970,7 +970,21 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if !anchorAtTheCut(r.Context(), ask.Anchor, "/ask") {
+	// At a cut the read leaves out what the records at the cut do not give of the ask
+	// (askFieldsAtTheCut), and of its thread what threadsAtTheCut names. askFieldsAtTheCut answers
+	// whether no record gives the block id of the ask's anchor at the cut, which anchorAtTheCut
+	// takes to leave out the place of the ask's block.
+	trees := wantsDisplayTrees(r)
+	_, atCut := asof.CutFrom(r.Context())
+	var undatedBlocks map[string]bool
+	if atCut {
+		undatedBlocks, err = s.askFieldsAtTheCut(r.Context(), []model.Ask{ask}, func(int) string { return "/ask" }, trees)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	if !anchorAtTheCut(r.Context(), ask.Anchor, "/ask", undatedBlocks[ask.ID]) {
 		ask.AnchorPosition, err = s.anchorBlock(r.Context(), ask.Anchor)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -1007,7 +1021,6 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	//
 	// The ask, its replies, the wordings it went through and every answer it was given are one
 	// read of the table: the whole page the dashboard draws from this route in one query.
-	trees := wantsDisplayTrees(r)
 	reader := s.readDisplayTrees(r.Context(), trees)
 	read := askRead{askThread: askThread{
 		Replies:   shapedComments(replies, reader),
@@ -1019,9 +1032,11 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	read.Ask.Ask = ask
 	read.Ask.shape(reader)
 	reader.resolve()
-	if err := s.askAtTheCut(r.Context(), read, trees); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if atCut {
+		if err := s.threadsAtTheCut(r.Context(), []*askThread{&read.askThread}, []string{""}, trees); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	WriteJSON(w, http.StatusOK, read)
 }

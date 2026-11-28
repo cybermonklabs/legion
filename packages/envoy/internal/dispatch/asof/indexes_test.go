@@ -113,16 +113,8 @@ func TestTheShadowsUseTheirIndexes(t *testing.T) {
 			index:     "events_created_at",
 		},
 		{
-			// The part state that each ask's newest state event at the cut stored (api's
-			// askPartsAtTheCut): each ask's events through the index of its types.
-			name:      "the asks' stored parts at the cut",
-			statement: asof.AskPartsAtTheCutStatement,
-			arguments: []any{[]string{"ask-7"}, cut.Time()},
-			index:     "events_ask_state",
-		},
-		{
 			// Which asks changed after the cut, and which hold a wording no record gives at it
-			// (api's leaveOutPastAskFields): each ask's events through the index of its types.
+			// (api's asksWordingUnknownAtTheCut): each ask's events through the index of its types.
 			name:      "the asks changed after the cut, read alone",
 			statement: asof.AsksChangedAfterStatement,
 			arguments: []any{[]string{"ask-7"}, cut.Time()},
@@ -137,7 +129,7 @@ func TestTheShadowsUseTheirIndexes(t *testing.T) {
 		},
 		{
 			// Which comments' and asks' anchors name at the cut no block that the record after it
-			// names (api's commentsAtTheCut and leaveOutPastAskFields): each item's events through
+			// names (api's commentsAtTheCut and askFieldsAtTheCut): each item's events through
 			// the index of its own types.
 			name:      "the comment anchor blocks pinned with no event",
 			statement: asof.CommentAnchorBlocksNotGivenStatement,
