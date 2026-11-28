@@ -21,7 +21,7 @@ REQUIRED = (
     "LABEL_DOMAIN", "COMPUTE_CLASS", "SERVER_CPU", "SERVER_MEMORY", "PG_CPU", "PG_MEMORY", "POD_CPU", "DRIVER_MEMORY",
     "SCRATCH", "COST_USD",
 )
-OPTIONAL = ("RUNTIME_CLASS", "GATING_CLASS", "PAINT_RUNS", "CATCHUP")
+OPTIONAL = ("RUNTIME_CLASS", "GATING_CLASS", "PAINT_RUNS", "CATCHUP", "SPLIT")
 # tab builds the web app and drives Chromium through the paint's cases and the recompute beside the
 # measurement; k22 loads and catches up two databases of the one-project fixture, one at the base
 # the checks name and one at this head: each takes three hours at most (dispatch://INFRA-2918, T27).
@@ -64,6 +64,8 @@ def main():
             sys.exit(f"render-job.py: PAINT_RUNS is at least 2 in mode k14, so each project's two reads are each the first after a restart once, not {runs}")
     if values["CATCHUP"] and not re.fullmatch(r"[1-9][0-9]*[hm]", values["CATCHUP"]):
         sys.exit(f"render-job.py: CATCHUP is a whole number of hours or minutes, such as 150m, not {values['CATCHUP']!r}")
+    if values["SPLIT"] and (values["MODE"] != "tab" or values["SPLIT"] not in ("0", "1")):
+        sys.exit(f"render-job.py: SPLIT is 1 or 0, in mode tab alone, not {values['SPLIT']!r} in mode {values['MODE']!r}")
     hours = ATTEMPT_HOURS[values["MODE"]]
     values["DRIVER_CPU"] = str(pod - server - pg)
     values["ATTEMPT_SECONDS"] = str(hours * 3600)

@@ -86,8 +86,8 @@
 #                          one-project fixture and k22's capture, at head and base
 #   EVALBENCH_CHROMIUM     tab: a Chromium to drive in place of the one Playwright installs
 #   run.sh's EVALBENCH_PORT, EVALBENCH_CATCHUP, EVALBENCH_QUIET, EVALBENCH_CATALOG,
-#   EVALBENCH_PAINT_RUNS, EVALBENCH_TAB_QUIET, EVALBENCH_TAB_CATALOG and EVALBENCH_RECOMPUTE_ARGS
-#   pass through.
+#   EVALBENCH_PAINT_RUNS, EVALBENCH_TAB_QUIET, EVALBENCH_TAB_CATALOG, EVALBENCH_RECOMPUTE_ARGS and
+#   EVALBENCH_SPLIT pass through.
 set -euo pipefail
 
 mode=${1:-}

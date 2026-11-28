@@ -66,6 +66,10 @@
 #                          are each the first after a restart once, so the render refuses 1
 #   CATCHUP                (optional) how long the consumers' catch-up may take (EVALBENCH_CATCHUP);
 #                          unset, 1h, and 150m in mode k14
+#   SPLIT                  (optional, mode tab alone) 1 for a split run, whose instruments explain
+#                          a plain run's numbers and cost the page and the server time of their own
+#                          (EVALBENCH_SPLIT, run.sh's tab); unset or 0, a plain run, which judges
+#                          every bound
 #   OMP_SESSION OMP_SESSION_TITLE      the session that runs it, as the farm's policy reads it
 #   LABEL_DOMAIN           the build farm's label domain, under which its policy reads a Job's
 #                          session, cost, branch, head and CPU class
@@ -230,6 +234,7 @@ spec:
         - {name: EVALBENCH_TEN_TIMES, value: "${TEN_TIMES}"}
         - {name: EVALBENCH_PAINT_RUNS, value: "${PAINT_RUNS}"}
         - {name: EVALBENCH_CATCHUP, value: "${CATCHUP}"}
+        - {name: EVALBENCH_SPLIT, value: "${SPLIT}"}
         - {name: EVALBENCH_NODE, valueFrom: {fieldRef: {fieldPath: spec.nodeName}}}
         - {name: EVALBENCH_COMPUTE_CLASS, value: "${COMPUTE_CLASS}"}
         - {name: EVALBENCH_GATING_CLASS, value: "${GATING_CLASS}"}

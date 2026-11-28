@@ -2,8 +2,13 @@
 // Chromium, resolved from packages/dispatch, which locks it; a signed-in reader's page of the tab
 // with the instrument that times it; the page's own live frames, replayed into what each of its
 // views holds; the server's debug lines, which time the server's steps (its DISPATCH_LOG_LEVEL is
-// debug under run.sh's `tab`); and the database the bench's Postgres serves. paint.ts and
-// recompute.ts are the two steps that read it, run by evalbench/run.sh's `tab` command with bun.
+// debug under run.sh's `tab` in a split run, EVALBENCH_SPLIT=1); and the database the bench's
+// Postgres serves. paint.ts and recompute.ts are the two steps that read it, run by
+// evalbench/run.sh's `tab` command with bun.
+//
+// The split's instruments (each step's `--split 1`) explain a run's numbers and cost the page and
+// the server time of their own: a plain run, which judges every bound, runs none of them (the
+// architect's ruling on T33's split, dispatch://INFRA-2918/comment/b286546b-9d3c-4361-a987-dc1b3fdc4018).
 import { readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
@@ -38,6 +43,17 @@ export function numberOf(given: Map<string, string>, name: string, fallback: num
   if (!Number.isFinite(parsed))
     throw new Error(`--${name} is a number, not ${JSON.stringify(value)}`);
   return parsed;
+}
+
+/** Whether the step runs the split's instruments (`--split 1`; `--split 0` or none runs none): the
+ *  page instrument's recording of the subscribes, the app's marks, the long tasks and the socket's
+ *  opening (instrument), and the reads of the server's debug lines, which only a server at debug
+ *  writes. */
+export function splitOf(given: Map<string, string>): boolean {
+  const value = given.get("split") ?? "0";
+  if (value !== "0" && value !== "1")
+    throw new Error(`--split is 1 or 0, not ${JSON.stringify(value)}`);
+  return value === "1";
 }
 
 let failures = 0;
@@ -155,21 +171,51 @@ export async function launchChromium(): Promise<Browser> {
   });
 }
 
-/** The instrument each page of the tab runs before any of the app's own scripts: when each
- *  section of the first paint (`[data-section]`, the timeline's left out) first reads
- *  `data-state="painted"`, when each of the CI section's job lists (`[data-job-list]`) first holds
- *  no loading line, when the narrowed cards' loading mark (`[data-narrowing="loading"]`) shows
- *  and when it gives way to the narrowed values; for every frame of the page's live socket
- *  (`/ws/live`), when it arrived and when the page had painted after it; when the page sent each
- *  subscribe frame, by its sub (`sends`); and every performance mark the app sets that is named
- *  `dispatch:…` (`marks`): a snapshot's parse ended (`dispatch:live-snapshot:<sub>`,
- *  api/live-socket.ts), and a section or a CI job list committed its drawing
- *  (`dispatch:evals-section:<id>`, `dispatch:evals-job-list:<id>`, useDrawnMark.ts). Every time of
+/** The instrument each page of the tab runs before any of the app's own scripts. A plain run's
+ *  records what the bounds are judged by: when each section of the first paint (`[data-section]`,
+ *  the timeline's left out) first reads `data-state="painted"`, when each of the CI section's job
+ *  lists (`[data-job-list]`) first holds no loading line, when the narrowed cards' loading mark
+ *  (`[data-narrowing="loading"]`) shows and when it gives way to the narrowed values, and for every
+ *  frame of the page's live socket (`/ws/live`), when it arrived and when the page had painted
+ *  after it. A split run's (`split`) records besides: when the page made each live socket and when
+ *  it opened (`opened`); when the page sent each subscribe frame, by its sub (`sends`); every
+ *  performance mark the app sets that is named `dispatch:…` (`marks`): a snapshot's parse ended
+ *  (`dispatch:live-snapshot:<sub>`, api/live-socket.ts), and a section or a CI job list committed
+ *  its drawing (`dispatch:evals-section:<id>`, `dispatch:evals-job-list:<id>`, useDrawnMark.ts);
+ *  and every long task of the page's main thread, a task of 50 ms or more, with its start and
+ *  length (`longTasks`), which says whether the thread was busy between two frames. Every time of
  *  a DOM change is read twice: `at`, the change, and `painted`, two animation frames later, once
  *  the browser has presented it. Times are milliseconds since the epoch, so they compare with the
  *  database's commit timestamps and the server's log; the navigation's own start is `start`. */
-export const INSTRUMENT = `(() => {
-  const record = { start: performance.timeOrigin, sections: {}, jobLists: {}, narrowing: {}, frames: [], sockets: 0, sends: [], marks: [] };
+export function instrument(split: boolean): string {
+  const splitParts = !split
+    ? ""
+    : `
+  record.opened = []; record.sends = []; record.marks = []; record.longTasks = [];
+  const SUBSCRIBE = '{"type":"subscribe","sub":"';
+  const send = Measured.prototype.send;
+  Measured.prototype.send = function (data) {
+    if (this.__evalbenchSocket !== undefined && typeof data === "string" && data.startsWith(SUBSCRIBE)) {
+      const end = data.indexOf('"', SUBSCRIBE.length);
+      if (end > 0) record.sends.push({ socket: this.__evalbenchSocket, sub: data.slice(SUBSCRIBE.length, end), at: now() });
+    }
+    return send.call(this, data);
+  };
+  opened = (socket, ws) => {
+    const entry = { socket, made: now() };
+    record.opened.push(entry);
+    ws.addEventListener("open", () => { entry.open = now(); });
+  };
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries())
+      if (entry.name.startsWith("dispatch:")) record.marks.push({ name: entry.name, at: performance.timeOrigin + entry.startTime });
+  }).observe({ type: "mark", buffered: true });
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries())
+      record.longTasks.push({ at: performance.timeOrigin + entry.startTime, ms: entry.duration });
+  }).observe({ type: "longtask", buffered: true });`;
+  return `(() => {
+  const record = { start: performance.timeOrigin, sections: {}, jobLists: {}, narrowing: {}, frames: [], sockets: 0 };
   window.__evalbench = record;
   const now = () => performance.timeOrigin + performance.now();
   const stamp = (entry) => {
@@ -177,7 +223,7 @@ export const INSTRUMENT = `(() => {
     requestAnimationFrame(() => requestAnimationFrame(() => { entry.painted = now(); }));
     return entry;
   };
-  const SUBSCRIBE = '{"type":"subscribe","sub":"';
+  let opened = null;
   const Native = window.WebSocket;
   class Measured extends Native {
     constructor(url, protocols) {
@@ -185,6 +231,7 @@ export const INSTRUMENT = `(() => {
       if (!String(url).includes("/ws/live")) return;
       const socket = ++record.sockets;
       this.__evalbenchSocket = socket;
+      if (opened !== null) opened(socket, this);
       let index = 0;
       this.addEventListener("message", () => {
         const entry = { socket, index: index++ };
@@ -192,19 +239,8 @@ export const INSTRUMENT = `(() => {
         stamp(entry);
       });
     }
-    send(data) {
-      if (this.__evalbenchSocket !== undefined && typeof data === "string" && data.startsWith(SUBSCRIBE)) {
-        const end = data.indexOf('"', SUBSCRIBE.length);
-        if (end > 0) record.sends.push({ socket: this.__evalbenchSocket, sub: data.slice(SUBSCRIBE.length, end), at: now() });
-      }
-      return super.send(data);
-    }
   }
-  window.WebSocket = Measured;
-  new PerformanceObserver((list) => {
-    for (const entry of list.getEntries())
-      if (entry.name.startsWith("dispatch:")) record.marks.push({ name: entry.name, at: performance.timeOrigin + entry.startTime });
-  }).observe({ type: "mark", buffered: true });
+  window.WebSocket = Measured;${splitParts}
   const check = () => {
     for (const element of document.querySelectorAll("[data-section]")) {
       const id = element.getAttribute("data-section");
@@ -228,6 +264,7 @@ export const INSTRUMENT = `(() => {
   new MutationObserver(check).observe(document, { subtree: true, childList: true, attributes: true,
     attributeFilter: ["data-state", "data-narrowing", "role"] });
 })();`;
+}
 
 /** One time the instrument read: the DOM change and the presentation after it. */
 export interface Stamp {
@@ -241,29 +278,34 @@ export interface Mark {
   at: number;
 }
 
-/** What the instrument holds of one page. */
+/** What the instrument holds of one page; the split's records are empty in a plain run. */
 export interface Instrumented {
   start: number;
   sections: Record<string, Stamp & { state: string }>;
   jobLists: Record<string, Stamp & { failed: boolean }>;
   narrowing: { loading?: Stamp; narrowed?: Stamp };
   frames: (Stamp & { socket: number; index: number })[];
+  /** Each live socket the page made, when it made it and when it opened (none before). */
+  opened: { socket: number; made: number; open?: number }[];
   /** Each subscribe frame the page sent, by its socket and sub, when it sent it. */
   sends: { socket: number; sub: string; at: number }[];
   /** Every `dispatch:` mark set, the ones the app has cleared since among them, each once. */
   marks: Mark[];
+  /** Every long task of the page's main thread: when it began and how long it ran. */
+  longTasks: { at: number; ms: number }[];
 }
 
-/** Reads the instrument's record off the page, its frames from `fromFrame` on: the marks its
- *  observer has been handed so far, and every mark the page's timeline still holds, which an
- *  observer not yet called has not been handed. */
+/** Reads the instrument's record off the page, its frames from `fromFrame` on: in a split run, the
+ *  marks its observer has been handed so far and every mark the page's timeline still holds, which
+ *  an observer not yet called has not been handed. */
 export async function readInstrument(page: Page, fromFrame = 0): Promise<Instrumented> {
   const record = await page.evaluate<Instrumented>(
-    `(() => { const r = window.__evalbench;
-       const held = performance.getEntriesByType("mark").filter((entry) => entry.name.startsWith("dispatch:"))
+    `(() => { const r = window.__evalbench; const split = r.marks !== undefined;
+       const held = !split ? [] : performance.getEntriesByType("mark").filter((entry) => entry.name.startsWith("dispatch:"))
          .map((entry) => ({ name: entry.name, at: performance.timeOrigin + entry.startTime }));
        return { start: r.start, sections: r.sections, jobLists: r.jobLists, narrowing: r.narrowing,
-         frames: r.frames.slice(${fromFrame}), sends: r.sends, marks: r.marks.concat(held) }; })()`
+         frames: r.frames.slice(${fromFrame}), opened: r.opened || [], sends: r.sends || [],
+         marks: (r.marks || []).concat(held), longTasks: r.longTasks || [] }; })()`
   );
   const seen = new Set<string>();
   record.marks = record.marks.filter((one) => {
@@ -283,18 +325,29 @@ export function firstMark(record: Instrumented, name: string): number | undefine
   return first;
 }
 
-/** A signed-in reader's browser context: the instrument on every page it opens, and the session
- *  cookie of the server's dev sign-in (signIn), so no page loads before the tab. */
+/** How long the page's long tasks ran within [from, to), milliseconds since the epoch: the main
+ *  thread's time busy in tasks of 50 ms or more, which no frame's handler could run beside. */
+export function busyWithin(record: Instrumented, from: number, to: number): number {
+  let busy = 0;
+  for (const task of record.longTasks)
+    busy += Math.max(0, Math.min(to, task.at + task.ms) - Math.max(from, task.at));
+  return busy;
+}
+
+/** A signed-in reader's browser context: the instrument on every page it opens, a split run's where
+ *  `split`, and the session cookie of the server's dev sign-in (signIn), so no page loads before
+ *  the tab. */
 export async function readerContext(
   browser: Browser,
   base: string,
-  login: string
+  login: string,
+  split: boolean
 ): Promise<BrowserContext> {
   const context = await browser.newContext({
     baseURL: base,
     viewport: { width: 1440, height: 1000 },
   });
-  await context.addInitScript({ content: INSTRUMENT });
+  await context.addInitScript({ content: instrument(split) });
   await signIn(context, base, login);
   return context;
 }
@@ -335,11 +388,14 @@ export interface Frame {
   parsed: Record<string, unknown> | null;
 }
 
-/** Everything a page's live socket carried: the views it subscribed, by sub, and, where `keep`,
- *  each frame it received, in order (a long drive keeps none, since its frames run to gigabytes).
- *  `onFrame` sees each frame as it is heard. */
+/** Everything a page's live socket carried: the views it subscribed, by sub, when the bench's
+ *  process heard the page send each one's first subscribe (milliseconds since the epoch, as a
+ *  frame's `heard`, both through the browser's own record of its socket, which costs the page
+ *  nothing), and, where `keep`, each frame it received, in order (a long drive keeps none, since
+ *  its frames run to gigabytes). `onFrame` sees each frame as it is heard. */
 export class LiveLog {
   readonly views = new Map<string, View>();
+  readonly subscribed = new Map<string, number>();
   readonly frames: Frame[] = [];
   onFrame: ((frame: Frame) => void) | null = null;
   private sockets = 0;
@@ -357,6 +413,7 @@ export class LiveLog {
         if (frame === null || typeof frame.sub !== "string") return;
         if (frame.type === "subscribe" && typeof frame.view === "object" && frame.view !== null) {
           this.views.set(frame.sub, frame.view as View);
+          if (!this.subscribed.has(frame.sub)) this.subscribed.set(frame.sub, Date.now());
         }
       });
       socket.on("framereceived", ({ payload }) => {

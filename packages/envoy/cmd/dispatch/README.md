@@ -1012,9 +1012,9 @@ The server and its subcommands log to stderr, one `key=value` line each (`log/sl
 `debug` adds the lines that time a write's way to an open page, each with the moments it names in Unix microseconds (`*_unix_us`) and the time each step took in milliseconds (`*_ms`):
 `dispatch: the eval day-row refresher read a page of changes` for each page of the refresher that reads the change log (the change positions it read, when it read them and when its day rows committed),
 `dispatch: delivery live hub read changes` for each read of the change log the live hub makes (the positions read and how many views they marked),
-`dispatch: delivery live hub timed a recompute` for each recompute (the view, how it stood marked, when it was due, and its read, fold and encode),
+`dispatch: delivery live hub timed a recompute` for each recompute and each expiry of a view (the view and the lane it ran on, how it stood marked, when it was due, picked, began and ended, and its read, fold and encode),
 and `dispatch: live socket wrote a frame` for each snapshot and delta a socket writes (its sub and position, and how long its encode and its compressed write took).
-The Evals tab's browser measurement (`evalbench/run.sh tab`) runs the server at `debug` and reads them.
+A split run of the Evals tab's browser measurement (`evalbench/run.sh tab` with `EVALBENCH_SPLIT=1`) runs the server at `debug` and reads them; a plain run, which judges the tab's bounds, runs it at `info`.
 
 ### Profiling
 

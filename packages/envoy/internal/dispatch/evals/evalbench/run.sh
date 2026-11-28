@@ -61,10 +61,13 @@
 # the server starts once more and INFRA-2916's write drive, phases A to D, runs with the tab open
 # on two pages and the merge timeline open on each (tab/recompute.ts). The server serves the built
 # web app (EVALBENCH_WEB_DIST) and signs its readers in through dev sign-in, with the cookie
-# identity a deployment uses. It logs at debug (DISPATCH_LOG_LEVEL=debug), and each of the two
-# steps reads its process's log (--server-log): the lines that time the refresher's pages, the
-# live hub's reads of the change log and its recomputes, and each frame a socket writes, which the
-# paint's split and the drive's trace of its slowest writes state.
+# identity a deployment uses. A plain run judges every bound and runs no instrument of the split's;
+# a split run (EVALBENCH_SPLIT=1) explains a plain run's numbers and costs the page and the server
+# time of its own: its server logs at debug (DISPATCH_LOG_LEVEL=debug), its pages run the split's
+# instrument, and each of the two steps (--split 1) reads its process's log (--server-log): the
+# lines that time the refresher's pages, the live hub's reads of the change log and its
+# recomputes, and each frame a socket writes, which the paint's split and the drive's trace of its
+# slowest writes state.
 #
 # capture-base is k22's capture at the base head (legion/INFRA-978 82380570f8) over the
 # one-project fixture: once the consumers have caught up, GET /api/v1/delivery/timeline for the 84
@@ -112,6 +115,7 @@
 #   EVALBENCH_TAB, EVALBENCH_DISPATCH_DIR, EVALBENCH_WEB_DIST   tab: the evalbench/tab directory,
 #                         packages/dispatch, and the built web app the server serves
 #   EVALBENCH_RECOMPUTE_ARGS  tab: more flags for tab/recompute.ts (its phases' sizes)
+#   EVALBENCH_SPLIT       tab: 1 for a split run (the tab's header above), 0 or unset for a plain one
 #   EVALBENCH_BASE_TIMELINE   capture-base and pages: the capture's file
 #   EVALBENCH_PAGES       pages: the built timelinepages command
 #
@@ -198,14 +202,21 @@ server_env=()
 status=0
 
 # The identity the server reads people by: the Go tests' trusted header, or, for the tab, the
-# cookie a deployment uses, signed by dev sign-in (which serves a loopback origin alone); the tab's
-# server logs at debug too, whose lines its two steps read (the header).
+# cookie a deployment uses, signed by dev sign-in (which serves a loopback origin alone); a split
+# run's tab server logs at debug too, whose lines its two steps read (the header).
 identity=(DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1)
 web_dist=$work/web
+split=${EVALBENCH_SPLIT:-0}
+if [ "$split" != 0 ] && [ "$split" != 1 ]; then
+  echo "FAIL run.sh: EVALBENCH_SPLIT is 1 or 0, not $split"
+  exit 2
+fi
 if [ "$command" = tab ]; then
   identity=(DISPATCH_IDENTITY=cookie DISPATCH_INSECURE_COOKIE=1 DISPATCH_DEV_SIGNIN=1 DISPATCH_SERVER_URL="$url")
   web_dist=$EVALBENCH_WEB_DIST
-  server_env=(DISPATCH_LOG_LEVEL=debug)
+  if [ "$split" = 1 ]; then
+    server_env=(DISPATCH_LOG_LEVEL=debug)
+  fi
 fi
 
 # start_server boots the server under its supervisor with its stderr in $1 and waits until
@@ -340,9 +351,13 @@ if [ "$command" = tab ]; then
     warmed=$work/paint-$paint_case.warmed restarted=$work/paint-$paint_case.restarted
     rm -f "$warmed" "$restarted"
     start_server "$work/server-warm-$paint_case.log"
+    split_flags=(--split "$split")
+    if [ "$split" = 1 ]; then
+      split_flags+=(--server-log "$work/server-paint-$paint_case.log")
+    fi
     bun "$EVALBENCH_TAB/paint.ts" --url "$url" --database "$database_url" --project INFRA --case "$paint_case" --rate "$mode" \
       --quiet "${EVALBENCH_TAB_QUIET:-30}" --catalog "${EVALBENCH_TAB_CATALOG:-65}" --warmed "$warmed" --restarted "$restarted" \
-      --server-log "$work/server-paint-$paint_case.log" &
+      "${split_flags[@]}" &
     paint_pid=$!
     # The cold navigation loads the app into the browser; then the server starts again under it.
     until [ -e "$warmed" ] || ! kill -0 "$paint_pid" 2>/dev/null; do sleep 0.2; done
@@ -355,9 +370,13 @@ if [ "$command" = tab ]; then
     stop_server
   done
   start_server "$work/server-recompute.log"
+  split_flags=(--split "$split")
+  if [ "$split" = 1 ]; then
+    split_flags+=(--server-log "$work/server-recompute.log")
+  fi
   # shellcheck disable=SC2086 # EVALBENCH_RECOMPUTE_ARGS is flags, split on purpose.
   bun "$EVALBENCH_TAB/recompute.ts" --url "$url" --database "$database_url" --project INFRA --rate "$mode" \
-    --token-file "$token_file" --server-log "$work/server-recompute.log" ${EVALBENCH_RECOMPUTE_ARGS:-} || status=1
+    --token-file "$token_file" "${split_flags[@]}" ${EVALBENCH_RECOMPUTE_ARGS:-} || status=1
   stop_server
   echo "MARK $(date -u +%FT%TZ) run.sh tab $mode exits $status"
   exit "$status"

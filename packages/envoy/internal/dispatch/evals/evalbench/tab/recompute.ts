@@ -37,22 +37,28 @@
 // judged write reaches each page within 2 s; a write that never reaches one fails.
 //
 // The trace (item 5 of the architect's ruling on T33's misses,
-// dispatch://INFRA-2918/comment/0d0aa027-83af-4a1b-9042-69f5d161ec32): once a phase is judged,
-// each of its --traced slowest writes (10), a write's delay its slowest page's and view's, gets
-// one `RESULT tab recompute trace` line with the time of each step from its commit: its own change
-// written and entered in the change log (a job write's in its own transaction; a facts write's by
-// the Legion facts pass), the eval day-row refresher's pass and the page that read that change,
-// the page's rewrite of the family's day rows (begun, folded, committed) and its own eval_days
-// change, written in that rewrite and entered in the log by a drain, the live hub's read of the
-// log that marked the view for it, the view's first and last marks and when they made it due, the
-// recompute whose answer carried it (its change position is the frame's) and how long its steps
-// took, and the frame's write, arrival and presentation. The changes are delivery_changes' rows
-// (their `at` and the commit of the transaction that entered each, track_commit_timestamp on); the
-// server's steps its debug lines (lib.ts's LOGGED) in the log --server-log names, none without it.
-// The trace judges nothing.
+// dispatch://INFRA-2918/comment/0d0aa027-83af-4a1b-9042-69f5d161ec32), a split run's alone
+// (`--split 1`, run.sh's EVALBENCH_SPLIT=1, whose server logs at debug; lib.ts's header): once a
+// phase is judged, each of its --traced slowest writes (10), a write's delay its slowest page's and
+// view's, gets one `RESULT tab recompute trace` line with the time of each step from its commit:
+// its own change written and entered in the change log (a job write's in its own transaction; a
+// facts write's by the Legion facts pass), the eval day-row refresher's page that was running as
+// the write committed (its pass's beginning, its rewrite's commit and its end), the refresher's
+// pass and the page that read the write's change, the page's rewrite of the family's day rows
+// (begun, folded, committed) and its own eval_days change, written in that rewrite and entered in
+// the log by a drain, the live hub's read of the log that marked the view for it, the view's first
+// and last marks and when they made it due, the recompute whose answer carried it (its change
+// position is the frame's): when the worker picked it, when it began, how long its steps took and
+// when it ended, with every recompute either of the hub's lanes ran between the view's due moment
+// and that beginning (`ran_before_begin`: view, lane, cause, begin and end), how long the serial
+// lane was busy in that span and, where the view's own last recompute was still under way at its
+// due moment, when that one ended; and the frame's write, arrival and presentation. The changes
+// are delivery_changes' rows (their `at` and the commit of the transaction that entered each,
+// track_commit_timestamp on); the server's steps its debug lines (lib.ts's LOGGED) in the log
+// --server-log names. The trace judges nothing.
 //
 //   bun recompute.ts --url <server> --database <url> --project INFRA [--rate stated|ten] \
-//     [--token-file <file holding the agent token>] [--server-log <file>] [--traced 10] \
+//     [--token-file <file holding the agent token>] [--split 1 --server-log <file>] [--traced 10] \
 //     [--phases A,B,C,D] [lat_r16.py's phase flags]
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -104,7 +110,12 @@ const tokenFile = given.get("token-file");
 const token = tokenFile ? readFileSync(tokenFile, "utf8").trim() : "evalbench-token";
 const login = given.get("login") ?? "alice";
 const phases = (given.get("phases") ?? "A,B,C,D").split(",");
+const split = splitOf(given);
 const serverLog = given.get("server-log");
+if (serverLog !== undefined && !split)
+  throw new Error(
+    "--server-log is read by a split run alone (--split 1), whose server logs at debug"
+  );
 const o = {
   aSeconds: numberOf(given, "a-seconds", 300),
   aRate: numberOf(given, "a-rate", 0),
@@ -792,9 +803,10 @@ async function runPhase(name: string, writes: Write[], note: string): Promise<vo
     passStarts.length = 0;
     pollTask = pollPasses();
   }
-  // Where the trace reads from: the server's log as it stands, and the change log's position.
+  // Where a split run's trace reads from: the server's log as it stands, and the change log's
+  // position.
   const logFrom = serverLog === undefined ? 0 : logSize(serverLog);
-  const changesFrom = await changesHead();
+  const changesFrom = split ? await changesHead() : 0;
   const started = Date.now();
   const base0 = started + 300;
   for (const write of writes) if (write.atMs !== undefined) write.atMs += base0;
@@ -868,7 +880,7 @@ async function runPhase(name: string, writes: Write[], note: string): Promise<vo
   result(
     `tab recompute phase=${name} rate=${rate} pages=${tabs.length} worst_ms=${ms(phaseWorst)} unreflected=${phaseUnreflected} budget_ms=${BOUND_MS}`
   );
-  await traceWrites(name, slowest, logFrom, changesFrom);
+  if (split) await traceWrites(name, slowest, logFrom, changesFrom);
   if (phaseWorst > BOUND_MS || phaseUnreflected > 0) {
     fail(
       `tab recompute phase=${name} rate=${rate}: the slowest write reached a page ${ms(phaseWorst)} ms after its commit, and ${phaseUnreflected} never did, over the ${BOUND_MS} ms`
@@ -1168,6 +1180,59 @@ async function traceWrites(
               recomputes(line, view, false) &&
               before(line, "ended_unix_us")
           );
+    // What the hub's lanes ran between the view's due moment and the recompute's beginning, how
+    // long the serial lane was busy in that span, and when the view's own last recompute ended
+    // where it was still under way at its due moment.
+    const due = recompute?.at("due_unix_us") ?? null;
+    const began = recompute?.at("began_unix_us") ?? null;
+    const ran =
+      due === null || began === null
+        ? []
+        : lines.filter((line) => {
+            const lineBegan = line.at("began_unix_us");
+            const lineEnded = line.at("ended_unix_us");
+            return (
+              line.msg === LOGGED.recompute &&
+              line !== recompute &&
+              lineBegan !== null &&
+              lineEnded !== null &&
+              lineBegan < began &&
+              lineEnded > due
+            );
+          });
+    const within = (line: Logged) =>
+      due === null || began === null
+        ? 0
+        : Math.max(
+            0,
+            Math.min(began, line.at("ended_unix_us") ?? due) -
+              Math.max(due, line.at("began_unix_us") ?? began)
+          );
+    const serialBusy = ran
+      .filter((line) => line.text("lane") === "serial")
+      .reduce((n, line) => n + within(line), 0);
+    const computingUntil = ran
+      .filter((line) => view !== undefined && recomputes(line, view, false))
+      .reduce<number | null>(
+        (last, line) => Math.max(last ?? 0, line.at("ended_unix_us") ?? 0),
+        null
+      );
+    const ranText = ran
+      .slice(0, 40)
+      .map(
+        (line) =>
+          `${[line.text("view"), line.text("evals_kind"), line.text("slug"), line.text("sort")].filter((part) => part !== "").join(":")}` +
+          `/${line.text("lane") || "none"}/${line.text("cause")}@${ms(from(line.at("began_unix_us")))}-${ms(from(line.at("ended_unix_us")))}`
+      )
+      .join(" ");
+    // The refresher's page whose pass began last before the commit, other than the one that read
+    // the write's change: the pass the write's own waited for.
+    const prior = lines.findLast(
+      (line) =>
+        line.msg === LOGGED.page &&
+        line !== page &&
+        (line.at("pass_began_unix_us") ?? Number.POSITIVE_INFINITY) <= commit
+    );
     const wrote = lines.findLast(
       (line) =>
         line.msg === LOGGED.frame &&
@@ -1183,17 +1248,22 @@ async function traceWrites(
       `tab recompute trace phase=${phase} rate=${rate} rank=${index + 1} write=${write.id} family=${write.family} ` +
         `day=${write.day} page=${one.tab.name} view=${shownOn} delay_ms=${ms(one.delay)} ` +
         `own_change_seq=${own?.seq ?? "none"} own_change_written_ms=${ms(from(own?.at))} own_change_logged_ms=${ms(from(own?.logged))} ` +
+        `prior_pass_began_ms=${ms(from(prior?.at("pass_began_unix_us")))} prior_rewrite_committed_ms=${ms(from(prior?.at(`${family}_committed_unix_us`)))} ` +
+        `prior_page_ended_ms=${ms(from(prior?.at("ended_unix_us")))} ` +
         `refresher_pass_began_ms=${ms(from(page?.at("pass_began_unix_us")))} refresher_read_ms=${ms(from(readAt))} ` +
         `rewrite_began_ms=${ms(from(page?.at(`${family}_began_unix_us`)))} rewrite_folded_ms=${ms(from(page?.at(`${family}_folded_unix_us`)))} ` +
         `rewrite_committed_ms=${ms(from(rewritten))} rewrite_spans=${spans} refresher_page_ended_ms=${ms(from(page?.at("ended_unix_us")))} ` +
         `day_change_seq=${dayChange?.seq ?? "none"} day_change_written_ms=${ms(from(dayChange?.at))} day_change_logged_ms=${ms(from(dayChange?.logged))} ` +
         `hub_marked_ms=${ms(from(marked?.at("marked_unix_us")))} ` +
         `view_first_marked_ms=${ms(from(recompute?.at("first_marked_unix_us")))} view_last_marked_ms=${ms(from(recompute?.at("last_marked_unix_us")))} ` +
-        `recompute_due_ms=${ms(from(recompute?.at("due_unix_us")))} recompute_cause=${recompute?.text("cause") || "none"} ` +
-        `recompute_seq=${frame.entry.seq || "none"} recompute_began_ms=${ms(from(recompute?.at("began_unix_us")))} ` +
+        `recompute_due_ms=${ms(from(due))} recompute_cause=${recompute?.text("cause") || "none"} ` +
+        `recompute_lane=${recompute?.text("lane") || "none"} recompute_picked_ms=${ms(from(recompute?.at("picked_unix_us")))} ` +
+        `recompute_seq=${frame.entry.seq || "none"} recompute_began_ms=${ms(from(began))} ` +
         `recompute_head_ms=${ms(recompute?.number("head_ms"))} recompute_read_ms=${ms(recompute?.number("read_ms"))} ` +
         `recompute_snapshot_ms=${ms(recompute?.number("snapshot_ms"))} recompute_fold_ms=${ms(recompute?.number("fold_ms"))} ` +
         `recompute_encode_ms=${ms(recompute?.number("encode_ms"))} recompute_ended_ms=${ms(from(recompute?.at("ended_unix_us")))} ` +
+        `view_computing_until_ms=${ms(from(computingUntil))} serial_busy_before_begin_ms=${ms(serialBusy)} ` +
+        `ran_before_begin_count=${ran.length} ran_before_begin=[${ranText}] ` +
         `frame_written_ms=${ms(from(wrote?.at("wrote_unix_us")))} frame_write_ms=${ms(wrote?.number("write_ms"))} ` +
         `frame_arrived_ms=${ms(from(frame.arrived))} presented_ms=${ms(from(frame.presented))}`
     );
