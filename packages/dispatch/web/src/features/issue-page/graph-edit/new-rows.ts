@@ -12,16 +12,8 @@ import {
   type TreeAnswer,
   type TreeAnswerNode,
 } from "../tree-read/tree-read";
-import {
-  heldRead,
-  type NewEntry,
-  names,
-  type Place,
-  parentRefOf,
-  placeNode,
-  readOutlinesAgain,
-} from "./node-writes";
-import { bandOf, type NewPlace, type PlaceLine, placingOf } from "./placement";
+import { heldRead, type NewEntry, parentRefOf, placeNode, readOutlinesAgain } from "./node-writes";
+import { type NewPlace, type Place, type PlaceLine, placingOf, standsAt } from "./placement";
 import { ownPathTo } from "./row-reveal";
 
 /**
@@ -43,23 +35,26 @@ import { ownPathTo } from "./row-reveal";
  * those 2 minutes that holds the node so sends the one `PATCH` to the row's place (`placingOf`)
  * on the node's chain (`node-writes.ts`' `placeNode`), the row `placing` from then on; a taken one
  * leaves the node where its answer puts it in the held read, where that read holds the node. The
- * row stays `placing` until the held read holds the node where the taken answer put it, under
- * its `parent` and right after its `after`: at once where the answer was written into it, else at
- * the first read after that which holds it so. Its `placement_seq` tells nothing of that, since a
- * `PATCH` that keeps the node under its parent is answered with the one it went under. A read of
- * several pages out as the `PATCH` goes, beside the page's own reads of the next pages, can read
- * its first page before the move puts the node under its new parent and its last page after the
- * move takes it from the end of the issue's own blocks, and so hold the node on no page: Graph's
- * own read is given up as the `PATCH` goes (`node-writes.ts`' `giveUpGraphRead`), so its answer
- * never lands over the answer written into the held read. Where the held read holds the node on
- * no page all the same, until a read holds it, the row is drawn from the words the reader left in
- * it, its editing and its caret kept. It then leaves this store in the flush after the outline
- * has been told of that read, its node drawn there by the read itself. A refused `PATCH` leaves
- * the node where the server keeps it, with the row's line, and tells the outline
- * (`subscribeRefusedPlacings`), which keeps the focus on it. Past the 2 minutes the row is
- * `waited`: no read and no `PATCH` goes for it, then or later, and it says that the block is saved
- * and not yet placed, drawn where it was until a read holds the node, and then where the server
- * keeps it.
+ * row stays `placing` until the held read holds the node where the taken `PATCH` put it, under
+ * the `parent` its answer names and at the place its body asked for, right after the body's
+ * `after` or first in its band where that is null (`placement.ts`' `standsAt`): at once where
+ * the answer was written into it, else at the first read after that which holds it so. Under the
+ * body's parent the answer's `after` tells nothing of that, since the server answers a null one
+ * with the last ranked sibling of an earlier band it holds, which can be a gone block no read
+ * holds; nor does its `placement_seq`, since a `PATCH` that keeps the node under its parent is
+ * answered with the one it went under. A read of several pages out as the `PATCH` goes, beside
+ * the page's own reads of the next pages, can read its first page before the move puts the node
+ * under its new parent and its last page after the move takes it from the end of the issue's own
+ * blocks, and so hold the node on no page: Graph's own read is given up as the `PATCH` goes
+ * (`node-writes.ts`' `giveUpGraphRead`), so its answer never lands over the answer written into
+ * the held read. Where the held read holds the node on no page all the same, until a read holds
+ * it, the row is drawn from the words the reader left in it, its editing and its caret kept. It
+ * then leaves this store in the flush after the outline has been told of that read, its node
+ * drawn there by the read itself. A refused `PATCH` leaves the node where the server keeps it,
+ * with the row's line, and tells the outline (`subscribeRefusedPlacings`), which keeps the focus
+ * on it. Past the 2 minutes the row is `waited`: no read and no `PATCH` goes for it, then or
+ * later, and it says that the block is saved and not yet placed, drawn where it was until a read
+ * holds the node, and then where the server keeps it.
  *
  * The rows, their timers and their watch of the cache are one client's, as the node writes are
  * (`node-writes.ts`), by issue: the outline of an issue holds that issue's rows while it is drawn
@@ -124,9 +119,9 @@ interface IssueRows {
   poll: number | undefined;
   /** Whether a next-page read of Graph's tree is out for a waiting row (`readNextPage`). */
   paging: boolean;
-  /** Where each taken `PATCH` put its row's node, by the row's block id: the answer's `parent` and
-   *  `after`, until the held read holds the node there (`letPlacedGo`). */
-  readonly placed: Map<string, Place>;
+  /** Each taken `PATCH`, by its row's block id: its body and the server's answer, null for a
+   *  landing that gave none, until the held read holds the node where it put it (`letPlacedGo`). */
+  readonly placed: Map<string, { readonly answer: Place | null; readonly body: Place }>;
   /** The watch of Graph's read in the cache, while a row waits or is placed. */
   unwatch: (() => void) | undefined;
   readonly refused: Set<RefusedPlacing>;
@@ -416,10 +411,7 @@ function placeHeld(client: QueryClient, issue: string): void {
       }
       // An outline that let the issue's rows go while the `PATCH` was out leaves none to place.
       if (stateOf(client).issues.get(issue) !== held) return;
-      // A landing that gave no answer says nothing of the place: the row waits for the place its
-      // body asked for, which a taken `PATCH` puts the node at. Every new row's body names `after`.
-      const { after = null, parent } = outcome.answer ?? placing.body;
-      held.placed.set(blockId, { after, parent });
+      held.placed.set(blockId, { answer: outcome.answer, body: placing.body });
       watchHeld(client, issue, held);
       letPlacedGo(client, issue);
     });
@@ -431,13 +423,13 @@ function placeHeld(client: QueryClient, issue: string): void {
 
 /**
  * Lets go each placed row of `issue` (`IssueRows.placed`) whose node Graph's held read holds where
- * its taken `PATCH` put it (`holdsAt`): the answer written into it (`node-writes.ts`' `movedIn`),
- * or a read since that holds the node there. A held read that holds no such node there - the
- * answer found no node to write into, or no parent or `after` of it on the pages loaded, its read
- * replaced by one that holds the node on no page, or no answer was given - keeps the row, drawn
- * from the words the reader left in it, until one does: let go then, no row would draw the node
- * where the row stands, which ends the editing in the row (`IssueTree.tsx`), and the letters the
- * reader types on go nowhere.
+ * its taken `PATCH` put it (`placement.ts`' `standsAt`): the answer written into it
+ * (`node-writes.ts`' `movedIn`), or a read since that holds the node there. A held read that
+ * holds no such node there - the answer found no node to write into, or no parent or `after` of
+ * it on the pages loaded, its read replaced by one that holds the node on no page, or no answer
+ * was given - keeps the row, drawn from the words the reader left in it, until one does: let go
+ * then, no row would draw the node where the row stands, which ends the editing in the row
+ * (`IssueTree.tsx`), and the letters the reader types on go nowhere.
  *
  * TanStack Query tells the outline of the read in its notify manager's next flush, a timer on in
  * a browser, where this store tells it at once: so the row leaves in the flush after that one.
@@ -448,34 +440,13 @@ function letPlacedGo(client: QueryClient, issue: string): void {
   const held = stateOf(client).issues.get(issue);
   const answer = heldRead(client, issue);
   if (held === undefined || answer === undefined) return;
-  for (const [blockId, place] of [...held.placed]) {
+  for (const [blockId, { answer: moved, body }] of [...held.placed]) {
     const node = readNodeOf(answer, blockId);
-    if (node === undefined || !holdsAt(answer, node, place)) continue;
+    if (node === undefined || !standsAt(answer, node, body, moved)) continue;
     held.placed.delete(blockId);
     notifyManager.schedule(() => change(client, issue, blockId, () => undefined));
   }
   unwatchIdle(held);
-}
-
-/** Whether `answer` holds its `node` at `place`: under the node `place.parent` names, right after
- *  the ranked sibling `place.after` names among that parent's ranked children in the read's
- *  order, or, where `after` is null, after none of the node's own band or a later one, as
- *  `node-writes.ts`' `movedIn` writes a taken answer in. */
-function holdsAt(answer: TreeAnswer, node: TreeAnswerNode, { after, parent }: Place): boolean {
-  const under = node.parent;
-  if (under === null || !names(under, parent)) return false;
-  const ranked = (answer.nodes ?? []).filter(
-    (each) =>
-      each.parent?.id === under.id &&
-      typeof each.rank === "string" &&
-      each.state !== "gone" &&
-      each.role !== "context"
-  );
-  const at = ranked.indexOf(node);
-  if (at < 0) return false;
-  const before = ranked[at - 1];
-  if (after !== null) return before !== undefined && names(before, after);
-  return before === undefined || bandOf(before) < bandOf(node);
 }
 
 /** Lets every row of `issue` go, with each of its timers and its watch. */

@@ -29,6 +29,8 @@ import {
   type Entry,
   type GreyReason,
   type MoveBody,
+  names,
+  type Place,
   type PlacementRow,
   placementOf,
 } from "./placement";
@@ -63,7 +65,8 @@ import {
  * A new row's node (R3) is placed the same way, on its own chain (`placeNode`): one `PATCH` of
  * the place its entry gave it, under the `placement_seq` the read that first held it ranked
  * answered, its answer written into the held read as a move's is and handed to `new-rows.ts`,
- * which lets the new row go once the held read holds the node where that answer put it.
+ * which lets the new row go once the held read holds the node under the answer's `parent`, at the
+ * place the body asked for (`placement.ts`' `standsAt`).
  *
  * Once a node's chain is empty after a taken act, or after a refusal that says the page read a
  * stale tree or a node that is gone (412, `409 NODE_GONE`, 404), the page reads each outline read
@@ -235,10 +238,6 @@ interface PlaceAct {
 }
 
 type Act = MoveAct | DeleteAct | PlaceAct;
-
-/** A node's place as a taken answer names it (`NodeMoved`): under `parent`, right after the
- *  sibling `after` names, first in its band where `after` is null. */
-export type Place = Pick<NodeMoved, "after" | "parent">;
 
 /** The acts of one node of one issue, in press order, the first of them the one whose turn it
  *  is. */
@@ -435,12 +434,6 @@ export function readAfterRoomWrite(client: QueryClient, issue: string, node: str
   const chain = stateOf(client).chains.get(hashKey([issue, node]));
   if (chain === undefined) readOutlinesAgain(client, issue);
   else chain.reads = true;
-}
-
-/** Whether `address`, a node as the node routes answer it (a block by its read id, any other node
- *  by `<kind>/<read id>`, as `placement.ts` names one in a body), names `node`. */
-export function names(node: Pick<TreeAnswerNode, "id" | "kind">, address: string): boolean {
-  return node.id === address || `${node.kind}/${node.id}` === address;
 }
 
 /** The index after the subtree of `nodes[at]` in the walk: the run of nodes after it that stand

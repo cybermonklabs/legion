@@ -87,12 +87,19 @@ export interface MoveBody {
   readonly after?: string | null;
 }
 
+/** A node's place, as the body of a new node's placing `PATCH` asks for it and as a taken move's
+ *  answer names it (`NodeMoved`): under `parent`, right after the ranked sibling `after` names,
+ *  first in its band where `after` is null. */
+export interface Place extends MoveBody {
+  readonly after: string | null;
+}
+
 /** Where a new block stands: `body` is the `PATCH` that gives it its place once it holds a rank
  *  and a `placement_seq`, `after` the read id of the row the new row is drawn right after under
  *  `body.parent`, null where it is that parent's first child. */
 export interface NewPlace {
   readonly after: string | null;
-  readonly body: MoveBody;
+  readonly body: Place;
 }
 
 /** The attributes of the block a retype makes, which keep the node where it stands: the
@@ -280,9 +287,7 @@ export interface PlacingInput {
   readonly place: NewPlace;
 }
 
-export type Placing =
-  | { readonly kind: "wait" }
-  | { readonly kind: "send"; readonly body: MoveBody };
+export type Placing = { readonly kind: "wait" } | { readonly kind: "send"; readonly body: Place };
 
 /** The new node's `PATCH` (R3): to wait until the held read holds `node` with a `rank` and a
  *  `placement_seq`, since the route refuses a node with no rank and the `PATCH` goes under that
@@ -292,6 +297,41 @@ export function placingOf({ node, place }: PlacingInput): Placing {
   const seq = node.placement_seq;
   if (seq === null || seq === undefined) return { kind: "wait" };
   return { body: place.body, kind: "send" };
+}
+
+/**
+ * Whether `held` holds `node`, a new row's, where its placing `PATCH` of `body` put it, `answer`
+ * the server's answer to it, null for a landing that gave none: ranked under the parent the answer
+ * names, the body's where there is no answer, and, under the body's parent, right after the ranked
+ * sibling the body's `after` names, or, where that is null, after no ranked sibling of the node's
+ * own band or a later one.
+ *
+ * The body's `after` is judged there, not the answer's: the server answers a named `after` with
+ * that same sibling, and a null one with the last ranked sibling of an earlier band it holds, which
+ * can be a gone block that keeps its rank and that no read holds. Under another parent than the
+ * body's, the body's `after` says nothing: the answer's is judged where the held read holds it
+ * among that parent's ranked children, and the parent alone where it does not, a gone sibling or a
+ * node on no page read.
+ */
+export function standsAt(
+  held: TreeAnswer,
+  node: TreeAnswerNode,
+  body: Place,
+  answer: Place | null
+): boolean {
+  const under = node.parent;
+  if (under === null || !names(under, (answer ?? body).parent)) return false;
+  const siblings = rankedChildren(walkOf(held), under.id);
+  const at = siblings.indexOf(node);
+  if (at < 0) return false;
+  const before = siblings[at - 1];
+  if (answer === null || names(under, body.parent)) {
+    if (body.after !== null) return before !== undefined && names(before, body.after);
+    return before === undefined || bandOf(before) < bandOf(node);
+  }
+  const { after } = answer;
+  if (after === null || !siblings.some((each) => names(each, after))) return true;
+  return before !== undefined && names(before, after);
 }
 
 /** Indexes `held`: its nodes by read id, each parent's children and its ranked children in the
@@ -364,6 +404,12 @@ function incomplete(walk: Walk, parent: string, band: number): boolean {
  *  by its read id, which holds its own `#`, any other node by `<kind>/<read id>`. */
 function routeId({ id, kind }: { readonly id: string; readonly kind: string }): string {
   return kind === "block" || id.includes("#") ? id : `${kind}/${id}`;
+}
+
+/** Whether `address`, a node as the node routes answer it (a block by its read id, any other node
+ *  by `<kind>/<read id>`, as `routeId` names one in a body), names `node`. */
+export function names(node: Pick<TreeAnswerNode, "id" | "kind">, address: string): boolean {
+  return node.id === address || `${node.kind}/${node.id}` === address;
 }
 
 function parentOf(node: TreeAnswerNode): Parent {

@@ -142,6 +142,7 @@ const TYPED = {
   proseUnderIssue: "A paragraph the row writes under the issue.",
   retypedCriterion: "A paragraph that becomes a criterion.",
   retypedStatement: "A paragraph that becomes a statement.",
+  underCriterion: "The new row under the criterion whose third statement is gone.",
   underProse: "The third new row, under the prose block.",
 } as const;
 
@@ -518,16 +519,17 @@ const PLACED_OFFERS = [
 ] as const;
 
 /** What the menu of the focused row `what` offers, read with the menu opened by `m` and closed
- *  again: whether each entry of `PLACED_OFFERS` is offered, not grey, and the state Delete settles
- *  on once its dry run answered. A menu opened again reads the row's verdicts anew and sends its
- *  own dry run, so a poll of this reads the row as it stands at each read. */
+ *  again: whether each entry of `offers` is offered, not grey, and the state Delete settles on
+ *  once its dry run answered. A menu opened again reads the row's verdicts anew and sends its own
+ *  dry run, so a poll of this reads the row as it stands at each read. */
 async function placedOffers(
   page: Page,
-  what: string
+  what: string,
+  offers: readonly string[]
 ): Promise<{ readonly delete: string; readonly offered: readonly boolean[] }> {
   await openRowMenu(page, "m", what);
   const offered = await Promise.all(
-    PLACED_OFFERS.map(
+    offers.map(
       async (word) => (await menuEntry(page, word).getAttribute("aria-disabled")) !== "true"
     )
   );
@@ -581,7 +583,7 @@ test("a new row below a block directly under the issue is placed", async ({ brow
     // The row keeps the focus once Escape left its text: its menu, read again until it holds,
     // offers the acts of a placed node, with no reload.
     await expect
-      .poll(() => placedOffers(page, what), {
+      .poll(() => placedOffers(page, what, PLACED_OFFERS), {
         message: "the new row under the same parent is placed",
         timeout: 30_000,
       })
@@ -599,6 +601,70 @@ test("a new row below a block directly under the issue is placed", async ({ brow
     };
     expect(nodeOf(answer, row.id)?.supertag, row.kind).toBe("block");
     expectPlaced(answer, sent, row);
+  });
+});
+
+/** The entries the new row under the criterion offers once it is placed, right after the second
+ *  statement and right before the prose block: Indent, since the second statement stands right
+ *  above it, Move down, since the prose block stands right below it, and New row under. Move up
+ *  is grey there, the first of the issue's own blocks under the criterion. */
+const UNDER_CRITERION_OFFERS = [
+  EDIT_LABELS.edit_indent,
+  EDIT_LABELS.edit_move_down,
+  EDIT_LABELS.edit_new_under,
+] as const;
+
+// c-new-node, third row: an edit of the spec takes the third statement, the criterion's last child
+// of the spec's band, out of its text, so its node is gone and keeps its part_of to the criterion
+// and its rank, which no tree read holds. New row under on the criterion sends `after: null`, and
+// the server answers it with the last ranked child of an earlier band it holds under the criterion
+// (`placeAmongSiblings` in `api/node_move.go`): the gone statement. The row is placed all the same,
+// by the parent the answer names, with its moves, Delete and New row under offered and no reload.
+// SLOW(>=2s): an edit of the spec waited for until the tree read leaves the statement out, a
+// landing, a new row typed and placed through the block index's read of the room, and its menu
+// read until it offers its acts.
+test("a new row under a parent whose ranked child is gone is placed @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  const size = rowSize();
+  await phase(browser, seedGraphEdit, async (page, seed) => {
+    owedUnless(await roomWriteGate(page, seed.key));
+    const ids = await graphEditIds(page, seed);
+    const key = seed.key;
+    const statement3 = ids.statements[2];
+    await page.setViewportSize(size);
+    await editArtifact(seed.spec, { ops: [{ block: "s3", op: "delete" }] });
+    await expect
+      .poll(async () => nodeOf(await treeOf(key), statement3) === undefined, {
+        message: "the tree read holds the third statement after the edit took it out",
+        timeout: 60_000,
+      })
+      .toBe(true);
+    const sent = watchNodeRequests(page, key);
+
+    await landOn(page, key, ids.criterion, "the criterion");
+    const from = nodeWrites(sent).length;
+    const what = "the new row under the criterion";
+    await newRowUnder(page, sent, TYPED.underCriterion, "the criterion");
+    const placing = await nthWrite(sent, from + 1, `the page sends no PATCH that places ${what}`);
+    expect(placeOf(placing), `the PATCH that places ${what} sends another place`).toEqual({
+      after: null,
+      parent: ids.criterion,
+    });
+    expect(
+      member((await placing.answer)?.body, "after"),
+      `the answer to the PATCH that places ${what} names another after than the gone statement`
+    ).toBe(statement3);
+
+    // The row keeps the focus once Escape left its text: its menu, read again until it holds,
+    // offers the acts of a placed node, with no reload.
+    await expect
+      .poll(() => placedOffers(page, what, UNDER_CRITERION_OFFERS), {
+        message: "the new row under a parent with a gone child is placed",
+        timeout: 30_000,
+      })
+      .toEqual({ delete: "counted", offered: UNDER_CRITERION_OFFERS.map(() => true) });
   });
 });
 

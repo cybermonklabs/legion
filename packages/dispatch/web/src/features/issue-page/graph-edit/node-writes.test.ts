@@ -936,6 +936,82 @@ test("a placing answered with the placement_seq it went under lets the row go on
   ]);
 });
 
+// New row below on the owed criterion, the last block of the spec under the issue that a read
+// holds, sends `after: null`, and the server answers it with the last ranked sibling of the spec's
+// band it holds: a statement an edit removed, gone, which keeps its part_of and its rank and which
+// no tree read holds. The answer written into the held read finds no such sibling and puts the
+// node last under the issue; the read made again holds it right after the criterion, first in its
+// band, the place the body asked for, which lets the row go.
+test("a placing whose answer names a gone sibling as after lets the row go once the held read holds the node first in its band", async () => {
+  const ask = belowCriterion();
+  const gone = "<owed-gone-statement>";
+  expect(ask.place.body, "New row below on the criterion names another place").toEqual({
+    after: null,
+    parent: `issue/${KEY}`,
+  });
+  expect(
+    indexedRead.nodes?.some((node) => node.id === gone),
+    "the read holds the gone statement"
+  ).toBe(false);
+  const patches = answerPatches({
+    body: { after: gone, parent: `issue/${KEY}`, placement_seq: "<seq:owed-paragraph>@2" },
+    status: 200,
+  });
+  const reads = answerOutline(indexedRead);
+  const { client, view } = mountNewRows();
+  typed(client, ask);
+  act(() => client.setQueryData(outlineQuery(KEY, "graph").queryKey, indexedRead));
+  await waitFor(() => expect(patches.calls).toHaveLength(1));
+  await waitFor(() => expect(reads.count(), "the outline was not read after the PATCH").toBe(1));
+  await waitFor(() =>
+    expect(
+      view.result.current.rows,
+      "the new row whose answer names a gone sibling is placed"
+    ).toEqual([])
+  );
+  const underIssue = (heldRead(client, KEY)?.nodes ?? []).flatMap((node) =>
+    node.parent?.id === KEY ? [node.id] : []
+  );
+  expect(underIssue, "the node stands elsewhere than right after the criterion").toEqual([
+    "<owed-criterion>",
+    WRITTEN,
+    "<owed-requirement>",
+  ]);
+});
+
+// An answer that names another parent than the body - the requirement, a block of the issue's own
+// fragment under the issue - and, as `after`, a sibling gone under it that no read holds: the
+// answer written into the held read puts the node under the requirement, ranked, right after no
+// sibling, and the row is let go by the parent the answer names.
+test("a placing whose answer names another parent and a gone sibling there lets the row go once the held read holds the node ranked under that parent", async () => {
+  const ask = belowCriterion();
+  const parent = "<owed-requirement>";
+  const gone = "<owed-gone-paragraph>";
+  expect(ask.place.body.parent, "the body names the answer's parent").not.toBe(parent);
+  expect(
+    indexedRead.nodes?.some((node) => node.id === gone),
+    "the read holds the gone sibling"
+  ).toBe(false);
+  const patches = answerPatches({
+    body: { after: gone, parent, placement_seq: "<seq:owed-paragraph>@2" },
+    status: 200,
+  });
+  answerOutline();
+  const { client, view } = mountNewRows();
+  typed(client, ask);
+  act(() => client.setQueryData(outlineQuery(KEY, "graph").queryKey, indexedRead));
+  await waitFor(() => expect(patches.calls).toHaveLength(1));
+  await waitFor(() =>
+    expect(
+      view.result.current.rows,
+      "the new row whose answer names another parent and a gone sibling is placed"
+    ).toEqual([])
+  );
+  const placed = heldNode(client, WRITTEN);
+  expect(placed?.parent?.id, "the node stands under another parent than the answer's").toBe(parent);
+  expect(placed?.rank, "the node holds no rank").toBeString();
+});
+
 // Past 2 minutes of the page's clock from the first character, the row says that its block is
 // saved and not yet placed, and no read and no PATCH goes for it, then or later, though a read
 // that holds the node comes.
