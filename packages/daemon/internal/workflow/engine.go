@@ -194,6 +194,11 @@ type Config struct {
 	// reads nothing, so a record names no session and no model, which is the API-only daemon and
 	// every test that reads no agent.
 	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
+	// ReadTotals reads the totals of each live launch of agents, before a fact's transaction
+	// (ReadFact), each read bounded by 5 s. It answers each read that gave totals. A step's start
+	// and end use these reads (keepStartTotals, writeCounts). Nil reads nothing, and an end then
+	// writes neither a set model nor answers.
+	ReadTotals func(ctx context.Context, agents []claim.Token) FactReads
 	// WorkspaceDir is the directory the runtime starts the role processes of the issue key in, when
 	// they work repo, the issue's working copy: the working copy line each start and resume of a
 	// phase's worker opens its task with (WorkingCopy, task, resumeText) names it for the repository

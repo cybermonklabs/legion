@@ -221,7 +221,7 @@ import { name as packageName, version as packageVersion } from "../package.json"
   type: "json",
 };
 import { CARD_DELIVERED_ENTRY, CardAges } from "../src/card-age";
-import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
+import { CardWake, cardWakeRecord, type EnvoyCardMarker } from "../src/card-wake";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
 import { recordEnvoySession, resolveEnvoySession } from "../src/envoy-session";
@@ -254,6 +254,11 @@ import {
   withSessionAnswers,
 } from "../src/session-answers-context";
 import { type SessionInbound, sessionInbound } from "../src/session-inbound";
+import {
+  deregisterAndDrain,
+  SHUTDOWN_DEADLINE_MS,
+  SHUTDOWN_RELEASE_MS,
+} from "../src/session-shutdown";
 import { sideTurn } from "../src/side-turn";
 import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
 import { gatedLogger } from "../src/stop-gates";
@@ -1583,6 +1588,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     sendMessage: (message, options) => pi.sendMessage(message, options),
     startupTurn: () => publishedInterface?.startupTurn,
     isOwnSession: (session) => sessionOpen(session),
+    // The tests' record of the startup phase, written only where ENVOY_CARD_WAKE_RECORD_FILE
+    // names a file.
+    record: cardWakeRecord(process.env),
   });
 
   // When each card reached each session this process serves, which every model request shows
@@ -3129,12 +3137,17 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   let agentStreamControlSession = "";
   let agentStreamCommandsRefreshedOnWatchAt = -Infinity;
   // When this session last put its context usage on the wire, which bounds how often it sends
-  // one, and the reading a turn's last message is owed, waiting for that interval to be up
-  // (`refreshAgentStreamContext`).
+  // one, the number of the interval that publish opened, and the reading a turn's last message is
+  // owed, waiting for that interval to be up (`refreshAgentStreamContext`).
   let agentStreamContextRefreshedAt = -Infinity;
+  let agentStreamContextInterval = 0;
   let agentStreamContextTrailing: Timer | undefined;
   let agentStreamContextHeld:
-    | { readonly session: string; readonly usage: ContextUsage | undefined }
+    | {
+        readonly session: string;
+        readonly usage: ContextUsage | undefined;
+        readonly readAt: number;
+      }
     | undefined;
   let agentStreamViewerAttached = false;
 
@@ -3219,10 +3232,36 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // for the turn that is running: measured on the pinned binary, a session whose turn read 7,661
   // tokens answers 5 two seconds later, with the turn over, and a ring drawn from that would show
   // a full session as empty.
-  const publishAgentStreamContext = (session: string, usage: ContextUsage | undefined): void => {
-    agentStreamContextRefreshedAt = Date.now();
+  //
+  // Each frame carries the session's own record of when it read and published: the number of the
+  // interval it went out in (`interval`), when it went out under that number (`at`), and when its
+  // reading was taken (`readAt`), which a reader checks the frames' order against without a clock
+  // of its own. A frame that goes out at once is numbered on from the interval the last publish
+  // opened by every whole interval since, so an interval that sent nothing is a number no frame
+  // carries; the held reading goes out at the moment its interval is up, which its timer is armed
+  // for, so it is the next interval's whatever the timer's own lateness. The next interval opens
+  // when the frame went out (`sentAt`): at `at` for a frame that went out at once, and when the
+  // timer ran for a held one, never before its interval was up. The count runs on across the
+  // sessions this process serves, as the stream's `seq` does.
+  const publishAgentStreamContext = (
+    session: string,
+    usage: ContextUsage | undefined,
+    readAt: number,
+    at: number,
+    sentAt: number
+  ): void => {
+    // Infinite before this process's first publish, and after the session it served was left.
+    const since = at - agentStreamContextRefreshedAt;
+    agentStreamContextInterval += Number.isFinite(since)
+      ? Math.floor(since / CONTEXT_FRAME_INTERVAL_MS)
+      : 1;
+    agentStreamContextRefreshedAt = sentAt;
     try {
-      agentStreamOf(session).setContext(agentStreamFramesSubject(session), usage);
+      agentStreamOf(session).setContext(agentStreamFramesSubject(session), usage, {
+        interval: agentStreamContextInterval,
+        at,
+        readAt,
+      });
     } catch (error) {
       logger.warn("envoy: could not publish the agent stream's context frame", {
         error: messageFor(error),
@@ -3244,26 +3283,35 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       });
       return;
     }
-    const waited = Date.now() - agentStreamContextRefreshedAt;
-    if (waited >= CONTEXT_FRAME_INTERVAL_MS) {
+    const now = Date.now();
+    // The end of the interval the last publish opened.
+    const dueAt = agentStreamContextRefreshedAt + CONTEXT_FRAME_INTERVAL_MS;
+    if (now >= dueAt) {
       // A trailing frame still owed is due by now and holds the older reading: it is dropped
       // before this one goes out, or its callback would publish after this frame and leave a
       // session that then stays idle showing the earlier figure.
       clearTimeout(agentStreamContextTrailing);
       agentStreamContextTrailing = undefined;
       agentStreamContextHeld = undefined;
-      publishAgentStreamContext(session, usage);
+      publishAgentStreamContext(session, usage, now, now, now);
       return;
     }
     // Held rather than dropped, and the newest reading is the one that goes out.
-    agentStreamContextHeld = { session, usage };
+    agentStreamContextHeld = { session, usage, readAt: now };
     if (agentStreamContextTrailing !== undefined) return;
     agentStreamContextTrailing = setTimeout(() => {
       agentStreamContextTrailing = undefined;
       const held = agentStreamContextHeld;
       agentStreamContextHeld = undefined;
-      if (held !== undefined) publishAgentStreamContext(held.session, held.usage);
-    }, CONTEXT_FRAME_INTERVAL_MS - waited);
+      if (held === undefined) return;
+      publishAgentStreamContext(
+        held.session,
+        held.usage,
+        held.readAt,
+        dueAt,
+        Math.max(Date.now(), dueAt)
+      );
+    }, dueAt - now);
     // A frame nobody is waiting on must not hold this process open at its end.
     agentStreamContextTrailing.unref?.();
   };
@@ -3700,28 +3748,6 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     recordLatest(registrationsInFlight, id, registering);
     return registering;
   };
-
-  /** The whole of what a stop (`stopSession`) gives its role release, its deregistration and its
-   *  drain. Oh My Pi abandons a shutdown handler after 2 s (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`),
-   *  and the second this leaves is for the synchronous work ahead of the race and for the host. A
-   *  SIGTERM gets no more: in a Legion pane the shim kills Oh My Pi 5 s after its SIGTERM
-   *  (`DefaultGrace`, `packages/daemon/internal/shim`), and the agent shares that grace. The
-   *  shared `SHUTDOWN_SETTLE_MS` is what the stop spends waiting on a registration still on the
-   *  wire: `REGISTRATION_SETTLE_MS` is five times this whole deadline, so a registration slower
-   *  than a second would mean no DELETE was sent at all and the record outlived this process by
-   *  the gone horizon, where a DELETE that races a slow registration only may lose. The release
-   *  of the session's role claims goes before both (`SHUTDOWN_RELEASE_MS`), so the two waits
-   *  leave at least 500 ms here (1.5 s of the host's 2 s) for the DELETE to reach the wire. */
-  const SHUTDOWN_DEADLINE_MS = 1_000;
-
-  /** How long the DELETE of a stop waits for the release of the session's role claims, which goes
-   *  first: a quarter of a second, as the wait on a registration still on the wire. A listener
-   *  that answers at all answers a release in tens of milliseconds. A release that has not
-   *  answered by then is no longer waited for: the DELETE goes, and nothing sends the release
-   *  again. That release can still land while the process lives; when it does not, the claim
-   *  stands until its last renewal is older than the listener's live window. The DELETE goes all
-   *  the same, because it is what lets a message to the stopped session wake it. */
-  const SHUTDOWN_RELEASE_MS = 250;
 
   /** Deregisters a session this process has stopped heartbeating — its own at shutdown, the one
    *  it left at a `/new`, a fork or a branch — once that session's registration has settled or
@@ -5384,15 +5410,20 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       // of the deadline once the release is done (`endsAt`), so a broker credential still waiting
       // on a trade leaves it time to go without one. The drain starts beside the deregistration:
       // it needs no listener call, and all of them share that deadline, which is what the host's
-      // own limit on a shutdown handler leaves them.
+      // own limit on a shutdown handler leaves them. A DELETE that fails or is given up at the
+      // deadline is logged at warn, naming the session (`deregisterAndDrain`), on the host's
+      // logger with no tell gate, as the release's lines are: they are the stop's own.
       const open = connection;
-      const stopped = releaseRoleClaims().then(() =>
-        Promise.allSettled([
-          deregisterSession(sessionID, SHUTDOWN_SETTLE_MS, endsAt).catch(() => undefined),
-          open?.drain().catch(() => undefined),
-        ])
-      );
-      await Promise.race([stopped.then(() => undefined), deadline.promise]);
+      const released = releaseRoleClaims();
+      await deregisterAndDrain({
+        sessionID,
+        deregistration: released.then(() =>
+          deregisterSession(sessionID, SHUTDOWN_SETTLE_MS, endsAt)
+        ),
+        draining: released.then(() => open?.drain()),
+        deadline: deadline.promise,
+        warn: (message, context) => scrubbedHostLogger.warn(message, context),
+      });
     } finally {
       clearTimeout(timer);
       connection = undefined;

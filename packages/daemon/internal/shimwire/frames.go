@@ -135,10 +135,12 @@ type AgentSecretsHello struct {
 
 // Hello2 authenticates a reverse-dialed shim: its first line, carrying the boot token the daemon
 // minted for the pane or pod, and the pod's identity when the shim was started with
-// --agent-secrets-key-dir (a tmux pane never is, and sends none).
+// --agent-secrets-key-dir (a tmux pane never is, and sends none). ModelTotals says that the shim
+// counts its launch's calls by model and answers ModelTotals. An older shim leaves it out.
 type Hello2 struct {
 	BootToken    string             `json:"bootToken"`
 	AgentSecrets *AgentSecretsHello `json:"agentSecrets,omitempty"`
+	ModelTotals  bool               `json:"modelTotals,omitempty"`
 }
 
 // AgentSecretsEnrollment hands the shim the broker's enrollment id for this pod generation; the
@@ -1068,6 +1070,10 @@ func (LauncherMemoryKill) FrameType() string           { return TypeLauncherMemo
 func (LauncherVolumeReport) FrameType() string         { return TypeLauncherVolumeReport }
 func (LauncherLeakCheck) FrameType() string            { return TypeLauncherLeakCheck }
 func (LauncherLeakCheckResult) FrameType() string      { return TypeLauncherLeakCheckResult }
+func (ModelTotals) FrameType() string                  { return TypeModelTotals }
+func (ModelTotalsResult) FrameType() string            { return TypeModelTotalsResult }
+func (ModelTotalsFinal) FrameType() string             { return TypeModelTotalsFinal }
+func (LegionSetModel) FrameType() string               { return TypeLegionSetModel }
 
 func (f Hello) MarshalJSON() ([]byte, error) {
 	type plain Hello
@@ -1738,6 +1744,14 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[LauncherLeakCheck](trimmed)
 	case TypeLauncherLeakCheckResult:
 		return decodeInto[LauncherLeakCheckResult](trimmed)
+	case TypeModelTotals:
+		return decodeInto[ModelTotals](trimmed)
+	case TypeModelTotalsResult:
+		return decodeInto[ModelTotalsResult](trimmed)
+	case TypeModelTotalsFinal:
+		return decodeInto[ModelTotalsFinal](trimmed)
+	case TypeLegionSetModel:
+		return decodeInto[LegionSetModel](trimmed)
 	default:
 		return Raw{Type: head.Type, JSON: bytes.Clone(trimmed)}, nil
 	}

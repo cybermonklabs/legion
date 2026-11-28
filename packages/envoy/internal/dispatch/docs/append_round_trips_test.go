@@ -311,11 +311,11 @@ func tracedRoomService(t *testing.T) (*Service, string, *roundTripRecorder) {
 	recorder := &roundTripRecorder{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, recorder, nil)}
 	service := New(Deps{
-		Store:     traced,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(traced),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Store:    traced,
+		Events:   events.NewBroker(),
+		Identity: headerIdentity(traced),
+		Origins:  testOrigins,
+		Settle:   time.Hour,
 	})
 	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
