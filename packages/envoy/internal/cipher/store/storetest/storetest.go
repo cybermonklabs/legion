@@ -4,8 +4,8 @@
 // that shared tables would act on each other's rows; with a database per test no test can see
 // another's rows, in its own package, a sibling package, or a concurrent run of either.
 //
-// Each test's database is a file copy of a template migrated once per migration set on the
-// server (template), so a test pays one create database, not the broker's whole migration set.
+// Each test's database is a file copy of a template migrated once per login and migration set on
+// the server (template), so a test pays one create database, not the broker's whole migration set.
 // A database of its own also gives each test its own copy of the broker's database-wide advisory
 // locks: Migrate's lock (store.go's lockAndPin) and the serving beat's (enroll's servingLock). In
 // one shared database, every test's migration, every broker's boot and every beat waited for those
@@ -14,14 +14,19 @@
 //
 // Dispatch's storetest and the daemon's testpg each make a template of the test binary's own and
 // drop it, and their clones, in the package's TestMain. This harness differs in three ways:
-//   - The template is the server's, not the binary's, and nothing drops it: every broker test
-//     binary of a run, and of every later run of the same migration set on that server, copies the
-//     one template, so no binary owns it, and none could drop it while another copies it. CI gives
-//     each job a server of its own. A server that outlives runs (a dev box's) keeps one template per
-//     migration set, which drop database reclaims when no run is using it. The name comes from the
-//     embedded migration files alone (store.MigrationsDigest), so a change to how Migrate applies
-//     them that leaves the files as they are reuses the template the earlier code built; drop it
-//     there to build it again.
+//   - The template is its login's on the server, not the binary's, and nothing drops it: every
+//     broker test binary of a run, and of every later run of the same migration set on that
+//     server, that connects as one login copies that login's one template, so no binary owns it,
+//     and none could drop it while another copies it. There is one template per login and
+//     migration set, owned by that login, because Postgres copies a database only for its owner,
+//     for a superuser, or where the database is marked a template, and a copy keeps its template's
+//     owner of schema and tables: another login's template refuses the copy, and even marked a
+//     template it hands the copy a schema and tables that login owns. CI gives each job a server
+//     of its own. A server that outlives runs (a dev box's) keeps one template per login and
+//     migration set, which drop database reclaims when no run is using it. The name comes from
+//     the embedded migration files (store.MigrationsDigest) and the login alone, so a change to
+//     how Migrate applies them that leaves the files as they are reuses the template the earlier
+//     code built; drop it there to build it again.
 //   - A test drops its own database in its own cleanup and waits for the drop's checkpoint, where
 //     Dispatch's drops run in the background and its TestMain waits for them: no package of the
 //     broker needs a TestMain for its databases, so nothing would wait for a drop left running.
@@ -40,7 +45,9 @@ package storetest
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
@@ -81,16 +88,19 @@ const testSchema = "broker_test"
 
 // templates holds, by the server's URL less its connect bound (testdb.ServerKey), which each
 // test's URL carries a value of its own for, the one call (sync.OnceValues) that finds or makes
-// the template of that server's migration set, so a test process asks the server once.
+// the template of that URL's login and migration set, so a test process asks the server once. A
+// URL of another login is another key, so each login's call finds that login's own template.
 var templates sync.Map
 
-// templateLockKey is the session advisory lock under which a process looks for the template and
-// makes it when it is missing: every broker test binary of a run, and of every other run on the
-// server, asks at once. Postgres keeps an advisory lock per database, so the lock is taken on a
-// connection to the server's postgres database (lockDatabase), whatever database the server's URL
-// names: two binaries that name the same server through different databases take the one lock,
-// and the sweep of unfinished builds below, which drops every build it finds, never drops one that
-// another process is building.
+// templateLockKey is the session advisory lock under which a process looks for its login's
+// template and makes it when it is missing: every broker test binary of a run, and of every other
+// run on the server, whatever its login, asks at once. Postgres keeps an advisory lock per
+// database, so the lock is taken on a connection to the server's postgres database
+// (lockDatabase), whatever database the server's URL names, and under the same key for every
+// login: two binaries that name the same server through different databases, or as different
+// logins, take the one lock. Builds are swept per login: the sweep of unfinished builds below
+// drops every build of its own login it finds, which under the server's one lock is never one
+// another process is building, and leaves every other login's, which only that login may drop.
 const templateLockKey = "envoy broker storetest template"
 
 // lockDatabase is the database of the server templateLockKey is taken in: one every Postgres
@@ -98,13 +108,15 @@ const templateLockKey = "envoy broker storetest template"
 // cannot be a template's source, so template1 would be the wrong one).
 const lockDatabase = "postgres"
 
-// template is the name of the database every test's own database is copied from: the server's
-// broker_template_<16 hex digits of store.MigrationsDigest>, migrated once by the first process to
-// ask and left on the server for the next run of the same migration set. Under templateLockKey it
-// uses that database when it exists; otherwise it drops what a process that died while building
-// left, builds the template under a name of its own, migrates it and closes it to connections
-// (a database anyone is connected to cannot be copied), and only then renames it, so a database of
-// the template's name is always a whole one.
+// template is the name of the database every test's own database is copied from: the template of
+// the server URL's login and migration set, broker_template_<16 hex digits of
+// store.MigrationsDigest>_<loginKey of the login>, owned by that login (a copy of a database
+// another login owns is refused, the package comment says why), migrated once by the first
+// process of that login to ask and left on the server for the next run of the same migration set.
+// Under templateLockKey it uses that database when it exists; otherwise it drops what a process of
+// the same login that died while building left, builds the template under a name of its own,
+// migrates it and closes it to connections (a database anyone is connected to cannot be copied),
+// and only then renames it, so a database of the template's name is always a whole one.
 func template(t testing.TB, raw string) string {
 	t.Helper()
 	entry, _ := templates.LoadOrStore(testdb.ServerKey(raw), sync.OnceValues(func() (string, error) { return makeTemplate(raw) }))
@@ -115,12 +127,21 @@ func template(t testing.TB, raw string) string {
 	return name
 }
 
+// loginKey is the first 12 hex digits of the SHA-256 of login, the part of the template's name,
+// and of its builds' names, that is the login's own. The login's name itself would not do: it may
+// hold any character and run to 63 bytes, the most a Postgres identifier holds, where its hash
+// keeps both names identifier-safe and bounded: broker_template_<16 hex>_<12 hex> is 45 bytes,
+// and a build's broker_template_build_<12 hex>_<16 hex> (testdb.NewDatabaseName) is 51.
+func loginKey(login string) string {
+	sum := sha256.Sum256([]byte(login))
+	return hex.EncodeToString(sum[:6])
+}
+
 func makeTemplate(raw string) (string, error) {
 	digest, err := store.MigrationsDigest()
 	if err != nil {
 		return "", err
 	}
-	name := "broker_template_" + digest[:16]
 	server, err := url.Parse(raw)
 	if err != nil {
 		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
@@ -136,6 +157,14 @@ func makeTemplate(raw string) (string, error) {
 		return "", fmt.Errorf("take the template lock: %w", err)
 	}
 	// The lock is the connection's: closing the connection releases it whatever happens below.
+	// The login is the one every database made below is owned by, and every copy is made as.
+	var login string
+	if err := conn.QueryRow(ctx, "select current_user").Scan(&login); err != nil {
+		return "", fmt.Errorf("read the login of %s: %w", DatabaseURLEnv, err)
+	}
+	key := loginKey(login)
+	name := "broker_template_" + digest[:16] + "_" + key
+	builds := "broker_template_build_" + key
 	var exists bool
 	if err := conn.QueryRow(ctx, "select exists (select from pg_database where datname = $1)", name).Scan(&exists); err != nil {
 		return "", fmt.Errorf("look for the template: %w", err)
@@ -143,9 +172,13 @@ func makeTemplate(raw string) (string, error) {
 	if exists {
 		return name, nil
 	}
-	// Builds only happen under the lock, which is the server's, so any build database on the server
-	// now is one whose process died before it renamed it.
-	rows, err := conn.Query(ctx, "select datname from pg_database where datname like 'broker_template_build_%'")
+	// Builds only happen under the lock, which is the server's, so any build of this login on the
+	// server now is one whose process died before it renamed it. The sweep is the login's own: it
+	// reads only the databases this login owns that bear its builds' name, since only a database's
+	// owner or a superuser may drop it, and another login's leftover is that login's to drop when it
+	// next builds, even where this login is a superuser.
+	rows, err := conn.Query(ctx, `select datname from pg_database
+		where datdba = (select oid from pg_roles where rolname = current_user) and starts_with(datname, $1)`, builds+"_")
 	if err != nil {
 		return "", fmt.Errorf("list unfinished template builds: %w", err)
 	}
@@ -158,7 +191,7 @@ func makeTemplate(raw string) (string, error) {
 			return "", fmt.Errorf("drop the unfinished template build %s: %w", leftover, err)
 		}
 	}
-	build, err := testdb.NewDatabaseName("broker_template_build")
+	build, err := testdb.NewDatabaseName(builds)
 	if err != nil {
 		return "", err
 	}

@@ -1078,18 +1078,22 @@ composes with the `TestMain` a package already has
 `packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
 schema.
 The broker's `packages/envoy/internal/cipher/store/storetest` (`URL`, `Open`) copies a template too,
-in three ways unlike these two. The template is the server's, `broker_template_<digest of the
-embedded migrations>`, made once under an advisory lock taken in the server's `postgres` database,
-and nothing drops it: every broker test binary of a run, and of every later run of the same
-migrations on that server, copies it, so no binary owns it. A test drops its own copy in its own
-cleanup (`testdb.DatabaseOn` with the template) and waits for that drop's checkpoint, since no broker
-package has a `TestMain` that would wait for drops left running. And each create and drop opens a
-connection of its own, so no pool outlives a test. CI gives each job a server of its own; on a
-server that outlives runs, as a dev box's does, each set of migrations leaves one template, and a
-change to how `Migrate` applies the files that leaves them as they are reuses the template the
-earlier code built. `drop database broker_template_<digest>` makes the next run build it again, and
-the `broker_test_<hex>` copies a killed test binary left are dropped the same way when no run is
-going.
+in three ways unlike these two. The template is one per login and migration set on the server,
+`broker_template_<digest of the embedded migrations>_<login key>` (the login key is 12 hex digits
+of the SHA-256 of the login's name), owned by that login and made once under an advisory lock
+taken in the server's `postgres` database, and nothing drops it: every broker test binary of a
+run, and of every later run of the same migrations on that server as that login, copies it, so no
+binary owns it. It is the login's because Postgres copies a database only for its owner, a
+superuser, or where the database is marked a template, and a copy keeps its template's owner of
+schema and tables: another login's template would refuse the copy, or hand it a schema and tables
+that login owns. A test drops its own copy in its own cleanup (`testdb.DatabaseOn` with the
+template) and waits for that drop's checkpoint, since no broker package has a `TestMain` that would
+wait for drops left running. And each create and drop opens a connection of its own, so no pool
+outlives a test. CI gives each job a server of its own; on a server that outlives runs, as a dev
+box's does, each login and set of migrations leaves one template, and a change to how `Migrate`
+applies the files that leaves them as they are reuses the template the earlier code built.
+`drop database broker_template_<digest>_<login key>` makes the next run build it again, and the
+`broker_test_<hex>` copies a killed test binary left are dropped the same way when no run is going.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
