@@ -196,6 +196,7 @@
     "/open_asks/*/revision",
     "/open_asks/*/urgency",
     "/open_asks/*/waiting_on_person",
+    "/pull_request",
     "/referenced_by_count",
     "/route_holder",
     "/route_status",

@@ -11,10 +11,22 @@
  *   `./page-words-parts`, and values from `./page-structure`. A value import from
  *   `page-words.ts` or `./page-words-parts` makes an import cycle.
  */
+import { freeze } from "./page-structure";
 import type { PartWords } from "./page-words-parts";
+
+/**
+ * How the issue's pull request stands, in the page's own words, drawn on the header's pull
+ * request link beside its number (part N's R22, `PullRequestLink.tsx`): one word per state
+ * `IssueDetails.pull_request.state` carries (`open`, `merged`, `closed`).
+ */
+export const PULL_REQUEST_STATE_WORDS = freeze({
+  closed: "Closed",
+  merged: "Merged",
+  open: "Open",
+} as const);
 
 export default {
   add: {},
-  unasked: [],
+  unasked: [PULL_REQUEST_STATE_WORDS],
   answers: [],
 } as const satisfies PartWords;

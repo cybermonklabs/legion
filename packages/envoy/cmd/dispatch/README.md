@@ -5272,7 +5272,7 @@ Where the answer's status already went out, the server sends no more of the body
 `TestTheGuideNamesTheMembersEachAnswersRouteCanLeaveOut` holds this list to that table.
 An answer names a member only when it leaves that member out.
 
-- `GET /api/v1/issues/{key}`: `/route_status`, `/route_holder`, `/route_status_reason`, `/holder_state`, `/last_seen`, `/takeable_at`, `/design_gates`, `/referenced_by_count`, `/open_asks/*/referenced_by_count`, `/components/ids`, `/components/unknown`, `/open_asks/*/revision`, `/open_asks/*/options/*/id`, `/open_asks/*/answer/id`, `/open_asks/*/waiting_on_person`, `/open_asks/*/approval/documents`, `/artifacts/*/approval/documents`, `/open_asks/*/question`, `/open_asks/*/options`, `/open_asks/*/multiple`, `/open_asks/*/urgency`, `/open_asks/*/question_tree`, `/artifacts/*/approval/content_sha256`, `/artifacts/*/approval/content_sha256_source`, `/open_asks/*/anchor/block_id`.
+- `GET /api/v1/issues/{key}`: `/route_status`, `/route_holder`, `/route_status_reason`, `/holder_state`, `/last_seen`, `/takeable_at`, `/design_gates`, `/pull_request`, `/referenced_by_count`, `/open_asks/*/referenced_by_count`, `/components/ids`, `/components/unknown`, `/open_asks/*/revision`, `/open_asks/*/options/*/id`, `/open_asks/*/answer/id`, `/open_asks/*/waiting_on_person`, `/open_asks/*/approval/documents`, `/artifacts/*/approval/documents`, `/open_asks/*/question`, `/open_asks/*/options`, `/open_asks/*/multiple`, `/open_asks/*/urgency`, `/open_asks/*/question_tree`, `/artifacts/*/approval/content_sha256`, `/artifacts/*/approval/content_sha256_source`, `/open_asks/*/anchor/block_id`.
 
 - `GET /api/v1/issues`, whose answer without a page is an array and whose page holds the issues under `issues`: `/*/route_status`, `/*/route_holder`, `/*/route_status_reason`, `/*/components/ids`, `/*/components/unknown`, `/issues/*/route_status`, `/issues/*/route_holder`, `/issues/*/route_status_reason`, `/issues/*/components/ids`, `/issues/*/components/unknown`.
 
@@ -5321,6 +5321,8 @@ The reasons, which `asof.AbsentFields` gives for each member:
 - The component model keeps no history, so the members of an explicit component attachment are left out.
 
 - No event records the field: the design gates, the snoozes, a block's token, embedding and place, the id of an untyped block of a version that `document_indexed_versions` does not hold, the ids of a table's rows and cells, a document version's token where Dispatch stored none (all before 2026-11-03), and the state of a delivery attempt that no receipt or reply event dates.
+
+- `pull_request_heads` keeps only the present state of each pull request, so an issue read at a cut leaves out its pull request.
 
 - No event dates the orphaning of a comment's anchor that an accept or a reject of a suggestion recorded before its `409 ANCHOR_ORPHANED` appended a `comment.anchor_refreshed` of its own, or that a delete of the suggestion recorded: only an anchor refresh event dates an orphaning (`asof.CommentAnchorsOrphanedNotGivenStatement`).
   So whether the anchor's mark was gone is left out at a cut where the comment's newest event gives the anchor as not orphaned and the record shows it orphaned before the comment's next event, with no refresh that dates it.

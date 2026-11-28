@@ -1,0 +1,5 @@
+kind: Added
+body: '`dispatch read --as-of` now names "the pull request" in the `Left out at` line for an issue. Dispatch keeps only the present state of each pull request.'
+time: 2026-11-28T05:20:30.907585799Z
+custom:
+    Issue: pr5918
