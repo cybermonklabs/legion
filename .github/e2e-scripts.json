@@ -390,7 +390,7 @@
     },
     {
       "script": "leak-guard-image-job.sh",
-      "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), the worker image digest to prove (--image, from the Worker Image run's Record digest step) and the deployment's compute class (--node-selector), with main's image at the base commit the change merges onto, by digest, as the negative control (--control); it starts one Job of that image and nothing of its own"
+      "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), the worker image digest to prove (--image, from the Worker Image run's Record digest step) and the deployment's compute class (--node-selector), with main's image of the base the change merges onto, by digest, as the negative control (--control): the image of the newest commit at or below the base that has one, where no commit after it changes a file of the worker_image filter (.github/ci-gates/worker-image.py), whose digest that commit's Release Packages run logs in its worker_image / build job; it starts one Job of that image and nothing of its own"
     },
     {
       "script": "leak-guard-image-probe.sh",

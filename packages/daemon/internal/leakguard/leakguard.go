@@ -93,11 +93,14 @@ type Options struct {
 	// Env is the environment the guard's children start from: the shared check, the visibility
 	// reads, and the git commands a push's records are read with. Nil means this process's own
 	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote)
-	// and the two reads of what a push's destination holds (Guard.advertised, Guard.negotiated),
-	// which keep only the entries lsRemoteInherits allows, the read through curl
-	// (Guard.CurlGet), which keeps only those TokenChildKeeps allows, and StaysLocal's read of
-	// git's own exec path (Guard.ownExecPath), which keeps all of it but GIT_EXEC_PATH
-	// (withoutExecPath). The guard adds to it the names that make a credential prompt fail closed
+	// and the gits Guard.heldRead runs for the two reads of what a push's destination holds (the
+	// ls-remote of Guard.advertised, and the init and the fetch --negotiate-only of
+	// Guard.negotiated), which keep only the entries lsRemoteInherits allows, the read through curl
+	// (Guard.CurlGet), which keeps only those TokenChildKeeps allows, and the read of git's own
+	// exec path (Guard.ownExecPath), which keeps all of it but GIT_EXEC_PATH (withoutExecPath). The
+	// other gits of those two reads, the cat-file --batch-check of Guard.advertised and the
+	// rev-parse of Guard.negotiated, keep all of it, since they read the clone under the hook's
+	// GIT_DIR. The guard adds to it the names that make a credential prompt fail closed
 	// (promptsNothing) and RunByRealGhVar blanked, and each child's own names on top of those. It
 	// is also where the guard reads RulesFileVar (Guard.rules).
 	Env []string

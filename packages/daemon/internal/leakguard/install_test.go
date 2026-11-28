@@ -916,10 +916,11 @@ func TestTheInstallsRunOfTheCheckStartsThroughItsStarter(t *testing.T) {
 	})
 }
 
-// verifyServed is the guard's sixth output-parsing read (beside the five in
-// TestEveryReadOfTheGuardAnswersFromItsStandardOutputAlone): it reads the check's two invocation
-// shapes (`check-public-text` and `gh-guard`) from `--help`'s standard output alone, never from
-// standard error, and quotes the first line of standard error when the check fails to name them.
+// verifyServed is one of the guard's output-parsing reads, beside the five in
+// TestEveryReadOfTheGuardAnswersFromItsStandardOutputAlone and Guard.ownExecPath, which that
+// test's doc names: it reads the check's two invocation shapes (`check-public-text` and
+// `gh-guard`) from `--help`'s standard output alone, never from standard error, and quotes the
+// first line of standard error when the check fails to name them.
 //
 // The fixtures under testdata/served-check-help/ were captured on 2026-11-27 from the shared
 // check's repository at each tag a deployment pins (`leak-check-v15`, `leak-check-v21`,

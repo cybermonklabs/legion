@@ -78,12 +78,22 @@
 #     real /usr/bin/git, with no wrapper and no hook. The probe expects it to land on the scratch
 #     remote, which shows it tells a push the guard checked from one the guard never saw.
 #
-# The control is main's published image at the base commit the change merges onto
-# (`git merge-base <head> origin/main`), driven by the same Job with the same probe. Pass it as
-# `--control`, by digest: the `Record digest` step of the `Worker Image` run of that base commit.
-# It carries the wrappers and the hook, and its `legion` runs the rule file the Job names, as the
-# head's does, but its hook reads every push. So every case gets the head's verdict on it but
-# `local-path`, which its rules refuse, naming the record, the class, what matched and its line.
+# The control is main's published image of the base the change merges onto
+# (`git merge-base <head> origin/main`), driven by the same Job with the same probe. A base need not
+# have an image of its own: main's images come from release.yaml's `worker_image` job, which runs
+# only on a push to main that changes a file release.yaml's `paths` names, so a merge that changed
+# none has none. Pass as `--control`, by digest, main's image of the newest commit at or below the
+# base that has one, where no commit after it up to the base changes a file the image build reads:
+# a file that .github/workflows/ci.yaml's `worker_image` filter matches, which
+# .github/ci-gates/worker-image.py declares. That image was built from the base's own image
+# inputs. Its digest is in that commit's `Release Packages` run (.github/workflows/release.yaml),
+# whose `worker_image / build` job logs it as `pushing manifest for
+# ghcr.io/cybermonklabs/legion-worker:sha-<the first 12 hex of the commit>@sha256:<digest>`:
+# `gh run list --workflow release.yaml --commit <commit>` names the run, and
+# `gh run view <run> --log` prints the line. The control carries the wrappers and the hook, and
+# its `legion` runs the rule file the Job names, as the head's does, but its hook reads every
+# push. So every case gets the head's verdict on it but `local-path`, which its rules refuse,
+# naming the record, the class, what matched and its line.
 # That case is the change: a control that lands it was built with the change, and a head that
 # refuses it was built without it. The harness tells the probe which arm it drives by the probe's
 # one argument, `head` or `control`, which it writes as the last argument of the Job's command
@@ -93,14 +103,18 @@
 #
 # Inputs, all of them required unless marked:
 #
-#   --image <ref>@sha256:<64 hex>    the image to prove, by digest, never by tag. The digest is in
-#                                    the `Record digest` step of the `Worker Image` run of the
-#                                    commit under test (docs/kubernetes.md, "Pin by digest, never
-#                                    by tag"). Also the first positional argument.
-#   --control <ref>@sha256:<64 hex>  optional: main's image at the base commit the change merges
-#                                    onto, by digest, from the `Record digest` step of the
-#                                    `Worker Image` run of that commit, driven as the negative
-#                                    control. Also the second positional argument.
+#   --image <ref>@sha256:<64 hex>    the image to prove, by digest, never by tag. For a pull
+#                                    request's head the digest is in the `Record digest` step of
+#                                    the `worker-image / build` job of the CI run of that head,
+#                                    which .github/workflows/ci.yaml calls worker-image.yaml for
+#                                    (docs/kubernetes.md, "Pin by digest, never by tag"). Also the
+#                                    first positional argument.
+#   --control <ref>@sha256:<64 hex>  optional: main's image of the base the change merges onto, by
+#                                    digest, driven as the negative control: the image of the
+#                                    newest commit at or below the base that has one, where no
+#                                    commit after it up to the base changes a file the image
+#                                    build reads, read from that commit's `Release Packages` run
+#                                    (above, "The control"). Also the second positional argument.
 #   --node-selector <key=value>[,…]  the deployment's compute class, which docs/kubernetes.md
 #                                    requires a workload to select by `nodeSelector`. Its value is
 #                                    in the deployment's own declaration, which this public
@@ -188,12 +202,16 @@ usage: scripts/e2e/leak-guard-image-job.sh --image <ref>@sha256:<64 hex>
                                            [--dry-run]
 
   --image         the worker image to prove, by digest; the first positional argument too.
-  --control       main's image at the base commit the change merges onto, by digest, driven as
-                  the negative control: every case gets the head's verdict on it but local-path, a
-                  refusable push to a local bare repository, which the head's hook clears and the
-                  control's rules refuse; the second positional argument too. A run without it
-                  proves only the head: it says nothing about whether local-path would have gone
-                  otherwise without the change.
+  --control       main's image of the base the change merges onto, by digest: the image of the
+                  newest commit at or below the base that has one, where no commit after it
+                  changes a file of the worker_image filter (.github/ci-gates/worker-image.py),
+                  whose digest that commit's Release Packages run logs in its `worker_image /
+                  build` job (`pushing manifest for <image>:sha-<12 hex>@sha256:<digest>`). It is
+                  driven as the negative control: every case gets the head's verdict on it but
+                  local-path, a refusable push to a local bare repository, which the head's hook
+                  clears and the control's rules refuse; the second positional argument too. A run
+                  without it proves only the head: it says nothing about whether local-path would
+                  have gone otherwise without the change.
   --node-selector the deployment's compute class, which the namespace's admission requires. Read
                   it from the deployment's own declaration; this public repository carries no
                   value of it. LEAK_GUARD_NODE_SELECTOR sets it too.
@@ -248,7 +266,7 @@ digest_shape='^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$'
 [[ $image =~ $digest_shape ]] || refuse "the image $image is not a digest reference <ref>@sha256:<64 hex>"
 if [ -n "$control" ]; then
   [[ $control =~ $digest_shape ]] || refuse "the control $control is not a digest reference <ref>@sha256:<64 hex>"
-  [ "$control" != "$image" ] || refuse "the control is the image under test; the control is main's image at the base commit the change merges onto"
+  [ "$control" != "$image" ] || refuse "the control is the image under test; the control is main's image of the base the change merges onto"
 fi
 [ -n "$node_selector" ] || refuse "no --node-selector: the namespace's admission requires the deployment's compute class, which is in the deployment's own declaration"
 case "$prefix" in

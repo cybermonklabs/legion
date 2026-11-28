@@ -420,10 +420,13 @@ type child struct {
 	// can depend on another, as ALL_PROXY does on what HTTPS_PROXY names (TokenChildKeeps). The
 	// guard's own names and env go on top either way. Nil keeps the whole base, which is what
 	// every child keeps but the visibility read made with no credential (Guard.lsRemote), the
-	// read through curl (Guard.CurlGet), the two reads of what a push's destination holds
-	// (Guard.advertised, Guard.negotiated), which keep what the read with no credential keeps,
-	// and StaysLocal's read of git's own exec path (Guard.ownExecPath), which keeps all of the
-	// base but GIT_EXEC_PATH (withoutExecPath).
+	// read through curl (Guard.CurlGet), the gits Guard.heldRead runs for the two reads of what a
+	// push's destination holds (the ls-remote of Guard.advertised, and the init and the fetch
+	// --negotiate-only of Guard.negotiated), which keep what the read with no credential keeps,
+	// and the read of git's own exec path (Guard.ownExecPath), which keeps all of the base but
+	// GIT_EXEC_PATH (withoutExecPath). The other gits of those two reads keep the whole base, and
+	// must, since they read the clone under the hook's GIT_DIR: the cat-file --batch-check of
+	// Guard.advertised (Guard.gitFed) and the rev-parse of Guard.negotiated (Guard.git).
 	inherit func(base []string) func(name, value string) bool
 	// stdin is the child's standard input, nil for none.
 	stdin io.Reader
@@ -435,10 +438,9 @@ type child struct {
 	// reads read gh's answer alone (Guard.ghVisibility, Guard.graphQLVisibility), the read through
 	// curl curl's answer alone (Guard.CurlGet), the token read quotes gh's error without its output
 	// (Guard.ghToken), a git read of a push's records quotes git's error without the push's content
-	// (Guard.git), the hook's read of git's own exec path reads git's answer alone
-	// (Guard.StaysLocal), and the two reads of what a push's destination holds read git's list of
-	// its refs and of the commits it holds alone (Guard.advertised, Guard.negotiated). Nil answers
-	// the two together.
+	// (Guard.git), the read of git's own exec path reads git's answer alone (Guard.ownExecPath),
+	// and the two reads of what a push's destination holds read git's list of its refs and of the
+	// commits it holds alone (Guard.advertised, Guard.negotiated). Nil answers the two together.
 	stderr io.Writer
 }
 

@@ -631,12 +631,14 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 
 // Every read of the guard that parses a child's output reads its answer from standard output alone,
 // so diagnostic lines the program writes on standard error (such as GH_DEBUG=api or GIT_TRACE=1)
-// cannot change the answer. The five reads below, and verifyServed
-// (TestTheServedChecksHelpIsReadFromItsStandardOutputAlone), are the reads of this package that
-// parse another program's answer through Guard.run or Guard.git. The reads of what a push's
-// destination holds (Guard.advertised and Guard.negotiated, through Guard.gitFed and
-// Guard.heldRead) keep git's standard error apart the same way, and held_test.go holds them.
-// Guard.lsRemote reads only git's exit status and parses no output.
+// cannot change the answer. The five reads below, verifyServed
+// (TestTheServedChecksHelpIsReadFromItsStandardOutputAlone), and Guard.ownExecPath (local.go),
+// which parses `git --exec-path` through Guard.run with its standard error apart and which no row
+// holds, are the reads of this package that parse another program's answer through Guard.run or
+// Guard.git. The reads of what a push's destination holds (Guard.advertised and
+// Guard.negotiated, through Guard.gitFed and Guard.heldRead) keep git's standard error apart the
+// same way, and held_test.go holds them. Guard.lsRemote reads only git's exit status and parses
+// no output.
 //
 // The fixtures under testdata/gh-rest-read/ were captured on 2026-11-27 with gh 2.98.0:
 //
