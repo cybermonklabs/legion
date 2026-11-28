@@ -527,7 +527,9 @@ func TestASecondRunIsRefusedAfterAConflictIsResolvedByHand(t *testing.T) {
 
 // The step begins from a tree nobody has touched, so it refuses one that is mid-merge or holds a
 // change, and names what the person must do and what it costs. These are the refusals that make a
-// second run impossible, rather than a reading of file content that judges one.
+// second run impossible, rather than a reading of file content that judges one. Each names
+// commands that act on the adopted tree, since the person runs the step with -C from wherever they
+// are, and running them as written returns a tree the step runs in.
 func TestTheStepRefusesATreeItDidNotStart(t *testing.T) {
 	t.Run("a merge is in progress", func(t *testing.T) {
 		repo := newScratchRepo(t)
@@ -559,6 +561,41 @@ func TestTheStepRefusesATreeItDidNotStart(t *testing.T) {
 		_, err := repo.adoptMain()
 		if err == nil || !strings.Contains(err.Error(), "holds changes") || !strings.Contains(err.Error(), "scratch_note.go") {
 			t.Fatalf("the step ran in a tree holding a change, or named none: %v", err)
+		}
+		if !strings.Contains(err.Error(), "git -C "+shellQuoted(repo.root)+" stash -u") {
+			t.Errorf("the refusal names no git command that acts on the adopted tree: %v", err)
+		}
+		// And it runs once the change is put away by the commands the refusal names. A plain
+		// `git stash` would leave the untracked file, and the run after it would be refused again.
+		repo.runNamed(err.Error(), "git")
+		if _, err := repo.adoptMain(); err != nil {
+			t.Fatalf("adopt after the refusal's own commands: %v", err)
+		}
+	})
+
+	t.Run("@ holds a change under jj", func(t *testing.T) {
+		repo := newScratchRepo(t)
+		base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+		repo.addRouteOn("branch-a", base, "a")
+		repo.moveMain()
+		found := repo.jjOn("branch-a")
+		repo.write("scratch_note.go", "package api\n\n// A change of the person's own.\n")
+		_, err := adopt(found, "main@origin")
+		if err == nil || !strings.Contains(err.Error(), "holds changes") || !strings.Contains(err.Error(), "scratch_note.go") {
+			t.Fatalf("the step ran on an @ holding a change, or named none: %v", err)
+		}
+		// A bare `jj new` acts on the repository of the shell it is pasted into, which is not the
+		// adopted one where the step ran with -C.
+		if !strings.Contains(err.Error(), "jj -R "+shellQuoted(repo.root)+" new") {
+			t.Errorf("the refusal names no jj command that acts on the adopted workspace: %v", err)
+		}
+		// The person describes the change, as the refusal says, and runs the commands it names.
+		if output, err := repo.run("jj", "describe", "-m", "a change of the person's own"); err != nil {
+			t.Fatalf("jj describe: %v: %s", err, output)
+		}
+		repo.runNamed(err.Error(), "jj")
+		if _, err := adopt(found, "main@origin"); err != nil {
+			t.Fatalf("adopt after the refusal's own commands: %v", err)
 		}
 	})
 }
@@ -959,16 +996,22 @@ func (r *scratchRepo) jjParents() []string {
 }
 
 // runNamed runs each command a message names in backquotes that begins with tool, in order,
-// through a shell as a person pasting it would: the recovery a refusal or a failure gives.
+// through a shell as a person pasting it would: the recovery a refusal or a failure gives. The
+// shell runs in a directory outside the scratch repository, as a person who ran the step with -C
+// from another checkout pastes the commands there, so a command that does not name the repository
+// by its root has no repository to act on and fails.
 func (r *scratchRepo) runNamed(message, tool string) {
 	r.t.Helper()
+	elsewhere := r.t.TempDir()
 	var ran int
 	for _, match := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(message, -1) {
 		if !strings.HasPrefix(match[1], tool+" ") {
 			continue
 		}
-		if output, err := r.run("sh", "-c", match[1]); err != nil {
-			r.t.Fatalf("%s, which the message names: %v: %s", match[1], err, output)
+		command := exec.Command("sh", "-c", match[1])
+		command.Dir = elsewhere
+		if output, err := command.CombinedOutput(); err != nil {
+			r.t.Fatalf("%s, which the message names, run from outside the repository: %v: %s", match[1], err, output)
 		}
 		ran++
 	}

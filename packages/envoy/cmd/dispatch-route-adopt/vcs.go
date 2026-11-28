@@ -171,7 +171,9 @@ func (g gitRepo) leaveTheMerge(here string, written []string) string {
 
 // refuseATreeThisDidNotStart refuses a tree that is mid-merge or holds a change, naming what the
 // person must do and what it costs them, since the step's safety rests on starting from a tree
-// nobody has touched.
+// nobody has touched. Every command it names acts on this checkout by its root, since the person
+// runs the step with -C from wherever they are, and a bare command pasted there acts on that
+// directory's repository instead.
 func (g gitRepo) refuseATreeThisDidNotStart() error {
 	const lost = "any resolution you have already made in that merge is lost, this step's route files included"
 	if g.jj {
@@ -196,7 +198,7 @@ func (g gitRepo) refuseATreeThisDidNotStart() error {
 			if err != nil {
 				return err
 			}
-			return fmt.Errorf("@ holds changes of its own, and this step begins from a commit nobody has touched: describe them and run `jj new` to sit on a fresh commit, then run this again:\n%s", strings.TrimRight(changed, "\n"))
+			return fmt.Errorf("@ holds changes of its own, and this step begins from a commit nobody has touched: describe them and run `jj -R %s new` to sit on a fresh commit, then run this again:\n%s", shellQuoted(g.root), strings.TrimRight(changed, "\n"))
 		}
 		return nil
 	}
@@ -209,8 +211,10 @@ func (g gitRepo) refuseATreeThisDidNotStart() error {
 	if err != nil {
 		return err
 	}
+	// -u, because `git status --porcelain` lists an untracked file, which a plain `git stash`
+	// leaves behind, so the run after it would be refused again.
 	if strings.TrimSpace(string(changed)) != "" {
-		return fmt.Errorf("the tree holds changes, and this step begins from a tree nobody has touched: commit or stash them, then run this again:\n%s", strings.TrimRight(string(changed), "\n"))
+		return fmt.Errorf("the tree holds changes, and this step begins from a tree nobody has touched: commit them, or stash them with `git -C %s stash -u`, then run this again:\n%s", shellQuoted(g.root), strings.TrimRight(string(changed), "\n"))
 	}
 	return nil
 }
@@ -273,9 +277,10 @@ type conflictSides struct {
 // recordConflict writes one path into git's index as a conflict, in git's own stage order: the
 // merge base at stage 1, HEAD's side at 2 and MERGE_HEAD's at 3, which is what `git merge` leaves
 // for a path it could not merge, and what `git checkout --ours` and `--theirs` read. git then
-// refuses to commit until the person resolves the file and runs `git add`. jj takes the working
-// copy as it is, markers and all, and keeps the file as a conflict of its own, so nothing is
-// written there.
+// refuses to commit until the person resolves the file and runs `git add`. jj reads no index:
+// it snapshots the file, markers and all, as plain content, not as a conflict of its own, so
+// `jj resolve --list` does not name it and nothing is written there. Under jj only this step's
+// report ("resolve the conflict markers in ...") names the file.
 func (g gitRepo) recordConflict(name string, sides conflictSides) error {
 	if g.jj {
 		return nil
