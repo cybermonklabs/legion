@@ -1651,16 +1651,12 @@ func (f GateRegistered) StaleGeneration(now uint64) *Refusal {
 // CloseRoot is a tree root's architect ending its tree before the tree's first phase starts, with
 // the reason it gives: a human decided no change at the design gate, or the issue is moot. By and
 // Generation are the architect's claim and the root's generation its route read (api's
-// closeRoot), which the workflow judges again under the fact lock (ArchitectRequest). Written is
-// the sequence Dispatch answered the close_root route's own done write with, which the route makes
-// before it applies this fact, and 0 for a close no route wrote first: the event of that write can
-// reach the record before the fact does.
+// closeRoot), which the workflow judges again under the fact lock (ArchitectRequest).
 type CloseRoot struct {
 	Issue      string
 	Reason     string
 	By         claim.Token
 	Generation uint64
-	Written    int64
 }
 
 func (f CloseRoot) namedIssue() (string, bool) { return f.Issue, true }

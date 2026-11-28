@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -185,6 +187,37 @@ func TestAnAcceptanceWhoseFactDoesNotTakeWritesTheStatusBack(t *testing.T) {
 		http.StatusConflict, "SIGNOFF_RESTING_ROOT_IN_WORKFLOW")
 	if want := []statusWrite{{"LEGION-208", "retro"}}; !reflect.DeepEqual(statuses.writes, want) {
 		t.Fatalf("Dispatch writes over an issue the record holds out of the workflow = %+v, want retro alone: %+v", statuses.writes, want)
+	}
+}
+
+// A write whose answer was lost on its way back, a timeout or a body cut short after Dispatch
+// took it, is read again: Dispatch shows the act's status past the read the write was fenced on,
+// made by no one but the daemon, so the act goes on to its fact as a write answered. A write that
+// failed before Dispatch took it reads the old status again and is answered DISPATCH_FAILED with
+// nothing applied.
+func TestAnAcceptanceWhoseAnswerWasLostIsReadAgain(t *testing.T) {
+	h, facts, statuses := newAcceptanceHarness(t, nil, nil)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	signOff := func() *httptest.ResponseRecorder {
+		t.Helper()
+		return h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil)
+	}
+
+	// The write failed before Dispatch took it: the old status reads again.
+	statuses.err = errors.New("dial tcp 127.0.0.1:8080: connect: connection refused")
+	message := refused(t, signOff(), http.StatusBadGateway, "DISPATCH_FAILED")
+	if len(statuses.acceptances) != 0 || len(facts.recorded()) != 0 || !strings.Contains(message, "connection refused") {
+		t.Fatalf("a write Dispatch never took wrote %q, applied %#v and answered %q; want nothing, naming the failure", statuses.acceptances, facts.recorded(), message)
+	}
+	statuses.err = nil
+
+	// Dispatch took the write and its answer was lost: the act goes on.
+	statuses.lostAnswer = errors.New("read the answer of PATCH /api/v1/issues/LEGION-208: unexpected EOF")
+	if answer := signOff(); answer.Code != http.StatusOK {
+		t.Fatalf("the sign-off whose write landed and whose answer was lost = %d: %s, want 200", answer.Code, answer.Body)
+	}
+	if want := []string{"LEGION-208=retro"}; !slices.Equal(statuses.acceptances, want) || len(facts.recorded()) != 1 {
+		t.Fatalf("acceptance writes %q and facts %#v, want the one retro and its sign-off applied", statuses.acceptances, facts.recorded())
 	}
 }
 

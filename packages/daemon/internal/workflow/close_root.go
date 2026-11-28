@@ -39,18 +39,15 @@ import (
 // controller's own Dispatch close the daemon set back, as a session's write on a waiting root).
 // It keeps its slot while it waits (blockers.waitsOf), and leave frees that slot once.
 //
-// The event of the route's own done write can reach the record before this fact, and leave the
-// tree as any close Dispatch shows does (closedByItsOwnWrite): the close is then made already, so
-// the fact posts the reason that leave did not, and is taken.
+// The event of the route's own done write can reach the record before this fact. It is no
+// departure while the record holds the root in the workflow (closeRootWriteAhead, which
+// dispatchIssue asks before it leaves the tree on a done), so this fact alone decides the close,
+// with every refusal below: one refused, a first phase started since the route's judgement among
+// them, has the route write back the status Dispatch showed before its write.
 func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot) (intake.Result, error) {
 	root, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || root == nil {
 		return intake.Result{}, err
-	}
-	if closedByItsOwnWrite(*root, fact) {
-		e.logOnCommit(ctx, "workflow: the close_root route's own done write reached the record before its fact; the fact posts the reason", "issue", root.Key,
-			"written", fact.Written, "recorded", root.LastDispatchSeq)
-		return intake.Result{}, e.enqueue(ctx, tx, root.Key, record.MessagePost{Body: fact.Message()})
 	}
 	if refusal, err := e.closeRootRefusal(ctx, tx, *root); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
@@ -92,12 +89,16 @@ func (e *Engine) closeRootRefusal(ctx context.Context, tx pgx.Tx, root record.Is
 	return nil, nil
 }
 
-// closedByItsOwnWrite says whether root left the workflow on the event of the close_root route's
-// own done write (intake.CloseRoot.Written) before the fact arrived: the record has applied that
-// event or a later one, Dispatch showed done there, and the record no longer holds root in the
-// workflow (record.InWorkflow), as the leave on that event left it.
-func closedByItsOwnWrite(root record.Issue, fact intake.CloseRoot) bool {
-	return fact.Written > 0 && root.LastDispatchSeq >= fact.Written && root.DispatchStatus == record.DoneStatus && !record.InWorkflow(root)
+// closeRootWriteAhead says whether fact is the event of a close_root's own done write that the
+// daemon has not recorded as a close: the daemon wrote it (intake.DispatchIssue.DaemonActor), and
+// the record still holds the issue in the workflow (record.InWorkflow). Every other done the
+// daemon writes, a close status row, is queued by a fact that took the issue out of the workflow
+// first. The route writes the done before the close's fact, and writes back the status it replaced
+// when that fact is refused, so the event is no departure: left on it, a tree whose first phase
+// started after the route's judgement would be closed with no refusal, and the write back, which
+// writes nothing over an issue out of the workflow, could not undo it.
+func closeRootWriteAhead(recorded *record.Issue, fact intake.DispatchIssue) bool {
+	return fact.DaemonActor && fact.Status == record.DoneStatus && recorded != nil && record.InWorkflow(*recorded)
 }
 
 // closableAtPhase says whether a root at this phase has started no phase of its tree, which is

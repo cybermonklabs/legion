@@ -158,52 +158,66 @@ func TestCloseRootIsRefusedOnceATreeHasStartedOrForAChild(t *testing.T) {
 }
 
 // The close_root route writes done in Dispatch before it applies its fact, so the event of that
-// write can reach the record first and leave the tree, as any close Dispatch shows does. The fact
-// then finds the close made: it posts the architect's reason, which that leave did not post, and is
-// taken, queueing no second close. The same fact naming no write of its own, a close no route
-// wrote first, is refused as a close of a tree already leaving.
-func TestACloseRootWhoseOwnDoneWriteReachedTheRecordFirstPostsItsReason(t *testing.T) {
+// write can reach the record first. It leaves nothing while the record holds the root in the
+// workflow (closeRootWriteAhead), and the fact alone decides: at admitted the close is taken and
+// queues its close row; once the root's first phase started after the route's judgement, the close
+// is refused CLOSE_AFTER_PHASE_STARTED and the tree runs on, for the route to write the status
+// back. The control: the same done written by a person leaves the running tree.
+func TestACloseRootsOwnDoneEventLeavesNothingAndItsFactDecides(t *testing.T) {
 	t.Parallel()
-	pool := migratedPool(t)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION",
-		Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1})
-	engine := testEngine(config.DesignGateRootIssues, nil)
-	apply := func(id string, fact intake.Fact) intake.Result {
-		t.Helper()
-		result, err := intake.ApplyFact(context.Background(), pool, "api", id, fact, engine, admissionStub{})
-		if err != nil {
-			t.Fatalf("apply %s: %v", id, err)
-		}
-		return result
-	}
+	for _, tc := range []struct {
+		name    string
+		stands  phase.Phase
+		daemon  bool
+		refused string
+	}{
+		{name: "at admitted, the close is taken", stands: phase.Admitted, daemon: true},
+		{name: "a first phase started since the judgement, the close is refused", stands: phase.Planning, daemon: true, refused: "CLOSE_AFTER_PHASE_STARTED"},
+		{name: "control: a person's done leaves the running tree", stands: phase.Planning},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION",
+				Title: "Root", Phase: tc.stands, Generation: 2, Status: "in_progress", DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1})
+			seedTreeLifecycle(t, pool, "LEGION-1")
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			apply := func(id string, fact intake.Fact) intake.Result {
+				t.Helper()
+				result, err := intake.ApplyFact(context.Background(), pool, "api", id, fact, engine, admissionStub{})
+				if err != nil {
+					t.Fatalf("apply %s: %v", id, err)
+				}
+				return result
+			}
 
-	apply("done-event", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: "Root",
-		Rank: "U", DaemonActor: true})
-	// Admission records the event's observation behind the engine's leave (admit's
-	// recordObservation); this test's admission is a stub, so the observation is written as
-	// admission writes it.
-	if _, err := pool.Exec(context.Background(), "update issues set last_dispatch_seq = 2, dispatch_status = 'done' where key = 'LEGION-1'"); err != nil {
-		t.Fatalf("record the done event's observation: %v", err)
-	}
-	if result := apply("close-unwritten", intake.CloseRoot{Issue: "LEGION-1", Reason: "moot"}); result.Refusal == nil || result.Refusal.Code != "CLOSE_AFTER_PHASE_STARTED" {
-		t.Fatalf("a close naming no write of its own over the tree that left = %+v, want refused CLOSE_AFTER_PHASE_STARTED", result.Refusal)
-	}
-	assertOutboxCount(t, pool, "dispatch_message", 0)
+			apply("done-event", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: "Root",
+				Rank: "U", DaemonActor: tc.daemon})
+			after := *issueRecord(t, pool, "LEGION-1")
+			if !tc.daemon {
+				if record.InWorkflow(after) {
+					t.Fatalf("after a person's done, LEGION-1 = %+v, want it out of the workflow", after)
+				}
+				return
+			}
+			if !record.InWorkflow(after) || after.Phase != tc.stands {
+				t.Fatalf("after the close's own done event, LEGION-1 = %+v, want it still in the workflow at %s", after, tc.stands)
+			}
 
-	if result := apply("close", intake.CloseRoot{Issue: "LEGION-1", Reason: "the human decided no change is needed", Written: 2}); result.Refusal != nil {
-		t.Fatalf("the close whose own done write the record took first = %+v, want it taken", result.Refusal)
-	}
-	rows, err := pool.Query(context.Background(), "select payload->>'body' from outbox where kind = 'dispatch_message' and issue = 'LEGION-1'")
-	if err != nil {
-		t.Fatalf("read the messages: %v", err)
-	}
-	bodies, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if want := "Closed by its architect before its first phase: the human decided no change is needed"; err != nil || len(bodies) != 1 || bodies[0] != want {
-		t.Fatalf("messages queued on LEGION-1 = %q, %v; want the one reason %q", bodies, err, want)
-	}
-	var closes int
-	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = 'dispatch_status' and payload->>'kind' = $1", string(record.CloseStatusRow)).Scan(&closes); err != nil || closes != 0 {
-		t.Fatalf("close rows queued = %d, %v; want none: Dispatch shows done already, and the record left on its event", closes, err)
+			result := apply("close", intake.CloseRoot{Issue: "LEGION-1", Reason: "the human decided no change is needed"})
+			var closes int
+			if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = 'dispatch_status' and payload->>'kind' = $1", string(record.CloseStatusRow)).Scan(&closes); err != nil {
+				t.Fatalf("count the close rows: %v", err)
+			}
+			if tc.refused != "" {
+				if result.Refusal == nil || result.Refusal.Code != tc.refused || closes != 0 || !record.InWorkflow(*issueRecord(t, pool, "LEGION-1")) {
+					t.Fatalf("the close = %+v with %d close rows, want refused %s, none queued and the tree still running", result.Refusal, closes, tc.refused)
+				}
+				return
+			}
+			if result.Refusal != nil || closes != 1 || record.InWorkflow(*issueRecord(t, pool, "LEGION-1")) {
+				t.Fatalf("the close = %+v with %d close rows, want it taken, one close row with its reason, and the tree out of the workflow", result.Refusal, closes)
+			}
+		})
 	}
 }
 

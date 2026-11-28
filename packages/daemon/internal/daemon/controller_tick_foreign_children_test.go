@@ -151,6 +151,22 @@ func TestControllerTickReadsChildrenOfAnotherProject(t *testing.T) {
 		}
 	})
 
+	// A closed child the copy holds under one parent and the list shows under another is read
+	// again, so its row takes the parent Dispatch shows: a closed child is still a child, and a
+	// parent's children of any status decide whether it is a parent at all.
+	t.Run("a closed child the list shows under another parent", func(t *testing.T) {
+		_, client, w := opened(t)
+		client.serveChild("icebox", acceptingParent, 2)
+		w.applyControllerTick(ctx, time.Now().Add(time.Second))
+		same, moved := acceptingParent, otherProjectParent
+		if _, skipped := w.closedInMirror(ctx, []dispatch.IssueSummary{{Key: otherProjectChild, Status: "icebox", Parent: &same}})[otherProjectChild]; !skipped {
+			t.Fatalf("%s listed in icebox under %s, where the copy holds it, is read again; want it passed over", otherProjectChild, acceptingParent)
+		}
+		if _, skipped := w.closedInMirror(ctx, []dispatch.IssueSummary{{Key: otherProjectChild, Status: "icebox", Parent: &moved}})[otherProjectChild]; skipped {
+			t.Fatalf("%s listed in icebox under %s, while the copy holds it under %s, is passed over; want it read again", otherProjectChild, otherProjectParent, acceptingParent)
+		}
+	})
+
 	t.Run("a failed list of the children", func(t *testing.T) {
 		pool, client, w := opened(t)
 		var logs testlog.Buffer

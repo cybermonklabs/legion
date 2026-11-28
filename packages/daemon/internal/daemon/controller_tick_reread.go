@@ -202,15 +202,21 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys, parents []stri
 	return observed
 }
 
-// closedInMirror is each of listed that the list shows closed, done or in icebox, and that the
-// mirror already holds closed too (record.ChildOpen of a child no record holds), read in one
-// short read-only transaction. A read that fails is logged and answers none, so every child is
-// read as before.
+// closedInMirror is each of listed that the list shows closed, done or in icebox, under the same
+// parent the mirror holds it under, and that the mirror already holds closed too (record.ChildOpen
+// of a child no record holds), read in one short read-only transaction. A closed child moved under
+// another parent is read again, so its row takes the parent the list shows. A read that fails is
+// logged and answers none, so every child is read as before.
 func (w *workflowRuntime) closedInMirror(ctx context.Context, listed []dispatch.IssueSummary) map[string]struct{} {
+	parents := make(map[string]string, len(listed))
 	var keys []string
 	for _, child := range listed {
 		if !record.ChildOpen(record.DispatchIssueRow{Status: child.Status}, nil) {
 			keys = append(keys, child.Key)
+			parents[child.Key] = ""
+			if child.Parent != nil {
+				parents[child.Key] = *child.Parent
+			}
 		}
 	}
 	if len(keys) == 0 {
@@ -227,7 +233,7 @@ func (w *workflowRuntime) closedInMirror(ctx context.Context, listed []dispatch.
 	}
 	closed := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
-		if !record.ChildOpen(row, nil) {
+		if !record.ChildOpen(row, nil) && row.Parent == parents[row.Key] {
 			closed[row.Key] = struct{}{}
 		}
 	}

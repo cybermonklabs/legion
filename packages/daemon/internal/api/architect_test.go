@@ -84,6 +84,9 @@ type statusRecorder struct {
 	// acceptance write the fake took, as `<issue>=<status>`, which writes keeps as well.
 	foreignOpen map[string][]dispatch.ForeignChild
 	acceptances []string
+	// lostAnswer, when set, is the answer of an acceptance write the fake took all the same, as a
+	// write whose answer was lost on its way back (a timeout, a body cut short).
+	lostAnswer error
 	// taken is every other Dispatch write the fake took, in order, as `<method> <issue or
 	// project>`: a message, a document upload, a role-holder publication, and a write of the
 	// gated steps, the design gates, a step, a step's rating, a step's experiment or a plan. It
@@ -261,6 +264,9 @@ func (r *statusRecorder) SetAcceptanceStatus(ctx context.Context, issue dispatch
 	written, err := r.SetStatus(ctx, issue.Key, status)
 	if err == nil {
 		r.acceptances = append(r.acceptances, issue.Key+"="+status)
+		if r.lostAnswer != nil {
+			return dispatch.Issue{}, r.lostAnswer
+		}
 	}
 	return written, err
 }
@@ -1377,8 +1383,7 @@ const rootArchitect208 = claim.Token("legion-legion-legion-208-architect")
 // A root architect ends its own tree before its first phase starts: a human decided no change at
 // the design gate, or the issue is moot. The route takes the reason; nothing else ends an admitted
 // root from the architect's side, since sign_off needs the production check and a backward move
-// needs a phase worker. It writes done in Dispatch before it applies the close, which carries the
-// sequence Dispatch answered that write with.
+// needs a phase worker. It writes done in Dispatch before it applies the close.
 func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	h, facts, statuses := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
@@ -1389,8 +1394,8 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close = %d: %s", closed.Code, closed.Body)
 	}
-	if got := facts.recorded(); len(got) != 1 || got[0] != (intake.CloseRoot{Issue: "LEGION-208", Reason: "The human decided no change is needed.", By: architect.token, Written: 8}) {
-		t.Fatalf("close facts = %#v, want the close with done's sequence 8", got)
+	if got := facts.recorded(); len(got) != 1 || got[0] != (intake.CloseRoot{Issue: "LEGION-208", Reason: "The human decided no change is needed.", By: architect.token}) {
+		t.Fatalf("close facts = %#v, want the close", got)
 	}
 	if want := []string{"LEGION-208=done"}; !slices.Equal(statuses.acceptances, want) {
 		t.Fatalf("acceptance writes = %q, want %q", statuses.acceptances, want)
@@ -1439,7 +1444,7 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	if closedLong.Code != http.StatusOK {
 		t.Fatalf("close with a reason of six blocks = %d: %s", closedLong.Code, closedLong.Body)
 	}
-	if got := facts.recorded(); len(got) != 2 || got[1] != (intake.CloseRoot{Issue: "LEGION-208", Reason: long, By: architect.token, Written: 9}) {
+	if got := facts.recorded(); len(got) != 2 || got[1] != (intake.CloseRoot{Issue: "LEGION-208", Reason: long, By: architect.token}) {
 		t.Fatalf("close facts = %#v, want the 40,000-character reason applied whole", got)
 	}
 }
