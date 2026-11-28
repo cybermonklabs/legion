@@ -1,5 +1,5 @@
 // priorities_read_test.go reads the whole body of GET /api/v1/priorities (priority_queries.go)
-// against the database store/storetest's Open clones from this package's migrated template,
+// against the database store/storetest's Open clones from the server's migrated template,
 // through the handler the neighbouring tests drive (newTestHandlerWithStore, dispatchRequest).
 //
 // The body is three readings at once: every live priority in rank order with the work that

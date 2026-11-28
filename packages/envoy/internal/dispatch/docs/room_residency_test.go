@@ -1159,12 +1159,14 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 		t.Skip("the child process runs the case, not this test")
 	}
 	// The child reports at the end of the parked trial's own guard, thirty seconds of it (the
-	// commit's ten, ten more for a late commit, ten for the close), with its own storetest
-	// template migration and database clone before that, and storetest's drop of that clone
+	// commit's ten, ten more for a late commit, ten for the close), with its storetest look for
+	// the server's template, which this process's TestMain already found or made, and its
+	// database clone before that, and storetest's drop of that clone
 	// after it: the parked commit's connection is still open on the clone, so the plain drop is
 	// answered 55006 and tried again for dropWindow, 15 s, before the drop is forced
 	// (storetest's dropDatabase), and Main waits for that drop before the binary exits
-	// (storetest.Run). Both measurements take it in: 54.56 s in this package's issue pod
+	// (storetest.Run). Both measurements take it in, with a template migration of the child's own
+	// besides, which it no longer makes: 54.56 s in this package's issue pod
 	// under -race and six busy loops on two CPUs, 47.75 s plain. The deadline is three times
 	// that worst measurement, so a slow runner cannot turn a reporting child into this row's red,
 	// and it is minutes below the deadline of any run that holds this package (the -timeout
@@ -1172,14 +1174,15 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// that truly wedges ends in this row's own failure rather than in the parent run's panic.
 	const childDeadline = 180 * time.Second
 	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
-	// the deadline above watches none of what the child does after them: storetest.Run's drops,
-	// the clone's and its template's, which start together once the tests return and which Run
-	// waits for up to its bound (testdb.TeardownDeadline: testdb.TeardownGrace, 30 s, past the
-	// child's -timeout, counted from the start of its tests), then the leak report. A child stuck
+	// the deadline above watches none of what the child does after them: storetest.Run's wait for
+	// the clone's drop, which the test's cleanup started, up to its bound
+	// (testdb.TeardownDeadline: testdb.TeardownGrace, 30 s, past the child's -timeout, counted
+	// from the start of its tests), its listing of the server's templates under that bound, then
+	// the leak report. A child stuck
 	// in one of those would hold this row until the run that holds this package reached its own
 	// deadline, which is the end this row exists to prevent, so the child is bounded from here too.
 	// The margin over childDeadline is what that teardown is worth: the 15 s the plain drop is
-	// retried for and the forced drop behind it, with the template's drop beside them, which a
+	// retried for and the forced drop behind it, which a
 	// minute covers with room to spare; Run's own bound, 30 s past childDeadline and its read of
 	// what the drops wait on, ends inside it too, while leaving this row minutes inside the
 	// shortest run that holds the package.

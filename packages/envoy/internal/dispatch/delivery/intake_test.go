@@ -112,7 +112,7 @@ func TestMain(m *testing.M) {
 }
 
 // deliveryTestPool returns the pool of a database of the test's own, with the test's context:
-// storetest.Open's clone of the template this test process migrated once, dropped after the test,
+// storetest.Open's clone of the template migrated once on the server, dropped after the test,
 // which skips the test (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A clone holds no
 // row another test or an earlier run wrote, so nothing is truncated or repaired first.
 //

@@ -1,5 +1,5 @@
 // priority_node_test.go drives the four routes of a priority (priorities.go) against the
-// database store/storetest's Open clones from this package's migrated template, through the
+// database store/storetest's Open clones from the server's migrated template, through the
 // handler the neighbouring tests drive (newTestHandlerWithStore, dispatchRequest).
 //
 // What it reads, beside the writes and the refusals, is the two tables' own shape: a priority

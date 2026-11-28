@@ -1048,8 +1048,7 @@ test ends, and the package's
 `TestMain` is `testpg.Main("<prefix>", m.Run)`, which drops the template when the run ends and
 composes with the `TestMain` a package already has
 (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
-`packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
-schema.
+`packages/envoy/internal/dispatch/store/storetest`'s `Open` gives each test a clone of Dispatch's schema in the same way, but the template it clones is the server's, not the package's (below).
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
@@ -1079,22 +1078,55 @@ template below it, and the package's `TestMain` drops them all when the run ends
 moves its clone further forward applies only the migrations past its version (`migrateAbove`),
 not the whole history again.
 
-`storetest` makes each template once per test binary, and under `storetest.Main` the first test
-that asks for one pays for it: Open's took 3.8 to 8.5 s of that one test's time in CI's envoy-go job.
-A package whose `TestMain` is `storetest.MainEager(m)` (or `storetest.RunEager` around another
-harness's Main) has Open's template made before its first test runs, and writes one line to stderr
-for it (`storetest: template "<key>" made in <d>`).
-The time moves from that test to `TestMain` and is not saved: it stays in the package's time, so
-a run of one test by name in such a package pays for the template even where that test opens no
-database.
-`go test -list` makes no template, and a template that cannot be made fails each test that asks
-for it, with the error, as under `Main`.
+`storetest`'s `Open` clones a template that belongs to the Postgres server, not to one test binary.
+The server keeps one such template for each set of migrations and each login, named `dispatch_shared_v1_<16 hex>_<12 hex>`.
+The first 16 hex digits come from the embedded migration files (`store.MigrationsDigest`) and from the steps that `storetest` adds outside them (`templateForm`).
+The last 12 hex digits come from the login.
+Only the owner of a database, or a superuser, can copy a database that is not marked as a template, so each login makes and copies its own.
+Every test process of that login on that server clones the same template.
+
+`storetest.Main` and `storetest.Run` find or make Open's template in `TestMain`, before the first test, where `DISPATCH_TEST_DATABASE_URL` is set and the run is not `go test -list`.
+So the first test of a package that opens a database pays for one clone only.
+When each test binary made a template of its own, that first test paid 3.8 to 8.5 s for it in CI's envoy-go job.
+Each binary writes one line to stderr for the template: `storetest: Open's template <name> on <host:port> found in <d>`, `… made in <d>`, or `storetest: Open's template on <host:port> could not be made after <d>: <error>`.
+A template that cannot be made does not stop the binary, and each test that asks for it fails with the error.
+A run of one test by name looks for the template even where that test opens no database, and makes the template where the server does not have it.
+
+A process that finds the template uses it at once.
+A process that does not find it takes an advisory lock in the server's `postgres` database, whatever database the URL names.
+It then looks again, so two processes that start together make the template once.
+The process that makes it builds it under a temporary name, migrates it, closes it to connections and then renames it, so a database of the template's name is always complete.
+Each test process keeps one connection to the server's `postgres` database for its whole run (its `application_name` is `storetest template <pid>`).
+On that connection it holds a shared advisory lock on the template it uses.
+
+Nothing drops a server template but a sweep.
+Before it builds, a process drops each unfinished build of its own login, which only a process that stopped during its build can leave.
+After it builds, it drops each other template of its own login that no running process holds, and writes `storetest: swept <name>, which no running test process holds` for each.
+So a server that outlives runs, such as the container of `packages/envoy/scripts/dev-postgres.sh` or a pod's test server, keeps the templates in use and the newest one.
+In CI the server of a job ends with the job.
+After its tests, where every drop ended, `Run` writes `storetest: shared templates on <host:port> after this binary's tests: <names>`, with each `dispatch_shared_v1_` database on the server.
+
+A process can lose its connection, and with it its lock, while it runs, and a sweep can then drop the template.
+The next clone of Open's template in that process, or its next copy of the template for a `Filled`, then finds the template gone.
+The process then finds or makes the template again, once, and writes its stderr line again, so no test fails for that.
+
+The template's name does not cover the Go code of the migration runner (`prepareVersionTable`, `pgmigrate`).
+After a change to the runner that leaves the migration files and `templateForm` as they are, a run on a server that outlives runs finds the template that the old runner built, and uses it.
+On such a server, drop that template by hand when no run is going: `drop database <name> with (force)`, with the name in the binary's `found` line.
+The next run then makes it again with the new runner.
+Drop the `dispatch_template_…` and `dispatch_test_…` databases that a killed run left in the same way, when no run is going.
+
+Every other template stays the test binary's own: each `OpenFrom` caller's and each `Filled`'s, which `storetest` drops at the binary's end, and the store package's per-version templates (above).
 A package whose tests each need the same rows names a `storetest.Filled`, a key and a `Fill`: its
 template is a file copy of Open's, as the store package's per-version templates are copies of the
 nearest one below them, into which `Fill` writes the rows once before the template is closed to
 connections, and each test that calls `OpenFilled` gets a clone of it, statistics included.
-`MainEager(m, filled...)` makes each filled template its `TestMain` names before the tests too;
-any other is made by the first test that asks for it.
+Under `storetest.Main`, the first test that asks for a template of the binary's own makes it.
+A package whose `TestMain` is `storetest.MainEager(m, filled...)` (or `storetest.RunEager` around another harness's Main) makes each `Filled` template it names in `TestMain`, after Open's, and writes one line to stderr for each (`storetest: template "<key>" made in <d>`).
+The time moves from that test to `TestMain` and is not saved: it stays in the package's time, so
+a run of one test by name in such a package pays for those templates even where that test opens no
+database.
+A `Filled` template that cannot be made fails each test that asks for it, with the error, as under `Main`.
 
 A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
 its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater

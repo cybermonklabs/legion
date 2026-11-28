@@ -1,5 +1,5 @@
 // advances_relation_test.go drives the `advances` relation an issue states on a priority
-// (issue_advances.go), on the database store/storetest's Open clones from this package's
+// (issue_advances.go), on the database store/storetest's Open clones from the server's
 // migrated template, through the handler the neighbouring tests drive
 // (newTestHandlerWithStore, dispatchRequest).
 //
