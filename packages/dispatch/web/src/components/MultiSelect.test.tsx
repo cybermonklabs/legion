@@ -56,6 +56,7 @@ function SingleHost({
   onTriggerFocus,
   optionLabel,
   options,
+  triggerKeys,
 }: {
   ariaDisabled?: boolean;
   disabled?: boolean;
@@ -67,6 +68,7 @@ function SingleHost({
   onTriggerFocus?: (from: Element | null) => void;
   optionLabel?: (value: string) => string | undefined;
   options: string[];
+  triggerKeys?: "list" | "page";
 }) {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState(initial);
@@ -98,6 +100,7 @@ function SingleHost({
         optionLabel={optionLabel}
         options={options}
         searchLabel="Search epics"
+        triggerKeys={triggerKeys}
         value={value}
       />
       <output data-testid="handed">{handed.join(",")}</output>
@@ -1743,6 +1746,72 @@ test("a disabled or busy trigger opens on none of the keys that open an enabled 
       expect(screen.queryByRole("listbox"), key).toBeInTheDocument();
       await user.keyboard("{Escape}");
     }
+  } finally {
+    view.unmount();
+  }
+});
+
+// A host that keeps the keys its trigger had before the shared list (`triggerKeys="page"`) draws
+// a plain button to the page's keys: a typed character and ArrowDown open nothing and reach the
+// page unhandled, the trigger carries the mark the keymap reads it as a button by, and Space still
+// presses it open. The default trigger opens on the same character.
+test("a trigger that keeps the page's keys opens on no typed character or arrow, and carries the keymap's mark", async () => {
+  const user = userEvent.setup();
+  const reached: string[] = [];
+  const hear = (event: KeyboardEvent) => {
+    if (!event.defaultPrevented) reached.push(event.key);
+  };
+  document.addEventListener("keydown", hear);
+  const view = render(<SingleHost options={["api", "docs"]} triggerKeys="page" />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    expect(trigger).toHaveAttribute("data-page-keys", "");
+    expect(trigger).toHaveAttribute("aria-haspopup", "listbox");
+    for (const key of ["d", "{ArrowDown}"]) {
+      act(() => trigger.focus());
+      await user.keyboard(key);
+      expect(screen.queryByRole("listbox"), key).not.toBeInTheDocument();
+      expect(trigger, key).toHaveAttribute("aria-expanded", "false");
+      expect(trigger, key).toHaveFocus();
+    }
+    expect(reached).toEqual(["d", "ArrowDown"]);
+    await user.keyboard(" ");
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+
+    view.rerender(<SingleHost options={["api", "docs"]} />);
+    expect(trigger).not.toHaveAttribute("data-page-keys");
+    act(() => trigger.focus());
+    await user.keyboard("d");
+    expect((screen.getByRole("combobox", { name: "Search epics" }) as HTMLInputElement).value).toBe(
+      "d"
+    );
+  } finally {
+    document.removeEventListener("keydown", hear);
+    view.unmount();
+  }
+});
+
+// The same host keeps the page's keys on the open list's controls too: the list's panel carries
+// the keymap's mark beside the one every panel carries, so a key on a row reaches the page's
+// bindings. The default list's panel carries the panel's mark alone.
+test("the open list of a trigger that keeps the page's keys carries the keymap's mark on its panel, and the default list's does not", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost options={["api", "docs"]} triggerKeys="page" />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    await user.click(trigger);
+    const marked = panelOf(trigger);
+    expect(marked).toHaveAttribute("data-anchored-panel", "");
+    expect(marked).toHaveAttribute("data-page-keys", "");
+    await user.keyboard("{Escape}");
+
+    view.rerender(<SingleHost options={["api", "docs"]} />);
+    await user.click(trigger);
+    const plain = panelOf(trigger);
+    expect(plain).toHaveAttribute("data-anchored-panel", "");
+    expect(plain).not.toHaveAttribute("data-page-keys");
   } finally {
     view.unmount();
   }

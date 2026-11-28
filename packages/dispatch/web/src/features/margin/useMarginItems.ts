@@ -28,9 +28,10 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
+import { useIssuePageChoice } from "../issue-page/choice";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { useNewIssuePageFreshness } from "../refs/reference-target";
-import { parseIssuePath, parseProjectPath } from "../refs/routes";
+import { parseIssuePath, parseProjectPath, unknownToShell } from "../refs/routes";
 import { useAnsweredAsks } from "./useAnsweredAsks";
 import { type CommentAction, useCommentActionQueue } from "./useCommentActionQueue";
 
@@ -51,7 +52,12 @@ export function composerOwner(owner: MarginOwner): ComposerOwner {
  *  every `owner`-keyed memo, callback and effect in the margin a new identity each render. */
 export function useMarginOwner(): MarginOwner | undefined {
   const { pathname, search } = useLocation();
-  const issueRoute = parseIssuePath(pathname, search);
+  // Where the reader draws today's page, an address of the new issue page alone is no issue's,
+  // so the margin has no owner there, as on `main` (`unknownToShell`).
+  const newPage = useIssuePageChoice()[0] === "outline";
+  const issueRoute = unknownToShell(pathname, newPage)
+    ? undefined
+    : parseIssuePath(pathname, search);
   const projectRoute = parseProjectPath(pathname, search);
   const document = projectRoute?.kind === "document" ? projectRoute : undefined;
   const artifact = useProjectArtifact(document);
@@ -583,6 +589,7 @@ export function useMarginItems(
     // answer it before, with the comment as it was. The owner's comments are everyone's, so the
     // hold ends on the event rather than wait out an answer that is late.
     holds: ({ id, kind }) => ({ endsOn: commentWritten(id, kind), keys: [commentsQueryKey] }),
+    issue: issueKey,
     onError: (_error, _input, context) => {
       queryClient.setQueryData(commentsQueryKey, context?.previous);
       void queryClient.invalidateQueries({ queryKey: commentsQueryKey });

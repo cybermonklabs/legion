@@ -35,6 +35,7 @@ import {
   parseIssuePath,
   parseNodeReference,
   referenceHref,
+  unknownToShell,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type TextSource, textSourceOf } from "../refs/text-references";
@@ -469,7 +470,9 @@ function ArtifactRow({
  *  before a file is picked, and every artifact the issue holds. */
 export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): ReactNode {
   const { pathname } = usePageAddress();
-  const route = parseIssuePath(pathname);
+  // Today's page alone draws this tab, and it knows no address of the new issue page alone, as
+  // `main` does not (`unknownToShell`).
+  const route = unknownToShell(pathname) ? undefined : parseIssuePath(pathname);
   const issueKey = route?.key;
   // The words that narrow the list live in the address (`?q=`), so a reader who reloads, shares
   // the tab or comes back to it finds the list narrowed the way they left it.

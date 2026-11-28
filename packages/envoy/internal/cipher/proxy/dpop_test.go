@@ -45,8 +45,11 @@ const (
 	mintedName    = "TEST_MINTED_TOKEN"
 	mintedGrantID = "testkind:00000000-0000-4000-8000-000000000001"
 	mintedSession = "ses_minted_test"
-	mintedToken   = "the-token-the-broker-minted-for-the-grant"
-	mintedPath    = "/api/v1/projects/ACME/results"
+	// mintedCheckRunID is the check run of the CI job the grant was made for (the grant's ci
+	// claim), which every line of its calls names.
+	mintedCheckRunID = "97"
+	mintedToken      = "the-token-the-broker-minted-for-the-grant"
+	mintedPath       = "/api/v1/projects/ACME/results"
 )
 
 // mintedPlaceholder is a minted grant's placeholder in the shape the broker mints them.
@@ -82,7 +85,7 @@ func (g *dpopGrants) AirlockRules() proxyrules.Rules { return g.rules }
 // session, the minted mark, no enrollment, and the one name whose one slot is the placeholder.
 func mintedConnection() requests.AirlockConnection {
 	return requests.AirlockConnection{
-		GrantID: mintedGrantID, SessionID: mintedSession, Minted: true,
+		GrantID: mintedGrantID, SessionID: mintedSession, CheckRunID: mintedCheckRunID, Minted: true,
 		Names: map[string]requests.AirlockGrantName{mintedName: {Slots: map[string]string{requests.SlotValue: mintedPlaceholder}}},
 	}
 }
@@ -417,22 +420,23 @@ func TestAnEndedMintedGrantsValuesAreDropped(t *testing.T) {
 	}
 }
 
-// TestAProxyLineNamesTheGrant: the line of a minted grant's request names the grant and no
-// enrollment, and a refusal's line names the grant alone as its caller.
+// TestAProxyLineNamesTheGrant: the line of a minted grant's request names the grant, the check
+// run of the CI job it was made for and no enrollment, and a refusal's line names the grant alone
+// as its caller, with that check run.
 func TestAProxyLineNamesTheGrant(t *testing.T) {
 	r, _ := newDPoPRig(t)
 	if answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder); answer.StatusCode != http.StatusOK {
 		t.Fatalf("the write = %d %s, want 200", answer.StatusCode, body)
 	}
 	call := r.logs.callsAtLeast(t, 1)[0].fields
-	if call["grant"] != mintedGrantID || call["secret"] != mintedName || call["path"] != mintedPath || call["enrollment"] != "" {
-		t.Errorf("the call line = %v, want grant %s, secret %s, path %s and no enrollment", call, mintedGrantID, mintedName, mintedPath)
+	if call["grant"] != mintedGrantID || call["ci_check_run_id"] != mintedCheckRunID || call["secret"] != mintedName || call["path"] != mintedPath || call["enrollment"] != "" {
+		t.Errorf("the call line = %v, want grant %s, ci_check_run_id %s, secret %s, path %s and no enrollment", call, mintedGrantID, mintedCheckRunID, mintedName, mintedPath)
 	}
 	answer, body := r.postMinted()
 	refusedAs(t, "a write with no placeholder", answer, body, codeNoPlaceholder)
 	refusals := r.logs.refusals()
-	if len(refusals) != 1 || refusals[0].fields["caller"] != mintedGrantID {
-		t.Fatalf("the refusal lines = %v, want one naming the caller %s", refusals, mintedGrantID)
+	if len(refusals) != 1 || refusals[0].fields["caller"] != mintedGrantID || refusals[0].fields["ci_check_run_id"] != mintedCheckRunID {
+		t.Fatalf("the refusal lines = %v, want one naming the caller %s and ci_check_run_id %s", refusals, mintedGrantID, mintedCheckRunID)
 	}
 }
 

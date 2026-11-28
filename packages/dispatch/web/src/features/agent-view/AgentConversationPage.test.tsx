@@ -2258,7 +2258,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
     "textbox"
   ) as HTMLTextAreaElement;
   await type(user, input, "and then run the tests");
-  await waitFor(() => expect(sendButton().disabled).toBe(false));
+  await waitFor(() => expect(sendHeld()).toBe(false));
 
   // The reply before the frame.
   await user.selectOptions(picker("Model"), "anthropic/model-b");
@@ -2288,7 +2288,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
   );
   expect(picker("Model").value).toBe("anthropic/model-a");
   expect(held(picker("Model"))).toBe(false);
-  expect(sendButton().disabled).toBe(false);
+  expect(sendHeld()).toBe(false);
   view.frame(settingsFrame(3, { model: "anthropic/model-b" }));
   await waitFor(() => expect(picker("Model").value).toBe("anthropic/model-b"));
 
@@ -2319,7 +2319,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
       "The session answered: Thinking set to high."
     )
   );
-  expect(sendButton().disabled).toBe(false);
+  expect(sendHeld()).toBe(false);
   expect(picker("Thinking level").value).toBe("high");
 });
 
@@ -2866,7 +2866,7 @@ test("a pending switch holds its own session's Send, and a send out on another h
 
   const other = await switchTo(user, "Reviewer");
   await type(user, other, "review the diff");
-  await waitFor(() => expect(sendButton().disabled).toBe(false));
+  await waitFor(() => expect(sendHeld()).toBe(false));
   await user.click(sendButton());
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenLastCalledWith(
@@ -2895,7 +2895,8 @@ test("a pending switch holds its own session's Send, and a send out on another h
     await jump(50);
   });
   await switchTo(user, "Reviewer");
-  expect(sendButton().disabled).toBe(false);
+  expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument();
+  expect(sendButton()).toHaveAttribute("title", "Type a message first.");
 });
 
 // A session advertising no delivery mode keeps today's behaviour mid-turn too: Send is

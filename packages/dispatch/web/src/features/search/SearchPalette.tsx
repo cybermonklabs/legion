@@ -368,9 +368,10 @@ type FilterListName = "project" | "status";
  * the panel, and the panel hands the focus to the control now at its place (`PanelTrigger`).
  *
  * The author is typed rather than picked: an item's author is a person's login or a session id,
- * and no list holds both. It is taken when the person presses Enter or leaves the box, so a
- * half-typed login never searches. The box keeps what was typed while the panel is shut, so a
- * reader who opens it again finds their half-typed login where they left it.
+ * and no list holds both. What the person typed is taken, which narrows the search and empties
+ * the box, when they press Enter, leave the box or shut the panel, so a half-typed login never
+ * searches. Escape in the box is a cancel: it drops what was typed, narrows nothing and shuts the
+ * panel, and the box is empty when the panel opens again.
  *
  * The Project list is drawn from the bar's one read of the projects, which can still be out or
  * have failed when the panel opens: it says which, as the Agents composer's Issue list does,
@@ -389,21 +390,54 @@ function SearchNarrowing({
   const [open, setOpen] = useState(false);
   const filterList = useNestedPanels<FilterListName>(open);
   const [author, setAuthor] = useState("");
+  // The box's text as `takeAuthor` reads it, written with `author`: an Escape empties it before
+  // the panel's own handler moves the focus off the box and shuts the panel, each of which takes
+  // the author, all inside the one key and so before React has drawn the emptied box.
+  const typedAuthor = useRef("");
+  const authorBox = useRef<HTMLInputElement>(null);
   const set = (patch: SearchBarFilters) => onFilters({ ...filters, ...patch });
+  const typeAuthor = (text: string) => {
+    typedAuthor.current = text;
+    setAuthor(text);
+  };
   const takeAuthor = () => {
-    const typed = author.trim();
+    const typed = typedAuthor.current.trim();
     if (typed !== "") {
-      setAuthor("");
+      typeAuthor("");
       set({ author: typed });
     }
   };
+  // Escape in the box drops what was typed. The key is read in the window's capture phase, ahead
+  // of the panel's own handler (`AnchoredPanel`), which stops it at the document before the box
+  // could hear it, so the text is gone whichever of the blur and the shut that handler sets off
+  // runs first. An Escape that ends an IME composition is the input method's (`inputMethodKey`),
+  // and the panel stays open with the text in its box.
+  useEffect(() => {
+    const listening = new AbortController();
+    window.addEventListener(
+      "keydown",
+      (event) => {
+        if (
+          event.key === "Escape" &&
+          !inputMethodKey(event) &&
+          event.target === authorBox.current
+        ) {
+          typedAuthor.current = "";
+          setAuthor("");
+        }
+      },
+      { capture: true, signal: listening.signal }
+    );
+    return () => listening.abort();
+  }, []);
 
   return (
     <PanelTrigger
       label="Filter"
       onOpenChange={(next) => {
         // Shutting the panel is leaving the author box as much as moving off it is: a press
-        // outside takes the box away with the panel, before it could lose focus on its own.
+        // outside takes the box away with the panel, before it could lose focus on its own. An
+        // Escape has emptied the box by then, so its shut takes nothing.
         if (!next) takeAuthor();
         setOpen(next);
       }}
@@ -447,7 +481,7 @@ function SearchNarrowing({
               className="w-full"
               label="Author"
               onBlur={takeAuthor}
-              onChange={setAuthor}
+              onChange={typeAuthor}
               onKeyDown={(event) => {
                 // An Enter that ends or moves an input method's composition is the composition's
                 // (`inputMethodKey`).
@@ -457,6 +491,7 @@ function SearchNarrowing({
                 }
               }}
               placeholder="Author"
+              ref={authorBox}
               value={author}
             />
           ) : null}

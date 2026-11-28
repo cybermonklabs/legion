@@ -183,6 +183,18 @@ side. Because the stream keeps them, an agent whose connection was down when one
 published still gets it when it reconnects
 ([Messages a session missed](#messages-a-session-missed)).
 
+An issue with no priority of its own takes the priority of the nearest issue above it that has
+one. When a write to another issue changes that priority, or the issue it comes from (a change or
+a clear of an own priority above it, a move or a detach of an issue above it), Dispatch appends
+one `issue.updated` on the issue, in the same transaction as the write and with the writer as its
+actor, and publishes it on the issue's topic. Its payload is the whole issue, and its `changed`
+names `resolved_priority`, `priority_from` or both, whichever moved, and nothing else: an own P0
+set or cleared on an issue under a P0 issue names only `priority_from` on each issue under it that
+takes its priority from it, since their priority stays P0. The event is quiet: its envelope says
+`quiet: true`, it wakes no route or claimant, and a session subscribed to the issue's topic is not
+shown it. The stream keeps it, so a reader that follows each issue's priority, such as the Legion
+daemon, reads it there.
+
 ## Topics and subscriptions
 
 | Topic | What it is |
@@ -191,7 +203,7 @@ published still gets it when it reconnects
 | `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and, when the publish named your session, sends your session a message that names it, unless it dropped it more than an hour late. A publish through the API that names no session of yours is not kept: it is refused `404`, since nothing could tell you if the copy expired. A message published straight onto NATS that names no session is still kept, and dropped at the end of its hour with no word to anyone. |
 | `notifications.dispatch.issue.<KEY>.>` | Every event of one Dispatch issue. |
 | `notifications.github.<owner>.<repo>.pr.<n>.>` | Every event of one pull request. |
-| `notifications.legion.<project>.controller` | A Legion project's controller. |
+| `notifications.legion.<project>.controller` | A Legion project's controller, from a Legion daemon of an earlier release. A current daemon sends its controller notices to the controller's role, `notifications.role.legion-<project>-controller`, once the controller's session holds that role live. |
 | `notifications.slack.*.<channel>.mention` | Every mention of the Slack app in one channel, whatever the team. |
 | `notifications.envoy.exceptions.<topic>` | A delivery to `<topic>` that failed, or a role send the API refused `404` because nobody holds `<topic>`'s role, with the reason. |
 | `notifications.team.<name>` | A team topic you name, such as `notifications.team.deploy-squad.all`. The stream keeps it like every other notification topic, so it reaches each session subscribed to it once, from that session's own consumer, also one that was away or restarted, and a session that subscribes later gets nothing published before it followed. A publish through the listener is answered once the stream stored it. A `notifications.` topic no stream subject captures is refused by name, at a publish and at a subscription alike, since nothing would store it for a session to read; so is a topic outside `notifications.`. |

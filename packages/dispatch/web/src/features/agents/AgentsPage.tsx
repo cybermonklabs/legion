@@ -1022,13 +1022,12 @@ const GROUP_FILTER_LABELS: ReadonlyMap<string, string> = new Map(
 );
 
 /**
- * The one row the page's controls sit in: the search box, the one trigger over the three
- * narrowings that are no column of a table here - group, machine and role - and the chips of
- * the values that are on. Each narrowing is still a multi-select whose panel holds a text box
- * that narrows its own options, because forty
- * machines cannot be read in a list that does not search; all three now sit behind one trigger
- * rather than three of their own. A pick that would take the machine or the role list past what
- * the address keeps is refused, in words under that list (`boundedList`).
+ * The one row the page's controls sit in: the search box, the one **Filter** trigger over the
+ * three narrowings that are no column of a table here - group, machine and role - and the chips
+ * of the values that are on. Each narrowing is a multi-select whose panel holds a text box that
+ * narrows its own options, because forty machines cannot be read in a list that does not search.
+ * A pick that would take the machine or the role list past what the address keeps is refused, in
+ * words under that list (`boundedList`).
  */
 function AgentFilterBar({
   agents,

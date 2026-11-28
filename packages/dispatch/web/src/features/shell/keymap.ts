@@ -38,11 +38,13 @@ export interface KeyBinding {
   /** Whether the binding applies right now; `false` neither fires nor shadows lower scopes. */
   when?: () => boolean;
   /** Fires while a control that takes typed text has focus - a `TEXTAREA`, a `SELECT`, a
-   *  contentEditable element, or a text-entry `INPUT` - and while the focus is anywhere inside an
-   *  open panel (`PANEL_ATTRIBUTE`). The key then reaches every such control, so a binding that
-   *  belongs to only some of them says which in its `when`: the document's `$mod+Alt+m` runs only
-   *  while its editor has focus and a selection, never from a comment composer or any other
-   *  field. */
+   *  contentEditable element, a text-entry `INPUT`, or the trigger of an option list
+   *  (`LIST_TRIGGER`) - and while the focus is anywhere inside an open panel
+   *  (`PANEL_ATTRIBUTE`). The trigger and the open panel's controls of a host that keeps the
+   *  page's keys (`PAGE_KEYS_ATTRIBUTE`) keep them: there only a text-entry control or a `SELECT`
+   *  counts. The key then reaches every such control, so a binding that belongs to only some of
+   *  them says which in its `when`: the document's `$mod+Alt+m` runs only while its editor has
+   *  focus and a selection, never from a comment composer or any other field. */
   inEditable?: boolean;
   /** Whether `⌘K` offers this binding as an action. The default is `true` for a binding with one
    *  key or none that is not `inEditable`, and `false` otherwise. A row presses only its first
@@ -209,6 +211,13 @@ function isStrictPrefix(shorter: readonly KeyCombo[], longer: readonly KeyCombo[
  *  registry a key was pressed inside one (`isEditableTarget`). */
 export const PANEL_ATTRIBUTE = "data-anchored-panel";
 const IN_PANEL = `[${PANEL_ATTRIBUTE}]`;
+/** The attribute a host that keeps the page's keys writes on its list trigger (`MultiSelect`'s
+ *  `triggerKeys="page"`) and on its open panel's element (`AnchoredPanel`'s `pageKeys`): what
+ *  tells the registry to read the trigger, and each control inside that panel, as the control it
+ *  is, so that neither the list-trigger rule nor the open-panel rule takes its keys and only a
+ *  control that takes typed text or a `<select>` keeps a key its own (`isEditableTarget`). */
+export const PAGE_KEYS_ATTRIBUTE = "data-page-keys";
+const WITH_PAGE_KEYS = `[${PAGE_KEYS_ATTRIBUTE}]`;
 /** An option list's trigger: the button that names the `listbox` it opens (`MultiSelect`). */
 const LIST_TRIGGER = '[aria-haspopup="listbox"]';
 
@@ -306,12 +315,27 @@ export function commitsOnBlur(element: Element): boolean {
  * no priority, and `c` on a Settings project list opens no Create issue. A key the trigger leaves
  * alone, such as a letter on a busy trigger, fires only the bindings that fire while the reader
  * types (`inEditable`).
+ *
+ * A host that keeps the page's keys (`PAGE_KEYS_ATTRIBUTE`) marks its list trigger and its open
+ * panel, and neither rule above reads them: the trigger, and every control inside that panel, is
+ * the control it is, so a key is its own only on a control that takes typed text or on a
+ * `<select>`, and every page key fires from a button, a checkbox or the trigger.
  */
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
-  if (takesText(target) || target.closest(IN_PANEL) !== null) {
+  if (takesText(target)) {
+    return true;
+  }
+  // The trigger and the controls inside the open panel of a host that keeps the page's keys take
+  // a key as the control they are, before either rule below reads the trigger as a select or a
+  // control inside the panel as the panel's: of the controls that take no typed text, only a
+  // `<select>` keeps its keys.
+  if (target.closest(WITH_PAGE_KEYS) !== null) {
+    return target.tagName === "SELECT";
+  }
+  if (target.closest(IN_PANEL) !== null) {
     return true;
   }
   // An `<input>` that takes no text - a checkbox, radio or button - leaves its keys to the page,

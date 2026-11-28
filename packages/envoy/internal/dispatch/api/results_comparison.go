@@ -138,7 +138,7 @@ type comparisonReader struct {
 	server *server
 	// readOnly is whether the request the reader reads for was made with a read-only credential
 	// (model.Credential.ReadOnly), read once when the reader is made from the caller the read-only
-	// gate put on the request's context (refuseReadOnlyToken): the gate puts every caller that can
+	// gate put on the request's context (refuseLimitedToken): the gate puts every caller that can
 	// be read-only there, a broker-issued token and a personal token alike, and a cookie, the
 	// shared token and a service-account token never are. optionalActor answers the handler the
 	// same caller, and it cannot change within one read.
@@ -333,13 +333,21 @@ func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) 
 	check.ComparedNothing = compared.reason
 	for index := range check.Results {
 		result := &check.Results[index]
-		moved := check.SHA256 != result.CheckSHA256 && check.Version != result.CheckVersion
+		moved := checkWordsMoved(check, result)
 		result.CheckWordsMoved = &moved
 		stands := c.commitStands(ctx, *check, compared, *result)
 		result.CommitStands = &stands
 	}
 	markNotCounted(check, compared)
 	check.PassStands = passStandsOf(*check, compared)
+}
+
+// checkWordsMoved reports whether check's words moved after result was recorded: both the digest
+// and the changed version differ, so a check that another renderer version spelled and whose
+// version stayed (refs.BlockIndexing.KeepRespelled) reads false. A read at a cut leaves it out
+// (checksAtTheCut).
+func checkWordsMoved(check *model.CheckBlock, result *model.CheckResult) bool {
+	return check.SHA256 != result.CheckSHA256 && check.Version != result.CheckVersion
 }
 
 // comparedWith is the bases of one check, read once per issue and `when`: two `before_merge`

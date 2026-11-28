@@ -18,6 +18,7 @@ import (
 // row. The row has a file of its own, and its dialer with it, so the control overlays it on a tree
 // without it.
 func TestHoldStalledWriteReturnsWithAWriteStillInTheSocket(t *testing.T) {
+	t.Parallel()
 	RequireSocketQueues(t)
 	hold := StartHandshakeHold(t, URL(t))
 	dialer := &writeCountingDialer{}
@@ -33,14 +34,15 @@ func TestHoldStalledWriteReturnsWithAWriteStillInTheSocket(t *testing.T) {
 	}
 }
 
-// writeCountingDialer dials as nats.go's own dialer does, and counts the writes begun on the sockets
-// it hands out and those that returned.
+// writeCountingDialer dials as nats.go's own dialer does, with nats.go's default timeout (as
+// endDialer dials), and counts the writes begun on the sockets it hands out and those that
+// returned.
 type writeCountingDialer struct {
 	begun, returned atomic.Int64
 }
 
 func (d *writeCountingDialer) Dial(network, address string) (net.Conn, error) {
-	conn, err := (&net.Dialer{Timeout: dialTimeout}).Dial(network, address)
+	conn, err := (&net.Dialer{Timeout: natsgo.DefaultTimeout}).Dial(network, address)
 	if err != nil {
 		return nil, err
 	}

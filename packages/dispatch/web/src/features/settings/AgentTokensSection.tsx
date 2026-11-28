@@ -41,10 +41,18 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { useDispatchSignIn } from "../credentials/logic/capabilities";
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { settingsSubmitButton } from "./classes";
+import {
+  ACT_AS_YOU,
+  APPROVE,
+  type DispatchScopeChoice,
+  READ_ONLY,
+  SET_P0,
+} from "./dispatch-scope-choices";
 
 const agentTokensQueryKey = ["agent-tokens"] as const;
 
@@ -73,47 +81,14 @@ function lostTokens(
     .sort((a, b) => compareTimestamps(b.created_at, a.created_at));
 }
 
-/** A word a personal token's scopes can hold, as its checkbox reads it: what the reader ticks, and
- *  the line under it saying what a token holding it may do. */
-interface TokenScope<Id extends DispatchTokenScope> {
-  readonly id: Id;
-  readonly label: string;
-  readonly allows: string;
-}
-
-const ACT_AS_YOU: TokenScope<"person"> = {
-  allows: "Reads and writes as you: issues, comments, asks, documents and messages.",
-  id: "person",
-  label: "Act as you",
-};
-
-const APPROVE: TokenScope<"approve"> = {
-  allows:
-    "Reviews documents, answers approvals and keeps decisions for you, and approves the credentials agents ask you for.",
-  id: "approve",
-  label: "Approve and control credentials",
-};
-
-const READ_ONLY: TokenScope<"read"> = {
-  allows: "Only reads: Dispatch refuses it every write, whatever else it holds.",
-  id: "read",
-  label: "Read only",
-};
-
-const SET_P0: TokenScope<"p0"> = {
-  allows: "Set an issue's priority to P0.",
-  id: "p0",
-  label: "Set P0",
-};
-
 /** The scopes a token that writes can hold, in the order a row shows them. The ids are the
  *  contract's own (`DISPATCH_SCOPES`), so a row cannot offer a scope the server does not mint, and
  *  a row offers no Read only: no token that writes becomes read only (the server refuses it, 400
  *  TOKEN_SCOPES_INPUT), since a person makes a new token for that. */
-const WRITING_SCOPES: readonly TokenScope<DispatchScope>[] = [ACT_AS_YOU, APPROVE, SET_P0];
+const WRITING_SCOPES: readonly DispatchScopeChoice<DispatchScope>[] = [ACT_AS_YOU, APPROVE, SET_P0];
 
 /** Every word the mint form offers, in the order it shows them (`DISPATCH_TOKEN_SCOPES`). */
-const MINT_SCOPES: readonly TokenScope<DispatchTokenScope>[] = [
+const MINT_SCOPES: readonly DispatchScopeChoice<DispatchTokenScope>[] = [
   ACT_AS_YOU,
   APPROVE,
   SET_P0,
@@ -125,8 +100,8 @@ const MINT_SCOPES: readonly TokenScope<DispatchTokenScope>[] = [
  *  word, and a credential gives no scope it does not hold itself, so a box drawn before then would
  *  be a refusal waiting to happen. */
 function withoutSetP0<Id extends DispatchTokenScope>(
-  offered: readonly TokenScope<Id>[]
-): readonly TokenScope<Id>[] {
+  offered: readonly DispatchScopeChoice<Id>[]
+): readonly DispatchScopeChoice<Id>[] {
   return offered.filter(({ id }) => id !== "p0");
 }
 
@@ -160,7 +135,7 @@ function heldScopes(scopes: readonly string[] | null): DispatchTokenScope[] {
  *  TOKEN_SCOPES_INPUT), and a form that offered one would be a refusal waiting to happen. No box
  *  is ever disabled for these rules: each press is taken, and the other boxes follow it. */
 function scopesAfterChoice<Id extends DispatchTokenScope>(
-  offered: readonly TokenScope<Id>[],
+  offered: readonly DispatchScopeChoice<Id>[],
   held: readonly Id[],
   scope: Id,
   ticked: boolean
@@ -202,7 +177,7 @@ function TokenScopeChoices<Id extends DispatchTokenScope>({
   chosen: readonly Id[];
   disabled: boolean;
   held?: boolean;
-  offered: readonly TokenScope<Id>[];
+  offered: readonly DispatchScopeChoice<Id>[];
   onChoose: (scopes: Id[]) => void;
   subject: string;
 }): ReactNode {
@@ -257,6 +232,8 @@ function ReadOnlyScopes({
 
 export function AgentTokensSection(): ReactNode {
   const queryClient = useQueryClient();
+  // The sign-in guidance shows only where the deployment serves Dispatch sign-ins.
+  const signInServed = useDispatchSignIn();
   const [name, setName] = useState("");
   /** What the mint form's boxes hold: Act as you and Approve until the reader changes them. */
   const [newScopes, setNewScopes] = useState<readonly DispatchTokenScope[]>(NEW_TOKEN_SCOPES);
@@ -499,6 +476,31 @@ export function AgentTokensSection(): ReactNode {
             )}
           </TableBody>
         </TableShell>
+      ) : null}
+
+      {signInServed ? (
+        <div className={`mt-6 rounded-xl border p-4 ${borderDefault}`}>
+          <h3 className={`text-base font-semibold ${textPrimaryOnCanvas}`}>
+            Sign in a session or tool
+          </h3>
+          <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
+            A session or tool that needs Dispatch alone can use a Dispatch sign-in instead of a
+            personal token. Run this in your own terminal, with the secrets broker's address:
+          </p>
+          <code className={`mt-2 block text-sm ${textPrimaryOnSurface}`}>
+            AGENT_SECRETS_URL=&lt;broker&gt; dispatch login --device --person &lt;you&gt; --scope
+            person
+          </code>
+          <p className={`mt-2 text-sm ${textSecondaryOnCanvas}`}>
+            Approve the code it prints on <a href="/credentials/machine">Machine login</a>, then
+            start each session with <code>AGENT_SECRETS_MACHINE_IDENTITY=device-login</code>.
+            Whatever you approve, the session writes in Dispatch and works on Envoy as its own
+            session within your projects; {ACT_AS_YOU.label} adds acting as you. To let it make work
+            P0 too, setting P0 or moving, clearing or filing work under a P0 issue, run it with{" "}
+            <code>--scope person,p0</code> and tick {SET_P0.label} when you approve it. To ask for
+            no scope, run it with <code>--scope none</code>.
+          </p>
+        </div>
       ) : null}
 
       <form

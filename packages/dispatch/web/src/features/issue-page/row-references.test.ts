@@ -1,11 +1,14 @@
 import { expect, spyOn, test } from "bun:test";
 
+import type { Actor } from "../../api/types";
 import * as textReferences from "../refs/text-references";
 import { chipWords } from "./node-row-chip";
+import { NODE_TYPE_NAMES } from "./page-words";
 import {
   citedReferences,
   knownIssueKeys,
   linkRowReferences,
+  rowReferenceNames,
   rowReferences,
   rowReferenceWords,
 } from "./row-references";
@@ -161,6 +164,51 @@ test("an issue reads as its key and title, and anything else as its target's own
     key: undefined,
     words: "dispatch://CORE-1/ask/ask-1",
   });
+});
+
+// A row and every plain line of the page name a reference by one rule (`rowReferenceNames`),
+// from what the page published: a post the page read as deleted by its deleted line, its actor
+// named as the page names an author, over the name the page published, which names the actor as
+// no registry knows it; a block by the line a chip names it by, over its published name; a whole
+// document by that line alone and never by its published name, its file name, which no chip
+// draws; and anything else by its published name. A reference with none is left out, so it reads
+// as the words its author wrote (`rowReferenceWords`).
+test("a reference is named by its deleted line, else its chip's line, else its published name", () => {
+  const deleted = "dispatch://CORE-1/comment/c-deleted";
+  const block = "dispatch://CORE-1/spec#b-r1";
+  const notes = "dispatch://CORE-1/artifact/notes";
+  const issue = "dispatch://CORE-7";
+  const unnamed = "dispatch://CORE-9";
+  const found = rowReferences(`${deleted} ${block} ${notes} ${issue} ${unnamed}`, []);
+  const published = new Map([
+    [deleted, "Deleted by session-1"],
+    [block, "R1. Every node is whole, and so is every row of it"],
+    [notes, "notes.md"],
+    [issue, "The header draws the approval of each step"],
+  ]);
+  const by: Actor = { id: "alice", kind: "user" };
+  const names = rowReferenceNames(
+    found,
+    {
+      deleted: new Map([[deleted, { at: "2026-11-05T10:00:00Z", by }]]),
+      lines: new Map([[block, "R1. Every node is whole"]]),
+    },
+    (reference) => published.get(reference),
+    ISSUE,
+    (actor) => (actor === undefined ? "nobody" : `the author ${actor.id}`)
+  );
+  expect([...names]).toEqual([
+    [deleted, "Deleted by the author alice"],
+    [block, "R1. Every node is whole"],
+    [issue, "The header draws the approval of each step"],
+  ]);
+  // So the document reads as the page's word for one, and the issue nobody named as written.
+  const [, , ofNotes, , ofUnnamed] = found;
+  if (ofNotes === undefined || ofUnnamed === undefined) {
+    throw new Error("the text holds five references");
+  }
+  expect(rowReferenceWords(ofNotes, names, ISSUE).words).toBe(NODE_TYPE_NAMES.document);
+  expect(rowReferenceWords(ofUnnamed, names, ISSUE).words).toBe(unnamed);
 });
 
 test("the pass links what painted words cite, and names it again when the names arrive", () => {

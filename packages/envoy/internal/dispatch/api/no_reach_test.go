@@ -464,6 +464,9 @@ func threeBadRequests(t *testing.T) {
 	}
 
 	owned := seedTwoProjects(t, handler, database)
+	// The coverage route answers 503 SEARCH_COVERAGE_NOT_FILLED until a fill has ended, as a
+	// server's counts loop fills it after it listens.
+	fillCoverageCounts(t, database)
 	var probed []string
 	for _, route := range rows {
 		target, addressable := crossProjectPath(t, route, owned)
@@ -634,6 +637,7 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/machine-logins":                                         "the agent-secrets broker",
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
 	"GET /api/v1/artifacts/{id}/changes":                                 "two stored versions of one document",
+	"GET /api/v1/projects/{key}/results":                                 "a stored result of a spec check, which only a CI run's results token writes, and the commit it is read by (?commit=)",
 }
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the

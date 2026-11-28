@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { DispatchEvent } from "@legion/contracts";
+import {
+  DISPATCH_AS_OF_ABSENT_HEADER,
+  DISPATCH_AS_OF_HEADER,
+  type DispatchEvent,
+} from "@legion/contracts";
 
 import { bearerCredential } from "../bearer";
 import { type CarriedItem, renderInbound, wholeCarriedBody } from "../delivery";
@@ -311,5 +315,27 @@ describe("renderInbound and a body an event did not carry whole", () => {
     );
     expect(kept.content).toContain(`body: ${CARRIED_BODY}`);
     expect(kept.content).not.toContain("· edited");
+  });
+
+  // A read at a cut leaves out the body of a post its event cut and an edit since replaced
+  // (`Dispatch-As-Of-Absent`). Such a post can carry its edit time all the same, and the card
+  // then keeps the part its event carried, never an edit mark with no words before it.
+  test("a body a read at a cut leaves out keeps the part the event carried", async () => {
+    const cut = "2026-09-09T12:00:00Z";
+    const { body: _left, ...edited } = { ...comment, edited_at: "2026-09-09T06:00:00Z" };
+    const fetchImpl = async (_input: RequestInfo | URL): Promise<Response> =>
+      new Response(JSON.stringify({ comment: edited, replies: [] }), {
+        headers: {
+          "Content-Type": "application/json",
+          [DISPATCH_AS_OF_HEADER]: "2026-09-09T12:00:00.000000Z",
+          [DISPATCH_AS_OF_ABSENT_HEADER]: "/comment/body",
+        },
+      });
+    const client = new DispatchClient(SERVER, bearerCredential("token"), fetchImpl as typeof fetch);
+
+    expect(await wholeCarriedBody(client, ITEM, SESSION, { asOf: cut })).toBeUndefined();
+    expect(await eventTextsWhole(client, [cutEvent], { asOf: cut })).toEqual([
+      { text: CARRIED_BODY, at: cutEvent.created_at },
+    ]);
   });
 });

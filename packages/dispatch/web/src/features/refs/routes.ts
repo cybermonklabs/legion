@@ -39,6 +39,7 @@ export type IssueRoute =
   | { key: string; kind: "artifacts" }
   | { key: string; kind: "collaborators" }
   | { key: string; kind: "dashboard" }
+  | { key: string; kind: "threads"; record?: string }
   | ({ key: string; kind: "artifact"; slug: string; version?: number } & BlockTarget)
   | ({ key: string; kind: "ask"; id: string } & BlockTarget)
   | ({ key: string; kind: "comment"; id: string } & BlockTarget)
@@ -98,8 +99,11 @@ export type PagedReferenceRoute = Exclude<DispatchReferenceRoute, { kind: "perso
  * The five fields the Inbox filters, sorts and groups by. Assignee is one of them, but it keeps
  * a vocabulary of its own in the address - repeated `?assignee=`, with `everyone` and
  * `unassigned` - because a person's email is not a word this page invented, so it rides in
- * `InboxRoute.assignees` rather than in that type's `filters` (`features/inbox/inbox-route.ts`,
- * which holds the Inbox's address grammar; these are the words it reads and writes).
+ * `InboxRoute.assignees` rather than in that type's `filters`. These are the words the Inbox's
+ * address reads and writes: this file's Inbox block (`InboxRoute`, `parseInboxSearch` and
+ * `buildInboxPath`) is the grammar the Inbox runs until the later piece of INFRA-3135 that
+ * converts the Inbox, and `features/inbox/inbox-route.ts` holds the same grammar for the Agents
+ * page's link to the Inbox.
  */
 export const INBOX_DIMENSIONS = ["priority", "urgency", "type", "project", "assignee"] as const;
 export type InboxDimension = (typeof INBOX_DIMENSIONS)[number];
@@ -136,10 +140,13 @@ export const INBOX_URGENCY_VALUES = [...ASK_URGENCIES, NO_FILTER_VALUE] as const
 export const INBOX_TYPE_VALUES = INBOX_ROW_TYPES;
 
 /** Each filter field's vocabulary, the one table both the address and the Filter panel read:
- *  the words the address keeps for the field (`features/inbox/inbox-route.ts` drops any other,
- *  which would match no row), and the values the field's control lists, in that order. `project`
- *  has none, because a project key is whatever somebody created: the address keeps any
- *  non-empty word, and the control lists the keys its rows carry and then `none`. */
+ *  the words the address keeps for the field, and the values the field's control lists, in that
+ *  order. The address drops any other word, which would match no row: this file's Inbox block
+ *  (`parseInboxSearch`), the grammar the Inbox runs until the later piece of INFRA-3135 that
+ *  converts the Inbox, drops it, and so does `features/inbox/inbox-route.ts`, which holds the
+ *  same grammar for the Agents page's link to the Inbox. `project` has no vocabulary, because a
+ *  project key is whatever somebody created: the address keeps any non-empty word, and the
+ *  control lists the keys its rows carry and then `none`. */
 export const INBOX_FILTER_VOCABULARY: Readonly<
   Record<InboxFilterField, readonly string[] | undefined>
 > = {
@@ -179,18 +186,29 @@ export interface InboxRoute {
   filters?: Partial<Record<InboxFilterField, readonly string[]>>;
 }
 
-export type IssueTab =
-  | "spec"
-  | "verification"
-  | "plan"
-  | "steps"
-  | "conversation"
-  | "children"
-  | "artifacts"
-  | "activity"
-  | "decisions"
-  | "dashboard"
-  | "collaborators";
+/** Every tab of the issue page, each the path segment that opens it (`/issues/<KEY>/<tab>`). The
+ *  dashboard's pages file (`dashboard-pages-file.ts`) is generated from this list, so a tab added
+ *  here reaches the server's and the agent client's readers of a dashboard address, unless its
+ *  page names nothing in text, as Dashboard's does (`parseIssuePath`). */
+export const ISSUE_TABS = [
+  "spec",
+  "verification",
+  "plan",
+  "steps",
+  "conversation",
+  "children",
+  "artifacts",
+  "activity",
+  "decisions",
+  "dashboard",
+  "collaborators",
+] as const;
+export type IssueTab = (typeof ISSUE_TABS)[number];
+
+/** The path segments under an issue that open one of its documents by slug
+ *  (`/issues/<KEY>/artifacts/<slug>`): the plural the dashboard writes, and the singular it reads
+ *  as the same page. */
+export const ISSUE_DOCUMENT_SEGMENTS = ["artifacts", "artifact"] as const;
 
 /** The slug of an issue's `decisions.md`, the document its Decisions tab is a view of. */
 export const DECISIONS_DOCUMENT_SLUG = "decisions-md";
@@ -226,6 +244,10 @@ const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);
 const projectKeyOnlyPattern = new RegExp(`^${projectKeyPattern}$`);
 const issuePathPattern = new RegExp(`^/issues/(${issueKeyPattern})(?:/(.*))?$`);
 const projectPathPattern = new RegExp(`^/projects/(${projectKeyPattern})(?:/(.*))?$`);
+/** A document of an issue by slug, under any segment of `ISSUE_DOCUMENT_SEGMENTS`. */
+const issueDocumentPathPattern = new RegExp(
+  `^(?:${ISSUE_DOCUMENT_SEGMENTS.join("|")})/([^/?#\\s]+)$`
+);
 /** The slug Dispatch gives a document, the one a reference can name. */
 const artifactSlugPattern = "[a-z0-9]+(?:-[a-z0-9]+)*";
 const artifactSlugOnlyPattern = new RegExp(`^${artifactSlugPattern}$`);
@@ -261,8 +283,12 @@ const machinePathPattern = /^\/machines\/([^/]+)$/;
 /** The page of an agent's artifact, the router's pattern for `AgentArtifactRoute`. */
 export const AGENT_ARTIFACT_PATH = "/agents/:sessionId/artifacts/:slug";
 
-/** Agents reference the conversation as `dispatch://KEY/log`; the browser path is `/conversation`. */
-const legacyLogReferencePattern = /^log$/;
+/** The segment a `dispatch://` reference writes the conversation tab as: agents write the
+ *  conversation as `dispatch://KEY/log`, and the browser path is `/conversation`. The reader of a
+ *  reference (`parseIssueReference`) takes it, and the dashboard's pages file writes the
+ *  conversation's reference as it (`dashboard-pages-file.ts`). Every other tab is written in a
+ *  reference as its own name. */
+export const CONVERSATION_REFERENCE_SEGMENT = "log";
 
 export function isProjectRoute(
   route: DispatchRoute | DispatchReferenceRoute
@@ -399,7 +425,7 @@ function parseIssueReference(key: string, target: string | undefined): IssueRout
   if (plain !== undefined) {
     return { key, kind: plain };
   }
-  if (legacyLogReferencePattern.test(target) || target === "conversation") {
+  if (target === CONVERSATION_REFERENCE_SEGMENT || target === "conversation") {
     return { key, kind: "conversation" };
   }
   const artifact = target.match(issueArtifactReferencePattern);
@@ -533,7 +559,20 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "dashboard") {
     return { key, kind: "dashboard" };
   }
-  const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
+  // Threads' list and each record of it are pages of the new issue page alone
+  // (dispatch://INFRA-5704/spec#b-r-addresses), out of `PLAIN_ISSUE_TABS` as Dashboard's tab is:
+  // no reader of text reads `dispatch://<KEY>/threads` or these paths as a reference
+  // (`pageRoutes`). `record` is the id the address writes, which the view reads; it is no `id`,
+  // so no reader of an ask's, a comment's or a message's route takes this route for one.
+  if (target === "threads") {
+    return { key, kind: "threads" };
+  }
+  const thread = target.match(/^threads\/([^/?#\s]+)$/);
+  if (thread !== null) {
+    const record = decodedSegment(thread[1] ?? "");
+    return record === undefined ? undefined : { key, kind: "threads", record };
+  }
+  const artifact = target.match(issueDocumentPathPattern);
   if (artifact !== null) {
     return artifactRoute(key, artifact[1] ?? "", new URLSearchParams(search).get("v"));
   }
@@ -547,6 +586,22 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
     key,
     kind: item[1] === "asks" ? "ask" : item[1] === "comments" ? "comment" : "message",
   };
+}
+
+/**
+ * Whether the shell takes `pathname` for an address it does not know, as `main` does: an address
+ * of the new issue page alone - Threads' list and each record of it (R12), with any query - for
+ * a reader who draws today's page (`newPage` false, the default). `parseIssuePath` answers these
+ * addresses for every reader, and today's page draws its not-found page at them
+ * (`features/issue/IssuePage.tsx`), so each reader of the shell outside the new page asks this
+ * before it reads the address as an issue's or a project's. With the new page off the shell then
+ * draws no margin there, adds no issue to Recents, scopes the search bar and a new issue to no
+ * issue or project, and names no issue as the page or in the sidebar
+ * (dispatch://INFRA-5704/spec#b-r-today-unchanged). This is the one list of the new page's own
+ * addresses: another of them joins it here.
+ */
+export function unknownToShell(pathname: string, newPage = false): boolean {
+  return !newPage && parseIssuePath(pathname)?.kind === "threads";
 }
 
 export function parseProjectPath(pathname: string, search = ""): ProjectRoute | undefined {
@@ -700,6 +755,10 @@ function pageRoutes(
   if (route.kind === "dashboard") {
     return undefined;
   }
+  // Nor does Threads' list or a record's page.
+  if (route.kind === "threads") {
+    return undefined;
+  }
   // The Decisions tab is a view of the issue's decisions.md, so its page names that document,
   // whatever its fragment, as the server's `text` and the agent client read the page.
   if (route.kind === "decisions") {
@@ -780,6 +839,10 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   }
   // Dashboard's tab is the issue, as every other tab is, though no reference names the tab.
   if (route.kind === "dashboard") {
+    return issue;
+  }
+  // Threads' pages are the issue too, and no reference names them.
+  if (route.kind === "threads") {
     return issue;
   }
   if (route.kind === "decisions") {
@@ -1022,6 +1085,8 @@ export function shortForm(route: DispatchReferenceRoute): string {
       return `${route.key} decisions`;
     case "dashboard":
       return `${route.key} dashboard`;
+    case "threads":
+      return `${route.key} threads`;
     case "artifact":
       return `${route.key} ${route.slug}${block}`;
     case "ask":
@@ -1128,8 +1193,9 @@ export function buildReferencePath(route: PagedReferenceRoute, specSlug?: string
       // because `agentsAddress` answers `null` for a list it cannot carry.
       return agentsAddress({ roles: [route.role] }) ?? "/agents";
     case "component": {
-      // The Architecture page is outside the six directories whose addresses R5 moves into
-      // `lib/page-address.ts`, so its `?component=` is built here as that page reads it.
+      // The Architecture page is outside the directories whose addresses move into
+      // `lib/page-address.ts` (`ADDRESS_FEATURES` in `components/one-definition.test.ts`), so its
+      // `?component=` is built here as that page reads it.
       const architecture = buildProjectPath({ kind: "architecture", project: route.project });
       return `${architecture}?${ARCHITECTURE_COMPONENT_PARAM}=${encodeURIComponent(route.id)}`;
     }
@@ -1180,6 +1246,11 @@ export function buildIssuePath(route: IssueRoute): string {
   }
   if (route.kind === "dashboard") {
     return `${issue}/dashboard`;
+  }
+  if (route.kind === "threads") {
+    return route.record === undefined
+      ? `${issue}/threads`
+      : `${issue}/threads/${encodeURIComponent(route.record)}`;
   }
   if (route.kind === "artifact") {
     const artifact = `${issue}/artifacts/${encodeURIComponent(route.slug)}`;
@@ -1342,6 +1413,10 @@ export function buildInboxPath(route: InboxRoute = {}): string {
  * owner, whose document form only appears once the artifact query lands.
  */
 export function routeHasMargin(pathname: string, search = ""): boolean {
+  // An address of the new issue page alone has no margin column: today's page draws its
+  // not-found page there, and the new page's margin is Details, a drawer its frame draws
+  // whatever this answers (`Margin.tsx`).
+  if (unknownToShell(pathname)) return false;
   return (
     parseIssuePath(pathname, search) !== undefined ||
     parseProjectPath(pathname, search)?.kind === "document"

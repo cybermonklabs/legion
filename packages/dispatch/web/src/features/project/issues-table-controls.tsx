@@ -112,8 +112,10 @@ export function ColumnFilter<TData>({
   const show = meta?.show ?? ((value: string) => value);
   return (
     <MultiSelect
-      // Main's look, which draws no chevron, until a piece of INFRA-3135 converts this page.
+      // The trigger draws its own look, a funnel, so it ends in no chevron.
       chevron={false}
+      // Main's keys on the trigger, until a piece of INFRA-3135 converts this page.
+      triggerKeys="page"
       emptyMessage="No matching value."
       label={name}
       onChange={(next) => column.setFilterValue(next.length === 0 ? undefined : next)}
@@ -194,9 +196,11 @@ export function Popover({
         <AnchoredPanel
           align={align}
           anchorRef={trigger}
-          className={`z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border p-1 text-sm font-normal shadow-lg ${card}`}
+          className={`flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border p-1 text-sm font-normal shadow-lg ${card}`}
           label={title ?? (typeof label === "string" ? label : "Table actions")}
           onDismiss={() => setOpen(false)}
+          // Main's keys inside the panel, until a piece of INFRA-3135 converts this page.
+          pageKeys
           role="dialog"
         >
           {children(close)}

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testparallel"
@@ -61,7 +62,7 @@ const testCurlEnv = "LEGION_CMD_TEST_CURL"
 // start, on this binary run again as `legion`, and on the wall-clock bounds some of them prove —
 // so one at a time the package kept about half of one of CI's four CPUs busy, and go test's
 // default of GOMAXPROCS would leave most of that idle. A -parallel on the command line still wins
-// only because TestMain sets this default before testBinaryDeadline parses the command line
+// only because TestMain sets this default before testwait.BinaryDeadline parses the command line
 // (flag.Parse): the set must stay above that call, or this default would replace a -parallel the
 // command line names.
 const cmdTestParallelism = 8
@@ -92,7 +93,7 @@ func TestMain(m *testing.M) {
 		// public_leak_check.py its stand-in carries as the one the read rule was proven against
 		// (ghCheckAt). Only this test binary reads the variable; the legion binary has none.
 		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
-			ghReadsProvenCheck.sha256 = proven
+			ghProvenCheckSHA256 = proven
 		}
 		// A test's stand-in curl for the guard's curl reads, which reach no network. Only this
 		// test binary reads the variable; the legion binary has none, and its guards run the
@@ -126,8 +127,8 @@ func TestMain(m *testing.M) {
 		ghChildTestEnviron = testGhChildEnviron(os.Environ())
 		main()
 	}
-	// The package's default -parallel (cmdTestParallelism), set before testBinaryDeadline below
-	// parses the command line, so a -parallel there still replaces it.
+	// The package's default -parallel (cmdTestParallelism), set before testwait.BinaryDeadline
+	// below parses the command line, so a -parallel there still replaces it.
 	if err := flag.Set("test.parallel", strconv.Itoa(cmdTestParallelism)); err != nil {
 		fmt.Fprintf(os.Stderr, "TestMain: set this package's default -parallel: %v\n", err)
 		os.Exit(1)
@@ -139,10 +140,11 @@ func TestMain(m *testing.M) {
 	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
 	fixtureenv.MustGuard("LEGION_GH_PATH")
-	// The bounds legion sets on a program it starts, at what is left of this binary's deadline,
-	// here and in every run of it as `legion` (boundByTheDeadline). After MustGuard, which takes
-	// LEGION_* variables out of the environment.
-	if deadline, ok := testBinaryDeadline(); ok {
+	// The bounds legion sets on a program it starts, at what is left of this binary's deadline
+	// (testwait.BinaryDeadline), here and in every run of it as `legion`, and in the `legion` it
+	// builds (boundByTheDeadline). After MustGuard, which takes LEGION_* variables out of the
+	// environment.
+	if deadline, ok := testwait.BinaryDeadline(); ok {
 		if err := boundByTheDeadline(deadline); err != nil {
 			fmt.Fprintln(os.Stderr, "TestMain:", err)
 			os.Exit(1)
@@ -1223,9 +1225,10 @@ func TestConfigCheckNamesTheBrokenKey(t *testing.T) {
 // production-check line and the capability gaps, and the warning says what the refusal would
 // have said: the key, that nothing counts fix attempts, that no CI verdict sends work back on its
 // own — what a settlement names is told to the roles that work the issue
-// (dispatch://INFRA-714/spec R1) — that the architect decides when to stop, and review_round_cap,
-// the one cap left that blocks a pull request. The refused keys of TestConfigCheckNamesTheBrokenKey (worker_cap,
-// resync_interval_seconds) are the control that the two kinds stay apart.
+// (dispatch://INFRA-714/spec R1) — that the architect decides when to stop, and that
+// review_round_cap, the one cap left on an issue's review rounds, moves nothing. The refused keys
+// of TestConfigCheckNamesTheBrokenKey (worker_cap, resync_interval_seconds) are the control that
+// the two kinds stay apart.
 func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
@@ -1234,7 +1237,7 @@ func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
+	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml. review_round_cap is the one cap left on an issue's review rounds, and it moves nothing: after that many counted review rounds (recordRound in internal/workflow/review.go counts them, less the conflict rounds) the daemon posts a message on the issue and sends the architect a pr-blocked notice, once for each value the cap holds, and the work goes on (dispatch://INFRA-956 R4)\n"
 	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProjectLines + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -1757,10 +1760,10 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 // `legion config check`'s plugins line names the pair runtime.kubernetes.plugins sets, "from
 // legion.yaml", or, absent that, this binary's linked pair, "from the binary"; absent both, the
 // gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). A source in URL form is
-// printed as the state shows it: a made-up user name, password and signature in a private
-// tarball URL's userinfo and query are not. When worker_backends runs any role on Claude Code, the
-// line gains one sentence naming those roles, whose plugin is the worker image's and never an
-// install.
+// printed as the state shows it (api.PluginSourceOf, read from the rule, never written out here),
+// and a made-up user name, password and signature in a private tarball URL's userinfo and query
+// are not printed. When worker_backends runs any role on Claude Code, the line gains one sentence
+// naming those roles, whose plugin is the worker image's and never an install.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (legionState); it sets the package variables piEnvoyVersion and piLegionVersion.
 	legionState(t)
@@ -1769,12 +1772,13 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	const claudeRoles = "worker_backends: {implementer: claude, tester: claude}\n"
 	// Built from its parts, so that no source line holds a URL with a password.
 	const pluginCredential = "madeUpPluginUser0123:madeUpPluginPassword0123"
-	const privateURL = "https://" + pluginCredential + "@cache.example/pi-legion.tgz?X-Amz-Signature=madeUpSignature0123"
+	const pluginSignature = "madeUpSignature0123"
+	const privateURL = "https://" + pluginCredential + "@cache.example/pi-legion.tgz?X-Amz-Signature=" + pluginSignature
 	for _, tc := range []struct{ name, extra, legion, envoy, want string }{
 		{"the file's own pair", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n", "", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
 		{"a private tarball URL, printed without its credential", "    plugins: {pi_legion: \"" + privateURL + "\", pi_envoy: 9.6.1}\n", "", "",
-			"plugins: @sjawhar/pi-legion https://[a URL with credentials]/pi-legion.tgz @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
+			"plugins: @sjawhar/pi-legion " + api.PluginSourceOf(privateURL) + " @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
 		{"the binary's linked pair, the file setting none", "", "9.7.0", "9.6.1",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from the binary)\n"},
 		{"the file's pair wins over the binary's", "    plugins: {pi_legion: 9.7.1, pi_envoy: 9.6.2}\n", "9.7.0", "9.6.1",
@@ -1798,6 +1802,12 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 			want := demoCheckConfigOK + secretsGap + defaultCacheLine + tc.want
 			if code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+			}
+			pluginUser, pluginPassword, _ := strings.Cut(pluginCredential, ":")
+			for _, credential := range []string{pluginUser, pluginPassword, pluginSignature} {
+				if strings.Contains(out.String(), credential) {
+					t.Errorf("legion config check printed %q, which holds %q", out.String(), credential)
+				}
 			}
 		})
 	}
@@ -2696,9 +2706,10 @@ func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
 	}
 }
 
-// `legion state` in a pane names the daemon LEGION_DAEMON_URL names without its userinfo
-// (redact.URL), a made-up password holding a "'" included, in its first line when the daemon
-// answers and in its refusal when the daemon cannot be reached.
+// `legion state` in a pane names the daemon LEGION_DAEMON_URL names without its userinfo, a made-up
+// password holding a "'" included, as the URL rule writes it (redact.URL and redact.RequestError,
+// read from the rule, never written out here), in its first line when the daemon answers and in
+// its refusal when the daemon cannot be reached.
 func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	const credential = "madeUpStateUser0123:madeUpState'Password0123"
@@ -2717,16 +2728,18 @@ func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
 			}
 		}
 	}
+	answering := strings.Replace(server.URL, "http://", "http://"+credential+"@", 1)
+	const unreachable = "http://" + credential + "@127.0.0.1:1"
 	for name, tc := range map[string]struct {
 		url, want string
 		code      int
 	}{
-		"a daemon that answers":         {server.URL, "legion LEGION on http://[a URL with credentials] — ", 0},
-		"a daemon that does not answer": {"http://127.0.0.1:1", "legion state: read http://[a URL with credentials]/legion/v1/state: ", 1},
+		"a daemon that answers":         {answering, "legion LEGION on " + redact.URL(answering) + " — ", 0},
+		"a daemon that does not answer": {unreachable, "legion state: read " + redact.URL(unreachable+"/legion/v1/state") + ": ", 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Chdir(t.TempDir())
-			t.Setenv("LEGION_DAEMON_URL", strings.Replace(tc.url, "http://", "http://"+credential+"@", 1))
+			t.Setenv("LEGION_DAEMON_URL", tc.url)
 			t.Setenv("LEGION_ISSUE", "")
 			var out, errb bytes.Buffer
 			code := run(context.Background(), []string{"legion", "state"}, &out, &errb)
@@ -2741,7 +2754,8 @@ func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
 // A LEGION_DAEMON_URL whose password holds a "/" parses as a host with a port that is the
 // password's head, which url.Parse's error quotes (`invalid port ":<head>"`): `legion state` refuses
 // it in plain words, and `legion claims list`, an operator command, names an unreachable daemon
-// through redact.URL, holding no part of a made-up token written as the user.
+// through redact.URL (read from the rule, never written out here), holding no part of a made-up
+// token written as the user.
 func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	t.Run("an address that does not parse", func(t *testing.T) {
@@ -2763,10 +2777,11 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 		if err := os.WriteFile(bearer, []byte("operator-bearer\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("LEGION_DAEMON_URL", "http://"+token+"@127.0.0.1:1")
+		daemonURL := "http://" + token + "@127.0.0.1:1"
+		t.Setenv("LEGION_DAEMON_URL", daemonURL)
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
-		if code != 1 || !strings.Contains(errb.String(), "http://[a URL with credentials]/legion/v1/") || strings.Contains(errb.String(), token[:10]) {
+		if code != 1 || !strings.Contains(errb.String(), redact.URL(daemonURL+claimsRoute)) || strings.Contains(errb.String(), token[:10]) {
 			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the token", code, errb.String())
 		}
 	})
@@ -2780,10 +2795,11 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 			t.Fatal(err)
 		}
 		userinfo := "legion:" + head + "@"
-		t.Setenv("LEGION_DAEMON_URL", "http://"+userinfo+tail)
+		daemonURL := "http://" + userinfo + tail
+		t.Setenv("LEGION_DAEMON_URL", daemonURL)
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
-		if code != 1 || !strings.Contains(errb.String(), "http://[a URL with credentials]/legion/v1/") ||
+		if code != 1 || !strings.Contains(errb.String(), redact.URL(daemonURL+claimsRoute)) ||
 			strings.Contains(errb.String(), head[:10]) || strings.Contains(errb.String(), tail[:10]) {
 			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the password", code, errb.String())
 		}
@@ -2832,10 +2848,11 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 				t.Fatal(err)
 			}
 			userinfo := "legion:" + secret + "@"
-			t.Setenv("LEGION_DAEMON_URL", strings.Replace(served.URL, "://", "://"+userinfo, 1))
+			daemonURL := strings.Replace(served.URL, "://", "://"+userinfo, 1)
+			t.Setenv("LEGION_DAEMON_URL", daemonURL)
 			var out, errb bytes.Buffer
 			code := run(context.Background(), append(append([]string{"legion", "claims"}, args...), "--operator-token-file", bearer), &out, &errb)
-			if code != 1 || !strings.Contains(errb.String(), "read the answer http://[a URL with credentials]/legion/v1/operator/claims served") ||
+			if code != 1 || !strings.Contains(errb.String(), "read the answer "+redact.URL(daemonURL+claimsRoute)+" served") ||
 				strings.Contains(errb.String(), secret[:10]) {
 				t.Fatalf("legion %s = %d, stderr %q; want 1, the list named by the mark, and no part of the password", name, code, errb.String())
 			}

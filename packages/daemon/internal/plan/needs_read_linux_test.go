@@ -65,7 +65,7 @@ func TestEachNeedOfAPlanIsReadInLinearTime(t *testing.T) {
 			runtime.LockOSThread()
 			defer runtime.UnlockOSThread()
 			before := threadCPU(t)
-			p, err := FromBlocks("plan-md", 1, tc.blocks)
+			p, err := FromBlocks("plan-md", planDocument, 1, tc.blocks)
 			spent := threadCPU(t) - before
 			if err != nil {
 				t.Fatalf("FromBlocks(%s): %v", tc.name, err)
@@ -78,6 +78,77 @@ func TestEachNeedOfAPlanIsReadInLinearTime(t *testing.T) {
 			}
 			t.Logf("FromBlocks(%s) spent %v of its thread's CPU", tc.name, spent)
 		})
+	}
+}
+
+// parentsBound is the most CPU time of its own thread that FromBlocks may spend reading each plan
+// of TestEachParentOfAPlanIsReadInLinearTime.
+const parentsBound = time.Second
+
+// A task block names the block it stands under (`parent`), and Places reads each block's place
+// from its chain of parents. A plan document of 1 MiB holds a chain of about 14,000 task blocks,
+// each under the one before, once Dispatch creates `parent`. Places takes time linear in the
+// blocks: one walk settles each block (cycleOf), and each place is read once. Each plan below is
+// read within parentsBound of the thread's own CPU time: a chain of 4,000 blocks under a task with
+// no sub-owner, each an element of it; a ring of 4,000, which FromBlocks refuses naming its first
+// 20 blocks and counting the rest; and a chain of 14,000. The fault is a walk from every block to
+// the top that scans the chain it has walked at each step, cubic in the chain: about 1.1×10¹⁰
+// comparisons at 4,000 and 4.6×10¹¹ at 14,000. The control is Places with that walk planted,
+// which spends far more than parentsBound on the first plan and stops there, so the test never
+// starts the chain of 14,000 under it. The bound catches that walk at these sizes; it proves no
+// bound of time in general.
+func TestEachParentOfAPlanIsReadInLinearTime(t *testing.T) {
+	// chain is the task a, then n task blocks t0 … t<n-1>, t0 under a and each other under the one
+	// before; in a ring, t0 stands under the last instead.
+	chain := func(n int, ring bool) []Block {
+		blocks := []Block{{ID: "a", Type: TaskBlockType, Attributes: map[string]string{"steps": "implementer"}}}
+		for i := range n {
+			above := "a"
+			switch {
+			case ring && i == 0:
+				above = fmt.Sprintf("t%d", n-1)
+			case i > 0:
+				above = fmt.Sprintf("t%d", i-1)
+			}
+			blocks = append(blocks, withParent(Block{ID: fmt.Sprintf("t%d", i), Type: TaskBlockType}, above))
+		}
+		return blocks
+	}
+	// The ring's walk from t0, its first block in the document, goes up through t3999, t3998 and so
+	// on, so the reason names t0 and the 19 blocks above it, and counts the other 3,980.
+	named := []string{"t0"}
+	for i := 3_999; len(named) < MostReasons; i-- {
+		named = append(named, fmt.Sprintf("t%d", i))
+	}
+	ringReason := "task blocks " + strings.Join(named, ", ") + " and 3980 more stand under each other, so none of them has a place in the plan"
+	for _, tc := range []struct {
+		name     string
+		blocks   []Block
+		elements int
+		err      string
+	}{
+		{name: "a chain of 4,000", blocks: chain(4_000, false), elements: 4_000},
+		{name: "a ring of 4,000", blocks: chain(4_000, true), err: ringReason},
+		{name: "a chain of 14,000", blocks: chain(14_000, false), elements: 14_000},
+	} {
+		// One plan after another, not as subtests: under the control the first plan fails the test
+		// and no later one runs.
+		runtime.LockOSThread()
+		before := threadCPU(t)
+		p, err := FromBlocks("plan-md", planDocument, 1, tc.blocks)
+		spent := threadCPU(t) - before
+		runtime.UnlockOSThread()
+		switch {
+		case tc.err != "" && (err == nil || err.Error() != tc.err):
+			t.Fatalf("FromBlocks(%s) = %v, want the error %q", tc.name, err, tc.err)
+		case tc.err == "" && err != nil:
+			t.Fatalf("FromBlocks(%s): %v", tc.name, err)
+		case tc.err == "" && (len(p.Tasks) != 1 || p.Tasks[0].ID != "a" || len(p.Elements) != tc.elements):
+			t.Fatalf("FromBlocks(%s) holds %d tasks and %d elements, want task a alone and %d elements", tc.name, len(p.Tasks), len(p.Elements), tc.elements)
+		case spent > parentsBound:
+			t.Fatalf("FromBlocks(%s) spent %v of its thread's CPU, want at most %v", tc.name, spent, parentsBound)
+		}
+		t.Logf("FromBlocks(%s) spent %v of its thread's CPU", tc.name, spent)
 	}
 }
 
