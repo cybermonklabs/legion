@@ -77,10 +77,10 @@ test("jsonText gives JSON.stringify no list and no object", () => {
 });
 
 // A walk that recursed once a level would overflow V8's call stack from about 4,500 levels; the
-// loop's own stack is a list on the heap. 65,000 levels is about the deepest value a body under
-// the server's 262,144-byte cap can hold (its JSON check takes 10,000), so the case holds no more
-// memory than such a body's text and its output.
-test("jsonText writes a value nested 65,000 deep, about the deepest a body under the server's cap holds", () => {
+// loop's own stack is a list on the heap. The server stores no body nested past 10,000 levels
+// (its JSON check refuses one), so 65,000 is far past any value the page reads, and this value's
+// text, 260,001 characters, stays under the server's 262,144-byte cap on a body.
+test("jsonText writes a value nested 65,000 deep", () => {
   const depth = 65_000;
   let value: unknown = 1;
   for (let level = 0; level < depth; level += 1) value = level % 2 === 0 ? [value] : { k: value };
