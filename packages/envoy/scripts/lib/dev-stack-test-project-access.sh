@@ -66,7 +66,7 @@ assert_project_access() {
   fi
 }
 
-# (q) and (r), run after (h): the --project-access run, and the port race it takes.
+# (q) and (r), run after (h): the --project-access run, and the front its airlock's proxy is named by.
 project_access_run_cases() {
   # (q) --project-access: the same stack, its broker pointed at its own Dispatch's access routes
   # with a token of its own account, and that account admitted to both of Dispatch's lists.
@@ -85,19 +85,39 @@ project_access_run_cases() {
   assert_databases_dropped 'the --project-access run' "$psql_calls1" "$run_suffix"
   printf 'PASS: --project-access pointed the broker at its own Dispatch with its own token, started the airlock in a container of its own, and Dispatch admits that account; a run without it sets none of it\n'
 
-  # (r) The port race --project-access takes: the run picks a free port for the airlock's proxy,
-  # lets it go, and the broker binds it a moment later. A run that loses that race must stop
-  # rather than print an address nothing serves, so here the broker reports another port and the
-  # run is expected to fail, naming both.
-  DEV_STACK_TEST_AIRLOCK_BOUND="127.0.0.1:65000" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --project-access
-  wait_for_exit 1 15 'a --project-access run whose proxy bound another port'
-  [[ "$exited_status" -ne 0 ]] || fail "a --project-access run whose proxy bound another port reported success"
-  if grep -q 'dev-stack: ready\.' "$log1"; then
-    fail "a --project-access run whose proxy bound another port reported ready"
+  # (r) The airlock's proxy binds no port this run picked: the broker binds it on port 0 and logs
+  # the port it got (its stub reports 1 and its own PID), and the release's proxy URL names a front
+  # the run started before the broker, on a port of the front's own (its stub's PID), which the
+  # run points at the address the broker logged. So there is no port another process could take
+  # between a pick and the broker's bind, and the run reaches ready. The front is stopped with the
+  # rest.
+  run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --project-access
+  assert_instance_ready 'the --project-access run of the front' "$log1" "$psql_calls1" "$curl_calls1"
+  local broker_log="${work_dir}/logs/broker.log" front_log="${work_dir}/logs/airlock-proxy-front.log"
+  local proxy_url proxy_addr front_port
+  proxy_url="$(exported "$log1" DEV_STACK_AIRLOCK_PROXY_URL)"
+  front_port="${proxy_url##*:}"
+  [[ "$proxy_url" =~ ^http://127\.0\.0\.1:[0-9]+$ ]] ||
+    fail "the banner's DEV_STACK_AIRLOCK_PROXY_URL is '$proxy_url', not a loopback URL"
+  grep -qxF "fake front: listen=127.0.0.1:0 backends-file=${work_dir}/airlock-proxy-backends" "$front_log" ||
+    fail "the front was not started on a port of its own choosing with the run's backends file: $(cat "$front_log")"
+  grep -qF "airlock-proxy=${proxy_url} " "$broker_log" ||
+    fail "the broker's BROKER_AIRLOCK_PROXY_URL is not the front's URL $proxy_url"
+  grep -qxF 'fake broker: airlock-listen=127.0.0.1:0' "$broker_log" ||
+    fail "the broker's proxy was not given port 0 (BROKER_AIRLOCK_LISTEN_ADDR)"
+  proxy_addr="$(jq -Rnr '[inputs | fromjson? | select(.message == "airlock proxy listening") | .addr][0] // empty' "$broker_log")"
+  [[ -n "$proxy_addr" && "$proxy_addr" != 127.0.0.1:0 ]] ||
+    fail "the broker's stub logged no address its proxy bound ('$proxy_addr')"
+  [[ "$(cat "${work_dir}/airlock-proxy-backends")" == "$proxy_addr" ]] ||
+    fail "the front's backends file holds '$(cat "${work_dir}/airlock-proxy-backends")', not $proxy_addr, the address the broker's proxy logged"
+  kill -INT "${instance_pid[1]}"
+  wait_for_exit 1 15 'the --project-access run of the front'
+  [[ "$exited_status" -eq 130 ]] || fail "the --project-access run of the front exited $exited_status on INT, not 130"
+  assert_everything_stopped 'the --project-access run of the front'
+  if kill -0 "$front_port" 2>/dev/null; then
+    fail "the --project-access run left its front, process $front_port, running"
   fi
-  grep -q "the broker's airlock proxy is on 127\.0\.0\.1:65000, not the 127\.0\.0\.1:[0-9]* this run picked" "$log1" ||
-    fail "the lost-port-race run does not name the port its proxy bound and the port it picked"
-  printf 'PASS: a --project-access run whose airlock proxy bound another port stops, naming both ports\n'
+  printf 'PASS: --project-access names the airlock proxy by a front on a port of its own, gives the broker port 0 for the proxy, and points the front at the address the broker logged\n'
 }
 
 # (s), run after (i), whose refusal checks it uses: --project-access given --binaries, and given

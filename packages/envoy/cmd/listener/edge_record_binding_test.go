@@ -116,6 +116,7 @@ func (r *edgeRig) heals(t *testing.T, token, sessionID string, standIn *sessionS
 // next heartbeat. The edge's reading of a record that names no key is held by
 // TestAnEdgeGrantsNoScopeToARecordNamingNoKey.
 func TestAnEdgeReadsNoScopeFromAForgedSessionRecord(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const priv, pub, none = "ses_forge_priv", "ses_forge_pub", "ses_forge_none"
 	token := rig.personToken(priv, "PRIV")
@@ -251,6 +252,8 @@ func requireOwnAnswer(t *testing.T, recorder *httptest.ResponseRecorder, session
 // row named the session id "", and every later registration was refused naming key "". The next
 // registration replaces it.
 func TestAnEdgeRegistrationTakesNoForgedInterestRow(t *testing.T) {
+	// Not parallel: it holds a quiet window: no second frame reaches S_priv's stand-in within 1 s
+	// of its PRIV event (sessionStandIn.none).
 	rig := newEdgeRig(t)
 	conn := rig.harness.client.Conn
 	ctx := context.Background()

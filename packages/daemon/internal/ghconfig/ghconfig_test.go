@@ -196,6 +196,35 @@ func TestTokenFromHostsNamesTheMissingKey(t *testing.T) {
 	}
 }
 
+// A hosts.yml yaml.v3 cannot decode is refused naming the file and the line, with no part of the
+// token: one where the token stands in place of github.com's mapping (yaml.v3's TypeError quotes
+// the scalar's head), one whose token is written after a "*" (its error names the unknown anchor),
+// and one that does not parse. The token is made up.
+func TestTokenFromHostsQuotesNoTokenOfAFileItCannotDecode(t *testing.T) {
+	const token = "ghs_madeUpHostsToken0123456789"
+	for name, tc := range map[string]struct{ data, want string }{
+		"the token where the mapping goes": {"github.com: " + token + "\n",
+			"parse hosts.yml: the YAML holds a value of another kind than the file takes at line 1"},
+		"the token after a star": {"github.com:\n    oauth_token: *" + token + "\n",
+			"parse hosts.yml: the YAML does not parse"},
+		"a file that does not parse": {"github.com:\n    oauth_token: [" + token + "\n",
+			"parse hosts.yml: the YAML does not parse at line 1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := TokenFromHosts([]byte(tc.data))
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("TokenFromHosts = %v, want %q", err, tc.want)
+			}
+			// Seven characters: the head of a scalar yaml.v3's TypeError quotes.
+			for i := 0; i+7 <= len(token); i++ {
+				if strings.Contains(err.Error(), token[i:i+7]) {
+					t.Fatalf("the refusal %q holds %q of the token", err, token[i:i+7])
+				}
+			}
+		})
+	}
+}
+
 // Render is the two files plus what the daemon's log line needs: the App label and the expiry,
 // carried through untouched.
 func TestRenderCarriesTheLeaseThrough(t *testing.T) {

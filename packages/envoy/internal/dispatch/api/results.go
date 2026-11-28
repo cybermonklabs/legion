@@ -504,6 +504,7 @@ func (s *server) recordResultUnderOwnerLocks(
 		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,
 		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
 		CheckVersion: resolved.Version, CheckSHA256: resolved.SHA256,
+		CheckSubject: resolved.Attributes.Subject, CheckProgram: resolved.Attributes.Program,
 		Role: input.Role, Surface: input.Surface, Run: input.Run, Observed: input.Observed,
 		CommitSHA: input.Commit, CommitRepo: linkedCommitRepo, NegativeControl: input.NegativeControl,
 		Failed: input.Failed, Skipped: input.Skipped, Excluded: input.Excluded,
@@ -545,17 +546,20 @@ type issueCheckResults struct {
 // The checks of the issue's Verification document in document order, each with what its
 // results are compared with and whether a pass of it stands, and every result recorded
 // against it from any issue, newest first, each with where its commit stands and whether the
-// check's words moved since. An issue with no Verification document has no checks and no
-// error.
+// check's words moved since. Each check names the statements its block serves, as its `serves`
+// attribute writes them (docs.CheckBlockOf). An issue with no Verification document has no checks
+// and no error.
 //
-// A check CI proves carries `ci` too, read from GitHub at the issue's newest pull request
-// head, and its one result is the one derived from the run its `ci_check` names
-// (deriveCIResults), which is judged as a recorded result is.
+// A check CI proves carries `ci` too, read from GitHub at each open pull request head, or where
+// none is open at the final head of the merged one that merged last, and its results are the one
+// derived from the run its `ci_check` names at each head (deriveCIResults), each judged as a
+// recorded result is. A reader of one result of such a check finds the derived one by its id
+// (ci-run:<check run id>).
 //
 // ?at=<commit> replaces what every check is compared with by the one commit the reader names.
-// The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's
-// newest pull request head as on every read: the derived result is that head's, and stands at
-// the named commit only where that commit is the head.
+// The only read of GitHub it leaves is the check runs of a check CI proves, read at each open pull
+// request head as on every read: the derived result of each is that head's, and stands at the named
+// commit only where that commit is the head.
 func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -609,22 +613,16 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	// The reader learns the heads GitHub names before any check CI proves is derived
-	// (deriveCIResults). A derived result is read at the issue's newest pull request head, which
-	// may be a head this read's read-through learns: derived first, a first read would answer
-	// that Dispatch holds no head while it names the head it learned as another check's basis. A
-	// derived result is at that newest head, which the learned heads already hold, so it leaves
-	// nothing to learn. Every head GitHub has to be asked for is learned before the first check is
-	// answered, and where the learn stored or learned any head every check's bases are read again,
-	// so each check of the answer is answered on the heads as they stand after this read's
-	// read-throughs, and two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn).
+	// Learn heads before deriving CI, so both reads use the same stored or request-local heads.
+	// The reader shares one merge-time fill across the comparison and every CI head.
 	reader := newComparisonReader(r.Context(), s, at)
 	reader.learn(r.Context(), checks)
-	if err := s.deriveCIResults(r.Context(), reader, issueKey, checks); err != nil {
+	headCI, err := s.deriveCIResults(r.Context(), reader, issueKey, checks)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	reader.headCI = headCI
 	// Each result's observed text is registered for its tree once no check's results are replaced
 	// any more (deriveCIResults), since what is registered is a pointer into the row.
 	for index := range checks {
@@ -1018,10 +1016,11 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 }
 
 // checkBlocksIn is every `check` block of one document, in document order, with its attributes
-// and its words (typedBlocksIn). trees is the request's own reader, nil for a caller that asked
-// for no tree: each check registers with it, as its text_tree, the markdown typedBlocksIn reads
-// the block's tree from (the rule GET /api/v1/reference-targets reads the same block by), once
-// the slice has stopped growing, since what is registered is a pointer into the row.
+// and the references its `serves` attribute names (docs.CheckBlockOf), and its words
+// (typedBlocksIn). trees is the request's own reader, nil for a caller that asked for no tree:
+// each check registers with it, as its text_tree, the markdown typedBlocksIn reads the block's
+// tree from (the rule GET /api/v1/reference-targets reads the same block by), once the slice has
+// stopped growing, since what is registered is a pointer into the row.
 func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	var checks []model.CheckBlock
 	var contents []string
@@ -1408,15 +1407,15 @@ func insertCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult
 		insert into check_results (
 			id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
 			check_sha256, role, surface, run, observed, commit_sha, negative_control,
-			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq, commit_repo
+			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq, commit_repo, check_subject, check_program
 		)
-		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 		returning created_at
 	`,
 		result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
 		result.CheckVersion, result.CheckSHA256, result.Role, result.Surface, result.Run, result.Observed,
 		result.CommitSHA, result.NegativeControl, result.Failed, result.Skipped, result.Excluded,
-		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq, result.CommitRepo,
+		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq, result.CommitRepo, result.CheckSubject, result.CheckProgram,
 	).Scan(&result.CreatedAt)
 }
 

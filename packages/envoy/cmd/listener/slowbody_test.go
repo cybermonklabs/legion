@@ -131,6 +131,7 @@ func TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished(t *tes
 // A GitHub sender that goes away partway through its body fails the read, and the failure is
 // logged with what the delivery was and how far its body got.
 func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
+	// Not parallel: it swaps the log package's output (log.SetOutput).
 	logged := &lockedBuffer{}
 	previous := log.Writer()
 	log.SetOutput(logged)
@@ -158,6 +159,8 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 // arrive is cut off. The body is a signed url_verification, which the route would answer 200 had
 // it arrived whole.
 func TestASlackBodyStillHasTheServersReadTimeout(t *testing.T) {
+	// Not parallel: it requires the Slack request to end by 11.5 s, 1.5 s past the server's 10 s
+	// read timeout.
 	if testing.Short() {
 		t.Skip("sends a body over 12 s")
 	}

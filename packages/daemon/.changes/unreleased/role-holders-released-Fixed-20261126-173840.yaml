@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+    Dispatch's role holders of an issue (`GET /api/v1/issues/{key}/role-holders`) now keep naming
+    a session whose claim the idle release suspended, and a session that a pause's stop suspended:
+    such a claim keeps its session, its phase and its task, and the next wake resumes the same
+    session, so it still holds its role. Before, the release published the set without the
+    session, and the wake published it again with the session, so a reader of the set got a
+    different answer depending on when it read. The set now follows the one rule the daemon's
+    owner walk already used for whether a claim holds its role: a claim holds it unless it failed,
+    retired or was suspended by any source but the release, and a claim launched again over the
+    session it kept holds it through the launch. A suspension by the operator, the controller or
+    the daemon, and a root's exit, still take the session out of the set. Each boot also publishes
+    every issue with a released claim, so a set that an earlier release emptied at a release names
+    its session again.
+time: 2026-11-26T17:38:40Z
+custom:
+    Issue: role-holders-released

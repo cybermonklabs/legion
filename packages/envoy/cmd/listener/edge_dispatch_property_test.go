@@ -113,6 +113,7 @@ func generatedDispatchFrames() []string {
 // must hold this tree's frames and verdicts; `go test ./cmd/listener -run
 // TestEdgeFrameVerdictOnGeneratedDispatchFrames -update-dispatch-property` rewrites it.
 func TestEdgeFrameVerdictOnGeneratedDispatchFrames(t *testing.T) {
+	t.Parallel()
 	own := contracts.LegacyAgentSubject("ses_v")
 	computed := dispatchPropertyRecord{Passed: []string{}, Withheld: []string{}}
 	for _, frame := range generatedDispatchFrames() {

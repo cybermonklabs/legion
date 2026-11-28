@@ -20,6 +20,8 @@ import (
 // wildcard that merges with nothing, so the same message reaches it through the first, now carried:
 // a cache that kept the first row's answer for the session would still call it left out.
 func TestALeftOutSetIsReducedOncePerSessionAndRow(t *testing.T) {
+	// Not parallel: it counts the reductions of filterLeftOuts, the one cache that every publish
+	// count and durable read of the process shares (leftOutCache.isolate, reductions).
 	const (
 		session = "ses_left_out_cache"
 		pairFoo = "notifications.envoy.exceptions.foo.*"

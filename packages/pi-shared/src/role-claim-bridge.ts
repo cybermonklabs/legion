@@ -7,11 +7,16 @@ import type { SessionContext } from "./pi-types";
  * hook from its heartbeat; the Legion entry (`extensions/legion.ts`, `controller-session.ts`)
  * claims through it and registers that hook. The bridge object itself is the `roleClaim` member of
  * the versioned interface (`interface.ts`), which both plugins reach through `globalThis`.
+ *
+ * `replaces` is the session this session replaces, as the daemon's registration names it: the
+ * claim sends it as its `previous_session_id`, so the listener hands that session's unread direct
+ * and role messages to this one once the claim lands. Undefined or empty, the claim names none.
  */
 export type LegionRoleClaim = (
   sessionID: string,
   role: string,
-  context?: SessionContext
+  context?: SessionContext,
+  replaces?: string
 ) => Promise<void>;
 
 /**
@@ -47,12 +52,14 @@ type LegionRoleRegained = (role: string, reason: RoleRegainReason) => Promise<vo
  * subagent, so a process holds one instance per live agent session, and a claim for the pane's
  * session must reach the pane's instance — the one whose heartbeat re-asserts the role — not
  * whichever instance bound last (a subagent's, whose own heartbeat would then see the pane's
- * id as drift and hand the role to the subagent's session). `sessionID` reads the pane's live
- * `SessionManager`, never this instance's own module state: OMP mutates the manager before it
- * dispatches a `session_switch`, so the key is already current when legion.ts's handler for
- * that event claims — whichever of the two extensions OMP dispatches first. The module
- * variable lags until this instance's own rebind runs, and keying on it would make the routing
- * depend on handler order.
+ * id as drift and hand the role to the subagent's session). While the pane is live, `sessionID`
+ * reads the pane's live `SessionManager`, not this instance's own module state: OMP mutates the
+ * manager before it dispatches a `session_switch`, so the key is already current when
+ * legion.ts's handler for that event claims — whichever of the two extensions OMP dispatches
+ * first. The module variable lags until this instance's own rebind runs, and keying on it would
+ * make the routing depend on handler order. Once an instance's stop has ended, the pane's manager
+ * is gone, and `sessionID` answers the id the instance last served, so its own session's claims
+ * still reach it.
  */
 export type LegionRoleClaimInstance = {
   readonly claim: LegionRoleClaim;
@@ -61,7 +68,12 @@ export type LegionRoleClaimInstance = {
 };
 
 export type LegionRoleClaimBridge = {
-  /** Every live instance in bind order; an instance removes itself on `session_shutdown`. */
+  /**
+   * Every bound instance in bind order. An instance whose session's stop has begun moves to the
+   * front and stays: it refuses that session's claims and role-bound subscriptions naming the stop
+   * (`RoleClaimStoppingError`) for the rest of the process. One that served no session, a `task`
+   * subagent's, leaves as its stop ends.
+   */
   readonly instances: LegionRoleClaimInstance[];
   /**
    * Sessions Legion drives: every id `claimEnvoyRole` has claimed a role for, in this process.
@@ -97,17 +109,22 @@ export function legionRoleClaimBridge(): LegionRoleClaimBridge {
 /**
  * Claims `role` for `sessionID` through the envoy instance currently serving that session — the
  * instance whose live `SessionManager` reports `sessionID` — so its heartbeat is the one that
- * re-asserts the claim afterwards. The key is the manager's id, not the instance's own module
- * state, so a claim made from legion.ts's `session_switch` handler routes correctly whether OMP
- * dispatched envoy.ts's rebind for the same event before or after it. With several instances
- * on the same id (a fixture that binds one per test) the most recently bound wins. A target no
- * instance serves yet falls back to the most recently bound instance, which establishes the
- * session itself.
+ * re-asserts the claim afterwards. While the pane is live the key is the manager's id, not the
+ * instance's own module state, so a claim made from legion.ts's `session_switch` handler routes
+ * correctly whether OMP dispatched envoy.ts's rebind for the same event before or after it. With
+ * several instances on the same id (a fixture that binds one per test) the one later in the list
+ * wins. A target no instance serves yet falls back to the last instance in the list, which
+ * establishes the session itself; a stopped instance moves to the front, so the fallback is a
+ * live one where there is one.
+ * A session whose stop has begun keeps its instance on the bridge, which refuses the claim naming
+ * the stop, so no other instance gets it. `replaces` is the session this one replaces, which the
+ * claim names as its `previous_session_id` (`LegionRoleClaim`).
  */
 export async function claimEnvoyRole(
   sessionID: string,
   role: string,
-  context?: SessionContext
+  context?: SessionContext,
+  replaces?: string
 ): Promise<void> {
   const bridge = legionRoleClaimBridge();
   bridge.managedSessions.add(sessionID);
@@ -115,7 +132,7 @@ export async function claimEnvoyRole(
     bridge.instances.findLast((candidate) => candidate.sessionID() === sessionID) ??
     bridge.instances.at(-1);
   if (instance === undefined) throw new Error("Envoy has no bound instance for a role claim");
-  await instance.claim(sessionID, role, context);
+  await instance.claim(sessionID, role, context, replaces);
 }
 
 /**

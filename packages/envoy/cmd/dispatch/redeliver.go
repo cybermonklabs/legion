@@ -31,7 +31,9 @@ const redeliveryPace = time.Second
 // the first sweep that finds the client connected, not here: the client connects in the background
 // (serverBus), and a bus that is down at boot must not stop the boot. A sweep before then is
 // skipped and logged as failed. Its App client and its own backoff obey the GitHub rate limits
-// every process shares, in the database's github_rate_limits.
+// every process shares, in the database's github_rate_limits. The client counts no call for the
+// rate reading: every call the sweep makes is the App's JWT's, which GitHub charges to no
+// installation.
 func webhookSweeper(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase string, replicas int) (*redeliver.Sweeper, error) {
 	if natsClient == nil {
 		return nil, nil
@@ -81,6 +83,14 @@ func redeliverWebhooks(ctx context.Context, args []string, env settingValues, ou
 		fmt.Fprintln(out, "redeliver-webhooks: DATABASE_URL is required: the GitHub rate limits every process obeys live there")
 		return 2
 	}
+	// Before anything connects, as the server refuses it at boot (gitHubAPIBaseRefusal).
+	gitHubAPIBase := strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE"))
+	if gitHubAPIBase != "" {
+		if err := gitHubAPIBaseRefusal(gitHubAPIBase); err != nil {
+			fmt.Fprintf(out, "redeliver-webhooks: %v\n", err)
+			return 2
+		}
+	}
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
 		fmt.Fprintf(out, "redeliver-webhooks: open database: %v\n", err)
@@ -113,7 +123,7 @@ func redeliverWebhooks(ctx context.Context, args []string, env settingValues, ou
 		fmt.Fprintf(out, "redeliver-webhooks: load app credentials: %v\n", err)
 		return 1
 	}
-	sweeper, err := webhookSweeper(natsClient, database, app, strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")), replicas)
+	sweeper, err := webhookSweeper(natsClient, database, app, gitHubAPIBase, replicas)
 	if err != nil {
 		fmt.Fprintf(out, "redeliver-webhooks: %v\n", err)
 		return 1

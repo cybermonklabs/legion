@@ -157,6 +157,7 @@ type compactPane struct {
 // fresh sessions both doors start, and the fresh session that starts a worker whose process is
 // gone, which runs last because it kills the panes the steps before it drive.
 func TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newClaimCompactionLive(t)
 	r.step("step1-the-panes-run-the-deployments-overlays-and-a-short-session-can-be-compacted", r.overlaysAreTheDeployments)
@@ -226,7 +227,7 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	r.registerController()
 	r.backends[r.onClaude] = runtime.BackendClaude
 	r.note("worker_backends now runs %s on %s, and the %s claim of %s is stopped and never launched",
@@ -311,6 +312,10 @@ func (r *claimCompactionLive) registerController() {
 		t.Fatalf("decode the controller's registration %s: %v", body, err)
 	}
 	r.controllerSecret = registered.Secret
+	// The listener names the registered session the controller role's live holder, as it does once
+	// the controller claims the role, so a notice for it is published there (the outbox's
+	// controllerNotice).
+	r.notices.holds(string(claim.ControllerToken(r.project)), r.controllerSession)
 	r.note("the project's controller is registered as %s (claim %s), and its registration secret mints the grant its own door takes",
 		r.controllerSession, registered.ClaimToken)
 }
@@ -566,7 +571,7 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	}
 	r.awaitControllerNotices(r.notice, 1)
 	told := r.controllerNotices(r.notice)
-	r.note("the project's controller was told once on %s: %q", notify.ControllerTopic(r.project), told[0])
+	r.note("the project's controller was told once on %s: %q", notify.RoleTopicPrefix+string(claim.ControllerToken(r.project)), told[0])
 	// Six refused turns in a row, twice launch_failure_limit's default, fail no claim: a 529 can
 	// clear, so each turn's task went to the same session again (dispatch://INFRA-4508).
 	if held := r.claim(token); held.State == string(supervise.StateFailed) {
@@ -816,14 +821,22 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 		"controller's own door cannot name the role at all", status, strings.TrimSpace(string(body)))
 
 	// A suspended, a stopped and a failed claim: each runs no Oh My Pi session, so each is told
-	// that a fresh session is what reaches it instead.
+	// what starts it again instead. For the stopped and the failed claim that is the fresh session,
+	// through both doors. The suspended claim is the operator's own suspension (`legion claims
+	// suspend`), which the controller may not get past: the controller's door names the operator's
+	// resume and no fresh session, since its fresh_session of that agent is refused
+	// SUSPENDED_BY_OPERATOR (api's holdSentences; TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension),
+	// while the operator's door names the fresh session.
 	implementer := r.token(r.notice, claim.RoleImplementer)
 	r.note("%s", r.legionClaims("suspend", "--claim", string(implementer)))
 	r.await(string(implementer)+" to be suspended", 2*time.Minute, func() bool {
 		return r.claim(implementer).State == string(supervise.StateSuspended)
 	})
-	r.refusedThroughBothDoors("a suspended worker", compactDoors, implementer, r.notice, claim.RoleImplementer,
-		http.StatusConflict, "CLAIM_NOT_RUNNING", string(supervise.StateSuspended), compactNamesFreshSession)
+	r.refusedThroughEachDoor("a worker the operator suspended", compactDoors, implementer, r.notice, claim.RoleImplementer,
+		http.StatusConflict, "CLAIM_NOT_RUNNING",
+		[]string{string(supervise.StateSuspended), compactNamesFreshSession},
+		[]string{string(supervise.StateSuspended), "`legion claims resume --claim " + string(implementer) + "`"},
+		"fresh_session")
 
 	// The ladder's planner is finished with: its kept task is answered first, so step 7 can read
 	// what its issue's phase owes a fresh session rather than the task the ladder held.
@@ -1332,6 +1345,24 @@ func (r *claimCompactionLive) refusedThroughBothDoors(what string, doors doorPai
 	r.note("%s at %s is refused %d %s through both doors, word for word: %q", doors.operation, what, status, code, operator)
 }
 
+// refusedThroughEachDoor drives one operation at one claim through both of its doors where the
+// two refusals differ by design: the same status and code through each, each door's own phrases,
+// and none of the controller's naming notToController, which is a door the operator's suspension
+// refuses the controller (api's holdSentences).
+func (r *claimCompactionLive) refusedThroughEachDoor(what string, doors doorPair, token claim.Token,
+	issue string, role claim.Role, status int, code string, operatorPhrases, controllerPhrases []string, notToController string) {
+	r.t.Helper()
+	operatorStatus, operatorBody := doors.operator(r, token)
+	operator := r.heldRefusal(doors.operation+" at "+what+", through the operator's door", operatorStatus, operatorBody, status, code, operatorPhrases...)
+	controllerStatus, controllerBody := doors.controller(r, issue, role)
+	controller := r.heldRefusal(doors.operation+" at "+what+", through the controller's door", controllerStatus, controllerBody, status, code, controllerPhrases...)
+	if strings.Contains(controller, notToController) {
+		r.t.Fatalf("%s at %s: the controller's door names %q, a door the operator's suspension refuses it: %q",
+			doors.operation, what, notToController, controller)
+	}
+	r.note("%s at %s is refused %d %s through each door: the operator's %q, the controller's %q", doors.operation, what, status, code, operator, controller)
+}
+
 // refusedByController drives one request only the controller's door can make and holds its
 // refusal. The operator's door names a claim by its token, so it can name no role at all.
 func (r *claimCompactionLive) refusedByController(what, path string, body api.ClaimRequest, status int, code string, phrases ...string) {
@@ -1399,13 +1430,13 @@ func (r *claimCompactionLive) awaitFreshPane(token claim.Token, old string) api.
 }
 
 // controllerNotices is the reason of every provider-errors notice the daemon has published to the
-// project's controller topic for issue, oldest first. The topic carries every claim's notice, so
-// the issue is read off the notice's own summary line (noticeSummary).
+// project's controller's role topic for issue, oldest first. The topic carries every claim's
+// notice, so the issue is read off the notice's own summary line (noticeSummary).
 func (r *claimCompactionLive) controllerNotices(issue string) []string {
 	r.t.Helper()
 	want := noticeSummary(record.ProviderErrorsNotice, issue)
 	var reasons []string
-	for _, published := range r.notices.acceptedOn(notify.ControllerTopic(r.project)) {
+	for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(claim.ControllerToken(r.project))) {
 		if published.Message != want {
 			continue
 		}

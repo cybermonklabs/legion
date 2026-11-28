@@ -14,11 +14,12 @@ import {
 
 import { ApiError, api } from "../../../api/client";
 import type { IssueDetails } from "../../../api/types";
+import { KEY } from "../../decision-card/decision-fixture";
 import { MarginProvider } from "../../margin/margin-context";
 import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
+import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import type { Preset } from "../page-words";
 import { FAILED_READ_RETRY } from "./failed-read-line";
@@ -155,13 +156,13 @@ export function drawAtBrowserEntry(
 }
 
 /** Which slot the stage drew, by each slot's own mark: a view's body - the Decisions view's, the
- *  Plan view's or the Verification view's - or a case's stand-in view (`data-stand-in-view`), or
- *  the body that draws the outline or a line in its place. */
+ *  Plan view's, the Spec view's or the Verification view's - or a case's stand-in view
+ *  (`data-stand-in-view`), or the body that draws the outline or a line in its place. */
 export function drawnSlot(view: RenderResult): string {
   const { container } = view;
   if (container.querySelector("[data-issue-body]") !== null) return "the body";
   const drawn = container.querySelector(
-    "[data-decisions-body], [data-plan-body], [data-verification-body], [data-stand-in-view]"
+    "[data-decisions-body], [data-plan-body], [data-spec-body], [data-verification-body], [data-stand-in-view]"
   );
   return drawn === null ? "nothing" : "the view";
 }

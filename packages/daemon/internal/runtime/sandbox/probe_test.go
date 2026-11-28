@@ -61,8 +61,10 @@ type probeRig struct {
 
 func newProbeRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *probeRig {
 	t.Helper()
-	g := &probeRig{rig: newRig(t, objects, options...), finishedUID: map[types.UID]bool{}}
-	g.autoStart.Store(false)
+	// The controller stand-in starts no pod from its first pass (withoutAutoStart): the probe rig
+	// finishes its pods itself, and an autoStart turned off once newRig had returned left a pass in
+	// that gap that could make a seeded Running Sandbox's pod scheduled and Running.
+	g := &probeRig{rig: newRig(t, objects, append([]rigOption{withoutAutoStart()}, options...)...), finishedUID: map[types.UID]bool{}}
 	g.kube.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
 		if action.GetSubresource() != "log" {
 			return false, nil, nil
@@ -256,6 +258,17 @@ func probeOptions(t *testing.T) ImageProbe {
 	}
 }
 
+// probeOptionsToDeadline is probeOptions with an attempt budget of what is left before the
+// test's margin (testwait.Remaining), rather than probeOptions' 10 s budget. newProbeRig's parent
+// context still ends all attempts at that margin; this larger per-attempt budget lets its probe
+// pod finish on the event the rig brings when a loaded machine delays it.
+func probeOptionsToDeadline(t *testing.T) ImageProbe {
+	t.Helper()
+	p := probeOptions(t)
+	p.Budget = testwait.Remaining(t)
+	return p
+}
+
 // unfinishedBudget is the attempt budget of a test in which no pod ever answers, so the attempt
 // runs out.
 const unfinishedBudget = 300 * time.Millisecond
@@ -293,11 +306,12 @@ func wantContains(t *testing.T, err error, wants ...string) {
 	}
 }
 
-// okLine is the OK line an image prints when every probe passed, confirming contract, the
-// prompt-named agents' models resolved, the capability list checked, model fallback off, and an
-// Oh My Pi omp/18.18.6 whose help lists --session-id.
+// okLine is the OK line an image prints when every check of the daemon's boot run passed, the run
+// the probe Sandbox starts (session-storage=skipped): confirming contract, the prompt-named
+// agents' models resolved, the capability list checked, model fallback off, and an Oh My Pi
+// omp/18.18.6 whose help lists --session-id.
 func okLine(contract int) string {
-	return bootprobe.OKLine("/opt/omp/bin/omp", contract, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, "off", "omp/18.18.6", bootprobe.SessionIDFlagTaken)
+	return bootprobe.OKLine("/opt/omp/bin/omp", contract, bootprobe.SessionStorageSkipped, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, "off", "omp/18.18.6", bootprobe.SessionIDFlagTaken)
 }
 
 // Role references whose encoding the image's Decode refuses would fail the probe pod, and the
@@ -372,8 +386,10 @@ func TestProbeImagePassesOnTheOKLineConfirmingTheContract(t *testing.T) {
 func TestProbeImagePassesTheRemainingAttemptBudgetToItsCommand(t *testing.T) {
 	t.Parallel()
 	g := newProbeRig(t, nil)
+	// The rig's own present (Options.Now reads it atomically): the runtime's now function is read
+	// by its informers' goroutines, so a test that replaced it after the rig started raced them.
 	now := time.Date(2026, 10, 28, 13, 30, 0, 0, time.UTC)
-	g.r.now = func() time.Time { return now }
+	g.now.Store(&now)
 	g.succeeds(okLine(3) + "\n")
 	probe := probeOptions(t)
 	probe.Budget = 300 * time.Second
@@ -504,7 +520,7 @@ func TestProbeImageReportsTheModelFallbackMark(t *testing.T) {
 			g := newProbeRig(t, nil)
 			g.succeeds("probe-image: capability eval-js: present (Oh My Pi is its JavaScript runtime, and the launch probes ran it)\n" +
 				"probe-image: capability model-fallback: reported (the daemon reports it from the image probe's read at boot, or the plugin gate's under tmux)\n" +
-				bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, mark, "omp/18.18.6", bootprobe.SessionIDFlagTaken) + "\n")
+				bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.SessionStorageProbed, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, mark, "omp/18.18.6", bootprobe.SessionIDFlagTaken) + "\n")
 
 			report, err := g.r.ProbeImage(g.ctx, probeOptions(t))
 
@@ -518,9 +534,70 @@ func TestProbeImageReportsTheModelFallbackMark(t *testing.T) {
 	}
 }
 
-// ompLine is okLine(3) with the omp-version mark version and the omp-session-id mark sessionID.
+// A passing probe passes the lines of either run of `legion probe-image`: the image build's, whose
+// OK line says session-storage=probed, and the daemon's boot run's, whose line says
+// session-storage=skipped, each after a capability line; the probe reads no session-storage mark,
+// and each report carries the line's model-fallback mark.
+func TestProbeImagePassesTheLinesOfEitherRun(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct{ name, sessionStorage string }{
+		{"the image build's run", bootprobe.SessionStorageProbed},
+		{"the daemon's boot run", bootprobe.SessionStorageSkipped},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			g := newProbeRig(t, nil)
+			g.succeeds("probe-image: capability eval-js: present (Oh My Pi is its JavaScript runtime, and the launch probes ran it)\n" +
+				bootprobe.OKLine("/opt/omp/bin/omp", 3, testCase.sessionStorage, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, bootprobe.ModelFallbackOff, "omp/18.18.6", bootprobe.SessionIDFlagTaken) + "\n")
+
+			report, err := g.r.ProbeImage(g.ctx, probeOptions(t))
+
+			if err != nil {
+				t.Fatalf("ProbeImage = %v, want a pass", err)
+			}
+			if report.ModelFallback != bootprobe.ModelFallbackOff {
+				t.Errorf("report.ModelFallback = %q, want %q", report.ModelFallback, bootprobe.ModelFallbackOff)
+			}
+		})
+	}
+}
+
+// A daemon built after the boot run's variable passes the boot run of an image built before it:
+// that image's legion probe-image ignores LEGION_IMAGE_PROBE_RUN, makes every launch probe as the
+// image build's run does, and prints session-storage=probed. The fixture is the log tail of such a
+// run, byte for byte and with no line feed at its end, as a daemon logged it in the `log` field of
+// its "sandbox runtime: the worker image passed its probe" line. The entry it takes is one whose
+// OK line holds agent-models=resolved and no omp-session-id= mark, from a daemon that sets no NATS
+// user and no exchange audience, as testOptions sets neither; the test passes judge that line's
+// contract, 256. The pass's report carries the line's model-fallback mark, on. The fixture was
+// captured, from this package's directory, with:
+//
+//	mkdir -p testdata/probe && gcloud logging read 'insertId="<the entry's insertId>" AND jsonPayload.msg="sandbox runtime: the worker image passed its probe"' --freshness=30d --limit=1 --format=json | jq -j '.[0].jsonPayload.log' > testdata/probe/boot-run-before-the-boot-signal.log
+func TestADaemonPassesTheBootRunLinesOfAnImageBuiltBeforeTheBootSignal(t *testing.T) {
+	t.Parallel()
+	fixture, err := os.ReadFile(filepath.Join("testdata", "probe", "boot-run-before-the-boot-signal.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := configure(testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{terminated(probeContainer, 0, "Completed")}}}
+
+	outcome := r.judge("legion-probe", "sha256:00", pod, string(fixture), nil, 256)
+
+	if !outcome.Passed {
+		t.Fatalf("judge = %+v, want a pass", outcome)
+	}
+	if outcome.Report.ModelFallback != bootprobe.ModelFallbackOn {
+		t.Errorf("judge's report.ModelFallback = %q, want %q", outcome.Report.ModelFallback, bootprobe.ModelFallbackOn)
+	}
+}
+
+// ompLine is okLine(3) as the image build's run prints it (session-storage=probed), with the
+// omp-version mark version and the omp-session-id mark sessionID.
 func ompLine(version, sessionID string) string {
-	return bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, "off", version, sessionID)
+	return bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.SessionStorageProbed, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, "off", version, sessionID)
 }
 
 // lineBeforeTheOmpMarks is the OK line of an image whose legion predates the omp-version and
@@ -557,7 +634,7 @@ func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *tes
 			g := newProbeRig(t, nil, exchangeKeyed())
 			g.succeeds(testCase.log + "\n")
 
-			err := g.probe(probeOptions(t))
+			err := g.probe(probeOptionsToDeadline(t))
 
 			wantContains(t, err, append([]string{"worker image sha256:" + testDigestHex + " failed its probe: pod " + probeSandboxName + " " + testCase.want}, why...)...)
 			if n := g.creates.Load(); n != 1 {
@@ -592,7 +669,7 @@ func TestProbeImagePassesAnOhMyPiThatTakesSessionIDOrNoExchangeAudience(t *testi
 			g := newProbeRig(t, nil, testCase.option, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
 			g.succeeds(testCase.log + "\n")
 
-			report, err := g.r.ProbeImage(g.ctx, probeOptions(t))
+			report, err := g.r.ProbeImage(g.ctx, probeOptionsToDeadline(t))
 
 			if err != nil {
 				t.Fatalf("ProbeImage = %v, want a pass", err)
@@ -646,11 +723,11 @@ func TestProbeImageRefusesWhatTheProbePodAnswered(t *testing.T) {
 				"legion probe-image: capability browser is missing: /nonexistent/chromium (PUPPETEER_EXECUTABLE_PATH) --version: fork/exec /nonexistent/chromium: no such file or directory")
 		}, []string{"Failed (container probe terminated", "exit code 1", "capability browser is missing"}},
 		{"a build-time probe's result", func(g *probeRig) {
-			g.succeeds(bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsSkipped, bootprobe.CapabilitiesAll, "off", "omp/18.18.6", bootprobe.SessionIDFlagTaken))
+			g.succeeds(bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.SessionStorageProbed, bootprobe.AgentModelsSkipped, bootprobe.CapabilitiesAll, "off", "omp/18.18.6", bootprobe.SessionIDFlagTaken))
 		},
 			[]string{"without resolving the prompt-named agents' models (its OK line's agent-models mark: skipped, where the daemon's probe requires resolved)"}},
 		{"a probe that left the browser row unchecked", func(g *probeRig) {
-			g.succeeds(bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesBrowserSkipped, "off", "omp/18.18.6", bootprobe.SessionIDFlagTaken))
+			g.succeeds(bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.SessionStorageProbed, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesBrowserSkipped, "off", "omp/18.18.6", bootprobe.SessionIDFlagTaken))
 		},
 			[]string{"Succeeded without checking the whole capability list (its OK line's capabilities mark: browser-skipped, where the daemon's probe requires checked)"}},
 		{"a CLI that predates the discovery-on pod lane", func(g *probeRig) {
@@ -1149,9 +1226,10 @@ func TestProbeImageReplacesOnlyItsOwnProjectsLeftover(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			// No pod: the fakes' watches ignore label selectors, so a pod of another project's
-			// Sandbox would reach the runtime's store, which a real API server never sends it.
-			g := newProbeRig(t, []k8sruntime.Object{sandboxObject(t, probeSandboxName, "uid-foreign", modeRunning, labels)})
-			g.setHold(true)
+			// Sandbox would reach the runtime's store, which a real API server never sends it. So
+			// the controller stand-in is held from its first pass (withHeld): a hold set once the
+			// rig is made let a pass make that pod first.
+			g := newProbeRig(t, []k8sruntime.Object{sandboxObject(t, probeSandboxName, "uid-foreign", modeRunning, labels)}, withHeld())
 
 			err := g.probe(probeOptions(t))
 
@@ -1192,23 +1270,31 @@ func TestEveryBootProbesTheImage(t *testing.T) {
 
 // A providers Secret the kubelet cannot mount leaves the probe pod Pending, never Failed: a
 // FailedMount event saying the Secret, or one of the keys provider_keys asks of it, is missing is
-// the answer, a refusal naming the Secret, the keys, and the kubelet's message, given once rather
-// than retried to the budget. Any other FailedMount on the volume is one the kubelet retries (its
-// Secret watch not yet synced, kubernetes/kubernetes#99475), and the attempt runs to its budget.
+// the answer, a refusal naming the Secret, the settings whose keys every pod mounts, and the fault
+// in its own words, given once rather than retried to the budget. Any other FailedMount on the
+// volume is one the kubelet retries (its Secret watch not yet synced, kubernetes/kubernetes#99475),
+// and the attempt runs to its budget. The refusal names a key by the setting that names it and
+// quotes no key of the Secret, nor the kubelet's message, which quotes one: a provider_keys value
+// can be a provider's key pasted where its name goes, here a made-up one.
 func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 	t.Parallel()
+	const pasted = "MadeUpProviderKey0123456789abcdefXYZ"
 	mount := `MountVolume.SetUp failed for volume "providers" : `
+	entries := "(provider_keys.ANTHROPIC_API_KEY, runtime.kubernetes.session_dsn_secret)"
 	for _, testCase := range []struct {
-		name, message string
-		refused       bool
+		name, secretKey, message, fault string
+		refused                         bool
 	}{
-		{"the Secret missing", mount + `secret "` + ProvidersSecretName(testProject) + `" not found`, true},
-		{"the Secret missing, as the API server says it", mount + `secrets "` + ProvidersSecretName(testProject) + `" not found`, true},
-		{"a key missing", mount + "references non-existent secret key: ANTHROPIC_API_KEY", true},
-		{"the kubelet's secret cache not synced", mount + "failed to sync secret cache: timed out waiting for the condition", false},
+		{"the Secret missing", "anthropic", mount + `secret "` + ProvidersSecretName(testProject) + `" not found`, "the kubelet reports the Secret is not there", true},
+		{"the Secret missing, as the API server says it", "anthropic", mount + `secrets "` + ProvidersSecretName(testProject) + `" not found`, "the kubelet reports the Secret is not there", true},
+		{"a provider key missing", "anthropic", mount + "references non-existent secret key: anthropic", "the kubelet reports the Secret holds no key for provider_keys.ANTHROPIC_API_KEY", true},
+		{"the session database's key missing", "anthropic", mount + "references non-existent secret key: SESSION_DSN", "the kubelet reports the Secret holds no key for runtime.kubernetes.session_dsn_secret", true},
+		{"a key no setting names missing", "anthropic", mount + "references non-existent secret key: ANTHROPIC_API_KEY", "the kubelet reports the Secret lacks a key the pod mounts, one no setting names", true},
+		{"a provider's key pasted where its Secret key goes, missing", pasted, mount + "references non-existent secret key: " + pasted, "the kubelet reports the Secret holds no key for provider_keys.ANTHROPIC_API_KEY", true},
+		{"the kubelet's secret cache not synced", "anthropic", mount + "failed to sync secret cache: timed out waiting for the condition", "", false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "anthropic"} }))
+			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": testCase.secretKey} }))
 			g.waits("ContainerCreating")
 			if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
 				ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
@@ -1222,7 +1308,10 @@ func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 			err := g.probe(p)
 
 			if testCase.refused {
-				wantContains(t, err, "cannot mount the providers Secret "+ProvidersSecretName(testProject), "(SESSION_DSN, anthropic)", testCase.message)
+				wantContains(t, err, "cannot mount the providers Secret "+ProvidersSecretName(testProject), entries, testCase.fault)
+				if err != nil && (strings.Contains(err.Error(), pasted) || strings.Contains(err.Error(), "references non-existent")) {
+					t.Errorf("ProbeImage = %v, quotes a key of the Secret or the kubelet's message", err)
+				}
 				if n := g.creates.Load(); n != 1 {
 					t.Errorf("ran the probe %d times for a Secret the pod cannot mount, want once", n)
 				}
@@ -1236,6 +1325,18 @@ func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 				t.Errorf("ran the probe %d times, want the retry's 2", n)
 			}
 		})
+	}
+}
+
+// Two provider_keys variables that read one key of the providers Secret are both named, sorted, so
+// the refusal is the same on every run, whatever order the map yields them in.
+func TestAMissingKeyNamesEveryVariableThatReadsIt(t *testing.T) {
+	t.Parallel()
+	r := &Runtime{providerKeys: map[string]string{"OPENAI_API_KEY": "shared", "ANTHROPIC_API_KEY": "shared", "GEMINI_API_KEY": "gemini"}}
+	for range 20 {
+		if got := r.providersMountFault(missingSecretKey + "shared"); got != "the kubelet reports the Secret holds no key for provider_keys.ANTHROPIC_API_KEY and provider_keys.OPENAI_API_KEY" {
+			t.Fatalf("providersMountFault = %q", got)
+		}
 	}
 }
 
@@ -1597,7 +1698,7 @@ func TestProbeImageRefusesAClaimThatIsNotThere(t *testing.T) {
 				o.Log = slogTo(logged)
 				o.Pod.Volumes = []corev1.Volume{team}
 				o.Pod.VolumeMounts = []corev1.VolumeMount{{Name: "team", MountPath: "/mnt/team", ReadOnly: true}}
-			}))
+			}), withTestBootTimeout())
 			g.finishes(unplaced(testCase.message, testCase.age))
 			p := rowProbe(t, testCase.refused)
 
@@ -1796,7 +1897,7 @@ func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
 	// they run out, and other tests' load could delay that read past them.
 	t.Run("unschedulable past the boot timeout, then placed", func(t *testing.T) {
 		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
+		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }), withTestBootTimeout())
 		g.with(func() { g.log = okLine(3) + "\n" })
 		var pods atomic.Int32
 		g.finishes(func(p *corev1.Pod) {
@@ -1838,7 +1939,7 @@ func TestProbeImageWaitsOnAProbePodThePoolCannotPlace(t *testing.T) {
 
 	t.Run("unschedulable within the boot timeout waits to the budget", func(t *testing.T) {
 		logged := &lockedLog{}
-		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
+		g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }), withTestBootTimeout())
 		g.finishes(unschedulable(testOptions().BootTimeout / 2))
 		p := probeOptions(t)
 		p.Budget = unfinishedBudget
@@ -2015,6 +2116,32 @@ func TestTheProbeIsToldTheOperatorsVariablesAsWritten(t *testing.T) {
 	}
 }
 
+// The probe's container is told that it runs as the daemon's boot run through its env, not its
+// command: LEGION_IMAGE_PROBE_RUN=boot once, as the env's last entry, after the operator's
+// variable and the pointers the runtime sets, with an operator's pod env and a provider key set.
+func TestTheProbeIsToldItIsTheDaemonsBootRun(t *testing.T) {
+	t.Parallel()
+	opts := goldenOptions()
+	opts.Pod.Env = map[string]string{"PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml"}
+	opts.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "anthropic"}
+	opts.LaunchSecrets, opts.ProvidersSecrets = []string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}
+	r, err := configure(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := r.probeManifest(probeSandboxName, ImageProbe{Contract: 3, RoleReferences: testRoleReferences}, time.Now()).Spec.PodTemplate.Spec.Containers[0].Env
+	var names []string
+	for _, variable := range env {
+		names = append(names, variable.Name)
+	}
+	if want := []string{"PI_CONFIG_FILES", "NATS_NKEY_SEED_FILE", "OMP_SESSION_SQL_DSN_FILE", bootprobe.ImageProbeRunVariable}; !slices.Equal(names, want) {
+		t.Errorf("the probe's env names %q, want %q: %s once, last, after the operator's variable and the pointers", names, want, bootprobe.ImageProbeRunVariable)
+	}
+	if n := len(env); n == 0 || env[n-1].Name != bootprobe.ImageProbeRunVariable || env[n-1].Value != bootprobe.ImageProbeRunBoot || env[n-1].ValueFrom != nil {
+		t.Errorf("the probe's env is %+v, want it to end with %s=%s", env, bootprobe.ImageProbeRunVariable, bootprobe.ImageProbeRunBoot)
+	}
+}
+
 // The golden pins every byte of the probe Sandbox, and every field is one the v1.0.3 CRD declares
 // with that type: the lifecycle fields the worker Sandboxes never set included. Its container
 // carries what the daemon hands it, the probe's own reservation (probeReservation).
@@ -2188,7 +2315,7 @@ func TestALogTailWithNoNewlineKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
 		}
 		return true, &k8sruntime.Unknown{Raw: []byte(log)}, nil
 	})
-	got := g.r.logTail(g.ctx, "legion-pod", fetchContainer)
+	got := g.r.logTail(g.ctx, "legion-pod", initContainer)
 	ruled := redact.Read(got, false)
 	for _, part := range []string{"reader", "@h.example", "planted-query-token-9"} {
 		if strings.Contains(ruled, part) {

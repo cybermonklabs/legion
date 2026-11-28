@@ -46,8 +46,8 @@ unknown function or a context it does not model, is refused by name with exit 2,
 false.
 
 Usage: ci_router_outputs.py <workflow> --filters <file> --event <name> [--ref <ref>] [--sha <sha>]
-  [--base <sha>] [--input <name>=<value>]... [--label <name>]... [--verdict <filter>=<value>]...
-  [--verdicts <true|false>] [--step-outputs <id>=<file>]...
+  [--base <sha>] [--pull-base <sha>] [--input <name>=<value>]... [--label <name>]...
+  [--verdict <filter>=<value>]... [--verdicts <true|false>] [--step-outputs <id>=<file>]...
   [--filter-step | --generate-step | --concurrency | --steps <job> [--changes-result <result>]]
        ci_router_outputs.py <workflow> --label-readers
 Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --filters is
@@ -55,8 +55,11 @@ the changes job's filters, which it computes when it runs (.github/scripts/ci-fi
 and no file of the repository holds; the filter names are its keys. --verdicts sets every filter's
 verdict (default true); --verdict overrides one. --ref defaults to a pull request's merge ref, the
 queue's branch, or refs/heads/main for any other event; --sha to forty 1s. --base is the commit
-the run is measured against, forty 3s by default: a pull request's base, a merge group's base, or
-the merge base with main the `base` step finds on a dispatch. --step-outputs gives the outputs of
+the run is measured against, forty 3s by default: a merge group's base, or the commit the `base`
+step finds - the first parent of a pull request's merge commit, the merge base with main on a
+dispatch. --pull-base is the pull request event's own base.sha, --base by default, which is older
+than the first parent when main has moved since the branch's base (98 of 149 pull-request runs on
+2026-11-26). --step-outputs gives the outputs of
 the changes job's step <id> as that step wrote them, a GITHUB_OUTPUT file of `<name>=<value>`
 lines, in place of running or modelling it (the generate step's, for one: ci-filters-generate.sh
 writes every_filter=true there when it falls open). --filter-step prints whether the filter step
@@ -435,6 +438,7 @@ def main():
     parser.add_argument("--ref")
     parser.add_argument("--sha", default="1" * 40)
     parser.add_argument("--base", default="3" * 40)
+    parser.add_argument("--pull-base")
     parser.add_argument("--input", action="append", default=[])
     parser.add_argument("--label-readers", action="store_true")
     parser.add_argument("--filter-step", action="store_true")
@@ -495,7 +499,7 @@ def main():
             "github": {"event_name": args.event, "ref": ref, "sha": args.sha,
                        "event": {"pull_request": {"number": 1 if pull_request else None,
                                                   "labels": [{"name": label} for label in args.label],
-                                                  "base": {"sha": args.base if pull_request else None}},
+                                                  "base": {"sha": (args.pull_base or args.base) if pull_request else None}},
                                  "merge_group": {"base_sha": args.base if args.event == "merge_group" else None}}},
             "inputs": dispatch_inputs(document, args.event, args.input),
             "steps": {step_id: {"outputs": {}} for step_id in ids},

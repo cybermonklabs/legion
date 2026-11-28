@@ -16,6 +16,9 @@ import {
 } from "../../theme/classes";
 import { BlockReferences } from "../refs/ReferencedBy";
 
+/** One requirement of the spec. Its head line's groups, in this order: its words, which wrap
+ *  inside themselves, then what it lacks, one pill per gap, each pill whole; when the line is too
+ *  narrow a pill moves to the next line. What references it follows. */
 function Requirement({ requirement }: { requirement: RequirementCoverage }): ReactNode {
   // What the server says this requirement lacks, in the server's own words. The server decides
   // which lacks count - a requirement with no plan task is no gap until the issue has a plan
@@ -28,9 +31,11 @@ function Requirement({ requirement }: { requirement: RequirementCoverage }): Rea
       data-testid="spec-requirement"
     >
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        {/* The server's flattened words of the spec block: the reading list's
-            `spec-requirement-words`. */}
-        <span className={textPrimaryOnSurface}>{requirement.text}</span>
+        <span className={`min-w-0 [overflow-wrap:anywhere] ${textPrimaryOnSurface}`}>
+          {/* The server's flattened words of the spec block: the reading list's
+              `spec-requirement-words`. */}
+          {requirement.text}
+        </span>
         {gaps.map((gap) => (
           <span
             className={`${pillShapeClassName} ${surfaceMutedBg} ${inlineWarningText}`}

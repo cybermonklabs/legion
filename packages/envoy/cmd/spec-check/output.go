@@ -8,7 +8,7 @@ import (
 )
 
 // output is the standard output of a subcommand, which is its product: the lines that a caller
-// reads, the JSON of checks and the blocks of print, which a change copies into the files. It
+// reads, such as the JSON of checks and the lines of print that name where it wrote each node. It
 // passes each write to w and keeps the first error, or io.ErrShortWrite for a write that w took
 // in part, and takes no write after it, so run reports a failed write once, whichever line failed.
 type output struct {

@@ -11,6 +11,7 @@ import {
   MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
+  SPEC_CHECK_OBSERVED_MAX,
 } from "./dispatch-api-limits";
 import { SEARCH_RESULT_KINDS } from "./dispatch-api-search";
 import { goBlankPattern } from "./go-blank";
@@ -73,12 +74,16 @@ const ASK_QUESTION_CONTRACT =
   '("Ship Friday and risk signing out 1,240 users, or hold to Monday?"), never "How should we ' +
   'proceed?" or "Which option?", because a reader cannot work back from a general question to ' +
   "the case. It carries every fact the reader needs to decide and nothing " +
-  "that does not change the decision. Generalize only after the specifics, if at all. Then give " +
-  "your recommendation and its reason.";
+  "that does not change the decision. Generalize only after the specifics, if at all. A question " +
+  "between two or more real choices gives one recommendation and its reason. A request for one " +
+  "act only the person can do (an approval, a credential, a grant, a setting of their own " +
+  "account) says what the act is, what it changes and how to do it, and gives no recommendation.";
 
 const ASK_OPTIONS_CONTRACT =
-  "Options carry the genuinely different approaches. Each option has a label, and its description " +
-  "says what that approach costs.";
+  "Options carry only the real choices: each is within your rules, and a person could choose " +
+  "it. Add no option that breaks your rules or that no one would choose. Each option has a " +
+  "label, and its description says what that approach costs. A request for one act only the " +
+  "person can do has the two options Done and Can't.";
 
 /** Who an ask is for, written once so every text an agent reads says it the same way: the two
  *  tool descriptions that open or edit one, and `skills/dispatch/SKILL.md`. An agent cannot
@@ -868,6 +873,13 @@ export const STEP_KINDS = ["step", "retro", "merge"] as const;
  *  `contracts.StepResultFailed` and `contracts.StepResultStopped`. A run that still runs has none. */
 export const STEP_RESULTS = ["passed", "failed", "stopped"] as const;
 
+/** Where a step of an issue's plan stands in the steps read (`PlannedStep.state`), from the records
+ *  of the plan's own run of the issue: not started before any run of it, running while its newest
+ *  run has no end, then that run's result (`STEP_RESULTS`). Generated into Go as
+ *  `contracts.PlannedStepNotStarted` and `contracts.PlannedStepRunning`, which Dispatch's steps read
+ *  writes; the OpenAPI document names them as the state's enum, which the web client switches on. */
+export const PLANNED_STEP_STATES = ["not started", "running", ...STEP_RESULTS] as const;
+
 /** The codes of the step write's refusals that no retry changes: a value outside its form, a writer
  *  that is not the daemon's session, and an id whose record is a run of another issue. Generated
  *  into Go as `contracts.StepInputCode`, `contracts.StepWriterCode` and
@@ -894,6 +906,22 @@ export const STEP_AGENT_TEXT_PATTERN = /^[!-~]{1,128}$/;
 /** STEP_AGENT_TEXT_PATTERN's rule in words, which Dispatch's refusal gives: generated into Go as
  *  `contracts.StepAgentTextRule`. */
 export const STEP_AGENT_TEXT_RULE_WORDS = "printable ASCII with no space, from 1 to 128 characters";
+
+/** The most bytes the id of a task a step record names holds. A task id is ASCII, so its bytes and
+ *  its characters are one count. Generated into Go as `contracts.StepTaskMax`. */
+export const STEP_TASK_MAX = 64;
+
+/** The form of the id of a task a step record names, which is also the id of a `plan_task` block
+ *  of an owner's plan: lowercase letters, digits and hyphens, the first a letter or a digit, at
+ *  most `STEP_TASK_MAX` bytes. Generated into Go as `contracts.StepTaskPattern`: Dispatch refuses
+ *  a step write and a plan write that names a task outside it, and the Legion daemon, through
+ *  `github.com/sjawhar/envoy/steprecord`, refuses a plan whose task block has such an id, whose
+ *  steps Dispatch could record none of. */
+export const STEP_TASK_PATTERN = new RegExp(`^[a-z0-9][a-z0-9-]{0,${STEP_TASK_MAX - 1}}$`);
+
+/** STEP_TASK_PATTERN's rule in words, which the refusal of either side gives: generated into Go as
+ *  `contracts.StepTaskRule`. */
+export const STEP_TASK_RULE_WORDS = `lowercase letters, digits and hyphens, starting with a letter or a digit, at most ${STEP_TASK_MAX} bytes`;
 
 /** A handoff's phase, the `{phase}` segment of the handoff routes: a lowercase slug. Legion writes
  *  `plan`, `implement`, `test` and `review`. Generated into Go as `contracts.HandoffPhasePattern`,
@@ -977,25 +1005,98 @@ const RESULT_RECORD_FIELDS = [
   "screenshots",
 ] as const;
 
+/** The arguments a CI job's record of a check of the spec files carries beside project. */
+const RESULT_PROJECT_FIELDS: readonly string[] = ["check", "verdict", "commit", "observed"];
+
+/** The three of them the record cannot do without. */
+const RESULT_PROJECT_REQUIRED = ["check", "verdict", "commit"] as const;
+
 /** What retract does, written once: the tool's description gives it, and so does the refusal of
  *  a call that mixes a retraction with a record. */
 const RESULT_RETRACT_RULE =
   "Pass retract with the id of a result recorded before, and reason with why that result is " +
   "wrong, to retract it.";
 
+/** What a CI job's record of a check of the spec files takes, written once: the refusal of a
+ *  call that breaks it gives it whole. */
+const RESULT_PROJECT_RULE =
+  "With project, the call records a CI job's result of a check of the spec files. It takes " +
+  "project, check, verdict, commit and observed, and no other argument.";
+
+/** The arguments the project form refuses: a role's record and a retraction. Dispatch reads who
+ *  ran the check and how from the job's token, from GitHub and from the spec files, so none of
+ *  them belongs in a CI job's record. */
+const RESULT_NOT_PROJECT_FIELDS = [
+  ...RESULT_RECORD_FIELDS.filter((field) => !RESULT_PROJECT_FIELDS.includes(field)),
+  "retract",
+  "reason",
+] as const;
+
 /** The whole rule a call of this tool keeps: one shape records a result, the other retracts one. */
 const RESULT_SHAPE_RULE =
   `${RESULT_RETRACT_RULE} A call with retract takes reason and no other argument. A call ` +
-  "without retract records a result, and it takes issue, check, role, verdict and commit.";
+  "without retract records a result, and it takes issue, check, role, verdict and commit. " +
+  RESULT_PROJECT_RULE;
+
+const DEPLOY_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const DEPLOY_PROGRAM = /^[a-z0-9-]{1,64}$/;
+const DEPLOY_COMMIT = /^[0-9a-f]{40}$/;
+const DEPLOY_TIME =
+  /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+
+function deployRepoProblem(value: unknown): string | undefined {
+  const input = value as Record<string, unknown>;
+  return typeof input["repo"] !== "string" || !DEPLOY_REPO.test(input["repo"])
+    ? "repo must be owner/repo"
+    : undefined;
+}
+
+function deployProblem(value: unknown): string | undefined {
+  const input = value as Record<string, unknown>;
+  const repo = deployRepoProblem(input);
+  if (repo !== undefined) return repo;
+  if (typeof input["program"] !== "string" || !DEPLOY_PROGRAM.test(input["program"]))
+    return "program must be 1 to 64 lowercase letters, digits or hyphens";
+  if (typeof input["commit"] !== "string" || !DEPLOY_COMMIT.test(input["commit"]))
+    return "commit must be 40 lowercase hexadecimal characters";
+  if (input["deployed_at"] !== undefined) {
+    const value = input["deployed_at"];
+    if (typeof value !== "string") return "deployed_at must be RFC3339";
+    const parts = DEPLOY_TIME.exec(value);
+    const timestamp = Date.parse(value);
+    if (parts === null || !Number.isFinite(timestamp)) return "deployed_at must be RFC3339";
+    const calendar = new Date(`${parts[1]}-${parts[2]}-${parts[3]}T00:00:00Z`);
+    if (calendar.toISOString().slice(0, 10) !== value.slice(0, 10))
+      return "deployed_at must be a valid calendar date";
+    if (timestamp > Date.now() + 5 * 60 * 1000)
+      return "deployed_at must not be more than five minutes in the future";
+  }
+  return undefined;
+}
 
 /** The refusal of the first rule a result call breaks, or undefined when it keeps them. The two
  *  shapes are one command because a retraction answers for one recorded result: the reader of
- *  `dispatch results` sees the result and its retraction together. */
+ *  `dispatch results` sees the result and its retraction together. A CI job's record is the
+ *  third shape, named by project. */
 function resultProblem(value: unknown): string | undefined {
   const input = value as Record<string, unknown> & {
     readonly retract?: unknown;
     readonly reason?: unknown;
   };
+  if (input["project"] !== undefined) {
+    const others = RESULT_NOT_PROJECT_FIELDS.filter((field) => input[field] !== undefined);
+    if (others.length > 0) {
+      return `${RESULT_PROJECT_RULE} This call also carries ${others.join(", ")}.`;
+    }
+    const missing = RESULT_PROJECT_REQUIRED.filter((field) => input[field] === undefined);
+    if (missing.length > 0) {
+      return `a CI job's result needs ${missing.join(", ")}. ${RESULT_PROJECT_RULE}`;
+    }
+    return undefined;
+  }
+  if (input["verdict"] === "could_not_run") {
+    return "verdict could_not_run goes with project alone: a role's result of a check of a Verification document is pass or fail.";
+  }
   const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
   if (typeof input.retract === "string") {
     const reason = input.reason;
@@ -1015,6 +1116,35 @@ function resultProblem(value: unknown): string | undefined {
     return `recording a result needs ${missing.join(", ")}. ${RESULT_RETRACT_RULE}`;
   }
   return undefined;
+}
+
+/** The first rule of the two forms of `dispatch_results`: one owner. */
+const RESULTS_OWNER_RULE =
+  "Exactly one of issue and project is required. With issue, the read prints the checks of the " +
+  "issue's Verification document. With project, it prints the results that CI jobs stored for " +
+  "checks of the spec files at commit.";
+
+/** The refusal of the first rule a `dispatch_results` call breaks, or undefined when it keeps
+ *  them: one owner, and each form's own arguments alone. */
+function resultsProblem(value: unknown): string | undefined {
+  const input = value as Record<string, unknown>;
+  if ((input["issue"] === undefined) === (input["project"] === undefined)) {
+    return RESULTS_OWNER_RULE;
+  }
+  if (input["project"] !== undefined) {
+    const issueOnly = ["at", "brief"].filter((field) => input[field] !== undefined);
+    if (issueOnly.length > 0) {
+      return `With project, the read takes commit, check and json alone, and this call also carries ${issueOnly.join(", ")}.`;
+    }
+    if (input["commit"] === undefined) {
+      return "With project, the read needs commit, the 40-character lowercase hex commit whose results it prints.";
+    }
+    return undefined;
+  }
+  const projectOnly = ["commit", "check", "json"].filter((field) => input[field] !== undefined);
+  return projectOnly.length === 0
+    ? undefined
+    : `With issue, the read takes at and brief alone, and this call also carries ${projectOnly.join(", ")}.`;
 }
 
 /**
@@ -1269,7 +1399,9 @@ export const dispatchToolSpecs = [
         .optional(),
       priority: z
         .number({ int: true, min: 0, max: 3 })
-        .describe("Optional coarse priority, a number from 0 to 3: 0 is highest and 3 is lowest.")
+        .describe(
+          "Optional coarse priority from 0 (P0, highest) to 3 (P3, lowest). Setting 0 needs the p0 scope."
+        )
         .optional(),
       assignee: z
         .string()
@@ -1399,7 +1531,9 @@ export const dispatchToolSpecs = [
         .number({ int: true, min: 0, max: 3 })
         .nullable()
         .optional()
-        .describe("Coarse priority: 0 is P0 (highest) through 3 is P3 (lowest); null clears it."),
+        .describe(
+          "Coarse priority from 0 (P0, highest) to 3 (P3, lowest), or null to clear it. Setting 0 needs the p0 scope, unless the issue's own priority is 0 already."
+        ),
       assignee: z
         .string()
         .nullable()
@@ -1534,7 +1668,9 @@ export const dispatchToolSpecs = [
     description:
       `${ASK_IS_FOR_A_PERSON} ${ASK_WAITS_ON_THE_ASSIGNEE} ` +
       "Open a to-do or permission only a human can give, or a decision that has no document to " +
-      "live in. A question about the design an issue's document records is not this tool: write " +
+      "live in. Ask for a decision only when two or more choices are real. Where only one is " +
+      "real, make it, and tell the person what you did and why. A question about the design an " +
+      "issue's document records is not this tool: write " +
       "it into that document as a decision block (dispatch doc-edit inserting an ask block at the " +
       "end of the section it concerns), at every phase, approved spec or not; the block reaches " +
       "the Inbox and its answer lands next to its context. Never give an ask an Approve option: a " +
@@ -1544,11 +1680,13 @@ export const dispatchToolSpecs = [
       ASK_QUESTION_CONTRACT +
       " " +
       ASK_OPTIONS_CONTRACT +
-      " For an action only a human can perform, state what it changes and risks as constraints. " +
+      " For an action only a human can perform, state what it changes and risks as constraints, " +
+      "and a safer alternative as a fact, never as an option. " +
       "Anything that requires a human to do, including a credential or grant renewal, is an ask, " +
       "never a message. Measure what you can first, and put the measurement and the size of the " +
       "population it covers in the question; drop an option that cannot fix most of that " +
-      "population, never offer it cut down, and keep an option not to act (Hold). Set urgency high " +
+      "population, and never offer it cut down. Offer an option not to act (Hold) only where not " +
+      "acting is a real choice and the question names its cost. Set urgency high " +
       "when your work halts on the answer, and keep working on everything else. " +
       "Anchor a to-do about a document passage, thread reply_to/reply_to_ask, or cite a dispatch:// " +
       `reference — it must be answerable from its own text and anchor alone, never "see above". ` +
@@ -2379,13 +2517,47 @@ export const dispatchToolSpecs = [
       "session that recorded the result, a session that holds the Dispatch claim of the issue " +
       "the result was recorded on, and a caller whose credential carries a person. Every other " +
       "caller is 403 RETRACTION_FORBIDDEN. A result retracted already is 409 RESULT_RETRACTED. " +
+      "With project, a CI job records its own result of one check of the spec files " +
+      "(.dispatch/spec) at the commit it tested. The job runs the command under agent-secrets " +
+      "result-grant, which gives it the secrets broker's proxy placeholder of its run as " +
+      "DISPATCH_RESULTS_TOKEN; the command presents that placeholder alone and trades nothing, " +
+      "and the airlock proxy puts the run's results token in its place. Dispatch refuses this form " +
+      "from every other credential. The call sends commit, check, verdict and " +
+      "observed. Dispatch takes the job, the procedure and the recorder from the token, from " +
+      "GitHub and from the spec files at the commit. The recorder is the run, and no person. " +
+      "Spec files that the graph logic refuses hold no check: 409 SPEC_FILES_REFUSED names the " +
+      `first problem. A result keeps ${SPEC_CHECK_OBSERVED_MAX} characters of observed. The ` +
+      "command sends a longer text as its start and its end, with a line between them that says " +
+      "the middle was cut, and it sends a NUL as U+FFFD. verdict could_not_run is a test that did " +
+      "not finish. The command prints the stored result as JSON, an in-toto statement of the " +
+      "run. A write that reached Dispatch with no answer that says whether it stored the result " +
+      'prints {"write_outcome_unknown":"<code>"} and exits 1: the result may be stored, and a ' +
+      "second run is safe, because Dispatch keeps each result. A tunnel the airlock proxy refuses " +
+      "prints AIRLOCK_TUNNEL_REFUSED with its status, and an answer the proxy gives itself before " +
+      "the write left it (Cipher-Proxy-Forwarded: false) prints its code and its words; each " +
+      "says nothing reached Dispatch and exits 1, and a 5xx of either is asked again. An answer the " +
+      "proxy gives itself after the write may have left it (Cipher-Proxy-Forwarded: unknown) is " +
+      "asked again under the same key and, if no answer settles it, prints " +
+      '{"write_outcome_unknown":"<code>"} and exits 1. A call that Dispatch\'s check of the ' +
+      "run's token (429 " +
+      "BROKER_TOKEN_RATE_LIMITED, 503 BROKER_UNAVAILABLE) turns away before anything " +
+      "is stored is asked again after the answer's Retry-After, or a second. The whole call has " +
+      "one bound, 60 s from its start, which every write runs under, and no round starts in its " +
+      "last 7 s; a call turned away until then ends with the last answer, its code named, and " +
+      "exits 1. It reads DISPATCH_URL and DISPATCH_RESULTS_TOKEN, and no broker variable. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
+      project: z
+        .string()
+        .describe(
+          "A project key such as ACME. With project, the call records a CI job's result of a check of the spec files."
+        )
+        .optional(),
       check: z
         .string()
         .describe(
-          "The check block's id, or its canonical reference dispatch://KEY/artifact/verification-md#b-<id> when the id is not unique among the issue's Verification document and those of the issues above it."
+          "The check block's id, or its canonical reference dispatch://KEY/artifact/verification-md#b-<id> when the id is not unique among the issue's Verification document and those of the issues above it. With project, the check's id as the spec files hold it."
         )
         .optional(),
       role: z
@@ -2394,7 +2566,12 @@ export const dispatchToolSpecs = [
           "Who ran it: implementer, tester, reviewer. At most 32 characters of a-z and -, printed in the pull-request line."
         )
         .optional(),
-      verdict: z.enum(["pass", "fail"]).describe("Whether the check passed.").optional(),
+      verdict: z
+        .enum(["pass", "fail", "could_not_run"])
+        .describe(
+          "Whether the check passed. could_not_run goes with project alone: the test did not finish."
+        )
+        .optional(),
       commit: z
         .string()
         .describe("The 40-character lowercase hex commit the check ran at.")
@@ -2442,33 +2619,74 @@ export const dispatchToolSpecs = [
     },
   },
   {
+    name: "dispatch_deploy",
+    example: {
+      repo: "acme/widgets",
+      program: "worker",
+      commit: "1111111111111111111111111111111111111111",
+    },
+    description:
+      "Record a deployed program's build. Dispatch records the credential's writer; the body cannot choose one. A repeat of the current commit changes nothing, including its time. An older time at another commit is DEPLOY_NOT_NEWEST and names the current build. The repository must hold the commit. A project-scoped credential cannot write a deployment-wide fact. --dry-run checks the arguments and sends nothing; --json prints the complete wire answer.",
+    arguments: (z) => ({
+      repo: z.string().describe("The deployed repository, owner/repo."),
+      program: z
+        .string()
+        .describe("The deployed program, 1 to 64 lowercase letters, digits or hyphens."),
+      commit: z.string().describe("The deployed build, 40 lowercase hexadecimal characters."),
+      deployed_at: z
+        .string()
+        .describe(
+          "The deployment time in RFC3339. Omit it for the server's clock; a time over five minutes ahead is refused."
+        )
+        .optional(),
+      url: z.string().describe("The deployment's URL, if it has one.").optional(),
+      json: z.boolean().describe("Print the complete wire answer as JSON.").optional(),
+    }),
+    validation: {
+      check: (value) => deployProblem(value) === undefined,
+      message: "Name repo, program and commit.",
+      refusal: (value) => deployProblem(value) ?? "Name repo, program and commit.",
+    },
+  },
+  {
+    name: "dispatch_deploys",
+    example: { repo: "acme/widgets" },
+    description:
+      "Read the current deploy of each program in a repository, in program order, with its commit, deployment time, source and URL. --json prints the complete wire answer, including the writer and a known workflow attempt or null for an unknown attempt.",
+    arguments: (z) => ({
+      repo: z.string().describe("The deployed repository, owner/repo."),
+      json: z.boolean().describe("Print the complete wire answer as JSON.").optional(),
+    }),
+    validation: {
+      check: (value) => deployRepoProblem(value) === undefined,
+      message: "repo must be owner/repo",
+      refusal: (value) => deployRepoProblem(value) ?? "repo must be owner/repo",
+    },
+  },
+  {
     name: "dispatch_results",
     example: { issue: "DSP-1" },
     description:
       "Print each check of an issue's Verification document with every result recorded against " +
       "it, newest first. " +
       "Each check prints what Dispatch compared its results with. A before_merge check is " +
-      "compared with the head of each pull request Dispatch holds for the check's issue, open " +
-      "or merged. An after_merge check is compared with the branch that issue's pull request " +
-      "merged into and with the repository's default branch, and with the default branch alone " +
-      "where Dispatch holds no merge of the issue. A default_branch check is compared with the " +
-      "repository's default branch alone, whatever branch the pull request merged into. Where " +
-      "a check compared with nothing, it says which of three things happened: the issue has no " +
-      "pull request and no branch to compare with, Dispatch cannot read the repository, or a " +
-      "read Dispatch made did not answer. " +
-      "Each check then prints one line that answers the gate: whether a pass of it stands, and " +
-      "from which roles. A pass stands when its commit is one of the commits the check " +
-      "compared with, the check's words did not move after the result was recorded, and no " +
-      "retraction stands against it. " +
+      "compared with every open pull request head, or the final head of the last to merge when " +
+      "none is open. An after_merge result counts only at a commit that holds the work's merge " +
+      "on the compared branch. A default_branch check names the default branch alone. " +
+      "With no known merge, an after_merge check compares with nothing and says so. " +
+      "A read that failed is not known, never a pass or a fail. The newest branch result decides " +
+      "and names its id and commit. A pass and fail at that commit are not known until retraction. " +
+      "Production and graph checks count only results recorded for the current deploy of the " +
+      "program they read. The output names that deploy and says why an excluded result counts " +
+      "for nothing. The check's words must be unchanged and the result unretracted. " +
       "The check's own words print once, under the check. Each result then prints its verdict, " +
       "its role, its whole 40-character commit, where that commit stands, whether the check's " +
       "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
       "A result nobody gave a reading says so. A retracted result prints as retracted, with " +
       "the reason and the caller that retracted it. A check with no result says so. " +
       `${CHECK_PROVED_BY_CI}: ` +
-      "no role records its result, and Dispatch reads it from GitHub at the head of the " +
-      "issue's open pull request of the highest number, else at the head of its merged one of " +
-      "the highest number. Its one result prints as `- <id> (before_merge): <verdict> at " +
+      "no role records its result. Dispatch reads GitHub at every open head, or the final head " +
+      "of the last pull request to merge when none is open. Its result prints as `- <id> (before_merge): <verdict> at " +
       "<commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's " +
       "words>`, then the `A pass stands:` line a recorded check prints, then `Pull request line:` " +
       "and the line to write into the pull-request body unchanged, then the reading: the " +
@@ -2484,13 +2702,36 @@ export const dispatchToolSpecs = [
       "A push that moves a pull request's head leaves a result at the commit before it, with " +
       "no write of anyone's: record the check again at the new head. A check CI proves is read " +
       "again at the new head by itself. " +
+      "With project and commit, the read prints each result that CI jobs stored for checks of " +
+      "the project's spec files at that commit, newest first in Dispatch's record order, one " +
+      "line each: its record number, the check, the verdict, the job, the leg of the matrix, " +
+      "the run and its attempt, and the commit. check limits the read to one check, and json " +
+      "prints the stored results as JSON. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
-      issue: z.string().describe(ISSUE_REFERENCE),
+      issue: z.string().describe(ISSUE_REFERENCE).optional(),
+      project: z
+        .string()
+        .describe(
+          "A project key such as ACME. With commit, the read prints the results that CI jobs stored for checks of the project's spec files."
+        )
+        .optional(),
+      commit: z
+        .string()
+        .describe(
+          "With project: the 40-character lowercase hex commit whose results the read prints."
+        )
+        .optional(),
+      check: z
+        .string()
+        .describe(
+          "With project: the id of one check of the spec files, whose results alone the read prints."
+        )
+        .optional(),
       at: z
         .string()
         .describe(
-          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at the issue's newest pull request head as on every read, so that check's result stands at this commit only where it is that head."
+          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at each open pull request head, or with none open the final head of the newest merged one, as on every read, so that check's result stands at this commit only where it is the head it was read at."
         )
         .optional(),
       brief: z
@@ -2499,7 +2740,18 @@ export const dispatchToolSpecs = [
           "Cut each reading whose result stands at none of the compared commits to its first 200 characters. Every other reading prints whole."
         )
         .optional(),
+      json: z
+        .boolean()
+        .describe(
+          "Print the complete results wire answer as JSON; with project, the stored results, one in-toto statement each."
+        )
+        .optional(),
     }),
+    validation: {
+      check: (value) => resultsProblem(value) === undefined,
+      message: RESULTS_OWNER_RULE,
+      refusal: (value) => resultsProblem(value) ?? RESULTS_OWNER_RULE,
+    },
   },
   {
     name: "dispatch_artifact",
@@ -3079,22 +3331,29 @@ export const dispatchToolSpecs = [
     name: "dispatch_steps",
     example: { issue: "DSP-1" },
     description:
-      "Print each step that ran on an issue, as the Legion daemon recorded it at the step's " +
-      "start and at its end, and the experiment and the variant the issue was drawn into, where " +
-      "its records name one. The first line is `<KEY>: <n> steps in <m> tasks`. Where the " +
-      "records of the issue's newest run name an experiment, the next line is `Experiment " +
-      "<experiment>: variant <variant>.`, and an issue whose newest run's records name none " +
-      "prints no such line. Then each run of a step prints one line, task by task, in the order " +
-      "each task first ran: `<task> " +
+      "Print each task of an issue's plan and each step that ran on the issue, as the Legion " +
+      "daemon recorded it at the step's start and at its end, and the experiment and the " +
+      "variant the issue was drawn into, where its records name one. The first line is " +
+      "`<KEY>: <n> steps in <m> tasks`, where m counts each task listed, a task of the plan " +
+      "with no run included. Where the records of the issue's newest run name an experiment, " +
+      "the next line is `Experiment <experiment>: variant <variant>.`, and an issue whose " +
+      "newest run's records name none prints no such line. The tasks of the issue's newest " +
+      "plan come first, in the plan's order, then each other task with a run, in the order " +
+      "each first ran. A task of the plan prints `task <task> needs <needs>: <place> <step> " +
+      "<state>, ...`: needs is the tasks it needs as a list, [a,b], [] where it needs none, " +
+      "and - where its plan node recorded none, then each step the plan gives it, where state " +
+      "is where Dispatch says it stands among the records of the plan's own run: not started, " +
+      "running, or the result of its newest run there. Then each run of a step of the task " +
+      "prints one line: `<task> " +
       "<step> <kind> <role> <type> attempt <attempt> <agent> <model> <started_at> <ended_at> " +
       "<result>`. kind is step, retro or merge. step is the step's place in its task, from 1, " +
       "and 0 for a retro or a merge. attempt counts the runs of the same task, step and kind, " +
       "from 1. agent is the claim of the role that ran the step, and model is the model that " +
       "answered it, as provider/model. result is passed, failed or stopped. A field with no " +
       "value prints -, and a run that has not ended prints running for its end and its result. " +
-      "A closed issue's steps read too. An issue that no step ran on prints 0 steps in 0 tasks, " +
-      "and a key Dispatch does not hold fails as dispatch read fails for it, NOT_FOUND: not " +
-      `found. ${ISSUE_REFERENCE}`,
+      "A closed issue's steps read too. An issue that no step ran on and that has no plan prints " +
+      "0 steps in 0 tasks, and a key Dispatch does not hold fails as dispatch read fails for it, " +
+      `NOT_FOUND: not found. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
     }),

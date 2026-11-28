@@ -53,6 +53,7 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 // their restarts: a second process's tick inside the hour the first one swept finds the hour served
 // and compacts nothing, however due a document is, and the duty record holds the first pass's hour.
 func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)

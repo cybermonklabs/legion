@@ -5,7 +5,7 @@
 // draw and what today's model holds are recorded in `issue-layout-seed.ts`'s doc comment.
 
 import type { Actor } from "../web/src/api/types";
-import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
+import { checkStanding } from "../web/src/features/issue-page/statement-rules";
 import { setInterests, setLiveSessions } from "./agents";
 import {
   answerAsk,
@@ -101,7 +101,7 @@ function wantedState(state: SeededCheckState, repositoryInstalled: boolean): str
 
 /** Waits until every check of the issue reads the state its seeding implies, so a fixture that
  *  came out in four states fails here and not inside the test that reads the fifth. The state is
- *  read with the page's own rule (`checkStanding` in `web/src/features/issue-page/tree-drafts.ts`), so
+ *  read with the page's own rule (`checkStanding` in `web/src/features/issue-page/statement-rules.ts`), so
  *  the seed waits for what the page draws and never for a copy of that rule that has fallen
  *  behind it. With `only`, it waits for the checks seeded in that one state alone. */
 export async function awaitSeededCheckStates(
@@ -156,8 +156,8 @@ async function seedProjectSurroundings(issueKey: string, repository: string): Pr
       // branch heads: while this repository is installed a result recorded at it reads `older`
       // (`wantedState`), and once the App is installed on nothing, as `seedWholeIssue` leaves it,
       // it reads `unmarked`, drawn `Cannot tell`. A commit the repository holds nowhere at all is
-      // refused `400 RESULT_COMMIT_UNKNOWN`, so it is named here. The `after_merge` checks compare
-      // with the default branch, which holds the pull request's head.
+      // refused `400 RESULT_COMMIT_UNKNOWN`, so it is named here. The merged pull request makes
+      // HEAD_SHA both the final head for before-merge checks and the merge after-merge checks hold.
       branch_commits: { main: [HEAD_SHA] },
       commit_pulls: { [HEAD_SHA]: [PULL_NUMBER] },
       commits: [STRAY_SHA],
@@ -165,7 +165,14 @@ async function seedProjectSurroundings(issueKey: string, repository: string): Pr
       installation_id: 312,
       pull_requests: "read",
       pulls: {
-        [PULL_NUMBER]: { head_sha: HEAD_SHA, state: "open", title: `${issueKey} the redesign` },
+        [PULL_NUMBER]: {
+          head_sha: HEAD_SHA,
+          state: "closed",
+          merged: true,
+          merge_commit_sha: HEAD_SHA,
+          merged_at: new Date().toISOString(),
+          title: `${issueKey} the redesign`,
+        },
       },
     },
   });

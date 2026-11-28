@@ -4,6 +4,7 @@ import {
   LegionGateRegisterRequest,
   type LegionGrant,
   type LegionIssue,
+  LegionP0BoundNumber,
   type LegionPhase,
   LegionPlanRegisterRequest,
   type LegionState,
@@ -31,7 +32,6 @@ import {
   legionToolDescription,
   mintClaimGrant,
   PHASE_OP_SENTENCES,
-  phaseInputAfter,
   phaseOpParameters,
   pluginBuildOf,
   readBuild,
@@ -126,6 +126,8 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     ...AGENT_ACTIONS,
     "pause",
     "resume",
+    "set_p0_bound",
+    "clear_p0_bound",
     "replay_give_up",
     "discard_give_up",
   ],
@@ -151,6 +153,8 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ...Object.fromEntries(AGENT_ACTIONS.map((operation) => [operation, AGENT_FIELDS])),
   pause: ["reason"],
   resume: [],
+  set_p0_bound: ["bound", "unbounded", "reason"],
+  clear_p0_bound: ["reason"],
   replay_give_up: ["giveUp", "consumer", "throughSeq"],
   discard_give_up: ["giveUp", "consumer", "throughSeq", "reason"],
 };
@@ -251,6 +255,26 @@ function pauseSummary(state: LegionState): string | undefined {
 }
 
 /**
+ * The summary's `p0` line (C3 and C4 of dispatch://INFRA-5636): how many of the issues holding a
+ * slot admission treats as P0 (Dispatch's resolved P0, or own P0 with an older Dispatch release),
+ * which hold it outside the cap, the P0 bound in force (`none` for no bound), and the live value
+ * that stands with who set it, when and why. The daemon writes `p0Holders` and `p0Bound` together,
+ * and a body served below the P0 start's contract entry carries neither (`withoutP0Start`), so the
+ * summary has the line only for a body that carries both.
+ */
+function p0Summary({ admission }: LegionState): string | undefined {
+  if (admission?.p0Holders === undefined || admission.p0Bound === undefined) return undefined;
+  const p0Bound = admission.p0Bound;
+  let line = `p0 holders ${admission.p0Holders} bound ${p0Bound.bound ?? "none"}`;
+  const live = p0Bound.live;
+  if (live !== undefined) {
+    const by = pauseActorWords(live.setBy.kind === "controller" ? live.setBy.session : undefined);
+    line += ` set ${live.bound ?? "none"} by ${by} at ${live.setAt}: ${live.reason}`;
+  }
+  return line;
+}
+
+/**
  * The summary's line on the wakes the daemon's pacing holds until their turn
  * (`wakesWaiting`): how many, and after `next` the earliest moment any of them is due, which is
  * when the pacing lets the next one out. The state lists them in claim order, so the earliest is
@@ -301,7 +325,9 @@ const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
   "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
-  "admission cap; active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
+  "admission cap; p0 holders <count> [bound <n|none> [set <n|none> by <who> at <time>: <reason>]], " +
+  "the P0 issues holding a slot outside the cap and the P0 bound in force, with the value set " +
+  "while the daemon runs that stands; active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
   "live tree and held <issue> <reason> [by <issue>...] one per issue the workflow holds that is " +
   "neither active nor waiting; wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
@@ -346,8 +372,10 @@ function stateSummary(state: LegionState): string {
   const pause = pauseSummary(state);
   if (pause !== undefined) lines.push(pause);
   if (admission !== undefined) {
+    lines.push(`admission cap ${admission.cap}`);
+    const p0 = p0Summary(state);
+    if (p0 !== undefined) lines.push(p0);
     lines.push(
-      `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`,
       `active ${admission.active?.join(" ") || "(none)"}`,
       `waiting ${admission.waiting?.join(" ") || "(none)"}`
     );
@@ -410,8 +438,7 @@ function stateSummary(state: LegionState): string {
     lines.push(`${key} ${issue.phase} ${issue.status}`);
     if (issue.phase === "done" || issue.phase === "unrecorded") continue;
     if (issue.slot !== undefined) {
-      const lent = issue.slot.lentTo === undefined ? "" : ` lent ${issue.slot.lentTo}`;
-      lines.push(`  slot ${issue.slot.index} since ${issue.slot.admittedAt}${lent}`);
+      lines.push(`  slot ${issue.slot.index} since ${issue.slot.admittedAt}`);
     }
     if (issue.holdReason !== undefined) lines.push(`  hold ${issue.holdReason}`);
     if (issue.designGate !== undefined) {
@@ -561,7 +588,7 @@ function toolSchema(pi: PiApi): unknown {
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, register_gate's reason for its basis, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -596,6 +623,18 @@ function toolSchema(pi: PiApi): unknown {
       .number()
       .describe(
         "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups"
+      )
+      .optional(),
+    bound: z
+      .number()
+      .describe(
+        "set_p0_bound's bound: how many P0 issues may hold an admission slot at once outside the cap, a whole number from 1 to 2147483647. Name it or unbounded, never both"
+      )
+      .optional(),
+    unbounded: z
+      .boolean()
+      .describe(
+        "set_p0_bound's no bound: true sets no P0 bound, whatever legion.yaml's admission_p0_bound says. Name it or bound, never both"
       )
       .optional(),
   });
@@ -791,10 +830,9 @@ export function createLegionTool(deps: {
   readonly session: (context: SessionContext) => LegionToolSession;
   /** Mints the controller's grant, authenticated by its registration's secret. */
   readonly controllerGrant: (sessionId: string) => Promise<LegionGrant>;
-  /** Told of each successful step completion or backward move, never a look's report. */
-  readonly onPhaseCompleted: (context: SessionContext) => void;
+
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
-   * update message on its pod, and its phase stays open. */
+   * update message on its pod, and the turn it answered in is to be continued by no reminder. */
   readonly onUpdateAnswered: (context: SessionContext) => void;
   /** What a completion by `role` reports beside its summary while the issue stands at `phase`
    * (`findHandoffReport`): for a file-backed phase the role works or, once the issue has moved
@@ -824,7 +862,6 @@ export function createLegionTool(deps: {
     daemon,
     session,
     controllerGrant,
-    onPhaseCompleted,
     onUpdateAnswered,
     handoffReport,
     branchHead,
@@ -870,9 +907,14 @@ export function createLegionTool(deps: {
         "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner`, with `implementer` " +
         "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
-        "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
-        "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
-        "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
+        "work starts: a root's before its design gate opens, a child's before release_children releases it. A later version that changes only " +
+        "the text of a running task is taken: the task goes on at its step, and every later start of it reads the new text. The answer is the " +
+        "plan Legion took, each task with its steps. A task that runs carries `running`, a list of one entry: the act it stands at " +
+        "now, with its place and the role whose agent works it. That agent reads no new start, so send it a message for a decision " +
+        "that is for it now. Legion records nothing when it refuses a " +
+        "plan it does not carry out, with a reason for each cause, the first reasons of each kind and one more that counts the rest of " +
+        "that kind (PLAN_REFUSED, which also refuses a version that removes a running task " +
+        "or changes more of it than its text: stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version below the plan in force (PLAN_VERSION_OLD; the plan in force given " +
         "again is answered as taken, and adds you to its givers), another document than the plan " +
@@ -881,8 +923,9 @@ export function createLegionTool(deps: {
         "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), a plan given for a run of the issue " +
         "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION), and every plan of a recorded issue whose tree " +
         "lingers after it left the workflow, the plan in force among them (TREE_LINGERING). " +
-        "Legion takes no plan for a recorded issue whose experiment's group runs the project's default steps (PLAN_NOT_TAKEN, naming " +
-        "the group): it records nothing, and the same plan given again gets the same answer. " +
+        "An issue whose experiment's group runs the project's default steps takes only a version that changes just the text of its " +
+        "running task default. Legion refuses every other plan of it (PLAN_NOT_TAKEN, naming the group): it records nothing, and " +
+        "the same plan given again gets the same answer. " +
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
         "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
@@ -890,8 +933,8 @@ export function createLegionTool(deps: {
         "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
         "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
         "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop in a tree that lingers after it left the " +
-        "workflow (TREE_LINGERING), every task of an issue whose experiment's group runs the project's default steps, since Legion " +
-        "takes no plan from its owner (PLAN_NOT_TAKEN), a stop of a root that waits on a person before its first step " +
+        "workflow (TREE_LINGERING), every task of an issue whose experiment's group runs the project's default steps, since its owner " +
+        "stops none of its tasks (PLAN_NOT_TAKEN), a stop of a root that waits on a person before its first step " +
         "(TASK_AWAITING_PERSON: change its task with a later version of the plan, or stop it once the person has answered) and a stop " +
         "of a parent in awaiting_children (WAITING_ON_CHILDREN, naming its open Dispatch children: act on the children). It also " +
         "refuses, changing nothing, a stop of an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run " +
@@ -987,10 +1030,18 @@ export function createLegionTool(deps: {
         "fresh_session (issue, role) starts one agent again in a new session, leaving behind the session it ran in: the daemon " +
         "stops the agent if it runs, forgets the session, and starts the agent, which loses everything that session held. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
-        "The answer is empty when the agent came back and nothing else is to be said. phaseNotRestarted says why nothing " +
+        "The answer is empty when the agent came back and its start is under way or queued: the daemon answers once it has " +
+        "written the agent's claim launching, or once it has queued the start of the agent's phase, which runs at once while " +
+        "the issue holds its admission slot, and read_state shows how the start ended, running or failed with the start's failure. " +
+        "phaseNotRestarted says why nothing " +
         "restarted the agent's phase, where the agent came back owing no task and the workflow refused that restart: the " +
-        "agent is running, and no work was handed to it. It says what was refused, where this request stopped the agent " +
-        "and a step that would have started it again was refused, and the state its claim stands in after that: read that state " +
+        "agent is running, and no work was handed to it. It names a start that waits for an admission slot, where the issue " +
+        "holds none while its phase keeps one, and the issues the issue waits on: a suspended agent runs again at once and " +
+        "only its phase's task waits, and a failed or retired agent's claim stays failed or retired, with its session " +
+        "forgotten, until the slot comes; ask for nothing more of it. It names a start refused after the session was " +
+        "forgotten, which leaves the agent's claim failed, retired or suspended with no session. It says what was refused, " +
+        "where this request stopped the agent and a step that would have started it again was refused, and the state its " +
+        "claim stands in after that: read that state " +
         "in read_state, and ask for a fresh session again only where the claim is suspended. " +
         "It reaches an agent whose claim is stored working and that no process stands behind: the daemon reads that agent's " +
         "process when the request arrives, suspends the agent where it stands, and starts it again with the task its dead turn held. " +
@@ -1007,7 +1058,9 @@ export function createLegionTool(deps: {
         "whose suspension outranks yours, landed or waiting for a turn to end: the operator's, which only the operator " +
         "lifts (SUSPENDED_BY_OPERATOR). A suspension that outranks yours and takes the agent over while the request " +
         "runs ends it with the same code, after your own suspension of the agent ran: the agent keeps the session its " +
-        "claim recorded. " +
+        "claim recorded. The one exception is a fresh_session of an agent that was suspended before it, whose session " +
+        "was already left behind when that suspension refused its resume: the answer is a success with the refusal, " +
+        "naming the operator's command, in phaseNotRestarted. " +
         "compact (issue, role) shortens one agent's session instead: the daemon has Oh My Pi write a text summary of the " +
         "session so far, and the agent keeps its session, its workspace and everything it knows of its issue and is sent " +
         "whatever task it owes again. Try compact first for an agent whose session a provider keeps refusing, and " +
@@ -1037,19 +1090,24 @@ export function createLegionTool(deps: {
         "it instead. " +
         "retry starts an agent that failed, or that a stop retired, again in the session its claim recorded, with " +
         "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
-        "phase's work, and the answer can show it failed or retired until that start runs. The daemon refuses " +
+        "phase's work, and the answer can show it failed or retired until that start runs. Where that start waits " +
+        "for an admission slot its issue does not hold, the answer's phaseNotRestarted says so, naming the issues " +
+        "its issue waits on, and the agent stays failed or retired until the slot comes. The daemon refuses " +
         "retry for an agent whose claim is stored working (CLAIM_IN_A_TURN) and for a suspended agent: resume_agent that agent instead, unless the operator suspended it. " +
         "suspend stops the agent and keeps its session and the task it owes. An agent in a turn " +
         "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
         "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the agent " +
         "again until your resume_agent or the operator's legion claims resume. " +
-        "resume_agent starts a suspended agent again in the session its claim recorded, and sends it the task it owes. " +
+        "resume_agent starts a suspended agent again in the session its claim recorded, and sends it the task it owes; " +
+        "it answers once that start is under way, with the claim launching, and read_state shows how the start ended. " +
         "The daemon refuses resume_agent for an agent whose claim is stored working (CLAIM_IN_A_TURN). " +
         "The daemon refuses resume_agent, suspend, stop, retry and fresh_session for an agent the operator suspended, or whose " +
         "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of its " +
         "claim's state, and the request leaves the agent as it was, but where fresh_session's own suspension of the " +
         "agent ran first, or where fresh_session left behind the session its claim recorded, so the agent starts in a " +
         "new session once it is started: only the operator lifts the operator's suspension, so ask the operator. " +
+        "Where fresh_session had left that session behind before the operator's suspension refused its resume, the answer " +
+        "is a success, not SUSPENDED_BY_OPERATOR, with that refusal in phaseNotRestarted. " +
         "The controller's compact is not refused the operator's suspension, and refuses such an agent " +
         "in its own codes. The four " +
         "refuse role controller as fresh_session and compact do. " +
@@ -1071,6 +1129,15 @@ export function createLegionTool(deps: {
         "resume brings back a role the pause stopped. stop and suspend still run while the project is paused. An agent a " +
         "suspension holds when the project is resumed stays suspended until a resume_agent that may lift that " +
         "suspension, or the operator's legion claims resume, lifts it. " +
+        "A P0 issue, one Dispatch resolves to P0 (its own priority, else the nearest issue's above it), starts outside the admission cap; set_p0_bound (bound or " +
+        "unbounded, reason) sets how many P0 issues may hold a slot at once, or no bound with unbounded true, whatever " +
+        "legion.yaml's admission_p0_bound says, and clear_p0_bound (reason) returns to legion.yaml's; neither takes an " +
+        "issue. Change the bound only on a person's word, and cite it in reason. " +
+        "Each is in force from the change's own admission pass on, with no restart: a lower bound stops nothing that " +
+        "runs, and at the bound a P0 issue waits first in the line. The answer is the bound in force, legion.yaml's and the " +
+        "value set that stands; read_state's summary gives the same on its p0 holders line. The daemon refuses a set that " +
+        "names neither bound nor unbounded, both, or a bound below 1 or above 2147483647 (INVALID_P0_BOUND), and a change with no reason " +
+        "(P0_BOUND_REASON_REQUIRED). " +
         "replay_give_up applies again give-ups, the messages the daemon's intake gave up on because their handling kept " +
         "failing or they did not decode, which the daemon keeps whole. The daemon runs each one through the handling a " +
         "live delivery takes and publishes nothing to the stream, so replay once the fix for a record's last error runs in " +
@@ -1118,18 +1185,10 @@ export function createLegionTool(deps: {
             { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
             parameters
           );
-          // A successful phase completion or backward move closes phase input. A report with
-          // check_opened_at leaves it open for this session's phase work.
-          // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
-          // then waits for its process to be replaced rather than working, so the turn it ends
-          // after answering earns no reminder (the `update-answered` input of
-          // `@legion/pi-shared/phase-stall`).
-          const effect = phaseInputAfter(operation, parameters);
-          if (effect === "phase-closed") {
-            onPhaseCompleted(context);
-          } else if (effect === "update-answered") {
-            onUpdateAnswered(context);
-          }
+          // `ready_for_update` answers the pod's update message, and the worker then waits for its
+          // process to be replaced rather than working, so the turn it ends after answering earns
+          // no reminder (the `update-answered` input of `@legion/pi-shared/phase-stall`).
+          if (operation === "ready_for_update") onUpdateAnswered(context);
           return jsonSuccess(answer);
         }
         assertOperationInput(parameters, operation);
@@ -1164,6 +1223,33 @@ export function createLegionTool(deps: {
           if (operation === "resume") {
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(await client.projectResume({ grantId }));
+          }
+          // The P0 bound's set and clear name no issue either, and are validated whole before the
+          // grant is minted; each answer is the daemon's own: the bound in force after the change.
+          if (operation === "set_p0_bound" || operation === "clear_p0_bound") {
+            const reason = requiredString(parameters, operation, "reason");
+            if (operation === "clear_p0_bound") {
+              const { grantId } = await controllerGrant(active.sessionID);
+              return jsonSuccess(await client.p0BoundClear({ grantId, reason }));
+            }
+            const { bound, unbounded } = parameters;
+            if ((bound === undefined) === (unbounded !== true)) {
+              throw new Error(
+                "set_p0_bound requires bound, a whole number from 1 to 2147483647, or unbounded true, not both"
+              );
+            }
+            const checked = bound === undefined ? undefined : LegionP0BoundNumber.safeParse(bound);
+            if (checked !== undefined && !checked.success) {
+              throw new Error("set_p0_bound's bound is a whole number from 1 to 2147483647");
+            }
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(
+              await client.p0Bound(
+                checked === undefined
+                  ? { grantId, unbounded: true, reason }
+                  : { grantId, bound: checked.data, reason }
+              )
+            );
           }
           // The replay and the discard of the intake's give-ups name no issue either. Each is
           // validated whole, its selection and the discard's reason, before its grant is minted,

@@ -12,6 +12,7 @@ import {
   userHeaders,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { openIssueDetails } from "./issue-details";
 import { expect, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -99,6 +100,7 @@ test("a person sets a project's default repository in Settings, a new issue of t
       resolved_repo: "acme/gadgets",
     });
     await page.goto(`/issues/${inheriting.key}`);
+    await openIssueDetails(page);
     const repository = page.getByLabel(`Repository of ${inheriting.key}`, { exact: true });
     await expect(repository).toHaveValue("");
     await expect(repository).toHaveAttribute("placeholder", "acme/widgets");

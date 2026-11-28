@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // The inputs of TestSessionTitlesBootScale, which only scripts/session-titles-scale.sh sets:
@@ -119,6 +121,9 @@ func runSessionTitlesBootScale(t *testing.T, admin url.URL, newest, floor, load 
 	name := "dispatch_titles_scale_" + randomDatabaseSuffix(t)
 	adminExec(t, admin, "create database "+name+" strategy file_copy")
 	t.Cleanup(func() { adminExec(t, admin, "drop database if exists "+name+" with (force)") })
+	// JIT off, as on production's Cloud SQL, so the boot this measures runs its statements as
+	// production's does (testdb.WithoutJIT; docs/testing.md, "A database a Go test creates").
+	adminExec(t, admin, testdb.WithoutJIT(name))
 	database, err := Open(ctx, databaseOn(admin, name))
 	if err != nil {
 		t.Fatalf("open %s: %v", name, err)
@@ -128,7 +133,7 @@ func runSessionTitlesBootScale(t *testing.T, admin url.URL, newest, floor, load 
 	// 1. Every shipped migration but the four, in version order, as the runner applies them.
 	started := time.Now()
 	migrations := shippedMigrations(t)
-	if err := database.prepareVersionTable(ctx, migrations); err != nil {
+	if _, err := database.prepareVersionTable(ctx, migrations); err != nil {
 		t.Fatalf("prepare the version table: %v", err)
 	}
 	left := 0

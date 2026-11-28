@@ -40,6 +40,7 @@
 
 import { generateKeyPairSync, type KeyObject, randomUUID } from "node:crypto";
 import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
+import { outage } from "@legion/contracts/http-status";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { CompactSign, calculateJwkThumbprint } from "jose";
@@ -90,7 +91,7 @@ import {
 import { type DpopKey, dpopKeyOf } from "./dpop";
 import { messageOf } from "./error-text";
 import { LOOPBACK_HOST } from "./loopback";
-import { endsGrant, outage, refusalCode } from "./oauth-refusal";
+import { endsGrant, refusalCode } from "./oauth-refusal";
 import type { SubjectToken, TokenSource } from "./source";
 import { sleep, TRADE_ATTEMPT_MS } from "./token-client";
 import {
