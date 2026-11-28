@@ -33,6 +33,14 @@ const (
 	xidAnchoredAsks     = 8
 )
 
+// xidFixtureSettlesNothing is the settle delay of a fixture that settles nothing during its test,
+// newXidFixture's default: a delay past every -timeout this package runs under, so no settlement
+// of the seeding runs during a test. An hour is not past them: the race-api legs run the package
+// under -timeout 70m, where a settlement armed an hour out in the binary's first 9.5 minutes fires
+// before the binary's deadline, and docs.Service.IdleForTest, which counts a settlement armed to
+// fire before that deadline as work, would hold the quiet wait until it fired.
+const xidFixtureSettlesNothing = 24 * time.Hour
+
 // xidSpec is the fixture spec, storetest.XidSpec on the fixture's project: about 40 KB of tables
 // and prose as the harness's large specs, and its requirement cells.
 func xidSpec(seed uint64) (string, []string) { return storetest.XidSpec(xidProject, seed) }
@@ -69,10 +77,10 @@ type xidFixture struct {
 // clone and with the row's options: its tracer, its document store, its listener.
 //
 // Each write arms its document's settlement and loads no room of it (docs.Service's
-// publishLiveWrite). Under the hour's settle the settlement the seed's last write armed stays
-// armed through the test, and no room of the spec is resident. Under twenty milliseconds' it
-// runs, and loads the spec's room as it settles, which the requests after it meet resident; each
-// caller of such a fixture waits for it before it measures (newBlockAskFixture's
+// publishLiveWrite). Under xidFixtureSettlesNothing, the default, the settlement the seed's last
+// write armed stays armed through the test, and no room of the spec is resident. Under twenty
+// milliseconds' it runs, and loads the spec's room as it settles, which the requests after it meet
+// resident; each caller of such a fixture waits for it before it measures (newBlockAskFixture's
 // awaitSettledDocuments, runXidSteps with settled). The clone's server has made no write, so once
 // its own boot's work has ended (awaitQuietDatabase), the fixture arms the spec's settlement on it
 // as that last write armed it on the seed's server (docs.Service.ScheduleSettlement), and the
@@ -88,7 +96,7 @@ func newXidFixture(t *testing.T, options testServerOptions, spec string) *xidFix
 	started := time.Now()
 	fixture := &xidFixture{tracer: storetest.NewXidTracer()}
 	if options.settle == 0 {
-		options.settle = time.Hour
+		options.settle = xidFixtureSettlesNothing
 	}
 	_, fixture.quotes = xidSpec(1)
 	if spec == "" {
@@ -116,12 +124,12 @@ func newXidFixture(t *testing.T, options testServerOptions, spec string) *xidFix
 // xidFixtureKey is the key of the template seedXidTemplate seeds for spec under seeding, the
 // options its writes read (storetest.Filled): a hash of the spec, which fixture C's transport ask
 // block changes; the settle delay, which decides whether the seed's settlements run (twenty
-// milliseconds) or stay owed (the hour); and the parent-status rule, under which the issue is
-// created. The other options a caller passes are its row's server's alone, which no write of the
-// seed reads: the tracer; persistence, the document store, which stores and loads as the default
-// store does until TestXidWindowDocumentRebuild makes it fail one load after the fixture is built
-// (invalidLoadOnceStore); and envoyURL, the listener, which none of the seed's writes calls, since
-// none mentions a session and the issue has no route.
+// milliseconds) or stay owed (xidFixtureSettlesNothing); and the parent-status rule, under which
+// the issue is created. The other options a caller passes are its row's server's alone, which no
+// write of the seed reads: the tracer; persistence, the document store, which stores and loads as
+// the default store does until TestXidWindowDocumentRebuild makes it fail one load after the
+// fixture is built (invalidLoadOnceStore); and envoyURL, the listener, which none of the seed's
+// writes calls, since none mentions a session and the issue has no route.
 func xidFixtureKey(spec string, seeding testServerOptions) string {
 	sum := sha256.Sum256([]byte(spec))
 	return fmt.Sprintf("api xid fixture: spec %x, settle %s, parent status rule %t", sum[:8], seeding.settle, seeding.parentStatusRule)
@@ -162,7 +170,7 @@ func xidSeedOf(t *testing.T, key string) xidSeed {
 // seed in xidSeeds. The server runs on seeding, the options its writes read, with no tracer. It
 // then waits for the work those writes left running (awaitQuietDatabase), each settlement too where
 // the fixture settles in twenty milliseconds, so the template holds the settled spec and the block
-// ask its settlement opens; under the hour's settle the spec's settlement stays owed, as on a
+// ask its settlement opens; under xidFixtureSettlesNothing the spec's settlement stays owed, as on a
 // server that seeded the fixture for its own test. The server stops before seedXidTemplate returns,
 // so no session of its holds the template once Fill has returned (newStoppableTestServer). Its
 // document service's Shutdown settles each document it holds that owes a settlement, so the seed
@@ -210,7 +218,7 @@ func seedXidTemplate(t *testing.T, key string, database *store.Store, seeding te
 			seed.spare = append(seed.spare, quotes[index])
 		}
 	}
-	awaitQuietDatabase(t, database, seeding.settle < time.Hour)
+	awaitQuietDatabase(t, database, seeding.settle < xidFixtureSettlesNothing)
 	owed := xidSettlementsOwed(t, database)
 	if err := deps.Docs.(*docs.Service).Evict(testwait.Context(t), seed.specID); err != nil {
 		t.Fatalf("XID RIG PROBLEM (not a finding about the code): let go of the seeded spec's room before the seed's server stops: %v", err)

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync"
@@ -48,7 +47,7 @@ func TestTheQuietWaitWaitsForEachBackgroundWriter(t *testing.T) {
 		{"a settlement owed", quietWaitSettlementOwed},
 		{"a settlement owed, not asked", quietWaitSettlementNotAsked},
 		{"a settlement armed, not asked", quietWaitSettlementArmed},
-		{"a settlement armed an hour out, not asked", quietWaitSettlementArmedPastTheDeadline},
+		{"a settlement armed past the deadline, not asked", quietWaitSettlementArmedPastTheDeadline},
 		{"another backend holding an xid", quietWaitOtherBackend},
 		{"a writer that starts after a first idle read", quietWaitLaterWriter},
 		{"the repair fixture's server", quietWaitRepairFixture},
@@ -68,15 +67,11 @@ func quietWaitNothingRunning(t *testing.T) {
 	testwait.Receive(t, "the server's boot mark", served.bootMark)
 	run := startQuietWait(t, database, true, nil)
 	run.returned(t)
-	for {
-		heard := testwait.Next(t, "the quiet wait's next read", &run.heard, func(heardRead) bool { return true })
-		if heard.returned {
-			return
+	run.eachRead(t, func(read quietRead) {
+		if read.busy != "" {
+			t.Errorf("a read of the quiet wait over a server that runs nothing found %q busy, want none", read.busy)
 		}
-		if heard.read.busy != "" {
-			t.Errorf("a read of the quiet wait over a server that runs nothing found %q busy, want none", heard.read.busy)
-		}
-	}
+	})
 }
 
 // quietWaitDetachedWork: work a server detached from its request (goDetached) is waited for until
@@ -88,7 +83,7 @@ func quietWaitDetachedWork(t *testing.T) {
 	run := startQuietWait(t, database, false, writer.committed)
 	run.hears(t, "the detached work busy", readBusy("detached work is running"))
 	run.stillWaiting(t, "the detached work")
-	writer.release()
+	writer.releaseOnce()
 	run.returned(t)
 }
 
@@ -105,7 +100,7 @@ func quietWaitKeyedRun(t *testing.T) {
 	run := startQuietWait(t, database, false, writer.committed)
 	run.hears(t, "the keyed run busy", readBusy("detached work is running"))
 	run.stillWaiting(t, "the keyed run")
-	writer.release()
+	writer.releaseOnce()
 	run.returned(t)
 }
 
@@ -155,29 +150,20 @@ func quietWaitReadWorker(t *testing.T) {
 }
 
 // quietWaitMentionSend: a comment that mentions a live session answers before its send, which the
-// mention sender makes after it; the listener holds the send's answer, and the wait waits until
-// the send is recorded sent.
+// mention sender makes after it; the listener (newBroadcastListener) holds the send's answer, and
+// the wait waits until the send is recorded sent.
 func quietWaitMentionSend(t *testing.T) {
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"]}]`
-	release, open := heldUntilReleased(t)
+	release, releaseOnce := heldUntilReleased(t)
 	sending := make(chan struct{})
 	var sendOnce sync.Once
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
-			writeSessionRecord(t, w, sessions, "s1")
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
-			_, _ = w.Write([]byte(sessions))
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+	listener, _ := newBroadcastListener(t, sessions, func(_ http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send" {
 			sendOnce.Do(func() { close(sending) })
 			<-release
-			_, _ = w.Write([]byte(`{"event_id":"quiet-envelope","recipient":"s1"}`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error":"not found"}`))
 		}
-	}))
-	t.Cleanup(listener.Close)
+		return false
+	})
 	// The server's clock is held, so no window of its own - the creation's lookup, the send's
 	// receipt - ends while the listener holds its answer.
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.Held()})
@@ -200,7 +186,7 @@ func quietWaitMentionSend(t *testing.T) {
 	})
 	run.hears(t, "the mention sender busy", readBusy("the mention sender holds a send"))
 	run.stillWaiting(t, "the mention's send")
-	open()
+	releaseOnce()
 	run.returned(t)
 }
 
@@ -210,11 +196,7 @@ func quietWaitMentionSend(t *testing.T) {
 // (ensureSearchTermStats).
 func quietWaitStatisticsRefresh(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
-	if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "QWS", "name": "Quiet wait statistics",
-	}, "alice"); created.Code != http.StatusCreated {
-		t.Fatalf("create the project: status=%d body=%s", created.Code, created.Body.String())
-	}
+	createTestProject(t, handler, "QWS")
 	writer := newHeldPerson(t, database, "statistics@quiet.example")
 	started := make(chan struct{})
 	served.termStats.DoChan("QWS", func() (any, error) {
@@ -226,7 +208,7 @@ func quietWaitStatisticsRefresh(t *testing.T) {
 	run := startQuietWait(t, database, false, writer.committed)
 	run.hears(t, "the join of the held refresh", readJoining("the refresh of project QWS's statistics"))
 	run.stillWaiting(t, "the refresh")
-	writer.release()
+	writer.releaseOnce()
 	run.returned(t)
 }
 
@@ -251,11 +233,11 @@ func quietWaitRoomUpdate(t *testing.T) {
 	registerQuietServer(t, database, served, documentService)
 	// The release runs first of the cleanups, before the server's wait and the service's
 	// shutdown, which a held append would hold.
-	open := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(open)
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseOnce)
 	issue := createInteractionIssue(t, handler, "QWR", "A held room update", "A spec.\n")
 	// The spec's own settlement runs first, so nothing but the browser's append stores its edit.
-	awaitSettlementRow(t, database, issue.PrimaryArtifactID, false)
+	awaitDocumentSettled(t, database, issue.PrimaryArtifactID)
 	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
 	peer.appendParagraph(t, "Typed while the room's append is held.")
 	testwait.Receive(t, "the room's append of the browser's edit to start", appends.started)
@@ -269,7 +251,7 @@ func quietWaitRoomUpdate(t *testing.T) {
 	})
 	run.hears(t, "the join of the document service's work", readJoining("its document service's work"))
 	run.stillWaiting(t, "the room's append")
-	open()
+	releaseOnce()
 	run.returned(t)
 }
 
@@ -278,7 +260,7 @@ func quietWaitRoomUpdate(t *testing.T) {
 // asked to wait for every settlement, waits until it commits.
 func quietWaitSettlementOwed(t *testing.T) {
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
-	release, open := heldUntilReleased(t)
+	release, releaseOnce := heldUntilReleased(t)
 	holding := make(chan string, 1)
 	var held atomic.Bool
 	deps.Docs.(*docs.Service).AfterSettleLockForTest(func(room string) {
@@ -290,10 +272,9 @@ func quietWaitSettlementOwed(t *testing.T) {
 	createInteractionIssue(t, handler, "QWT", "A held settlement", "A spec.\n")
 	room := testwait.Receive(t, "the spec's settlement to be held", holding)
 	run := startQuietWait(t, database, true, func() error {
-		var owed bool
-		if err := database.Pool.QueryRow(context.Background(),
-			`select exists (select 1 from doc_settlements_pending where artifact_id = $1)`, room).Scan(&owed); err != nil {
-			return fmt.Errorf("read the spec's pending settlement: %w", err)
+		owed, err := settlementOwed(database, room)
+		if err != nil {
+			return err
 		}
 		if owed {
 			return errors.New("the quiet wait returned while the spec still owed its settlement")
@@ -302,7 +283,7 @@ func quietWaitSettlementOwed(t *testing.T) {
 	})
 	run.hears(t, "the running settlement busy", readBusy("a settlement of document "+room+" is running"))
 	run.stillWaiting(t, "the settlement")
-	open()
+	releaseOnce()
 	run.returned(t)
 }
 
@@ -314,16 +295,15 @@ func quietWaitSettlementOwed(t *testing.T) {
 func quietWaitSettlementNotAsked(t *testing.T) {
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "QWN", "An owed settlement", "A spec.\n")
-	awaitSettlementRow(t, database, issue.PrimaryArtifactID, false)
+	awaitDocumentSettled(t, database, issue.PrimaryArtifactID)
 	if _, err := database.Pool.Exec(context.Background(),
 		`insert into doc_settlements_pending (artifact_id) values ($1)`, issue.PrimaryArtifactID); err != nil {
 		t.Fatalf("write the spec's pending settlement as another process's append does: %v", err)
 	}
 	run := startQuietWait(t, database, false, func() error {
-		var owed bool
-		if err := database.Pool.QueryRow(context.Background(),
-			`select exists (select 1 from doc_settlements_pending where artifact_id = $1)`, issue.PrimaryArtifactID).Scan(&owed); err != nil {
-			return fmt.Errorf("read the spec's pending settlement: %w", err)
+		owed, err := settlementOwed(database, issue.PrimaryArtifactID)
+		if err != nil {
+			return err
 		}
 		if !owed {
 			return errors.New("the spec's pending settlement is gone, want it still owed: nothing here settles it")
@@ -331,15 +311,11 @@ func quietWaitSettlementNotAsked(t *testing.T) {
 		return nil
 	})
 	run.returned(t)
-	for {
-		heard := testwait.Next(t, "the quiet wait's next read", &run.heard, func(heardRead) bool { return true })
-		if heard.returned {
-			return
+	run.eachRead(t, func(read quietRead) {
+		if strings.Contains(read.busy, "owes its settlement") {
+			t.Errorf("a read of the quiet wait not asked to wait for settlements found %q busy", read.busy)
 		}
-		if strings.Contains(heard.read.busy, "owes its settlement") {
-			t.Errorf("a read of the quiet wait not asked to wait for settlements found %q busy", heard.read.busy)
-		}
-	}
+	})
 }
 
 // quietWaitSettlementArmed: a settlement armed to run before the test's deadline is work the
@@ -352,10 +328,9 @@ func quietWaitSettlementArmed(t *testing.T) {
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{settle: time.Minute})
 	issue := createInteractionIssue(t, handler, "QWA", "An armed settlement", "A spec.\n")
 	run := startQuietWait(t, database, false, func() error {
-		var owed bool
-		if err := database.Pool.QueryRow(context.Background(),
-			`select exists (select 1 from doc_settlements_pending where artifact_id = $1)`, issue.PrimaryArtifactID).Scan(&owed); err != nil {
-			return fmt.Errorf("read the spec's pending settlement: %w", err)
+		owed, err := settlementOwed(database, issue.PrimaryArtifactID)
+		if err != nil {
+			return err
 		}
 		if owed {
 			return errors.New("the quiet wait returned before the spec's armed settlement had run")
@@ -370,39 +345,36 @@ func quietWaitSettlementArmed(t *testing.T) {
 	run.returned(t)
 }
 
-// quietWaitSettlementArmedPastTheDeadline: a settlement armed an hour out, as the fixtures that
-// settle nothing during their test arm theirs, fires after the test binary's deadline, so it is
-// no work a measurement meets: a wait not asked to wait for settlements returns with it still
-// armed and its document still owing it. Under -timeout 0, whose wait has no deadline, a
-// settlement of any delay counts as work (docs' settlesBeforeForTest), so the row has nothing to
-// show there and skips.
+// quietWaitSettlementArmedPastTheDeadline: a settlement armed to fire an hour after the wait gives
+// up (testwait.GiveUpAt: the binary's deadline less testwait's margin) fires after the binary's
+// deadline under any -timeout, as a settlement of the fixtures that settle nothing during their
+// test does (xidFixtureSettlesNothing), so it is no work a measurement meets: a wait not asked to
+// wait for settlements returns with it still armed and its document still owing it. Under
+// -timeout 0, whose wait has no deadline, a settlement of any delay counts as work (docs'
+// settlesBeforeForTest), so the row has nothing to show there and skips.
 func quietWaitSettlementArmedPastTheDeadline(t *testing.T) {
-	if _, bounded := testwait.Context(t).Deadline(); !bounded {
+	deadline, bounded := testwait.GiveUpAt(t)
+	if !bounded {
 		t.Skip("under -timeout 0 an armed settlement of any delay is work the quiet wait waits for")
 	}
-	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
-	issue := createInteractionIssue(t, handler, "QWH", "A settlement armed an hour out", "A spec.\n")
+	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{settle: time.Until(deadline) + time.Hour})
+	issue := createInteractionIssue(t, handler, "QWH", "A settlement armed past the deadline", "A spec.\n")
 	run := startQuietWait(t, database, false, func() error {
-		var owed bool
-		if err := database.Pool.QueryRow(context.Background(),
-			`select exists (select 1 from doc_settlements_pending where artifact_id = $1)`, issue.PrimaryArtifactID).Scan(&owed); err != nil {
-			return fmt.Errorf("read the spec's pending settlement: %w", err)
+		owed, err := settlementOwed(database, issue.PrimaryArtifactID)
+		if err != nil {
+			return err
 		}
 		if !owed {
-			return errors.New("the spec's pending settlement is gone, want it still owed: its settlement is armed an hour out")
+			return errors.New("the spec's pending settlement is gone, want it still owed: its settlement is armed past the deadline")
 		}
 		return nil
 	})
 	run.returned(t)
-	for {
-		heard := testwait.Next(t, "the quiet wait's next read", &run.heard, func(heardRead) bool { return true })
-		if heard.returned {
-			return
+	run.eachRead(t, func(read quietRead) {
+		if strings.Contains(read.busy, "is armed") {
+			t.Errorf("a read of the quiet wait found %q busy, want a settlement armed past the deadline left out", read.busy)
 		}
-		if strings.Contains(heard.read.busy, "is armed") {
-			t.Errorf("a read of the quiet wait found %q busy, want a settlement armed past the deadline left out", heard.read.busy)
-		}
-	}
+	})
 }
 
 // quietWaitOtherBackend: a transaction on another connection that has written holds an xid until
@@ -446,10 +418,10 @@ func quietWaitLaterWriter(t *testing.T) {
 	run := startQuietWait(t, database, false, second.committed)
 	run.hears(t, "the first writer busy", readBusy("detached work is running"))
 	run.stillWaiting(t, "the first writer")
-	first.release()
+	first.releaseOnce()
 	testwait.Receive(t, "the second writer to start", secondStarted)
 	run.stillWaiting(t, "the second writer")
-	second.release()
+	second.releaseOnce()
 	run.returned(t)
 }
 
@@ -462,7 +434,7 @@ func quietWaitRepairFixture(t *testing.T) {
 	run := startQuietWait(t, f.database, false, writer.committed)
 	run.hears(t, "the repair server's detached work busy", readBusy("detached work is running"))
 	run.stillWaiting(t, "the repair server's detached work")
-	writer.release()
+	writer.releaseOnce()
 	run.returned(t)
 }
 
@@ -479,10 +451,10 @@ func quietWaitNoServer(t *testing.T) {
 }
 
 // heardRead is what a row hears of the quiet wait it runs (quietWaitRun): a read the wait told of,
-// or, once, that the wait has returned or stopped.
+// or, once, that the wait has ended - returned or stopped.
 type heardRead struct {
-	read     quietRead
-	returned bool
+	read  quietRead
+	ended bool
 }
 
 // quietWaitRun is a quiet wait a row runs on a goroutine of its own (startQuietWait).
@@ -490,10 +462,9 @@ type quietWaitRun struct {
 	heard    testwait.Stream[heardRead]
 	stopping *stoppingTB
 	done     chan struct{}
-	// atReturn is the row's check of its writer, run by the wait's goroutine as the wait returns,
-	// and its answer, read once done has closed.
-	atReturn func() error
-	failed   error
+	// failed is the answer of the row's check of its writer (startQuietWait's atReturn), which the
+	// wait's goroutine runs as the wait returns; it is read once done has closed.
+	failed error
 }
 
 // startQuietWait runs the quiet wait on database (awaitQuiet), on a goroutine of its own under a
@@ -501,13 +472,13 @@ type quietWaitRun struct {
 // it runs atReturn, when set, at once.
 func startQuietWait(t *testing.T, database *store.Store, settled bool, atReturn func() error) *quietWaitRun {
 	t.Helper()
-	run := &quietWaitRun{stopping: &stoppingTB{TB: t}, done: make(chan struct{}), atReturn: atReturn}
+	run := &quietWaitRun{stopping: &stoppingTB{TB: t}, done: make(chan struct{})}
 	go func() {
 		defer close(run.done)
-		defer run.heard.Add(heardRead{returned: true})
+		defer run.heard.Add(heardRead{ended: true})
 		awaitQuiet(run.stopping, database, settled, func(read quietRead) { run.heard.Add(heardRead{read: read}) })
-		if run.atReturn != nil {
-			run.failed = run.atReturn()
+		if atReturn != nil {
+			run.failed = atReturn()
 		}
 	}()
 	return run
@@ -518,7 +489,7 @@ func startQuietWait(t *testing.T, database *store.Store, settled bool, atReturn 
 func (r *quietWaitRun) hears(t *testing.T, what string, match func(quietRead) bool) {
 	t.Helper()
 	testwait.Next(t, "the quiet wait to read "+what, &r.heard, func(heard heardRead) bool {
-		if heard.returned {
+		if heard.ended {
 			t.Fatalf("the quiet wait ended (stopped: %q) before any of its reads saw %s", r.stopping.stop(), what)
 		}
 		return match(heard.read)
@@ -548,6 +519,18 @@ func (r *quietWaitRun) returned(t *testing.T) {
 	}
 }
 
+// eachRead reads every read the wait tells of until the wait's end, and calls check on each.
+func (r *quietWaitRun) eachRead(t *testing.T, check func(quietRead)) {
+	t.Helper()
+	for {
+		heard := testwait.Next(t, "the quiet wait's next read", &r.heard, func(heardRead) bool { return true })
+		if heard.ended {
+			return
+		}
+		check(heard.read)
+	}
+}
+
 // readBusy matches a read that ended finding busy what its text holds.
 func readBusy(text string) func(quietRead) bool {
 	return func(read quietRead) bool { return strings.Contains(read.busy, text) }
@@ -561,24 +544,24 @@ func readJoining(text string) func(quietRead) bool {
 // heldPerson is a writer a row holds: run waits for the row's release, records email as a person,
 // and closes wrote once that write has returned, its error in err.
 type heldPerson struct {
-	database *store.Store
-	email    string
-	held     <-chan struct{}
-	release  func()
-	wrote    chan struct{}
-	err      error
+	database    *store.Store
+	email       string
+	release     <-chan struct{}
+	releaseOnce func()
+	wrote       chan struct{}
+	err         error
 }
 
-// newHeldPerson is a held writer of email on database, released by its release or, at the latest,
-// by t's end (heldUntilReleased), whose server wait runs t's releases first.
+// newHeldPerson is a held writer of email on database, released by its releaseOnce or, at the
+// latest, by t's end (heldUntilReleased), whose server wait runs t's releases first.
 func newHeldPerson(t *testing.T, database *store.Store, email string) *heldPerson {
 	t.Helper()
-	held, release := heldUntilReleased(t)
-	return &heldPerson{database: database, email: email, held: held, release: release, wrote: make(chan struct{})}
+	release, releaseOnce := heldUntilReleased(t)
+	return &heldPerson{database: database, email: email, release: release, releaseOnce: releaseOnce, wrote: make(chan struct{})}
 }
 
 func (h *heldPerson) run() {
-	<-h.held
+	<-h.release
 	_, h.err = h.database.Pool.Exec(context.Background(), `insert into people (email) values ($1)`, h.email)
 	close(h.wrote)
 }
@@ -609,17 +592,25 @@ func personRecorded(database *store.Store, email string) error {
 	return nil
 }
 
-// awaitSettlementRow waits until artifactID's pending-settlement row is there (owed) or gone (not
-// owed). Its one bound is the test binary's deadline (testwait.Until).
-func awaitSettlementRow(t *testing.T, database *store.Store, artifactID string, owed bool) {
+// settlementOwed reads whether artifactID owes its settlement on database: whether its
+// pending-settlement row is there. It takes no t, so a row's check at the wait's return, which
+// runs off the test goroutine, can read it.
+func settlementOwed(database *store.Store, artifactID string) (bool, error) {
+	var owed bool
+	if err := database.Pool.QueryRow(context.Background(),
+		`select exists (select 1 from doc_settlements_pending where artifact_id = $1)`, artifactID).Scan(&owed); err != nil {
+		return false, fmt.Errorf("read the spec's pending settlement: %w", err)
+	}
+	return owed, nil
+}
+
+// awaitDocumentSettled waits until artifactID owes no settlement: its pending-settlement row is
+// gone (documentOwesSettlement). Its one bound is the test binary's deadline (testwait.Until).
+func awaitDocumentSettled(t *testing.T, database *store.Store, artifactID string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("the pending settlement of %s to be owed: %t (owed at the last read)", artifactID, owed), func() (bool, bool) {
-		var pending bool
-		if err := database.Pool.QueryRow(context.Background(),
-			`select exists (select 1 from doc_settlements_pending where artifact_id = $1)`, artifactID).Scan(&pending); err != nil {
-			t.Fatalf("read the pending settlement of %s: %v", artifactID, err)
-		}
-		return pending, pending == owed
+	testwait.Until(t, "the pending settlement of "+artifactID+" to be gone (owed at the last read)", func() (bool, bool) {
+		owed := documentOwesSettlement(t, database, artifactID)
+		return owed, !owed
 	})
 }
 

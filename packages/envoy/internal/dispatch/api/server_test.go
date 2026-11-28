@@ -370,12 +370,17 @@ func newStoppableTestServer(t testing.TB, options testServerOptions) (handler ht
 	options.lifetime = lifetime
 	var steps []func()
 	handler, _, deps, _ = buildTestServer(t, options, func(step func()) { steps = append(steps, step) })
-	return handler, deps, sync.OnceFunc(func() {
-		end()
-		for _, step := range slices.Backward(steps) {
-			step()
-		}
-	})
+	// A sync.Once, not sync.OnceFunc: a step that ends its test (testwait's Fatalf at the deadline)
+	// leaves through runtime.Goexit, which sync.OnceFunc turns into panic(nil).
+	var once sync.Once
+	return handler, deps, func() {
+		once.Do(func() {
+			end()
+			for _, step := range slices.Backward(steps) {
+				step()
+			}
+		})
+	}
 }
 
 // buildTestServer builds the server newRegisteredTestServer and newStoppableTestServer answer,
@@ -2532,21 +2537,22 @@ func awaitQuiet(t testing.TB, database *store.Store, settled bool, heard func(qu
 	ctx := testwait.Context(t)
 	what := "the work the servers on database " + name + " run past their requests to end and no other backend to hold an xid (busy at the last read)"
 	if settled {
-		what = "every document to settle, the work the servers on database " + name + " run past their requests to end and no other backend to hold an xid (busy at the last read)"
+		what = "every document to settle, " + what
 	}
 	testwait.Until(t, what, func() (string, bool) {
-		busy := quietBusy(t, ctx, database, settled, heard)
+		busy := quietBusy(t, ctx, database, name, settled, heard)
 		heard(quietRead{busy: busy})
 		return busy, busy == ""
 	})
 }
 
-// quietBusy is one read of the quiet wait (awaitQuietDatabase): what it found busy, the first in
-// the wait's order, or "" when it found nothing. A join of a statistics refresh that found one
-// running reads busy too, once that refresh has ended, so the next read asks every server again.
-func quietBusy(t testing.TB, ctx context.Context, database *store.Store, settled bool, heard func(quietRead)) string {
+// quietBusy is one read of the quiet wait (awaitQuietDatabase) on database, whose name is name:
+// what it found busy, the first in the wait's order, or "" when it found nothing. A join of a
+// statistics refresh that found one running reads busy too, once that refresh has ended, so the
+// next read asks every server again.
+func quietBusy(t testing.TB, ctx context.Context, database *store.Store, name string, settled bool, heard func(quietRead)) string {
 	t.Helper()
-	servers := quietServersOn(database.Pool.Config().ConnConfig.Database)
+	servers := quietServersOn(name)
 	for index, quiet := range servers {
 		served, at := quiet.served, fmt.Sprintf("server %d", index+1)
 		if mark := served.bootMark; mark != nil {
@@ -2609,14 +2615,11 @@ func quietBusy(t testing.TB, ctx context.Context, database *store.Store, settled
 }
 
 // quietProjects reads every project key of database: the keys a statistics refresh runs under
-// (ensureSearchTermStats), which the quiet wait joins.
+// (ensureSearchTermStats), which the quiet wait joins, read as the statistics pass reads them
+// (searchTermStatsProjects).
 func quietProjects(t testing.TB, database *store.Store) []string {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `select key from projects order by key`)
-	if err != nil {
-		t.Fatalf("read the projects whose statistics may be refreshing: %v", err)
-	}
-	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	projects, err := searchTermStatsProjects(context.Background(), database.Pool)
 	if err != nil {
 		t.Fatalf("read the projects whose statistics may be refreshing: %v", err)
 	}

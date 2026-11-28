@@ -29,9 +29,10 @@ import (
 // to running none inside the window (refuseAdvisoryReadsInXidWindow): those reads are queries,
 // back to back, which D6 alone would pass. Each request runs under a marked context
 // (storetest.MarkXid), so only the transactions the request itself ran are judged; the server's
-// background work shares the pool but not the verdict. The server settles documents after an
-// hour, so no settlement races the measured request, except where a route needs settlement to
-// have run first (the block ask). The fixture itself is xid_fixture_test.go's.
+// background work shares the pool but not the verdict. The server settles documents only after
+// xidFixtureSettlesNothing, past any test's deadline, so no settlement races the measured request,
+// except where a route needs settlement to have run first (the block ask). The fixture itself is
+// xid_fixture_test.go's.
 //
 // This file, the route window table's (route_xid_window_test.go and the files of its rows),
 // issue_ask_repair_xid_window_test.go and delivery's xid_window_test.go build without the race
