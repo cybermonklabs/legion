@@ -129,12 +129,16 @@ function RepositoryFilter({
     setDraft("");
     if (!repos.includes(name)) onChange([...repos, name]);
   };
+  // The row and its form wrap, and each box down to the field may shrink (`min-w-0`): at 360 px
+  // "Repository", its field and Add stand wider than the column, and a flex item's automatic
+  // minimum is its content's width, so a form that keeps them on one line widened the page.
+  // A name with no space to break at breaks anywhere rather than widening its chip.
   return (
-    <div className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
-      <form className="flex items-center gap-2" onSubmit={add}>
+    <div className={`flex min-w-0 flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
+      <form className="flex min-w-0 flex-wrap items-center gap-2" onSubmit={add}>
         <label htmlFor={`${id}-repo`}>Repository</label>
         <input
-          className={fieldClass}
+          className={`${fieldClass} min-w-0`}
           id={`${id}-repo`}
           onChange={(event) => setDraft(event.target.value)}
           placeholder="owner/name"
@@ -149,10 +153,12 @@ function RepositoryFilter({
         <ul aria-label="Repositories" className="flex flex-wrap items-center gap-1">
           {repos.map((name) => (
             <li
-              className={`flex items-center gap-1 rounded border px-2 ${borderStrong}`}
+              className={`flex min-w-0 items-center gap-1 rounded border px-2 ${borderStrong}`}
               key={name}
             >
-              <span className={textPrimaryOnCanvas}>{name}</span>
+              <span className={`min-w-0 [overflow-wrap:anywhere] ${textPrimaryOnCanvas}`}>
+                {name}
+              </span>
               <button
                 aria-label={`Remove ${name}`}
                 className="px-1"
