@@ -257,15 +257,15 @@ type heldDurable struct {
 	clock intakeClock
 	// holdClock is the time this intake reads and bounds its hold on: its tries for the hold every
 	// durableBindInterval and its checks of the durable every intakeHoldRenew (run), the bound of each call
-	// it makes of the hold or of the durable's state (takeHold, lookupDurable, releaseHold), every
-	// reading of whether it still holds the hold (holds, intakeDelivery.holdCovers, retryHeld), the
-	// take-over's bound and its waits between tries (finishTakeOver, retryHeld), and the flushes that
-	// confirm its hand-backs, the waits between them and their bounds (finalizeHandBacks, watchLoss,
-	// lostWith, flushHandBacks). clock.Real, which newHeldDurable gives it, and a test's
-	// clocktest.Fake, set before Run. The hold's renewals and its loss deadline (duty.Hold.Deadline)
-	// are duty's, and its lapse is the database's: duty's hold runs on the wall clock; a test's
-	// holdClock is a clocktest.Held fake, whose Now is the wall clock plus what the test added, never
-	// a clocktest.New one, whose moments holds would compare with duty's wall-clock deadline.
+	// it makes of the hold or of the durable's state (takeHold, lookupDurable, releaseHold), the hold's
+	// renewals and its loss deadline (duty.HoldOptions.Clock, duty.Hold.Deadline), every reading of
+	// whether it still holds the hold (holds, intakeDelivery.holdCovers, retryHeld), the take-over's
+	// bound and its waits between tries (finishTakeOver, retryHeld), and the flushes that confirm its
+	// hand-backs, the waits between them and their bounds (finalizeHandBacks, watchLoss, lostWith,
+	// flushHandBacks). clock.Real, which newHeldDurable gives it, and a test's clocktest.Fake, set
+	// before Run. Whether another process may take the hold is the database's clock either way: the
+	// hold's row lapses intakeHoldTTL after its last renewal on the database's now() (duty.TryHold),
+	// which no Go clock moves.
 	holdClock clock.Clock
 
 	mu sync.Mutex
@@ -429,6 +429,7 @@ func (d *heldDurable) takeHold(ctx context.Context) bool {
 	}
 	hold, err := duty.TryHold(bounded, d.leases, holdName, d.holder, duty.HoldOptions{
 		TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Token: token, Logger: d.tuning.log,
+		Clock: d.holdClock,
 	})
 	if err != nil {
 		if ctx.Err() == nil {
