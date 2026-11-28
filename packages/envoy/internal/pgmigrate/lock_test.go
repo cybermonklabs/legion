@@ -89,6 +89,12 @@ func TestAZeroLockingIsProductionsDiscipline(t *testing.T) {
 // it as its Timeout, the census refuses a table that another session holds in ACCESS EXCLUSIVE as
 // not read within it, and ExecNonTransactional either builds the index or gives up with a
 // *LockTimeoutError of that Timeout.
+//
+// One more row is a whole number of milliseconds above the largest lock_timeout Postgres takes,
+// 2147483647 ms (INT_MAX): a Locking of 2147483648 ms is one Postgres cannot take either, so the
+// seam refuses it as it refuses the others, before PinSession resets anything of the session: the
+// row moves the session's search_path off the value RESET gives it, and a refused PinSession
+// leaves it there.
 func TestALockingOfAnyTimeoutBoundsTheMigrationsLockWaits(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -122,7 +128,7 @@ func TestALockingOfAnyTimeoutBoundsTheMigrationsLockWaits(t *testing.T) {
 		var timedOut *LockTimeoutError
 		return errors.As(err, &timedOut)
 	}
-	for _, timeout := range []time.Duration{500 * time.Microsecond, 10 * time.Nanosecond, -time.Nanosecond, 1500 * time.Microsecond, time.Millisecond} {
+	for _, timeout := range []time.Duration{500 * time.Microsecond, 10 * time.Nanosecond, -time.Nanosecond, 1500 * time.Microsecond, time.Millisecond, 2147483648 * time.Millisecond} {
 		t.Run(timeout.String(), func(t *testing.T) {
 			locking := Locking{Timeout: timeout, Clock: clocktest.New(time.Unix(0, 0).UTC())}
 			var pinned string
@@ -143,20 +149,32 @@ func TestALockingOfAnyTimeoutBoundsTheMigrationsLockWaits(t *testing.T) {
 			// takes must name.
 			pinnedTimeout := time.Duration(pinnedMillis) * time.Millisecond
 			session := connect(t, ctx, url)
+			// The session's search_path is moved off the value RESET gives it, so a PinSession that
+			// resets it before it refuses the Timeout shows in the session.
+			if _, err := session.Exec(ctx, "set search_path = pg_catalog"); err != nil {
+				t.Fatal(err)
+			}
 			var before, after int
+			var pathBefore, pathAfter string
 			if err := session.QueryRow(ctx, lockTimeoutMillis).Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			if err := session.QueryRow(ctx, "select current_setting('search_path')").Scan(&pathBefore); err != nil {
 				t.Fatal(err)
 			}
 			sessionErr := locking.PinSession(ctx, session)
 			if err := session.QueryRow(ctx, lockTimeoutMillis).Scan(&after); err != nil {
 				t.Fatal(err)
 			}
+			if err := session.QueryRow(ctx, "select current_setting('search_path')").Scan(&pathAfter); err != nil {
+				t.Fatal(err)
+			}
 			if pinErr != nil {
 				if !errors.Is(pinErr, errUnpinnableTimeout) {
 					t.Errorf("Pin under a Locking of %v returned %v, want its refusal of a Timeout Postgres cannot take", timeout, pinErr)
 				}
-				if !errors.Is(sessionErr, errUnpinnableTimeout) || after != before {
-					t.Errorf("PinSession under a Locking of %v, which Pin refused, returned %v and moved the session's lock_timeout from %d ms to %d ms, want that refusal and the session as it was", timeout, sessionErr, before, after)
+				if !errors.Is(sessionErr, errUnpinnableTimeout) || after != before || pathAfter != pathBefore {
+					t.Errorf("PinSession under a Locking of %v, which Pin refused, returned %v and moved the session's lock_timeout from %d ms to %d ms and its search_path from %q to %q, want that refusal and the session as it was", timeout, sessionErr, before, after, pathBefore, pathAfter)
 				}
 			} else {
 				if pinnedMillis <= 0 {
