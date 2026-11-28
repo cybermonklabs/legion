@@ -884,20 +884,10 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
 // written, and child-closed to the architect above a child. It retires nobody and suspends nothing:
 // the linger's own rows already did, and the tree's close retires every member's claims.
 func (e *Engine) closeLingeringMember(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, row Row) error {
-	status := PhaseStatus(row.To)
-	if err := e.status(ctx, tx, issue, status, ""); err != nil {
-		return err
-	}
 	if err := e.nameMoveEnd(ctx, w, issue, TriggerChecksPassed, row.To, record.PhaseRow{}); err != nil {
 		return err
 	}
-	if err := e.moveTask(ctx, tx, &issue, &w, row.To, record.TaskDone); err != nil {
-		return err
-	}
 	issue.Hold = nil
-	if status != "" {
-		issue.Status = status
-	}
 	if err := e.WriteIssue(ctx, tx, issue); err != nil {
 		return err
 	}
