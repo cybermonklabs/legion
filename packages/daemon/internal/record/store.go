@@ -4413,10 +4413,10 @@ func (s *Postgres) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string
 	return nil
 }
 
-func (s *Postgres) DropAcceptanceWrites(ctx context.Context, tx pgx.Tx, issue string) error {
-	if _, err := tx.Exec(ctx, "delete from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3",
-		string(OutboxKindDispatchStatus), issue, string(AcceptanceStatusRow)); err != nil {
-		return fmt.Errorf("drop the unfinished acceptances of %s: %w", issue, err)
+func (s *Postgres) DropSetBacksOver(ctx context.Context, tx pgx.Tx, issue, status string) error {
+	if _, err := tx.Exec(ctx, "delete from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3 and payload->>'observedStatus' = $4",
+		string(OutboxKindDispatchStatus), issue, string(ReassertStatusRow), status); err != nil {
+		return fmt.Errorf("drop the set-backs over %s of %s: %w", status, issue, err)
 	}
 	return nil
 }

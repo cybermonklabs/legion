@@ -3400,11 +3400,13 @@ type Store interface {
 	// the runner has leased included; one mid-attempt can still reach Dispatch, and its finish then
 	// finds nothing to delete.
 	DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error
-	// DropAcceptanceWrites deletes every unfinished acceptance of issue the outbox holds
-	// (AcceptanceStatusRow), a row the runner has leased included: the act's fact, taken, retires
-	// what it settles in its own transaction. A runner mid-attempt reads the record under the
-	// issue's lock and finds the acceptance or the close recorded, so it writes nothing back.
-	DropAcceptanceWrites(ctx context.Context, tx pgx.Tx, issue string) error
+	// DropSetBacksOver deletes every set-back of issue (ReassertStatusRow) that undoes status, a
+	// row the runner has leased included: a sign-off that is taken drops, in its own transaction,
+	// the set-back of retro its route queued before its write, and any other set-back of a retro,
+	// which the acceptance now stands for. A runner mid-attempt reads the record under the issue's
+	// lock and finds the acceptance recorded, so it writes nothing back (the outbox's
+	// overAcceptance).
+	DropSetBacksOver(ctx context.Context, tx pgx.Tx, issue, status string) error
 	// DropQueuedChanges deletes each outbox row of rows, a row a runner has leased included: the
 	// changes requests a clear's forget found that the person's approval followed (KeptForget,
 	// QueuedChanges), whose gates the clear then deletes. A runner mid-attempt reads its lease in

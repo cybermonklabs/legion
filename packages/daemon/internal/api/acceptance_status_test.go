@@ -279,20 +279,39 @@ func TestAMessageBetweenTheReadAndTheRepeatChangesNothingAKeySettles(t *testing.
 	}
 }
 
-// acceptanceQueued fails the test unless the one outbox row of issue is an unfinished acceptance
-// (record.AcceptanceStatusRow) of status over observed at seq, under a key, and answers that key.
-func acceptanceQueued(t *testing.T, h *harness, issue, status, observed string, seq int64) string {
+// acceptanceQueued fails the test unless the one outbox row of issue is the set-back of an act's
+// request (queueSetBack): old written back over act, a record.ReassertStatusRow observed at seq,
+// the sequence the request was fenced on, and carrying nothing of the request's key.
+func acceptanceQueued(t *testing.T, h *harness, issue, act, old string, seq int64) {
 	t.Helper()
 	if rows := outboxRowsOf(t, h, issue); rows != 1 {
-		t.Fatalf("outbox rows of %s = %d, want the one unfinished acceptance", issue, rows)
+		t.Fatalf("outbox rows of %s = %d, want the one set-back of the act's request", issue, rows)
 	}
-	var kind, writes, over, key string
+	var kind, writes, over string
 	var at int64
-	if err := h.store.Pool().QueryRow(t.Context(), "select payload->>'kind', payload->>'status', payload->>'observedStatus', (payload->>'observedSeq')::bigint, payload->>'key' from outbox where issue = $1", issue).
-		Scan(&kind, &writes, &over, &at, &key); err != nil || kind != string(record.AcceptanceStatusRow) || writes != status || over != observed || at != seq || key == "" {
-		t.Fatalf("the queued row of %s = kind %q writing %q over %q at %d under key %q (%v), want an unfinished acceptance of %s over %s at %d under a key", issue, kind, writes, over, at, key, err, status, observed, seq)
+	if err := h.store.Pool().QueryRow(t.Context(), "select payload->>'kind', payload->>'status', payload->>'observedStatus', (payload->>'observedSeq')::bigint from outbox where issue = $1", issue).
+		Scan(&kind, &writes, &over, &at); err != nil || kind != string(record.ReassertStatusRow) || writes != old || over != act || at != seq {
+		t.Fatalf("the queued row of %s = kind %q writing %q over %q at %d (%v), want the set-back of %s over %s at %d", issue, kind, writes, over, at, err, old, act, seq)
 	}
-	return key
+}
+
+// KEY_COMMITTED says a transaction of the key's request committed, which a close's settlement of
+// its documents does before its status. Where the issue's event log after the request's sequence
+// shows no status change of the daemon's, the status may still commit, so the request is answered
+// unsettled and its set-back stands, for the outbox's fence to settle; where it shows the daemon's
+// change, the write landed and the act goes on.
+func TestAKeyCommittedWithNoStatusChangeKeepsTheSetBack(t *testing.T) {
+	h, facts, statuses := newAcceptanceHarness(t, nil, nil)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.beforeAcceptance = func(dispatch.AcceptanceWrite, int) (dispatch.Issue, error, bool) {
+		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: dispatch.IdempotencyKeyCommitted, Echoed: true}, true
+	}
+	message := refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
+		http.StatusBadGateway, "DISPATCH_FAILED")
+	if len(facts.recorded()) != 0 || !strings.Contains(message, "KEY_COMMITTED") || !strings.Contains(message, "fences that write") {
+		t.Fatalf("with KEY_COMMITTED and no status change, facts %#v and the answer %q; want nothing applied and the answer naming the fence", facts.recorded(), message)
+	}
+	acceptanceQueued(t, h, "LEGION-208", "retro", "needs_review", 7)
 }
 
 // A refusal of the exact request settles it, so its unfinished acceptance is retired: left, the

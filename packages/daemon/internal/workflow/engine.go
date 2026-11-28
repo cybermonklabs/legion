@@ -2870,10 +2870,10 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// The sign-off is taken, so the acceptance its route sent is recorded: the unfinished
-	// acceptance the route queued before its write is retired in this transaction (the API's
-	// queueAcceptance).
-	if err := e.store.DropAcceptanceWrites(ctx, tx, issue.Key); err != nil {
+	// The sign-off is taken, so the acceptance its route sent is recorded: the set-back of retro
+	// the route queued before its write is dropped in this transaction (the API's queueSetBack),
+	// so no release, an earlier one after a rollback included, writes it.
+	if err := e.store.DropSetBacksOver(ctx, tx, issue.Key, PhaseStatus(phase.Retro)); err != nil {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, "")

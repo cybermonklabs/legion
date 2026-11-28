@@ -147,10 +147,8 @@ type outboxDispatch struct {
 	gatedStepsErr error
 	// recordErr is what a step record's write and a plan's write answer.
 	recordErr error
-	// acceptance, when set, answers each keyed acceptance write (SetAcceptanceStatus), which
-	// acceptanceWrites records, and events is the issue's event log after any sequence
-	// (EventsAfter).
-	acceptance       func(dispatch.AcceptanceWrite) (dispatch.Issue, error)
+	// acceptanceWrites is every keyed acceptance write sent (SetAcceptanceStatus), and events the
+	// issue's event log after any sequence (EventsAfter).
 	acceptanceWrites []dispatch.AcceptanceWrite
 	events           []json.RawMessage
 }
@@ -179,14 +177,11 @@ func (d *outboxDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, 
 	return d.SetStatus(ctx, issue.Key, status)
 }
 
-// SetAcceptanceStatus records write and answers it with acceptance where a case scripts one, as
-// Dispatch's keyed layer answers the request under its key, and as this stand-in's own SetStatus
-// otherwise.
+// SetAcceptanceStatus records write, which no outbox row sends: a set-back settles its act's
+// request from Dispatch alone, and acceptanceWrites lets a test say so. It is answered as this
+// stand-in's own SetStatus.
 func (d *outboxDispatch) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
 	d.acceptanceWrites = append(d.acceptanceWrites, write)
-	if d.acceptance != nil {
-		return d.acceptance(write)
-	}
 	return d.SetStatus(ctx, write.Issue, write.Status)
 }
 func (d *outboxDispatch) HandOver(_ context.Context, issue dispatch.Issue, status string) error {

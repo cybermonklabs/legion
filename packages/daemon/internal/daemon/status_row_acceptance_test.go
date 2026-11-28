@@ -2,9 +2,8 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,77 +50,60 @@ func TestAStatusRowWritesNothingOverAnAcceptanceTheRecordHolds(t *testing.T) {
 	}
 }
 
-// An unfinished acceptance (record.AcceptanceStatusRow) is settled by sending its request again
-// under its key, as Dispatch's keyed layer answers how the first attempt ended:
-//   - landed, with the record holding no acceptance or close: the status before the act is
-//     written back;
-//   - landed, with the record holding the close: nothing is written;
-//   - refused: the request never lands, and nothing is written;
-//   - committed, with no status change of the daemon's after the request's sequence: the key
-//     committed something else (a close's settlement), and nothing is written; with one: written
-//     back as landed;
-//   - unsettled: the row is attempted again, and nothing is written.
-//
-// Where Dispatch still stands at the request's sequence, the row posts a fence first, so a fresh
-// run of a request that never reached Dispatch is refused rather than landing the very status the
-// row undoes.
-func TestAnUnfinishedAcceptanceIsSettledUnderItsKey(t *testing.T) {
+// lateLanding is outboxDispatch in front of which an act's request lands just before the
+// set-back's fence posts: the issue moves to landed at the next sequence, and the fence takes the
+// one after. With landed empty, nothing lands, and the fence alone moves the sequence.
+type lateLanding struct {
+	*outboxDispatch
+	landed string
+}
+
+func (d *lateLanding) PostMessage(ctx context.Context, key, body string) error {
+	if d.landed != "" {
+		d.issue.Status, d.issue.LastSeq = d.landed, d.issue.LastSeq+1
+	}
+	d.issue.LastSeq++
+	return d.outboxDispatch.PostMessage(ctx, key, body)
+}
+
+// The set-back an act queues before its request (the API's queueSetBack) settles the request from
+// Dispatch alone, and never sends it again under its key, whose answer Dispatch keeps for a day:
+//   - Dispatch still at the request's sequence, at the status before it: the request may still be
+//     in flight, so the row posts a fence, after which no request fenced on that sequence lands, and
+//     judges the read after it: a request that landed just before the fence is set back, and one
+//     that did not leaves nothing to write;
+//   - Dispatch past the request's sequence, at the request's status, a day later and with no key
+//     the row could read: the request landed, and its status is set back;
+//   - Dispatch past the request's sequence, at the status before it: the request never lands, and
+//     nothing is written.
+func TestASetBackSettlesItsRequestFromDispatchAlone(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	closedBy := func(key string) []json.RawMessage {
-		return []json.RawMessage{issueEvent(key, 10, "issue.closed", dispatch.Actor{Kind: "session", ID: dispatch.DaemonSession(key)}, nil)}
-	}
-	refusal := func(code string) error {
-		return &dispatch.Error{Status: http.StatusConflict, Code: code, Message: code, Echoed: true}
-	}
 	for _, tc := range []struct {
-		name, key string
-		recorded  string
-		at        phase.Phase
-		seq       int64
-		answer    error
-		events    func(string) []json.RawMessage
-		writes    []string
-		fences    int
-		unsettled bool
+		name, key, shows, landed string
+		seq                      int64
+		fences                   int
+		writes                   []string
 	}{
-		{name: "landed, the record holding no close", key: "LEGION-791", recorded: "in_progress", at: phase.Admitted, seq: 10, writes: []string{"in_progress"}},
-		{name: "landed, the record holding the close", key: "LEGION-792", recorded: "done", at: phase.Done, seq: 10},
-		{name: "refused", key: "LEGION-793", recorded: "in_progress", at: phase.Admitted, seq: 10, answer: refusal("ISSUE_CHANGED")},
-		{name: "committed, no status change of the daemon's", key: "LEGION-794", recorded: "in_progress", at: phase.Admitted, seq: 10,
-			answer: refusal(dispatch.IdempotencyKeyCommitted)},
-		{name: "committed, the daemon's close in the log", key: "LEGION-795", recorded: "in_progress", at: phase.Admitted, seq: 10,
-			answer: refusal(dispatch.IdempotencyKeyCommitted), events: closedBy, writes: []string{"in_progress"}},
-		{name: "unsettled", key: "LEGION-796", recorded: "in_progress", at: phase.Admitted, seq: 10,
-			answer: &dispatch.Error{Status: http.StatusConflict, Code: dispatch.IdempotencyKeyInFlight, Echoed: true}, unsettled: true},
-		{name: "Dispatch still at the request's sequence, its fresh run refused after the fence", key: "LEGION-797", recorded: "in_progress", at: phase.Admitted, seq: 9,
-			answer: refusal("ISSUE_CHANGED"), fences: 1},
+		{name: "at the request's sequence, it lands before the fence", key: "LEGION-787", shows: "in_progress", landed: "done", seq: 9, fences: 1, writes: []string{"in_progress"}},
+		{name: "at the request's sequence, nothing lands", key: "LEGION-788", shows: "in_progress", seq: 9, fences: 1},
+		{name: "past the request's sequence, landed, its key long expired", key: "LEGION-789", shows: "done", seq: 10, writes: []string{"in_progress"}},
+		{name: "past the request's sequence, never landed", key: "LEGION-790", shows: "in_progress", seq: 11},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			putOutboxIssue(t, pool, records, record.Issue{Key: tc.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-				Project: "LEGION", Tree: tc.key, Title: tc.key, Phase: tc.at, Generation: 1, Status: tc.recorded, DispatchStatus: "done"})
-			client := &outboxDispatch{issue: dispatch.Issue{Key: tc.key, Status: "done", LastSeq: tc.seq}}
-			client.acceptance = func(dispatch.AcceptanceWrite) (dispatch.Issue, error) {
-				return dispatch.Issue{Key: tc.key, Status: "done", LastSeq: 10}, tc.answer
-			}
-			if tc.events != nil {
-				client.events = tc.events(tc.key)
-			}
+				Project: "LEGION", Tree: tc.key, Title: tc.key, Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
+			client := &lateLanding{outboxDispatch: &outboxDispatch{issue: dispatch.Issue{Key: tc.key, Status: tc.shows, LastSeq: tc.seq}}, landed: tc.landed}
 			runner := &outbox{pool: pool, records: records, dispatch: client, log: quietLogger(), issueLocks: &issuelock.Locks{}}
-			payload := record.AcceptanceStatusWrite("done", "in_progress", 9, "legion:close_root:"+tc.key+":k1")
-			err := runner.settleAcceptance(context.Background(), record.OutboxRow{ID: 1, Issue: tc.key}, payload, client.issue)
-			if tc.unsettled != (err != nil) {
-				t.Fatalf("settle = %v, want unsettled %v", err, tc.unsettled)
+			if err := runner.execute(context.Background(), mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", "done", 9), time.Now())); err != nil {
+				t.Fatalf("execute the row: %v", err)
 			}
-			if _, permanent := dispatch.PermanentRefusal(err); permanent {
-				t.Fatalf("the unsettled answer %v reads as a permanent refusal, which would drop the row", err)
+			if len(client.messages) != tc.fences || tc.fences > 0 && !strings.Contains(client.messages[0], "ends any chance that it lands later") {
+				t.Fatalf("messages = %q, want %d fence", client.messages, tc.fences)
 			}
-			if len(client.acceptanceWrites) != 1 || client.acceptanceWrites[0] != (dispatch.AcceptanceWrite{Key: payload.Key, Issue: tc.key, Status: "done", Sequence: 9}) {
-				t.Fatalf("keyed writes = %+v, want the one request again under its key", client.acceptanceWrites)
-			}
-			if !slices.Equal(client.statuses, tc.writes) || len(client.messages) != tc.fences {
-				t.Fatalf("Dispatch writes %q and %d messages, want %q and %d", client.statuses, len(client.messages), tc.writes, tc.fences)
+			if !slices.Equal(client.statuses, tc.writes) || len(client.acceptanceWrites) != 0 {
+				t.Fatalf("Dispatch writes %q and keyed resends %+v, want %q and no resend", client.statuses, client.acceptanceWrites, tc.writes)
 			}
 		})
 	}

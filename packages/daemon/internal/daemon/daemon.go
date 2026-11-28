@@ -3908,11 +3908,11 @@ func (s projectRecords) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue s
 	return s.Store.DropStatusWrites(ctx, tx, issue)
 }
 
-func (s projectRecords) DropAcceptanceWrites(ctx context.Context, tx pgx.Tx, issue string) error {
+func (s projectRecords) DropSetBacksOver(ctx context.Context, tx pgx.Tx, issue, status string) error {
 	if !s.ownsKey(record.OutboxKindDispatchStatus, issue) {
 		return nil
 	}
-	return s.Store.DropAcceptanceWrites(ctx, tx, issue)
+	return s.Store.DropSetBacksOver(ctx, tx, issue, status)
 }
 
 // ClearGeneration deletes the facts of the issue's generation and answers the issues whose gates

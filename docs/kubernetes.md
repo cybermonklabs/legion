@@ -3232,6 +3232,30 @@ It writes the daemon's status as that release writes it, with no read of the eve
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the outbox is one table for all of them, but each daemon runs only its own project's rows (`DueRows` in `record/store.go`).
 So one project can roll back while another stays on this release, and the statement names the project: a daemon left on this release keeps the check on its own set-backs.
 
+#### Rolling back the release that writes an acceptance before it records it
+
+In this release `sign_off` and `close_root` write `retro` or `done` in Dispatch before the daemon records the act, under an `Idempotency-Key` for each request.
+Before each request, the route queues a set-back of that request: the status Dispatch showed before the act, written back over the act's status, observed at the sequence the request is fenced on (`record.ReassertStatusWrite`, the route's `queueSetBack`).
+The act's fact drops it once taken, and a refusal of the request, or a write back that landed, deletes it.
+A set-back left standing is the undo of a write the daemon sent and did not record: a daemon that stopped between the write and the fact, a write Dispatch did not settle within the act, or a write back that failed.
+Where Dispatch still stands at the request's sequence, this release first posts a message to the issue (the outbox's `fenceUnlanded`), after which Dispatch refuses any request fenced on that sequence, and then judges the issue as Dispatch shows it.
+
+**Nothing is removed before the earlier image is pinned.**
+The row is a set-back as the release before writes one: the kind `reassert` with `observedSeq`, which that release decodes and runs.
+That release writes the status before the act back where Dispatch shows the act's status and no one but the daemon changed the issue's status after the request's sequence, and writes nothing where Dispatch shows another status.
+It does not post the fence.
+So a request still in flight in front of Dispatch when the earlier release runs the row can land after it, and that status then stays until a person or the next status repair moves it.
+That needs a write Dispatch did not answer, a stop or a rollback within the same seconds, and a request that reaches Dispatch after the row ran.
+
+To see what a project carries before it rolls back, run this with `<PROJECT>` replaced by the project's key, as the block above takes it:
+
+```sql
+-- The set-backs of one project that undo an acceptance or a close the daemon sent and did not record.
+select id, issue, payload->>'status' as back, payload->>'observedStatus' as sent, payload->>'observedSeq' as seq from outbox where kind = 'dispatch_status' and payload->>'kind' = 'reassert' and payload->>'observedStatus' in ('retro', 'done') and split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+Each project rolls back on its own, as the set-backs above do.
+
 #### Rolling back the release that tells a holder of an approved new version
 
 This release's migration `20261119203047_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`, `design_news_credits`, `design_news_openings` and `design_news_told_in`, and the outbox kind `design_changes`.

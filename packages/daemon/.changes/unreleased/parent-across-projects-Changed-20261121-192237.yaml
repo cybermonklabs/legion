@@ -31,17 +31,20 @@ body: |-
   `CloseRootRefusal`), the fences of the architect's request among it (its claim, generation and
   run, as `requestRefusal` judges them), so a refusal the workflow makes writes nothing in Dispatch.
   Each request of the act goes to Dispatch under an `Idempotency-Key` of its own, and the route
-  records it first as the act's unfinished acceptance (an `acceptance` status row with the key, the
-  exact request and the status Dispatch showed). Dispatch's answer is read as the agents' client
-  reads a keyed answer: an answer that settles nothing is sent again under the same key, which
-  Dispatch answers with how the first attempt ended and never commits late; `KEY_COMMITTED` is
-  resolved from the issue's event log, because a close commits its documents first; and a request at
-  a newer sequence after `ISSUE_CHANGED` goes under a new key. The fact, once taken, retires the
-  record in its own transaction. A record left standing (Dispatch unsettled within the act, a
-  daemon stopped between the write and the fact, a write back that failed) is settled by the outbox
-  under the same key. Where Dispatch still stands at the request's sequence, the outbox first
-  posts a message so a request that never reached Dispatch cannot land later. Where the write
-  landed and the record holds no acceptance or close, it writes the status before the act back. A
+  queues the request's set-back first: the status Dispatch showed written back over the act's,
+  observed at the sequence the request is fenced on. Dispatch's answer is read as the agents'
+  client reads a keyed answer: an answer that settles nothing is sent again under the same key,
+  which Dispatch answers with how the first attempt ended; `KEY_COMMITTED` counts as landed only
+  where the issue's event log after the request's sequence shows the daemon's status change, since
+  a close commits its documents first; and a request at a newer sequence after `ISSUE_CHANGED` goes
+  under a new key. A sign-off that is taken drops the set-back in its own transaction, and a close
+  that is taken drops every status row. A set-back left standing (Dispatch unsettled within the
+  act, a daemon stopped between the write and the fact, a write back that failed) settles the
+  request from Dispatch alone, never from its key, whose answer Dispatch keeps for a day: where
+  Dispatch still stands at the request's sequence it first posts a message, after which no request
+  fenced on that sequence lands, and it writes the status before the act back only where Dispatch
+  shows the act's status and no one but the daemon moved the issue since. The release before
+  decodes and runs such a set-back as its own, without the message. A
   fact that refuses or fails after the write writes back the status Dispatch showed before it at
   once, and records that write so the event of the acceptance's own write changes nothing.
   The write back lands only over the acceptance's own
