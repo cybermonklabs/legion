@@ -6488,7 +6488,7 @@ echo "case: the repository's go-legs.yaml entry for envoy is held"
 check "passes" "$(is "$(envoy_legs_held "$real_envoy")" held)"
 
 echo "case: an envoy go-legs.yaml job key no matrix job runs"
-typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go-typo"] = {"1": [e["envoy-go"]["5"].pop()]}; print(json.dumps(e))' "$real_envoy")
+typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); last = max(e["envoy-go"], key=int); e["envoy-go-typo"] = {"1": [e["envoy-go"][last].pop()]}; print(json.dumps(e))' "$real_envoy")
 out=$(envoy_legs_held "$typo")
 check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the key and the jobs whose legs run" \
@@ -6502,7 +6502,7 @@ check "names the missing key" "$(contains "$out" "a package under a missing key 
 check "and the plain job it must name" "$(contains "$out" "its unlisted is None, and the job whose last leg runs a package no place names is envoy-go")"
 
 echo "case: a race lane package moved into a plain leg"
-moved=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); next(v for v in e["envoy-go-race"].values() if "natscred" in v).remove("natscred"); e["envoy-go"]["5"].append("natscred"); print(json.dumps(e))' "$real_envoy")
+moved=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); next(v for v in e["envoy-go-race"].values() if "natscred" in v).remove("natscred"); e["envoy-go"][max(e["envoy-go"], key=int)].append("natscred"); print(json.dumps(e))' "$real_envoy")
 out=$(envoy_legs_held "$moved")
 check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the lane package no race leg runs" "$(contains "$out" "ENVOY_RACE_LANE's envoy-go-race names natscred, which no envoy-go-race leg runs")"
@@ -6563,7 +6563,7 @@ done
 # change to only an unlisted package's _test.go files starts the job that runs them, in a merge
 # group too. Each case takes one package out of the repository's own entry.
 echo "case: a package no line names is in the plain gate's Run (envoy-go)"
-unclock=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go"]["5"].remove("internal/clock"); print(json.dumps(e))' "$real_envoy")
+unclock=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); next(v for v in e["envoy-go"].values() if "internal/clock" in v).remove("internal/clock"); print(json.dumps(e))' "$real_envoy")
 check "the Run names it" "$(contains " $(ask plain_run packages/envoy envoy-go "$unclock") " ' internal/clock ')"
 check "and the race job's does not" "$(is "$(contains " $(ask plain_run packages/envoy envoy-go-race "$unclock") " ' internal/clock ')" false)"
 echo "case: a package no line names is in the plain gate's Run (daemon-go)"
