@@ -64,38 +64,17 @@ func TestReadPlacesAnthropicCompactionFileNotes(t *testing.T) {
 	native := conversation.Message{Role: conversation.Assistant, Native: &conversation.Native{
 		Kind: conversation.AnthropicCompaction, Provider: "anthropic", Payload: json.RawMessage(payload),
 	}}
-	for _, tc := range []struct {
-		name   string
-		redact bool
-		note   string
-	}{
-		{name: "resume", note: "Read " + token + "."},
-		{name: "redaction", redact: true, note: "Read [github_token_redacted]."},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s, err := Read(f.bytes(), Options{ReplayAnthropicCompaction: true, RedactAnthropicCompactionFiles: tc.redact})
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := []conversation.Message{native, user("Earlier note one."), user("Earlier note two."), claude(call(callID, "read", `{}`)),
-				result(callID, "read", "plum", false), user("At the commit time."), user(tc.note), user("After the commit time.")}
-			want = append(want, user("Final file note."))
-			assertMessages(t, s.Messages, want)
+	t.Run("resume", func(t *testing.T) {
+		s, err := Read(f.bytes(), Options{ReplayAnthropicCompaction: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertMessages(t, s.Messages, []conversation.Message{
+			native, user("Earlier note one."), user("Earlier note two."), claude(call(callID, "read", `{}`)),
+			result(callID, "read", "plum", false), user("At the commit time."), user("Read " + token + "."),
+			user("After the commit time."), user("Final file note."),
 		})
-	}
-}
-
-func TestRedactCompactionFileNoteUsesPinnedASCIIBoundaries(t *testing.T) {
-	body := strings.Repeat("aB", 18)
-	github, anthropic := "GhP_"+body, "SK-ANT-"+body
-	lookalike := "sK-ant-" + body
-	homogeneous := "ghp_" + strings.Repeat("x", 36)
-	masked := "glpat-" + strings.Repeat("*", 20)
-	note := github + "," + anthropic + "K " + lookalike + " " + homogeneous + " x-" + github + " " + masked
-	want := "[github_token_redacted],[anthropic_token_redacted]K " + lookalike + " " + homogeneous + " x-" + github + " [gitlab_token_redacted]"
-	if got := redactCompactionFileNote(note); got != want {
-		t.Errorf("redacted note = %q, want %q", got, want)
-	}
+	})
 }
 
 func TestReadFlushesAnthropicFileNotesBeforeAStaleResultNote(t *testing.T) {
@@ -120,10 +99,9 @@ func TestReadFlushesAnthropicFileNotesBeforeAStaleResultNote(t *testing.T) {
 func TestReadReplaysLegacyAnthropicCompaction(t *testing.T) {
 	for _, tc := range []struct {
 		name, provider, state string
-		legacy, native        bool
+		native                bool
 	}{
-		{name: "legacy enabled", provider: "anthropic", state: `,"encryptedContent":"ciphertext"`, legacy: true, native: true},
-		{name: "legacy disabled", provider: "anthropic", state: `,"encryptedContent":"ciphertext"`},
+		{name: "legacy enabled", provider: "anthropic", state: `,"encryptedContent":"ciphertext"`, native: true},
 		{name: "different provider", provider: "other", state: `,"signature":"signed"`, native: false},
 		{name: "empty signature", provider: "anthropic", state: `,"signature":""`},
 	} {
@@ -136,7 +114,7 @@ func TestReadReplaysLegacyAnthropicCompaction(t *testing.T) {
 			payload := `{"provider":` + quote(tc.provider) + `,"content":"Native summary.","filesText":"File note"` + tc.state + `}`
 			f.add(`{"type":"compaction","summary":"Readable.","firstKeptEntryId":` + quote(kept) + `,"preserveData":{"anthropicCompaction":` + payload + `}}`)
 			f.add(claudeEntry("stop", `[{"type":"text","text":"Done."}]`))
-			s, err := Read(f.bytes(), Options{ReplayAnthropicCompaction: true, ReplayLegacyAnthropicCompaction: tc.legacy})
+			s, err := Read(f.bytes(), Options{ReplayAnthropicCompaction: true})
 			if err != nil {
 				t.Fatal(err)
 			}

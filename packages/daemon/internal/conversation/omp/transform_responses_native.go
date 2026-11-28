@@ -370,7 +370,7 @@ func repairNativeResponsesToolCalls(messages []conversation.Message) {
 	}
 	for i, add := range outputs {
 		native := messages[i].Native
-		repaired := make([]json.RawMessage, 0, len(native.Items)+len(add))
+		repaired := make([]json.RawMessage, 0, len(native.Items))
 		for j, raw := range native.Items {
 			repaired = append(repaired, raw)
 			if output := add[j]; output != nil {

@@ -99,53 +99,21 @@ func replayModelClass(id string) string {
 	return winner
 }
 
-// demotedThinking follows dialect/demotion.ts and catalog/src/identity/dialect.ts.
-func demotedThinking(class, text string) string {
+// thinkingDialect has one value for each supported target.
+type thinkingDialect bool
+
+const (
+	anthropicThinkingDialect thinkingDialect = false
+	openAIThinkingDialect    thinkingDialect = true
+)
+
+// demotedThinking renders text in the target's dialect, as in transform-messages.ts.
+func demotedThinking(dialect thinkingDialect, text string) string {
 	if text == "" {
 		return ""
 	}
-	switch class {
-	case "anthropic":
-		return text
-	case "gemini":
-		return "```thinking\n" + text + "\n```"
-	case "openai", "gpt-oss", "gemma", "glm", "kimi", "qwen", "deepseek":
+	if dialect == openAIThinkingDialect {
 		return "<think>\n" + text + "\n</think>"
-	default: // MiniMax and the default XML dialect share the same wrapper.
-		return "<thinking>\n" + unwrapThinkingXML(text) + "\n</thinking>"
 	}
-}
-
-// unwrapThinkingXML removes complete adjacent or nested thinking wrappers. It preserves the
-// original text if only part of it is wrapped (dialect/rendering.ts:233–291).
-func unwrapThinkingXML(text string) string {
-	const open, close, whitespace = "<thinking>", "</thinking>", " \t\n\r\v\f"
-	tail := strings.Trim(text, whitespace)
-	if !strings.HasPrefix(tail, open) {
-		return text
-	}
-	var segments []string
-	for tail != "" {
-		inner, ok := strings.CutPrefix(tail, open)
-		if !ok {
-			return text
-		}
-		cursor, depth := 0, 1
-		for depth > 0 {
-			nextClose := strings.Index(inner[cursor:], close)
-			if nextClose < 0 {
-				return text
-			}
-			if nextOpen := strings.Index(inner[cursor:cursor+nextClose], open); nextOpen >= 0 {
-				depth++
-				cursor += nextOpen + len(open)
-				continue
-			}
-			depth--
-			cursor += nextClose + len(close)
-		}
-		segments = append(segments, unwrapThinkingXML(strings.Trim(inner[:cursor-len(close)], whitespace)))
-		tail = strings.TrimLeft(inner[cursor:], whitespace)
-	}
-	return strings.Join(segments, "\n")
+	return text
 }

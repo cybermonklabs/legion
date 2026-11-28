@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"encoding/json"
 	"math"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,7 +24,7 @@ func selectAnthropicCompaction(m *conversation.Message, t target) {
 	}
 	if t.anthropicReplay && m.Native.Provider == t.provider &&
 		json.Unmarshal(m.Native.Payload, &state) == nil &&
-		(compactionString(state.Signature) != "" || t.anthropicLegacy && compactionString(state.EncryptedContent) != "") {
+		(compactionString(state.Signature) != "" || compactionString(state.EncryptedContent) != "") {
 		m.Role, m.Content = conversation.Assistant, nil
 		return
 	}
@@ -46,7 +45,6 @@ type compactionFileNote struct {
 type anthropicCompactionFiles struct {
 	exact  []compactionFileNote
 	legacy string
-	redact bool
 }
 
 // beforeTurn runs after pairing any open tool call. A tool-result run never
@@ -98,7 +96,7 @@ func (f *anthropicCompactionFiles) beforeTurn(out []conversation.Message, m conv
 
 func (f *anthropicCompactionFiles) flushExact(out []conversation.Message, before float64) []conversation.Message {
 	for len(f.exact) > 0 && f.exact[0].after < before {
-		out = f.appendNote(out, f.exact[0].text)
+		out = appendCompactionFileNote(out, f.exact[0].text)
 		f.exact = f.exact[1:]
 	}
 	return out
@@ -108,7 +106,7 @@ func (f *anthropicCompactionFiles) flushLegacy(out []conversation.Message) []con
 	if f == nil || f.legacy == "" {
 		return out
 	}
-	out = f.appendNote(out, f.legacy)
+	out = appendCompactionFileNote(out, f.legacy)
 	f.legacy = ""
 	return out
 }
@@ -120,83 +118,11 @@ func (f *anthropicCompactionFiles) finish(out []conversation.Message) []conversa
 	return f.flushLegacy(f.flushExact(out, math.Inf(1)))
 }
 
-func (f *anthropicCompactionFiles) appendNote(out []conversation.Message, text string) []conversation.Message {
+func appendCompactionFileNote(out []conversation.Message, text string) []conversation.Message {
 	if blank(text) {
 		return out
 	}
-	if f.redact {
-		text = redactCompactionFileNote(text)
-	}
 	return append(out, anthropicUserText(text))
-}
-
-// The pin uses ASCII case-insensitive matching and lookaround. In Go, /i
-// would also match Unicode case folds such as Kelvin sign. Check boundary
-// bytes separately so a separator does not hide an adjacent match.
-var compactionTokenPattern = regexp.MustCompile(
-	`[gG][hH][oOpPuUsSrR]_[A-Za-z0-9_*]{36,}|` +
-		`[gG][iI][tT][hH][uU][bB]_[pP][aA][tT]_[A-Za-z0-9_*]{36,}|` +
-		`[gG][lL][pP][aA][tT]-[A-Za-z0-9_*-]{20,}|` +
-		`[sS][kK]-[pP][rR][oO][jJ]-[A-Za-z0-9_*-]{36,}|` +
-		`[sS][kK]-[aA][nN][tT]-[A-Za-z0-9_*-]{36,}|` +
-		`[sS][kK]-[A-Za-z0-9_*-]{48,}`)
-
-func redactCompactionFileNote(text string) string {
-	var result strings.Builder
-	last := 0
-	for _, match := range compactionTokenPattern.FindAllStringIndex(text, -1) {
-		start, end := match[0], match[1]
-		if start > 0 && compactionTokenByte(text[start-1]) || end < len(text) && compactionTokenByte(text[end]) {
-			continue
-		}
-		token := text[start:end]
-		lower := strings.ToLower(token)
-		prefix, replacement := 3, "[openai_token_redacted]"
-		switch {
-		case strings.HasPrefix(lower, "github_pat_"):
-			prefix, replacement = len("github_pat_"), "[github_token_redacted]"
-		case strings.HasPrefix(lower, "gh"):
-			prefix, replacement = 4, "[github_token_redacted]"
-		case strings.HasPrefix(lower, "glpat-"):
-			prefix, replacement = len("glpat-"), "[gitlab_token_redacted]"
-		case strings.HasPrefix(lower, "sk-ant-"):
-			prefix, replacement = len("sk-ant-"), "[anthropic_token_redacted]"
-		case strings.HasPrefix(lower, "sk-proj-"):
-			prefix = len("sk-proj-")
-		}
-		var classes uint8
-		allStars := true
-		for i := prefix; i < len(token); i++ {
-			b := token[i]
-			allStars = allStars && b == '*'
-			switch {
-			case b >= 'a' && b <= 'z':
-				classes |= 1
-			case b >= 'A' && b <= 'Z':
-				classes |= 2
-			case b >= '0' && b <= '9':
-				classes |= 4
-			case b == '_' || b == '-':
-				classes |= 8
-			}
-		}
-		if !allStars && classes&(classes-1) == 0 {
-			continue
-		}
-		result.WriteString(text[last:start])
-		result.WriteString(replacement)
-		last = end
-	}
-	if last == 0 {
-		return text
-	}
-	result.WriteString(text[last:])
-	return result.String()
-}
-
-func compactionTokenByte(b byte) bool {
-	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' ||
-		b == '_' || b == '*' || b == '-'
 }
 
 // shapeAnthropicHistory applies the encoder after tool pairing. The neutral model

@@ -16,16 +16,13 @@ type target struct {
 	provider, api, model string
 	// signing is an Anthropic endpoint that verifies thinking signatures and replays no unsigned
 	// thinking (Options).
-	signing              bool
-	officialAnthropic    bool
-	textOnly             bool
-	prefixBinding        bool
-	demotionClass        string
-	anthropicSystem      bool
-	anthropicEffort      bool
-	anthropicReplay      bool
-	anthropicLegacy      bool
-	anthropicRedactFiles bool
+	signing           bool
+	officialAnthropic bool
+	textOnly          bool
+	prefixBinding     bool
+	anthropicSystem   bool
+	anthropicEffort   bool
+	anthropicReplay   bool
 }
 
 // toRequest applies the pinned history transforms and projects the target encoder's
@@ -35,7 +32,6 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 		t.prefixBinding = anthropicPrefixBinding(t.model)
 		t.anthropicSystem, t.anthropicEffort = anthropicControlSupport(t.model)
 	}
-	t.demotionClass = replayModelClass(t.model)
 	messages = dropMalformedToolCalls(messages)
 	latest := -1
 	for i, m := range messages {
@@ -48,7 +44,7 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 	var latestRewrite *float64
 	var compactionFiles *anthropicCompactionFiles
 	if t.api == conversation.AnthropicMessages && t.anthropicReplay {
-		compactionFiles = &anthropicCompactionFiles{redact: t.anthropicRedactFiles}
+		compactionFiles = &anthropicCompactionFiles{}
 	}
 	for i, m := range messages {
 		if t.prefixBinding && m.rewriteAt != nil && (latestRewrite == nil || *m.rewriteAt > *latestRewrite) {
@@ -235,7 +231,7 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 				continue
 			case sameModel:
 			default:
-				thinking = conversation.Block{Type: conversation.Text, Text: demotedThinking(t.demotionClass, thinking.Text)}
+				thinking = conversation.Block{Type: conversation.Text, Text: demotedThinking(openAIThinkingDialect, thinking.Text)}
 			}
 			survivingThinking = true
 			converted[i] = &thinking
@@ -313,7 +309,7 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 				continue
 			}
 			if signed || !replaysUnsigned {
-				*block = conversation.Block{Type: conversation.Text, Text: demotedThinking(t.demotionClass, block.Text)}
+				*block = conversation.Block{Type: conversation.Text, Text: demotedThinking(anthropicThinkingDialect, block.Text)}
 			} else {
 				block.Signature = ""
 			}

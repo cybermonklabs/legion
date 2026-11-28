@@ -138,10 +138,10 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // Read replaces malformed native function arguments with a bounded diagnostic. Its parser
 // message can differ from the pinned JavaScript parser's.
 //
-// The reader does not apply these request-time branches of transform-messages.ts:
+// The reader does not apply these request-time branches:
 //
-//   - Credential-pattern redaction changes nothing when the caller has not enabled it, or
-//     when the replay contains no matching token. The session does not record that setting.
+//   - The sender applies the session's secrets policy to credential redaction and compaction file
+//     notes. The session journal does not record that policy.
 //   - foreignCredential changes nothing unless the Anthropic target verifies signatures and
 //     both the recorded and current credential IDs are known and different. Read has no current ID.
 //   - Responses portable reasoning needs the effective target compat, including the per-call
@@ -158,8 +158,8 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 //     When the pin drops either block for the target, Read drops it too.
 //
 // Read checks the restored target, not the models that wrote earlier turns. It accepts only
-// anthropic with anthropic-messages and a claude- model, or openai with openai-responses and
-// a gpt- model outside the GPT OSS family. Other targets return conversation.ErrUnknownFormat.
+// anthropic with anthropic-messages and a claude- model of class anthropic, or openai with
+// openai-responses and a gpt- model of class openai. Other targets return conversation.ErrUnknownFormat.
 type Options struct {
 	// ReplayUnsignedThinking describes the endpoint used for the supported Anthropic target.
 	// True allows unsigned same-model thinking on endpoints that do not verify signatures.
@@ -174,13 +174,9 @@ type Options struct {
 	TextOnly bool
 	// ReplayAnthropicCompaction is true if the resolved model and endpoint accept
 	// Anthropic compaction blocks. The default is to replay the summary as text.
+	// On a non-compaction request, the sender sends the replay edit when the
+	// replayed block has encryptedContent and no signature.
 	ReplayAnthropicCompaction bool
-	// ReplayLegacyAnthropicCompaction also allows encrypted legacy blocks without
-	// a signature. Set it only when the sender enables the legacy replay edit.
-	ReplayLegacyAnthropicCompaction bool
-	// RedactAnthropicCompactionFiles applies the pin's credential-pattern
-	// redaction to native compaction file-note text when enabled for the request.
-	RedactAnthropicCompactionFiles bool
 }
 
 // Read reads a session's content.
@@ -220,11 +216,9 @@ func Read(content []byte, opts Options) (*Session, error) {
 	}
 	s.Messages, err = toRequest(built.messages, target{
 		provider: provider, api: s.API, model: model, signing: !opts.ReplayUnsignedThinking,
-		officialAnthropic:    provider == "anthropic" && !opts.NonOfficialAnthropicEndpoint,
-		textOnly:             opts.TextOnly,
-		anthropicReplay:      opts.ReplayAnthropicCompaction,
-		anthropicLegacy:      opts.ReplayLegacyAnthropicCompaction,
-		anthropicRedactFiles: opts.RedactAnthropicCompactionFiles,
+		officialAnthropic: provider == "anthropic" && !opts.NonOfficialAnthropicEndpoint,
+		textOnly:          opts.TextOnly,
+		anthropicReplay:   opts.ReplayAnthropicCompaction,
 	})
 	if err != nil {
 		return nil, err

@@ -368,21 +368,16 @@ func ompAnthropicTarget() target {
 }
 
 func TestDemotedThinkingUsesPinnedDialect(t *testing.T) {
-	for _, tc := range []struct{ id, in, want string }{
-		{"anthropic/alias", "reasoning", "reasoning"},
-		{"gemini-3", "reasoning", "```thinking\nreasoning\n```"},
-		{"google/gemma-4", "reasoning", "<think>\nreasoning\n</think>"},
-		{"gpt-6.1", "reasoning", "<think>\nreasoning\n</think>"},
-		{"o4-mini", "reasoning", "<think>\nreasoning\n</think>"},
-		{"deepseek-v4", "reasoning", "<think>\nreasoning\n</think>"},
-		{"qwen3", "reasoning", "<think>\nreasoning\n</think>"},
-		{"glm-5", "reasoning", "<think>\nreasoning\n</think>"},
-		{"moonshotai/k3", "reasoning", "<think>\nreasoning\n</think>"},
-		{"custom-model", " <thinking><thinking>reasoning</thinking></thinking> <thinking>next</thinking> ", "<thinking>\nreasoning\nnext\n</thinking>"},
-		{"minimax-m2", "Prose <thinking>reasoning</thinking>", "<thinking>\nProse <thinking>reasoning</thinking>\n</thinking>"},
+	for _, tc := range []struct {
+		id, in, want string
+		dialect      thinkingDialect
+	}{
+		{"anthropic", "reasoning", "reasoning", anthropicThinkingDialect},
+		{"openai", "reasoning", "<think>\nreasoning\n</think>", openAIThinkingDialect},
+		{"openai_empty", "", "", openAIThinkingDialect},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
-			if got := demotedThinking(replayModelClass(tc.id), tc.in); got != tc.want {
+			if got := demotedThinking(tc.dialect, tc.in); got != tc.want {
 				t.Errorf("thinking = %q, want %q", got, tc.want)
 			}
 		})

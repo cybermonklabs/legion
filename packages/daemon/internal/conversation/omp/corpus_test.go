@@ -183,9 +183,7 @@ func compareCorpusSession(t *testing.T, route target, content []byte) string {
 		model = newAnthropicStandIn(t)
 		// Official signing and tool ID rules, with native compaction over loopback.
 		// The pin accepts a Bedrock Messages proxy for native replay at its configured URL.
-		// Permit legacy replay too: the pin includes its replay edit for unsigned cached state.
 		opts.ReplayAnthropicCompaction = true
-		opts.ReplayLegacyAnthropicCompaction = true
 	} else {
 		model = newOpenAIStandIn(t)
 	}
