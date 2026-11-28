@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // Server answers the helper socket. PeerOf is a field so tests can present a chosen pid.
@@ -52,6 +53,12 @@ type Server struct {
 	// Zero, which is what cmd/cipher-helper leaves it, means DefaultBrokerCallBound; a row that
 	// reads the bound sets one short enough to be quick.
 	BrokerCallBound time.Duration
+	// Clock is the time this server's own timers run on: a register's wait, the enroll
+	// retry's backoff, the first confirming renew's bound, the renew cadence, and a broker-call
+	// op's bound and the timer that answers it (brokerCall). Nil is
+	// clock.Real; a test hands it a clocktest.Fake and moves it rather than waiting a
+	// cadence out. The Broker's own timers take the clock the Broker is given.
+	Clock clock.Clock
 	// calls counts the connections Serve accepted that may still owe a broker call's answer, and
 	// pending is the same count as a number, for the "connections" attribute of the line Serve
 	// logs while it waits on calls: each connection counts from its accept until its handler has
@@ -66,34 +73,16 @@ type Server struct {
 	// drainBoundNS is DefaultDrainBound unless SetDrainBound names another: how long a drain
 	// holds before the helper ends it by itself (drain). Atomic for the reason dormantGraceNS is.
 	drainBoundNS atomic.Int64
-	// drainTimer, when set (setDrainTimer), arms the timer that ends a drain in place of
-	// time.AfterFunc: the seam through which a test sees the bound a drain's timer is armed with
-	// and fires it itself, so no clock decides the row. Atomic for the reason dormantGraceNS is.
+	// drainTimer, when set (setDrainTimer), arms the timer that ends a drain in place of the
+	// server clock's AfterFunc: the seam through which a test sees the bound a drain's timer is
+	// armed with and fires it itself, so no clock decides the row. Atomic for the reason
+	// dormantGraceNS is.
 	drainTimer atomic.Pointer[func(bound time.Duration, end func())]
-	// brokerCallSlack is how long after the bound brokerCall's timer answers an op still running
-	// (brokerCallTimerSlack): zero, which every production caller leaves it, means
-	// DefaultBrokerCallSlack. A test that tells the op's own answer at the bound from the timer's
-	// sets a long one, so load cannot move the op's answer past the timer's. Set before the call,
-	// as BrokerCallBound is.
-	brokerCallSlack time.Duration
-	// firstConfirmTimer, when set (setFirstConfirmTimer), arms the end of the first confirming
-	// renew's bound in place of FirstConfirmBound's timeout (confirmInherited): the seam through
-	// which a test sees the bound that renew runs under and ends it itself, once the register it
-	// reads is waiting, so no clock decides the row. Atomic for the reason dormantGraceNS is.
-	firstConfirmTimer atomic.Pointer[func(bound time.Duration, end func())]
 	// testRegisterWaiting, when set, runs in waitForRegister once a register call has taken its
 	// wait and none of the channels it waits on has fired, just before it blocks: the seam through
 	// which a test knows that this Server's own register call is waiting, and no other Server's.
 	// No production caller sets it. Atomic, since a test sets it while the Server serves.
 	testRegisterWaiting atomic.Pointer[func()]
-	// testClock, when set, is renewLoop's clock in place of the wall clock: its Now for
-	// time.Now and its After for time.After, so a test walks the loop through a lease and an
-	// outage in virtual time and no scheduler's lateness moves a renewal. No production caller
-	// sets it, and a test sets it before the loop runs.
-	testClock interface {
-		Now() time.Time
-		After(time.Duration) <-chan time.Time
-	}
 	// revokesInFlight counts every revoke fired off (goRevoke) until it has returned, and
 	// revokesIdle is closed each time that count falls to zero, so a test that must see a revoke
 	// land waits for it (the tests' waitRevokes) rather than polling a fixed span for its effect.
@@ -103,6 +92,14 @@ type Server struct {
 	revokesMu       sync.Mutex
 	revokesInFlight int
 	revokesIdle     chan struct{}
+}
+
+// clock is the time this server's timers run on: Clock, or the wall clock when it is nil.
+func (s *Server) clock() clock.Clock {
+	if s.Clock == nil {
+		return clock.Real()
+	}
+	return s.Clock
 }
 
 // Serve accepts until ctx ends. Each connection carries one request.
@@ -326,24 +323,16 @@ func (s *Server) brokerCallBound() time.Duration {
 	return DefaultBrokerCallBound
 }
 
-// brokerCallTimerSlack is how long after the bound this Server's brokerCall timer answers:
-// brokerCallSlack when it is set, DefaultBrokerCallSlack otherwise.
-func (s *Server) brokerCallTimerSlack() time.Duration {
-	if s.brokerCallSlack > 0 {
-		return s.brokerCallSlack
-	}
-	return DefaultBrokerCallSlack
-}
-
 // brokerCall runs call, the broker-call op named op, under the bound B (brokerCallBound), and
-// answers by B + S, S the timer's slack (brokerCallTimerSlack, DefaultBrokerCallSlack unless a test
-// sets another), whatever the op is doing. It sets conn's deadline at B + S + 4 s, which is B + 5 s
-// at the default slack, the 5 s every op has for its read and its write, so the connection stays
-// open past the latest answer. call runs on a goroutine of its own, under ctx (Serve's) ended at
-// B, and the answer is the first of its result and a timer at B + S. On the timer the answer is
-// brokerCallOps[op](cause), the op's own refusal for an outcome it does not know, and a WARN names
-// the op and the bound; when the op ends after that, its result is logged too, so an operator can
-// see what the broker did.
+// answers by B + S, S the timer's slack (DefaultBrokerCallSlack), whatever the op is doing. It
+// sets conn's deadline at B + S + 4 s, which is B + 5 s, the 5 s every op has for its read and its
+// write, so the connection stays open past the latest answer. call runs on a goroutine of its
+// own, under ctx (Serve's) ended at B, and the answer is the first of its result and a timer at
+// B + S. The bound and the timer run
+// on the server's clock (Clock), so a test moves its fake past them; conn's deadline is the
+// kernel's, on the wall clock. On the timer the answer is brokerCallOps[op](cause), the op's own
+// refusal for an outcome it does not know, and a WARN names the op and the bound; when the op ends
+// after that, its result is logged too, so an operator can see what the broker did.
 //
 // What ends the wait, in each state the op can be in while the client waits:
 //
@@ -384,20 +373,20 @@ func (s *Server) brokerCallTimerSlack() time.Duration {
 // The timer's answer is unknown and not failed because the timer cannot see which requests the
 // op has made.
 func (s *Server) brokerCall(ctx context.Context, conn net.Conn, op string, call func(context.Context) Response) Response {
-	bound, slack := s.brokerCallBound(), s.brokerCallTimerSlack()
+	bound, slack := s.brokerCallBound(), DefaultBrokerCallSlack
 	_ = conn.SetDeadline(time.Now().Add(bound + slack + 4*time.Second))
-	callCtx, cancel := context.WithTimeout(ctx, bound)
+	callCtx, cancel := s.clock().WithTimeout(ctx, bound)
 	result := make(chan Response, 1)
 	go func() {
 		defer cancel()
 		result <- call(callCtx)
 	}()
-	timer := time.NewTimer(bound + slack)
+	timer := s.clock().NewTimer(bound + slack)
 	defer timer.Stop()
 	select {
 	case resp := <-result:
 		return resp
-	case <-timer.C:
+	case <-timer.C():
 	}
 	s.Log.Warn("a broker call did not end within its bound; its outcome is answered as unknown", "op", op, "bound", bound)
 	go func() {
@@ -843,7 +832,7 @@ func (s *Server) waitForRegister(ready, refused, settled, stop <-chan struct{}, 
 	case <-ready:
 	case <-refused:
 	case <-settled:
-	case <-time.After(wait):
+	case <-s.clock().After(wait):
 	case <-stop:
 	}
 }
@@ -1098,7 +1087,7 @@ func (s *Server) drain() Response {
 		if arm := s.drainTimer.Load(); arm != nil {
 			(*arm)(bound, end)
 		} else {
-			time.AfterFunc(bound, end)
+			s.clock().AfterFunc(bound, end)
 		}
 	}
 	return Response{OK: true, Sessions: infos}
@@ -1330,7 +1319,7 @@ var errRefused = fmt.Errorf("the broker will not honour this enrollment: %w", er
 // false), and whether the loop is about to retry, so a caller expresses only what it retries —
 // its logging and any per-failure side effect — not how retrying works. Returns whether try
 // eventually succeeded.
-func retryUntilStop(ctx context.Context, stop <-chan struct{}, wake, alsoWake func() <-chan struct{}, attempts int, start, maxDelay time.Duration, onFail func(attempt int, err error, delay time.Duration, retrying bool), try func() error) bool {
+func retryUntilStop(c clock.Clock, ctx context.Context, stop <-chan struct{}, wake, alsoWake func() <-chan struct{}, attempts int, start, maxDelay time.Duration, onFail func(attempt int, err error, delay time.Duration, retrying bool), try func() error) bool {
 	delay := start
 	for attempt := 1; attempts <= 0 || attempt <= attempts; attempt++ {
 		var woken, alsoWoken <-chan struct{}
@@ -1354,7 +1343,7 @@ func retryUntilStop(ctx context.Context, stop <-chan struct{}, wake, alsoWake fu
 			return false
 		}
 		select {
-		case <-time.After(delay):
+		case <-c.After(delay):
 			delay = min(delay*2, maxDelay)
 		case <-woken:
 			delay = start
@@ -1465,7 +1454,7 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 		// (Session.confirmSettled). So the woken attempt reads the new generation, ends this
 		// retry (errRenamed), and the pass that follows reaches confirmInherited at once,
 		// rather than when a backoff this enrollment has no part in comes round.
-		enrolled := retryUntilStop(ctx, sess.stop, s.Broker.CredentialInstalled, sess.wakeCh, 0, time.Second, time.Minute, func(attempt int, err error, delay time.Duration, retrying bool) {
+		enrolled := retryUntilStop(s.clock(), ctx, sess.stop, s.Broker.CredentialInstalled, sess.wakeCh, 0, time.Second, time.Minute, func(attempt int, err error, delay time.Duration, retrying bool) {
 			if renamed {
 				return
 			}
@@ -1491,7 +1480,7 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 				// the rest of this ladder, up to heldRetryCap.
 				if rest := heldDelay - delay; rest > 0 {
 					select {
-					case <-time.After(rest):
+					case <-s.clock().After(rest):
 					case <-sess.stop:
 					case <-ctx.Done():
 					}
@@ -1639,7 +1628,7 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 	// first is read and written by the try below alone, which retryUntilStop runs one attempt
 	// at a time: the bound is the first attempt's, and no retry's.
 	first := true
-	kept := retryUntilStop(ctx, sess.stop, s.Broker.CredentialInstalled, nil, 0, time.Second, time.Minute, func(attempt int, err error, delay time.Duration, retrying bool) {
+	kept := retryUntilStop(s.clock(), ctx, sess.stop, s.Broker.CredentialInstalled, nil, 0, time.Second, time.Minute, func(attempt int, err error, delay time.Duration, retrying bool) {
 		sess.settleConfirm(pass.EnrollmentID, pass.Generation)
 		switch {
 		case errors.Is(err, errRenamed):
@@ -1661,14 +1650,7 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 		renewCtx := ctx
 		if first {
 			first = false
-			var bounded context.Context
-			var cancel context.CancelFunc
-			if arm := s.firstConfirmTimer.Load(); arm != nil {
-				bounded, cancel = context.WithCancel(ctx)
-				(*arm)(s.firstConfirmBound(), cancel)
-			} else {
-				bounded, cancel = context.WithTimeout(ctx, s.firstConfirmBound())
-			}
+			bounded, cancel := s.clock().WithTimeout(ctx, s.firstConfirmBound())
 			defer cancel()
 			renewCtx = bounded
 		}
@@ -1682,6 +1664,7 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 		lease = next
 		return nil
 	})
+
 	if kept {
 		return lease, confirmKept
 	}
@@ -1721,10 +1704,7 @@ func enrollmentNotLive(err error) (string, bool) {
 // this change exists to prevent — so a wake counts only while the identity has in fact moved on
 // from the one being renewed.
 func (s *Server) renewLoop(ctx context.Context, sess *Session, lease time.Time, generation uint64) bool {
-	now, after := time.Now, time.After
-	if s.testClock != nil {
-		now, after = s.testClock.Now, s.testClock.After
-	}
+	now, after := s.clock().Now, s.clock().After
 	for {
 		interval := leasetime.HelperRenewAfter(lease.Sub(now()), s.MinRenew)
 		select {
@@ -1784,7 +1764,7 @@ func (s *Server) renewLoop(ctx context.Context, sess *Session, lease time.Time, 
 // again, since the session's key went with it. ctx done means the whole daemon is exiting, and
 // nothing further is attempted.
 func (s *Server) revokeLapsed(ctx context.Context, sess *Session, id string) bool {
-	revoked := retryUntilStop(ctx, sess.stop, s.Broker.CredentialInstalled, nil, 0, time.Second, time.Minute, func(attempt int, err error, delay time.Duration, retrying bool) {
+	revoked := retryUntilStop(s.clock(), ctx, sess.stop, s.Broker.CredentialInstalled, nil, 0, time.Second, time.Minute, func(attempt int, err error, delay time.Duration, retrying bool) {
 		if s.lacksCredential(err) {
 			s.Log.Error("session cannot enroll: revoking its lapsed enrollment first needs a launcher credential, and the helper holds none; "+cipherclient.Hint(s.Broker.noCredentialFailure()),
 				"runtime_id", sess.RuntimeID(), "enrollment_id", id, "why", s.Broker.noCredentialReason(), "in", delay)
@@ -1792,6 +1772,7 @@ func (s *Server) revokeLapsed(ctx context.Context, sess *Session, id string) boo
 		}
 		s.Log.Warn("revoking the lapsed enrollment failed; retrying", "runtime_id", sess.RuntimeID(), "enrollment_id", id, "error", err, "in", delay)
 	}, func() error { return s.revokeOnce(ctx, id) })
+
 	if !revoked && ctx.Err() == nil {
 		s.goRevoke(ctx, id)
 	}
@@ -1892,18 +1873,6 @@ func (s *Server) setDrainTimer(arm func(bound time.Duration, end func())) {
 	s.drainTimer.Store(&arm)
 }
 
-// setFirstConfirmTimer makes arm what ends the first confirming renew's bound, in place of
-// FirstConfirmBound's timeout (confirmInherited): arm is handed the bound and the func that ends
-// it, and runs that func when it chooses. Nil puts the timeout back. Safe to call while the
-// Server runs.
-func (s *Server) setFirstConfirmTimer(arm func(bound time.Duration, end func())) {
-	if arm == nil {
-		s.firstConfirmTimer.Store(nil)
-		return
-	}
-	s.firstConfirmTimer.Store(&arm)
-}
-
 // retire forgets the session. One with no omp session id has its enrollments revoked at once by
 // the bounded revoke (three tries; the lease is the fallback), fired off on goroutines of their
 // own as every sibling path fires it (SweepDormant), so an unregister answers at once with what
@@ -1948,7 +1917,7 @@ func (s *Server) retire(ctx context.Context, sess *Session, why string) {
 // DormantGrace ago and did not come back, and forgets it: the one its key holds and any it was
 // still to revoke. The helper runs it on a ticker (SweepLoop); a test calls it directly.
 func (s *Server) SweepDormant(ctx context.Context) {
-	expired := s.Registry.ExpiredDormant(time.Now().Add(-s.dormantGrace()))
+	expired := s.Registry.ExpiredDormant(s.clock().Now().Add(-s.dormantGrace()))
 	if len(expired) == 0 {
 		return
 	}
@@ -1998,11 +1967,12 @@ func (s *Server) goRevoke(ctx context.Context, id string) {
 // SweepLoop runs SweepDormant until ctx ends. every is the tick; cmd/cipher-helper passes
 // a minute, and a test a short one.
 func (s *Server) SweepLoop(ctx context.Context, every time.Duration) {
-	t := time.NewTicker(every)
+	t := s.clock().NewTimer(every)
 	defer t.Stop()
 	for {
 		select {
-		case <-t.C:
+		case <-t.C():
+			t.Reset(every)
 			s.SweepDormant(ctx)
 		case <-ctx.Done():
 			return
@@ -2013,11 +1983,12 @@ func (s *Server) SweepLoop(ctx context.Context, every time.Duration) {
 // revoke is the bounded revoke: three tries, 2 s apart, then the lease is the fallback. It uses
 // revokeOnce, so an enrollment of another operator counts as done here too.
 func (s *Server) revoke(ctx context.Context, id string) {
-	retryUntilStop(ctx, nil, nil, nil, 3, 2*time.Second, 2*time.Second, func(attempt int, err error, delay time.Duration, retrying bool) {
+	retryUntilStop(s.clock(), ctx, nil, nil, nil, 3, 2*time.Second, 2*time.Second, func(attempt int, err error, delay time.Duration, retrying bool) {
 		if !retrying {
 			s.Log.Warn("revoke failed; the lease lapses on its own", "enrollment_id", id, "error", err)
 		}
 	}, func() error { return s.revokeOnce(ctx, id) })
+
 }
 
 func (s *Server) save() {

@@ -84,17 +84,10 @@ func TestServeWaitsForTheRevokesItFiredOff(t *testing.T) {
 	}
 	testwait.Receive(t, "the revoke unregister fired off to reach the transport", held.reached)
 	r.cancel()
-	select {
-	case <-r.served:
-		t.Fatal("Serve returned while the revoke it fired off was still in flight; a helper that exits then cuts the revoke off")
-	case <-time.After(time.Second):
-	}
+	testwait.Quiet(t, "Serve's return while the revoke it fired off is still in flight", r.served, time.Second,
+		"Serve blocked on the revokes it fired off reports nothing: no state of the server tells a Serve waiting there from one that has not reached its return yet, no later action can be ordered after a return that must not happen, and the held DELETE is real HTTP, which synctest cannot hold")
 	letGo()
-	select {
-	case <-r.served:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Serve did not return within 10 s of the revoke's request being let go")
-	}
+	testwait.Receive(t, "Serve to return once the revoke's request was let go", r.served)
 }
 
 // TestAStopEndsARevokeAnUnresponsiveBrokerHolds: the wait above cannot hang a stop. Every revoke
@@ -122,13 +115,8 @@ func TestAStopEndsARevokeAnUnresponsiveBrokerHolds(t *testing.T) {
 		defer r.fake.mu.Unlock()
 		return r.fake.revokeAttempts == 1
 	}
-	waitUpTo(t, 5*time.Second, reached, "unregister answered, but its revoke never reached the broker")
+	waitUpTo(t, reached, "unregister answered, but its revoke never reached the broker")
 
-	stopped := time.Now()
 	r.cancel()
-	select {
-	case <-r.served:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("Serve did not return within 5 s of its context ending, with the broker holding the revoke's request since %s", time.Since(stopped))
-	}
+	testwait.Receive(t, "Serve to return once its context ended, with the broker still holding the revoke's request", r.served)
 }

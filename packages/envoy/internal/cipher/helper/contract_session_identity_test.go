@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type contractCreatedRequest struct {
@@ -185,13 +186,12 @@ func rebootRecords(t *testing.T, cr *contractRig) {
 	}
 }
 
-// awaitEnrollmentsSaved waits, under the test's own deadline and no bound of its own, until cr's
-// records file names, for every session the helper holds with an enrollment, that session's
-// runtime id with that enrollment.
+// awaitEnrollmentsSaved waits, through the shared wait (testwait.Until) and no bound of its own,
+// until cr's records file names, for every session the helper holds with an enrollment, that
+// session's runtime id with that enrollment.
 func awaitEnrollmentsSaved(t *testing.T, cr *contractRig) {
 	t.Helper()
-	deadline, bounded := t.Deadline()
-	for {
+	testwait.Until(t, "the helper to save to "+cr.sessionsPath+" the enrollments its sessions hold", func() (map[string]string, bool) {
 		want := map[string]string{}
 		for _, sess := range cr.srv.Registry.List() {
 			if id := sess.identity().EnrollmentID; id != "" {
@@ -207,14 +207,8 @@ func awaitEnrollmentsSaved(t *testing.T, cr *contractRig) {
 				delete(want, rec.RuntimeID)
 			}
 		}
-		if len(want) == 0 {
-			return
-		}
-		if bounded && time.Now().After(deadline) {
-			t.Fatalf("the helper never saved the enrollments %v its sessions hold to %s", want, cr.sessionsPath)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return want, len(want) == 0
+	})
 }
 
 // TestContractASessionThatDoesNotComeBackLosesItsGrant is the other half: the same reboot, and

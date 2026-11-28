@@ -26,7 +26,7 @@ type stoppedLoopRig struct {
 	helper *Broker
 	served *rig
 	out    *syncBuffer
-	expiry *expiryTimers
+	expiry *expiryWatch
 	waits  *tradeWaits
 	trades func() int
 	// requests counts every request to the token endpoint, whatever it is answered: a trade the
@@ -199,7 +199,7 @@ func TestAStoppedTradeLoopHoldingACredentialPromisesNoRenewal(t *testing.T) {
 		t.Fatalf("login-status's line while the stopped loop holds a credential reads %q; want it to promise no renewal", lapse)
 	}
 
-	r.expiry.fire(t, first, 0)
+	fireArmedAt(t, r.expiry.fake, first.expiresAt, "the drop at the credential's expiry")
 	waitFor(t, func() bool { return !r.helper.HasCredential() })
 	waitForRecord(t, r.out, dropExpired+"; cleared: no session can enroll under this machine's credential; "+cipherclient.Hint(cipherclient.FailureIdentityStopped))
 	stopped := "no machine credential; " + cipherclient.Hint(cipherclient.FailureIdentityStopped)

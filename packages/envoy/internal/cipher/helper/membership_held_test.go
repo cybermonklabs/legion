@@ -18,6 +18,7 @@ package helper
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -189,7 +190,7 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		if !b.HasCredential() {
 			t.Fatal("the helper dropped its credential at a membership_held trade, before the credential's own expiry")
 		}
-		expiries.fire(t, first, 0)
+		fireArmedAt(t, expiries.fake, first.expiresAt, "the drop at the first credential's expiry")
 		waitFor(t, func() bool { return !b.HasCredential() })
 		if status := b.LoginStatus(); status.Dropped != dropExpired {
 			t.Fatalf("login-status once the credential lapsed: %+v; want it dropped at its expiry (%q)", status, dropExpired)
@@ -252,22 +253,21 @@ func (w *tradeWaits) after(d time.Duration) <-chan time.Time {
 	return ch
 }
 
-// wait answers the n-th wait the loop asked for, failing the test when the loop asks for none
-// within 5 s: a loop that stopped trading asks for no more.
+// wait answers the n-th wait the loop asked for, failing the test at the shared wait's bound when
+// the loop never asks for it: a loop that stopped trading asks for no more. The failure prints how
+// many waits it had asked for.
 func (w *tradeWaits) wait(t *testing.T, n int) tradeWait {
 	t.Helper()
 	var got tradeWait
-	if !testwait.Holds(5*time.Second, 5*time.Millisecond, func() bool {
+	testwait.Until(t, fmt.Sprintf("the trade loop to ask for wait %d; a loop that stopped trading after membership_held asks for no more, and the credential could come back only at a restart", n+1), func() (int, bool) {
 		w.mu.Lock()
 		defer w.mu.Unlock()
 		if len(w.asked) <= n {
-			return false
+			return len(w.asked), false
 		}
 		got = w.asked[n]
-		return true
-	}) {
-		t.Fatalf("the trade loop asked for %d waits; want a wait %d: after membership_held it stopped trading, so the credential could come back only at a restart", w.count(), n+1)
-	}
+		return len(w.asked), true
+	})
 	return got
 }
 
@@ -278,10 +278,4 @@ func (w *tradeWaits) fire(t *testing.T, n int) time.Duration {
 	asked := w.wait(t, n)
 	asked.ch <- time.Now()
 	return asked.d
-}
-
-func (w *tradeWaits) count() int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return len(w.asked)
 }
