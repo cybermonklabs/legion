@@ -24,6 +24,8 @@ import (
 	"github.com/reearth/ygo/persistence"
 	ygws "github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -97,6 +99,12 @@ func newTestServiceOnTo(t *testing.T, database *store.Store, logger *slog.Logger
 	t.Helper()
 	deps := testServiceDeps(database)
 	deps.Logger = logger
+	return newTestServiceWith(t, deps)
+}
+
+// newTestServiceWith builds a test service with caller-supplied dependencies, including its clock.
+func newTestServiceWith(t *testing.T, deps Deps) *Service {
+	t.Helper()
 	service := New(deps)
 	service.SetFormGate(formKept)
 	testcleanup.Add(t, func() {
@@ -612,7 +620,7 @@ func TestSettlementRepairsServerOwnedAskAttributesOncePerVersion(t *testing.T) {
 	`, artifactID).Scan(&askID); err != nil {
 		t.Fatalf("read indexed ask: %v", err)
 	}
-	answer := model.AskAnswer{User: "alice", Selected: []string{}, At: time.Now().UTC()}
+	answer := model.AskAnswer{User: "alice", Selected: []string{}, At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	answerJSON, err := json.Marshal(answer)
 	if err != nil {
 		t.Fatalf("encode answer: %v", err)
@@ -836,6 +844,7 @@ func TestSetAskBlockTextRefusesEveryEditOfAnAskBreakingItsContentRule(t *testing
 		"paragraph after the list": {"Stray words after the list\n", `"Stray words after the list"`, "paragraph"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 			editLiveTree(t, service, artifactID, appendToAsk(parsedBlock(t, test.block)))
 			settleCurrentGeneration(t, service, artifactID)
@@ -1071,6 +1080,7 @@ func TestSetAskBlockTextRefusalNamesADeleteThatAppliesWhateverTheShape(t *testin
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 			editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 				ask := firstAsk(tree)
@@ -1092,6 +1102,7 @@ func TestSetAskBlockTextRefusalNamesADeleteThatAppliesWhateverTheShape(t *testin
 func TestEditAskRepairsAnEmptyQuestion(t *testing.T) {
 	t.Parallel()
 	t.Run("the decision keeps its content rule", func(t *testing.T) {
+		t.Parallel()
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 			firstAsk(tree).Children[0].Children = nil
@@ -1134,6 +1145,7 @@ func TestEditAskRepairsAnEmptyQuestion(t *testing.T) {
 	// one before it, deleting a person's options unseen, so both lists are the very nodes the
 	// document held, and the row the edit reports holds the options of both.
 	t.Run("the decision holds a second bullet list", func(t *testing.T) {
+		t.Parallel()
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 			ask := firstAsk(tree)
@@ -1207,6 +1219,7 @@ func TestEditAskRepairsAnEmptyQuestion(t *testing.T) {
 func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 	t.Parallel()
 	t.Run("the decision keeps its content rule", func(t *testing.T) {
+		t.Parallel()
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 			firstAsk(tree).Children[0].Children = nil
@@ -1223,6 +1236,7 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 		assertAskEditWroteNothing(t, service, artifactID, before, err)
 	})
 	t.Run("the decision breaks its content rule too", func(t *testing.T) {
+		t.Parallel()
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 			ask := firstAsk(tree)
@@ -1252,6 +1266,7 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 	// an upload of the document as a new version, which is the path an agent has, and the
 	// document editor, where a person writes it.
 	t.Run("a paragraph the question would replace holds an image", func(t *testing.T) {
+		t.Parallel()
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 			ask := firstAsk(tree)
@@ -1783,12 +1798,17 @@ func TestSetAskBlockTextRefusalOfEveryBrokenBodyHoldingADecisionLeadsToAValidDec
 				id, _ := decision.Attrs[pmdoc.BlockIDAttr].(string)
 				whys = append(whys, followAskRefusal(t, service, artifactID, id))
 			}
+			settledByFollow := false
 			if readAskBlockStrictly(firstAsk(liveTree(t, service, artifactID))) != nil {
-				whys = append(whys, followAskRefusal(t, service, artifactID, "ask-lists"))
+				why := followAskRefusal(t, service, artifactID, "ask-lists")
+				whys = append(whys, why)
+				settledByFollow = why == "" // A successful follow settles before it reads back the repair.
 			} else if err := editAskUrgency(service, artifactID, "ask-lists"); err != nil {
 				t.Fatalf("ask edit of the decision the nested repair left reading as one: %v", err)
 			}
-			settleCurrentGeneration(t, service, artifactID)
+			if !settledByFollow {
+				settleCurrentGeneration(t, service, artifactID)
+			}
 			// No follow left a decision worse than it found it: every decision that still does
 			// not read as one did not read as one before any of them either, each refusal having
 			// named either a delete that repaired the decision it was sent to, or no delete at
@@ -1836,6 +1856,7 @@ func TestSetAskBlockTextRefusalOfEveryBrokenBodyHoldingADecisionLeadsToAValidDec
 func TestSetAskBlockTextRefusalOfNestedDecisionsNamesOnlyWhatBreaksTheRule(t *testing.T) {
 	t.Parallel()
 	t.Run("the decision and the one it holds both broken", func(t *testing.T) {
+		t.Parallel()
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 			ask := firstAsk(tree)
@@ -1888,6 +1909,7 @@ func TestSetAskBlockTextRefusalOfNestedDecisionsNamesOnlyWhatBreaksTheRule(t *te
 		}
 	})
 	t.Run("an unreadable decision before the broken one", func(t *testing.T) {
+		t.Parallel()
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 			list := firstAsk(tree).Children[1]
@@ -1935,6 +1957,7 @@ func TestSetAskBlockTextRefusalOfNestedDecisionsNamesOnlyWhatBreaksTheRule(t *te
 	// The one edit that repairs the two decisions holding it deletes that decision itself, by its
 	// own block id, and never the blocks inside it.
 	t.Run("the decision nested three deep holds no question", func(t *testing.T) {
+		t.Parallel()
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 			middle := parsedBlock(t, ":::ask{#ask-middle urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich day?\n\n- Monday\n:::\n")
@@ -1992,6 +2015,7 @@ func TestSetAskBlockTextRefusalOfNestedDecisionsNamesOnlyWhatBreaksTheRule(t *te
 	// in the document editor, this same ask edit, sent again, names this decision's deletes, and
 	// following them leaves both decisions reading as decisions.
 	t.Run("the decision holding it has no question", func(t *testing.T) {
+		t.Parallel()
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 			ask := firstAsk(tree)
@@ -2044,6 +2068,7 @@ func TestSetAskBlockTextRefusalOfNestedDecisionsNamesOnlyWhatBreaksTheRule(t *te
 	// decision's deletes, which leaves both reading as decisions, for a holder no ask edit of its
 	// own reaches.
 	t.Run("the decision holding it is decided and broken too", func(t *testing.T) {
+		t.Parallel()
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		answerIndexedAsk(t, service, artifactID, "ask-lists")
 		settleCurrentGeneration(t, service, artifactID)
@@ -2651,6 +2676,7 @@ func TestSetAskBlockTextRefusalBeforeBlockIDsSettleNamesNoDelete(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 			editLiveTree(t, service, artifactID, edit(t))
 			before := liveTree(t, service, artifactID)
@@ -2881,6 +2907,7 @@ func TestAskOptionsEditRefusesDroppingAnItemHoldingContent(t *testing.T) {
 		{name: "an item holding nothing but its plain line", options: []model.AskOption{hold}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := seedIndexedRichAsk(t)
 			before := liveTree(t, service, artifactID)
 			list := askOptionList(t, service, artifactID)
@@ -2980,6 +3007,7 @@ func TestAskOptionsEditOfALineHoldingTypedWhitespace(t *testing.T) {
 	ship := model.AskOption{Label: "Ship", Description: "Release it"}
 	for _, line := range []string{"Hold: Wait for review ", "Hold : Wait for review"} {
 		t.Run("the drop of "+strconv.Quote(line), func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := seedTypedOptionLine(t, line)
 			held := askOptionList(t, service, artifactID).Children[0]
 
@@ -2996,6 +3024,7 @@ func TestAskOptionsEditOfALineHoldingTypedWhitespace(t *testing.T) {
 			assertAskRepaired(t, service, artifactID, "ask-lists", "Should we ship?", options)
 		})
 		t.Run("the rewrite of "+strconv.Quote(line), func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := seedTypedOptionLine(t, line)
 
 			options := []model.AskOption{ship, {Label: "Hold", Description: "Wait for the sign-off"}}
@@ -3047,26 +3076,31 @@ func TestAskOptionsEditOfALineHoldingATypedBreak(t *testing.T) {
 	ship := model.AskOption{Label: "Ship", Description: "Release it"}
 	for _, test := range []struct {
 		name   string
-		inline []*pmdoc.Node
+		inline func() []*pmdoc.Node
 		text   string
 	}{
 		{
 			name: "a soft break",
-			inline: []*pmdoc.Node{
-				{Type: "text", Text: "Hold: Wait"},
-				{Type: "hardbreak", Attrs: pmdoc.Attrs{"isInline": true}},
-				{Type: "text", Text: "for review"},
+			inline: func() []*pmdoc.Node {
+				return []*pmdoc.Node{
+					{Type: "text", Text: "Hold: Wait"},
+					{Type: "hardbreak", Attrs: pmdoc.Attrs{"isInline": true}},
+					{Type: "text", Text: "for review"},
+				}
 			},
 			text: "Hold: Wait\nfor review",
 		},
 		{
-			name:   "a line feed its text ends with",
-			inline: []*pmdoc.Node{{Type: "text", Text: "Hold: Wait for review\n"}},
-			text:   "Hold: Wait for review\n",
+			name: "a line feed its text ends with",
+			inline: func() []*pmdoc.Node {
+				return []*pmdoc.Node{{Type: "text", Text: "Hold: Wait for review\n"}}
+			},
+			text: "Hold: Wait for review\n",
 		},
 	} {
 		t.Run("the drop of "+test.name, func(t *testing.T) {
-			service, artifactID := seedOptionLineHolding(t, test.inline, test.text)
+			t.Parallel()
+			service, artifactID := seedOptionLineHolding(t, test.inline(), test.text)
 			held := askOptionList(t, service, artifactID).Children[0]
 
 			options := []model.AskOption{ship}
@@ -3082,7 +3116,8 @@ func TestAskOptionsEditOfALineHoldingATypedBreak(t *testing.T) {
 			assertAskRepaired(t, service, artifactID, "ask-lists", "Should we ship?", options)
 		})
 		t.Run("the rewrite of "+test.name, func(t *testing.T) {
-			service, artifactID := seedOptionLineHolding(t, test.inline, test.text)
+			t.Parallel()
+			service, artifactID := seedOptionLineHolding(t, test.inline(), test.text)
 
 			options := []model.AskOption{ship, {Label: "Hold", Description: "Wait for the sign-off"}}
 			if err := sendAskOptions(service, artifactID, AskBlockEdit{Options: &options}); err != nil {
@@ -3177,6 +3212,7 @@ func TestAskOptionsEditRefusesRewritingALineHoldingMarkup(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := newTestService(t)
 			service.settle = time.Hour
 			seedServiceText(t, service, artifactID, ":::ask{#ask-lists urgency=\"med\" multiple=\"false\" state=\"open\"}\n"+
@@ -3276,6 +3312,7 @@ func TestAskOptionsEditRefusesDroppingATaskOption(t *testing.T) {
 		{name: "an unticked option", box: "[ ]"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := newTestService(t)
 			service.settle = time.Hour
 			seedServiceText(t, service, artifactID, ":::ask{#ask-lists urgency=\"med\" multiple=\"false\" state=\"open\"}\n"+
@@ -3468,6 +3505,7 @@ func TestAskOptionsEditChargesTheItemsItSendsToTheWritesBudget(t *testing.T) {
 	count := pmdoc.MaxDocumentElements/2/itemElements + 50
 
 	t.Run("the new items it sends are charged to the write", func(t *testing.T) {
+		t.Parallel()
 		block, err := parseAskBlock(parsedBlock(t, ":::ask{#ask-lists urgency=\"med\" multiple=\"false\" state=\"open\"}\n"+
 			"Should we ship?\n\n- Ship: Release it\n:::\n"))
 		if err != nil {
@@ -3484,14 +3522,18 @@ func TestAskOptionsEditChargesTheItemsItSendsToTheWritesBudget(t *testing.T) {
 	})
 
 	t.Run("the content it preserves is not", func(t *testing.T) {
-		var markdown strings.Builder
-		markdown.WriteString(":::ask{#ask-lists urgency=\"med\" multiple=\"false\" state=\"open\"}\n" +
-			"Should we ship?\n\n- Ship: Release it\n- Hold: Wait for review\n\n")
+		t.Parallel()
+		ask := parsedBlock(t, ":::ask{#ask-lists urgency=\"med\" multiple=\"false\" state=\"open\"}\n"+
+			"Should we ship?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n")
+		notes := &pmdoc.Node{Type: "bullet_list", Children: make([]*pmdoc.Node, 0, count)}
 		for index := range count {
-			fmt.Fprintf(&markdown, "  - note %d\n", index)
+			notes.Children = append(notes.Children, &pmdoc.Node{Type: "list_item", Children: []*pmdoc.Node{{
+				Type: "paragraph", Children: []*pmdoc.Node{{Type: "text", Text: fmt.Sprintf("note %d", index)}},
+			}}})
 		}
-		markdown.WriteString(":::\n")
-		block, err := parseAskBlock(parsedBlock(t, markdown.String()))
+		hold := ask.Children[1].Children[1]
+		hold.Children = append(hold.Children, notes)
+		block, err := parseAskBlock(ask)
 		if err != nil {
 			t.Fatalf("parse the ask holding a sub-list of %d items: %v", count, err)
 		}
@@ -3554,7 +3596,7 @@ func assertBrokenAskEditRefused(t *testing.T, service *Service, artifactID strin
 // the next settlement projects that back into its block.
 func answerIndexedAsk(t *testing.T, service *Service, artifactID, blockID string) {
 	t.Helper()
-	answerJSON, err := json.Marshal(model.AskAnswer{User: "alice", Selected: []string{"Ship"}, At: time.Now().UTC()})
+	answerJSON, err := json.Marshal(model.AskAnswer{User: "alice", Selected: []string{"Ship"}, At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)})
 	if err != nil {
 		t.Fatalf("encode answer: %v", err)
 	}
@@ -3855,6 +3897,7 @@ func TestReplaceCarriesAnUnreadableAskWithWhatNoRenderingWrites(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := newTestService(t)
 			service.settle = time.Hour
 			seedServiceText(t, service, artifactID, ask)
@@ -3880,6 +3923,7 @@ func TestARefusedSeedLeavesNoRoom(t *testing.T) {
 		{"markdown outside the schema", "<div>\nblock html\n</div>\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := newTestService(t)
 			tx, err := service.store.Pool.Begin(context.Background())
 			if err != nil {
@@ -4063,6 +4107,7 @@ func TestAttributesTheEditorDerivesSettleWithoutAVersion(t *testing.T) {
 		{name: "ordered list inside bullets", markdown: "- Outer\n  1. Inner one.\n  2. Inner two.", edit: labelOrderedListItems},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := newTestService(t)
 			service.settle = time.Hour
 			seedServiceText(t, service, artifactID, test.markdown)
@@ -4120,6 +4165,7 @@ func TestAMarkInsideAWordWritesNoVersion(t *testing.T) {
 				name = string(kind) + ", in a transaction that snapshots"
 			}
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				service, artifactID := newTestService(t)
 				service.settle = time.Hour
 				seedServiceText(t, service, artifactID, "Use snake_case here.")
@@ -4191,6 +4237,7 @@ func TestAReaderIsNoAuthorOfAnAgentsVersion(t *testing.T) {
 		{name: "reader connected, transactional edit", joined: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := newTestService(t)
 			service.settle = time.Hour
 			seedServiceText(t, service, artifactID, "before")
@@ -4371,11 +4418,11 @@ func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
 	armed := state.roomGeneration
 	state.mu.Unlock()
 	service.settleRoom(artifactID, armed)
-	<-foreignApplied
+	testwait.Receive(t, "the foreign update to apply", foreignApplied)
 	if foreignErr != nil {
 		t.Fatalf("apply foreign update during identity settlement: %v", foreignErr)
 	}
-	identityUpdate := <-captured
+	identityUpdate := testwait.Receive(t, "settlement to append its identity update", captured)
 	doc := crdt.New()
 	if err := crdt.ApplyUpdateV1(doc, loaded.Update, nil); err != nil {
 		t.Fatalf("decode legacy document: %v", err)
@@ -4505,7 +4552,7 @@ func TestSettleDiscardsIdentityUpdateWhenVersionTransactionFails(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), `drop function dispatch_test_reject_identity_settlement()`); err != nil {
 		t.Fatalf("drop identity settlement failure function: %v", err)
 	}
-	if err := service.awaitRoomRecovery(context.Background(), artifactID); err != nil {
+	if err := service.awaitRoomRecovery(testwait.Context(t), artifactID); err != nil {
 		t.Fatalf("await room recovery: %v", err)
 	}
 	service.settleRoom(artifactID, 0)
@@ -4535,13 +4582,13 @@ func TestFailedSettlementDoesNotDiscardSuccessorRoomUpdate(t *testing.T) {
 		Settle:      time.Hour,
 	})
 	testcleanup.Add(t, func() {
-		if persistence.released.CompareAndSwap(false, true) {
-			close(release)
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
 		}
 	})
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
+		if persistence.released.CompareAndSwap(false, true) {
+			close(release)
 		}
 	})
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -4569,7 +4616,7 @@ func TestFailedSettlementDoesNotDiscardSuccessorRoomUpdate(t *testing.T) {
 	})
 
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	<-entered
+	testwait.Receive(t, "the first append to reach the held store", entered)
 	state := service.room(artifactID)
 	state.mu.Lock()
 	generation := state.roomGeneration
@@ -4579,7 +4626,7 @@ func TestFailedSettlementDoesNotDiscardSuccessorRoomUpdate(t *testing.T) {
 		close(release)
 	}
 	waitForRoomFailure(t, service, artifactID)
-	if err := service.awaitRoomRecovery(context.Background(), artifactID); err != nil {
+	if err := service.awaitRoomRecovery(testwait.Context(t), artifactID); err != nil {
 		t.Fatalf("evict failed room: %v", err)
 	}
 
@@ -4690,7 +4737,7 @@ func TestBackfillDoesNotBypassClosedIssueForConcurrentApplyOps(t *testing.T) {
 		_, err := service.BackfillBlockIDs(context.Background())
 		backfill <- result{err: err}
 	}()
-	<-entered
+	testwait.Receive(t, "closed-document backfill to reach the injection hook", entered)
 	_, applyErr := joinedApplyOps(service, artifactID, []model.EditOp{{
 		Op:   "replace",
 		Find: "before",
@@ -4700,7 +4747,7 @@ func TestBackfillDoesNotBypassClosedIssueForConcurrentApplyOps(t *testing.T) {
 	if released.CompareAndSwap(false, true) {
 		close(release)
 	}
-	backfillResult := <-backfill
+	backfillResult := testwait.Receive(t, "closed-document backfill to return", backfill)
 	if backfillResult.err != nil {
 		t.Fatalf("backfill document: %v", backfillResult.err)
 	}
@@ -4832,7 +4879,7 @@ func TestUnlinkedDocumentIsAlwaysOpen(t *testing.T) {
 func TestSettleSkipsVersionWhenTreeLeavesTheSchema(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	service.settle = 20 * time.Millisecond
+	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.srv.Apply(context.Background(), artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
 		fragment := doc.GetXmlFragment(fragmentName)
@@ -4842,7 +4889,7 @@ func TestSettleSkipsVersionWhenTreeLeavesTheSchema(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	settleCurrentGeneration(t, service, artifactID)
 	var versions int
 	if err := service.store.Pool.QueryRow(context.Background(), `select count(*) from artifact_versions where artifact_id = $1`, artifactID).Scan(&versions); err != nil {
 		t.Fatal(err)
@@ -4860,8 +4907,7 @@ func TestSettleSkipsVersionWhenTreeLeavesTheSchema(t *testing.T) {
 func TestRolledBackWriteNeverReachesTheRoom(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
-	const settleInterval = 50 * time.Millisecond
-	service.settle = settleInterval
+	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
 	// The seed owes a settlement, which versions it (the fixture's first version is another
 	// text); settled here, it is not what a load during the transaction arms below.
@@ -4885,7 +4931,7 @@ func TestRolledBackWriteNeverReachesTheRoom(t *testing.T) {
 		t.Fatalf("roll back document mutation: %v", err)
 	}
 	ledger.Discard()
-	time.Sleep(3 * settleInterval)
+	settleCurrentGeneration(t, service, artifactID)
 	if got, err := service.Text(ctx, artifactID); err != nil || got != "before\n" {
 		t.Fatalf("live document after rollback = %q (%v), want before", got, err)
 	}
@@ -5133,80 +5179,13 @@ func settleCurrentGeneration(t *testing.T, service *Service, artifactID string) 
 	settleNow(service, artifactID)
 }
 
-// appendStall is how long awaitRoomAppends lets the service land no append at all, while the room
-// it waits for still counts one, before it fails: three times the longest such stall measured, as
-// docs/testing.md asks of a bound. With this bound lifted to 10 min, the package as CI runs it, on
-// a 288-CPU machine at a load of 230 when it began (2026-11-16), had 927 of these waits go more
-// than 1 s with no append landing and the room's counts unchanged, 231 more than 3 s and 22 5 s
-// or more; the longest went 5.363 s.
-const appendStall = 16 * time.Second
-
-// awaitRoomAppends waits until room's live updates have reached its persistence or landed, by
-// wait - the service's waitForPendingUpdates or waitForDurableAppends, which the room's idle
-// signal wakes - and fails the test if they do not. It puts no span on the wait: a room's appends
-// queue behind every other room's on the service's room-appends pool, so how long they take grows
-// with how many rooms the test drives at once, one per CPU for a test whose subtests run in
-// parallel, and with the machine's load. It fails on appends that have stopped instead: no append
-// landed anywhere in the service and the room's own counts unchanged for appendStall, or the run's
-// deadline 30 s away, so that the failure names this wait rather than the binary's timeout.
+// awaitRoomAppends waits on the room's idle signal until its live updates reach persistence or
+// become durable. The shared test deadline bounds the wait, not a span on the appends queue.
 func awaitRoomAppends(t *testing.T, service *Service, room, what string, wait func(context.Context, string) error) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	waited := make(chan error, 1)
-	go func() { waited <- wait(ctx, room) }()
-	type progress struct {
-		landed  uint64
-		pending int
-		durable int64
+	if err := wait(testwait.Context(t), room); err != nil {
+		t.Fatalf("wait for live updates to %s: %v", what, err)
 	}
-	read := func() progress {
-		pending, durable := roomAppendCounts(service, room)
-		return progress{landed: service.appendFigures.batches.Load(), pending: pending, durable: durable}
-	}
-	last, movedAt := read(), time.Now()
-	deadline, bounded := t.Deadline()
-	check := time.NewTicker(100 * time.Millisecond)
-	defer check.Stop()
-	for {
-		select {
-		case err := <-waited:
-			if err != nil {
-				t.Fatalf("wait for live updates to %s: %v", what, err)
-			}
-			return
-		case now := <-check.C:
-			if current := read(); current != last {
-				last, movedAt = current, now
-			}
-			var why string
-			switch {
-			case now.Sub(movedAt) >= appendStall:
-				why = fmt.Sprintf("no append landed in the service for %s", appendStall)
-			case bounded && deadline.Sub(now) < 30*time.Second:
-				why = "the run's deadline is 30 s away"
-			default:
-				continue
-			}
-			cancel()
-			<-waited
-			t.Fatalf("wait for live updates to %s: %s, and the room counts %d updates its persistence has not taken and %d appends that have not landed",
-				what, why, last.pending, last.durable)
-		}
-	}
-}
-
-// roomAppendCounts is what room's record counts: updates its persistence has not taken, and
-// durable appends that have not landed. A room with no record counts neither.
-func roomAppendCounts(service *Service, room string) (pending int, durable int64) {
-	value, ok := service.rooms.Load(room)
-	if !ok {
-		return 0, 0
-	}
-	state := value.(*roomState)
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return state.pendingUpdates, state.durableAppends.Load()
 }
 
 // settleNow runs the room's settlement at its current generation at once, whatever the room has not
@@ -5410,9 +5389,7 @@ func TestShutdownSkipsColdDocumentSettlement(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
-	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
-	defer cancel()
-	if err := service.Shutdown(ctx); err != nil {
+	if err := service.Shutdown(testwait.Context(t)); err != nil {
 		t.Fatalf("shutdown cold document: %v", err)
 	}
 	state := service.room(artifactID)
@@ -5432,9 +5409,7 @@ func TestShutdownStopsTimerForEvictedRoom(t *testing.T) {
 	if err := service.Evict(context.Background(), artifactID); err != nil {
 		t.Fatalf("evict scheduled room: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
-	defer cancel()
-	if err := service.Shutdown(ctx); err != nil {
+	if err := service.Shutdown(testwait.Context(t)); err != nil {
 		t.Fatalf("shutdown after eviction: %v", err)
 	}
 }
@@ -5516,12 +5491,9 @@ func TestShutdownCompletesCompactionBeforeTestStoreCloses(t *testing.T) {
 	}
 
 	persistence.closed.Store(true)
-	database.Pool.Close()
-	select {
-	case <-persistence.compactionAfterClose:
-		t.Fatal("document compaction ran after the test store closed")
-	case <-time.After(100 * time.Millisecond):
-	}
+	testwait.Returns(t, "every database connection to come back so the pool closes", database.Pool.Close)
+	testwait.Quiet(t, "a document compaction after the test store closed", persistence.compactionAfterClose, 100*time.Millisecond,
+		"a compaction left running by a defective Shutdown has no service state to inspect or later service action to join, and synctest cannot reach the real database")
 }
 
 func TestShutdownBoundsAdvisoryLockedAppendAndPreservesUpdate(t *testing.T) {
@@ -5544,9 +5516,15 @@ func TestShutdownBoundsAdvisoryLockedAppendAndPreservesUpdate(t *testing.T) {
 	if !service.hasDurableAppend(artifactID) {
 		t.Fatal("durable append finished while its advisory lock was held")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	callerClock := clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	const budget = 400 * time.Millisecond
+	ctx, cancel := callerClock.WithTimeout(context.Background(), budget)
 	defer cancel()
-	if err := service.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- service.Shutdown(ctx) }()
+	awaitShutdownScanned(t, service, artifactID)
+	callerClock.Advance(budget)
+	if err := testwait.Receive(t, "Shutdown to return at its caller's deadline", shutdown); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown while append lock held = %v, want deadline exceeded", err)
 	}
 	if err := locker.Commit(context.Background()); err != nil {
@@ -5579,7 +5557,7 @@ func TestAdversarialSettlementDoesNotMissAppendAfterClassConsume(t *testing.T) {
 	})
 	seedServiceText(t, service, artifactID, "before")
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	<-entered
+	testwait.Receive(t, "the first append to reach the held store", entered)
 	state := service.room(artifactID)
 	state.mu.Lock()
 	if state.settle == nil || !service.stopSettleTimer(state.settle) {
@@ -5599,8 +5577,8 @@ func TestAdversarialSettlementDoesNotMissAppendAfterClassConsume(t *testing.T) {
 
 func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 	t.Parallel()
-	service, artifactID := newTestService(t)
-	service.settle = 5 * time.Millisecond
+	callerClock := clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	service, artifactID, recorder := newSettlementLockService(t, callerClock)
 	seedServiceText(t, service, artifactID, "before")
 
 	blocker, err := service.store.Pool.Begin(context.Background())
@@ -5612,15 +5590,34 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 		t.Fatalf("lock document issue: %v", err)
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	waitForDatabaseLock(t, service.store)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	// Take the timer's settleWG count, not just its generation: Shutdown will join this
+	// settlement exactly as it would join the callback. The one-hour timer never needs to fire.
+	state := service.room(artifactID)
+	state.mu.Lock()
+	generation := state.roomGeneration
+	taken := service.takeSettleTimer(state.settle)
+	state.mu.Unlock()
+	if !taken {
+		t.Fatal("the edit did not arm a settlement to take over")
+	}
+	recorder.reset()
+	settled := make(chan struct{})
+	go func() {
+		defer close(settled)
+		defer service.settleWG.Done()
+		service.settleRoom(artifactID, generation)
+	}()
+	// Defers run first: the blocker rolls back before this join and the fixture's shutdown.
+	testcleanup.Add(t, func() { testwait.Receive(t, "the settlement to return after releasing its blocker", settled) })
+	awaitSettlementQueued(t, recorder, blocker, artifactID, settled)
+	const budget = 50 * time.Millisecond
+	ctx, cancel := callerClock.WithTimeout(context.Background(), budget)
 	defer cancel()
 	result := make(chan error, 1)
 	go func() { result <- service.Shutdown(ctx) }()
-	// A Shutdown that waited on the blocked settlement would return only when this test's
-	// blocker rolls back, after the test body: the wait for its answer ends on the answer, with
-	// the test binary's deadline as its only bound.
-	if err := testwait.Receive(t, "Shutdown to answer at its own 50 ms deadline", result); !errors.Is(err, context.DeadlineExceeded) {
+	awaitShutdownScanned(t, service, artifactID)
+	callerClock.Advance(budget)
+	if err := testwait.Receive(t, "Shutdown to return at the caller's deadline while settlement is blocked", result); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown error = %v, want deadline exceeded", err)
 	}
 }
@@ -5644,28 +5641,31 @@ func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
 	// past the shutdown budget, as a settlement that renders 1 MiB under load does.
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	letSettle := sync.OnceFunc(func() { close(release) })
+	testcleanup.Add(t, letSettle)
 	var enteredOnce sync.Once
 	service.afterSettleLock = func(string) {
 		enteredOnce.Do(func() { close(entered) })
 		<-release
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	callerClock := clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	const budget = 300 * time.Millisecond
+	ctx, cancel := callerClock.WithTimeout(context.Background(), budget)
 	defer cancel()
-	err := service.Shutdown(ctx)
-	close(release)
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- service.Shutdown(ctx) }()
+	testwait.Receive(t, "Shutdown's settlement to hold the document's locks", entered)
+	callerClock.Advance(budget)
+	err := testwait.Receive(t, "Shutdown to return at the caller's deadline", shutdown)
+	letSettle()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown past its budget = %v, want deadline exceeded", err)
-	}
-	select {
-	case <-entered:
-	default:
-		t.Fatal("shutdown never ran the document's settlement")
 	}
 	if asks := indexedAsks(t, service, artifactID); asks != 0 {
 		t.Fatalf("the settlement shutdown cut short indexed %d asks", asks)
 	}
 
-	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 10 * time.Millisecond})
+	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: time.Hour})
 	testcleanup.Add(t, func() {
 		if err := restarted.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown restarted document service: %v", err)
@@ -5674,13 +5674,14 @@ func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
 	if err := restarted.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the document on the restarted server: %v", err)
 	}
-	deadline := time.Now().Add(recoveryBound)
-	for indexedAsks(t, restarted, artifactID) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the restarted server never ran the settlement the shutdown left: its ask block is unindexed")
-		}
-		time.Sleep(5 * time.Millisecond)
+	if armed := armedSettleTimers(restarted); armed != 1 {
+		t.Fatalf("loading the owed document armed %d settlements, want one", armed)
 	}
+	settleCurrentGeneration(t, restarted, artifactID)
+	testwait.Until(t, "the restarted service to index the ask the interrupted settlement left", func() (int, bool) {
+		asks := indexedAsks(t, restarted, artifactID)
+		return asks, asks != 0
+	})
 	if !strings.Contains(err.Error(), artifactID) {
 		t.Fatalf("shutdown error %q does not name the document whose settlement it left", err)
 	}
@@ -5693,26 +5694,45 @@ func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
 func TestResumptionSettlesAnOwedDocumentNobodyOpens(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
+	service.settle = time.Hour
 	seedServiceText(t, service, artifactID,
 		":::ask{#ask-block urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich transport?\n:::\n")
-	if err := service.resumeOwedSettlements(context.Background(), time.Hour); err != nil {
+	if armed := armedSettleTimers(service); armed != 0 {
+		t.Fatalf("before resumption, %d settlements are armed, want none", armed)
+	}
+	if err := service.resumeOwedSettlements(testwait.Context(t), time.Hour); err != nil {
 		t.Fatalf("resume settlements owed for an hour: %v", err)
 	}
-	// Ten times the test service's settle delay.
-	time.Sleep(200 * time.Millisecond)
+	if armed := armedSettleTimers(service); armed != 0 {
+		t.Fatalf("resumption armed %d settlements for a document owing one for less than an hour", armed)
+	}
 	if asks := indexedAsks(t, service, artifactID); asks != 0 {
 		t.Fatalf("the resumption settled a document owing one for less than its age: %d asks indexed", asks)
 	}
-	if err := service.resumeOwedSettlements(context.Background(), 0); err != nil {
+	// This resumption should run the settlement without any room open. Arm it for an
+	// immediate callback now that the absence check no longer needs to observe its timer.
+	service.settle = 0
+	if err := service.resumeOwedSettlements(testwait.Context(t), 0); err != nil {
 		t.Fatalf("resume every owed settlement: %v", err)
 	}
-	deadline := time.Now().Add(recoveryBound)
-	for indexedAsks(t, service, artifactID) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the resumption never settled the owed document: its ask block is unindexed")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "resumption to index the ask of the unopened document", func() (int, bool) {
+		asks := indexedAsks(t, service, artifactID)
+		return asks, asks != 0
+	})
+}
+
+func armedSettleTimers(service *Service) int {
+	service.timerMu.Lock()
+	defer service.timerMu.Unlock()
+	return len(service.timers)
+}
+
+func awaitShutdownScanned(t *testing.T, service *Service, room string) {
+	t.Helper()
+	testwait.Until(t, "Shutdown to scan the room "+room, func() (bool, bool) {
+		scanned := service.shuttingDown(room)
+		return scanned, scanned
+	})
 }
 
 func TestIssueReopenRestoresLiveWrites(t *testing.T) {
@@ -5765,8 +5785,7 @@ func TestCancelledTextLoadDoesNotQuarantineRoom(t *testing.T) {
 
 func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 	t.Parallel()
-	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service, artifactID, recorder := newSettlementLockService(t, nil)
 	seedServiceText(t, service, artifactID, "before")
 	first := model.Actor{Kind: "user", ID: "alice"}
 	second := model.Actor{Kind: "user", ID: "bob"}
@@ -5781,15 +5800,17 @@ func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin blocker transaction: %v", err)
 	}
+	defer blocker.Rollback(context.Background())
 	if _, _, err := lockArtifactOwner(context.Background(), blocker, artifactID); err != nil {
 		t.Fatalf("lock document issue: %v", err)
 	}
+	recorder.reset()
 	settled := make(chan struct{})
 	go func() {
 		service.settleRoom(artifactID, generation)
 		close(settled)
 	}()
-	waitForDatabaseLock(t, service.store)
+	awaitSettlementQueued(t, recorder, blocker, artifactID, settled)
 	service.recordActor(t, artifactID, second)
 	if err := blocker.Commit(context.Background()); err != nil {
 		t.Fatalf("release document lock: %v", err)
@@ -5801,30 +5822,40 @@ func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 	}
 }
 
-// waitForDatabaseLock waits until a backend of this test's own database waits on a lock, which
-// is how a settlement held behind another transaction's document lock shows itself. The
-// settlement must warm the room and reach that lock first, which takes as long as the machine
-// takes, so the wait sets no span of its own and the test binary's deadline bounds it.
-func waitForDatabaseLock(t *testing.T, database *store.Store) {
+// Trace the service's pool, not the append store's, so a room append cannot supply the PID.
+func newSettlementLockService(t *testing.T, serviceClock clock.Clock) (*Service, string, *roundTripRecorder) {
 	t.Helper()
-	testwait.Until(t, "a transaction of the test's database to wait on a lock", func() (string, bool) {
-		return databaseLockWaiters(t, database)
-	})
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "# First")
+	recorder := &roundTripRecorder{}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, recorder, nil)}
+	deps := testServiceDeps(traced)
+	deps.Persistence = NewPgVersioned(database)
+	deps.Settle = time.Hour
+	deps.Clock = serviceClock
+	return newTestServiceWith(t, deps), artifactID, recorder
 }
 
-// databaseLockWaiters reads how many backends of database's own database wait on a lock, as the
-// reading of a wait for one: the tests beside this one hold the same tables and lock keys in
-// databases cloned from one template, so the predicate names this database (docs/testing.md).
-func databaseLockWaiters(t *testing.T, database *store.Store) (string, bool) {
+func awaitSettlementQueued(t *testing.T, recorder *roundTripRecorder, blocker pgx.Tx, artifactID string, settled <-chan struct{}) {
 	t.Helper()
-	var waiting int
-	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock'
-	`).Scan(&waiting); err != nil {
-		t.Fatalf("inspect database locks: %v", err)
+	// lockArtifactOwner first reads the owner on the very connection that takes its lock.
+	pid := testwait.Until(t, "the settlement to read the document's owner on its own backend", func() (uint32, bool) {
+		select {
+		case <-settled:
+			t.Fatal("settlement returned before it queued behind the blocker's owner lock")
+		default:
+		}
+		for _, trip := range recorder.recorded() {
+			if !trip.batch && !trip.prepare && trip.names(artifactID) &&
+				strings.Contains(trip.sql[0], "select issue_key, coalesce(project_key, ''), slug, name") {
+				return trip.conn.PgConn().PID(), true
+			}
+		}
+		return 0, false
+	})
+	if _, early := storetest.WaitForQueuedBehind(t, blocker, pid, settled); early {
+		t.Fatal("settlement returned before it queued behind the blocker's owner lock")
 	}
-	return fmt.Sprintf("%d transactions wait on a lock", waiting), waiting > 0
 }
 
 // failingOnceVersionedStore fails the first load of the stored document, of either kind: a room's
@@ -6583,7 +6614,7 @@ func TestASettlementWhoseRoomACloseRetiredBeforeItsReadIsArmedAgain(t *testing.T
 		if room != artifactID || !closed.CompareAndSwap(false, true) {
 			return
 		}
-		if err := service.srv.CloseRoom(room, true); err != nil {
+		if err := closeRoomInHelper("afterSettleWarm", service, room, true); err != nil {
 			t.Errorf("close the room between the settlement's warm-up and its read: %v", err)
 		}
 	}
@@ -6591,9 +6622,10 @@ func TestASettlementWhoseRoomACloseRetiredBeforeItsReadIsArmedAgain(t *testing.T
 	// reads it. The delay is written once, before the settlement it arms.
 	service.settle = 20 * time.Millisecond
 	service.scheduleSettle(artifactID)
-	waitFor(t, roomWait(t), "the document whose room closed under its settlement to settle", func() bool {
-		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
-		return err == nil && !owed
+	ctx := testwait.Context(t)
+	testwait.Until(t, "the document whose room closed under its settlement to settle", func() (string, bool) {
+		owed, err := settlementPending(ctx, service.store.Pool, artifactID)
+		return fmt.Sprintf("settlement owed: %t, error: %v", owed, err), err == nil && !owed
 	})
 	if !closed.Load() {
 		t.Fatal("no settlement reached the window between its warm-up and its read of the room")
@@ -6605,6 +6637,13 @@ func TestASettlementWhoseRoomACloseRetiredBeforeItsReadIsArmedAgain(t *testing.T
 	if err := service.roomFailure(artifactID); err != nil {
 		t.Fatalf("the document's room failed: %v", err)
 	}
+}
+
+func closeRoomInHelper(what string, service *Service, room string, flush bool) error {
+	closed := make(chan error, 1)
+	go func() { closed <- service.srv.CloseRoom(room, flush) }()
+	err, waitErr := testwait.ReceiveInHelper(what, "the document room to close", closed)
+	return errors.Join(err, waitErr)
 }
 
 // A read that loads its room and then reads it takes what it reads from the room it holds: a
@@ -6652,6 +6691,7 @@ func TestAWarmedReadSurvivesItsRoomsEviction(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := newTestService(t)
 			service.settle = time.Hour
 			seedServiceText(t, service, artifactID, "The quick brown fox")
@@ -6752,7 +6792,7 @@ func TestProjectMarkSettlesLegacyTableWithoutCanonicalizing(t *testing.T) {
 	}
 	alignLatestVersionWithUpdates(t, service, artifactID)
 	if err := joinedProjectMark(service, artifactID, "mark-1", MarkRecord{
-		Kind: "comment", By: "alice", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Text: "note",
+		Kind: "comment", By: "alice", CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano), Text: "note",
 	}, model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("project mark: %v", err)
 	}

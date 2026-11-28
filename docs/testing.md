@@ -1240,20 +1240,21 @@ Such a hold in another database delays nothing now. What a wait rides out is an 
 
 `settleCurrentGeneration` (`packages/envoy/internal/dispatch/docs/service_test.go`) waits for a room's live updates to reach its persistence and land, and then settles the room.
 That wait is a queue.
-A room's appends go through the service's room-appends pool of 8 connections, and a test whose subtests run in parallel drives one room per CPU on a single service.
-So the wait is as long as that queue, which grows with the machine's CPU count, its load and the other tests running beside it.
+A room's appends go through the service's room-appends pool of 8 connections.
+The queue grows with the number of rooms sharing the pool and with the machine's load.
 A fixed 10 s clock on it failed `TestSetAskBlockTextRefusalOfEveryBrokenBodyLeadsToAValidDecision` (2026-11-16, 288 CPUs).
 At the timeout all 8 connections were in use, with 1449 s of acquire waiting in total, and the same wait issued again returned at once.
+A separate run that day started at load 230 on 288 CPUs and gave these waits up to 10 min.
+It recorded 927 intervals over 1 s in which no append landed and the waiting room's counts stayed unchanged.
+Of those intervals, 231 exceeded 3 s and 22 lasted at least 5 s.
+The longest lasted 5.363 s.
 
-`awaitRoomAppends` therefore waits on the room's idle signal and sets no span of its own, so the bound is a signal rather than a clock.
-It fails when the appends have stopped: no append lands anywhere in the service, and the room's own counts do not change, for `appendStall`.
-That bound is 16 s, three times the longest such stall measured: with it lifted to 10 min, the package as CI runs it (`GODEBUG=checkfinalizers=1 go test -v -count=1`, 288 CPUs, load 230 when it began, 2026-11-16) had 927 of these waits go more than 1 s with no append landing and the room's counts unchanged, 231 more than 3 s and 22 for 5 s or more, and the longest went 5.363 s.
-The 9 s of `ShutdownDrainBudget` it was before, the time Shutdown gives the rooms' appends to land, was 1.7 times that stall.
-It also fails 30 s before the run's own deadline, so that the failure names the wait.
-Two scratch tests checked it, each with the 10 s clock and with this wait:
+`awaitRoomAppends` waits on the room's idle signal, with `testwait.Context(t)` as its only bound.
+That context ends 30 s before the test binary's deadline, so a failure names the append wait instead of the binary timing out.
+Under `-timeout 0`, the wait has no deadline.
 
-- 24 rooms whose appends were each held 4 s on their connection settled in about 12 s. The clock failed 8 of the rooms in each of 2 runs, and this wait passed 3 of 3 with the 9 s bound and 1 of 1 with the 16 s one.
-- An append that another transaction's hold on the document's lock kept from landing failed both: the clock at 10 s, and this wait at 9.1 s with the 9 s bound and at 16.0 and 16.2 s with the 16 s one, naming the stall and the room's counts.
+In a scratch test, 24 rooms whose appends each held their connection for 4 s settled in about 12 s.
+The old 10 s clock failed 8 rooms in each of 2 runs.
 
 ## A test that reads a model request's messages
 
