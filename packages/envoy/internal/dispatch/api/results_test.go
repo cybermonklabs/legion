@@ -861,10 +861,9 @@ func TestResultAtACommitTheRepositoryDoesNotHoldIsRefused(t *testing.T) {
 	if results := checkOf(t, readResults(t, handler, issue.Key), "k1").Results; len(results) != 0 {
 		t.Fatalf("the refused check holds %+v, want no result", results)
 	}
-	// Then the event. lastIssueEventPayload reads the newest event's payload alone, and a
-	// payload carries no type, so the absence is asked of the events table by type: that says
-	// the event was never appended, where the newest payload would say only that it is not the
-	// newest one.
+	// Then the event. The absence is asked of the events table by type: that says the event was
+	// never appended, where the newest event's payload would say only that it is not the newest
+	// one.
 	if events := resultEventsOn(t, database, issue.Key); events != 0 {
 		t.Fatalf("the check's issue holds %d result.recorded events, want none", events)
 	}

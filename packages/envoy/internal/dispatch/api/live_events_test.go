@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -201,7 +202,8 @@ func seedEvents(t *testing.T, database *store.Store, key string, count, pad int)
 }
 
 // createPlainIssue creates project and an issue in it with no spec, as alice, and answers the
-// issue's key: two events, project.created and issue.created, and no document to settle.
+// issue's key: four events, project.created, issue.created and the two artifact.digest events the
+// create's fill appends (requireCreateDigests), and no document to settle.
 func createPlainIssue(t *testing.T, handler http.Handler, project string) string {
 	t.Helper()
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -220,6 +222,33 @@ func createPlainIssue(t *testing.T, handler http.Handler, project string) string
 	}](t, created).Key
 }
 
+// requireCreateDigests reads sub's next two events, which must be the artifact.digest of version 1
+// of the spec and of the decisions query of the issue key, in either order, the two its create's
+// fill appends after the COMMIT (R14's hash gate), and answers the id of the second.
+func requireCreateDigests(t *testing.T, client *socketClient, sub, key string) int64 {
+	t.Helper()
+	var names []string
+	var last int64
+	for range 2 {
+		_, event := nextEvent(t, client, sub)
+		var payload struct {
+			Name    string `json:"name"`
+			Version int    `json:"version"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode the payload of event %d: %v", event.ID, err)
+		}
+		if event.Type != model.ArtifactDigestEventType || event.IssueKey == nil || *event.IssueKey != key || payload.Version != 1 {
+			t.Fatalf("replayed event = %+v, want an artifact.digest of version 1 of a document of %s", event, key)
+		}
+		names, last = append(names, payload.Name), event.ID
+	}
+	if slices.Sort(names); !slices.Equal(names, []string{"decisions", "spec.md"}) {
+		t.Fatalf("the create's artifact.digest events name %v, want the spec.md and the decisions query of %s", names, key)
+	}
+	return last
+}
+
 func TestTheEventFeedReplaysThenStreamsACommittedEvent(t *testing.T) {
 	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
@@ -235,19 +264,20 @@ func TestTheEventFeedReplaysThenStreamsACommittedEvent(t *testing.T) {
 	if _, replayed := nextEvent(t, client, "events"); replayed.Type != "issue.created" || replayed.IssueKey == nil || *replayed.IssueKey != "TEST-1" {
 		t.Fatalf("second replayed event = %+v, want issue.created of TEST-1", replayed)
 	}
+	created := requireCreateDigests(t, client, "events", issue)
 
 	renameIssue(t, rig.handler, issue, "Renamed")
 	if _, live := nextEvent(t, client, "events"); live.Type != "issue.updated" || !strings.Contains(string(live.Payload), `"title":"Renamed"`) {
 		t.Fatalf("live event = %+v, want the rename's issue.updated", live)
 	}
 
-	// A page resuming after the second event, on a socket of its own, is sent the third.
+	// A page resuming after the create's last event, on a socket of its own, is sent the next.
 	resumed := rig.dial(t, withBearer("agent-token"))
-	if start := subscribeEvents(t, resumed, "events", new(int64(2))); start != 2 {
-		t.Fatalf("the resumed subscription's events_start.since = %d, want 2", start)
+	if start := subscribeEvents(t, resumed, "events", new(created)); start != created {
+		t.Fatalf("the resumed subscription's events_start.since = %d, want %d", start, created)
 	}
-	if _, event := nextEvent(t, resumed, "events"); event.ID != 3 || event.Type != "issue.updated" {
-		t.Fatalf("resumed replay = %+v, want event 3, the issue.updated", event)
+	if _, event := nextEvent(t, resumed, "events"); event.ID != created+1 || event.Type != "issue.updated" {
+		t.Fatalf("resumed replay = %+v, want event %d, the issue.updated", event, created+1)
 	}
 }
 
@@ -886,6 +916,7 @@ func TestTheDisconnectHookSendsTheEventFeedThroughItsResume(t *testing.T) {
 	if _, replayed := nextEvent(t, client, "events"); replayed.Type != "issue.created" {
 		t.Fatalf("second replayed event = %+v, want issue.created", replayed)
 	}
+	applied := requireCreateDigests(t, client, "events", issue)
 
 	if disconnect := agentRequest(t, rig.handler, http.MethodPost, "/api/v1/live/_test/disconnect", nil, "agent-token"); disconnect.Code != http.StatusOK {
 		t.Fatalf("disconnect hook: status=%d body=%s", disconnect.Code, disconnect.Body.String())
@@ -903,11 +934,11 @@ func TestTheDisconnectHookSendsTheEventFeedThroughItsResume(t *testing.T) {
 	// A page reopening after this close resumes from the last id it applied, not from 0.
 	renameIssue(t, rig.handler, issue, "Renamed after disconnect")
 	resumed := rig.dial(t, withBearer("agent-token"))
-	if start := subscribeEvents(t, resumed, "events", new(int64(2))); start != 2 {
-		t.Fatalf("the resumed subscription starts after %d, want 2", start)
+	if start := subscribeEvents(t, resumed, "events", new(applied)); start != applied {
+		t.Fatalf("the resumed subscription starts after %d, want %d", start, applied)
 	}
-	if _, event := nextEvent(t, resumed, "events"); event.ID != 3 || event.Type != "issue.updated" {
-		t.Fatalf("resumed replay after the disconnect = %+v, want event 3, the issue.updated", event)
+	if _, event := nextEvent(t, resumed, "events"); event.ID != applied+1 || event.Type != "issue.updated" {
+		t.Fatalf("resumed replay after the disconnect = %+v, want event %d, the issue.updated", event, applied+1)
 	}
 }
 

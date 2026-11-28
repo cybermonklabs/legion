@@ -1469,28 +1469,39 @@ func TestIssueRouteVersionEventsAndChildStatus(t *testing.T) {
 	if err := json.NewDecoder(childEvents.Body).Decode(&childLog); err != nil {
 		t.Fatalf("decode child events: %v", err)
 	}
-	if len(childLog) != 5 {
-		t.Fatalf("child events: got %#v, want five events", childLog)
+	// The create's fill appends the quiet artifact.digest of version 1 of the child's spec and of
+	// its decisions query after its issue.created, and each named version of the spec its own
+	// artifact.digest after its artifact.version (R14's hash gate), in the order the fill runs, after
+	// the write's COMMIT: the person's named version notifies, the session's does not.
+	type loggedEvent struct {
+		Type   string
+		Notify bool
+	}
+	wantChild := []loggedEvent{
+		{"issue.created", true}, {"artifact.digest", false}, {"artifact.digest", false},
+		{"issue.updated", true}, {"issue.updated", true},
+		{"artifact.version", true}, {"artifact.digest", false},
+		{"artifact.version", false}, {"artifact.digest", false},
+	}
+	if len(childLog) != len(wantChild) {
+		t.Fatalf("child events: got %#v, want %v", childLog, wantChild)
 	}
 	for index, event := range childLog {
 		if event.Seq != index+1 {
 			t.Fatalf("child event %d sequence: got %d, want %d", index, event.Seq, index+1)
 		}
-	}
-	if !childLog[3].Notify || childLog[4].Notify {
-		t.Fatalf("named version notifications: got user=%t session=%t", childLog[3].Notify, childLog[4].Notify)
+		if got := (loggedEvent{event.Type, event.Notify}); got != wantChild[index] {
+			t.Fatalf("child event %d: got %+v, want %+v of %v", index, got, wantChild[index], wantChild)
+		}
 	}
 
 	parentEvents := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+parent.Key+"/events", nil, "alice")
-	var parentLog []struct {
-		Type   string `json:"type"`
-		Notify bool   `json:"notify"`
-	}
+	var parentLog []loggedEvent
 	if err := json.NewDecoder(parentEvents.Body).Decode(&parentLog); err != nil {
 		t.Fatalf("decode parent events: %v", err)
 	}
-	if len(parentLog) != 2 || parentLog[1].Type != "child.status" || !parentLog[1].Notify {
-		t.Fatalf("parent events: got %#v, want child.status notification", parentLog)
+	if want := []loggedEvent{{"issue.created", true}, {"artifact.digest", false}, {"artifact.digest", false}, {"child.status", true}}; !slices.Equal(parentLog, want) {
+		t.Fatalf("parent events: got %#v, want %v: its create's two quiet artifact.digest events, then the child.status notification", parentLog, want)
 	}
 }
 
@@ -1519,8 +1530,12 @@ func TestListIssueEventsSupportsNewestCursorAndIDLookup(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	broker := events.NewBroker()
-	eventIDs := make(map[int]int64, 249)
-	for wantSeq := 2; wantSeq <= 250; wantSeq++ {
+	// The issue holds its issue.created at 1 and, at 2 and 3, the artifact.digest of version 1 of
+	// its spec and of its decisions query, which its create's fill appended (R14's hash gate): the
+	// seed takes the sequences after them, up to 250.
+	const firstSeeded = 4
+	eventIDs := make(map[int]int64, 250-firstSeeded+1)
+	for wantSeq := firstSeeded; wantSeq <= 250; wantSeq++ {
 		event, err := broker.Append(ctx, tx, model.Event{
 			IssueKey: new(issue.Key),
 			Type:     "test.seeded",
@@ -1572,15 +1587,15 @@ func TestListIssueEventsSupportsNewestCursorAndIDLookup(t *testing.T) {
 	}
 
 	ids := dispatchRequest(t, handler, http.MethodGet,
-		"/api/v1/issues/"+issue.Key+"/events?ids="+fmt.Sprintf("%d,%d,%d", eventIDs[250], eventIDs[2], eventIDs[100]),
+		"/api/v1/issues/"+issue.Key+"/events?ids="+fmt.Sprintf("%d,%d,%d", eventIDs[250], eventIDs[firstSeeded], eventIDs[100]),
 		nil, "alice")
 	if ids.Code != http.StatusOK {
 		t.Fatalf("list event IDs: status=%d body=%s", ids.Code, ids.Body.String())
 	}
 	idLog := decodeBody[[]listedEvent](t, ids)
-	for index, want := range []int{2, 100, 250} {
+	for index, want := range []int{firstSeeded, 100, 250} {
 		if len(idLog) != 3 || idLog[index].Seq != want {
-			t.Fatalf("events by ID: got %#v, want sequences [2 100 250]", idLog)
+			t.Fatalf("events by ID: got %#v, want sequences [%d 100 250]", idLog, firstSeeded)
 		}
 	}
 

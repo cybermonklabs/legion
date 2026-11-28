@@ -187,14 +187,30 @@ func decisionsQueryVersionSQL(e string) string {
 		where a.id::text = ` + e + `.payload->>'artifact_id' and a.issue_key = $1 and ` + refs.DecisionsQuerySQL("a") + `))`
 }
 
+// fencePassesOverSQL is whether the events row aliased e, an event of the issue $1, is one a fence
+// on the issue's sequence passes over: a version of the issue's decisions query
+// (decisionsQueryVersionSQL), or an artifact.digest, which the fill of a version's record digest,
+// the first pass that states a version and the drain of the issue's queries append once the write
+// of that version has committed (R14's hash gate, docs.DigestFillActor). An artifact.digest is
+// Dispatch's verdict on a version whose own artifact.version, or the review whose fill appended
+// it, the fence reads or passes over already, so it is no change of the issue a hand-over read
+// missed. A write's answer names the sequence its write phase committed, which comes before those
+// events: the create's answer comes before the artifact.digest of its spec's version 1 and of its
+// decisions query's, and the answer of a write that withdrew or restored a question comes before
+// its drain's version of the decisions query and that version's artifact.digest.
+func fencePassesOverSQL(e string) string {
+	return `(` + e + `.type = '` + model.ArtifactDigestEventType + `' or ` + decisionsQueryVersionSQL(e) + `)`
+}
+
 // fencedEventsStatement lists, oldest first, the events on the issue $1 after the sequence $2 that
-// a fence on the issue's sequence reads. It passes over the decisions query's versions
-// (decisionsQueryVersionSQL): the write that moved the query's record is a real change of the
-// issue, which the fence sees by the event it appends of its own, and before the drains an
-// expected_sequence never saw such a version at all.
+// a fence on the issue's sequence reads. It passes over the decisions query's versions and every
+// artifact.digest (fencePassesOverSQL): the write that moved the query's record, or that wrote the
+// version a digest names, is a real change of the issue, which the fence sees by the event it
+// appends of its own, and before the drains and the hash gate an expected_sequence never saw such
+// an event at all.
 var fencedEventsStatement = `
 	select e.id from events e
-	where e.issue_key = $1 and e.seq > $2 and not ` + decisionsQueryVersionSQL("e") + `
+	where e.issue_key = $1 and e.seq > $2 and not ` + fencePassesOverSQL("e") + `
 	order by e.id`
 
 // fencedEventsAfter is the events on issue after sequence that a fence reads (fencedEventsStatement).

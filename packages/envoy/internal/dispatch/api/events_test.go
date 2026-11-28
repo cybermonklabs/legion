@@ -25,11 +25,15 @@ func TestReadEventsKeepsNonAskPayloadRaw(t *testing.T) {
 		{"message.created", `{"body":"preserve","target":{"kind":"session","id":"other"}}`},
 		{"message.answered", `{"body":"separate","target":{"kind":"session","id":"another"}}`},
 	}
-	for index, fixture := range fixtures {
+	// Each fixture takes the issue's next sequence and moves its last_seq there, as an append
+	// does: the create's issue.created and the two artifact.digest events its fill appended (R14's
+	// hash gate) hold the sequences before them.
+	for _, fixture := range fixtures {
 		if _, err := database.Pool.Exec(context.Background(), `
+			with next as (update issues set last_seq = last_seq + 1 where key = $1 returning last_seq)
 			insert into events (issue_key, seq, type, actor, payload, notify)
-			values ($1, $2, $3, '{"kind":"session","id":"session-0123456789abcdef"}'::jsonb, $4::jsonb, false)
-		`, issue.Key, index+2, fixture.eventType, fixture.payload); err != nil {
+			select $1, next.last_seq, $2, '{"kind":"session","id":"session-0123456789abcdef"}'::jsonb, $3::jsonb, false from next
+		`, issue.Key, fixture.eventType, fixture.payload); err != nil {
 			t.Fatalf("insert %s event: %v", fixture.eventType, err)
 		}
 	}

@@ -10,7 +10,10 @@ body: |-
   `current_sha256` and `digest_owed` on `approval`, and `POST /reviews`, an ask's answer and a plan
   review fill a version's owed digest before they record, so a person's approval pins the record's
   digest. Review events carry `approval_current`. The Verification record covers `check` nodes
-  alone: recording, changing or retracting a result leaves its digest where it stands.
+  alone: recording, changing or retracting a result leaves its digest where it stands. An
+  `expected_sequence` fence passes over `artifact.digest`, as it passes over the decisions query's
+  drained versions, so a write fenced at the sequence an issue create, a close or a reopen answered
+  is not refused by the digests appended after that write committed.
 time: 2026-11-27T17:30:00Z
 custom:
     Issue: INFRA-1253

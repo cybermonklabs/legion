@@ -19,12 +19,13 @@ import (
 // asks' document write queues an event of its own - the refresh of a comment whose stored quote is
 // stale - before the status event. The patch's response and the status event's stored payload
 // must name the sequence that event took, which a count of the events the route itself queued
-// answers short. A later read of the issue names one sequence more: the close withdraws the
+// answers short. A later read of the issue names two sequences more: the close withdraws the
 // issue's open questions and the reopen restores them, and the decisions query takes each of
 // them, so the move's write marks the issue's queries owed and its drain, once the move has
 // committed and before the route answers, writes that query's next version (R14,
-// docs.Service.DrainOwedQueries), whose artifact.version is the one event past the status event,
-// as TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem reads it too. Each move runs
+// docs.Service.DrainOwedQueries), whose artifact.version and the artifact.digest the drain appends
+// after it (R14's hash gate) are the two events past the status event, as
+// TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem reads them too. Each move runs
 // while the release before serves (whileTheReleaseBeforeServes): on a fleet of one build no block
 // holds an ask's state, so the close and the reopen write nothing into the asks' documents
 // (docs.WriteIssueAskStates), and only while a build that reads an ask's state from its block
@@ -77,9 +78,9 @@ func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T
 			t.Fatalf("%s answered last_seq %d and stored %s at seq %d with payload last_seq %d: want all three at %d, the sequence the write phase committed",
 				move.name, response.LastSeq, move.eventType, event.seq, event.payloadLastSeq, event.seq)
 		}
-		if detail := readIssueDetail(t, f.handler, f.issue); detail.LastSeq != event.seq+1 {
-			t.Fatalf("%s: a read of the issue answers last_seq %d, want %d: the sequence the write phase committed, %d, and the one event the move's drain appends past it",
-				move.name, detail.LastSeq, event.seq+1, event.seq)
+		if detail := readIssueDetail(t, f.handler, f.issue); detail.LastSeq != event.seq+2 {
+			t.Fatalf("%s: a read of the issue answers last_seq %d, want %d: the sequence the write phase committed, %d, and the two events the move's drain appends past it",
+				move.name, detail.LastSeq, event.seq+2, event.seq)
 		}
 		requireDecisionsVersionEventAt(t, f.database, f.issue, event.seq+1, decisionsQuery)
 		// The settlement the move's write left owed, which the room timer would run.

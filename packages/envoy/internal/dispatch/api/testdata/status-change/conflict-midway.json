@@ -16,7 +16,7 @@
         "key": "ACME-8",
         "status": "done",
         "parent": "ACME-7",
-        "previous_last_seq": 2,
+        "previous_last_seq": 4,
         "issue": {
           "key": "ACME-8",
           "project": "ACME",
@@ -58,7 +58,7 @@
           "verification_artifact_id": "",
           "plan_artifact_id": "",
           "decisions_artifact_id": "",
-          "last_seq": 4
+          "last_seq": 6
         }
       }
     ]

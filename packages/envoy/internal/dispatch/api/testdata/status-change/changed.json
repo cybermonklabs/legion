@@ -42,14 +42,14 @@
       "verification_artifact_id": "",
       "plan_artifact_id": "",
       "decisions_artifact_id": "",
-      "last_seq": 5
+      "last_seq": 7
     },
     "changed": [
       {
         "key": "ACME-1",
         "status": "in_progress",
         "parent": null,
-        "previous_last_seq": 3,
+        "previous_last_seq": 5,
         "issue": {
           "key": "ACME-1",
           "project": "ACME",
@@ -91,14 +91,14 @@
           "verification_artifact_id": "",
           "plan_artifact_id": "",
           "decisions_artifact_id": "",
-          "last_seq": 5
+          "last_seq": 7
         }
       },
       {
         "key": "ACME-3",
         "status": "backlog",
         "parent": null,
-        "previous_last_seq": 2,
+        "previous_last_seq": 4,
         "issue": {
           "key": "ACME-3",
           "project": "ACME",
@@ -140,14 +140,14 @@
           "verification_artifact_id": "",
           "plan_artifact_id": "",
           "decisions_artifact_id": "",
-          "last_seq": 4
+          "last_seq": 6
         }
       },
       {
         "key": "ACME-2",
         "status": "in_progress",
         "parent": "ACME-1",
-        "previous_last_seq": 4,
+        "previous_last_seq": 6,
         "issue": {
           "key": "ACME-2",
           "project": "ACME",
@@ -189,7 +189,7 @@
           "verification_artifact_id": "",
           "plan_artifact_id": "",
           "decisions_artifact_id": "",
-          "last_seq": 5
+          "last_seq": 7
         }
       }
     ]
