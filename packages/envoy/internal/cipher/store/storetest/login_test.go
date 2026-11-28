@@ -18,7 +18,7 @@ import (
 // migration the store embeds. The test makes the second login, has the server URL's login find or
 // make its template first, then makes a test database as the second login the way URL does
 // (urlOn), and reads the migrations it holds.
-func TestASecondLoginCopiesTheTemplateAnotherLoginMade(t *testing.T) {
+func TestASecondLoginGetsADatabaseWhereAnotherLoginMadeTheTemplate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	raw := serverURL(t)

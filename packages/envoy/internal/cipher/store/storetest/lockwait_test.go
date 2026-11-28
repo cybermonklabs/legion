@@ -60,14 +60,7 @@ func TestABuilderBehindAHeldTemplateLockGivesUpNamingIt(t *testing.T) {
 	server := ownServer(t)
 	login := newLogin(t, server, "broker_lock_wait_test")
 	builder := testdb.DatabaseOn(t, login.String(), "", "broker_lock_wait_test")
-	holder, err := pgx.Connect(ctx, testdb.DatabaseURL(server, lockDatabase))
-	if err != nil {
-		t.Fatalf("connect the holder to the test's own server: %v", err)
-	}
-	t.Cleanup(func() { holder.Close(context.Background()) })
-	if _, err := holder.Exec(ctx, "select pg_advisory_lock(hashtext($1))", templateLockKey); err != nil {
-		t.Fatalf("take the template lock: %v", err)
-	}
+	holder := holdTemplateLock(t, testdb.DatabaseURL(server, lockDatabase))
 
 	stdout, stderr, err := testwait.RunChild(t, os.Args[0], lockWaitChildGuard, "^"+test+"$", lockWaitChildURL+"="+builder)
 	// The child's backend may still wait on the lock after the child is gone; end it, so the

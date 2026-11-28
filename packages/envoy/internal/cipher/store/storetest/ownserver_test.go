@@ -43,6 +43,17 @@ const ownServerPort = 5432
 // ends, a cleanup sends postgres SIGINT, its fast shutdown, waits for it to exit
 // (testwait.Receive) and fails t unless it exited cleanly; the two directories go after it.
 //
+// A test binary that ends without running t's cleanups, killed or ended by go test's alarm
+// (-timeout), sends postgres no SIGINT and removes neither directory. On Linux postgres stops with
+// it all the same: it starts with SIGINT as its parent-death signal (startServer), which the kernel
+// sends it when the thread that started it ends, as each of the binary's threads does when the
+// binary ends; the two directories are left. On any other system postgres keeps running, fsync
+// off, until someone stops it. pgrep -f 'postgres -D .*/data -p 5432 -c listen_addresses=' prints
+// the pid of each such server still running, kill -INT <pid> stops one as the cleanup does, and
+// ps -o command= -p <pid> shows its data directory after -D: data in t.TempDir(), under TMPDIR
+// (GOTMPDIR where that is set) in a directory named for the test. That directory, and the socket
+// directory after unix_socket_directories=, can go once postgres has exited.
+//
 // The URL has no host in its authority and names the socket directory in its host pair, which
 // pgx reads as a unix socket's directory, so testdb.DatabaseURL and testdb.DatabaseOn, which
 // replace the path and keep the other pairs byte for byte, name the server's other databases.
@@ -66,7 +77,7 @@ func ownServer(t *testing.T) url.URL {
 	// once that goroutine is done, after the process has exited.
 	var output bytes.Buffer
 	server.Stdout, server.Stderr = &output, &output
-	if err := server.Start(); err != nil {
+	if err := startServer(server); err != nil {
 		t.Fatalf("start %s: %v", postgres, err)
 	}
 	// exited is closed once postgres has exited, with exit its Wait's answer.
