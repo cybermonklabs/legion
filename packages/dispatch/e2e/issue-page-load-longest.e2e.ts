@@ -61,6 +61,12 @@
  * runs a named function (`loadProbeAnchor`) for 30 ms from a time it reads, and the profile's first
  * sample inside that function stands for that time. The lining is off by at most one sample's
  * interval and the call's own start.
+ *
+ * With `ISSUE_PAGE_LOAD_TRACE=1`, `the acts made after the load, profiled` also records Chrome's
+ * own trace through the same session (`Tracing`, the timeline's categories) around each fold and
+ * unfold, from just before the act's steps to its result, and prints each task that dispatched
+ * the act's press (`printTrace`): what a CPU profile reads as `(program)` split by the engine's
+ * own events, style, layout and paint.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -68,7 +74,7 @@ import { createRequire } from "node:module";
 import { basename } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import type { Browser, Page } from "@playwright/test";
+import type { Browser, CDPSession, Page } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { Preset } from "../web/src/features/issue-page/page-words";
@@ -891,7 +897,8 @@ interface CommitEntry {
   readonly at: number;
   /** Each component that rendered in the commit, by its name, with how often. */
   readonly rendered: Readonly<Record<string, number>>;
-  /** The `NodeRow` fibers the committed tree holds, and how many of them rendered. */
+  /** The `NodeRow` fibers the committed tree holds, whatever number the build adds to the name
+   *  (`ROW_COMPONENT`), and how many of them rendered. */
   readonly rows: number;
   readonly rowsRendered: number;
   /** Of the rows that rendered and had rendered before, those whose props were all the same
@@ -924,6 +931,11 @@ function commitProbe(): void {
   // renders nothing itself, and its child fiber is counted.
   const components = new Set([0, 1, 11, 15]);
   const performedWork = 1;
+  // The row's component, `NodeRow`, by its name as the build gives it: a build that keeps names
+  // calls the function `NodeRow2`, a number added so that it shadows no `const NodeRow` it is
+  // bound to (`memo(function NodeRow ...)`). `ROW_COMPONENT` below is the same rule; this script
+  // runs in the page, and reads nothing of this file's.
+  const rowComponent = /^NodeRow\d*$/;
   const nameOf = (type: unknown): string => {
     let at: unknown = type;
     for (let depth = 0; depth < 4 && typeof at === "object" && at !== null; depth += 1) {
@@ -950,7 +962,7 @@ function commitProbe(): void {
       if (components.has(fiber.tag) && did) {
         const name = nameOf(fiber.type);
         count(rendered, name);
-        if (name === "NodeRow") {
+        if (rowComponent.test(name)) {
           rowsRendered += 1;
           if (before !== null) {
             const now = fiber.memoizedProps ?? {};
@@ -967,7 +979,7 @@ function commitProbe(): void {
       for (let child = fiber.child; child !== null; child = child.sibling) reached(child);
     };
     const every = (fiber: Fiber): void => {
-      if (fiber.tag === 15 && nameOf(fiber.type) === "NodeRow") rows += 1;
+      if (fiber.tag === 15 && rowComponent.test(nameOf(fiber.type))) rows += 1;
       for (let child = fiber.child; child !== null; child = child.sibling) every(child);
     };
     reached(root);
@@ -1002,6 +1014,11 @@ const COMMIT_ACTS: Readonly<Partial<Record<LoadAct["kind"], true>>> = { fold: tr
 
 /** How many components `printCommits` prints for each commit, most renders first. */
 const COMMIT_COMPONENTS = 30;
+
+/** The row's component, `NodeRow`, by a function's name as the build gives it: `NodeRow`, or with
+ *  the number a build that keeps names adds so that the function shadows no `const NodeRow`
+ *  (`NodeRow2`). The commit probe's init script holds the same rule (`commitProbe`). */
+const ROW_COMPONENT = /^NodeRow\d*$/;
 
 /**
  * Prints each commit the commit probe read in an act's window, from its event to its result
@@ -1065,7 +1082,7 @@ function printCommits(
     for (let at: number | undefined = sample.node.id; at !== undefined; at = parents.get(at)) {
       const frame = nodes.get(at)?.callFrame;
       if (frame === undefined || engineFrame(frame)) continue;
-      if (mapFrame(frame).name === "NodeRow") {
+      if (ROW_COMPONENT.test(mapFrame(frame).name)) {
         inRow = true;
         break;
       }
@@ -1096,6 +1113,221 @@ function printCommits(
     `COMMIT-SAME-ROWS ${line} rendered=${rendered} same-props=${same} ` +
       `share=${share.toFixed(2)} time=${shown(rowMs * share)}`
   );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The trace probe (`ISSUE_PAGE_LOAD_TRACE=1`): Chrome's own events of the tasks that dispatched a
+// fold's or an unfold's press after the load, so the engine's time a CPU profile reads as
+// `(program)` is split by what the engine did in it.
+// ---------------------------------------------------------------------------------------------
+
+/** The acts the trace probe records, after the load. */
+const TRACE_ACTS: Readonly<Partial<Record<LoadAct["kind"], true>>> = { fold: true, unfold: true };
+
+/** The trace's categories: the timeline's events (style, layout, paint, script, an input's
+ *  dispatch) and each task of the thread (`RunTask`). */
+const TRACE_CATEGORIES = [
+  "devtools.timeline",
+  "disabled-by-default-devtools.timeline",
+  "toplevel",
+  "v8.execute",
+];
+
+/** The input events whose dispatch makes a task one of the act's input tasks: a press as
+ *  Playwright makes it, a move to the point and then the button down and up. */
+const TRACE_INPUTS: Readonly<Record<string, true>> = {
+  click: true,
+  mousedown: true,
+  mousemove: true,
+  mouseup: true,
+  pointerdown: true,
+  pointermove: true,
+  pointerup: true,
+};
+
+/** The engine's own events the probe prints of an input task, in the order a frame makes them. */
+const TRACE_RENDERING = [
+  "UpdateLayoutTree",
+  "Layout",
+  "PrePaint",
+  "Paint",
+  "Layerize",
+  "UpdateLayer",
+  "CompositeLayers",
+];
+
+/** The events whose time is the page's script: a style or layout inside one is one the script
+ *  forced. */
+const TRACE_SCRIPT: Readonly<Record<string, true>> = {
+  EvaluateScript: true,
+  FunctionCall: true,
+  RunMicrotasks: true,
+  "V8.Execute": true,
+  "v8.callFunction": true,
+};
+
+/** One event of a trace as a span of its thread's time, in µs, with its arguments: a complete
+ *  event (`X`), or a begin and its end (`B`, `E`) with both their arguments. */
+interface TraceSpan {
+  readonly args: Readonly<Record<string, unknown>>;
+  readonly end: number;
+  readonly name: string;
+  readonly pid: number;
+  readonly start: number;
+  readonly tid: number;
+}
+
+/** Starts Chrome's trace of `TRACE_CATEGORIES` on `cdp`; answers how to end it, which answers the
+ *  trace's events as the session reported them. */
+async function startTrace(cdp: CDPSession): Promise<() => Promise<readonly unknown[]>> {
+  const events: unknown[] = [];
+  const collect = (batch: { readonly value: readonly unknown[] }): void => {
+    events.push(...batch.value);
+  };
+  cdp.on("Tracing.dataCollected", collect);
+  await cdp.send("Tracing.start", {
+    traceConfig: { includedCategories: TRACE_CATEGORIES, recordMode: "recordAsMuchAsPossible" },
+    transferMode: "ReportEvents",
+  });
+  return async () => {
+    // Every batch of the trace is reported before `tracingComplete`, which ends it.
+    const complete = Promise.withResolvers<void>();
+    cdp.once("Tracing.tracingComplete", () => complete.resolve());
+    await cdp.send("Tracing.end");
+    await complete.promise;
+    cdp.off("Tracing.dataCollected", collect);
+    return events;
+  };
+}
+
+/** A record's object, or none. */
+function objectOf(value: unknown): Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+/** The spans of a trace's events, by the trace event format: each complete event, and each begin
+ *  matched with the next end of its name on its thread. Other phases are left out. */
+function traceSpans(events: readonly unknown[]): TraceSpan[] {
+  const spans: TraceSpan[] = [];
+  const open = new Map<string, { readonly args: Record<string, unknown>; readonly ts: number }[]>();
+  for (const raw of events) {
+    const event = objectOf(raw);
+    const { name, ph, pid, tid, ts } = event;
+    if (typeof name !== "string" || typeof ts !== "number") continue;
+    if (typeof pid !== "number" || typeof tid !== "number") continue;
+    const args = objectOf(event.args);
+    if (ph === "X" && typeof event.dur === "number") {
+      spans.push({ args, end: ts + event.dur, name, pid, start: ts, tid });
+      continue;
+    }
+    const key = `${pid} ${tid} ${name}`;
+    if (ph === "B") {
+      open.set(key, [...(open.get(key) ?? []), { args: { ...args }, ts }]);
+      continue;
+    }
+    if (ph !== "E") continue;
+    const begun = open.get(key)?.pop();
+    if (begun !== undefined) {
+      spans.push({ args: { ...begun.args, ...args }, end: ts, name, pid, start: begun.ts, tid });
+    }
+  }
+  return spans.sort((a, b) => a.start - b.start);
+}
+
+/** How long the spans cover between them, each µs counted once however many cover it. */
+function coveredUs(spans: readonly TraceSpan[]): number {
+  let total = 0;
+  let reached = Number.NEGATIVE_INFINITY;
+  for (const span of [...spans].sort((a, b) => a.start - b.start)) {
+    const from = Math.max(span.start, reached);
+    if (span.end > from) total += span.end - from;
+    reached = Math.max(reached, span.end);
+  }
+  return total;
+}
+
+/** A span's µs as a line prints ms. */
+function traceMs(us: number): string {
+  return shown(us / 1000);
+}
+
+/** What a line prints of a style or layout event's own counts: `elementCount` of a style
+ *  recalculation, and a layout's `beginData` counts, each where the event holds it. */
+function traceCounts(span: TraceSpan): string {
+  const begin = objectOf(span.args.beginData);
+  const counts: [string, unknown][] = [
+    ["elementCount", span.args.elementCount ?? objectOf(span.args.data).elementCount],
+    ["dirtyObjects", begin.dirtyObjects],
+    ["totalObjects", begin.totalObjects],
+    ["partialLayout", begin.partialLayout],
+  ];
+  return counts
+    .filter(([, value]) => value !== undefined)
+    .map(([name, value]) => ` ${name}=${String(value)}`)
+    .join("");
+}
+
+/**
+ * Prints each task of the trace's main thread that dispatched one of the act's press events
+ * (`TRACE_INPUTS`): `TRACE-TASK` with its time from the first such dispatch, its duration, the
+ * time its script covers (`js`) and the events it dispatched; `TRACE-EVENT` for each of the
+ * engine's own events in it (`TRACE_RENDERING`), with its time from the task's start, its
+ * duration, whether a script forced it (`in-js`), and the counts a style recalculation and a
+ * layout give; and `TRACE-SUM` for each kind of them, with how many came, their total, and the
+ * part of it that no script forced.
+ */
+function printTrace(label: string, width: number, events: readonly unknown[]): void {
+  const line = `${width} ${label} 1`;
+  const spans = traceSpans(events);
+  const typeOf = (span: TraceSpan): unknown => objectOf(span.args.data).type;
+  const inputs = spans.filter(
+    (span) => span.name === "EventDispatch" && TRACE_INPUTS[String(typeOf(span))] === true
+  );
+  const first = inputs[0];
+  if (first === undefined) {
+    console.log(`TRACE ${line} no press event was dispatched in the trace (${spans.length} spans)`);
+    return;
+  }
+  const thread = spans.filter((span) => span.pid === first.pid && span.tid === first.tid);
+  const within = (inner: TraceSpan, outer: TraceSpan) =>
+    inner.start >= outer.start && inner.end <= outer.end;
+  const runs = thread.filter((span) => span.name === "RunTask");
+  const tasks = runs.filter(
+    (task) =>
+      !runs.some((outer) => outer !== task && within(task, outer)) &&
+      inputs.some(
+        (input) => input.pid === task.pid && input.tid === task.tid && within(input, task)
+      )
+  );
+  for (const [at, task] of tasks.entries()) {
+    const inside = thread.filter((span) => within(span, task));
+    const script = inside.filter((span) => TRACE_SCRIPT[span.name] === true);
+    const dispatched = [
+      ...new Set(inputs.filter((input) => within(input, task)).map((input) => typeOf(input))),
+    ];
+    console.log(
+      `TRACE-TASK ${line} task=${at + 1} start=${traceMs(task.start - first.start)} ` +
+        `duration=${traceMs(task.end - task.start)} js=${traceMs(coveredUs(script))} ` +
+        `inputs=${dispatched.join(",")}`
+    );
+    for (const name of TRACE_RENDERING) {
+      const own = inside.filter((span) => span.name === name);
+      if (own.length === 0) continue;
+      const forced = (span: TraceSpan) => script.some((outer) => within(span, outer));
+      for (const span of own) {
+        console.log(
+          `TRACE-EVENT ${line} task=${at + 1} ${name} at=${traceMs(span.start - task.start)} ` +
+            `dur=${traceMs(span.end - span.start)} in-js=${forced(span) ? "yes" : "no"}` +
+            traceCounts(span)
+        );
+      }
+      console.log(
+        `TRACE-SUM ${line} task=${at + 1} ${name} count=${own.length} ` +
+          `total=${traceMs(coveredUs(own))} ` +
+          `native=${traceMs(coveredUs(own.filter((span) => !forced(span))))}`
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1367,6 +1599,7 @@ test("the acts made after the load, profiled", async ({ browser, loadSeeds }, te
   const seeded = await loadSeeds.shape();
   const load = await openLoad(browser, rate, presetPath(seeded.key, "conversation"), "none");
   const readCommits = process.env.ISSUE_PAGE_LOAD_COMMITS === "1";
+  const readTrace = process.env.ISSUE_PAGE_LOAD_TRACE === "1";
   try {
     if (readCommits) await load.page.addInitScript(commitProbe);
     await load.goto();
@@ -1390,7 +1623,10 @@ test("the acts made after the load, profiled", async ({ browser, loadSeeds }, te
       const commits = readCommits && COMMIT_ACTS[act.kind] === true;
       if (commits) await load.page.evaluate(() => window.__commitProbe?.arm());
       await load.cdp.send("Profiler.start");
+      const endTrace =
+        readTrace && TRACE_ACTS[act.kind] === true ? await startTrace(load.cdp) : undefined;
       const made = await makeSteps(load.page, next, act.steps, "now");
+      const traced = await endTrace?.();
       const anchoredAt = await anchor(load.page);
       const { profile } = await load.cdp.send("Profiler.stop");
       const record = await recordOf(load.page);
@@ -1400,6 +1636,7 @@ test("the acts made after the load, profiled", async ({ browser, loadSeeds }, te
         spans: load.requests.spans(record.timeOrigin),
       };
       printAct(label, width, 1, profiled);
+      if (traced !== undefined) printTrace(label, width, traced);
       if (commits) {
         // The act has shown its result and the probe was armed for it alone, so this one read
         // holds every commit of the act's window; it prints them and decides nothing.
