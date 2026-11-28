@@ -306,22 +306,32 @@ type sentences struct{ abandoned, ended bool }
 //     names, still says its turn was interrupted, under the cause the claim's record names
 //     (interruptedTask): the let-go that took it back, whichever path that was, rather than the
 //     last death's words. With an abandoned session still to tell, that turn was the old
-//     session's, and the abandoned session's sentence stands in its place (the first item).
+//     session's, and the abandoned session's sentence stands in its place (the first item). A
+//     false death a read found running names no cause here: where its record replaced the told
+//     record of the end that took the task back, it kept that record (EndedWork.Earlier) and the
+//     read put it back (reportedProcess), so a later send of the task, a retry after a provider
+//     error or an uninvoked result among them, names that end's cause and reads that end's death
+//     kind for the out-of-memory note, as with no false death.
 //   - A task a death the daemon judged of its process took back, sent again to that same process
 //     after a read found it running (EndedWork.SentAgain), says in one sentence that it is sent
-//     again because the daemon read the process wrongly as ended, and nothing of an end, a cause
-//     or a turn cut off (sentAgainTask): the process never ended, and the record of that death is
-//     told already, by no delivery, or gone (reportedProcess). Where the read put back an earlier
-//     launch's end that no turn had yet confirmed a prompt carrying (EndedWork.Earlier, Tells),
-//     that end's sentence and its out-of-memory note lead, exactly as they would have had the
-//     false death never happened, and the sentence of the task sent again follows them, since
-//     both are true: the earlier process ended, and this one did not. It is that task's alone,
-//     and only while the process it went to again lives: a task of another id never carries it,
-//     a prompt of the task that comes to nothing, or a send that rewrites it for its news, moves
-//     the mark to the id the task takes (takeBackPending, rewritePending), a turn that runs the
-//     task's prompt to its result and the task's retirement end the mark (promptResulted,
-//     retirePending), and so does the let-go of the process (letGo), so the next process's
-//     prompt carries none.
+//     again because the daemon read the process wrongly as ended, and nothing of that death, its
+//     cause or a turn it cut off (sentAgainTask): the process never ended, and the record of that
+//     death is told already, by no delivery, or gone (reportedProcess). Where the read put back
+//     an earlier launch's end (EndedWork.Earlier), every end the same steps tell with no false
+//     death leads, in its own words, and the sentence of the task sent again follows, since both
+//     are true: the earlier process ended, and this one did not. That end's sentence and its
+//     out-of-memory note lead where no turn has yet confirmed a prompt carrying it (Tells), and
+//     where the task carries that end's marks, which the read put back (Interrupted,
+//     EndedWork.TookBackEarlierTask): that end took the task back, so with no false death its
+//     next send tells it, in the sentence of its record rather than interruptedTask's. The result
+//     of the prompt the death's take-back replaced is stale (fence), so the task sent again
+//     carries no provider-error note and no retry for that prompt. The sentence of a task sent
+//     again is that task's alone, and only while the process it went to again lives: a task of
+//     another id never carries it, a prompt of the task that comes to nothing, or a send that
+//     rewrites it for its news, moves the mark to the id the task takes (takeBackPending,
+//     rewritePending), a turn that runs the task's prompt to its result and the task's retirement
+//     end the mark (promptResulted, retirePending), and so does the let-go of the process
+//     (letGo), so the next process's prompt carries none.
 //
 // Composing a prompt tells nothing (confirmCarrying).
 //
@@ -378,15 +388,24 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	// sentence stands in place of the notes of that turn: an abandoned session still tells, and
 	// no record of the fresh process says the task was in a turn of its own.
 	oldTurn := c.Abandoned.Tells() && !(c.EndedWork.Tells() && c.EndedWork.TaskTurn)
+	// earlier is whether d, a task sent again, carries the marks of an earlier launch's end that
+	// the read put back in place of the false death's record (reportedProcess): after a read, a
+	// task sent again carries no mark of the false death, so its marks are that end's.
+	earlier := again && d.Interrupted && c.EndedWork.Cause != "" && c.EndedWork.Generation != c.Generation
 	switch {
 	case relaunch:
 		// Its text is the record's sentence already.
 	case c.EndedWork.Tells():
 		prefix, carried.ended = prefix+relaunchSentence(c.EndedWork.inFrontOf(d), true)+"\n\n", true
+	case earlier && !oldTurn:
+		// That end is told already. The task it took back tells it again in its record's words,
+		// as a send of that task after a result that ran no turn does with no false death, and
+		// the telling stands as it is.
+		prefix += relaunchSentence(c.EndedWork.inFrontOf(d), true) + "\n\n"
 	case d.Interrupted && !oldTurn && !again:
 		prefix += interruptedTask(c.EndedWork.Cause)
 	}
-	if d.Interrupted && d.OutOfMemory && !oldTurn && (!again || carried.ended) {
+	if d.Interrupted && d.OutOfMemory && !oldTurn && (!again || carried.ended || earlier) {
 		prefix += outOfMemoryNote(c.EndedWork)
 	}
 	if again {
@@ -2342,10 +2361,11 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	untold := m.untellInFlight()
 	stored := m.stored()
 	// Store the new id and the earlier task's marks with the new delivery so a restart
-	// can undo the take-back.
+	// can undo the take-back: the death's record keeps an earlier launch's (EndedWork.Earlier),
+	// told or not, whose take-back may have marked this task.
 	e := &stored.EndedWork
-	joinedDeath := e.Died && e.Generation == m.claim.Generation && e.Earlier != nil
-	if joinedDeath {
+	keptEarlier := e.Died && e.Generation == m.claim.Generation && e.Earlier != nil
+	if keptEarlier {
 		e.TookBack = next.ID
 		e.TookBackEarlierTask = e.Earlier.TaskTurn && p.Interrupted
 		e.TookBackEarlierOutOfMemory = e.TookBackEarlierTask && p.OutOfMemory
@@ -2355,7 +2375,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 		stored.Handshake, handshakeMoved = m.claim.Handshake.unconfirmed(*p)
 	}
 	var err error
-	if untold || handshakeMoved || joinedDeath {
+	if untold || handshakeMoved || keptEarlier {
 		err = m.putClaimAndDelivery(ctx, stored, next)
 	} else {
 		err = m.putDelivery(ctx, next)
@@ -2679,7 +2699,10 @@ func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 // that confirmation stands under from here on, and reports whether any record had a telling to
 // hand: each of the claim's two records whose ToldBy is from names to instead. to "" is the
 // confirmation taken back, which tells nothing any more, so such a record goes back to untold and
-// the next prompt carries its sentence again. Its callers:
+// the next prompt carries its sentence again. The told record of an earlier launch that a death's
+// record keeps (EndedWork.Earlier) follows the confirmation that told it too, so a read that
+// finds the process running puts it back told or untold as that telling now stands, as with no
+// false death; no prompt carries it while it is kept, so its untelling is not logged. Its callers:
 //
 //   - refused, a send that reached no turn with no other prompt of the task outstanding: the
 //     turn that confirmed the task was another input's. It writes the claim with the delivery
@@ -2709,6 +2732,9 @@ func (m *Machine) moveTelling(from, to string) bool {
 	if moved && to == "" {
 		m.log.Info("supervise: the confirmation of the prompt that told the agent what became of its earlier work was taken back; the next prompt tells it again",
 			"delivery", from)
+	}
+	if e := m.claim.EndedWork.Earlier; e != nil && e.Told && e.ToldBy == from {
+		e.Told, e.ToldBy, moved = to != "", to, true
 	}
 	return moved
 }

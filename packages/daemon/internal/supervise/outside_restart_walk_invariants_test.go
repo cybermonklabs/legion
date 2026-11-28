@@ -118,13 +118,14 @@ func (w *outsideWalk) check() {
 	}
 	// The earlier launch's record is told where a confirmation told it, and untold again where a
 	// let-go takes that telling back, so a death's record joins it and keeps it (EndedWork.Earlier,
-	// untellInFlight). A record of another end that replaced it told leaves it told.
+	// untellInFlight). A death's record that replaces it told keeps it as it stood, told, and a
+	// record of another end that replaced it told leaves it told.
 	switch {
 	case w.earlierCause == "":
 	case e.Cause == w.earlierCause:
 		w.earlierTold = e.Told && e.ToldBy != ""
 	case e.Earlier != nil && e.Earlier.Cause == w.earlierCause:
-		w.earlierTold = false
+		w.earlierTold = e.Earlier.Told && e.Earlier.ToldBy != ""
 	}
 	prompts := h.prompts()
 	for _, p := range prompts[min(w.seen, len(prompts)):] {

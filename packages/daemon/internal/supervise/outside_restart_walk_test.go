@@ -66,9 +66,12 @@ const (
 // running verdict ends a death died judged once in a walk at most; on the daemon that read the
 // end, where the claim stood holding its task sent and still holds it, a late acknowledgement of
 // that task's prompt (acked), as the send in flight at the end gives one, or the shim's second
-// answer for one prompt; the steps of a process a running verdict found running (live): the end
-// of its turn with an activity report that says nothing runs, the turn start of the task sent
-// again, a suspension held for that turn, and an end of the process; and, once in a walk, an
+// answer for one prompt; Oh My Pi's result of the prompt of the task the claim is in a turn of,
+// that turn having run nothing to its end, a provider error's or one not invoked (promptResult),
+// at any step where the claim records the ended launch working in a turn of its pending task,
+// confirmed, after a restart too; the steps of a process a running verdict found running (live):
+// the end of its turn with an activity report that says nothing runs, the turn start of the task
+// sent again, a suspension held for that turn, and an end of the process; and, once in a walk, an
 // operator's suspension, held for the turn where the claim is in one over a process the daemon
 // does not hold gone (holdSuspension), and landing where it arrives otherwise. An event the
 // machine answers with an error is allowed. The walk closes with the faults cleared, the replay
@@ -206,14 +209,18 @@ const (
 // verdict, a suspension held for a turn, an operator's suspension that lands where it arrives,
 // after a running verdict, a displacement, a death and an end from outside the pod, a running
 // verdict over the earlier launch's death still untold, the task sent again behind that death's
-// words, and the sweep's report of the process running, and unless some sweep report lands while
-// a death's relaunch waits in the pacing, while any launch waits, ready or idle, in a turn and
-// after a restart; it logs how many seeds walk each, and how many sweep reports land at each of
+// words, the sweep's report of the process running, a prompt's result of each kind that ran no
+// turn to its end, and such a result after a running verdict ended a death, and unless some
+// sweep report lands while a death's relaunch waits in the pacing, while any launch waits, ready
+// or idle, in a turn and after a restart; it logs how many seeds walk each, how many of them
+// walk such a result after a read's verdict alone, and how many sweep reports land at each of
 // those points.
 func TestAnEndFromOutsideHoldsItsInvariantsInRandomOrders(t *testing.T) {
 	var reads, acks, displacedReports, turnEnds, turnStarts, held, suspended, earlierReads, earlierSentAgain, sweeps int
 	var liveEnds [3]int
 	var sweepsAt [5]int
+	var results [2]int
+	var resultsAfterVerdict, resultsAfterRead int
 	for seed := uint64(1); seed <= outsideSeeds; seed++ {
 		t.Run(fmt.Sprintf("seed %d", seed), func(t *testing.T) {
 			w := newOutsideWalk(t, seed)
@@ -230,15 +237,22 @@ func TestAnEndFromOutsideHoldsItsInvariantsInRandomOrders(t *testing.T) {
 			for at, n := range w.sweepsAt {
 				sweepsAt[at] += n
 			}
+			for kind, n := range w.resultsTaken {
+				results[kind] += min(n, 1)
+			}
+			resultsAfterVerdict += min(w.resultsAfterVerdict, 1)
+			resultsAfterRead += min(w.resultsAfterRead, 1)
 		})
 	}
 	t.Logf("seeds that walk a running read: %d; a late acknowledgement over a gone process: %d; a report read neither way over displaced's record: %d; an idle turn end: %d; a turn start after a running verdict: %d; a suspension held for a turn: %d; an operator's suspension landing: %d; after a running verdict, a displacement: %d, a death: %d, an end from outside the pod: %d; a running verdict over an earlier launch's end still untold: %d; the task sent again behind that end's words: %d; the sweep's report of the process running: %d",
 		reads, acks, displacedReports, turnEnds, turnStarts, held, suspended, liveEnds[0], liveEnds[1], liveEnds[2], earlierReads, earlierSentAgain, sweeps)
 	t.Logf("sweep reports of the process running while a death's relaunch waits in the pacing: %d; while any launch waits: %d; ready or idle: %d; in a turn: %d; after a restart: %d",
 		sweepsAt[0], sweepsAt[1], sweepsAt[2], sweepsAt[3], sweepsAt[4])
+	t.Logf("seeds that walk a prompt's result that ran no turn to its end, a provider error: %d, not invoked: %d; either after a running verdict, a read's or a sweep's, found the process running over a death: %d, after a read's: %d",
+		results[0], results[1], resultsAfterVerdict, resultsAfterRead)
 	if !t.Failed() && (reads == 0 || acks == 0 || displacedReports == 0 || turnEnds == 0 || turnStarts == 0 || held == 0 ||
 		suspended == 0 || slices.Contains(liveEnds[:], 0) || earlierReads == 0 || earlierSentAgain == 0 || sweeps == 0 ||
-		slices.Contains(sweepsAt[:], 0)) {
+		slices.Contains(sweepsAt[:], 0) || slices.Contains(results[:], 0) || resultsAfterVerdict == 0) {
 		t.Fatal("a seed list that walks none of one of the orders, want each walked")
 	}
 }
@@ -385,18 +399,32 @@ type outsideWalk struct {
 	// in a turn, and after a restart. outlivedDeaths is how many running verdicts, a read's or a
 	// sweep's, ended a death died judged, which comes once in a walk at most: a second would let
 	// a third death fail the claim at the deaths limit (chargeDeath). outlived is the causes the
-	// records of those deaths held, which nothing may tell again (invariant 9).
+	// records of those deaths held, which nothing may tell again (invariant 9). endedBy is the
+	// verdict that ended such a death, "the read" or "the sweep", "" while none has.
 	sweep          *rand.Rand
 	sweeps         int
 	sweepsAt       [5]int
 	outlivedDeaths int
 	outlived       []string
+	endedBy        string
+	// results is a tenth stream from the seed, of whether Oh My Pi answers the prompt of the task
+	// the claim is in a turn of with a result that ran no turn to its end before a random step
+	// where one can come (promptResult), and of which answer, drawn apart for the reason more is.
+	// answered is the id of the prompt the walk last answered so, resultsTaken how many results
+	// of each kind, a provider error's and one not invoked, the walk took, and resultsAfterVerdict
+	// and resultsAfterRead how many came while a process a running verdict found running over a
+	// death lives: after a verdict of either kind, and after a read's (endedBy).
+	results                               *rand.Rand
+	answered                              string
+	resultsTaken                          [2]int
+	resultsAfterVerdict, resultsAfterRead int
 }
 
 func newOutsideWalk(t *testing.T, seed uint64) *outsideWalk {
 	w := &outsideWalk{t: t, seed: seed, rng: rand.New(rand.NewPCG(seed, 0)), more: rand.New(rand.NewPCG(seed, 1)),
 		extra: rand.New(rand.NewPCG(seed, 3)), kinds: rand.New(rand.NewPCG(seed, 4)), life: rand.New(rand.NewPCG(seed, 6)),
-		sweep: rand.New(rand.NewPCG(seed, 8)), h: pacedHarness(t, wakeRate), judged: 1, cutAts: map[int64]bool{}}
+		sweep: rand.New(rand.NewPCG(seed, 8)), results: rand.New(rand.NewPCG(seed, 9)), h: pacedHarness(t, wakeRate), judged: 1,
+		cutAts: map[int64]bool{}}
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("seed %d walked: %s", seed, strings.Join(w.walked, "; "))
@@ -602,7 +630,12 @@ func (w *outsideWalk) observe(name string, observation runtime.Observation) {
 // ended launch live and the store takes every write but the relaunch's recheck; from extra, one
 // time in two, a running read (readRunning), once in a walk, in such a walk, where no launch
 // waits, and, one time in three, a late acknowledgement of the prompt of the task the claim stood
-// owing (lateAck); the steps of a process a running verdict found running (live); and from
+// owing (lateAck); from results, one time in two, Oh My Pi's result of the prompt of the task
+// the claim is in a turn of, which ran no turn to its end (promptResult), where the claim records
+// the ended launch working in a turn of its pending task, confirmed and not answered so yet, and
+// its process can be running: a running verdict found it so, or the sweep could, in a walk whose
+// first report was read neither way before any report read the pod ended (promptResult says why
+// no other place); the steps of a process a running verdict found running (live); and from
 // kinds, one time in two an idle turn end where such a verdict found the process running and the
 // claim is in a turn (idleTurnEnd), and one time in eight an operator's suspension, once in a
 // walk (suspend). A running verdict ends a death died judged once in a walk at most
@@ -623,6 +656,11 @@ func (w *outsideWalk) beside() {
 	if c = w.h.claim(); ours && w.owing && !w.restarted && c.Pending != nil && c.Pending.ConfirmedAt.IsZero() &&
 		w.extra.IntN(3) == 0 {
 		w.lateAck()
+	}
+	if c = w.h.claim(); c.Generation == w.generation && c.Locator != nil && (w.alive || w.diedFirst && !w.podEnded) &&
+		c.State == StateWorking && c.Pending != nil && !c.Pending.ConfirmedAt.IsZero() && c.Pending.ID != w.answered &&
+		w.results.IntN(2) == 0 {
+		w.promptResult()
 	}
 	if c = w.h.claim(); w.alive && c.Generation == w.generation && c.Locator != nil {
 		w.live()
@@ -682,6 +720,56 @@ func (w *outsideWalk) turnStart() {
 	w.step("a turn start of the task sent again", func() error {
 		return w.h.handle(StreamTurnStart{Claim: w.h.token})
 	})
+}
+
+// promptResult is a step of Oh My Pi's result of the prompt of the task the claim is in a turn
+// of, which ran no turn to its end: drawn from results one time in two, the result of a turn that
+// ended in a provider error (providerErrored), and otherwise a result that says no turn ran for
+// it, the turn the task was taken for being another input's (promptFailed). Each takes the task
+// back unconfirmed under a new id (takeBackPending), to go again: the provider error's retry once
+// its wait has passed, the other at the turn's end. It answers the pending task's id, after a
+// restart too, where the daemon no longer waits on that prompt. The take-back is no death's, so
+// the task it names is none a death took back (takenBack), and a task sent again keeps that mark
+// under its new id (EndedWork.SentAgain), which the walk follows.
+//
+// It is drawn only where the process can be running (beside). A result can reach the machine
+// after its pod's end is judged as well: the stream queues a prompt_result frame it has read with
+// no generation and no incarnation (stream's Conn.read, conn.go), and the connection's Closed only
+// behind it (Listener.serve, listener.go); the runtime's reading of the end reaches the same inbox
+// from another goroutine; and the fence reads nothing of a result but its delivery id
+// (Machine.fence). Where the end's take-back left the task its id, such a result takes the task
+// back and loses nothing: the relaunch sends it. Drawn after the pod is read as ended, the step
+// meets, under the walk's store faults and restarts, the take-back's durability limit instead:
+// takeBackPending clears the task's confirmation in memory before its write lands (delivery.go),
+// so a write the store refuses or loses, followed by a restart before any write of the delivery
+// lands, leaves the store's confirmation, which settle reads as a turn run to its end and retires
+// the task as served. That holds over a live process too, and the walk does not hold it.
+func (w *outsideWalk) promptResult() {
+	h := w.h
+	id, invoked := h.claim().Pending.ID, w.results.IntN(2) == 0
+	result := StreamPromptResult{Claim: h.token, DeliveryID: id}
+	name, kind := "a result of the task's prompt, not invoked", 1
+	if invoked {
+		result.AgentInvoked, result.Error, result.HTTPStatus = true, "overloaded_error", 529
+		name, kind = "a result of the task's prompt, a provider error", 0
+	}
+	w.answered = id
+	w.resultsTaken[kind]++
+	if w.alive && w.endedBy != "" {
+		w.resultsAfterVerdict++
+		if w.endedBy == "the read" {
+			w.resultsAfterRead++
+		}
+	}
+	takenBack, again := w.takenBack, id == w.sentAgain
+	w.step(name, func() error {
+		err := h.handle(result)
+		if again {
+			w.sentAgain = h.claim().EndedWork.SentAgain
+		}
+		return err
+	})
+	w.takenBack = takenBack
 }
 
 // liveEnd is a step of an end of a process a running verdict found running, drawn from life: the
@@ -786,7 +874,7 @@ func (w *outsideWalk) outlive(pre Claim, verdict string) {
 	}
 	if pre.DeathCharged || pre.judgedDeath() {
 		w.judged++
-		w.outlivedDeaths++
+		w.outlivedDeaths, w.endedBy = w.outlivedDeaths+1, verdict
 		if e := pre.EndedWork; e.Died && e.Generation == w.generation {
 			w.outlived = append(w.outlived, e.Cause)
 		}

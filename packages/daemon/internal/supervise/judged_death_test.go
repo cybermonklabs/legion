@@ -595,11 +595,15 @@ func TestARunningReadLeavesNoTurnOfTheDeathItEnded(t *testing.T) {
 // nothing, whichever of the three judgements that type that record judges it (retype: died,
 // markDisplaced, markFromOutside), tells exactly what the same end tells with no false death
 // before it: a role holding its task, which a turn of the agent's own kept waiting, is sent that
-// task alone, and a role holding none is sent nothing and is not woken for it. Each row runs its
-// steps twice, the second time on a harness of its own without the false death and the read, and
-// compares every prompt the two claims were sent, whole. The false death comes in the agent's own
-// turn, whose activity report names a subagent, so its record names the turn, the subagent and a
-// report of the turn; and it takes nothing back, so the task stands the same in both harnesses.
+// task alone, and a role holding none is sent nothing and is not woken for it. The exception,
+// which the list in the EndedWork doc names, is a death the runtime read a plain cause of (the
+// memory limit or an eviction) of a role holding its task: recordEnd keeps it whatever it cut off
+// (kept), and the role is told it, with no false death as with one; this row's death has no
+// plain cause. Each row runs its steps twice, the first time on a harness of its own without
+// the false death and the read, and compares every prompt the two claims were sent, whole. The
+// false death comes in the agent's own turn, whose activity report names a subagent, so its
+// record names the turn, the subagent and a report of the turn; and it takes nothing back, so
+// the task stands the same in both harnesses.
 //
 // The negative controls: reportedProcess keeping the death's background work and report on the
 // record (EndedWork.Background, Kinds, Reported) fails every row at its check of the record after
@@ -753,18 +757,21 @@ func TestARunningReadTellsNothingOfTheDeathItEnded(t *testing.T) {
 }
 
 // A read that finds the process running after a death whose take-back the store refused leaves
-// the task as that death found it. An earlier end took the task back, marking it interrupted by a
-// pod that ran out of memory; the relaunch's turn confirmed it and its prompt's result came, so
-// that end's record is told. A death died judged then records the task's turn as cut off
-// (EndedWork.TaskTurn, recordGoneEnd) before it tries the take-back, which the store refuses, so
-// the task stays confirmed under its id, the earlier end's marks still on it, and the death's
-// record joins nothing. The read reads the take-back by the task's confirmation as well as by the
-// record's turn and the task's mark (reportedProcess): this death took nothing back, so no task is
-// marked sent again (EndedWork.SentAgain) and the task keeps its id, its confirmation and its
-// marks, in the claim and in the store.
+// the task and the record as that death found them. An earlier end took the task back, marking it
+// interrupted by a pod that ran out of memory; the relaunch's turn confirmed it and its prompt's
+// result came, so that end's record is told. A death died judged then records the task's turn as
+// cut off (EndedWork.TaskTurn, recordGoneEnd) before it tries the take-back, which the store
+// refuses, so the task stays confirmed under its id, the earlier end's marks still on it. The
+// death's record replaces the earlier end's told record and keeps it whole (EndedWork.Earlier),
+// naming no task it took back (EndedWork.TookBack). The read reads the take-back by that id
+// (reportedProcess): this death took nothing back, so no task is marked sent again
+// (EndedWork.SentAgain), the task keeps its id, its confirmation and its marks, and the earlier
+// end's record is back as it stood, told, in the claim and in the store.
 //
-// The negative control is reportedProcess reading the take-back by the record's turn and the
-// task's mark alone: the row fails, the task named sent again and its marks gone.
+// The negative controls: reportedProcess reading the take-back of a record that keeps an earlier
+// one by the record's turn and the task's mark alone, the id aside, fails the row, the task named
+// sent again and its marks gone; and recordEnd keeping an earlier record only where it still
+// tells fails the row at its check of the record the death left.
 func TestARunningReadAfterARefusedTakeBackLeavesTheTaskAsTheDeathFoundIt(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateWorking)
@@ -772,19 +779,20 @@ func TestARunningReadAfterARefusedTakeBackLeavesTheTaskAsTheDeathFoundIt(t *test
 	h.relaunched()
 	h.must(StreamTurnStart{Claim: h.token})
 	h.must(StreamPromptResult{Claim: h.token, DeliveryID: h.pending().ID, AgentInvoked: true})
-	before := h.pending()
-	if !before.Interrupted || !before.OutOfMemory || before.ConfirmedAt.IsZero() || h.claim().EndedWork.Tells() {
+	before, earlier := h.pending(), h.claim().EndedWork
+	if !before.Interrupted || !before.OutOfMemory || before.ConfirmedAt.IsZero() || earlier.Tells() {
 		t.Fatalf("premise: the relaunch holds the task %+v under the record %+v, want it confirmed with the earlier end's marks, that end told",
-			before, h.claim().EndedWork)
+			before, earlier)
 	}
 	h.store.fail("PutDelivery", errStoreRefused)
 	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); err == nil {
 		t.Fatal("the take-back was written, want the store's refusal of it")
 	}
 	h.store.fail("PutDelivery", nil)
-	if e, p := h.claim().EndedWork, h.pending(); !e.Died || !e.TaskTurn || e.Earlier != nil || p.ID != before.ID || p.ConfirmedAt.IsZero() {
-		t.Fatalf("premise: the death left the record %+v over the task %+v, want died's record of the task's turn, joined over nothing, the task still confirmed under %s",
-			e, p, before.ID)
+	if e, p := h.claim().EndedWork, h.pending(); !e.Died || !e.TaskTurn || e.Earlier == nil || !reflect.DeepEqual(*e.Earlier, earlier) ||
+		e.TookBack != "" || p.ID != before.ID || p.ConfirmedAt.IsZero() {
+		t.Fatalf("the death left the record %+v over the task %+v, want died's record of the task's turn keeping the earlier end's told record %+v whole, the task still confirmed under %s",
+			e, p, earlier, before.ID)
 	}
 	readRunning(t, h)
 	for whose, c := range map[string]Claim{"the claim": h.claim(), "the store": h.store.load(h.token)} {
@@ -792,6 +800,286 @@ func TestARunningReadAfterARefusedTakeBackLeavesTheTaskAsTheDeathFoundIt(t *test
 			p.Interrupted != before.Interrupted || p.OutOfMemory != before.OutOfMemory {
 			t.Fatalf("%s holds the task %+v under the record %+v after the read, want %s still confirmed with the marks it held, interrupted=%v outOfMemory=%v, and sent again never",
 				whose, p, c.EndedWork, before.ID, before.Interrupted, before.OutOfMemory)
+		}
+		if !reflect.DeepEqual(c.EndedWork, earlier) {
+			t.Fatalf("%s holds the record %+v after the read, want the earlier end's put back as it stood, told: %+v", whose, c.EndedWork, earlier)
+		}
+	}
+}
+
+// A read that finds the process running after a death whose take-back the store refused leaves
+// the marks of an earlier end the claim no longer records on the task. A death of the claim's
+// process takes its task back, marked interrupted by a pod that ran out of memory, and its
+// relaunch is refused; the store takes the delivery and refuses the claim, so the death's record
+// and charge are lost at the restart that follows, and the claim stands over the same process
+// holding the marked task and no record. The turn the process was in ends, the task goes to it
+// again, and the next turn confirms it, marks and all. A second death, judged afresh, records the
+// task's turn as cut off and keeps no earlier record, there being none (recordEnd), and the store
+// refuses its take-back, so the task stays confirmed under its id with the first death's marks.
+// The read reads the take-back of a record that keeps none by the task's confirmation as well as
+// by the record's turn and the task's mark (reportedProcess): this death took nothing back, so no
+// task is marked sent again (EndedWork.SentAgain), and the task keeps its id, its confirmation
+// and its marks, in the claim and in the store.
+//
+// The negative control is reportedProcess reading that take-back by the record's turn and the
+// task's mark alone: the row fails, the task named sent again and its marks gone.
+func TestARunningReadAfterARefusedTakeBackKeepsTheMarksOfAnEndTheStoreLost(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateWorking)
+	refused := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	h.m.deps.Store = refused
+	h.store.fail("PutClaim", errStoreRefused)
+	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
+		OutOfMemory: true}}); err == nil {
+		t.Fatal("the death's claim write was taken, want the store's refusal of it")
+	}
+	h.store.fail("PutClaim", nil)
+	h.restart()
+	if c := h.claim(); c.EndedWork.Cause != "" || c.DeathCharged || c.Pending == nil || !c.Pending.Interrupted || !c.Pending.OutOfMemory ||
+		!c.Pending.ConfirmedAt.IsZero() {
+		t.Fatalf("premise: the restart restored the record %+v, charged=%v, over the task %+v, want no record and no charge over the task the death took back, marked",
+			c.EndedWork, c.DeathCharged, c.Pending)
+	}
+	h.must(StreamTurnEnd{Claim: h.token})
+	h.must(StreamTurnStart{Claim: h.token})
+	before := h.pending()
+	if before.ConfirmedAt.IsZero() || !before.Interrupted || !before.OutOfMemory {
+		t.Fatalf("premise: the next turn holds the task %+v, want it confirmed with the first death's marks", before)
+	}
+	h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	h.store.fail("PutDelivery", errStoreRefused)
+	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); err == nil {
+		t.Fatal("the second death's take-back was written, want the store's refusal of it")
+	}
+	h.store.fail("PutDelivery", nil)
+	if e, p := h.claim().EndedWork, h.pending(); !e.Died || !e.TaskTurn || e.Earlier != nil || p.ID != before.ID || p.ConfirmedAt.IsZero() {
+		t.Fatalf("premise: the second death left the record %+v over the task %+v, want died's record of the task's turn, keeping no earlier one, the task still confirmed under %s",
+			e, p, before.ID)
+	}
+	readRunning(t, h)
+	for whose, c := range map[string]Claim{"the claim": h.claim(), "the store": h.store.load(h.token)} {
+		if p := c.Pending; p == nil || c.EndedWork.SentAgain != "" || p.ID != before.ID || p.ConfirmedAt.IsZero() || !p.Interrupted || !p.OutOfMemory {
+			t.Fatalf("%s holds the task %+v under the record %+v after the read, want %s still confirmed with the first death's marks, and sent again never",
+				whose, p, c.EndedWork, before.ID)
+		}
+	}
+}
+
+// A task taken back from a turn goes again behind the sentence of the end that cut that turn off,
+// and a false death that a read found running names no end there: every prompt after the read is
+// what the same steps send with no false death
+// (dispatch://INFRA-1117/comment/dbf49ff6-0883-4b79-8379-d306e3323b57), but for the sentence of a
+// task sent again where the death's take-back landed, and the stale result of the prompt that
+// take-back replaced (dispatch://INFRA-1117/comment/6e64dc44-8791-46de-9b01-fa305a750309). An OOM
+// kill of launch G-1 cuts off its task's turn, in which a subagent ran, and its take-back marks
+// the task interrupted and out of memory. The turn of relaunch G confirms the task, which tells
+// G-1's record, and the daemon restarts before the prompt's result. A death of G then comes, its
+// relaunch refused by the lifecycle recheck: its record replaces G-1's told record and keeps it
+// whole (EndedWork.Earlier, recordEnd), and a read that finds G running puts that record back as
+// it stood (reportedProcess). The result of the prompt G ran comes with a provider error, or as
+// not invoked, after the read or before it.
+//
+// Where the store refuses the death's take-back, the result takes the task back with its marks,
+// and takes back what the task's confirmation told (takeBackPending, moveTelling), G-1's record
+// among them where the death keeps it, so G-1's record tells again; the turn's end sends the task
+// again, behind that record's sentence, once the retry's wait has passed. Every prompt the two
+// claims were sent after the restart is compared whole: the one retry, behind G-1's interruption
+// under G-1's cause, its subagent and the out-of-memory note G-1's death gives, and the note of
+// the provider error where there was one.
+//
+// Where the take-back lands, it replaces the prompt G was running, so that prompt's result is
+// stale (fence) and no retry comes of it. The read puts G-1's marks back on the task
+// (EndedWork.TookBackEarlierTask), and the turn's end sends the task again to G behind G-1's end,
+// told in its record's words with its out-of-memory note, and then the sentence of a task sent
+// again (Delivery.message). That one prompt, with the sentence of a task sent again
+// (sentAgainTask) taken out, is compared whole with the retry of the run with no false death,
+// less the provider-error note that retry carries (Delivery.ProviderErrorNote, read off that run's
+// task); and that sentence stands right in front of the task. Each row runs with G-1's memory
+// limit recorded and without it, its run with no false death first, on a harness of its own.
+//
+// The negative controls: recordEnd keeping an earlier record only where it still tells fails
+// every row. The false death's record replaces G-1's told record and keeps nothing, so the read
+// leaves it outlived, under the false death's cause and told by no delivery. Where the store
+// refused the take-back and the result comes after the read, the retry names the false death as
+// the end that interrupted the task (interruptedTask); where it comes before, the read takes the
+// result's take-back for the death's, and the retry goes behind the sentence of a task sent again
+// with no word of G-1's end; and where the take-back landed, the read takes G-1's marks off the
+// task, which fails the row at its check of the task after the read. moveTelling leaving the
+// telling of the record a death keeps as it stood fails the refused rows whose result comes
+// before the read: the read puts G-1's record back told, and the retry names no subagent and says
+// the daemon has no report of that turn. Delivery.message telling no end in front of a task sent
+// again whose record is told, as it did, fails every landed row at its comparison: the task goes
+// behind the sentence of a task sent again alone.
+func TestARetryAfterARunningReadNamesTheEndItWouldWithNoFalseDeath(t *testing.T) {
+	const oomDetail = "the pod's roles container was OOMKilled"
+	// sends walks a claim through the row's steps. It answers the cause G-1's record holds, every
+	// prompt the claim was sent after the restart, and the task the claim holds at the end.
+	sends := func(t *testing.T, cause runtime.DeathCause, invoked, falseDeath, landed, resultFirst bool) (string, []string, Delivery) {
+		t.Helper()
+		h := newHarness(t)
+		h.reach(StateWorking)
+		h.reportActivity("subagent")
+		h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
+			Detail: oomDetail, OutOfMemory: true, Cause: cause}})
+		earlier := h.claim().EndedWork.Cause
+		h.relaunched()
+		h.must(StreamTurnStart{Claim: h.token})
+		if p, e := h.pending(), h.claim().EndedWork; !p.Interrupted || !p.OutOfMemory || p.ConfirmedAt.IsZero() || e.Tells() {
+			t.Fatalf("premise: G's turn holds the task %+v under the record %+v, want it confirmed with G-1's marks and G-1's record told", p, e)
+		}
+		h.restart()
+		// ran is the prompt G ran, whose result names it.
+		sent, ran := len(h.prompts()), h.pending().ID
+		result := func() {
+			r := StreamPromptResult{Claim: h.token, DeliveryID: ran}
+			if invoked {
+				r.AgentInvoked, r.Error, r.HTTPStatus = true, "overloaded_error", 529
+			}
+			h.must(r)
+		}
+		if falseDeath {
+			store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+			h.m.deps.Store = store
+			if !landed {
+				h.store.fail("PutDelivery", errStoreRefused)
+			}
+			err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
+				Detail: "a false death"}})
+			h.store.fail("PutDelivery", nil)
+			store.failing = false
+			if p := h.pending(); landed && (p.ID == ran || !p.ConfirmedAt.IsZero()) || !landed && (err == nil || p.ID != ran) {
+				t.Fatalf("premise: the false death answered %v and left the task %+v, want its take-back landed=%v", err, p, landed)
+			}
+			if resultFirst {
+				result()
+			}
+			readRunning(t, h)
+			switch p, e := h.pending(), h.claim().EndedWork; {
+			case landed && (!p.Interrupted || !p.OutOfMemory || !p.ConfirmedAt.IsZero() || e.SentAgain != p.ID || e.Cause != earlier || e.Tells()):
+				t.Fatalf("after the read G holds the task %+v under the record %+v, want it sent again with G-1's marks under G-1's told record", p, e)
+			case !landed && !resultFirst && (!p.Interrupted || !p.OutOfMemory || p.ConfirmedAt.IsZero()):
+				t.Fatalf("premise: after the read G holds the task %+v, want it confirmed with G-1's marks", p)
+			}
+		}
+		if !falseDeath || !resultFirst {
+			result()
+		}
+		h.must(StreamTurnEnd{Claim: h.token})
+		h.advance(promptRetryMax)
+		var got []string
+		for _, p := range h.prompts()[sent:] {
+			got = append(got, p.Message)
+		}
+		return earlier, got, h.pending()
+	}
+	for _, limit := range []struct {
+		name  string
+		cause runtime.DeathCause
+		note  string
+	}{
+		{"G-1's memory limit recorded", runtime.DeathCause{Kind: runtime.DeathMemoryLimit, Limit: 8 << 30}, outOfMemoryGuidance},
+		{"no memory limit recorded", runtime.DeathCause{}, outOfMemoryTask},
+	} {
+		for _, landed := range []bool{false, true} {
+			for _, invoked := range []bool{true, false} {
+				for _, resultFirst := range []bool{false, true} {
+					name := limit.name + ", the take-back refused"
+					if landed {
+						name = limit.name + ", the take-back landed"
+					}
+					if invoked {
+						name += ", a provider error"
+					} else {
+						name += ", a result not invoked"
+					}
+					if resultFirst {
+						name += ", before the read"
+					} else {
+						name += ", after the read"
+					}
+					t.Run(name, func(t *testing.T) {
+						earlier, want, held := sends(t, limit.cause, invoked, false, landed, resultFirst)
+						_, got, _ := sends(t, limit.cause, invoked, true, landed, resultFirst)
+						if len(want) != 1 || !strings.HasPrefix(want[0], "Your previous turn on this task was interrupted. Your process ended because "+earlier+". ") ||
+							!strings.Contains(want[0], saysSubagentStopped) || !strings.Contains(want[0], limit.note) ||
+							strings.Contains(want[0], outOfMemoryStatement) != (limit.note == outOfMemoryTask) ||
+							(held.ProviderErrorNote != "") != invoked || !strings.HasSuffix(want[0], held.Task) {
+							t.Fatalf("premise: with no false death the role was sent %q holding %+v, want one retry of its task behind G-1's interruption under %q, its subagent, the note %q and a provider-error note where the result was a provider error",
+								want, held, earlier, limit.note)
+						}
+						if !landed {
+							if !slices.Equal(got, want) {
+								t.Fatalf("after the false death and the read the role was sent\n%q\nwant what the same steps send with no false death\n%q", got, want)
+							}
+							return
+						}
+						// The retry of the run with no false death, less the note of the provider error
+						// of the prompt the landed take-back replaced.
+						retry := want[0]
+						if held.ProviderErrorNote != "" {
+							retry = strings.Replace(retry, held.ProviderErrorNote+"\n\n", "", 1)
+						}
+						if len(got) != 1 || strings.Count(got[0], sentAgainTask) != 1 || !strings.HasSuffix(got[0], sentAgainTask+held.Task) ||
+							strings.Replace(got[0], sentAgainTask, "", 1) != retry {
+							t.Fatalf("after the false death, its take-back landed, and the read the role was sent\n%q\nwant, with the sentence of a task sent again in front of the task, what the same steps send with no false death less the provider-error note of the replaced prompt\n%q",
+								got, retry)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+// A death that stands tells nothing of the told record it keeps. The claim holds an older
+// let-go's record, told already (olderToldClaim), and a death in its task's turn replaces it and
+// keeps it whole for a read that finds the process running (EndedWork.Earlier, recordEnd). No
+// read comes, so the death stands: the record the relaunch's ready reads for the architect's
+// catch-up (Tells, RelaunchSentence) is the death's alone, and the ready sends the task behind the
+// death's own sentence; the relaunch's turn tells the death's record, and after a restart the
+// restored claim and the store hold that record told, so nothing tells either record again; and
+// a later death of the relaunched process, which keeps the first death's record in its place and
+// drops the older one, sends the next relaunch the task behind its own sentence. Every prompt from
+// the first death on names the cause of the end it tells and never the older let-go's
+// (olderCause), and says once that its turn was interrupted.
+func TestADeathThatStandsTellsNothingOfTheToldRecordItKeeps(t *testing.T) {
+	h := newHarnessOf(t, olderToldClaim())
+	h.reach(StateWorking)
+	from := len(h.prompts())
+	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
+		Detail: "the death that stands"}})
+	first := h.claim().EndedWork
+	if first.Earlier == nil || first.Earlier.Cause != olderCause || !first.Earlier.Told || !first.Tells() {
+		t.Fatalf("premise: the death left the record %+v, want its own, untold, keeping the older told record whole", first)
+	}
+	h.relaunched()
+	if e := h.claim().EndedWork; !e.Tells() || e.Cause != first.Cause || strings.Contains(RelaunchSentence(e), olderCause) {
+		t.Fatalf("at the relaunch's ready the claim holds the record %+v, telling %q, want the death's own, which tells nothing of the older record",
+			e, RelaunchSentence(e))
+	}
+	h.must(StreamTurnStart{Claim: h.token})
+	h.restart()
+	for whose, c := range map[string]Claim{"the restored claim": h.claim(), "the store": h.store.load(h.token)} {
+		if e := c.EndedWork; e.Tells() || e.Cause != first.Cause || e.Earlier == nil || !e.Earlier.Told {
+			t.Fatalf("after the relaunch's turn and a restart %s holds the record %+v, want the death's own, told, keeping the older record told",
+				whose, e)
+		}
+	}
+	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
+		Detail: "a later death"}})
+	later := h.claim().EndedWork
+	if later.Earlier == nil || later.Earlier.Cause != first.Cause || later.Earlier.Earlier != nil {
+		t.Fatalf("the later death left the record %+v, want its own keeping the first death's, which keeps nothing", later)
+	}
+	h.relaunched()
+	sent := h.prompts()[from:]
+	if len(sent) != 2 {
+		t.Fatalf("the claim was sent %q after the first death, want its task at each relaunch's ready", sent)
+	}
+	for i, cause := range []string{first.Cause, later.Cause} {
+		if p := sent[i].Message; !strings.HasPrefix(p, "Your previous turn on this task was interrupted. Your process ended because "+cause+". ") ||
+			strings.Contains(p, olderCause) || strings.Count(p, "interrupted") != 1 {
+			t.Fatalf("relaunch %d was sent %q, want the task behind the sentence of %q alone, naming nothing of %q", i+1, p, cause, olderCause)
 		}
 	}
 }

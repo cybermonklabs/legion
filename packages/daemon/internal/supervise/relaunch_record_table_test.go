@@ -351,8 +351,20 @@ func (row relaunchRecordRow) run(t *testing.T) {
 	if row.record.cause == "" {
 		h.wantOnlyTheOlderRecord()
 	} else {
-		h.wantEnded(EndedWork{At: at, Cause: row.record.cause, Died: row.kind.died, Generation: letGo, Turn: row.record.turn,
-			TaskTurn: row.record.taskTurn, Background: len(row.state.kinds) > 0, Kinds: row.state.kinds, Reported: true})
+		want := EndedWork{At: at, Cause: row.record.cause, Died: row.kind.died, Generation: letGo, Turn: row.record.turn,
+			TaskTurn: row.record.taskTurn, Background: len(row.state.kinds) > 0, Kinds: row.state.kinds, Reported: true}
+		if row.kind.died {
+			// A death keeps the told record it replaces whole (EndedWork.Earlier), for a read that
+			// finds the process running to put back, and names the id its take-back gave the task
+			// (EndedWork.TookBack); no prompt tells that record (wantFirstPrompt and
+			// wantNoTaskSentInterruptedWithoutItsRecord below).
+			older := olderToldClaim().EndedWork
+			want.Earlier = &older
+			if row.sent == sentTaskTakenBack {
+				want.TookBack = h.pending().ID
+			}
+		}
+		h.wantEnded(want)
 	}
 	c.endCompaction(ErrCompactProcessGone)
 	next := len(h.prompts())

@@ -267,7 +267,7 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 // nothing by the boot's replay, and decided nothing again by a later report. Left untyped, it
 // would read a charged death (chargedDeath) that nothing judged: its relaunch in the first
 // queue, the replay's relaunch charged a launch failure, and a later report sent to died. The
-// next process is still told the cause displaced recorded first.
+// next process is still told the cause displaced recorded first, where that record tells.
 //
 // One no judgement types takes this end's cause and drops the kind of a death's
 // (EndedWork.Death), keeping its told state (retype): the end that let the process go is this
