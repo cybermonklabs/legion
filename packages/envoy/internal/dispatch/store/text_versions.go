@@ -25,6 +25,13 @@ type TextVersions struct {
 	Cut time.Time
 }
 
+// TextVersionsRules is the version of the fill's event rules that the relation needs
+// (textversions' RulesVersion): version 2 reads the edit of an issue message and the delete of a
+// comment or a message, which version 1 passed. A cursor row that an earlier version wrote lacks
+// the rows of those events below its cursor until the fill reads them again, and only that read
+// raises the row's rules, so no time is reached while the cursor row records an earlier version.
+const TextVersionsRules = 2
+
 // SQL is the relation as one parenthesised select, for a statement to join as `from <SQL> v`
 // and match, filter, rank, page and cut snippets in itself, as the present search's arms do over
 // the items' own tables. Its columns, in this order, are a contract its readers build on
@@ -79,11 +86,14 @@ func (e *TextVersionsNotReachedError) Error() string {
 	return "the keyword table's fill has reached " + textVersionsTime(e.Reach) + ", before the cut " + textVersionsTime(e.Cut)
 }
 
-// textVersionsCursorQuery reads the fill's one row: its cursor and the reach it stored.
-const textVersionsCursorQuery = `select event_id, reach from public.search_text_versions_fill where id = 1`
+// textVersionsCursorQuery reads the fill's one row, its cursor and the reach it stored, where
+// the rules that wrote it are at least $1 (TextVersionsRules): a row an earlier version of the
+// rules wrote reads as no row, a fill that has reached no time.
+const textVersionsCursorQuery = `select event_id, reach from public.search_text_versions_fill where id = 1 and rules >= $1`
 
 // scanTextVersionsCursor scans textVersionsCursorQuery's row. found is false when the fill has
-// written no row yet; reach is nil while it has stored none.
+// written no row yet, and while the row records rules earlier than TextVersionsRules; reach is
+// nil while it has stored none.
 func scanTextVersionsCursor(row pgx.Row) (cursor int64, reach *time.Time, found bool, err error) {
 	if err := row.Scan(&cursor, &reach); errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil, false, nil
@@ -97,19 +107,20 @@ func scanTextVersionsCursor(row pgx.Row) (cursor int64, reach *time.Time, found 
 // has not reached cut, so a search at a past time never reads a table that lacks a version that
 // held then. The cut is judged as SQL writes it, cut to the microsecond.
 //
-// With no cursor row the fill has reached no time, and the error says so (Reached false). A cut
-// at or before the stored reach is answered from that row alone. A cut past it has the reach
-// computed again (TextVersionsReach), so a database whose fill is caught up and quiet is not
-// refused a cut it has reached merely because no batch has stored a later reach since; the cut
-// is answered when it is at or before the greater of the two, and refused naming that reach
-// otherwise.
+// With no cursor row the fill has reached no time, and the error says so (Reached false); so too
+// while the row records rules earlier than TextVersionsRules, until the fill has read again the
+// events those rules passed. A cut at or before the stored reach is answered from that row alone.
+// A cut past it has the reach computed again (TextVersionsReach), so a database whose fill is
+// caught up and quiet is not refused a cut it has reached merely because no batch has stored a
+// later reach since; the cut is answered when it is at or before the greater of the two, and
+// refused naming that reach otherwise.
 //
 // Its statements decide whether a cut can be answered, so they read the present tables and never
 // the database as it stood at a past time: the fill's row, public.events, pg_stat_activity and
 // pg_locks, each table of Dispatch's named with its schema.
 func (s *Store) TextVersionsAt(ctx context.Context, cut time.Time) (TextVersions, error) {
 	at := cut.Truncate(time.Microsecond)
-	_, stored, found, err := scanTextVersionsCursor(s.Pool.QueryRow(ctx, textVersionsCursorQuery))
+	_, stored, found, err := scanTextVersionsCursor(s.Pool.QueryRow(ctx, textVersionsCursorQuery, TextVersionsRules))
 	if err != nil {
 		return TextVersions{}, err
 	}
@@ -131,8 +142,8 @@ func (s *Store) TextVersionsAt(ctx context.Context, cut time.Time) (TextVersions
 
 // TextVersionsReach answers how far the keyword table's fill has reached: the latest time at or
 // before which every event, one a transaction still open will commit included, has its rows.
-// reached is false while the fill has written no cursor row, and while it has stored no reach and
-// none can be computed now.
+// reached is false while the fill has written no cursor row, while that row records rules earlier
+// than TextVersionsRules, and while it has stored no reach and none can be computed now.
 //
 // It reads the cursor row and computes the reach again (ComputeTextVersionsReach) in one
 // read-only READ COMMITTED transaction, and answers the greater of the stored reach and the
@@ -143,7 +154,7 @@ func (s *Store) TextVersionsReach(ctx context.Context) (reach time.Time, reached
 		return time.Time{}, false, fmt.Errorf("begin the keyword table's reach read: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	cursor, stored, found, err := scanTextVersionsCursor(tx.QueryRow(ctx, textVersionsCursorQuery))
+	cursor, stored, found, err := scanTextVersionsCursor(tx.QueryRow(ctx, textVersionsCursorQuery, TextVersionsRules))
 	if err != nil || !found {
 		return time.Time{}, false, err
 	}
