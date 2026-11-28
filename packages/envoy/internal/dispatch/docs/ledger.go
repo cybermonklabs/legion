@@ -181,6 +181,23 @@ type Ledger struct {
 	restored []string
 }
 
+// logger is the logger of the service this ledger belongs to as that service holds it
+// (Service.logger), for a write that logs later and resolves it at its line (logTo): nil for a
+// ledger of no service (queueWrites) and for no ledger, either of which writes where the default
+// points.
+func (l *Ledger) logger() *slog.Logger {
+	if l == nil || l.service == nil {
+		return nil
+	}
+	return l.service.logger
+}
+
+// log is the logger a line written for this ledger goes to: its service's (Service.log), which
+// for a ledger of no service is where the default points.
+func (l *Ledger) log() *slog.Logger {
+	return l.service.log()
+}
+
 // WriteStep is one step of a transaction's write phase: it puts the statements of one write on the
 // phase's batch, with the callbacks that read their results (store.WriteBatch), and runs nothing.
 // Everything the write decides on - its locks, its reads, the document work - runs before it is
@@ -1053,7 +1070,7 @@ func (l *Ledger) storeVersionTrees(ctx context.Context) {
 		for _, one := range written {
 			documents = append(documents, one.artifactID)
 		}
-		slog.Warn("dispatch: store document version display trees failed", "documents", documents, "error", err)
+		l.log().Warn("dispatch: store document version display trees failed", "documents", documents, "error", err)
 	}
 }
 

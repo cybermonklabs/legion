@@ -45,6 +45,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"maps"
 	"math/rand/v2"
 	"os"
@@ -204,6 +205,9 @@ func (p *relayProcess) holdsRoomForReaders(room string) bool { return room == sc
 func (p *relayProcess) coalesceAwareness(flush func()) { p.flushes = append(p.flushes, flush) }
 
 func (p *relayProcess) awarenessWindows() awarenessWindows { return p.windows }
+
+// log is the default logger at each line, as a service given no logger writes (logTo).
+func (p *relayProcess) log() *slog.Logger { return logTo(nil) }
 
 // holds is what p's room holds of client now, and whether it holds a state of it at all.
 func (p *relayProcess) holds(client uint64) (awareness.ClientState, bool) {
@@ -529,7 +533,7 @@ func (s *relaySchedule) begin(op relayOp) {
 		s.note(fmt.Sprintf("%s: asks %s for its local clients' states", process.name, process.peer.name))
 	case opPurge:
 		s.start(fmt.Sprintf("%s: the room's tombstones are freed", process.name), nil, func() {
-			reclaimAwarenessSlots(scheduleRoom, process.aw)
+			reclaimAwarenessSlots(nil, scheduleRoom, process.aw)
 		})
 	case opFlush:
 		if len(process.flushes) == 0 {

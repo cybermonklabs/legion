@@ -51,14 +51,15 @@ const RenderStampValues = `(select version from head),
 
 // renderStampOf is the stamp a version write of tree stores: the tree's document token and this
 // build's renderer version. A nil tree, or one holding a value no token encodes (nodeToken), is
-// the empty stamp, which stores neither and reads as an unstamped version does.
-func renderStampOf(artifactID string, tree *pmdoc.Node) RenderStamp {
+// the empty stamp, which stores neither and reads as an unstamped version does; the warning of
+// such a tree goes to logger, the writing service's (logTo).
+func renderStampOf(logger *slog.Logger, artifactID string, tree *pmdoc.Node) RenderStamp {
 	if tree == nil {
 		return RenderStamp{}
 	}
 	token, err := nodeToken(tree)
 	if err != nil {
-		slog.Warn("dispatch: a document version stored no render stamp: its tree has no document token",
+		logTo(logger).Warn("dispatch: a document version stored no render stamp: its tree has no document token",
 			"artifact", artifactID, "error", err)
 		return RenderStamp{}
 	}
@@ -77,7 +78,7 @@ func (l *Ledger) RenderStampOf(artifactID, markdown string) RenderStamp {
 	if rendered.tree == nil || rendered.markdown != markdown {
 		return RenderStamp{}
 	}
-	return renderStampOf(artifactID, rendered.tree)
+	return renderStampOf(l.logger(), artifactID, rendered.tree)
 }
 
 // storedVersionSQL reads, for the room $1 names, everything a stored text read weighs, in one

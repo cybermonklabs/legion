@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"time"
 
@@ -421,7 +420,7 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 	if pass.Moved != nil {
 		// No second pass cures a row whose node the store holds in another project, so it holds
 		// back no debt: it is logged for a person, and the census names the row.
-		slog.Error("dispatch: block index left rows whose node the store holds in another project", "error", pass.Moved)
+		s.log().Error("dispatch: block index left rows whose node the store holds in another project", "error", pass.Moved)
 	}
 	failed := []error{passErr}
 	orphaned, err := graphcensus.OrphanedDocumentNodes(ctx, s.store.Pool, orphanedNodesSwept+1)
@@ -430,7 +429,7 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 	for _, ref := range orphaned[:min(len(orphaned), orphanedNodesSwept)] {
 		switch err := graphcensus.StateOrphanedGone(ctx, s.store, ref); {
 		case errors.Is(err, graphcensus.ErrNotOrphaned):
-			slog.Info("dispatch: block index left a document node it read as orphaned", "node", ref, "reason", err)
+			s.log().Info("dispatch: block index left a document node it read as orphaned", "node", ref, "reason", err)
 		case err != nil:
 			failed = append(failed, fmt.Errorf("state the orphaned node of %s gone: %w", ref, err))
 		default:
@@ -474,7 +473,7 @@ func (s *Service) blockIndexHorizon() *events.Horizon {
 		case err == nil:
 			db = pool
 		case !errors.Is(err, store.ErrPoolClosed):
-			slog.Error("dispatch: could not open the event horizon's pool; the block-index tick observes the event log through the shared request pool until the process restarts",
+			s.log().Error("dispatch: could not open the event horizon's pool; the block-index tick observes the event log through the shared request pool until the process restarts",
 				"error", err)
 		}
 		s.eventHorizon = events.NewHorizon(db)

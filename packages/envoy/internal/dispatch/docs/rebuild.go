@@ -266,7 +266,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		if err := owed.exec(ctx, tx); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
-		logUnindexedAskBlocks(*owner.IssueKey, closedStates.marked)
+		logUnindexedAskBlocks(s.logger, *owner.IssueKey, closedStates.marked)
 	}
 	// Supplied markdown whose rendering the latest version holds - byte for byte, or as another
 	// renderer version's spelling of the same tree (latestVersionRow.holds) - writes no version.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -66,7 +65,7 @@ func (s *Service) RunRefsFormsReconciliation(ctx context.Context, leases duty.Le
 	// counts (a document whose live text stays ahead, left owed every pass) logs nothing.
 	var logged RefsFormsTick
 	liveAhead := newFormsLiveAhead()
-	duty.RunLeasedAfterEachPass(ctx, leases, RefsFormsLease, BlockIndexReconcileInterval, func(ctx context.Context, _ time.Duration) time.Duration {
+	duty.RunLeasedAfterEachPassTo(ctx, s.logger, leases, RefsFormsLease, BlockIndexReconcileInterval, func(ctx context.Context, _ time.Duration) time.Duration {
 		var wait time.Duration
 		wait, cursor = s.refsFormsTick(ctx, cursor, liveAhead, &logged)
 		return wait
@@ -82,11 +81,11 @@ func (s *Service) refsFormsTick(ctx context.Context, cursor refs.Owed, liveAhead
 		return BlockIndexReconcileInterval, cursor
 	}
 	if err != nil {
-		slog.Error("dispatch: refs forms reconciliation", "error", err)
+		s.log().Error("dispatch: refs forms reconciliation", "error", err)
 	}
 	if tick.Texts > 0 || tick.Documents > 0 || tick.Gone > 0 || tick.LiveAhead != logged.LiveAhead ||
 		tick.Unindexed != logged.Unindexed || tick.OwedTexts != logged.OwedTexts {
-		slog.Info("dispatch: refs forms index", "texts", tick.Texts, "documents", tick.Documents,
+		s.log().Info("dispatch: refs forms index", "texts", tick.Texts, "documents", tick.Documents,
 			"gone", tick.Gone, "live_ahead", tick.LiveAhead, "unindexed", tick.Unindexed,
 			"owed_texts", tick.OwedTexts)
 		*logged = tick
@@ -137,7 +136,7 @@ rows:
 			case ctx.Err() != nil:
 				return tick, ctx.Err()
 			case err != nil:
-				slog.Error("dispatch: refs forms index skipped text it could not index",
+				s.log().Error("dispatch: refs forms index skipped text it could not index",
 					"kind", source.Kind, "id", source.ID, "error", err)
 			case indexed:
 				tick.Texts++
@@ -148,7 +147,7 @@ rows:
 			case ctx.Err() != nil:
 				return tick, ctx.Err()
 			case err != nil:
-				slog.Error("dispatch: refs forms index skipped a document it could not index",
+				s.log().Error("dispatch: refs forms index skipped a document it could not index",
 					"artifact", source.ID, "error", err)
 			case s.stillLiveAhead(liveAhead.documents, document):
 				tick.LiveAhead++
@@ -166,17 +165,17 @@ rows:
 				case errors.Is(err, ErrDocNewerContent):
 					// Another build wrote an element this build does not know, during a release;
 					// a build that reads it indexes the document, which stays owed until then.
-					slog.Warn("dispatch: refs forms index skipped a document holding an element this build cannot read",
+					s.log().Warn("dispatch: refs forms index skipped a document holding an element this build cannot read",
 						"artifact", source.ID, "error", err)
 				case err != nil:
-					slog.Error("dispatch: refs forms index skipped a document it could not index",
+					s.log().Error("dispatch: refs forms index skipped a document it could not index",
 						"artifact", source.ID, "error", err)
 				default:
 					drained.count(&tick)
 				}
 			}
 		default:
-			slog.Error("dispatch: refs forms index skipped a row of a kind it does not drain",
+			s.log().Error("dispatch: refs forms index skipped a row of a kind it does not drain",
 				"kind", source.Kind, "id", source.ID)
 		}
 		tick.Cursor = source

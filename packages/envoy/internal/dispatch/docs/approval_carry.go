@@ -257,7 +257,7 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 			return err
 		}
 		if review != nil {
-			return writeCarriedReview(ctx, tx, s.events, artifactID, number, *review, fmt.Sprintf(carryReason, review.Version), s.serverURL, sink)
+			return writeCarriedReview(ctx, s.logger, tx, s.events, artifactID, number, *review, fmt.Sprintf(carryReason, review.Version), s.serverURL, sink)
 		}
 	}
 	restored, err := restoresVersionText(ctx, tx, artifactID, newest.Version, rendered.markdown)
@@ -265,9 +265,9 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 		return err
 	}
 	if restored {
-		return writeCarriedReview(ctx, tx, s.events, artifactID, number, newest, fmt.Sprintf(restoreReason, newest.Version), s.serverURL, sink)
+		return writeCarriedReview(ctx, s.logger, tx, s.events, artifactID, number, newest, fmt.Sprintf(restoreReason, newest.Version), s.serverURL, sink)
 	}
-	return reopenedApproval(ctx, tx, s.events, artifactID, number, rendered.tree, blocks, newest, s.serverURL, sink)
+	return reopenedApproval(ctx, s.logger, tx, s.events, artifactID, number, rendered.tree, blocks, newest, s.serverURL, sink)
 }
 
 // CarryRestoredApproval is the restore alone, for the route that writes a document version itself
@@ -284,7 +284,8 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // rows are the rows this transaction's own queued writes leave (loadAskBlocks). Its reads run
 // where it is called, the route's read phase, and its writes are queued there, as carryApproval's
 // are; the events it appends reach the ledger of the transaction it runs in (eventSink), which
-// publishes them after its Commit, beside the version move's own.
+// publishes them after its Commit, beside the version move's own. Its lines go to the logger of
+// that ledger's service (Ledger.logger).
 func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) error {
 	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
 		return err
@@ -297,15 +298,16 @@ func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 	if err != nil || !restored {
 		return err
 	}
+	logger := ledgerFrom(ctx).logger()
 	if tree == nil {
 		if tree, err = pmdoc.ParseRendering(markdown); err != nil {
-			return skipUnreadableVersion(artifactID, number, err)
+			return skipUnreadableVersion(logger, artifactID, number, err)
 		}
 	}
 	if _, known, err := versionBlocks(ctx, tx, artifactID, tree); err != nil || !known {
 		return err
 	}
-	return writeCarriedReview(ctx, tx, broker, artifactID, number, *newest, fmt.Sprintf(restoreReason, newest.Version), serverURL, eventSink(ctx))
+	return writeCarriedReview(ctx, logger, tx, broker, artifactID, number, *newest, fmt.Sprintf(restoreReason, newest.Version), serverURL, eventSink(ctx))
 }
 
 // versionBlocks is every ask block of a version, tree, as its row, the row of artifactID that
@@ -335,8 +337,9 @@ func versionBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdo
 // (withOpenBlocksResolved), holds A's stored text as the restore compares it
 // (restoresVersionText); it appends nothing otherwise, and hands sink what it appends, as
 // carryApproval does. The rows are decided first, from the asks' events: a version write whose
-// open blocks hold any other ask renders nothing more.
-func reopenedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, tree *pmdoc.Node, blocks map[string]model.Ask, newest model.ArtifactReview, serverURL string, sink func(model.Event)) error {
+// open blocks hold any other ask renders nothing more. logger is the carrying service's
+// (writeCarriedReview).
+func reopenedApproval(ctx context.Context, logger *slog.Logger, tx pgx.Tx, broker *events.Broker, artifactID string, number int, tree *pmdoc.Node, blocks map[string]model.Ask, newest model.ArtifactReview, serverURL string, sink func(model.Event)) error {
 	var opened []string
 	for _, ask := range blocks {
 		if ask.State == "open" {
@@ -356,7 +359,7 @@ func reopenedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, art
 	if rendersApproved, err := restoresVersionText(ctx, tx, artifactID, newest.Version, closed); err != nil || !rendersApproved {
 		return err
 	}
-	return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(reopenReason, newest.Version), serverURL, sink)
+	return writeCarriedReview(ctx, logger, tx, broker, artifactID, number, newest, fmt.Sprintf(reopenReason, newest.Version), serverURL, sink)
 }
 
 // reopenRestoredSince reports whether every ask of asks, the open rows of a version's blocks, is
@@ -450,8 +453,9 @@ func withOpenBlocksResolved(node *pmdoc.Node, blocks map[string]model.Ask) *pmdo
 // session that wrote the version (ReviewKindPlanReview). A row read from artifact_reviews always
 // names its kind, and a review that names none is a person's, as the column's default says. It
 // holds no document service: every write it makes is a package function over tx and the broker,
-// which is what the restore's own caller outside this package holds (CarryRestoredApproval).
-func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, review model.ArtifactReview, reason, serverURL string, sink func(model.Event)) error {
+// which is what the restore's own caller outside this package holds (CarryRestoredApproval), and
+// its review's warning goes to logger, the carrying service's (queueReview).
+func writeCarriedReview(ctx context.Context, logger *slog.Logger, tx pgx.Tx, broker *events.Broker, artifactID string, number int, review model.ArtifactReview, reason, serverURL string, sink func(model.Event)) error {
 	var askID *string
 	// The request as the version write's own move left it (MoveApprovalAsk), which names this
 	// version already.
@@ -496,7 +500,7 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	// the row; a review read from a row that names no kind is a person's.
 	kind := cmp.Or(review.Kind, ReviewKindPerson)
 	if err := write(ctx, tx, func(b *store.WriteBatch) error {
-		return QueueReview(b, broker, artifact, number, "approved", kind, review.Actor, &reason, askID, func(_ model.ArtifactReview, event model.Event) {
+		return queueReview(logger, b, broker, artifact, number, "approved", kind, review.Actor, &reason, askID, func(_ model.ArtifactReview, event model.Event) {
 			sink(event)
 		})
 	}); err != nil {
@@ -590,7 +594,7 @@ func (s *Service) carriedReview(ctx context.Context, tx pgx.Tx, artifactID strin
 		}
 		cut, err := cutOnce()
 		if err != nil {
-			return nil, skipUnreadableVersion(artifactID, number, err)
+			return nil, skipUnreadableVersion(s.logger, artifactID, number, err)
 		}
 		if !carryVerdict(carryInput{login: login, approvedAt: review.CreatedAt, blocks: blocks, approved: heldAsItsRow(approved.nodes, blocks), approvedCut: approved.cut, cut: cut}) {
 			continue
@@ -641,7 +645,7 @@ func (s *Service) readApprovedVersion(ctx context.Context, tx pgx.Tx, artifactID
 	}
 	cut, err := renderWithoutAskBlocks(tree)
 	if err != nil {
-		return approvedVersion{}, false, skipUnreadableVersion(artifactID, number, err)
+		return approvedVersion{}, false, skipUnreadableVersion(s.logger, artifactID, number, err)
 	}
 	return approvedVersion{nodes: nodes, cut: cut}, true, nil
 }
@@ -653,15 +657,15 @@ func (s *Service) readApprovedVersion(ctx context.Context, tx pgx.Tx, artifactID
 // version write fails with it - settlement writes no version and leaves the document owed, for a
 // build that reads the element (skipUnreadableSettlement). Any other schema refusal is a version
 // an earlier release stored, which is not this write's to fail for: the approval is not carried
-// and the refusal is logged. Any other error is the write's.
-func skipUnreadableVersion(artifactID string, number int, err error) error {
+// and the refusal is logged, to logger (logTo). Any other error is the write's.
+func skipUnreadableVersion(logger *slog.Logger, artifactID string, number int, err error) error {
 	if errors.Is(err, pmdoc.ErrUnknownElement) {
 		return newerContent(fmt.Errorf("version %d: %w", number, err))
 	}
 	if !errors.Is(err, pmdoc.ErrSchema) {
 		return err
 	}
-	slog.Warn("dispatch: skip carrying an approval over a document version outside the Proof schema",
+	logTo(logger).Warn("dispatch: skip carrying an approval over a document version outside the Proof schema",
 		"room", artifactID, "version", number, "error", err)
 	return nil
 }
@@ -855,7 +859,7 @@ func (s *Service) storedVersionTree(ctx context.Context, tx pgx.Tx, artifactID s
 	}
 	tree, err = pmdoc.ParseRendering(markdown)
 	if err != nil {
-		return nil, false, skipUnreadableVersion(artifactID, number, err)
+		return nil, false, skipUnreadableVersion(s.logger, artifactID, number, err)
 	}
 	return tree, true, nil
 }

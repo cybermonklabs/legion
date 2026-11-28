@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"errors"
-	"log/slog"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
@@ -91,7 +90,7 @@ func (s *Service) retireSettlementRoom(room string) {
 		err = retireErr
 	}
 	if err != nil {
-		slog.Warn("dispatch: retire the room a settlement loaded; it stays until its idle minute runs out", "room", room, "error", err)
+		s.log().Warn("dispatch: retire the room a settlement loaded; it stays until its idle minute runs out", "room", room, "error", err)
 	}
 }
 

@@ -160,7 +160,7 @@ func (s *Service) RestoreDecidedWordings(ctx context.Context) (restored, copies 
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, fmt.Errorf("commit restoring decided asks' wordings: %w", err)
 	}
-	logRestoredWordings(wordings)
+	logRestoredWordings(s.logger, wordings)
 	for _, document := range owed {
 		s.scheduleSettle(document)
 	}
@@ -246,7 +246,7 @@ func (s *Service) restoreDocumentDecidedWordings(ctx context.Context, tx pgx.Tx,
 		}
 		asks = append(asks, ask)
 	}
-	logRestoredWordings(restored)
+	logRestoredWordings(s.logger, restored)
 	return asks, nil
 }
 
@@ -371,14 +371,14 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 }
 
 // logRestoredWordings logs each restored ask with its document and the question it asks again,
-// and nothing of the wording it no longer asks.
-func logRestoredWordings(restored []restoredWording) {
+// and nothing of the wording it no longer asks, to logger, the restoring service's (logTo).
+func logRestoredWordings(logger *slog.Logger, restored []restoredWording) {
 	for _, wording := range restored {
 		document := ""
 		if wording.document != nil {
 			document = *wording.document
 		}
-		slog.Info("dispatch: restored a decided ask's wording",
+		logTo(logger).Info("dispatch: restored a decided ask's wording",
 			"ask", wording.ask, "artifact", document, "question", wording.wording.Question)
 	}
 }

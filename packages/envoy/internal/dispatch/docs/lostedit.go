@@ -171,7 +171,7 @@ func (s *Service) refuseLostWrite(ctx context.Context, room string, write *liveW
 		if judged == nil {
 			judged = write.fork
 		}
-		if lost, err = lostWithSharedUpdates(room, write.loss, judged, answers); err != nil {
+		if lost, err = lostWithSharedUpdates(s.logger, room, write.loss, judged, answers); err != nil {
 			return err
 		}
 	}
@@ -187,8 +187,8 @@ func (s *Service) refuseLostWrite(ctx context.Context, room string, write *liveW
 
 // lostWithSharedUpdates is check's lost operations on a scratch copy of base with the updates the
 // other processes shared merged in, nil when none shared any. An update that does not apply is
-// logged and left out.
-func lostWithSharedUpdates(room string, check *lossCheck, base *crdt.Doc, answers []roomAnswer) ([]int, error) {
+// logged, to logger, the judging service's (logTo), and left out.
+func lostWithSharedUpdates(logger *slog.Logger, room string, check *lossCheck, base *crdt.Doc, answers []roomAnswer) ([]int, error) {
 	var scratch *crdt.Doc
 	for _, answer := range answers {
 		if len(answer.updates) == 0 {
@@ -201,7 +201,7 @@ func lostWithSharedUpdates(room string, check *lossCheck, base *crdt.Doc, answer
 			}
 		}
 		if err := crdt.ApplyUpdateV1(scratch, answer.updates, nil); err != nil {
-			slog.Warn("dispatch: apply another process's not-yet-stored updates to judge a write's loss; judging without them",
+			logTo(logger).Warn("dispatch: apply another process's not-yet-stored updates to judge a write's loss; judging without them",
 				"room", room, "process", answer.process, "error", err)
 		}
 	}

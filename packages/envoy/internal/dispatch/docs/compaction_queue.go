@@ -8,7 +8,6 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -171,7 +170,7 @@ type compactionAttempt struct {
 func (s *Service) tryCompaction(ctx context.Context, room string, retrying bool) compactionAttempt {
 	check, err := s.checkCompaction(ctx, room)
 	if err != nil {
-		warnCompaction(ctx, warnCompactionCheck, room, err)
+		s.warnCompaction(ctx, warnCompactionCheck, room, err)
 		return compactionAttempt{try: tryLater}
 	}
 	if (retrying && !check.aged) || (!retrying && !check.due) {
@@ -179,7 +178,7 @@ func (s *Service) tryCompaction(ctx context.Context, room string, retrying bool)
 	}
 	result, err := s.persistence.compactRoom(ctx, room, tailRule, false)
 	if err != nil {
-		warnCompaction(ctx, warnCompactionCompact, room, err)
+		s.warnCompaction(ctx, warnCompactionCompact, room, err)
 		return compactionAttempt{try: tryLater, check: check}
 	}
 	switch result.outcome {
@@ -224,9 +223,9 @@ const (
 )
 
 // warnCompaction logs a step's failure, unless it failed because the queue is stopping.
-func warnCompaction(ctx context.Context, message, room string, err error) {
+func (s *Service) warnCompaction(ctx context.Context, message, room string, err error) {
 	if ctx.Err() == nil {
-		slog.Warn(message, "room", room, "error", err)
+		s.log().Warn(message, "room", room, "error", err)
 	}
 }
 

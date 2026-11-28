@@ -125,13 +125,14 @@ func (st *settlement) savedNothing(versioning bool) bool {
 // builds serve one database - in the tree, or in the version a human approved, without which the
 // version write cannot tell whether his approval carries (carryApproval). The settlement writes no
 // version and records no failure, and the document stays unsettled for a later settlement - a
-// repair's, or one on a build that reads the element, which the log names.
-func skipUnreadableSettlement(room string, err error) bool {
+// repair's, or one on a build that reads the element, which the log names. The line goes to
+// logger, the settling service's (logTo).
+func skipUnreadableSettlement(logger *slog.Logger, room string, err error) bool {
 	switch {
 	case errors.Is(err, ErrDocNewerContent):
-		slog.Warn("dispatch: settle document holding an element this build cannot read; no version written; a build that reads the element writes it", "room", room, "error", err)
+		logTo(logger).Warn("dispatch: settle document holding an element this build cannot read; no version written; a build that reads the element writes it", "room", room, "error", err)
 	case errors.Is(err, ErrDocSchema):
-		slog.Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
+		logTo(logger).Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
 	default:
 		return false
 	}
@@ -431,7 +432,7 @@ func (st *settlement) endOnRefusedUpdate() settleOutcome {
 	s := st.service
 	s.discardSuppressedPersistence(st.room, st.slots...)
 	s.refuseClosedIssueAppend(st.room, s.instanceOf(st.doc))
-	slog.Info("dispatch: document settlement ended on a room update its closed issue refused; the room closes and the document settles from the store",
+	s.log().Info("dispatch: document settlement ended on a room update its closed issue refused; the room closes and the document settles from the store",
 		"room", st.room)
 	return settleOutcome{}
 }
@@ -484,7 +485,7 @@ func (st *settlement) applyStamp(ctx context.Context) (settleStep, settleOutcome
 		})
 		st.keep(slot, update)
 		if err != nil {
-			if len(st.slots) == 0 && skipUnreadableSettlement(room, err) {
+			if len(st.slots) == 0 && skipUnreadableSettlement(s.logger, room, err) {
 				return settleDone, settleOutcome{}
 			}
 			return settleDone, st.abandon(err)
@@ -748,7 +749,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		markdown, offsets, err = renderTreeWithOffsets(st.versioned)
 	}
 	if err != nil {
-		if len(st.slots) == 0 && skipUnreadableSettlement(room, err) {
+		if len(st.slots) == 0 && skipUnreadableSettlement(s.logger, room, err) {
 			return settleDone, settleOutcome{}
 		}
 		return settleDone, st.abandon(err)
@@ -855,7 +856,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if writeErr != nil {
 			// The version a human approved holds an element this build does not know: the version
 			// is left, unwritten, to a build that reads it, as a tree holding one is.
-			if len(st.slots) == 0 && errors.Is(writeErr, ErrDocNewerContent) && skipUnreadableSettlement(room, writeErr) {
+			if len(st.slots) == 0 && errors.Is(writeErr, ErrDocNewerContent) && skipUnreadableSettlement(s.logger, room, writeErr) {
 				return settleDone, settleOutcome{}
 			}
 			return settleDone, st.abandon(writeErr)
@@ -937,7 +938,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	for _, event := range st.published {
 		s.events.Publish(event)
 	}
-	st.reconciliation.logCopiedBlocks(room)
+	st.reconciliation.logCopiedBlocks(s.logger, room)
 	// A copy of an ask this settlement retracted opens its own ask at its next settlement, which
 	// its pending row (reconcileAskBlocks, owedCopiesOf) also leaves to the resumption should this
 	// process stop first.

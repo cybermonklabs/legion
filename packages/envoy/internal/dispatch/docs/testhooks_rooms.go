@@ -299,8 +299,9 @@ func (h *testHooks) awaitPersistenceHold(ctx context.Context, artifactID string)
 }
 
 // parkLiveWrite parks the calling write of artifactID at point when a pause is armed there and
-// no write has taken it yet, until the test releases it.
-func (h *testHooks) parkLiveWrite(artifactID string, point LiveWritePausePoint) {
+// no write has taken it yet, until the test releases it, and logs the park and the release to
+// logger, the writing service's (logTo).
+func (h *testHooks) parkLiveWrite(logger *slog.Logger, artifactID string, point LiveWritePausePoint) {
 	if h == nil {
 		return
 	}
@@ -312,8 +313,8 @@ func (h *testHooks) parkLiveWrite(artifactID string, point LiveWritePausePoint) 
 	}
 	pause.taken = true
 	h.mu.Unlock()
-	slog.Info("dispatch: test hook parked a live document write", "room", artifactID, "point", string(point))
+	logTo(logger).Info("dispatch: test hook parked a live document write", "room", artifactID, "point", string(point))
 	close(pause.parked)
 	<-pause.released
-	slog.Info("dispatch: test hook released a live document write", "room", artifactID, "point", string(point))
+	logTo(logger).Info("dispatch: test hook released a live document write", "room", artifactID, "point", string(point))
 }

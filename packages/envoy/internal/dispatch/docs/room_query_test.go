@@ -532,7 +532,7 @@ func TestARoomAnswerTooLargeForOneNotificationIsSplitIntoParts(t *testing.T) {
 		actors = append(actors, model.Actor{Kind: "user", ID: fmt.Sprintf("reader-with-a-long-login-%03d", index)})
 	}
 	updates := []byte(strings.Repeat("an update's bytes ", 2000))
-	payloads, err := roomAnswerPayloads(roomAnswerPart{ID: "query", Process: "member", Holds: true}, actors, base64.StdEncoding.EncodeToString(updates))
+	payloads, err := roomAnswerPayloads(nil, roomAnswerPart{ID: "query", Process: "member", Holds: true}, actors, base64.StdEncoding.EncodeToString(updates))
 	if err != nil {
 		t.Fatalf("split the answer: %v", err)
 	}

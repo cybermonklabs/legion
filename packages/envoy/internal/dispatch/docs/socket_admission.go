@@ -93,16 +93,16 @@ const documentNewerContentCloseCode = contracts.DocumentNewerContentCloseCode
 
 // refuseOutsideSchema completes the upgrade only to close it with documentSchemaCloseCode before
 // anything of the document is sent: a browser reads a close code, never the status of a refused
-// upgrade.
-func refuseOutsideSchema(w http.ResponseWriter, r *http.Request, room string, cause error) {
-	slog.Warn("dispatch: refuse a document socket outside Proof schema; a replacement from markdown repairs it", "room", room, "error", cause)
+// upgrade. The refusal is logged to logger, the service's (logTo).
+func refuseOutsideSchema(logger *slog.Logger, w http.ResponseWriter, r *http.Request, room string, cause error) {
+	logTo(logger).Warn("dispatch: refuse a document socket outside Proof schema; a replacement from markdown repairs it", "room", room, "error", cause)
 	closeRefusedSocket(w, r, documentSchemaCloseCode, contracts.DocumentSchemaCloseReason)
 }
 
 // refuseNewerContent completes the upgrade only to close it with documentNewerContentCloseCode
-// before anything of the document is sent.
-func refuseNewerContent(w http.ResponseWriter, r *http.Request, room string, cause error) {
-	slog.Warn("dispatch: refuse a document socket holding an element this build cannot read; the provider reconnects", "room", room, "error", cause)
+// before anything of the document is sent, and logs the refusal to logger (logTo).
+func refuseNewerContent(logger *slog.Logger, w http.ResponseWriter, r *http.Request, room string, cause error) {
+	logTo(logger).Warn("dispatch: refuse a document socket holding an element this build cannot read; the provider reconnects", "room", room, "error", cause)
 	closeRefusedSocket(w, r, documentNewerContentCloseCode, contracts.DocumentNewerContentCloseReason)
 }
 
@@ -156,9 +156,10 @@ func (s *Service) holdDocumentSocket(close context.CancelCauseFunc) (release fun
 // came after its admission read the document against the installed schema and before the socket
 // was held where the switch closes it (ServeHTTP), so the switch's own close missed it. It is the
 // close the switch gives the sockets it holds, so the browser reads it the one way it reads that
-// code: it admits the document again, against the schema installed now.
-func refuseSwitchedAdmission(w http.ResponseWriter, r *http.Request, room string) {
-	slog.Info("dispatch: close a document socket whose admission a schema switch overtook; the provider reconnects", "room", room)
+// code: it admits the document again, against the schema installed now. The close is logged to
+// logger, the service's (logTo).
+func refuseSwitchedAdmission(logger *slog.Logger, w http.ResponseWriter, r *http.Request, room string) {
+	logTo(logger).Info("dispatch: close a document socket whose admission a schema switch overtook; the provider reconnects", "room", room)
 	closeRefusedSocket(w, r, documentSchemaCloseCode, contracts.DocumentSchemaCloseReason)
 }
 
@@ -189,7 +190,7 @@ func (s *Service) CloseDocumentSockets() int {
 		closed++
 		return true
 	})
-	slog.Info("dispatch: closed the document sockets of a schema this process no longer serves",
+	s.log().Info("dispatch: closed the document sockets of a schema this process no longer serves",
 		"sockets", closed, "reason", reason)
 	return closed
 }
@@ -310,11 +311,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switches := s.schemaSwitches.Load()
 	withdraw, documentSince, err := s.admitDocument(ctx, room)
 	if errors.Is(err, ErrDocNewerContent) {
-		refuseNewerContent(w, r, room, err)
+		refuseNewerContent(s.logger, w, r, room, err)
 		return
 	}
 	if errors.Is(err, ErrDocOutsideSchema) {
-		refuseOutsideSchema(w, r, room, err)
+		refuseOutsideSchema(s.logger, w, r, room, err)
 		return
 	}
 	if err != nil {
@@ -336,12 +337,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// process may no longer serve, and its close ran before this socket was held, or ran while
 	// it was being held: either way this socket is closed here, before ygo sends any of it.
 	if s.schemaSwitches.Load() != switches {
-		refuseSwitchedAdmission(w, r, room)
+		refuseSwitchedAdmission(s.logger, w, r, room)
 		return
 	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
 	// frames (awareness_limit.go).
-	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))
+	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room, logger: s.logger}, r.WithContext(ctx))
 }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above
@@ -510,7 +511,7 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 	room := socketRoom(r)
 	fleet, err := readSchemaFleet(r.Context(), s.queryFrom(r.Context()))
 	if err != nil {
-		slog.Warn("dispatch: refuse a document socket: read the live server processes", "room", room, "error", err)
+		s.log().Warn("dispatch: refuse a document socket: read the live server processes", "room", room, "error", err)
 		return websocket.ConnectionConfig{}, false
 	}
 	state := s.lockState(room)

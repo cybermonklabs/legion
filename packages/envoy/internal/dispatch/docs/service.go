@@ -115,6 +115,11 @@ type Deps struct {
 	// update after a close it never hears of gives a margin past any run, so whether the update is
 	// stored is not decided by how long a loaded machine takes between the close and the update.
 	CloseMargin time.Duration
+	// Logger is where the service writes its lines; nil means each line goes to the handler
+	// slog.Default() has when the line is written. It also reaches the store New builds (not a
+	// Persistence the caller hands, which keeps its builder's), the ygo server's lines
+	// (Server.Logger) and the lease lines of the service's duty loops.
+	Logger *slog.Logger
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -606,6 +611,33 @@ type Service struct {
 	// hostname names this process on each document socket's upgrade (ProcessHeader), read once
 	// when the service is built; empty when the host would not say, and then no header is sent.
 	hostname string
+	// logger is Deps.Logger as New was handed it, nil included: every line of the service goes
+	// through log, which reads the default at the line when it is nil, and whatever writes later
+	// on the service's behalf keeps this and never log's answer.
+	logger *slog.Logger
+}
+
+// log is the logger a line of the service is written to (logTo of Deps.Logger). A nil service is
+// a ledger's that queueWrites made, which belongs to no service, and writes where the default
+// points.
+func (s *Service) log() *slog.Logger {
+	if s == nil {
+		return logTo(nil)
+	}
+	return logTo(s.logger)
+}
+
+// logTo is the logger a line of this package is written to: logger, or the default logger as it
+// is now when logger is nil, so a caller that hands no logger writes exactly where slog.Info would.
+// It answers the logger rather than writing the line itself, so each line still names its own
+// call site as its source. A type or closure that writes later keeps the logger it was handed and
+// calls logTo at each line, never keeping logTo's answer, which would hold the default as it was
+// when kept.
+func logTo(logger *slog.Logger) *slog.Logger {
+	if logger == nil {
+		return slog.Default()
+	}
+	return logger
 }
 
 type artifactOwner struct {
@@ -977,14 +1009,13 @@ func New(deps Deps) *Service {
 	// The Go memory limit is the process's, set before New runs (GOMEMLIMIT, or the runtime's
 	// default of none), so the budget is read once here.
 	readBudget := readBudgetFor(debug.SetMemoryLimit(-1))
-	slog.Info("dispatch: document rooms' limits", "read_budget_bytes", readBudget,
-		"max_live_rooms", roomCap, "max_doc_connections", connectionCap)
 	processID := uuid.NewString()
 	persist := deps.Persistence
 	if persist == nil {
 		pg := NewPgVersioned(deps.Store)
 		pg.processID = processID
 		pg.closeMargin = cmp.Or(deps.CloseMargin, closeMargin)
+		pg.logger = deps.Logger
 		persist = pg
 	}
 	service := &Service{
@@ -1008,16 +1039,19 @@ func New(deps Deps) *Service {
 		roomCap:           roomCap,
 		connectionCap:     connectionCap,
 		maxPendingItems:   maxUpdateItems,
+		logger:            deps.Logger,
 	}
+	service.log().Info("dispatch: document rooms' limits", "read_budget_bytes", readBudget,
+		"max_live_rooms", roomCap, "max_doc_connections", connectionCap)
 	service.catchUps = newRoomCatchUps(service)
 	service.roomSyncSender = newRoomSyncSender(service)
 	service.awarenessRelay = newAwarenessRelay(service)
 	service.roomQueries = newRoomQueries(service)
 	switch hostname, err := os.Hostname(); {
 	case err != nil:
-		slog.Warn("dispatch: read the host name the document sockets name their process by", "error", err)
+		service.log().Warn("dispatch: read the host name the document sockets name their process by", "error", err)
 	case strings.ContainsFunc(hostname, func(r rune) bool { return r <= ' ' || r == 0x7f }):
-		slog.Warn("dispatch: the host name holds bytes a header cannot carry; document sockets name no process", "hostname", hostname)
+		service.log().Warn("dispatch: the host name holds bytes a header cannot carry; document sockets name no process", "hostname", hostname)
 	default:
 		service.hostname = hostname
 	}
@@ -1033,6 +1067,9 @@ func New(deps Deps) *Service {
 	adapter := &servicePersistenceAdapter{store: persist, service: service}
 	srv := websocket.NewServerWithPersistence(adapter)
 	srv.HocuspocusFraming = true
+	// ygo's server writes its lines - a connection's lifecycle, a failed write, a slow peer - where
+	// the service writes its own, and falls back to the default at each line as log does.
+	srv.Logger = deps.Logger
 	// Transactional server-side edits suppress one automatic ygo write and append it inside the API
 	// transaction, so ygo hands the room's persistence each update on its own, one call per update,
 	// and each update is stored as a row of its own. The calls are grouped at the store instead: an
@@ -1327,13 +1364,13 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			defer workers.Done()
 			settles := false
 			if err := s.waitForDurableAppends(drainCtx, room.name); err != nil {
-				slog.Warn("dispatch: stop document settlement before durable append drain", "room", room.name, "error", err)
+				s.log().Warn("dispatch: stop document settlement before durable append drain", "room", room.name, "error", err)
 				mu.Lock()
 				drainErr = err
 				mu.Unlock()
 			} else if owes, err := settlementPending(drainCtx, s.store.Pool, room.name); err != nil {
 				// Nothing says the settlement can be skipped, so it runs.
-				slog.Warn("dispatch: read whether the document owes a settlement before shutdown", "room", room.name, "error", err)
+				s.log().Warn("dispatch: read whether the document owes a settlement before shutdown", "room", room.name, "error", err)
 				settles = true
 			} else {
 				// A document whose updates have all been settled would spend the budget
@@ -1348,7 +1385,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 			if room.connected {
 				if err := s.srv.closeRoom(ctx, room.name, true); err != nil && !errors.Is(err, websocket.ErrRoomNotFound) {
-					slog.Warn("dispatch: close document peers before shutdown", "room", room.name, "error", err)
+					s.log().Warn("dispatch: close document peers before shutdown", "room", room.name, "error", err)
 				}
 			}
 		}()
@@ -1415,16 +1452,16 @@ func (s *Service) roomsOwingSettlement(ctx context.Context, rooms []string) (map
 func (s *Service) reportShutdownSettlements(ctx context.Context, owed map[string]bool, rooms []string, budgetEnded bool) {
 	left, err := s.roomsOwingSettlement(ctx, rooms)
 	if err != nil {
-		slog.Warn("dispatch: read the documents left owing a settlement at shutdown", "error", err)
+		s.log().Warn("dispatch: read the documents left owing a settlement at shutdown", "error", err)
 		return
 	}
 	for _, room := range rooms {
 		switch {
 		case left[room]:
-			slog.Warn("dispatch: document settlement left to resume after shutdown",
+			s.log().Warn("dispatch: document settlement left to resume after shutdown",
 				"room", room, "shutdown_budget_ended", budgetEnded)
 		case owed[room]:
-			slog.Info("dispatch: document settled before shutdown", "room", room)
+			s.log().Info("dispatch: document settled before shutdown", "room", room)
 		}
 	}
 }
@@ -1763,9 +1800,9 @@ func (s *Service) retrySettleLocked(room string, state *roomState, generation ui
 		// that close arranged - a reload, the document's next load or the resumption - and is not
 		// counted below; one that did not is followed by no load that arms it, so it is armed again
 		// below.
-		slog.Info("dispatch: document settlement wrote nothing into a replaced room", "room", room, "error", err)
+		s.log().Info("dispatch: document settlement wrote nothing into a replaced room", "room", room, "error", err)
 	default:
-		slog.Error("dispatch: settle document", "room", room, "error", err)
+		s.log().Error("dispatch: settle document", "room", room, "error", err)
 	}
 	if !counted {
 		return
@@ -2027,9 +2064,9 @@ func (s *Service) followUpSettlement(room string, outcome settleOutcome) {
 	case settleRetry:
 		s.retrySettle(room, outcome.generation, outcome.err)
 	case settleOutOfBudget:
-		slog.Warn("dispatch: document settlement stopped at the shutdown budget", "room", room, "error", outcome.err)
+		s.log().Warn("dispatch: document settlement stopped at the shutdown budget", "room", room, "error", outcome.err)
 	case settleRefusedInShutdown:
-		slog.Warn("dispatch: skip shutdown document settlement that has to write into its room", "room", room, "error", outcome.err)
+		s.log().Warn("dispatch: skip shutdown document settlement that has to write into its room", "room", room, "error", outcome.err)
 	case settleEnded, settleRoomFailed, settleReloaded:
 	}
 }
@@ -2106,12 +2143,12 @@ func (s *Service) commitSettlement(ctx context.Context, tx pgx.Tx, ledger *Ledge
 // still serving leaves a line naming what became of its room.
 func (s *Service) reloadReplacedRoom(ctx context.Context, room string, state *roomState, generation uint64, live *crdt.Doc, refusal error) {
 	if s.shuttingDown(room) {
-		slog.Warn("dispatch: skip shutdown document settlement from a room whose stored history was replaced; the next process settles it",
+		s.log().Warn("dispatch: skip shutdown document settlement from a room whose stored history was replaced; the next process settles it",
 			"room", room, "error", refusal)
 		return
 	}
 	leftOpen := func(reason string) {
-		slog.Info("dispatch: left open a document room its settlement found on a replaced stored history",
+		s.log().Info("dispatch: left open a document room its settlement found on a replaced stored history",
 			"room", room, "reason", reason, "error", refusal)
 	}
 	state.mu.Lock()
@@ -2152,10 +2189,10 @@ func (s *Service) reloadReplacedRoom(ctx context.Context, room string, state *ro
 	case errors.Is(err, websocket.ErrRoomInUse):
 		leftOpen("another caller is inside the room, which ygo closes no room under; the settlement is armed again")
 	case err != nil:
-		slog.Warn("dispatch: close a document room its settlement found on a replaced stored history; the settlement is armed again",
+		s.log().Warn("dispatch: close a document room its settlement found on a replaced stored history; the settlement is armed again",
 			"room", room, "error", err)
 	case closed:
-		slog.Info("dispatch: closed a document room its settlement found on a replaced stored history; settling it again from the store",
+		s.log().Info("dispatch: closed a document room its settlement found on a replaced stored history; settling it again from the store",
 			"room", room, "error", refusal)
 	default:
 		leftOpen("the room it read was retired or replaced before the close reached it; the settlement is armed again")
@@ -2681,7 +2718,7 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 		// refuses its browsers' appends taken later than closeMargin after the close
 		// (refuseClosedIssueAppend).
 		if ctx.Err() == nil {
-			slog.Error("dispatch: read the open state of an issue's documents", "issue", issueKey, "error", err)
+			s.log().Error("dispatch: read the open state of an issue's documents", "issue", issueKey, "error", err)
 		}
 		return
 	}
@@ -2718,7 +2755,7 @@ func (s *Service) documentRemoved(ctx context.Context, artifactID string) {
 		// reads it again is the lane's pass after the next LISTEN (recheckRemovedRooms),
 		// which this process makes on a reconnect. Until one of those, the error is what
 		// anyone looking at this process has to go on.
-		slog.Error("dispatch: close the editor room of a removed document", "artifact", artifactID, "error", err)
+		s.log().Error("dispatch: close the editor room of a removed document", "artifact", artifactID, "error", err)
 	}
 }
 
@@ -2750,7 +2787,7 @@ func (s *Service) recheckResidentIssues(ctx context.Context) {
 	states, err := s.readRoomIssueStates(ctx, residentIssuesStatement, rooms)
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Error("dispatch: read the open state of the resident documents' issues", "rooms", len(rooms), "error", err)
+			s.log().Error("dispatch: read the open state of the resident documents' issues", "rooms", len(rooms), "error", err)
 		}
 		return
 	}
@@ -2798,7 +2835,7 @@ func (s *Service) recheckRemovedRooms(ctx context.Context) {
 		// Every room stays as it is until the next LISTEN reads again, as a failed read of
 		// the resident rooms' issues leaves them (recheckResidentIssues).
 		if ctx.Err() == nil {
-			slog.Error("dispatch: read which of the resident documents still exist", "rooms", len(rooms), "error", err)
+			s.log().Error("dispatch: read which of the resident documents still exist", "rooms", len(rooms), "error", err)
 		}
 		return
 	}
@@ -2875,7 +2912,7 @@ func (s *Service) refuseClosedIssueAppend(room string, instance *roomInstance) {
 	closed := state.closed
 	s.unlockState(room, state)
 	if !closed {
-		slog.Info("dispatch: closing a document room whose issue closed before this process heard of it", "room", room)
+		s.log().Info("dispatch: closing a document room whose issue closed before this process heard of it", "room", room)
 	}
 	// Shutdown joins the close, as it does a failed room's eviction (failRoomLocked); one that
 	// begins after Shutdown stopped accepting work runs unjoined, since the room still must close.
@@ -2989,7 +3026,7 @@ func (s *Service) closeRefusedAppendRoom(ctx context.Context, room string, insta
 		},
 		func(err error) error { return err })
 	if err != nil && !errors.Is(err, websocket.ErrRoomNotFound) {
-		slog.Warn("dispatch: close a document room of an issue that closed or reopened; its browsers keep the admission they had",
+		s.log().Warn("dispatch: close a document room of an issue that closed or reopened; its browsers keep the admission they had",
 			"room", room, "error", err)
 	}
 	if recorded {
@@ -3035,7 +3072,7 @@ func (s *Service) closeRoomOnReplacedHistory(room string, instance *roomInstance
 					ErrRoomBehindHead, room, err))
 			}
 		case closed:
-			slog.Info("dispatch: closed a document room whose browser's update was stored on a history replaced under it", "room", room)
+			s.log().Info("dispatch: closed a document room whose browser's update was stored on a history replaced under it", "room", room)
 		}
 	}()
 }
@@ -3222,7 +3259,7 @@ func (s *Service) readCloseRowFacts(ctx context.Context, room string) settlement
 	defer cancel()
 	row, err := readSettlementRowFacts(readCtx, s.store.Pool, room)
 	if err != nil {
-		slog.Error("dispatch: read a closing document's pending settlement for its latest edit source", "room", room, "error", err)
+		s.log().Error("dispatch: read a closing document's pending settlement for its latest edit source", "room", room, "error", err)
 		return settlementRowFacts{}
 	}
 	return row
@@ -3248,7 +3285,7 @@ func (s *Service) persistClosedLastActor(ctx context.Context, room string, snaps
 	if snapshot.lastActor != nil {
 		written, err := s.persistLastActor(ctx, room, snapshot)
 		if err != nil {
-			slog.Error("dispatch: record closing document's latest edit source", "room", room, "error", err)
+			s.log().Error("dispatch: record closing document's latest edit source", "room", room, "error", err)
 		} else {
 			persisted = written
 		}
@@ -3263,7 +3300,7 @@ func (s *Service) persistClosedLastActor(ctx context.Context, room string, snaps
 // keep the admission they connected with until one does.
 func (s *Service) closeRoomForIssue(ctx context.Context, room string) {
 	if err := s.srv.closeRoom(ctx, room, true); err != nil && !errors.Is(err, websocket.ErrRoomNotFound) {
-		slog.Warn("dispatch: close a document room of an issue that closed or reopened; its browsers keep the admission they had",
+		s.log().Warn("dispatch: close a document room of an issue that closed or reopened; its browsers keep the admission they had",
 			"room", room, "error", err)
 	}
 }
@@ -3281,7 +3318,7 @@ func (s *Service) closeRoomForIssue(ctx context.Context, room string) {
 func (s *Service) restoreLastActor(ctx context.Context, room string, creditSeq uint64) {
 	owed, lastActor, err := readOwedSettlement(ctx, s.store.Pool, room)
 	if err != nil {
-		slog.Error("dispatch: restore a reopened document's latest edit source", "room", room, "error", err)
+		s.log().Error("dispatch: restore a reopened document's latest edit source", "room", room, "error", err)
 		return
 	}
 	if !owed || lastActor == nil {
@@ -3438,7 +3475,7 @@ func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 	if state.failed != nil {
 		return
 	}
-	slog.Warn("dispatch: a document room failed", "room", room, "error", cause)
+	s.log().Warn("dispatch: a document room failed", "room", room, "error", cause)
 	state.failed = cause
 	s.hooks.countRoomFailure(room)
 	state.failedDone = make(chan struct{})
@@ -3467,7 +3504,7 @@ func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 			s.beforeFailedEviction(room)
 		}
 		if err := s.evictFailed(room, state); err != nil {
-			slog.Warn("dispatch: a failed document room's eviction failed", "room", room, "error", err)
+			s.log().Warn("dispatch: a failed document room's eviction failed", "room", room, "error", err)
 		}
 		close(done)
 	}()
@@ -3501,7 +3538,7 @@ func (s *Service) awaitRoomRecovery(ctx context.Context, room string) error {
 		// A room that stays failed is otherwise visible only in its callers' 503s, which
 		// reach no server log at all: the refusal is what the server knows about the
 		// failure, so it names the room and the cause it refused for.
-		slog.Warn("dispatch: refuse a transaction's operation on a failed document room",
+		s.log().Warn("dispatch: refuse a transaction's operation on a failed document room",
 			"room", room, "error", failure)
 		return fmt.Errorf("%w: %w", ErrServiceUnavailable, failure)
 	}

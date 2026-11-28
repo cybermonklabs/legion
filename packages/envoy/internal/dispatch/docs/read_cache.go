@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math"
 	"runtime/debug"
 	"strconv"
@@ -358,7 +357,7 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("cold document read panicked: %v\n%s", recovered, debug.Stack())
-			slog.Error("dispatch: cold document read panicked", "room", artifactID, "error", err)
+			s.log().Error("dispatch: cold document read panicked", "room", artifactID, "error", err)
 		}
 	}()
 	foldCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coldReadTimeout)

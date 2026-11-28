@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"sync"
 	"time"
@@ -181,7 +180,7 @@ func (s *Service) catchUpRoom(ctx context.Context, q Queryer, room string, live 
 	}
 	if parks(live) {
 		pending := live.PendingStats()
-		slog.Error("dispatch: a document room holds updates it cannot place after catching up to the stored head",
+		s.log().Error("dispatch: a document room holds updates it cannot place after catching up to the stored head",
 			"room", room, "versions", versions, "pending_items", pending.Items, "pending_delete_ranges", pending.DeleteRanges)
 	}
 	if applied == nil {
@@ -399,7 +398,7 @@ func (c *roomCatchUps) headNotified(_ context.Context, payload string) {
 	var head documentHead
 	if err := json.Unmarshal([]byte(payload), &head); err != nil || head.R == "" {
 		c.ownHead = ""
-		slog.Warn("dispatch: drop a document head notification that does not decode", "payload", payload, "error", err)
+		c.service.log().Warn("dispatch: drop a document head notification that does not decode", "payload", payload, "error", err)
 		return
 	}
 	defer c.noteDecided(head.R)
@@ -474,7 +473,7 @@ func (c *roomCatchUps) catchUp(ctx context.Context, room string) {
 	switch {
 	case err != nil:
 		if ctx.Err() == nil {
-			slog.Warn("dispatch: catch up a document room to the stored head", "room", room, "error", err)
+			c.service.log().Warn("dispatch: catch up a document room to the stored head", "room", room, "error", err)
 		}
 		c.armRetry(room)
 	case outcome == catchUpReplaced:
@@ -516,7 +515,7 @@ func (c *roomCatchUps) closeReplaced(ctx context.Context, room string, live *crd
 	replaced, err := service.historyReplacedUnderLock(ctx, room, live)
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Warn("dispatch: confirm a document room's stored history was replaced", "room", room, "error", err)
+			c.service.log().Warn("dispatch: confirm a document room's stored history was replaced", "room", room, "error", err)
 		}
 		c.armRetry(room)
 		return
@@ -531,11 +530,11 @@ func (c *roomCatchUps) closeReplaced(ctx context.Context, room string, live *crd
 	case errors.Is(err, errRoomCloseHeldOff):
 		c.armRetry(room)
 	case err != nil:
-		slog.Warn("dispatch: close a document room whose stored history was replaced", "room", room, "error", err)
+		c.service.log().Warn("dispatch: close a document room whose stored history was replaced", "room", room, "error", err)
 		c.armRetry(room)
 	case closed:
 		c.settled(room)
-		slog.Info("dispatch: closed a document room whose stored history was replaced", "room", room)
+		c.service.log().Info("dispatch: closed a document room whose stored history was replaced", "room", room)
 	default:
 		// Another close or another instance answers for the room now (closeRoomBehindHead).
 		c.settled(room)

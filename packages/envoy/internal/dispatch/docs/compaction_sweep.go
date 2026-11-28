@@ -8,7 +8,6 @@ package docs
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -39,7 +38,7 @@ const (
 // is required, as it is of every leased loop.
 func (s *Service) RunCompactionSweep(ctx context.Context, leases duty.Leases) {
 	ctx = store.WithTransactionTracking(ctx)
-	duty.RunLeased(ctx, leases, compactionSweepLease, compactionSweepPeriod, duty.TickAtStart, s.compactionSweepPass)
+	duty.RunLeasedTo(ctx, s.logger, leases, compactionSweepLease, compactionSweepPeriod, duty.TickAtStart, s.compactionSweepPass)
 }
 
 // compactionSweepPass lists the documents with rows to fold (compactionCandidates) and tries each
@@ -55,13 +54,13 @@ func (s *Service) RunCompactionSweep(ctx context.Context, leases duty.Leases) {
 func (s *Service) compactionSweepPass(ctx context.Context) {
 	pool, err := s.store.Pool.Compaction()
 	if err != nil {
-		slog.Error("dispatch: document compaction sweep", "error", err)
+		s.log().Error("dispatch: document compaction sweep", "error", err)
 		return
 	}
 	rooms, err := compactionCandidates(ctx, pool)
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Error("dispatch: document compaction sweep", "error", err)
+			s.log().Error("dispatch: document compaction sweep", "error", err)
 		}
 		return
 	}
@@ -87,7 +86,7 @@ func (s *Service) compactionSweepPass(ctx context.Context) {
 			}
 			removed, err := forgetCompactionCandidate(ctx, pool, room)
 			if err != nil {
-				warnCompaction(ctx, warnCompactionForget, room, err)
+				s.warnCompaction(ctx, warnCompactionForget, room, err)
 			} else if removed {
 				forgotten++
 			}
@@ -96,7 +95,7 @@ func (s *Service) compactionSweepPass(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	slog.Info("dispatch: document compaction sweep",
+	s.log().Info("dispatch: document compaction sweep",
 		"candidates", len(rooms), "compacted", compacted, "rows_deleted", deleted, "left_to_queue", left,
 		"forgotten", forgotten)
 }

@@ -127,10 +127,11 @@ type copiedBlock struct {
 // - naming the copy, its source and the state it shows, never the question. A block taken for a
 // copy opens no ask and reaches nobody's Inbox, so this line is how one taken for a copy that was
 // meant as a new question is found. A copy whose attributes already agree is written nothing and
-// logged nothing, so an unchanged copy's later settlements add no line.
-func (r *settlementReconciliation) logCopiedBlocks(artifactID string) {
+// logged nothing, so an unchanged copy's later settlements add no line. The lines go to logger,
+// the settling service's (logTo).
+func (r *settlementReconciliation) logCopiedBlocks(logger *slog.Logger, artifactID string) {
 	for _, block := range r.copied {
-		slog.Info("dispatch: settled an ask block as a copy of another document's ask",
+		logTo(logger).Info("dispatch: settled an ask block as a copy of another document's ask",
 			"artifact", artifactID, "block", block.blockID, "source_ask", block.source.ask.ID,
 			"source_document", block.source.document, "source_state", block.source.ask.State)
 	}
@@ -514,12 +515,12 @@ func (s *Service) reconcileAskBlocks(
 			changed, err := writeDecidedWording(block.node, ask)
 			switch {
 			case err != nil:
-				slog.Error("dispatch: cannot write a decided ask's wording back into its block",
+				s.log().Error("dispatch: cannot write a decided ask's wording back into its block",
 					"ask", ask.ID, "artifact", artifactID, "block", block.id, "error", err)
 			case changed:
 				reconciled.repairs = append(reconciled.repairs, askRepair(block.id, decidedWording(ask)))
 				reworded = true
-				slog.Info("dispatch: wrote a decided ask's wording back into its block",
+				s.log().Info("dispatch: wrote a decided ask's wording back into its block",
 					"ask", ask.ID, "artifact", artifactID, "block", block.id, "state", ask.State)
 			}
 		} else if !block.asks(previous) && !issueClosed {
@@ -590,7 +591,7 @@ func (s *Service) reconcileAskBlocks(
 			reconciled.repairAsk(block.node, block.id, ask, "", &repaired)
 		}
 	}
-	reconciled.withholdAnswers(artifactID, tree, before)
+	reconciled.withholdAnswers(s.logger, artifactID, tree, before)
 	if err := recordAskAuthors(ctx, tx, artifactID, unindexed); err != nil {
 		return settlementReconciliation{}, err
 	}

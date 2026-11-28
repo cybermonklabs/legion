@@ -28,10 +28,11 @@ type BlockRef struct {
 // while the issue is closed keeps it resolved and opens no ask for it, and once the issue
 // reopens, which marks its document owed (MarkReopenOwedAskDocuments), a settlement indexes it
 // as a new open ask. WriteIssueAskStates and RebuildDocument each log the blocks they mark
-// themselves, so every caller sees them logged once, whatever it does with them.
-func logUnindexedAskBlocks(issueKey string, blocks []BlockRef) {
+// themselves, to logger, their service's (logTo), so every caller sees them logged once, whatever
+// it does with them.
+func logUnindexedAskBlocks(logger *slog.Logger, issueKey string, blocks []BlockRef) {
 	for _, block := range blocks {
-		slog.Warn("dispatch: mark resolved an ask block no settlement indexed before its issue closed",
+		logTo(logger).Warn("dispatch: mark resolved an ask block no settlement indexed before its issue closed",
 			"issue", issueKey, "artifact", block.ArtifactID, "block", block.BlockID)
 	}
 }
@@ -150,7 +151,7 @@ func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks
 		}
 		unindexed = append(unindexed, marked...)
 	}
-	logUnindexedAskBlocks(issueKey, unindexed)
+	logUnindexedAskBlocks(s.logger, issueKey, unindexed)
 	return unindexed, nil
 }
 
@@ -173,7 +174,7 @@ func (s *Service) writeDocumentAskStates(
 	err := s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
 		if current.Node() == nil {
 			// Settlement reads none of its ask blocks either (settleRoomWithin).
-			slog.Warn("dispatch: leave the ask blocks of a document outside Proof schema as they are", "artifact", artifactID)
+			s.log().Warn("dispatch: leave the ask blocks of a document outside Proof schema as they are", "artifact", artifactID)
 			return nil
 		}
 		var err error
@@ -194,7 +195,7 @@ func (s *Service) writeDocumentAskStates(
 		// Nothing can load the document, so no reader sees its blocks open, and a retry meets the
 		// same history: the close, reopen or repair writing it goes on without it. The rebuild
 		// that makes it load again writes its closed issue's states itself (RebuildDocument).
-		slog.Warn("dispatch: leave the ask blocks of a document whose history cannot load as they are",
+		s.log().Warn("dispatch: leave the ask blocks of a document whose history cannot load as they are",
 			"issue", *owner.IssueKey, "artifact", artifactID, "error", err)
 		return nil, nil
 	default:
@@ -460,7 +461,7 @@ func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID
 	// the live tree it rendered: the stored text's read-back is that tree.
 	tree, err := pmdoc.ParseRendering(latest.markdown)
 	if err != nil {
-		return skipUnreadableVersion(artifactID, latest.Number, err)
+		return skipUnreadableVersion(s.logger, artifactID, latest.Number, err)
 	}
 	return s.carryStandingApproval(ctx, tx, artifactID, latest.Number, renderedTree{tree: tree, markdown: latest.markdown}, *newest, eventSink(ctx))
 }
@@ -752,7 +753,7 @@ func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) err
 			}
 		}
 		if err != nil {
-			slog.Warn("dispatch: settle a document of an issue", "issue", issueKey, "room", room, "error", err)
+			s.log().Warn("dispatch: settle a document of an issue", "issue", issueKey, "room", room, "error", err)
 			failures = append(failures, fmt.Errorf("settle document %s: %w", room, err))
 		}
 	}

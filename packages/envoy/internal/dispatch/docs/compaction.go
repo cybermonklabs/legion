@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"time"
 
@@ -373,7 +372,7 @@ func (p *PgVersioned) recordUnfoldable(room string, point rowVersion, misread er
 	if already {
 		return
 	}
-	slog.Warn(misreadWarning+"; compaction leaves them as stored",
+	p.log().Warn(misreadWarning+"; compaction leaves them as stored",
 		"room", room, "version", point.version, "error", misread)
 }
 

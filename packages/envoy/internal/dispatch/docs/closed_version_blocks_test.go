@@ -78,7 +78,7 @@ func heldBlocksOf(t *testing.T, service *Service, artifactID string) (string, []
 	if live == stored {
 		t.Fatalf("the live text of %s is its latest version's, want it ahead: %q", artifactID, live)
 	}
-	markdown, blocks, err := heldVersionBlocks(ctx, tx, artifactID, stored, live, liveBlocks,
+	markdown, blocks, err := heldVersionBlocks(ctx, nil, tx, artifactID, stored, live, liveBlocks,
 		"test: cannot read back a document version")
 	if err != nil {
 		t.Fatalf("render the latest version of %s: %v", artifactID, err)

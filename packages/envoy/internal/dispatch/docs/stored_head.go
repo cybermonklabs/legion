@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"slices"
 	"time"
 
@@ -137,19 +136,19 @@ func (s *Service) recordPublishedLoss(write *liveWrite) {
 	defer cancel()
 	rooms, err := s.store.Pool.Rooms()
 	if err != nil {
-		slog.Warn("dispatch: reach the document store to judge a published write's text", "room", write.artifactID, "error", err)
+		s.log().Warn("dispatch: reach the document store to judge a published write's text", "room", write.artifactID, "error", err)
 		return
 	}
 	_, others, err := s.roomQueries.ask(ctx, rooms, write.artifactID, roomQueryFlush)
 	if err != nil {
 		// Whether another process holds the document is unknown, so the verdict reads the head.
-		slog.Warn("dispatch: ask the other processes to store their rooms' updates before judging a published write's text",
+		s.log().Warn("dispatch: ask the other processes to store their rooms' updates before judging a published write's text",
 			"room", write.artifactID, "error", err)
 		others = true
 	}
 	lost, err := s.lostAtStoredHead(ctx, rooms, write, others)
 	if err != nil {
-		slog.Warn("dispatch: read a published write's text back from the document", "room", write.artifactID, "error", err)
+		s.log().Warn("dispatch: read a published write's text back from the document", "room", write.artifactID, "error", err)
 		return
 	}
 	write.lost, write.lostVerdict = lost, true

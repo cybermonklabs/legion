@@ -193,12 +193,12 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 		return nil, false, nil
 	}
 	if locked {
-		slog.Error("dispatch: a document room flush was asked for while holding the document's advisory lock, which every other process's append waits on; the flush is skipped",
+		r.service.log().Error("dispatch: a document room flush was asked for while holding the document's advisory lock, which every other process's append waits on; the flush is skipped",
 			"room", room)
 		return nil, true, nil
 	}
 	if !slices.Contains(members, self) {
-		slog.Warn("dispatch: this process's room-sync listener is not connected, so it cannot hear the other processes answer a document room query; it goes on without them",
+		r.service.log().Warn("dispatch: this process's room-sync listener is not connected, so it cannot hear the other processes answer a document room query; it goes on without them",
 			"room", room, "kind", kind, "members", others)
 		return nil, true, nil
 	}
@@ -224,7 +224,7 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 		if ctx.Err() != nil {
 			return nil, true, ctx.Err()
 		}
-		slog.Warn("dispatch: send a document room query to the other processes; going on without their answers",
+		r.service.log().Warn("dispatch: send a document room query to the other processes; going on without their answers",
 			"room", room, "kind", kind, "error", err)
 		return nil, true, nil
 	}
@@ -242,12 +242,12 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 	r.mu.Unlock()
 	if len(missing) > 0 {
 		slices.Sort(missing)
-		slog.Warn("dispatch: other processes did not answer a document room query in time; going on without them",
+		r.service.log().Warn("dispatch: other processes did not answer a document room query in time; going on without them",
 			"room", room, "kind", kind, "members", missing, "waited", time.Since(started))
 	}
 	for _, answer := range answers {
 		if answer.tooLarge {
-			slog.Warn("dispatch: another process's room holds more not-yet-stored updates than one query shares; judging without them",
+			r.service.log().Warn("dispatch: another process's room holds more not-yet-stored updates than one query shares; judging without them",
 				"room", room, "process", answer.process, "limit_bytes", roomShareLimit)
 		}
 	}
@@ -261,7 +261,7 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 func (r *roomQueries) answer(_ context.Context, payload string) {
 	var part roomAnswerPart
 	if err := json.Unmarshal([]byte(payload), &part); err != nil || part.ID == "" || part.Part < 0 {
-		slog.Debug("dispatch: drop a document room answer that does not parse", "error", err)
+		r.service.log().Debug("dispatch: drop a document room answer that does not parse", "error", err)
 		return
 	}
 	r.mu.Lock()
@@ -283,7 +283,7 @@ func (r *roomQueries) answer(_ context.Context, payload string) {
 	}
 	answer, err := parts.assemble()
 	if err != nil {
-		slog.Debug("dispatch: drop a document room answer that does not decode", "process", part.Process, "error", err)
+		r.service.log().Debug("dispatch: drop a document room answer that does not decode", "process", part.Process, "error", err)
 		return
 	}
 	delete(pending.waiting, part.Process)
@@ -325,7 +325,7 @@ func (p *roomAnswerParts) assemble() (roomAnswer, error) {
 func (r *roomQueries) query(ctx context.Context, payload string) {
 	var query roomQuery
 	if err := json.Unmarshal([]byte(payload), &query); err != nil || query.ID == "" || query.Room == "" {
-		slog.Debug("dispatch: drop a document room query that does not parse", "error", err)
+		r.service.log().Debug("dispatch: drop a document room query that does not parse", "error", err)
 		return
 	}
 	if query.Sender == r.service.processID {
@@ -342,7 +342,7 @@ func (r *roomQueries) query(ctx context.Context, payload string) {
 	case roomQueryShare:
 		updates, err := s.unstoredShare(query.Room, live)
 		if err != nil {
-			slog.Warn("dispatch: merge a document room's not-yet-stored updates to share with another process; sharing none",
+			r.service.log().Warn("dispatch: merge a document room's not-yet-stored updates to share with another process; sharing none",
 				"room", query.Room, "error", err)
 			updates = nil
 		}
@@ -362,7 +362,7 @@ func (r *roomQueries) query(ctx context.Context, payload string) {
 			flushed, cancel := context.WithTimeout(ctx, r.answerWait())
 			defer cancel()
 			if err := awaitStored(flushed, s.instanceOf(live), classes); err != nil {
-				slog.Warn("dispatch: a document room's updates were not stored in time to answer another process's flush; it is left unanswered",
+				r.service.log().Warn("dispatch: a document room's updates were not stored in time to answer another process's flush; it is left unanswered",
 					"room", query.Room, "asker", query.Sender, "waiting", len(classes), "error", err)
 				return
 			}
@@ -377,9 +377,9 @@ func (r *roomQueries) query(ctx context.Context, payload string) {
 // (roomAnswerPayloads).
 func (r *roomQueries) send(ctx context.Context, query roomQuery, answer roomAnswerPart, actors []model.Actor, updates []byte) {
 	answer.ID, answer.Process = query.ID, r.service.processID
-	payloads, err := roomAnswerPayloads(answer, actors, base64.StdEncoding.EncodeToString(updates))
+	payloads, err := roomAnswerPayloads(r.service.logger, answer, actors, base64.StdEncoding.EncodeToString(updates))
 	if err != nil {
-		slog.Error("dispatch: encode a document room answer", "room", query.Room, "error", err)
+		r.service.log().Error("dispatch: encode a document room answer", "room", query.Room, "error", err)
 		return
 	}
 	sending, cancel := context.WithTimeout(ctx, roomSyncSendTimeout)
@@ -387,7 +387,7 @@ func (r *roomQueries) send(ctx context.Context, query roomQuery, answer roomAnsw
 	for _, payload := range payloads {
 		if err := r.service.roomSyncSender.Notify(sending, documentAnswerChannel, payload); err != nil {
 			if !errors.Is(err, context.Canceled) {
-				slog.Warn("dispatch: answer another process's document room query", "room", query.Room, "asker", query.Sender, "error", err)
+				r.service.log().Warn("dispatch: answer another process's document room query", "room", query.Room, "asker", query.Sender, "error", err)
 			}
 			return
 		}
@@ -397,8 +397,8 @@ func (r *roomQueries) send(ctx context.Context, query roomQuery, answer roomAnsw
 // roomAnswerPayloads packs answer with actors and updates (base64) into the fewest notification
 // payloads each within roomSyncPayloadLimit: the actors first, whole, then the updates cut across
 // as many parts as they fill, each part numbered and the last flagged. An actor whose entry alone
-// does not fit is dropped with a WARN.
-func roomAnswerPayloads(answer roomAnswerPart, actors []model.Actor, updates string) ([]string, error) {
+// does not fit is dropped with a WARN, to logger, the answering service's (logTo).
+func roomAnswerPayloads(logger *slog.Logger, answer roomAnswerPart, actors []model.Actor, updates string) ([]string, error) {
 	var payloads []string
 	part := answer
 	part.Part, part.Actors, part.Updates, part.Last = 0, nil, "", false
@@ -437,7 +437,7 @@ func roomAnswerPayloads(answer roomAnswerPart, actors []model.Actor, updates str
 			}
 			part.Actors = nil
 		}
-		slog.Warn("dispatch: drop an actor too large for a document room answer", "kind", actor.Kind, "id", actor.ID)
+		logTo(logger).Warn("dispatch: drop an actor too large for a document room answer", "kind", actor.Kind, "id", actor.ID)
 	}
 	// The updates field's own framing, `,"updates":""`; base64 needs no JSON escaping.
 	const updatesFraming = len(`,"updates":""`)

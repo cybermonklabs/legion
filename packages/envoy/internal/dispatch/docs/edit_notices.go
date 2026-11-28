@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"time"
 
@@ -111,7 +110,7 @@ func (s *Service) recordEditNotice(ctx context.Context, tx pgx.Tx, artifactID st
 		if latest != nil {
 			latestKind = latest.Kind
 		}
-		slog.Info("dispatch: a version names no latest editor among the people it lists, so its edit notice names nobody new",
+		s.log().Info("dispatch: a version names no latest editor among the people it lists, so its edit notice names nobody new",
 			"artifact", artifactID, "version", version, "editors", len(editors), "latest_kind", latestKind)
 		return writeExec(ctx, tx, "hold edit notice", holdEditNotice, artifactID, version, editorsJSON, s.editNoticeQuiet)
 	}
@@ -212,6 +211,7 @@ func (s *Service) runEditNotices(ctx context.Context, leases duty.Leases, wake <
 	duty.RunWoken(ctx, duty.WokenLoop{
 		Lease:  editNoticeLease,
 		Leases: leases,
+		Logger: s.logger,
 		Wake:   wake,
 		MinGap: schedule.minGap,
 		Pass:   s.editNoticePass,
@@ -225,13 +225,13 @@ func (s *Service) runEditNotices(ctx context.Context, leases duty.Leases, wake <
 func (s *Service) editNoticePass(ctx context.Context) time.Time {
 	sent, err := s.sendDueEditNotices(ctx)
 	if sent > 0 {
-		slog.Info("dispatch: sent edit notices", "notices", sent)
+		s.log().Info("dispatch: sent edit notices", "notices", sent)
 	}
 	switch {
 	case ctx.Err() != nil:
 		return time.Time{}
 	case err != nil:
-		slog.Error("dispatch: send edit notices", "error", err)
+		s.log().Error("dispatch: send edit notices", "error", err)
 		return time.Now()
 	}
 	var wait *int64
@@ -239,7 +239,7 @@ func (s *Service) editNoticePass(ctx context.Context) time.Time {
 		if ctx.Err() != nil {
 			return time.Time{}
 		}
-		slog.Error("dispatch: read the next edit notice's due time", "error", err)
+		s.log().Error("dispatch: read the next edit notice's due time", "error", err)
 		return time.Now()
 	}
 	if wait == nil {
@@ -271,7 +271,7 @@ func (s *Service) sendDueEditNotices(ctx context.Context) (int, error) {
 		}
 		ok, err := s.sendEditNotice(ctx, id)
 		if err != nil {
-			slog.Error("dispatch: send an edit notice", "artifact", id, "error", err)
+			s.log().Error("dispatch: send an edit notice", "artifact", id, "error", err)
 			continue
 		}
 		if ok {

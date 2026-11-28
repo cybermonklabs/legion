@@ -113,9 +113,11 @@ const (
 // (server.go:330-341, bufioReaderSize), while the v1.5.4 pre-release the workspace builds keeps
 // it on the connection underneath (server.go:192-195), where the filter would never see a frame.
 // So Hijack resets the reader onto the filter itself, which holds whichever of the two reads it.
+// logger is the service's (Service.logger), which the filter's lines go to (logTo).
 type awarenessLimitWriter struct {
 	http.ResponseWriter
-	room string
+	room   string
+	logger *slog.Logger
 }
 
 func (w *awarenessLimitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -132,7 +134,7 @@ func (w *awarenessLimitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		head, _ := buffers.Reader.Peek(held)
 		pending = bytes.Clone(head)
 	}
-	filtered := newAwarenessLimitConn(conn, w.room, pending)
+	filtered := newAwarenessLimitConn(conn, w.room, pending, w.logger)
 	buffers.Reader.Reset(filtered)
 	return filtered, buffers, nil
 }
@@ -146,6 +148,9 @@ func (w *awarenessLimitWriter) Unwrap() http.ResponseWriter { return w.ResponseW
 type awarenessLimitConn struct {
 	net.Conn
 	room string
+	// logger is the service's, as the socket's writer was handed it (awarenessLimitWriter), and
+	// resolved at each line (logTo).
+	logger *slog.Logger
 	// live is the awareness clients this socket holds now: a client announced takes a place and a
 	// client taken away gives it back, so a socket that announces and removes one client at a
 	// time is never refused.
@@ -167,13 +172,13 @@ type awarenessLimitConn struct {
 }
 
 // newAwarenessLimitConn is the filter over conn, reading pending - what the upgrade's hijack
-// held of the socket already (Hijack) - before conn itself.
-func newAwarenessLimitConn(conn net.Conn, room string, pending []byte) *awarenessLimitConn {
+// held of the socket already (Hijack) - before conn itself, and writing its lines to logger.
+func newAwarenessLimitConn(conn net.Conn, room string, pending []byte, logger *slog.Logger) *awarenessLimitConn {
 	var source io.Reader = conn
 	if len(pending) > 0 {
 		source = io.MultiReader(bytes.NewReader(pending), conn)
 	}
-	return &awarenessLimitConn{Conn: conn, room: room, live: make(map[uint64]struct{}), src: bufio.NewReader(source)}
+	return &awarenessLimitConn{Conn: conn, room: room, logger: logger, live: make(map[uint64]struct{}), src: bufio.NewReader(source)}
 }
 
 // Read hands ygo the rewritten stream: it reads whole frames from the socket until it has bytes
@@ -288,7 +293,7 @@ func (c *awarenessLimitConn) decide(payload int64, final bool) error {
 // frames after it - and rewrites the message once it ends.
 func (c *awarenessLimitConn) collect(n int64, final bool) error {
 	if int64(len(c.message))+n > maxAwarenessMessageBytes {
-		slog.Debug("dispatch: drop a document socket's awareness message past the size one carries",
+		logTo(c.logger).Debug("dispatch: drop a document socket's awareness message past the size one carries",
 			"room", c.room, "bytes", int64(len(c.message))+n, "limit", maxAwarenessMessageBytes)
 		c.message = c.message[:0]
 		return c.skip(n, final)
@@ -355,12 +360,12 @@ func (c *awarenessLimitConn) unmask(start int) {
 func (c *awarenessLimitConn) allowed(message []byte) []byte {
 	update, err := encoding.NewDecoder(message).ReadVarBytes()
 	if err != nil {
-		slog.Debug("dispatch: drop a document socket's awareness message the filter cannot read", "room", c.room, "error", err)
+		logTo(c.logger).Debug("dispatch: drop a document socket's awareness message the filter cannot read", "room", c.room, "error", err)
 		return nil
 	}
 	entries, err := decodeAwarenessEntries(update)
 	if err != nil {
-		slog.Debug("dispatch: drop a document socket's awareness update the filter cannot read", "room", c.room, "error", err)
+		logTo(c.logger).Debug("dispatch: drop a document socket's awareness update the filter cannot read", "room", c.room, "error", err)
 		return nil
 	}
 	kept := make([][]byte, 0, len(entries))
@@ -381,7 +386,7 @@ func (c *awarenessLimitConn) allowed(message []byte) []byte {
 		kept = append(kept, entry.raw)
 	}
 	if dropped := len(entries) - len(kept); dropped > 0 {
-		slog.Debug("dispatch: drop the awareness clients a document socket may not hold",
+		logTo(c.logger).Debug("dispatch: drop the awareness clients a document socket may not hold",
 			"room", c.room, "dropped", dropped, "held", len(c.live), "limit", maxAwarenessClientsPerSocket)
 	}
 	return encodeAwarenessEntries(kept)
