@@ -1965,6 +1965,26 @@ expect_status 3
 expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, and the services its auth service admits could not be read: the Deployment dispatch/envoy-broker could not be read: Error from server (Forbidden): deployments.apps \"envoy-broker\" is forbidden"
 done_case
 
+# An answer for the auth service's Deployment that is no JSON document, or more than one, is no
+# Deployment: the reading is UNKNOWN by name and writes its record, never a stop on jq's own error.
+for answer in "no JSON document" "two JSON documents"; do
+new_case "(a3) an auth service's Deployment answered with ${answer} is UNKNOWN, and the reading writes its record"
+hub_configmap "$FAKE" --callout "${clean_users[@]}"
+facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server)
+first_reading_secs 200 reading
+if [ "$answer" = "no JSON document" ]; then
+  : >"$FAKE/broker.json"
+else
+  jq -c . "$FAKE/broker.json" "$FAKE/broker.json" >"$FAKE/broker.tmp" && mv "$FAKE/broker.tmp" "$FAKE/broker.json"
+fi
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, and the services its auth service admits could not be read: the Deployment dispatch/envoy-broker: its Deployment is no JSON object"
+[ -f "$FAKE/record.json" ] || fail "the reading wrote no record"
+expect_last "UNKNOWN"
+done_case
+done
+
 new_case "(a3) an auth service whose BROKER_NATS_SERVICES is set through valueFrom is UNKNOWN"
 hub_configmap "$FAKE" --callout "${clean_users[@]}"
 jq '.spec.template.spec.containers[0].env[1] = {name: "BROKER_NATS_SERVICES", valueFrom: {configMapKeyRef: {name: "envoy-broker", key: "services"}}}' \
