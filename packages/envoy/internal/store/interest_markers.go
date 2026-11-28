@@ -134,7 +134,7 @@ func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(
 			pass.floor = entry.Revision
 		}
 		return nil
-	}, jetstream.MetaOnly())
+	}, kvwatch.ScanMetaOnly())
 	if err != nil {
 		// A scan short of the bucket is not a reading of it: the keys it never delivered are still
 		// there, and the lowest revision among those it did is no floor.
