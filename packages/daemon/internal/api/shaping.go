@@ -584,6 +584,13 @@ type stateNarrowing struct {
 // (leftDeploymentRoles) are read after the earlier bands ran, so they are the claims the body would
 // have carried.
 //
+// startWaitTokenContract's band writes an issue's `startWaitsForPod` in the shape of the contracts
+// below it, the roles of the starts, rather than taking a key out, and deploymentRolesContract's
+// leaves that same key off the wire. The second does it by a flag on the issue
+// (Issue.startWaitsHidden) and keeps the list, so each band finds the list the source answered
+// whichever runs first, each reports its move and writes its line, and a caller below both is
+// served no list.
+//
 // The value strips are no rows of this table: they follow restore rather than strip, and take a
 // value rather than a key a contract added, which are questions this table's one number cannot
 // ask (valueStrip). They are the rows of valueStrips, applied, recorded and described from there
@@ -1238,10 +1245,11 @@ const causeTimesContract = 256
 // controller reads as past review or as a wait describes it; and every plan this daemon takes
 // holds an implementer — and it stays in `issues` and in `admission.active`, which the daemon
 // computes before any narrowing. A hold from step is served as a hold from implementing, a pending
-// task at step as one at implementing, and `stepRole` and `startWaitsForPod` are cleared. An
-// issue's workers keep the deployment role's key, which such a caller reads as a record keyed by
-// any string. The views it changes are copied (withEachClaimView), so the state the source
-// answered is left as it was.
+// task at step as one at implementing, `stepRole` is cleared and `startWaitsForPod` is left off the
+// wire (Issue.startWaitsHidden), which keeps the list for the band of startWaitTokenContract to
+// find. An issue's workers keep the deployment role's key, which such a caller reads as a record
+// keyed by any string. The views it changes are copied (withEachClaimView), so the state the
+// source answered is left as it was.
 func withoutDeploymentRoles(issue Issue) (Issue, bool) {
 	moved := issue.Phase == phase.Step || issue.HeldFrom == string(phase.Step) || issue.StepRole != "" ||
 		len(issue.StartWaitsForPod) > 0
@@ -1251,7 +1259,7 @@ func withoutDeploymentRoles(issue Issue) (Issue, bool) {
 	if issue.HeldFrom == string(phase.Step) {
 		issue.HeldFrom = string(phase.Implementing)
 	}
-	issue.StepRole, issue.StartWaitsForPod = "", nil
+	issue.StepRole, issue.startWaitsHidden = "", true
 	issue, views := withEachClaimView(issue, func(view ClaimView) ClaimView {
 		if view.PendingTask == nil || view.PendingTask.Phase != phase.Step {
 			return view
@@ -1822,6 +1830,26 @@ func withoutClaimTokens(issue Issue) (Issue, bool) {
 		issue.OtherClaims, moved = nil, true
 	}
 	return issue, moved
+}
+
+// withoutStartWaitTokens is the issue whose `startWaitsForPod` is the roles of its starts, each
+// role once and in the order of the first start of it, as a caller below startWaitTokenContract
+// reads the list: each entry left is written as its role alone (StartWaitView.asRole). An issue
+// whose list is empty is returned as it is; otherwise the list is built anew, so the state the
+// source answered is left as it was.
+func withoutStartWaitTokens(issue Issue) (Issue, bool) {
+	if len(issue.StartWaitsForPod) == 0 {
+		return issue, false
+	}
+	roles := make([]StartWaitView, 0, len(issue.StartWaitsForPod))
+	for _, start := range issue.StartWaitsForPod {
+		named := func(listed StartWaitView) bool { return listed.Role == start.Role }
+		if !slices.ContainsFunc(roles, named) {
+			roles = append(roles, StartWaitView{Role: start.Role, asRole: true})
+		}
+	}
+	issue.StartWaitsForPod = roles
+	return issue, true
 }
 
 // withoutUnadmittedWaitAnswer is the issue whose wait carries no `answeredAt` and no

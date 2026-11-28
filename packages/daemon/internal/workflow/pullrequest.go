@@ -496,8 +496,9 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record
 // move's), on its merged pull request pr, and reports
 // the issues it waited for instead, empty when it closed. In a running tree the close is the
 // table's row to done (transition), which leaves: a child's close retires every claim of it but
-// that of the role the project's `production_check` names, and opens its production check in that
-// role's live session, and retires every claim and opens no check where that setting is off; a root's close lingers
+// the claim of the worker on the step of the role the project's `production_check` names
+// (record.WorkerClaim) and opens its production check in that claim's live session, and retires
+// every claim and opens no check where that setting is off; a root's close lingers
 // its tree and opens its check behind the linger's rows (leave). A merge is the one fact GitHub
 // never sends again, so one that lands while the tree lingers, where no transition runs, still
 // closes the issue: it writes what leave would that a lingering tree allows — the phase done, the
@@ -754,7 +755,7 @@ func leftPhase(issue record.Issue, at phase.Phase, lingers bool) string {
 // nothing else tells anybody it is missing - the implementer's completion was applied with GitHub
 // unread, or the pull request it read was closed without merging since. The notice names the
 // issue, the repository, the branch and the handoff commit, and the topic of the implementer to
-// tell: the claim that works the implementer's step (workerClaim), which a key's agent can be,
+// tell: the claim record.WorkerClaim gives the implementer's step (workerClaim),
 // not a topic spelled from the role. It says what to do. It tells nothing
 // when the issue has left implementing, its implementer's handoff is another commit, or an open or
 // merged pull request is recorded: the read asked GitHub before the record changed, or the merge

@@ -349,12 +349,23 @@ func lostRole(role claim.Role, deployment plan.Deployment) bool {
 	return claim.IsDeploymentRole(role) && !deployment.Defines(string(role))
 }
 
-// lostAgent says whether name, the name of a step's agent (record.PlanStep.AgentName), is a role
-// deployment lost (lostRole): the agent runs in the slot of its name, the role of its first step
-// (record.NameAgents), so a pod of the deployment has no slot for it, whatever role its step has
-// now. A step of the key owner has no name, and is never lost this way.
+// lostAgent says whether name, the name of a step's agent (record.PlanStep.AgentName), is named
+// for a role deployment lost (lostRole): the agent runs in the slot of its name, which it takes
+// from the role of its first step (record.NameAgents), so a pod of the deployment has no slot for
+// it, whatever role its step has now. A second or later agent of a role takes a numbered name of
+// that role (claim.NumberedAgentRole), such as `implementer-2`, which is no role itself: it is
+// lost only where that role is, and a numbered name of no role the deployment defines, such as
+// that of a role it lost, is lost. A step of the key owner has no name, and is never lost this way.
 func lostAgent(name claim.Agent, deployment plan.Deployment) bool {
-	return name != "" && lostRole(claim.Role(name), deployment)
+	if name == "" || !lostRole(claim.Role(name), deployment) {
+		return false
+	}
+	roles := slices.Clone(claim.Roles)
+	for role := range deployment.Roles {
+		roles = append(roles, claim.Role(role))
+	}
+	of, numbered := claim.NumberedAgentRole(string(name), roles)
+	return !numbered || lostRole(of, deployment)
 }
 
 // lostSlot says whether token's claim runs in a slot (claim.Token.Slot) that is a role deployment

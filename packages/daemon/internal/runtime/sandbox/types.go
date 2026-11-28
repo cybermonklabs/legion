@@ -176,6 +176,12 @@ type Store interface {
 	// daemon's orphan sweep still knows, suspended and failed ones included. The sweep reads it under
 	// the controller's pod turn, since the known set it was handed was read before it listed.
 	ClaimUnretired(ctx context.Context, token claim.Token) (bool, error)
+	// PlanAgents is each agent of issue's plan in force by its name (the name its claim token ends
+	// in), with the role of its first step: every step of the issue's generation but the owner's,
+	// whose agent holds no name on the issue. An issue with no plan rows has none. The slots of an
+	// issue pod are the runtime's roles and each of these names no role has (issueSlots); a slot
+	// no claim has run in yet holds the App of its agent's first role.
+	PlanAgents(ctx context.Context, project, issue string) (map[claim.Agent]claim.Role, error)
 	// Claims is every stored claim, including retired claims whose session files can
 	// remain on a Sandbox-owned volume until its cleanup reaps it.
 	Claims(ctx context.Context) ([]supervise.Claim, error)

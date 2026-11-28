@@ -432,8 +432,9 @@ func podImageDrift(s *sandbox, want string) bool {
 // of the operating mode, one of the issue the Sandbox is labelled with and one of the annotation
 // the stored template records, against the shape the runtime holds for an issue pod in that
 // issue's sandbox (r.podShapes, storedShapeKey), all strings of the object this call already
-// holds. The Sandbox itself is decoded only where the two shapes differ, which is the pod a round
-// is about to be opened over.
+// holds. It reads nothing of the store: the slots the issue's plan names are a question of the
+// pod, which the sweep asks once for each issue (PodSlotsDrift). The Sandbox itself is decoded
+// only where the two shapes differ, which is the pod a round may be about to be opened over.
 func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
 	if err := k.Validate(); err != nil {
 		return nil, fmt.Errorf("sandbox runtime: pod drift: %w", err)
@@ -778,24 +779,103 @@ func rolesDrift(s *sandbox, roles []claim.Role) []string {
 	return []string{"roles " + runtime.JoinRoles(held) + ", now " + runtime.JoinRoles(roles)}
 }
 
+// PodSlotsDrift satisfies runtime.PlanSlotsDrift: why the pod k's process runs in drifts from the
+// slots its issue's plan in force names (slotsDrift), from one read of that plan's agents
+// (Store.PlanAgents). The daemon's sweep asks it once for each issue's pod, beside PodDrift of each
+// claim in it, so a sweep reads each issue's plan once rather than once for each claim. A read
+// that fails is returned, and the caller decides on the pod's other reasons alone. It answers
+// nothing for a claim with no process, for a pod no round covers, and for a Sandbox the informers
+// no longer hold, which PodDrift answers as gone. Nor does it for a Sandbox suspended, and it reads
+// no plan for one: its pod is on its way out, as PodDrift answers it — the round's own replacement
+// in flight, whose next launch builds the pod again from the plan in force, or a pod gone — and a
+// slot the ending pod lacks would open a round over a pod being deleted.
+func (r *Runtime) PodSlotsDrift(ctx context.Context, k runtime.Known) ([]string, error) {
+	if err := k.Validate(); err != nil {
+		return nil, fmt.Errorf("sandbox runtime: pod slots drift: %w", err)
+	}
+	if k.Locator == nil {
+		return nil, nil
+	}
+	if err := r.checkLocator(*k.Locator); err != nil {
+		return nil, err
+	}
+	if slot, _ := k.Locator.Claim.Slot(); !roundCovers(podKindFor(launcherOf(slot))) {
+		return nil, nil
+	}
+	issue, ok := k.Locator.Claim.IssueKey()
+	if !ok {
+		return nil, nil
+	}
+	u, err := r.storedObject(k.Locator.Sandbox.Name)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox runtime: pod slots drift %s: %w", k.Claim, err)
+	}
+	if u == nil {
+		return nil, nil
+	}
+	if mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode"); mode == modeSuspended {
+		return nil, nil
+	}
+	agents, err := r.store.PlanAgents(ctx, r.project, issue)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox runtime: pod slots drift %s: read the agents of its issue's plan: %w", k.Claim, err)
+	}
+	return r.slotsDrift(agents, u)
+}
+
+// slotsDrift is the one reason a pod built before an agent of its issue's plan drifts by: where the
+// plan in force names agents (Store.PlanAgents) one of whose names no role of the runtime has
+// (agentSlots), and the template of the stored Sandbox u binds no slot of that name
+// (templateRoles), `slots <the template's>, now <the slots a launch of the issue binds now>`. So
+// the update round opens over the pod, and a start of that agent, which waits while its pod lacks
+// its slot (runtime.PodLacks, in the launch and in the outbox's wait for its pod), waits for that
+// round alone. A slot
+// the template holds and the plan no longer names is no reason, since the pod still runs every
+// agent there is, and neither is a template no launcher of this layout wrote, which binds none.
+// Where the plan names no agent beside the runtime's roles, as a plan of roles alone does, it
+// decodes nothing. Its slots are the ones a launch builds (agentSlots, as issueSlots takes them),
+// so an agent whose first step's role names no App, which no build gives a slot, is no reason
+// either: a round over it would build the same pod again, and the next sweep would open another.
+func (r *Runtime) slotsDrift(agents map[claim.Agent]claim.Role, u *unstructured.Unstructured) ([]string, error) {
+	slots := r.agentSlots(r.issueRoles, agents)
+	if len(slots) == 0 {
+		return nil, nil
+	}
+	s, err := decodeSandbox(u)
+	if err != nil {
+		return nil, err
+	}
+	held := templateRoles(s)
+	if len(held) == 0 || !slices.ContainsFunc(slots, func(slot claim.Role) bool { return !slices.Contains(held, slot) }) {
+		return nil, nil
+	}
+	now := append(slices.Clone(r.issueRoles), slots...)
+	return []string{"slots " + runtime.JoinRoles(held) + ", now " + runtime.JoinRoles(now)}, nil
+}
+
 // PodLacksRole satisfies runtime.IssuePodRoles: the uid of the issue's live pod (livePod) whose
-// template was built without role (templateLacks), and true; "" and false where the issue has
-// no Sandbox, no live pod, or a pod built with role. It reads the informers' stores alone and
-// makes no API call.
-func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
-	name, err := issueSandboxName(r.project, issue)
+// template was built without name (templateLacks), and true; "" and false where the issue has no
+// Sandbox, no live pod, or a pod built with name, and for a template no launcher of this layout
+// wrote, which binds none. It reads the informers' stores alone and makes no API call. The outbox
+// asks name both as the slot of a claim (claim.Token.Slot, the agent its token ends in, which can
+// be a name no role has, such as the second implementer of a plan, `implementer-2`) and as the role
+// of a start's step, whose own resources (its role_config_files overlays among them) a pod built
+// before the deployment defined it lacks as it lacks a slot of that name: a slot is named by its
+// agent, not by its step's role, and the claim's token names the slot alone.
+func (r *Runtime) PodLacksRole(issue string, name claim.Role) (string, bool) {
+	sandbox, err := issueSandboxName(r.project, issue)
 	if err != nil {
 		return "", false
 	}
-	s, err := r.storedSandbox(name)
+	s, err := r.storedSandbox(sandbox)
 	if err != nil || s == nil {
 		return "", false
 	}
-	pod := r.storedPod(name)
+	pod := r.storedPod(sandbox)
 	if !livePod(s, pod) {
 		return "", false
 	}
-	if !templateLacks(s)(role) {
+	if !templateLacks(s)(name) {
 		return "", false
 	}
 	return string(pod.UID), true
@@ -804,9 +884,11 @@ func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
 // SlotWaitsForCredential satisfies runtime.IssuePodRoles: the uid of the issue's pod whose
 // launcher of slot is connected and said in its hello no credential wait (launchers.credentialWaits),
 // and false; "" and true where that launcher waits, or where no launcher of the slot is connected.
-// It refuses a slot no claim token of the issue carries (claim.AgentToken), and a project no token
-// spells: no launcher serves such a slot, and an answer that it waits would let a re-role into it
-// start with no credential wait. It reads the launchers this runtime accepted and makes no API call.
+// The launchers are held by the claim of their slot (LauncherResolver), so the token of the agent
+// slot names is the key. It refuses a slot no claim token of the issue carries (claim.AgentToken),
+// and a project no token spells: no launcher serves such a slot, and an answer that it waits would
+// let a re-role into it start with no credential wait. It reads the launchers this runtime
+// accepted and makes no API call.
 func (r *Runtime) SlotWaitsForCredential(issue string, slot claim.Agent) (string, bool, error) {
 	project, err := claim.ProjectToken(r.project)
 	if err != nil {

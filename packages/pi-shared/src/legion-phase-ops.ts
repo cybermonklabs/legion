@@ -432,8 +432,9 @@ export function legionToolDescription(host: {
     "through the round, but a reset or a change of its disk shape still deletes it, so push first there too. If the daemon " +
     "finds work that origin does not hold, it keeps the pod and says so; push that work. A round over a drift that breaks the " +
     "pod replaces the pod anyway. The round ends at the moment the message " +
-    "names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running " +
-    "subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background " +
+    "names. It can end earlier, once every agent the round asks has answered, no agent of the issue is in a turn and the last " +
+    "report of each agent in the pod names no running subagent or background job. Two agents of one role answer each for itself. " +
+    "No answer delays that moment, and the end of a turn is no answer. If a subagent or a background " +
     "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
     "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
     (host.after ?? "") +

@@ -1,10 +1,11 @@
 // The whole-daemon tests of the agents of an owner's plan: one key across roles, where the owner of
 // a real issue gives the steps `implementer:a tester:a reviewer` and steps 1 and 2 run in one agent
-// and one session, and one role at two steps, `implementer:a reviewer implementer:a`, whose steps 1
-// and 3 run in one agent and one session. Each runs the whole daemon over real PostgreSQL, NATS and
-// Dispatch, a fake runtime and a fake GitHub (ownerStepsRig), and each pane follows its claim as Oh
-// My Pi's plugin does: a relaunch of the claim on another role resumes the session the claim
-// recorded (relaunchedAs).
+// and one session; one role at two steps, `implementer:a reviewer implementer:a`, whose steps 1
+// and 3 run in one agent and one session; and a second agent of one role, `implementer reviewer
+// implementer`, whose step 3 runs in an agent and a session of its own. Each runs the whole daemon
+// over real PostgreSQL, NATS and Dispatch, a fake runtime and a fake GitHub (ownerStepsRig), and
+// each pane follows its claim as Oh My Pi's plugin does: a relaunch of the claim on another role
+// resumes the session the claim recorded (relaunchedAs).
 package daemon
 
 import (
@@ -347,13 +348,14 @@ func (r *ownerStepsRig) entryRose(c *stepClaimant, entered, before claim.Role) {
 // An issue that ran under the release before keeps its claims (R20). The plan `implementer
 // reviewer` reaches reviewing on this release; the daemon stops, and the store is taken back to the
 // schema the release before leaves by the way backs its migrations' headers give, newest first: the
-// key of a phases row by its step, whose way back writes the key (issue, role) that release writes
-// its phases rows by (docs/kubernetes.md, "Rolling back the release that keys a phases row by its
-// step"), the claim of each backstop, the claim of each resume, whose way back also puts back one
-// open resume per role, and the name of each step's agent, so its plan rows name no agent, as that
-// release wrote them. This release then boots, migrates the key, the columns and the indexes again,
-// the column naming each step for its role (20261124213820), and the issue reaches done with the
-// claims `…-implementer` and `…-reviewer` of its steps and no other.
+// agent of a claim's session, the key of a phases row by its step, whose way back writes the key
+// (issue, role) that release writes its phases rows by (docs/kubernetes.md, "Rolling back the
+// release that keys a phases row by its step"), the claim of each backstop, the claim of each
+// resume, whose way back also puts back one open resume per role, and the name of each step's
+// agent, so its plan rows name no agent, as that release wrote them. This release then boots,
+// migrates the key, the columns and the indexes again, the column naming each step for its role
+// (20261124213820), and the issue reaches done with the claims `…-implementer` and `…-reviewer` of
+// its steps and no other.
 func TestAnIssueThatRanUnderTheReleaseBeforeKeepsItsClaims(t *testing.T) {
 	t.Parallel()
 	r := newAgentsRig(t)
@@ -363,8 +365,8 @@ func TestAnIssueThatRanUnderTheReleaseBeforeKeepsItsClaims(t *testing.T) {
 	r.work(claim.RoleImplementer, "implement", implementCompletion, phase.Reviewing)
 	r.worker(claim.RoleReviewer)
 	r.restartWith(func() {
-		for _, migration := range []string{phaseStepKeyMigration, "_pod_wake_backstop_claim.up.sql", "_pod_resume_claim.up.sql",
-			planStepAgentMigration} {
+		for _, migration := range []string{"_claim_session_agent.up.sql", phaseStepKeyMigration, "_pod_wake_backstop_claim.up.sql",
+			"_pod_resume_claim.up.sql", planStepAgentMigration} {
 			r.exec(strings.ReplaceAll(r.headerTransaction(migration), "<PROJECT>", r.cfg.Project))
 		}
 		if key := r.phasesKey(); key != releaseBeforesPhasesKey {
@@ -440,9 +442,9 @@ func (r *stepRecordsRig) holdsClaimsOf(roles ...claim.Role) {
 // step records say the same: each run of steps 1 and 3 names one agent and one session, and each
 // run of step 2 another of each.
 //
-// Two controls. The key taken off step 3 (`implementer:a reviewer implementer`) asks for a second
-// agent that starts with the role implementer, which this release refuses with that sentence,
-// recording nothing. And key b across the reviewer's and the implementer's steps
+// Two controls. The key taken off step 3 (`implementer:a reviewer implementer`) gives step 3 a
+// second agent that starts with the role implementer, `…-implementer-2`, in a session of its own
+// and not step 1's (walkSecondAgent). And key b across the reviewer's and the implementer's steps
 // (`implementer:a reviewer:b implementer:b`, whose agent is named reviewer, its first role) gives
 // step 3 the session of step 2, not of step 1: `…-reviewer` is relaunched with the role
 // implementer, resuming its own session, which the same reads must show.
@@ -455,7 +457,10 @@ func TestARoleTwoTimesInATask(t *testing.T) {
 		}
 	})
 	t.Run("control: the key taken off step 3", func(t *testing.T) {
-		newAgentsRig(t).roleTwiceRefused()
+		r := newAgentsRig(t)
+		if err := secondAgentHolds(r, r.walkSecondAgent(roleTwiceUnkeyedPlan)); err != nil {
+			t.Fatal(err)
+		}
 	})
 	t.Run("control: key b across the reviewer's and the implementer's steps", func(t *testing.T) {
 		r := newAgentsRig(t)
@@ -466,17 +471,14 @@ func TestARoleTwoTimesInATask(t *testing.T) {
 }
 
 // roleTwicePlan is the plan of one key at two steps of one role; roleTwiceUnkeyedPlan the same with
-// the key taken off step 3, which asks for a second agent that starts with the role implementer;
-// and roleTwiceKeyBPlan the plan whose steps 2 and 3 are key b's, an agent that starts with the
-// role reviewer and so is named reviewer.
+// the key taken off step 3, which gives step 3 a second agent that starts with the role
+// implementer; and roleTwiceKeyBPlan the plan whose steps 2 and 3 are key b's, an agent that starts
+// with the role reviewer and so is named reviewer.
 var (
 	roleTwicePlan        = []string{"implementer:a", "reviewer", "implementer:a"}
 	roleTwiceUnkeyedPlan = []string{"implementer:a", "reviewer", "implementer"}
 	roleTwiceKeyBPlan    = []string{"implementer:a", "reviewer:b", "implementer:b"}
 )
-
-// roleTwiceReason is the one reason register_plan gives roleTwiceUnkeyedPlan.
-const roleTwiceReason = "step 3 of task a needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent that starts with each role for an issue. This release of Legion does not carry it out yet."
 
 // stepRun is one run of a step: the step's place and the run's attempt, as its record names them.
 type stepRun struct{ step, attempt int }
@@ -541,28 +543,87 @@ func roleTwiceHolds(r *ownerStepsRig, records []stepRecordRead) error {
 	return nil
 }
 
-// roleTwiceRefused is the architect of the walk's issue giving roleTwiceUnkeyedPlan (register_plan):
-// it answers 409 PLAN_REFUSED with the one reason roleTwiceReason for task a, and the issue holds no
-// plan rows. It answers the refusal's body.
-func (r *ownerStepsRig) roleTwiceRefused() string {
+// A step with no key gets a fresh agent, a second agent of a role among them. The owner gives
+// `implementer reviewer implementer`: step 1 is `…-implementer`'s and step 2 `…-reviewer`'s, and
+// step 3, whose role the agent of step 1 already holds as its name, gets an agent of its own named
+// `…-implementer-2` (record.NameAgents), launched fresh in a session of its own while
+// `…-implementer` is launched once. Step 3's task names the reports of steps 1 and 2, and the
+// retro, which the agent of the task's last implementer's step runs, is `…-implementer-2`'s. The
+// step records say the same: three agents, each in a session of its own.
+func TestASecondAgentOfOneRoleRunsInASessionOfItsOwn(t *testing.T) {
+	r := newAgentsRig(t)
+	if err := secondAgentHolds(r, r.walkSecondAgent(secondAgentPlan)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// secondAgentPlan is the plan of two agents of the role implementer, no step keyed.
+var secondAgentPlan = []string{"implementer", "reviewer", "implementer"}
+
+// secondAgent is the name record.NameAgents gives the agent of step 3 of secondAgentPlan and of
+// roleTwiceUnkeyedPlan: the role implementer is the name of the agent of step 1.
+const secondAgent claim.Agent = "implementer-2"
+
+// walkSecondAgent gives the walk's issue steps, `implementer reviewer implementer` with or without
+// a key on step 1, and walks it to done: the implementer's completion; the reviewer's report and an
+// approving review; step 3, the launch of `…-implementer-2`, the second agent, fresh, whose task
+// names the reports of steps 1 and 2; the retro, which `…-implementer-2` runs as the agent of the
+// task's last implementer's step; and the merge. `…-implementer` and `…-implementer-2` must each be
+// launched once, and the second's launch must resume no session. It answers the records of steps 1
+// to 3 once each is read ended.
+func (r *ownerStepsRig) walkSecondAgent(steps []string) []stepRecordRead {
 	t := r.t
 	t.Helper()
-	status, body := r.registerPlan(r.document("role-twice-unkeyed.md", planOf(roleTwiceUnkeyedPlan...)), 1)
-	var refusal api.PlanRefusal
-	if status == http.StatusConflict {
-		if err := json.Unmarshal([]byte(body), &refusal); err != nil {
-			t.Fatalf("decode the refusal of register_plan %q: %v", body, err)
+	r.givePlan(steps...)
+	r.openGate(phase.Implementing)
+	r.github.open("legion/"+r.key, r.number)
+	implementer := r.worker(claim.RoleImplementer)
+	r.work(claim.RoleImplementer, "implement", implementCompletion, phase.Reviewing)
+	r.reviewReported("APPROVED", phase.Implementing)
+	second := r.agentWorker(secondAgent, claim.RoleImplementer)
+	launches := launchSpecsOf(r.rt, second.token)
+	if len(launches) != 1 || launches[0].Role != claim.RoleImplementer || launches[0].ResumeSessionFile != "" {
+		t.Fatalf("the daemon launched %s as %+v, want one launch as implementer resuming no session", second.token, launches)
+	}
+	third := second.takeTask()
+	for _, says := range []string{" Step 3 of 3: " + steps[2] + ".", " Step 1 (" + steps[0] + ") reported: implement version 1.",
+		" Step 2 (" + steps[1] + ") reported: review version 1."} {
+		if !strings.Contains(third, says) {
+			t.Fatalf("step 3's task is %q, want it to say %q", third, says)
 		}
 	}
-	want := []api.PlanReason{{Task: "a", Reason: roleTwiceReason}}
-	if status != http.StatusConflict || refusal.Code != "PLAN_REFUSED" || !slices.Equal(refusal.Reasons, want) {
-		t.Fatalf("register_plan of the plan `%s` = %d %s, want 409 PLAN_REFUSED with the one reason %+v", strings.Join(roleTwiceUnkeyedPlan, " "),
-			status, body, want)
+	r.finish(second, "implement", implementCompletion, phase.Retro)
+	second.take()
+	r.finish(second, "", r.retroCompletion(&record.PlanRating{Rating: 4, Reason: "The plan fit the work."}), phase.Merging)
+	r.merge()
+	for _, c := range []*stepClaimant{implementer, second} {
+		if launches := launchSpecsOf(r.rt, c.token); len(launches) != 1 {
+			t.Fatalf("%s was launched %d times, want once: steps 1 and 3 are two agents' and no step relaunches either", c.token, len(launches))
+		}
 	}
-	if rows := r.planRows(); rows != 0 {
-		t.Fatalf("the refused plan left %d plan rows on %s, want none", rows, r.key)
+	return r.runsRecorded([]stepRun{{1, 1}, {2, 1}, {3, 1}})
+}
+
+// secondAgentHolds says whether the records of steps 1 to 3 of walkSecondAgent name three agents,
+// each in a session of its own: step 1 `…-implementer`, step 2 `…-reviewer` and step 3
+// `…-implementer-2`. The error names the first record that does not.
+func secondAgentHolds(r *ownerStepsRig, records []stepRecordRead) error {
+	second, err := claim.AgentToken(r.project, r.key, secondAgent)
+	if err != nil {
+		return err
 	}
-	return body
+	want := []claim.Token{r.token(claim.RoleImplementer), r.token(claim.RoleReviewer), second}
+	for place, got := range records {
+		if got.Agent != string(want[place]) {
+			return fmt.Errorf("step %d names agent %q, want %s", place+1, got.Agent, want[place])
+		}
+		for earlier := range place {
+			if got.Session == records[earlier].Session {
+				return fmt.Errorf("steps %d and %d name one session %q, want each step's agent in a session of its own", earlier+1, place+1, got.Session)
+			}
+		}
+	}
+	return nil
 }
 
 // walkKeyB gives the walk's issue roleTwiceKeyBPlan and walks it to done: the implementer's

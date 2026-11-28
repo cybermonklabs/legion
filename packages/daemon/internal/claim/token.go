@@ -21,10 +21,11 @@ var (
 	projectToken = regexp.MustCompile(`^[a-z0-9]+$`)
 	// roleName is a role's name alone (IsRole), and an agent's (AgentToken).
 	roleName = regexp.MustCompile(`^` + roleGrammar + `$`)
-	// agentToken is a claim token of an issue cut after its fourth "-": the issue's part,
-	// `legion-<project>-<issue project>-<number>`, three parts with no dash in them, then the agent's
-	// name, which can hold dashes of its own.
-	agentToken = regexp.MustCompile(`^(legion-[^-]+-[^-]+-[^-]+)-(` + roleGrammar + `)$`)
+	// agentToken is a claim token of an issue cut after its fourth "-": the issue's part (group 1),
+	// `legion-<project>-<issue project>-<number>`, three parts with no dash in them, of which the
+	// issue project (group 2) and the number (group 3) are the issue's key as the token spells it,
+	// then the agent's name (group 4), which can hold dashes of its own.
+	agentToken = regexp.MustCompile(`^(legion-[^-]+-([^-]+)-([^-]+))-(` + roleGrammar + `)$`)
 	// notAlphanumeric is everything ProjectToken drops.
 	notAlphanumeric = regexp.MustCompile(`[^a-z0-9]`)
 )
@@ -132,11 +133,33 @@ func AgentToken(project, issue string, agent Agent) (Token, error) {
 // or no agent's name, such as the controller's, and for one that ends in the controller's name,
 // which no agent of an issue has (AgentToken).
 func (t Token) Cut() (issue string, agent Agent, ok bool) {
-	match := agentToken.FindStringSubmatch(string(t))
-	if match == nil || match[2] == string(RoleController) {
+	match := t.agentMatch()
+	if match == nil {
 		return string(t), "", false
 	}
-	return match[1], Agent(match[2]), true
+	return match[1], Agent(match[4]), true
+}
+
+// IssueKey is the Dispatch key of the issue t's claim is on, read back from the issue project and
+// the number agentToken matched in t: the project upper-cased, since a key's project is upper-case
+// letters and digits, which AgentToken lowercases one to one, then the number. ok is false where
+// Cut's is.
+func (t Token) IssueKey() (string, bool) {
+	match := t.agentMatch()
+	if match == nil {
+		return "", false
+	}
+	return strings.ToUpper(match[2]) + "-" + match[3], true
+}
+
+// agentMatch is t's match of agentToken, its groups by their numbers there, and nil for a token
+// that does not match or that ends in the controller's name, the tokens Cut and IssueKey refuse.
+func (t Token) agentMatch() []string {
+	match := agentToken.FindStringSubmatch(string(t))
+	if match == nil || match[4] == string(RoleController) {
+		return nil
+	}
+	return match
 }
 
 // Project is the project token t was built from (ProjectToken), its part after `legion-` and

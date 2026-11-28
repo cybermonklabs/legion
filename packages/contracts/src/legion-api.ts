@@ -738,8 +738,8 @@ const legionPendingStatusWrite = z.object({
 /** `api.StrandedClaim` — one claim nothing will wake (`workflow.Stranded`): a worker of its issue's
  * phase, or its tree's architect, in a tree that runs, named by its issue, its role, its state and
  * its claim `token`; the issue's entry under `issues` carries the rest. Two claims of one issue can
- * hold one role, a keyed agent's on another role's step among them, so the token is what tells them
- * apart, and a reader of who suspended a claim reads it by that token. Its state, role and
+ * hold one role (`record.WorkerClaim`), so the token is what tells them apart, and a reader of who
+ * suspended a claim reads it by that token. Its state, role and
  * suspension say the move that brings it back (`api.StrandedClaim.Move`). A `retired` entry is a
  * claim a close or a stop retired while its tree runs: only a start of the phase it owns relaunches
  * it, and no rule the daemon runs queues that start, so nothing will wake it either. That state
@@ -924,8 +924,9 @@ const legionIssue = z.object({
   priorityFrom: issueKey.optional(),
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
   /** `api.Issue.OtherClaims` — each claim of the issue that neither `architect` nor `workers`
-   * shows, with the role it holds (the stranded token's contract entry): the other claim of a role
-   * a keyed agent works the step of, found by its token. */
+   * shows, with the role it holds (the stranded token's contract entry): two claims of one issue can
+   * hold one role (`record.WorkerClaim`), and the one `workers` does not show is listed here by its
+   * token. */
   otherClaims: z.array(z.object({ role: stepRole, claim: legionClaimView })).optional(),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),
@@ -1059,9 +1060,15 @@ const legionIssue = z.object({
    * from an issue no experiment holds an answer for, and from every issue of the body the route
    * serves a caller before 141, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
-  /** The roles whose start waits for the issue's pod, which runs no process of theirs yet
-   * (`api.Issue.StartWaitsForPod`): absent for an issue no start waits on. */
-  startWaitsForPod: z.array(nonEmptyString).optional(),
+  /** `api.Issue.StartWaitsForPod`: each start that waits for the issue's pod, which runs no
+   * process of the start's claim yet, by the role of its step and the token of the claim it
+   * starts (the start-wait token's contract entry). Two claims of one issue can hold one role
+   * (`record.WorkerClaim`), so the role alone would name a second agent of the role, such as
+   * `implementer-2`, as the role's own agent. Absent for an issue no start waits on. No plugin
+   * code reads an entry (`LEGION_ANSWER_READS`), so both keys are optional. */
+  startWaitsForPod: z
+    .array(z.object({ role: stepRole.optional(), token: nonEmptyString.optional() }))
+    .optional(),
   /** The standing hold of the issue's pod (contract 246, `legionPodHold`): present only while a
    * hold of the idle rule stands on that pod, and absent for a pod the rule has not held, one it
    * released and one whose streak a later pass ended. A daemon before contract 246 writes none,
@@ -1524,8 +1531,10 @@ const legionEndedPause = z.object({
 
 /** `api.PauseStopView` — one claim whose stop the open pause still waits on: the claim, its issue
  * and role, and `askedAt`, when the pause asked it to stop. A role in a turn stops when that turn
- * ends, so it is listed until then. The controller's summary names each by its issue and role,
- * so those two are required; `claim` and `askedAt` are optional, since no plugin code reads them
+ * ends, so it is listed until then. The controller's summary names each by its issue and role, so
+ * those two are required, with the claim's token beside them for a claim that is not of its role's
+ * own agent, as `legion state` names it; `claim` stays optional, since a stop served without it is
+ * named by its issue and role alone, and `askedAt` is optional, since no plugin code reads it
  * (LEGION_ANSWER_READS). Its `role` is read by the role grammar, as a stranded claim's is. */
 const legionPauseStop = z.object({
   claim: nonEmptyString.optional(),
@@ -1840,9 +1849,8 @@ export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
  * claims it suspended (each once, sorted, as the store holds them), the tokens of those claims
  * (`claims`, sorted; the stranded token's contract entry), when the release completed, and the
  * size of the git bundle of unpushed work it saved, zero when the workspace held none. Two claims
- * of one issue can hold one role, a keyed agent's on another role's step among them, so `claims`
- * names what `roles` cannot; it is absent on a release that suspended no claim and on one
- * recorded before that entry.
+ * of one issue can hold one role (`record.WorkerClaim`), so `claims` names what `roles` cannot; it
+ * is absent on a release that suspended no claim and on one recorded before that entry.
  * `roles` is required because `read_release_records` reads it: the empty list is the whole mark
  * of a release no wake can reach, which that report counts and measures nowhere, and the daemon
  * writes the list on every release, empty rather than null. `issue` is required because that
@@ -2923,10 +2931,10 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "repositories.live[].readError",
     // The summary's line on the wakes the pacing holds counts them and names the earliest
     // `dueAt`, and its line on the project's pause (contract 178) names the pause that stands,
-    // with the roles whose stop it waits on and how many rows it holds, or the last pause with
-    // when and by whom it was ended. `wakesWaiting`, `paused` and `lastPause` stay optional: the
-    // daemon writes the two pauses only where there is one, and strips all three for a caller
-    // below the contract that added each.
+    // with the claims whose stop it waits on, each by its issue, its role and its token, and how
+    // many rows it holds, or the last pause with when and by whom it was ended. `wakesWaiting`,
+    // `paused` and `lastPause` stay optional: the daemon writes the two pauses only where there is
+    // one, and strips all three for a caller below the contract that added each.
     "wakesWaiting",
     "wakesWaiting[].dueAt",
     "paused",
@@ -2940,6 +2948,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "paused.waitsOn",
     "paused.waitsOn[].issue",
     "paused.waitsOn[].role",
+    "paused.waitsOn[].claim",
     "paused.held",
     "paused.held[].issue",
     "lastPause",

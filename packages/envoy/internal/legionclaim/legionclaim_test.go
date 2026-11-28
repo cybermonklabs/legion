@@ -25,9 +25,10 @@ func TestIsRoleTakesTheGrammarButTheController(t *testing.T) {
 
 // A claim token of an issue is split as the daemon's claim.Token.Cut splits it: its project, the
 // issue it names and its agent's name, which may hold a "-", is up to MaxRoleBytes long and is the
-// role of the agent's first step, whatever role the agent's step is on now. The controller's
-// token, a token whose agent's name is controller or outside the role grammar, and a token of
-// another shape are no claim of an issue.
+// role of the agent's first step, or a numbered name such as `implementer-2` for a second agent of
+// one role, whatever role the agent's step is on now. The controller's token, a token whose
+// agent's name is controller or outside the role grammar, and a token of another shape are no
+// claim of an issue.
 func TestCutClaimTokenSplitsATokenAsTheDaemonDoes(t *testing.T) {
 	for _, tc := range []struct{ token, project, issue, agent string }{
 		{"legion-infra-infra-448-tester", "infra", "INFRA-448", "tester"},

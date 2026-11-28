@@ -36,6 +36,9 @@ func (liveTrees) IssueSandboxHome(context.Context, string, string) (string, erro
 func (s liveTrees) ClaimUnretired(_ context.Context, token claim.Token) (bool, error) {
 	return token != "" && token == s.unretired, nil
 }
+func (liveTrees) PlanAgents(context.Context, string, string) (map[claim.Agent]claim.Role, error) {
+	return nil, nil
+}
 func (liveTrees) Claims(context.Context) ([]supervise.Claim, error) { return nil, nil }
 
 // The orphan sweep is told what knownClaims makes of the daemon's claims, and the Sandbox runtime

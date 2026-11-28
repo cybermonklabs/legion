@@ -9,10 +9,10 @@
 --
 -- plan_steps.leave_session is record.PlanStep.LeaveSession: the session the claim of the step's
 -- agent recorded when the step was written, where that agent takes a name a key's agent held in an
--- earlier generation, so its claim's session is that key's. Only the project's default steps
--- write one (workflow's leaveKeySessions); every start of the step's agent carries it
--- (record.SuperviseRequest.LeaveSession), and the claim leaves it where it still records it. Every
--- other row holds the empty string, and so does every row the table already holds.
+-- earlier generation, so its claim's session is that key's. No writer sets it now, since
+-- record.NameAgents gives no agent a name a key held; every start of the step's agent carries it
+-- (record.SuperviseRequest.LeaveSession), and the claim leaves it where it still records it. Each
+-- row is written with the empty string, which every row the table already holds takes too.
 --
 -- plan_key_names is record.KeyName, the lasting record of every name a key's agent held on an
 -- issue: record.PutPlan writes one row for each step of a key (but the owner's), and
@@ -25,20 +25,25 @@
 -- as the plan tables name none (20261117034837_issue_plans), because an owner can give a plan
 -- before the daemon records its issue, at generation 0, and PutPlan writes this table with it; so
 -- an operator who removes an issue's record by hand removes its rows here too. Each row holds the
--- latest generation whose steps gave the key that name (record.KeyName.Generation), which tells a
--- row with no key that shows the name before the key held it from one written after it (workflow's
--- handedBefore). The table is filled below from the plan_steps rows this migration names.
+-- latest generation whose steps gave the key that name (record.KeyName.Generation). The table is filled below from the plan_steps rows this migration names.
 --
 -- Every row the table already holds is named by the update below with the name record.NameAgents
 -- gave it, where the rows it holds still show that name. A step with no key is named for its role:
 -- the release before this one ran each role at most once in a task and refused every key but the
 -- owner's, so the role of each of its steps named that step's agent, and every agent keeps the
--- claim it had. A step of the key owner keeps the empty string. A step of any other key is a row
+-- claim it had. A row this release wrote before a rollback for a second agent of one role with no
+-- key, which NameAgents named `<role>-2` beside the agent of the role's own name, is named for its
+-- role too, so the two share that name; the rollback past the release that records each claim's
+-- session agent, whose way back runs before this one's, waits until each issue whose plan names
+-- such an agent is done or stopped (docs/kubernetes.md), so no step of either is still to run. A
+-- step of the key owner keeps the empty string. A step of any other key is a row
 -- this release wrote before a rollback, whose name the way back below dropped, and it takes the
 -- role of the key's first row of its issue by generation, task and place. NameAgents gives a key
 -- the name of its newest earlier row, and the version that wrote that row gave it the name the
 -- generation before held, so every generation's rows of the key hold the name of its first
--- generation: the role of its first step there. The first row is that step while the first
+-- generation: the role of its first step there, or a numbered name such as `implementer-2` where
+-- another agent of the plan held that role's name, which the fill gives as the role, as it does a
+-- second agent with no key. The first row is that step while the first
 -- generation's rows stand as its first version wrote them, and the role of the key's first step in
 -- a later generation is not its name. So the key's steps share one name in every task and
 -- generation, the name the next version gives the key too.

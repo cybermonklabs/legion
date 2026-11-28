@@ -72,6 +72,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the session its agent registered, which is how a seat is addressed and how a transcript is found"},
 	{Field: "SessionFile", Column: ColumnOperator, Keys: []string{"sessionFile"},
 		Reason: "a path on the pod's own disk, which the operator's tools open and no agent reads of another seat"},
+	{Field: "SessionAgent", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ServingGeneration", Column: ColumnAgents, Keys: []string{"servingGeneration"},
 		Reason: "says whether the work the claim serves is of this generation, which a re-admission and a worker told to wait both turn on"},
 	{Field: "GivenEntry", Column: ColumnAgents, Keys: []string{"givenEntry"},

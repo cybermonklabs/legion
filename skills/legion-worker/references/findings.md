@@ -26,7 +26,7 @@ The actions on an agent (stop, retry, suspend, resume the agent, compact, and st
 
 ## What the ask says
 
-The question stands alone in at most 2,000 characters, the `Ref:` line `--ref` appends included. Its first line is `Finding from <your role token>`. Then the concrete case: what went wrong, where and to whom (`dispatch://<KEY>`, the machine, file, command or session, the numbers); where the fix belongs, saying plainly when it is not Legion's; the decision a person must make, each option's effect, and your recommendation with its reason where the options are real choices (`skill://dispatch/SKILL.md#asks-and-ask-blocks`). Offer only the real choices. Evidence the decision does not need goes in a comment posted first and cited by `--ref`:
+The question stands alone in at most 2,000 characters, the `Ref:` line `--ref` appends included. Its first line is `Finding from <your claim token>`. Then the concrete case: what went wrong, where and to whom (`dispatch://<KEY>`, the machine, file, command or session, the numbers); where the fix belongs, saying plainly when it is not Legion's; the decision a person must make, each option's effect, and your recommendation with its reason where the options are real choices (`skill://dispatch/SKILL.md#asks-and-ask-blocks`). Offer only the real choices. Evidence the decision does not need goes in a comment posted first and cited by `--ref`:
 
 ```bash
 dispatch comment --issue '<ASK KEY>' --body-file - <<'EOF'
@@ -37,7 +37,7 @@ dispatch ask --issue '<ASK KEY>' --ref 'dispatch://<ASK KEY>/comment/<id>' --que
   --option 'File an issue: <what it would track, and who would work it>' \
   --option 'File it for Legion: Legion works it once it is filed' \
   --option 'Do not file: <what stays as it is, and what that costs>' <<'EOF'
-Finding from <your role token>
+Finding from <your claim token>
 <what went wrong, where and to whom, with dispatch://<KEY> and the numbers; where the fix belongs; what each option does to whom; where the options are real choices, your recommendation and why>
 EOF
 ```

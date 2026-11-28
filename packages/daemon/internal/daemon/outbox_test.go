@@ -2958,6 +2958,9 @@ type outboxClaimStore struct {
 	// refused is the error every claim write answers while it is set, which is how a case drives
 	// a decision the store would not take (the stall backstop's own relaunch).
 	refused error
+	// onPut runs after each claim write while it is set, outside the store's lock, with the claim
+	// written: a case's hook into the moment a machine stores its claim (afterPut).
+	onPut func(supervise.Claim)
 }
 
 // refuse sets, or clears, the error this store answers every claim write with.
@@ -2967,16 +2970,28 @@ func (s *outboxClaimStore) refuse(err error) {
 	s.refused = err
 }
 
-func (s *outboxClaimStore) PutClaim(_ context.Context, c supervise.Claim) error {
+// afterPut sets, or clears, the hook every later claim write runs (onPut).
+func (s *outboxClaimStore) afterPut(hook func(supervise.Claim)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.onPut = hook
+}
+
+func (s *outboxClaimStore) PutClaim(_ context.Context, c supervise.Claim) error {
+	s.mu.Lock()
 	if s.refused != nil {
+		defer s.mu.Unlock()
 		return s.refused
 	}
 	if s.claims == nil {
 		s.claims = map[claim.Token]supervise.Claim{}
 	}
 	s.claims[c.Token] = c
+	hook := s.onPut
+	s.mu.Unlock()
+	if hook != nil {
+		hook(c)
+	}
 	return nil
 }
 

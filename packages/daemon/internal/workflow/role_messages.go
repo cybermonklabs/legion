@@ -23,7 +23,7 @@ type roleRecipient struct {
 // addressedRole is a recipient the daemon can name: the claim token whose role topic the message
 // is published to, the role of the recipient that named it first, and the issue its outbox row
 // belongs to. The role is the recipient's and never read off the token, which names the claim's
-// agent: a keyed agent's token can end in another role's name.
+// agent (claim.Token.Slot), not the role of its step.
 type addressedRole struct {
 	token claim.Token
 	role  claim.Role

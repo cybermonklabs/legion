@@ -108,11 +108,25 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 	return record.TaskPlace{}, false
 }
 
-// stepAt is the step whose agent does the work of place on w, the one place the workflow reads a
-// step's agent from (Engine.stepToken): for a step, that step, so the steps of one key are one
-// agent; for the retro, the task's last step of the type implementation, which runs it. A walk with
-// no plan rows holds none, and neither does the merge or a place the task does not hold: there the
-// role stands for the agent.
+// AgentAt is the name of the agent that does the work of place on w (record.PlanStep.AgentName),
+// read from the step stepAt gives, the one rule of which agent works a place, as Engine.stepToken
+// reads the claim and agentIDAt the identity of that agent: so the steps of one key name one agent
+// and the retro names the agent that runs it. It is "" for the merge, for a walk with no plan rows,
+// for a step of the key owner, whose claim is no name on the issue, and for a place the task does
+// not hold: there the role stands for the agent (Engine.stepToken).
+func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
+	if step, ok := w.stepAt(place); ok {
+		return step.AgentName()
+	}
+	return ""
+}
+
+// stepAt is the step whose agent does the work of place on w, the one rule of which agent works a
+// place: the workflow reads a step's agent from it alone (Engine.stepToken, AgentAt, agentIDAt),
+// so the claim a start of the place's work runs on and the identity the start names are always one
+// agent. For a step, that step, so the steps of one key are one agent; for the retro, the task's
+// last step of the type implementation, which runs it. A walk with no plan rows holds none, and
+// neither does the merge or a place the task does not hold: there the role stands for the agent.
 func (w Walk) stepAt(place record.TaskPlace) (record.PlanStep, bool) {
 	if !w.Stored {
 		return record.PlanStep{}, false
@@ -128,6 +142,20 @@ func (w Walk) stepAt(place record.TaskPlace) (record.PlanStep, bool) {
 		}
 	}
 	return record.PlanStep{}, false
+}
+
+// agentIDAt is the identity of the agent that does the work of place on w (plan.Agent.ID), the
+// agent AgentAt names, of the same step (stepAt): the agent of its key or of its own task and
+// place (record.PlanStep.PlanAgent). It is "" where AgentAt is: for the merge, for a walk with no
+// plan rows, for a step of the key owner and for a place the task does not hold. A start of the
+// work of place names it (record.SuperviseRequest.Agent), and the claim it reaches starts in a new
+// session where its session is another agent's (supervise.Claim.SessionAgent).
+func (w Walk) agentIDAt(place record.TaskPlace) plan.AgentID {
+	step, ok := w.stepAt(place)
+	if agent := step.PlanAgent(); ok && !agent.Owner() {
+		return agent.ID()
+	}
+	return ""
 }
 
 // placeIn is where w's task stands while its issue stands in p: for a stored walk, w.Place where
@@ -470,11 +498,12 @@ func returnStep(issue record.Issue, w Walk, from stepSite, n int, act returnAct)
 
 // lostAt says whether the work of place on w's task is lost to d: a step whose role d does not
 // define, a role the deployment lost, whose step no role may start (stopLostRole); or a step, or
-// the retro, whose agent's name is such a role (lostAgent). An agent runs in the slot of its name
-// (claim.Token.Slot), the role of its first step (record.NameAgents), whatever role its step has
-// now, so an agent named for a role the deployment lost has no slot in a pod the deployment builds,
-// and its launch waits for a pod that never comes. Legion's own roles are in every deployment
-// (config.Config.Deployment, and New's default), so only a role of a deployment's own can be lost.
+// the retro, whose agent is named for such a role (lostAgent). An agent runs in the slot of its
+// name (claim.Token.Slot), taken from the role of its first step (record.NameAgents), whatever
+// role its step has now, so an agent named for a role the deployment lost has no slot in a pod the
+// deployment builds, and its launch waits for a pod that never comes. Legion's own roles are in
+// every deployment (config.Config.Deployment, and New's default), so only a role of a deployment's
+// own can be lost.
 func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (record.TaskPlace, bool) {
 	if !w.Stored {
 		return record.TaskPlace{}, false

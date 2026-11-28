@@ -6,11 +6,11 @@ Read this when `skill://legion-worker/references/findings.md` sends you here for
 
 1. Find the issue: the issue of an open pull request on a `legion/<KEY>` branch that changes that code, or the open issue `dispatch search` finds for it.
 2. Walk its `child_of` links up to the tree's root: `dispatch read --issue <KEY>` names each parent under `Links:`.
-3. Post the evidence on that issue, and mention the root's architect. `<project>` is the Legion project that runs the tree; for your own project it is the word after `legion-` in your role token.
+3. Post the evidence on that issue, and mention the root's architect. `<project>` is the Legion project that runs the tree; for your own project it is the word after `legion-` in your claim token.
 
    ```bash
    dispatch comment --issue '<THAT KEY>' --mention 'role:legion-<project>-<root key, lower case>-architect' --body-file - <<'EOF'
-   Clear defect from <your role token>
+   Clear defect from <your claim token>
    <what went wrong, where and to whom, with the numbers; dispatch://<KEY> it came from; the repository and component; the fix; why you do not make it yourself>
    EOF
    ```
@@ -21,7 +21,7 @@ Apart from that reply, file nothing and wait for nothing. A production check's r
 
 ## Another agent that needs an action
 
-`<project>` is the word after `legion-` in your role token. Name the agent by its issue and role, the action in plain words, and why, with what you observed:
+`<project>` is the word after `legion-` in your claim token. Name the agent by its issue and role, the action in plain words, and why, with what you observed:
 
 ```bash
 dispatch comment --issue '<KEY>' --mention 'role:legion-<project>-controller' --body-file - <<'EOF'

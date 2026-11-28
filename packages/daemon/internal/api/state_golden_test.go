@@ -614,7 +614,7 @@ func populatedState(t *testing.T) State {
 				// (`why`, api.WhyClaimStopped).
 				Why: &WhyView{
 					State:  WhyClaimStopped,
-					Reason: "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it.",
+					Reason: "Its phase is held and its implementer is stranded at failed, so nothing will wake it.",
 				},
 				// No architect claim of this root stands in the record, so the view carries no
 				// `architect`, and the work of its architect's entry has waited past the bound with
@@ -691,7 +691,7 @@ func populatedState(t *testing.T) State {
 				// that claim rather than its place in the queue.
 				Why: &WhyView{
 					State:  WhyClaimStopped,
-					Reason: "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it.",
+					Reason: "Its phase is implementing and its implementer is stranded at suspended, so nothing will wake it.",
 				},
 			},
 			// LEGION-212's architect asked a person a question and handed the turn back, and the
@@ -727,7 +727,7 @@ func populatedState(t *testing.T) State {
 				// stopped claim is read before the line: that is the one answer it carries.
 				Why: &WhyView{
 					State:  WhyClaimStopped,
-					Reason: "Its phase is awaiting_person and the tester's claim is stranded at retired, so nothing will wake it.",
+					Reason: "Its phase is awaiting_person and its tester is stranded at retired, so nothing will wake it.",
 				},
 				WaitingOn: &WaitingOnView{
 					Kind:       "ask",
@@ -754,22 +754,25 @@ func populatedState(t *testing.T) State {
 			// defines, which the phase alone does not name (`stepRole`). It holds a slot and is at
 			// work (deploymentRolesContract), but its pod was built before the deployment defined
 			// the checker, so the checker's start waits for that pod's update round or its release
-			// (record.Store.StartsWaitingForPod): the issue names the checker in `startWaitsForPod`
-			// and no claim of the checker exists yet, so it carries no worker.
+			// (record.Store.StartsWaitingForPod): the issue names the checker's start in
+			// `startWaitsForPod` by its role and the token of the claim it starts, and no claim of
+			// the checker exists yet, so it carries no worker.
 			// LEGION-241 is held from that step, its checker's claim failed, so its hold names the
 			// phase it left and the role of that step, and the failed claim stays its worker, keyed
 			// by the role of the deployment, as LEGION-210's failed implementer stays its own.
 			"LEGION-240": {
-				Key:              "LEGION-240",
-				Generation:       1,
-				Phase:            phase.Step,
-				StepRole:         "checker",
-				Status:           "in_progress",
-				Tree:             "LEGION-240",
-				Repo:             "acme/widgets",
-				DefaultBranch:    "main",
-				Workers:          map[claim.Role]PhaseView{},
-				StartWaitsForPod: []string{"checker"},
+				Key:           "LEGION-240",
+				Generation:    1,
+				Phase:         phase.Step,
+				StepRole:      "checker",
+				Status:        "in_progress",
+				Tree:          "LEGION-240",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers:       map[claim.Role]PhaseView{},
+				StartWaitsForPod: []StartWaitView{
+					{Role: "checker", Token: "legion-legion-legion-240-checker"},
+				},
 			},
 			"LEGION-241": {
 				Key:           "LEGION-241",

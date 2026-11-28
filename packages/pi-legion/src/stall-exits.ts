@@ -23,11 +23,11 @@ import type { StallWatchdogExits, StallWatchdogLog } from "@legion/pi-shared/sta
  * **Where the count lives.** `LEGION_STATE_DIR` is the directory the daemon gives this pane
  * (`src/claim-session.ts:43`). Under Kubernetes it is the pod's own, so a pod replacement resets
  * this count while the daemon's death budget is not reset — the two bounds are deliberately not
- * the same bound. Under tmux several panes share one state directory, so the file is named for
- * the claim it counts, by the claim's token: the claim of one agent of an issue, which can work a
- * step of another role than its name beside that role's own claim, and keeps its token when it
- * moves to another role's step. One claim's exits therefore never spend another's budget, two
- * claims of one role keep two counts, and a relaunch of the same claim in the same pod reads its
+ * the same bound. Under tmux several panes share one state directory, so the file is named for the
+ * claim it counts, by the claim's token: the claim of one agent of an issue, which keeps its token
+ * when it moves to another role's step, and two claims of one issue can hold one role (the daemon's
+ * `record.WorkerClaim`). One claim's exits therefore never spend another's budget, two claims of
+ * one role keep two counts, and a relaunch of the same claim in the same pod reads its
  * own count back, whatever role it was relaunched on.
  *
  * **Written and flushed before the process ends.** Both halves are synchronous and the write ends

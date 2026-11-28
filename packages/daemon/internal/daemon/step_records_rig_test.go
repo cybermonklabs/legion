@@ -760,12 +760,28 @@ func (r *stepRecordsRig) worker(role claim.Role) *stepClaimant {
 	return r.workerOf(r.key, role)
 }
 
-// workerOf is role's claimant on issue, an issue of the tree of the walk's issue: the one already
-// registered, or the launch the daemon makes now, registered and ready under a session of its own.
+// workerOf is role's claimant on issue, an issue of the tree of the walk's issue (claimantOf).
 func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
+	r.t.Helper()
+	return r.claimantOf(issue, r.tokenOf(issue, role), role)
+}
+
+// agentWorker is the claimant of the agent named agent on the walk's issue, whose first step is of
+// role, as a name no role has (`implementer-2`) is a claim of its own (claimantOf).
+func (r *stepRecordsRig) agentWorker(agent claim.Agent, role claim.Role) *stepClaimant {
+	r.t.Helper()
+	token, err := claim.AgentToken(r.project, r.key, agent)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return r.claimantOf(r.key, token, role)
+}
+
+// claimantOf is the claimant of token's claim on issue, working role: the one already registered,
+// or the launch the daemon makes now, registered and ready under a session of its own.
+func (r *stepRecordsRig) claimantOf(issue string, token claim.Token, role claim.Role) *stepClaimant {
 	t := r.t
 	t.Helper()
-	token := r.tokenOf(issue, role)
 	if c, ok := r.claims[token]; ok {
 		return c
 	}

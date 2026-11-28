@@ -49,11 +49,13 @@ var claimTokenPattern = regexp.MustCompile(`^legion-([a-z0-9]+)-([a-z][a-z0-9]*)
 
 // CutClaimToken splits a Legion claim token of an issue into the Legion project token it carries,
 // the Dispatch issue key it names (upper case, ACME-7) and the name of its agent. The agent's name
-// is the role of the agent's first step, one of Roles or a role the deployment defines, and stays
-// the agent's whatever role its later steps are on, so a token whose last part is no role of an
-// issue (IsRole), the controller's name among them, is no claim of an issue: ok is false for it
-// and for every token of another shape. It is the one split of a claim token in Envoy, which the
-// Legion agent registry's entries and the broker's reading of a pod's issue both take.
+// is the role of the agent's first step, one of Roles or a role the deployment defines, or a
+// numbered name such as `implementer-2` for a second agent of one role (the daemon's
+// claim.NumberedAgentName), and stays the agent's whatever role its later steps are on. Each is a
+// name of the role grammar, so a token whose last part is outside it, or is the controller's name
+// (IsRole), is no claim of an issue: ok is false for it and for every token of another shape. It
+// is the one split of a claim token in Envoy, which the Legion agent registry's entries and the
+// broker's reading of a pod's issue both take.
 func CutClaimToken(token string) (project, issue, agent string, ok bool) {
 	match := claimTokenPattern.FindStringSubmatch(token)
 	if match == nil || !IsRole(match[4]) {

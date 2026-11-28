@@ -31,6 +31,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -204,6 +205,22 @@ type Claim struct {
 	// Session and SessionFile are the agent's reported session id and absolute transcript path.
 	Session     string
 	SessionFile string
+	// SessionAgent is the agent whose session the claim holds, in the identity a workflow start
+	// names it by (plan.Agent.ID, StartWork.Agent): the agent of a key, or of a step with no key.
+	// One name can go to two agents of an issue in turn — a later version of a plan can give the
+	// name a stopped task's agent ran under to a new agent — and this is the one record of which of
+	// them the session is. It has two writers. One is the admission of the decision that brings the
+	// claim back for a step's agent (revive), the decision that begins or takes the session for
+	// that agent: a spawn for it, a resume or a retry of the session the claim holds for it, and a
+	// start for another agent, which leaves the session behind first. The other is a start that
+	// reaches a claim that still runs a process and records no agent (TakeSessionFor): the start's
+	// task goes to that process, so the session is that start's agent's from then. No other code
+	// writes it, and a forget for any other cause keeps it: the claim then relaunches in a new
+	// session the same agent's work it holds. "" is a claim no start for a step's agent has reached
+	// yet — the claim of an issue with no plan rows, of a role no step names, or one the release
+	// before last ran — whose session the next such start takes. The store keeps it in
+	// claims.session_agent.
+	SessionAgent plan.AgentID
 	// Abandoned is the session this claim stopped resuming when it last forgot one
 	// (forgetSession), and why. The session itself stays in its store — nothing of it is deleted
 	// — so this is the one record of where it went, for the operator who may want to read it and
@@ -1701,9 +1718,11 @@ type Machine struct {
 	sessionFrom uint64
 	// lostCause is the cause of the forget the launch made last (startFresh), and "" where none is
 	// kept; the rule of how long it is kept is written here alone. It is kept from that forget
-	// until the claim's first ready after it (ready), or until a later forget that drops a session
+	// until the claim's first ready after it (ready), until a later forget that drops a session
 	// (forgetSession): an operator's forget-session, or a retry in a new session, of the fresh
-	// agent's own session. A forget that drops nothing keeps it. Every launch until then is built
+	// agent's own session, or until a start for another agent than the one whose session was
+	// forgotten brings the claim back (revive): the agent that start spawns never had that
+	// session. Any other forget that drops nothing keeps it. Every launch until then is built
 	// with it (spawnSpec reads it into Claim.SessionLost): the retry of a fresh spawn that failed,
 	// a relaunch of the fresh agent before its ready, such as the stale-plugin relaunch that
 	// resumes its new file, and the spawn after a retry in a new session that dropped nothing, so
@@ -2614,11 +2633,24 @@ func (m *Machine) markRound(ctx context.Context, round string, mark **time.Time)
 }
 
 // ReleasedLaunch is whether a stored claim is an uncertain launch ReleaseUncertainLaunch released
-// and no launch then recorded: queued at a generation above zero, with no process. A claim is
+// and no launch then recorded: queued after a launch (Launched), with no process. A claim is
 // created queued at generation zero, and only a release makes one queued again after a launch, so
 // the daemon's next boot counts such a claim as a launch to finish.
 func (c Claim) ReleasedLaunch() bool {
-	return c.State == StateQueued && c.Generation > 0 && c.Locator == nil
+	return c.State == StateQueued && c.Launched() && c.Locator == nil
+}
+
+// Launched is whether a launch of the claim was ever written: each launch raises the claim's
+// generation (launchNow), and a claim is created at generation zero. A claim that never launched
+// has run no process and holds no session, so no agent's work is in it.
+func (c Claim) Launched() bool { return c.Generation > 0 }
+
+// Unstarted is whether no start has run against the claim since it was stored: queued, never
+// launched (Launched), and no start recorded against it (LastStartRow). The outbox's start stores
+// a claim so and records itself against it (StartedBy) before it brings the claim back, so a claim
+// still unstarted once the try that stored it has ended is one that try failed to bring back.
+func (c Claim) Unstarted() bool {
+	return c.State == StateQueued && !c.Launched() && c.LastStartRow == 0
 }
 
 // StartedBy records the outbox row of the start being run against this claim, so a stop written
@@ -4844,6 +4876,13 @@ type AbandonedSession struct {
 	SessionFile string    `json:"sessionFile,omitempty"`
 	Why         string    `json:"why"`
 	At          time.Time `json:"at"`
+	// Agent is the agent whose session it was (Claim.SessionAgent when the claim left it), "" for
+	// a claim that recorded none. The agent the session is told to is the agent the claim records
+	// when it is told, which a start for another agent changes even where it leaves no session of
+	// its own behind: the session before is the earlier agent's then, lost before that start. So
+	// whether it was the told agent's own is read at the telling (OfAnotherAgent, abandonedTask),
+	// not decided where it was left.
+	Agent plan.AgentID `json:"agent,omitempty"`
 	// Told is whether the agent that replaced the session has been told of it, so it is told in
 	// the first task it actually takes and in no later one, and ToldBy is the delivery whose
 	// confirmation told it, as confirmCarrying states. A sentence told twice is the harmless way
@@ -4864,6 +4903,15 @@ type AbandonedSession struct {
 // Tells is whether a prompt to this claim's agent must still name the session the claim
 // abandoned: one was abandoned and it has not been told yet.
 func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
+
+// OfAnotherAgent is whether the session was another agent's than agent, the agent the claim
+// records as its session's now (Claim.SessionAgent): both are recorded and they differ. That
+// agent is new on its step and is told so (abandonedTask), not that a session of its own was
+// lost. A claim that recorded no agent then, or records none now, tells the session as its
+// agent's own, as it did before agents were recorded.
+func (a AbandonedSession) OfAnotherAgent(agent plan.AgentID) bool {
+	return otherAgent(a.Agent, agent)
+}
 
 // RoleChange is the record that a claim took another role (Machine.Rerole) while its agent has
 // not yet been told so. The claim keeps its session, so the transcript its next generation resumes
@@ -4963,19 +5011,26 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // It is the one place a claim leaves its session behind, so every start, retry or resume of a
 // claim relaunches the session the claim records — by its file, or by its id where it records no
 // file (start) — unless that launch forgets the session here, and a claim starts in a new session
-// only after this ran. It has five callers: the launch's startFresh, for a session no store holds
+// only after this ran. It has seven callers: the launch's startFresh, for a session no store holds
 // any more, one the pod's launcher could not look up and Oh My Pi did not resume by its id, and
 // one a Claude Code claim records with no transcript file; the launch's replaceEndedSession, for
 // the project controller's session whose launches keep ending before it finishes a turn
 // (SessionRun); the launch's replaceAgedSession, for the project controller's session older than
 // its age at a daemon-driven relaunch; retry, when freshSession says the retry needs a new session;
-// and the forget of a recorded session (forgetSession, the table's): the operator's
-// forget-session, which `legion claims retry --fresh-session` runs too, and the controller's own
-// forget, which its fresh_session sends (api's forgetRecordedSession; RequestForgetSession.By names
-// which, forgottenBy). It clears the claim's mark of a start by Oh My Pi's own lookup with the
-// session (Claim.AgentResumeGeneration), and, where it drops a session, the cause of an earlier
-// forget the machine keeps for the fresh agent's launches; Machine.lostCause says why one that
-// drops nothing keeps it. startFresh sets the cause of its own forget after this call.
+// the start of a step's agent whose session the claim does not hold (revive), in a spawn, a resume
+// by rule or a retry; the start that leaves the session a key's agent ran in, where its step's
+// agent took that key's name in an earlier generation (revive, leaves); and the forget of a
+// recorded session (forgetSession, the table's): the operator's forget-session, which
+// `legion claims retry --fresh-session` runs too, and the
+// controller's own forget, which its fresh_session sends (api's forgetRecordedSession;
+// RequestForgetSession.By names which, forgottenBy). None of them changes the agent the claim
+// records as its session's (Claim.SessionAgent): the start of another agent records its own once
+// it is admitted (revive), after this ran. The session it drops is recorded as the session of the
+// agent the claim records then (AbandonedSession.Agent). It clears the claim's mark of a start by
+// Oh My Pi's own lookup with the session (Claim.AgentResumeGeneration), and, where it drops a
+// session, the cause of an earlier forget the machine keeps for the fresh agent's launches;
+// Machine.lostCause says why one that drops nothing keeps it. startFresh sets the cause of its own
+// forget after this call.
 //
 // A fresh session is not told the old session's record of what the last let-go of its process
 // ended (EndedWork), and this is the one place that rule is written. When it records the
@@ -4992,11 +5047,12 @@ func (m *Machine) sessionGone(ctx context.Context) {
 //
 // Every caller runs it after the old process's record is written, so no let-go writes a record of
 // that process later: the launch's startFresh, replaceEndedSession and replaceAgedSession run after
-// the launch let the old process go (launchNow, letGo), and retry's fresh session and the table's
-// forget-session reach only a claim that runs nothing — queued, suspended, failed or retired —
-// whose process the suspension, the failure or the retirement already let go (suspended, fail,
-// retire), or that never had one. A let-go records nothing for a claim that records no process
-// (recordEnd), so the next record written is of the fresh session's own process.
+// the launch let the old process go (launchNow, letGo), and retry's fresh session, the start of
+// another agent and the table's forget-session reach only a claim that runs nothing — queued,
+// suspended, failed or retired — whose process the suspension, the failure or the retirement
+// already let go (suspended, fail, retire), or that never had one. A let-go records nothing for a
+// claim that records no process (recordEnd), so the next record written is of the fresh session's
+// own process.
 //
 // It puts the claim's run of provider-error turns back to zero as well (Claim.ProviderErrorRun).
 // The run counts the turns one session had refused in a row, and the new session has had none,
@@ -5014,6 +5070,7 @@ func (m *Machine) forgetSession(why string) {
 		m.lostCause = ""
 		m.claim.Abandoned = AbandonedSession{
 			Session: m.claim.Session, SessionFile: m.claim.SessionFile, Why: storetext.FarSideError(why), At: m.deps.Clock.Now(),
+			Agent: m.claim.SessionAgent,
 		}
 		if e := &m.claim.EndedWork; e.Tells() {
 			e.Told, e.ToldBy = true, ""

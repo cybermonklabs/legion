@@ -213,7 +213,7 @@ func TestTheStage4bDoneCheckpointHasTheMergeCloseTree1AtOnce(t *testing.T) {
 		}
 	}
 	driver := shippedText(t, "scripts/e2e/stage4b-sandbox-tree.sh")
-	if want := `waited=$(log_lines "` + wait + `"`; !strings.Contains(driver, want) {
+	if want := `merge_waits=$(log_lines "` + wait + `"`; !strings.Contains(driver, want) {
 		t.Errorf("scripts/e2e/stage4b-sandbox-tree.sh omits %q", want)
 	}
 	for _, phrase := range append(gone, "**The merge does not close tree 1**") {

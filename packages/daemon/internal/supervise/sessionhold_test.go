@@ -984,8 +984,10 @@ func TestAHoldsLinesNameTheClaimOnce(t *testing.T) {
 // is in a new session, or the controller's fresh_session, which starts the agent in a new session,
 // and the claim stays suspended with nothing launched and nothing charged.
 // Relaunched, its every launch would be refused by the hold at start and the claim would fail
-// within its launch budget (acceptance of #4220). A rule's resume leaves it suspended the same way.
-// A claim holding its session resumes as before (R9).
+// within its launch budget (acceptance of #4220). A rule's resume that names no agent, or the
+// agent whose session the claim records, leaves it suspended the same way; one for another step's
+// agent leaves that session behind instead (resumeByRule). A claim holding its session resumes as
+// before.
 //
 // The control (the pull request records the run): resume with no resumeRefusal: the operator's
 // resume answers no refusal and the claim is launched into the hold's refusal.
@@ -1209,8 +1211,10 @@ func TestADeathsRelaunchIntoAHeldSessionIsChargedToTheLaunchBudget(t *testing.T)
 }
 
 // The daemon's own resume of a claim it suspended, recording a session another claim holds, leaves
-// the claim suspended (resumeByRule, resumeRefusal): nothing resumed, nothing charged, and the line
-// says why. A claim an operator suspended never reaches this check (RuleMayResume).
+// the claim suspended (resumeByRule, resumeRefusal) where the resume names no agent or the agent
+// whose session the claim records: nothing resumed, nothing charged, and the line says why. A
+// resume for another step's agent leaves that session behind instead. A claim an operator
+// suspended never reaches this check (RuleMayResume).
 //
 // The control (the pull request records the run): resumeByRule without its resumeRefusal: the rule's
 // resume answers the hold's refusal from start.

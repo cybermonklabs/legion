@@ -403,12 +403,12 @@ const (
 const volumeResetAnnotation = "legion.dev/volume-reset"
 
 // secretsReleasedAnnotation is the release's record on the Sandbox of an issue's kept volume that
-// it deleted the Secrets the Sandbox owns: the provisioning Secret and each role's Secret
-// (deleteIssueSecrets). Its value is the Sandbox's uid. The release writes it once every delete
-// has succeeded, so it is never on a Sandbox that still owns one of them. A launch that keeps the
-// Sandbox removes it before it writes the first Secret (relaunch, annotate). A Sandbox
-// that a launch creates carries none. IssueSandbox reads it: a Suspended kept Sandbox that carries
-// it holds nothing that a release can take.
+// it deleted the Secrets the Sandbox owns: the provisioning Secret and the Secret of each slot of
+// its pod (deleteIssueSecrets). Its value is the Sandbox's uid. The release writes it
+// once every delete has succeeded, so it is never on a Sandbox that still owns one of them. A
+// launch that keeps the Sandbox removes it before it writes the first Secret (relaunch, annotate).
+// A Sandbox that a launch creates carries none. IssueSandbox reads it: a Suspended kept Sandbox
+// that carries it holds nothing that a release can take.
 const secretsReleasedAnnotation = "legion.dev/secrets-released"
 
 // issueVolume is the name a pod's disk is mounted under, an issue's and the controller's alike,

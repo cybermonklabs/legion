@@ -100,7 +100,7 @@ func (r *Runtime) deleteSandbox(ctx context.Context, object *unstructured.Unstru
 		}
 		return fmt.Errorf("delete Sandbox %s: %w", name, err)
 	}
-	r.forgetLauncherCredentials(name)
+	r.launcherAuth.forgetSandbox(name)
 	r.noteTaken(name, sandboxTaken{uid: uid})
 	return r.awaitSandboxDeleted(ctx, name)
 }

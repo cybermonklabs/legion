@@ -3121,7 +3121,7 @@ It narrows nothing, so it rolls: the release before it writes only the six, whic
 Both statements are catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
 
 Migration `20261124213825_issue_role_holders_by_session` keys `issue_role_holders` by session: it drops the primary key on `(issue_key, role)`, so the unique index on `(issue_key, session)` is the table's key and a role can have more than one session, and adds `claim`, the token of the claim a session holds its role by, and `works_step`, whether that claim works the role's step that started last, at the constant defaults `''` and `false`.
-Two claims of one issue can hold one role (an agent's on another role's step, beside that role's own claim of an earlier version of the plan, or two agents at two steps of the role), and the route refused a set that named a role twice, so the second claim's session held no role.
+Two claims of one issue can hold one role, and the route refused a set that named a role twice, so the second claim's session held no role.
 Every statement is catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
 **It is the one migration after `20261111210103` that does not roll.**
 The release before it inserts with `on conflict (issue_key, role)`, which Postgres refuses once no unique index on exactly those columns stands, so while both releases serve, a role-holder publication that reaches a server of the release before is answered `500`.

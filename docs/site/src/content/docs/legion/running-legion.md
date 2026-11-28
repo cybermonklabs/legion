@@ -250,7 +250,7 @@ The account's name joins the owners that each later launch of that App's roles i
 `Legion addressing` line of its prompt.
 Under the tmux runtime a running pane holds the new directory within a minute, at the daemon's
 next refresh.
-Under `runtime: kubernetes` the bundle is each role's Secret, and a pod projects the directories
+Under `runtime: kubernetes` the bundle is each slot's Secret, and a pod projects the directories
 of its creation, an issue pod only those that both role Apps' bundles hold.
 So once both role Apps are installed on the account, the daemon opens one update round over each
 live issue pod, and the pod that replaces it projects the new directory.
@@ -299,15 +299,15 @@ Dispatch read them, delete the files, then install every App from
   with its priority class, and a microVM pod also its ComputeClass's label and toleration. The
   selector may not set `legion.dev/pool`, the label of the retired Legion pool.
 - **One reservation per pod, no affinity set by Legion.** An issue pod runs every role of the
-  issue in one container, `roles`, each role's process in Linux namespaces of its own that keep
-  its tokens out of its siblings' reads; the roles share the pod's own disk and network, so code
+  issue in one container, `roles`, each agent's process in Linux namespaces of its own that keep
+  its tokens out of its siblings' reads; the agents share the pod's own disk and network, so code
   one of them plants there can run in another with that one's credentials. Every container of a
   Legion pod carries a cpu and memory limit with a
   request no greater than it, and bounds its ephemeral storage — the node's disk: the image's own
-  content and each role's home and `/tmp`, the issue's temporary directory, cache and data homes
-  and bun install cache being one set its roles share on the pod's own disk instead, each role's
+  content and each slot's home and `/tmp`, the issue's temporary directory, cache and data homes
+  and bun install cache being one set its agents share on the pod's own disk instead, each agent's
   state home a separate directory there, and the two Go caches one pair on that disk shared by the
-  issue's roles — with a limit over a smaller request. `runtime.kubernetes.resources` takes two
+  issue's agents — with a limit over a smaller request. `runtime.kubernetes.resources` takes two
   keys: `issue`, the one reservation of every issue pod (its `roles` container and both init
   containers), and `controller`, the daemon-launched controller's pod's (`controller: daemon`
   only). Each takes `cpu` and `memory` (the limits), `cpu_request` and `memory_request` (what the
@@ -716,13 +716,14 @@ What each part is for:
   refused: the daemon's own wake to an architect is a notice); and the words, as `prompt` in the
   key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
   name `moves`, the moves it counts, each written `<from>-<to>` of two workflow phases, which differ
-  but in `step-step` (`testing-implementing`, `reviewing-implementing`, `merging-implementing`, or
-  any other of the 41 moves back a task's line can make, such as `testing-reviewing` on a task
+  but in `step-step` and in a phase a step runs as moved back to itself, which a role at two steps
+  of one task makes (`testing-implementing`, `reviewing-implementing`, `merging-implementing`,
+  `implementing-implementing`, or
+  any other of the 49 moves back a task's line can make, such as `testing-reviewing` on a task
   whose reviewer step comes before its tester step), or the word `any`,
   which is also what a hook that leaves the key out takes.
   A pair that no line makes as a move back is refused, since the hook would never
-  fire: a move into `retro` or `merging`, which end every line, and a move from `implementing` to
-  `testing`, `reviewing` or `accepting`, whose steps come after the implementer's. A hook fires
+  fire: a move into `retro` or `merging`, which end every line in that order. A hook fires
   when the move is one it counts and the counts of the moves it
   counts, added up, are then a whole multiple of its `every`
   ([what it writes](/legion/legion/concepts/#review-signalling)). Each refusal at load names the
@@ -800,9 +801,10 @@ What each part is for:
   the role's own App token on every owner that App is installed on, with the role's own
   permissions, each reaching every repository that owner's installation holds, and the
   controller's read-only. Oh My Pi starts only once it exits 0; a failure is a failed launch, and
-  its output is in the role's log. It may install an Oh My Pi plugin marketplace from GitHub. Such
-  an install renames a directory in the role's home overlay, which stopped the pod's gVisor
-  sandbox until legion-v19.18.1 mounted that overlay with `userxattr` (gVisor could not write its
+  its output is on the lines of its agent's slot in the `roles` container's log. It may install an
+  Oh My Pi plugin marketplace from GitHub. Such an install renames a directory in the slot's home
+  overlay, which stopped the pod's gVisor sandbox until legion-v19.18.1 mounted that overlay with
+  `userxattr` (gVisor could not write its
   opaque mark on the renamed directory). For example:
 
   ```yaml
@@ -1047,7 +1049,7 @@ answer. A pre-registration states seven things.
    outcome.** `unit: tree` draws once for a whole tree, so every issue of that tree runs in one
    arm. `unit: issue` draws for each issue, so two issues of one tree can run in different arms.
    Mixing inside a tree is safe when an arm cannot reach its siblings — an overlay that changes
-   how one issue's implementer writes its own code, and nothing the tree shares. It is a danger
+   how one issue's implementers write its own code, and nothing the tree shares. It is a danger
    when the arm can reach them: anything that changes what a role writes into the tree's spec,
    its branch, or its architect's context reaches the tree's other issues, so the control arm
    measures the treatment too and the difference you read is smaller than the true one. Where an
@@ -1424,9 +1426,12 @@ Closing the terminal leaves the project without one, and the daemon logs
    its session, a root agent's report of its own exit and the release of an idle
    issue pod (`runtime.kubernetes.idle_release`), the daemon suspends or ends claims only when an
    issue leaves the workflow, when a claim moves to another tree, for a production check after the
-   issue is done, or when an agent's next step is of another role than the one its claim holds:
-   the start of that step suspends the claim at the end of its turn, keeping its session, gives
-   it the step's role and resumes it on the same session. That session can hold a GitHub token of
+   issue is done, when an agent's next step is of another role than the one its claim holds, or
+   when the next step of a claim's name is another agent's than the one whose session it holds: the
+   start of that step suspends the claim at the end of its turn. For another role it keeps the
+   session, gives the claim the step's role and resumes it on the same session; for another agent
+   it leaves the session behind and starts that agent in a session of its own. A session the claim
+   keeps can hold a GitHub token of
    the earlier role's App that the agent printed, which GitHub accepts until it expires, so the
    first prompt the agent takes in the new role tells it that any GitHub token it saw in an
    earlier role is no longer its to use and that its `gh` and `git` now act as the new role's App;
@@ -1649,17 +1654,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   round read longest ago, although the read is the only moment the line prints — the wait an
   operator acts on is the one a head has sat through.
 
-  The `agents in a tool call` line names every working claim whose agent is in a tool call the
-  daemon has seen the start of and no end of: how many, and each by issue and role with the tool,
-  the call id the stream's start and end frames pair by, and when the daemon received that start
-  (`none` when no agent is in one). A retired or suspended claim keeps the call it was last in on
-  its record, and the line leaves it out, since no turn of that claim is in flight. It is the
-  shape a stalled turn leaves behind, which is what `worker_stall_backstop_hours` above acts on,
-  so a call that has been open for hours is the one to look at. The call's arguments are in no
-  column of this surface or any other: the daemon keeps their length and a fingerprint alone,
-  because a shell command routinely holds a credential. The project controller's claim is on no
-  issue and so on no part of this line; `legion claims list` prints each claim's open call in the
-  same shape, in its last column, the controller's included.
+  The `agents in a tool call` line lists each working claim in a call whose start the daemon has received but whose end it has not. It includes the architect, each worker and other claims. The line shows the count, issue, role, tool, call id, and when the daemon received the start (`none` if there are no open calls). A claim not named for its role also shows its token, for example `WIDGETS-12 implementer (claim legion-widgets-widgets-12-implementer-2)`.
+  A retired or suspended claim retains its last call in its record, but the line omits that claim because it is not in a turn. An open call lasting hours can identify a stalled turn (`worker_stall_backstop_hours`, above). The daemon records only the length and a fingerprint of call arguments, not their text, which can contain credentials. The controller's claim belongs to no issue and does not appear on this line. `legion claims list` prints calls in its last column, including the controller's.
   A shell command Oh My Pi backgrounded (a plain one still running after about a minute, or at
   once when a message is steered into the turn) is an ended call here while its process runs on:
   `none` says no agent is parked in a call, not that nothing runs on its machine.
@@ -1726,14 +1722,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), on a root
   `treeRuns` (true when the root's tree runs: its lifecycle is open, the root does not linger, and
   the root does not wait in the line for its tree to open), `repo` and `defaultBranch`, `holdReason`,
-  `priority` (the issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for none; absent on an
-  issue the workflow does not record, and absent, with the `priority` of each member of the line
-  below, for a caller below contract 250), `resolvedPriority` (the priority Dispatch resolves for
-  the issue, 0 to 3 or null; absent when Dispatch sent none), `priorityFrom` (the issue key
-  `resolvedPriority` comes from; absent when own or none),
-  `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one
-  count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has
-  made none), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
+  `priority` (the issue's own Dispatch priority, 0 for P0 through 3 for P3, or null for none; absent on an issue the workflow does not record, and absent with the line members' `priority` for a caller below contract 250),
+  `resolvedPriority` (the priority Dispatch resolves for the issue, 0 to 3 or null; absent when Dispatch sent none), `priorityFrom` (the issue key `resolvedPriority` comes from; absent when own or none),
+  `architect` and `workers` (one claim per role, the worker on its last-started step; each claim's `state`, and on the implementer `backwardMoves`, the counts keyed `<from>-<to>`, absent if there are none),
+  `otherClaims` (each other claim with its role, including a second agent of a role),
+  `startWaitsForPod` (each start waiting for a pod that lacks its claim's slot or its step's role; the `role` and `token` of the claim it starts, or just the distinct roles for a contract from the deployment roles' entry to below the start-wait token's entry), and `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
   `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
   — `unregistered`, `waiting`, `approved`, `changes_requested`, `open_on_basis` or
@@ -1823,7 +1816,7 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   ```sh
   kubectl -n legion get sandboxes,pods -l legion.dev/tree=WIDGETS-12
-  kubectl -n legion logs <pod> -c roles | grep '^implementer: '   # that role's launcher, its shim and Oh My Pi
+  kubectl -n legion logs <pod> -c roles | grep '^<agent>: '   # one agent's slot, such as implementer-2: its launcher, its shim and Oh My Pi
   kubectl -n legion logs <pod> -c workspace-init    # the workspace provisioning
   ```
 

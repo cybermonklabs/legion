@@ -193,8 +193,9 @@ func CancelPodBackstops(ctx context.Context, tx pgx.Tx, project, issue string, t
 // token, and every open backstop of the issue when token is empty (CancelPodBackstops), for a
 // caller outside one. The outbox's `suspend` row takes one claim of a released pod over and drops
 // that claim's backstop alone (decision 17 of dispatch://INFRA-3759), so a stop of another claim of
-// the issue — a pause's, a park's of the architect, a stop of the role's own claim beside a keyed
-// agent on its step — never cancels a worker's backstop. The close of an issue or of its tree takes
+// the issue — a pause's, a park's of the architect, a stop of the role's own claim beside the claim
+// record.WorkerClaim gives its step — never cancels a worker's backstop. The
+// close of an issue or of its tree takes
 // the whole released pod over, and the arming of a release's backstops drops what the release
 // before it armed; both name no claim. Dropping the backstops is the whole of what taking a
 // released pod over leaves to do, since a wake's own record is the resume the index holds
@@ -317,9 +318,8 @@ func (s *Store) ClaimStatesIn(ctx context.Context, project, issue string) (Claim
 }
 
 // PodWakeBackstop is one armed backstop: the phase worker it wakes and when it comes due. Claim
-// is the token of that worker's claim (pod_wake_backstops.claim), the claim the record gave the
-// open role's step when it was armed, which can be a keyed agent's beside the role's own claim;
-// Role is the role that claim held then.
+// is the token of that worker's claim (pod_wake_backstops.claim), the claim record.WorkerClaim
+// gave the open role's step when it was armed; Role is the role that claim held then.
 type PodWakeBackstop struct {
 	ID      int64
 	Project string
@@ -399,8 +399,8 @@ func duePodBackstops(ctx context.Context, tx pgx.Tx, project string, now time.Ti
 // stamped and nothing has closed (pod_resumes_one_open_per_claim), so a second wake of a claim
 // whose pod is already coming back for it conflicts and writes nothing, and `taken` is false: the
 // index decides it inside the transaction, where a read could be overtaken between its answer and
-// the insert. Another claim of the same role takes a wake of its own: the agent of a key on a
-// step of another role, beside that role's own claim, is a claim of its own to bring back. The
+// the insert. Another claim of the same role takes a wake of its own: two claims of one issue can
+// hold one role (record.WorkerClaim), and each is a claim of its own to bring back. The
 // caller's transaction is what makes that atomic, so the workflow's four wakes and the outbox's
 // delivery wake are held to it alike.
 //

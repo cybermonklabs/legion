@@ -1251,13 +1251,12 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// Two claims of one issue can hold one role — the agent of a key on a step of another role,
-	// beside that role's own claim of an earlier version of the plan, or two agents at two steps of
-	// the role — and the role's row names the one that works its step (record.WorkerClaim). A
-	// completion from the other is no report of the step: taken, it would move the issue and write
-	// its own claim on the row, and every later start and message of the step would reach it. It is
-	// refused before anything is written, and left unspent, so the same report applies should a
-	// later entry of the step give it to that claim (intake.StepsWorkerFence).
+	// Two claims of one issue can hold one role (record.WorkerClaim), and the role's row names the
+	// one that works its step. A completion from the other is no report of
+	// the step: taken, it would move the issue and write its own claim on the row, and every later
+	// start and message of the step would reach it. It is refused before anything is written, and
+	// left unspent, so the same report applies should a later entry of the step give it to that
+	// claim (intake.StepsWorkerFence).
 	//
 	// One such completion is the entry fence's to answer first: a completion of an entry its own
 	// claim served (record.ServedClaim), on a step of the role the task has since left for another
@@ -1435,14 +1434,12 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // suspended its claims (a parked child) or closed them (a child closed as done), and a lingering
 // tree holds its members where they stood, so neither tells anyone.
 //
-// Two claims of one issue can hold one role — the agent of a key on a step of another role,
-// beside that role's own claim of an earlier version of the plan, or two agents at two steps of
-// the role — so the role the fact names does not name the claim that failed: the fact names it
-// too (intake.ClaimFailed.Claim). Only the failure of the claim that works the role's step
-// (workerClaim) holds the issue; another claim of that role failing is told in a worker-died that
-// names it and the step's worker, and holds nothing, so the working agent is not left running on a
-// held issue. A fact that names no claim, from a daemon before the claim was carried, keeps the
-// role's rule.
+// Two claims of one issue can hold one role (record.WorkerClaim), so the role the fact names does
+// not name the claim that failed: the fact names it too (intake.ClaimFailed.Claim). Only the
+// failure of the claim that works the role's step (workerClaim) holds the issue; another claim of
+// that role failing is told in a worker-died that names it and the step's worker, and holds
+// nothing, so the working agent is not left running on a held issue. A fact that names no claim,
+// from a daemon before the claim was carried, keeps the role's rule.
 //
 // The checking role of a closed issue failing inside a look of its production check ends that look
 // as a report of pending would (endFailedLook): a done issue has no phase to hold, and the look's
@@ -2064,10 +2061,11 @@ func missingList(list []record.VolumeMissing) string {
 // carry no detail; they name the session the claim forgot (intake.SessionLost.Session), which the
 // agent's registration chose, quoted the same way.
 //
-// A claim is its agent's, so a keyed agent's claim can lose its session on a step of another role
-// than its name: the sentence then names the agent and the step's role, and says that each later
-// step of that agent runs in the fresh session, which is the key's. A claim named by its role, the
-// claim of every step of an issue with no plan rows, keeps the sentence it always had.
+// A claim is its agent's, so the claim that loses its session can be one whose agent is not named
+// for the step's role. The sentence then names
+// the agent and the step's role, and says that each later step of that agent runs in the fresh
+// session. A claim named by its role, the claim of every step of an issue with no plan rows, keeps
+// the sentence it always had.
 func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.SessionLost) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -2076,7 +2074,7 @@ func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.Session
 	kind := record.NoticeKind("session-lost")
 	const fresh = "It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives."
 	// subject names who lost the session and runner who runs the fresh agent: the step's role, or,
-	// for a keyed agent's claim, whose name is another role's, that agent on its step, whose later
+	// for a claim whose agent is not named for the step's role, that agent on its step, whose later
 	// steps run in the fresh session too (later).
 	subject, runner, later := fmt.Sprintf("The %s of %s", fact.Role, issue.Key), "The "+string(fact.Role), ""
 	if _, agent, ok := fact.Claim.Cut(); ok && agent != claim.Agent(fact.Role) {
@@ -2344,16 +2342,16 @@ const (
 // stopped by the pod's kernel (shimwire.MemoryKillCauseKernelProtected): the role-init, the shim,
 // the agent and the helpers the launcher's classifier protects. The agent's end ends the shim's
 // (the shim returns the agent's exit), the shim's ends the role-init's, which ends every process
-// of the role with it, and the launcher reports that generation's exit. The daemon reads that as
-// the role's process gone, as it reads every exit a role's process makes on its own: it takes
+// of the agent's slot with it, and the launcher reports that generation's exit. The daemon reads
+// that as the claim's process gone, as it reads every exit an agent's process makes on its own: it takes
 // back the task the turn was running, charges one launch failure, and relaunches the same
 // session, which is sent that task again, or fails the claim where the launch failures have
 // reached their limit (supervise's died, interrupted, relaunchAfterFailure). A helper of the
 // agent's may end alone, which is why the note says what follows only of the agent.
 const kernelProtectedKillEnd = "It was one of the processes that run your session, not a command you ran. " +
-	"If it was your agent, your turn ended with it, and so did every other process of your role. " +
+	"If it was your agent, your turn ended with it, and so did every other process of yours. " +
 	"The daemon then starts the same session again and sends again any task that the turn was running. " +
-	"It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. "
+	"It counts each such exit of an agent's process as a failed launch, and at the limit of failed launches it fails your claim instead. "
 
 // memoryGuardNote is what a role reads when the memory guard ended one of its processes: which
 // process, how much it held, how near the limit the pod was, that nothing else of the role
@@ -2968,12 +2966,11 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 		return intake.Result{Refusal: staleBackwardMove(issue.Key, fact.Requester, issue.Phase, row.Entry, fact.PhaseEntry), Unspent: true}, nil
 	}
 	// A phase worker's move is its step's worker's decision: two claims of one issue can hold one
-	// role — the agent of a key on a step of another role, beside that role's own claim of an
-	// earlier version of the plan, or two agents at two steps of the role — and the move names the
-	// claim that asked it (By). A claim the role's row does not name on its step works nothing the
-	// move would send back, so its move is refused, unspent. A row that names no agent of its own
-	// (record.NamesItsAgent) names no worker here, and a move that names no claim, from a route
-	// before the claim was carried, is judged by its role as before.
+	// role (record.WorkerClaim), and the move names the claim that asked it (By). A claim the
+	// role's row does not name on its step works nothing the move would send back, so its move is
+	// refused, unspent. A row that names no agent of its own (record.NamesItsAgent) names no worker
+	// here, and a move that names no claim, from a route before the claim was carried, is judged by
+	// its role as before.
 	if fact.Requester != claim.RoleArchitect && fact.By != "" && record.NamesItsAgent(row) && fact.By != row.Claim {
 		return intake.Result{Refusal: refused("BACKWARD_REFUSED", fmt.Sprintf(
 			"%s is a claim of the %s of %s, and %s works its step: only that claim's move sends the step back; this move changed nothing",
@@ -3465,21 +3462,23 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 	}
 	// No transition stops a worker: the claim whose phase this ends keeps its process, its role and
-	// its session until its issue closes (leave), or until its agent's next step is of another
-	// role, which the start of that step waits for its turn to end to give it (the outbox's
-	// reroleForStep), and its phase entry ends here, not its process. The workspace passes to the
-	// next role at the completion this move records, which the worker reports once its handoff is
-	// committed and pushed, so the next role's start may run while that worker's turn is still
-	// finishing (the issue's lifecycle lane runs its supervise rows one at a time, oldest due
-	// first, and the start of a claim on the role it holds waits for no turn to end). From then on
-	// the finished role answers questions read-only: a completion it reports is refused, since it no
-	// longer works the issue's phase (handoff), and a task queued for a phase the issue has left is
-	// dropped rather than sent (supervise.Deps's PhaseHolds). A move between two phases of one role -
-	// retro back to implementing on the implementer's own backward move - hands the running worker
-	// the new phase's task once its turn is over, as any start of a working claim does. A move no
-	// completion records - the review App's decision on a round the reviewer had not completed -
-	// starts the next role the same way: that role keeps its turn, its jobs, its process and its
-	// session, and the start waits for none of them.
+	// its session until its issue closes (leave), or until its next step is of another role or of
+	// another agent, which the start of that step waits for its turn to end to give it (the outbox's
+	// prepareClaimForStep), and its phase entry ends here, not its process. The start of another
+	// agent leaves the claim's session behind, and that agent begins a session of its own
+	// (supervise.StartWork.Agent). The workspace passes
+	// to the next role at the completion this move records, which the worker reports once its
+	// handoff is committed and pushed, so the next role's start may run while that worker's turn
+	// is still finishing (the issue's lifecycle lane runs its supervise rows one at a time, oldest
+	// due first, and the start of a claim on the role it holds waits for no turn to end). From then
+	// on the finished role answers questions read-only: a completion it reports is refused, since it
+	// no longer works the issue's phase (handoff), and a task queued for a phase the issue has left
+	// is dropped rather than sent (supervise.Deps's PhaseHolds). A move between two phases of one
+	// role - retro back to implementing on the implementer's own backward move - hands the running
+	// worker the new phase's task once its turn is over, as any start of a working claim does. A
+	// move no completion records - the review App's decision on a round the reviewer had not
+	// completed - starts the next role the same way: that role keeps its turn, its jobs, its process
+	// and its session, and the start waits for none of them.
 	// A pull request GitHub has already merged leaves the merger nothing to merge, so no merger is
 	// started for it and the merge closes the issue the moment it reaches merging. The close is
 	// closeMergedTelling's rather than a second transition's because a merged issue's close waits
@@ -3899,14 +3898,13 @@ type claimTarget struct {
 // linger's tree close), but the one except's close reaches: each stored claim of issue
 // (record.Store.IssueClaims) by its token, whether or not its agent ever reported a handoff — its
 // architect among them, which admission starts with a root's tree and a child's first phase start
-// starts for a child (StartFirstPhase). Two claims can hold one role — a keyed agent on a step of
-// another role, beside that role's own claim from an earlier version of the plan, or two agents at
-// two steps of the role — so a row naming a role alone would reach the claim of the worker on that
-// role's step twice and leave the other claim without its request. except is the one role left
-// out, "" for none: a merged child's close leaves out the role that works its production check
-// (Engine.checkRole), whose claim the check's own close retires (closeCheck); that close names the
-// role alone, so the claim it reaches, and the one left out here, is the claim of the worker on
-// that role's step (record.WorkerClaim).
+// starts for a child (StartFirstPhase). Two claims of one issue can hold one role
+// (record.WorkerClaim), so a row naming a role alone would reach the claim of the worker on that
+// role's step twice and leave the other
+// claim without its request. except is the one role left out, "" for none: a merged child's close
+// leaves out the role that works its production check (Engine.checkRole), whose claim the check's
+// own close retires (closeCheck); that close names the role alone, so the claim it reaches, and the
+// one left out here, is the claim of the worker on that role's step (record.WorkerClaim).
 //
 // A claim can also come up after this read: a start already past its fences when the request's
 // fact commits brings its claim up later, with no row of its own. So each role the issue can hold
@@ -3915,11 +3913,7 @@ type claimTarget struct {
 // reaches the claim the record gives that role's step when the row runs, and treats a request for
 // a claim that does not exist as done.
 func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue, except claim.Role) ([]claimTarget, error) {
-	project, err := claim.ProjectToken(issue.Project)
-	if err != nil {
-		return nil, fmt.Errorf("the claims of %s: %w", issue.Key, err)
-	}
-	claims, err := e.store.IssueClaims(ctx, tx, project, issue.Key)
+	project, claims, err := e.issueClaims(ctx, tx, issue)
 	if err != nil {
 		return nil, err
 	}

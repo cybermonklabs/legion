@@ -188,8 +188,8 @@ func liveRootSpec(project, issue string, token claim.Token, bootToken, prompt st
 }
 
 // firstLaunchStore answers the runtime as the daemon's store does for an issue's first launch:
-// its tree live, no other tree running it, its Sandbox its own tree's, and no controller claim
-// stored.
+// its tree live, no other tree running it, its Sandbox its own tree's, no plan naming an agent
+// beside its roles, and no controller claim stored.
 type firstLaunchStore struct{}
 
 func (firstLaunchStore) TreeLive(context.Context, string, string) (bool, error) { return true, nil }
@@ -203,7 +203,10 @@ func (firstLaunchStore) IssueSandboxHome(_ context.Context, _, issue string) (st
 }
 
 func (firstLaunchStore) ClaimUnretired(context.Context, claim.Token) (bool, error) { return false, nil }
-func (firstLaunchStore) Claims(context.Context) ([]supervise.Claim, error)         { return nil, nil }
+func (firstLaunchStore) PlanAgents(context.Context, string, string) (map[claim.Agent]claim.Role, error) {
+	return nil, nil
+}
+func (firstLaunchStore) Claims(context.Context) ([]supervise.Claim, error) { return nil, nil }
 
 // publicCloneTokens is the provisioning token for a public repository, which GitHub never asks
 // git for.

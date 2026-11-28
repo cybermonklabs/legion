@@ -310,7 +310,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: rolesKey, Default: "the deployment defines no role: a plan's steps name Legion's own roles alone", RequiredBy: "no",
-			Description: "The roles the deployment defines of its own, which a step of a plan names as it names Legion's: each key a role's name, a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters and none of Legion's own names (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, `controller`, `acceptance`), each value the role's `type` and `prompt_file`, and its optional `model` and `github_app`.",
+			Description: "The roles the deployment defines of its own, which a step of a plan names as it names Legion's: each key a role's name, a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters, none of Legion's own names (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, `controller`, `acceptance`) and none of the names Legion gives a second or later agent of another role, Legion's or the deployment's (`planner-2`, or `checker-3` beside a role `checker`), each value the role's `type` and `prompt_file`, and its optional `model` and `github_app`.",
 			Read:        reads(readRoles, func(f *fileConfig, v []Role) { f.Roles = v }),
 		},
 		{

@@ -413,9 +413,10 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 // takes the phase back to implementing with nobody's completion. The implementer's start runs at
 // once, as at every phase change that starts a claim on the role it holds: it waits for no turn to
 // end, and hands the implementer the move's task while the tester is still working. (Only a start
-// that would give a claim another role waits for that claim's turn to end, the outbox's
-// reroleForStep; each claim here is named for its role.) The tester's turn is its own — nothing
-// interrupts it and nothing stops it — and it keeps its launch, its session and its capability.
+// that would give a claim another role or another agent waits for that claim's turn to end, the
+// outbox's prepareClaimForStep; each claim here is named for its role.) The tester's turn is its
+// own — nothing interrupts it and nothing stops it — and it keeps its launch, its session and its
+// capability.
 func TestABackwardMoveStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)

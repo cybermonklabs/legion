@@ -1444,10 +1444,10 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // issue and its first step took a plan. It answers a give of the version that runs, or that the
 // issue's first step will run, as taken and writes nothing, but where that version names another
 // giver, whom it adds (record.Store.AddPlanGiver); it stores the plan (workflow's planGiven) where
-// its task has not started, and applies the rules of a later version. It answers PLAN_REFUSED
-// (RunningTaskChanged; StartedBeforePlans for an issue that ran before Legion took plans; or
-// AgentUnnamed for a version in which an agent would need a name, its key's or its role's, that
-// another agent of the plan holds from an earlier version, refused before anything is written),
+// its task has not started, and applies the rules of a later version. A version in which a fresh
+// agent would need the name of its role that another agent of the plan holds is not refused: that
+// agent takes a numbered name of its own (record.NameAgents). It answers PLAN_REFUSED
+// (RunningTaskChanged; StartedBeforePlans for an issue that ran before Legion took plans),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE, PLAN_NOT_TAKEN (an issue whose experiment's group
 // takes no plan from its owner) and TREE_LINGERING, and it leaves each of those refusals unspent
@@ -1644,10 +1644,9 @@ func (f CloseRoot) Message() string {
 type ClaimFailed struct {
 	Issue string
 	Role  claim.Role
-	// Claim is the token of the claim that failed. Two claims of one issue can hold one role — the
-	// agent of a key on a step of another role, beside that role's own claim of an earlier version
-	// of the plan — so the role does not name the claim: only the failure of the claim that works
-	// the role's step holds the issue, and only the failure of a look's claim ends that look
+	// Claim is the token of the claim that failed. Two claims of one issue can hold one role
+	// (record.WorkerClaim), so the role does not name the claim: only the failure of the claim that
+	// works the role's step holds the issue, and only the failure of a look's claim ends that look
 	// (workflow's claimFailed). It is "" on a fact from a daemon before the claim was carried,
 	// which keeps the role's rule.
 	Claim        claim.Token
@@ -2120,9 +2119,8 @@ type Refusal struct {
 
 // PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
 // cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
-// the workflow for a version that changes or removes a running task (RunningTaskChanged), or one
-// whose agent this release cannot name (AgentUnnamed). The message holds every reason in its
-// order, so a reader of the sentence alone reads every cause.
+// the workflow for a version that changes or removes a running task (RunningTaskChanged). The
+// message holds every reason in its order, so a reader of the sentence alone reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
@@ -2135,22 +2133,6 @@ func PlanRefused(reasons []plan.Refusal) *Refusal {
 // removes task, which is running: the owner stops it first.
 func RunningTaskChanged(task string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is running: stop it with stop_task before you change it.", task)}
-}
-
-// AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task
-// would take name — the name its key held in an earlier version, or its role's — which holder holds:
-// the key of another agent of the plan that holds the name, or the key whose rows held it in an
-// earlier version, "" for an agent with no key (record.NameAgents, record.UnnamedAgents). A name a
-// key held is that key's alone, and this release names each agent of an issue for a role and gives
-// each name to one agent, so such a version is refused as a plan before anything is written, never
-// as an error of the write.
-func AgentUnnamed(task string, place int, name, holder string) plan.Refusal {
-	held := "another agent of this plan, with no key,"
-	if holder != "" {
-		held = "key " + holder + ", from this version or an earlier one,"
-	}
-	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and %s holds the name %s, which this step's agent would take; "+
-		"a name a key held is that key's alone, and this release names each agent of an issue for a role and gives each name to one agent. This release of Legion does not carry it out yet.", place, task, held, name)}
 }
 
 // PlanVersionOld is the 409 PLAN_VERSION_OLD refusal of version given of issue's plan document,
@@ -2517,15 +2499,13 @@ func EntryFence(issue record.Issue, role claim.Role, served claim.Token, entry i
 
 // StepsWorkerFence is the 409 HANDOFF_NOT_THE_STEPS_WORKER refusal of a completion by token, a
 // claim of role on issue, of a step whose run's row, row, names another claim on a step of the plan,
-// and nil where token works the step. Two claims of one issue can hold one role — the agent of a
-// key on a step of another role, beside that role's own claim of an earlier version of the plan, or
-// two agents at two steps of the role — and the row names the one that works its step
-// (record.WorkerClaim), so a completion from the other is no report of the step. A row that names
-// no agent of its own (record.NamesItsAgent) names no worker here, and a completion that names no
-// claim, from a route before the claim was carried, is judged by its role. A completion of an
-// entry token's own claim served (served, record.ServedClaim) is the entry fence's to answer: a
-// step token ran that the task has since left for another agent's step, which EntryFence refuses
-// naming that agent (AnotherAgentsStep).
+// and nil where token works the step. Two claims of one issue can hold one role, and the row names
+// the one that works its step (record.WorkerClaim), so a completion from the other is no report of
+// the step. A row that names no agent of its own (record.NamesItsAgent) names no worker here, and a
+// completion that names no claim, from a route before the claim was carried, is judged by its role.
+// A completion of an entry token's own claim served (served, record.ServedClaim) is the entry
+// fence's to answer: a step token ran that the task has since left for another agent's step, which
+// EntryFence refuses naming that agent (AnotherAgentsStep).
 //
 // Both judges ask it before EntryFence: the completion route on its read, where the role works the
 // issue's phase, and the workflow's handoff on its own. Asked after, the fence would refuse such a

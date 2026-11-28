@@ -3,11 +3,13 @@
 --
 -- The key of phases is the issue, the role and the step the row runs (step_task, step_place),
 -- where it was the issue and the role. A role can stand at two steps of a task, one agent doing
--- both or one agent each, and the run of each step keeps a row of its own, with its report, its
+-- both where one key names both steps, or one agent each (such as `implementer` and
+-- `implementer-2`), and the run of each step keeps a row of its own, with its report, its
 -- completion and its entry, so the task of a later step names the report of each step before it
--- (record.PhaseRowAt). An issue with no plan rows keeps the empty task and place 0 on each row, so
--- it has one row for each role, as before, and so does every row the upgrade finds: the release
--- before ran each role at most once in a task, so no two of its rows share an issue and a role.
+-- (record.PhaseRowAt).
+-- An issue with no plan rows keeps the empty task and place 0 on each row, so it has one row for
+-- each role, as before, and so does every row the upgrade finds: the release before ran each role
+-- at most once in a task, so no two of its rows share an issue and a role.
 --
 -- A new generation clears the step of each row (record.Postgres.ClearGeneration), and it folds the
 -- rows of one role first, keeping the one with the highest entry, so the clear never makes two

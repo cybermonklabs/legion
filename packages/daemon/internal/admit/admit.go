@@ -631,8 +631,8 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // notice: in an outage every claim's turns fail, each claim owes a notice of its own, and the
 // machine tells at exactly the sixth turn in a row, so a notice dropped because another claim's
 // still waited would never be sent. Two claims of one issue, an architect and its worker, or two
-// claims that hold one role (a keyed agent on a step of another role, beside that role's own
-// claim), are two such claims, which is why the claim is the key. The tree-stalled notice names
+// claims that hold one role (record.WorkerClaim), are two such claims, which is why the claim is
+// the key. The tree-stalled notice names
 // no claim and no role, which keys it by its issue alone: a claim and a role that are empty are
 // terms the pending read leaves out.
 //
@@ -811,8 +811,8 @@ type phaseWorker struct {
 // token (claim.ProjectToken), and byKey is the project's live records by key, which the tree
 // roots are read from and which the slot repair walks its slots and its issues in accepting,
 // retro or merging through. entries is the caller's one batched read of the phases rows of its
-// candidates (record.Store.PhaseEntries), which the claim of the role's worker is read from
-// (record.WorkerClaimOf): a keyed agent on a step of another role is that step's worker.
+// candidates (record.Store.PhaseEntries), which the claim of the role's worker is read from: the
+// claim record.WorkerClaimOf gives the step.
 //
 // Its two callers are the repairs over phase workers: the tick's silent list (silentWorkers,
 // through phaseWorkers) and the selection of the roles behind the entry their phases row names
@@ -3587,9 +3587,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			}
 		}
 		standing := midPhaseMember{issue: member, owner: owner, carriedSlot: carried}
-		// The phase's owner is the claim the promotion's start reaches: the agent of the step the
-		// member stands in, which can be a keyed agent on a step of another role, read as every
-		// reader of a role's worker reads it (record.WorkerClaim), off the row the step's entry
+		// The phase's owner is the claim the promotion's start reaches: the claim
+		// record.WorkerClaim gives the step the member stands in, read as every reader of a role's
+		// worker reads it, off the row the step's entry
 		// wrote it on. The member keeps its generation and its rows keep their steps through the
 		// re-admission, so it is the claim the start names (workflow.Engine.StartPromotedWorker).
 		// Its token's refusal stays the fact's, as it was: the phase's own role is the member's
@@ -3610,8 +3610,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		}
 		// Every other stored claim of the member comes back with the tree, on a start that names it
 		// with its stored role (record.Store.IssueClaims): one claim gets one start, and no row of
-		// this walk names a role alone, whose claim a keyed agent can share with another role. A
-		// claim row is the durable record that a claim has run, so a role that never ran gets
+		// this walk names a role alone, which does not name one claim: two claims of one issue can
+		// hold one role (record.WorkerClaim). A claim row is the durable record that a claim has
+		// run, so a role that never ran gets
 		// nothing. The tree's architect is promotion's own start, with the task that hands it its
 		// tree; a member's own sub-architect is no phase worker and comes back with the rest.
 		stored, err := a.store.IssueClaims(ctx, tx, project, member.Key)
@@ -3961,7 +3962,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 	}
 	// The candidates are gathered first and their phases rows read in one statement before any is
 	// weighed, because the claim of each candidate's phase worker is read from its row
-	// (phaseWorkerOf): a keyed agent on a step of another role is that step's worker.
+	// (phaseWorkerOf): the claim record.WorkerClaimOf gives the step.
 	type candidate struct {
 		issue      record.Issue
 		admittedAt time.Time
@@ -4345,11 +4346,12 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 // A row the fences keep is weighed once more, against the claim it would start: a stop that
 // outlived the row's own start ends the row too, since the row's retry would otherwise start
 // the stopped worker again the moment a slot came (stopOutlivedStart). The claim a row would
-// start is the claim it names (record.OwedStart.Claim), the claim it was queued for, which the
-// outbox acts on; a row the release before wrote names none, and starts the claim of its role's
-// worker (record.WorkerClaimOf). The second read is one batched PhaseEntries call, made only for
-// rows that name no claim, and one batched RoleClaims call over the rows the fences kept, and no
-// read at all when they kept none: the rule reads nothing of the queued rows beside those claims.
+// start is the claim the outbox's start acts on (record.QueuedClaimOf): the claim it names
+// (record.OwedStart.Claim), the claim it was queued for, and for a row the release before wrote,
+// which names none, the claim of its role's worker. The second read is one batched PhaseEntries
+// call, made only for rows that name no claim, and one batched RoleClaims call over the rows the
+// fences kept, and no read at all when they kept none: the rule reads nothing of the queued rows
+// beside those claims.
 //
 // It runs before the waiting line is judged, and so before the cap loop hands out any slot
 // (promoteHolds). That is what keeps the line and this repair from disagreeing: the line offers
@@ -4399,12 +4401,11 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	if len(kept) == 0 {
 		return finished, nil
 	}
-	// The claim each kept row would start is the claim it names, and for a row that names none
-	// the claim of its role's worker (record.WorkerClaimOf), read from those rows' phases rows in
-	// one statement: a keyed agent on a step of another role is that step's worker. A row whose
-	// issue and role yield no claim token has no run to read, as the slot repair's holders have
-	// none (resumeSlottedWorkers): it stays owed and the rule passes over it rather than failing
-	// the whole fact.
+	// The claim each kept row would start is the claim record.QueuedClaimOf gives it: the claim it
+	// names, and for a row that names none the claim of its role's step, read from those rows'
+	// phases rows in one statement. A row whose issue and role yield no claim token has no run to
+	// read, as the slot repair's holders have none (resumeSlottedWorkers): it stays owed and the rule
+	// passes over it rather than failing the whole fact.
 	var unnamed []string
 	for _, keptRow := range kept {
 		if keptRow.owed.Claim == "" {
@@ -4419,11 +4420,9 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	}
 	weighed := kept[:0]
 	for _, keptRow := range kept {
-		token := keptRow.owed.Claim
-		if token == "" {
-			if token, err = record.WorkerClaimOf(project, keptRow.owed.Issue, keptRow.owed.Role, entries); err != nil {
-				continue
-			}
+		token, err := record.QueuedClaimOf(project, keptRow.owed.Issue, keptRow.owed.Role, keptRow.owed.Claim, entries)
+		if err != nil {
+			continue
 		}
 		keptRow.token = token
 		weighed = append(weighed, keptRow)

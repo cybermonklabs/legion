@@ -459,21 +459,28 @@ test("every Go-written fixture parses to a value equal to the file", () => {
   }
 });
 
-// The roles whose start waits for the issue's pod (`api.Issue.StartWaitsForPod`): a plugin parses
-// the state through `legionIssue`, which strips a key it does not name, so a mirror without the
-// line would drop the list in silence, and the gate above names the key the day a golden holds it.
-test("a served issue keeps the roles whose start waits for its pod", () => {
+// Each start that waits for the issue's pod, by its role and the token of the claim it starts
+// (`api.Issue.StartWaitsForPod`, the start-wait token's contract entry): a plugin parses the state
+// through `legionIssue`, which strips a key it does not name, so a mirror without the line, or
+// without a key of an entry, would drop it in silence. Two claims of one issue can hold one role,
+// so the role's own start and a second agent's start of the role are two entries, told apart by
+// their tokens.
+test("a served issue keeps each start that waits for its pod, by its role and its claim", () => {
   const state = fixture("state.json") as { issues: Record<string, Record<string, unknown>> };
   const atStep = state.issues["LEGION-240"];
   if (atStep?.phase !== "step") {
     throw new Error("state fixture lacks LEGION-240 at step");
   }
-  atStep.startWaitsForPod = ["checker"];
+  // Built by `roleToken`, as the daemon builds a claim token: a token spelled from words would be
+  // a fixture secret of words (`fixtureSecret`).
+  const starts = (["checker", "implementer", "implementer-2"] as const).map((agent) => ({
+    role: agent === "checker" ? "checker" : "implementer",
+    token: roleToken("legion", "LEGION-240", agent),
+  }));
+  atStep.startWaitsForPod = starts;
 
   expect(droppedFromState(state)).toBeUndefined();
-  expect(LegionStateResponse.parse(state).issues["LEGION-240"]?.startWaitsForPod).toEqual([
-    "checker",
-  ]);
+  expect(LegionStateResponse.parse(state).issues["LEGION-240"]?.startWaitsForPod).toEqual(starts);
 });
 
 // The other direction of that gate, and the hole a merge opened in it: the case above walks the
@@ -1210,13 +1217,16 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
 
 // A step of a role of the deployment runs as the phase `step`, and the issue names the role that
 // works it, `stepRole`, at `step` and while a hold keeps it out of that step. An issue whose pod
-// was built before that role names it in `startWaitsForPod` and holds no claim of it; a held issue
-// keeps the failed claim of that role as its worker.
+// was built before that role names the start of it in `startWaitsForPod`, by the role and the
+// token of the claim it starts (the start-wait token's contract entry), and holds no claim of it;
+// a held issue keeps the failed claim of that role as its worker.
 test("the state golden carries an issue at step and the role of the deployment that works it", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   const atStep = state.issues["LEGION-240"];
   expect([atStep?.phase, atStep?.stepRole]).toEqual(["step", "checker"]);
-  expect(atStep?.startWaitsForPod).toEqual(["checker"]);
+  expect(atStep?.startWaitsForPod).toEqual([
+    { role: "checker", token: roleToken("legion", "LEGION-240", "checker") },
+  ]);
   expect(Object.keys(atStep?.workers ?? {})).toEqual([]);
   const held = state.issues["LEGION-241"];
   expect([held?.phase, held?.heldFrom, held?.stepRole]).toEqual(["held", "step", "checker"]);
@@ -3359,12 +3369,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // and its claims of a role of the deployment as a caller below that entry reads them
   // (`belowDeploymentRoles`). The stranded token's entry (`strandedTokenContract`) stands above
   // that: it serves each claim nothing will wake and each claim view without its `token`, and each
-  // issue without its `otherClaims` (`withoutStrandedTokens`, `withoutClaimTokens`). One value strip
-  // stands above 199 as well: `caches`, the source of the repository-cache-room row, arrived at
-  // contract 213, so that row is served here without its `source`, every other field of it and
-  // every other row as the state golden holds them. The gate-basis entry's value strips take
-  // nothing more here: the strip of its two step statuses takes the `gatedSteps` its band has
-  // taken already, and the golden holds no issue in `awaiting_children` and no held row of it.
+  // issue without its `otherClaims` (`withoutStrandedTokens`, `withoutClaimTokens`). The start-wait
+  // token's entry (`startWaitTokenContract`) stands above that: it serves each issue's
+  // `startWaitsForPod` as the roles of its starts (`withoutStartWaitTokens`), a list the band of
+  // the deployment roles' entry already leaves off. One value strip stands above 199 as well:
+  // `caches`, the source of the repository-cache-room row, arrived at contract 213, so that row is
+  // served here without its `source`, every other field of it and every other row as the state
+  // golden holds them. The gate-basis entry's value strips take nothing more here: the strip of
+  // its two step statuses takes the `gatedSteps` its band has taken already, and the golden holds
+  // no issue in `awaiting_children` and no held row of it.
   const recordedBelow = daemonApiRecords(fixtureDir)
     .records.map((record) => record.contract)
     .filter((contract) => contract < repositoriesLiveContract);

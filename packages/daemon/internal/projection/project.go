@@ -132,9 +132,10 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
-	// The roles of the starts that wait because their issue's pod lacks the slot of the start's
-	// claim or the role of its step, by issue: a start waiting on its backoff, which may have no
-	// claim to show yet.
+	// The starts that wait because their issue's pod lacks the slot of the start's claim or the
+	// role of its step, by issue, each with its role and the claim its row names: a start waiting
+	// on its backoff, which may have no claim to show yet. Each issue's view names them below,
+	// once its phases rows are read.
 	waitingForPod, err := in.Store.StartsWaitingForPod(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err
@@ -171,10 +172,8 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// entry its phases row names. An issue's view reads them off the claim of the worker on the
 	// role's step (record.WorkerClaim over the issue's phases rows): the claim the role's row names
 	// while that row runs a step of the issue's plan, and otherwise the role's own claim, which is
-	// the claim the admission pass weighs. Two claims can hold one role — the agent of a key on a
-	// step of another role, beside that role's own claim of an earlier version of the plan, or two
-	// agents at two steps of the role — so the issue and the role do not name the claim, and the
-	// worker's token does.
+	// the claim the admission pass weighs. Two claims of one issue can hold one role, so the issue
+	// and the role do not name the claim, and the worker's token does.
 	entries := make(map[claim.Token]claimEntry, len(in.Claims))
 	for _, current := range in.Claims {
 		entries[current.Token] = claimEntry{given: current.GivenEntry, handshake: current.Handshake}
@@ -241,9 +240,6 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			Priority: &priority,
 			Workers:  map[claim.Role]api.PhaseView{},
 		}
-		for _, role := range waitingForPod[issue.Key] {
-			view.StartWaitsForPod = append(view.StartWaitsForPod, string(role))
-		}
 		// The priority Dispatch resolves the issue to, absent where Dispatch sent none
 		// (api.Issue.ResolvedPriority), and the issue it resolves it from, empty where it is the
 		// issue's own or none (api.Issue.PriorityFrom): an issue Dispatch resolved no priority
@@ -288,6 +284,22 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		phases, err := in.Store.Phases(ctx, in.Tx, issue.Key)
 		if err != nil {
 			return api.State{}, err
+		}
+		// Each start that waits for the issue's pod, by its role and the claim it starts, each once
+		// (record.StartClaims): the claim its row names, or, for a row that names none, the claim the
+		// record gives the role's step, which is the claim the outbox's next try of that row acts on,
+		// since the outbox's start reads it by the same rule (record.QueuedClaim). Two claims of one
+		// issue can hold one role, so a role alone would name a second agent of the role as the
+		// role's own agent. The rule fails only for a role or an issue no token spells, and the
+		// outbox read this same claim from the same row's role and issue on the try that wrote its
+		// wait, so a failure is a fault of the record and fails the state rather than serving a
+		// start unnamed.
+		starts, err := record.StartClaims(projectToken, issue.Key, waitingForPod[issue.Key], phases)
+		if err != nil {
+			return api.State{}, fmt.Errorf("name the starts of %s that wait for its pod: %w", issue.Key, err)
+		}
+		for _, start := range starts {
+			view.StartWaitsForPod = append(view.StartWaitsForPod, api.StartWaitView{Role: start.Role, Token: start.Token})
 		}
 		// Each role's row now (record.PhaseRowOf), the row with the highest entry: a role that
 		// stands at two steps of a task has a row for each, and its worker is served from the row of

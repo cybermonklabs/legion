@@ -3,11 +3,13 @@ package record
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
 // PhaseRowOf is role's row among rows now, read with no walk: the row with the highest entry, and
@@ -178,19 +180,20 @@ func StartLeft(rows []PhaseRow, role claim.Role, entry int64) (int64, bool) {
 }
 
 // PhaseRowAt is role's row among rows where the task of an issue with plan rows stands: task, at
-// at, whose steps are steps. A role can stand at two steps of a task, one agent doing both or one
-// agent each, and each run of a step keeps a row of its own (StepTask, StepPlace), so the row read
-// is the row of one of the role's places in the task: its step at at where the step there is the
-// role's; else its latest place before at, the retro, the implementer's (phase.RoleFor), and the
-// merge, the merger's, standing after every step; else its first place after at, so a read or a
-// write before the role's first step reaches the row of that step, as the one row of a role did;
-// and place 0 where the task gives the role no place, so every write of such a role lands on one
-// row. Where the row of that place does not stand yet, the role's row of no step (StepTask "", a
-// row a new generation cleared or the release before wrote) is the role's row, as it was before a
-// step was written on it, and the step's entry moves it to the step (workflow's enter). Where
-// neither stands, it is the zero row stamped with role, task and that place, which a caller that
-// writes it back writes as that row. For an issue with no plan rows (task ""), each role has one
-// row, PhaseRowOf's.
+// at, whose steps are steps. A role can stand at two steps of a task, of one agent or of two (such
+// as a second agent of the role, `implementer-2`), and each run of a step keeps a row of its own
+// (StepTask, StepPlace), so the row read is the row of
+// one of the role's places in the task: its step at at where the step there is the role's; else
+// its latest place before at, the retro, the implementer's (phase.RoleFor), and the merge, the
+// merger's, standing after every step; else its first place after at, so a read or a write before
+// the role's first step reaches the row of that step, as the one row of a role did; and place 0
+// where the task gives the role no place, so every write of such a role lands on one row. Where
+// the row of that place does not stand yet, the role's row of no step (StepTask "", a row a new
+// generation cleared or the release before wrote) is the role's row, as it was before a step was
+// written on it, and the step's entry moves it to the step (workflow's enter). Where neither
+// stands, it is the zero row stamped with role, task and that place, which a caller that writes it
+// back writes as that row. For an issue with no plan rows (task ""), each role has one row,
+// PhaseRowOf's.
 //
 // It is the one reading of a role's row where a walk is known: the engine's (workflow's phaseRow,
 // enter and reportsBefore) and the completion route's, which knows the place it was handed. A
@@ -324,9 +327,11 @@ func NamesItsAgent(row PhaseRow) bool { return row.StepTask != "" && row.Claim !
 
 // RowWorker is the claim of the agent whose runs wrote row, role's phases row of issue: the claim
 // row names where it names its agent (NamesItsAgent), and the role's own token,
-// claim.NewToken(project, issue, role), for every other row. A step's agent can be the agent of a
-// key, whose claim is the one it started on an earlier step of another role, so a role's own token
-// does not name it. project is the project's token, as claim.NewToken takes it, and a role that is
+// claim.NewToken(project, issue, role), for every other row. A step's agent can be a second agent
+// of the role in a task, whose claim has a name of its own (`…-implementer-2` beside
+// `…-implementer`), or the agent of a key, whose claim is the one it started on an earlier step of
+// another role, so a role's own token does not name it. project is the project's token, as
+// claim.NewToken takes it, and a role that is
 // no role of Legion yields its refusal. The worker of a role now (WorkerClaim) and the agent whose
 // review a step's row holds the commit of (workflow's stepRunRow) are read through it.
 func RowWorker(project, issue string, role claim.Role, row PhaseRow) (claim.Token, error) {
@@ -342,12 +347,12 @@ func RowWorker(project, issue string, role claim.Role, row PhaseRow) (claim.Toke
 // Each derivation of the claim of a role's worker from an issue and a role calls it, so a row that
 // names a role reaches the agent that works that role's step when the row runs. It is one rule with
 // the start of that step, which names the claim the step's entry writes on the row (workflow's
-// startClaim), because a row of no step stands only where the agent of the place its issue stands
+// stepReach), because a row of no step stands only where the agent of the place its issue stands
 // at is the role's own: an issue a new generation put back at admitted, a run of the release
 // before, whose plans name no key, and an issue with no plan rows. The clear of a tree leaves the
 // steps of every member whose generation it keeps (Store.ClearTreeGeneration), so no row loses its
-// step while its issue stands at a step of a keyed agent, and the start of a step and every reader
-// of its worker name one agent.
+// step while its issue stands at a step of a second agent of a role or of a keyed agent, and the
+// start of a step and every reader of its worker name one agent.
 func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim.Token, error) {
 	return RowWorker(project, issue, role, PhaseRowOf(rows, role))
 }
@@ -355,8 +360,85 @@ func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim
 // WorkerClaimOf is WorkerClaim over entries, a batched read of many issues' phases rows
 // (Store.PhaseEntries), for a pass over many issues that reads their rows in one statement.
 func WorkerClaimOf(project, issue string, role claim.Role, entries map[PhaseRole]PhaseEntry) (claim.Token, error) {
+	return WorkerClaim(project, issue, role, entryRows(issue, role, entries))
+}
+
+// entryRows is role's phases row of issue in entries, a batched read (Store.PhaseEntries), as the
+// one row of rows WorkerClaim and QueuedClaim read: its claim and the task of the step it runs.
+func entryRows(issue string, role claim.Role, entries map[PhaseRole]PhaseEntry) []PhaseRow {
 	entry := entries[PhaseRole{Issue: issue, Role: role}]
-	return WorkerClaim(project, issue, role, []PhaseRow{{Issue: issue, Role: role, Claim: entry.Claim, StepTask: entry.StepTask}})
+	return []PhaseRow{{Issue: issue, Role: role, Claim: entry.Claim, StepTask: entry.StepTask}}
+}
+
+// QueuedClaim is the claim a queued outbox row of role on issue acts on: the claim the row names,
+// and for a row that names none the claim WorkerClaim gives role's step over rows. A phase
+// worker's start names the claim it was queued for (SuperviseRequest.Claim), and a supervise row
+// of another op names the one stored claim it stands for. A hook's words, an update ask and a
+// merge forward's message name the claim their producer read as the worker of the role's step. A
+// row the release before wrote names none, and so does the merge-queue message, which goes to the
+// issue's merger.
+//
+// It is the one rule of that claim, and each reader of the claim of a queued row calls it, or
+// QueuedClaimOf over a batched read: the outbox acts on it (internal/daemon's outbox, for a
+// supervise row of every op, and its workerToken, for the rows of the other kinds and the
+// supervise rows its other paths run), a pause lists each row it holds under it (pauseHeldClaim),
+// the run of a role counts a queued supervise row under it (RoleRuns and ClaimQueued, through
+// reachedClaim), admission weighs an owed start against it (admit's finishFencedStarts), and the
+// served state and the idle release's notice name a start that waits for its pod by it
+// (StartClaims). Its error is WorkerClaim's, for a role or an issue no token spells, and each
+// caller says what such a row is to it.
+func QueuedClaim(project, issue string, role claim.Role, named claim.Token, rows []PhaseRow) (claim.Token, error) {
+	if named != "" {
+		return named, nil
+	}
+	return WorkerClaim(project, issue, role, rows)
+}
+
+// QueuedClaimOf is QueuedClaim over entries, a batched read of many issues' phases rows
+// (Store.PhaseEntries), for a pass over many queued rows that reads their issues' rows in one
+// statement.
+func QueuedClaimOf(project, issue string, role claim.Role, named claim.Token, entries map[PhaseRole]PhaseEntry) (claim.Token, error) {
+	return QueuedClaim(project, issue, role, named, entryRows(issue, role, entries))
+}
+
+// WaitingClaim is a start that waits for its issue's pod with the claim it starts: Role, the role
+// of the start's step, and Token, the claim QueuedClaim gives the start, never "". It is a type of
+// its own, apart from pods.WaitingStart, whose Claim is the claim the start's row names and "" for
+// a row that names none. So a start as the readers of those rows keep it
+// (pods.IdleView.StartsWaitingForPod, Store.StartsWaitingForPod) does not compile where the claim
+// a start acts on is wanted (internal/daemon's podWaitHeldWords): only StartClaims makes one.
+type WaitingClaim struct {
+	Role  claim.Role
+	Token claim.Token
+}
+
+// StartClaims is each of starts, starts of issue that wait for its pod (pods.WaitingStart), as the
+// claim it starts (WaitingClaim, QueuedClaim over rows), each once and in the order of starts: a
+// row that names a claim and a row of its role that names none can start one claim, and two rows
+// can be one start queued twice. The readers of those rows keep each row (Store.StartsWaitingForPod,
+// pods.IdleView.StartsWaitingForPod), so this is the one place they are made distinct.
+func StartClaims(project, issue string, starts []pods.WaitingStart, rows []PhaseRow) ([]WaitingClaim, error) {
+	claims := make([]WaitingClaim, 0, len(starts))
+	for _, start := range starts {
+		token, err := QueuedClaim(project, issue, start.Role, start.Claim, rows)
+		if err != nil {
+			return nil, fmt.Errorf("the claim of %s's start of %s that waits for its pod: %w", issue, start.Role, err)
+		}
+		if started := (WaitingClaim{Role: start.Role, Token: token}); !slices.Contains(claims, started) {
+			claims = append(claims, started)
+		}
+	}
+	return claims, nil
+}
+
+// IdlePhaseRows is the phases rows an idle view keeps (pods.IdleView.Phases), one of each role
+// with its claim and the task of the step it runs, as the rows WorkerClaim and QueuedClaim read.
+func IdlePhaseRows(view pods.IdleView) []PhaseRow {
+	rows := make([]PhaseRow, 0, len(view.Phases))
+	for role, row := range view.Phases {
+		rows = append(rows, PhaseRow{Issue: view.Issue, Role: role, Claim: row.Claim, StepTask: row.StepTask})
+	}
+	return rows
 }
 
 // PhaseReader reads an issue's phases rows (Store.Phases), what ReadWorkerClaim needs of a store.
@@ -368,8 +450,9 @@ type PhaseReader interface {
 // that works role's step of issue now, read in the caller's transaction. It is the one reader of
 // that claim for a caller that holds no rows of its own — the engine (Engine.workerClaim), the
 // open phase's worker (workflow.OpenWorker), the operator's routes (internal/api's workerToken) and
-// the outbox's executors (internal/daemon's workerToken and lookBoundAfterPause) — so each reads
-// the rows and the rule the same way.
+// the outbox's look bound (internal/daemon's lookBoundAfterPause) — so each reads the rows and the
+// rule the same way. A queued row's claim is QueuedClaim's, which reads the worker only for a row
+// that names no claim.
 func ReadWorkerClaim(ctx context.Context, phases PhaseReader, tx pgx.Tx, project, issue string, role claim.Role) (claim.Token, error) {
 	rows, err := phases.Phases(ctx, tx, issue)
 	if err != nil {

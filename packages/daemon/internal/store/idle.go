@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -45,11 +44,11 @@ var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prom
 	"merge_queue_removal", "merge_holds_changed", "conflict_confirm", "merge_forward"}
 
 // startWaitsForPodRow is the predicate of a start row that waits because the issue's pod lacks the
-// slot of the start's claim or the role of its step, built before the deployment defined that name
-// (the outbox's roleWaitsForItsPod writes its last error with pods.StartWaitsForPodPrefix, the
-// parameter %s names). Such a start is no delivery the
-// pod waits for: the pod cannot run it, and only its update round or its release lets it start.
-// The view's StartsWaitingForPod lists the roles of such starts (readIdleView).
+// slot of the start's claim or the role of its step, built before the deployment defined or the
+// issue's plan named that name (the outbox's roleWaitsForItsPod writes its last error with
+// pods.StartWaitsForPodPrefix, the parameter %s names). Such a start is no delivery the pod waits
+// for: the pod cannot run it, and only its update round or its release lets it start. The view's
+// StartsWaitingForPod lists such starts (readIdleView).
 const startWaitsForPodRow = `(kind = 'supervise' and payload->>'op' = 'start' and starts_with(coalesce(last_error, ''), %s))`
 
 // idleWaitingRow is the predicate, over the outbox with idleWaitingKinds as $2 and
@@ -956,8 +955,8 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, r
 // backstop's due time are stamped with (At, the caller's clock), the backstop the stop of the
 // issue's open phase's worker arms (the idle release's backstop_minutes; zero arms none, as
 // where the deployment releases no pod), and the claim that works an issue's open phase, read in
-// the cancel's transaction (OpenWorker, the workflow's workflow.OpenWorker: at step, the claim the
-// record gives the running step, which can be a keyed agent's beside the role's own claim), which
+// the cancel's transaction (OpenWorker, the workflow's workflow.OpenWorker: at step, the claim
+// record.WorkerClaim gives the running step), which
 // the store does not restate (nil arms no backstop). At is required of every cancel, since whether
 // the project is paused is read inside the cancel's own transaction; a cancel made while the
 // project runs reads nothing else of it.
@@ -993,8 +992,9 @@ type ReleaseCancelled struct {
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
 // unpushed work; and, for the worker of the issue's open phase serving the issue's generation, its
 // backstop, which the record arms only where the stop owes no launch. That worker is a claim
-// (ReleaseCancelPause.OpenWorker), read once for the cancel: at step a keyed agent's claim works the
-// step beside the role's own claim, which gets none. A wake taken since is left open: it is the
+// (ReleaseCancelPause.OpenWorker), read once for the cancel: at step, the claim record.WorkerClaim
+// gives the step. Two claims of one issue can hold one role, and the one that works no step gets
+// none. A wake taken since is left open: it is the
 // launch the role is owed, and its start row runs at the resume. The caller holds the issue's lock
 // and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
@@ -1090,10 +1090,9 @@ type releasedRole struct {
 
 // stillReleasedClaims are the claims among suspended, the tokens of the claims a release's own
 // stops suspended (issue_releases.suspended), that are still suspended as `released`, in token
-// order. Two claims can hold one role — a keyed agent on a step of another role, beside that
-// role's own claim from an earlier version of the plan, or two agents at two steps of the role —
-// and only the ones the release suspended are its to resume: another claim of the role an earlier
-// release left released is not.
+// order. Two claims of one issue can hold one role (record.WorkerClaim), and only the ones the
+// release suspended are its to resume: another claim of the role an earlier release left released
+// is not.
 func stillReleasedClaims(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string) ([]releasedRole, error) {
 	if len(suspended) == 0 {
 		return nil, nil
@@ -1273,19 +1272,19 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		&view.IssueSuspendQueued, &view.CheckLookOpen, &view.WorkspaceCheckQueued); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the queued rows of %s for its idle view: %w", issue, err)
 	}
-	waitingForPod, err := tx.Query(ctx, fmt.Sprintf(`select payload->>'role' from outbox
-		where issue = $1 and %s order by id`, fmt.Sprintf(startWaitsForPodRow, "$2")), issue, pods.StartWaitsForPodPrefix)
+	waitingForPod, err := tx.Query(ctx, fmt.Sprintf(`select payload->>'role',
+		coalesce(payload->>'claim', '') from outbox where issue = $1 and %s order by id`,
+		fmt.Sprintf(startWaitsForPodRow, "$2")), issue, pods.StartWaitsForPodPrefix)
 	if err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the starts of %s that wait for its pod: %w", issue, err)
 	}
-	roles, err := pgx.CollectRows(waitingForPod, pgx.RowTo[string])
-	if err != nil {
-		return pods.IdleView{}, fmt.Errorf("read the starts of %s that wait for its pod: %w", issue, err)
+	scan := func(row pgx.CollectableRow) (pods.WaitingStart, error) {
+		var role, token string
+		err := row.Scan(&role, &token)
+		return pods.WaitingStart{Role: claim.Role(role), Claim: claim.Token(token)}, err
 	}
-	for _, role := range roles {
-		if !slices.Contains(view.StartsWaitingForPod, claim.Role(role)) {
-			view.StartsWaitingForPod = append(view.StartsWaitingForPod, claim.Role(role))
-		}
+	if view.StartsWaitingForPod, err = pgx.CollectRows(waitingForPod, scan); err != nil {
+		return pods.IdleView{}, fmt.Errorf("read the starts of %s that wait for its pod: %w", issue, err)
 	}
 	if err := tx.QueryRow(ctx, `select coalesce((select reason from pod_holds
 		where project = $1 and issue = $2 and not ended order by id desc limit 1), '')`,

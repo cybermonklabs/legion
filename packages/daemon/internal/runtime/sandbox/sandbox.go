@@ -1025,10 +1025,11 @@ func podContainer(role claim.Role) string {
 }
 
 // launcherOf is the role of the pod's launcher that serves slot, the slot a claim's process runs in
-// (claim.Token.Slot): a pod runs one launcher of each role of its kind (podKind.roles), and the
-// launcher of a role serves the slot of that role's name, with that role's Secret, volumes and
-// address record. A slot no role of the pod is named for is one the pod was built without
-// (runtime.PodLacks).
+// (claim.Token.Slot): a pod runs one launcher of each of its slots, which are the roles
+// of its kind (podKind.roles) and, for an issue pod, each agent name of its plan that no role has,
+// such as `implementer-2` (issueSlots), and the launcher of a slot serves the slot of that name,
+// with that slot's Secret, volumes and address record. A slot the pod has no launcher of is one the
+// pod was built without (runtime.PodLacks).
 func launcherOf(slot claim.Agent) claim.Role { return claim.Role(slot) }
 
 // checkLocator refuses a locator this runtime did not mint.
@@ -1218,8 +1219,9 @@ var _ runtime.WorkspaceWorkReader = (*Runtime)(nil)
 // of the issue shares holds work that no branch or tag on origin holds, over that claim's
 // connection. The claim must be one whose process runs in the issue's own running pod
 // (runningClaimConn). A claim with no locator, one whose pod is not the recorded one, and one
-// with no connection are each a refusal rather than an answer of no work. A role does not name
-// the claim of a keyed agent working that role's step, so the release names the claim on its row
+// with no connection are each a refusal rather than an answer of no work. The claim is named by
+// its token rather than derived from a role, since two claims of one issue can hold one role
+// (record.WorkerClaim), so the release names the claim on its row
 // (record.IssueWorkspaceCheck.Claim).
 func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, token claim.Token) (runtime.WorkspaceWork, error) {
 	conn, err := r.runningClaimConn(ctx, issue, token)
@@ -1513,11 +1515,11 @@ func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attr
 	err := r.sandboxClient().Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &policy, Preconditions: &fence})
 	switch {
 	case err == nil:
-		r.forgetLauncherCredentials(name)
+		r.launcherAuth.forgetSandbox(name)
 		r.noteTaken(name, sandboxTaken{uid: uid})
 		r.log.Info(msg, append([]any{"sandbox", name, "uid", uid}, attrs...)...)
 	case apierrors.IsNotFound(err):
-		r.forgetLauncherCredentials(name)
+		r.launcherAuth.forgetSandbox(name)
 		r.noteTaken(name, sandboxTaken{uid: uid})
 	case apierrors.IsConflict(err):
 		r.log.Info("sandbox runtime: kept a sandbox written since its delete was decided; the orphan sweep decides it again",

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -309,4 +310,41 @@ func (s *Store) IssueSandboxHome(ctx context.Context, project, issue string) (st
 		return "", fmt.Errorf("read the tree issue %s's Sandbox belongs to: %w", issue, err)
 	}
 	return home, nil
+}
+
+// PlanAgents satisfies the sandbox runtime's Store: each agent of issue's plan in force by its name,
+// with the role of its first step. The plan in force is the plan_steps rows of the issue's
+// generation, which a version replaces task by task (record.Postgres.PutPlan). Each step's agent is
+// named by the one rule every reader of a stored step names it by (plan.StoredAgentName): a step of
+// the key owner names none, so it is passed over. Steps are read in the order of their task and
+// place, so an agent's role is the role of its first one. The record is the project's own
+// (lower(project) = project), as IssueSandboxHome reads it; an issue with no plan rows at its
+// generation, or no record, has none.
+func (s *Store) PlanAgents(ctx context.Context, project, issue string) (map[claim.Agent]claim.Role, error) {
+	agents := map[claim.Agent]claim.Role{}
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select s.role, s.agent_key, s.agent
+			from plan_steps s join issues i on i.key = s.issue and i.generation = s.generation
+			where i.key = $2 and lower(i.project) = $1
+			order by s.task, s.position`, project, issue)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var role, key, stored string
+			if err := rows.Scan(&role, &key, &stored); err != nil {
+				return err
+			}
+			name := claim.Agent(plan.StoredAgentName(key, stored))
+			if _, named := agents[name]; name != "" && !named {
+				agents[name] = claim.Role(role)
+			}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the agents of the plan of %s: %w", issue, err)
+	}
+	return agents, nil
 }

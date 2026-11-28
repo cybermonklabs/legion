@@ -335,7 +335,7 @@ run_tolerations='[]'
 admitted_scheduling=
 # The daemon's log text the children's and tree 1's Sandboxes are judged by: the delete a child's
 # stop logs — its close as done here, and a park the same way, since SuspendIssue deletes the
-# Sandbox and the role Secrets it owns once the pod is gone, and the disk went with that pod
+# Sandbox and the Secrets it owns once the pod is gone, and the disk went with that pod
 # (internal/runtime/sandbox/issue_suspend.go).
 deleted_msg="sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned"
 # How long a planner the driver has told to plan gets to finish: before its handoff it runs its two
@@ -619,7 +619,9 @@ limit_pending() {
 # would wrongly BLOCK an unrelated later timeout on an old failure. Ties a match to the current
 # check instead: reads the daemon log for a claim that failed with launch failures ran out at or
 # after check_started, whose token (claim_token, lib/workflow.sh:133) names an issue inside
-# SELECTOR; from the pod watch, keeps that issue's pod if it was Unschedulable at or before the
+# SELECTOR — cut as the daemon's claim.Token cuts it, the issue key and then the agent's name, a
+# role or a numbered name such as implementer-2, so the claim of every agent of the issue counts;
+# from the pod watch, keeps that issue's pod if it was Unschedulable at or before the
 # failure with no PodScheduled=True before it (placement after the failure still counts) and was
 # never deleted at or before the failure (a pod of an earlier, already-abandoned incarnation of
 # the same issue is not evidence about this one); then requires Karpenter's own nodepool-limit
@@ -662,7 +664,7 @@ limit_pending_exhausted() {
     | [$lines[]
         | select(.msg == "supervise: claim failed" and .why == "launch failures ran out")
         | select((.time | seconds) >= $since_t)
-        | (.claim | capture("^legion-" + $run_label + "-(?<issue>.+)-(?<role>architect|planner|implementer|tester|reviewer|merger)$")) as $m
+        | (.claim | capture("^legion-" + $run_label + "-(?<issue>[a-z][a-z0-9]*-[0-9]+)-(?<agent>[a-z][a-z0-9-]*)$")) as $m
         | select($m != null)
         | {issue: ($m.issue | ascii_upcase), failed_at: (.time | seconds)}
       ] as $failures
@@ -4061,7 +4063,7 @@ begin child-release
 # (INFRA-80); the root's Sandbox stays Running, its own pod's disk Bound and its pod the same.
 # Child 2 set backlog: a park reaches SuspendIssue exactly as a close does (linger.go enqueues an
 # IssueSuspend for every stop that is not a merged done), so its Sandbox is deleted with the
-# role Secrets it owned once its pod is gone, and its disk went with that pod; nothing of the
+# Secrets it owned once its pod is gone, and its disk went with that pod; nothing of the
 # parked child is left to keep, and its next todo (child-reentered) makes the Sandbox afresh.
 # The two slots those children held are freed with them, and the line's first issue takes one:
 # tree 3, waiting since issue-independence. A child's slot going to a root is the cap counting
@@ -6625,16 +6627,16 @@ note "merged pull request #$pr_number holds $(gh api --paginate "repos/$repo/pul
 on_tree "$tree1" wait_for_phase "$tree1" "done" 900
 phase_change_logged "$tree1" merging "done" pull_request_merged ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from merging to done on pull_request_merged"
-waited=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
-[ "$waited" = 0 ] ||
-  fail "the daemon logged $tree1's merged close waiting for the issues beneath it $waited times, though $child3 and $child4 left the workflow at children-first-acceptance: $(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | tail -1)"
-# The read is of the architect's session, and notice_line prints nothing for a session it cannot
-# read, so the read is proven first: an empty read then comes from a session that holds none.
+merge_waits=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
+[ "$merge_waits" = 0 ] ||
+  fail "the daemon logged $tree1's merged close waiting for the issues beneath it $merge_waits times, with none of its tree in the workflow"
+# The read is of the architect's session, and notice_deliveries counts nothing in a session it
+# cannot read, so the read is proven first: a count of 0 then comes from a session that holds none.
 claim_session_text "$tree1" architect >/dev/null ||
   fail "tree 1's architect has no readable session, so its pr-merged notices cannot be counted"
-merged_notice=$(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")")
-[ -z "$merged_notice" ] ||
-  fail "$tree1's architect holds a pr-merged notice, want none, since the merge closed $tree1: $(cut -c1-300 <<<"$merged_notice")"
+merged_notices=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")")
+[ "$merged_notices" = 0 ] ||
+  fail "the merge that closed $tree1 told its architect pr-merged $merged_notices times, want none"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
 # No issue of tree 1 holds an admission slot once it closes: the root's row went when it last
@@ -6677,7 +6679,7 @@ timeout_hook=limit_pending_blocked # clean_smoke_main leaves the hook empty
 on_tree "$tree1" until_true 600 "the tester's pending report on the first look of $tree1's production check" check_look_reported "$tree1" 1
 # root_parked: the root keeps no Sandbox, no pod and no disk between its looks. The pending report
 # suspends the tester's claim and queues an IssueSuspend, which deletes the Sandbox with the
-# role Secrets it owned once the pod is gone (internal/workflow/check.go endLookPending), exactly as
+# Secrets it owned once the pod is gone (internal/workflow/check.go endLookPending), exactly as
 # any other stop of an issue does, so there is no mode left to read: the gone-read of
 # child1_released is the signal here too, the pod's disk inside it for the reason child2_parked
 # gives. root_running: a look's wake has made the Sandbox again, Running, with a pod. Each read is
@@ -6763,7 +6765,7 @@ pass
 begin node-release
 # Tree 1 lingers (linger_hours 0.5, from the close its merge brought on): no issue of it
 # keeps a Sandbox or a pod — the linger suspends every member and queues an IssueSuspend for each
-# (linger.go beginLinger), which deletes that member's Sandbox, with the role Secrets it owned,
+# (linger.go beginLinger), which deletes that member's Sandbox, with the Secrets it owned,
 # once its pod is gone, and the disk went with the pod; children 2, 3 and 4 had already lost theirs
 # to their parks — and no pod of tree 1 is left on any node a pod of tree 1 ran on. No pod asks for
 # or keeps off a node (LEGION-632): a node empties when the pods on it stop, and its NodePool
@@ -6877,7 +6879,7 @@ begin close
 # waited, and the reads below hold either way; the close waits while a member's production check is
 # open, which production-check-bound saw closed) the tree's cleanup foreground-deletes every Sandbox
 # still carrying tree 1's label, and the linger leaves it little: a member's own stop took its
-# Sandbox and the role Secrets it owned once that member's pod was gone — child 1's at its done,
+# Sandbox and the Secrets it owned once that member's pod was gone — child 1's at its done,
 # child 2's at child-release, those of children 3 and 4 at the parks that let the sign-off land, the
 # root's at the linger's IssueSuspend row and again when its production check closed — and each
 # disk went with the pod that owned it. Every member of the tree is out of the workflow, so nothing

@@ -56,10 +56,18 @@ func (r *idleWakeRig) startChecker(issue idleRigIssue) {
 	}, time.Now().UTC()))
 }
 
-// startWaitsForPod is the roles the served state names as waiting for the issue's pod.
-func (r *idleWakeRig) startWaitsForPod(issue idleRigIssue) []string {
+// startWaitsForPod is the starts the served state names as waiting for the issue's pod, each by
+// its role and the claim it starts.
+func (r *idleWakeRig) startWaitsForPod(issue idleRigIssue) []api.StartWaitView {
 	r.t.Helper()
 	return r.api.state().Issues[issue.key].StartWaitsForPod
+}
+
+// checkerStart is the checker's start as the served state names it: by the role and the token of
+// the checker's own claim, which the start makes once the pod is replaced.
+func (r *idleWakeRig) checkerStart(issue idleRigIssue) api.StartWaitView {
+	r.t.Helper()
+	return api.StartWaitView{Role: podWaitRigRole, Token: r.roleToken(issue, podWaitRigRole)}
 }
 
 // claimOf is whether the operator's listing holds a claim of role on the issue.
@@ -223,8 +231,8 @@ func (r *idleWakeRig) quietExcept(token claim.Token) {
 // row and makes no claim, so no launch replaces the pod with the issue's disk under it.
 //
 //  1. A stopped role's work stays while the start waits: for three of the rig's ticks the pod
-//     keeps its uid, no release is marked, the served issue names the checker in
-//     startWaitsForPod, and no claim of the checker exists.
+//     keeps its uid, no release is marked, the served issue names the checker's start, by its
+//     role and its claim's token, in startWaitsForPod, and no claim of the checker exists.
 //  2. After the idle period, main's rule releases the pod, and the checker starts in a new pod.
 //     That release has the pod's launcher read the disk first (R6 of #5285), so the pod is made
 //     quiet only once its launcher is connected to the restarted daemon: a read made before then
@@ -235,7 +243,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 	waiting := func(t *testing.T, rig *idleWakeRig, issue idleRigIssue) {
 		t.Helper()
 		idleRigEventually(t, idleRigRecordWait, "the served issue "+issue.key+" naming the checker's start as waiting for its pod", func() bool {
-			return slices.Contains(rig.startWaitsForPod(issue), string(podWaitRigRole))
+			return slices.Contains(rig.startWaitsForPod(issue), rig.checkerStart(issue))
 		})
 	}
 	kept := func(t *testing.T, rig *idleWakeRig, issue idleRigIssue, uid string) {
@@ -248,8 +256,10 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 			if rig.releaseMarked(issue) {
 				t.Errorf("tick %d: a release of %s's pod is marked, want none", tick, issue.key)
 			}
-			if names := rig.startWaitsForPod(issue); !slices.Contains(names, string(podWaitRigRole)) {
-				t.Errorf("tick %d: the served issue %s names %v as waiting for its pod, want the checker", tick, issue.key, names)
+			starts, checker := rig.startWaitsForPod(issue), rig.checkerStart(issue)
+			if !slices.Contains(starts, checker) {
+				t.Errorf("tick %d: the served issue %s names %v as waiting for its pod, want %v",
+					tick, issue.key, starts, checker)
 			}
 			if rig.claimOf(issue, podWaitRigRole) {
 				t.Errorf("tick %d: a claim of the checker on %s exists, want none while its start waits", tick, issue.key)

@@ -1,0 +1,11 @@
+kind: Changed
+custom:
+  Issue: pr5158
+body: |-
+  Daemon API contract 245: in `GET /legion/v1/state` and an issue's record, each start in an
+  issue's `startWaitsForPod` is an object of its `role` and the `token` of the claim it starts,
+  where the list held the role of each start, each role once, so the start of a second agent of
+  one role, such as `…-implementer-2`, read as a start of the role's own agent. A plugin of an
+  earlier contract is served the roles as before. The `claim_stopped` answer of an issue names its
+  stranded worker as `legion state` names a claim: `its implementer is stranded at failed` for the
+  role's own claim, and the token beside the role for any other claim of the role.

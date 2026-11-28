@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
@@ -34,14 +35,20 @@ import (
 // a launch the wake pacing parks, at that launch's turn (launchAfter). The zero StartWork — an
 // operator's request, the boot's, a start of no phase — is judged by nothing.
 //
+// Agent is the agent of the step the start is a run of (record.SuperviseRequest.Agent,
+// plan.Agent.ID), "" for a start of no step's agent. The admission that brings the claim back
+// leaves the claim's session behind first where it is another agent's, and records Agent as the
+// agent of the session it begins or takes (Claim.SessionAgent, revive).
+//
 // LeaveSession is the session the start's claim must not resume (record.SuperviseRequest's
-// LeaveSession): the session of a key's agent, recorded by the claim of a name that agent held,
-// which a step's agent of a later generation took (workflow's leaveKeySessions). The claim leaves
-// it where it still records it, so that agent starts in a session of its own (revive); a claim
-// that records another session has left it already, and resumes that one.
+// LeaveSession): the session the stored step of the start names (record.PlanStep.LeaveSession),
+// which no writer sets now, since record.NameAgents gives no agent a name a key held. The claim
+// leaves it where it still records it, so the step's agent starts in a session of its own
+// (revive); a claim that records another session has left it already, and resumes that one.
 type StartWork struct {
 	Phase        phase.Phase
 	Generation   uint64
+	Agent        plan.AgentID
 	LeaveSession string
 }
 
@@ -82,13 +89,14 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 
 // revive binds an explicitly spawned, resumed or retried claim to the open tree epoch before
 // launching. In-lifetime recovery only rechecks the bound epoch (checkLaunch), so an old launch
-// cannot cross a cleanup confirmation into a later admission. exempt is whether the request that
-// asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
-// its own event, so a request that carries no such field is paced. place is the place the
-// request's caller already took for this launch in the pacing (RequestSpawn.Place), nil for every
-// request that took none (launchAfter). start is the work a workflow start brings the claim back
-// for, which its caller has judged already (startHolds) and the launch judges again where a park
-// it waits in ends (startLeftWhileParked).
+// cannot cross a cleanup confirmation into a later admission. request names the decision that
+// brings the claim back, for a refusal and the line. exempt is whether the request that asked
+// for it is one the wake pacing never makes wait (exemptWake); every caller reads it from its own
+// event, so a request that carries no such field is paced. place is the place the request's
+// caller already took for this launch in the pacing (RequestSpawn.Place), nil for every request
+// that took none (launchAfter). start is the work a workflow start brings the claim back for,
+// which its caller has judged already (startHolds) and the launch judges again where a park it
+// waits in ends (startLeftWhileParked).
 //
 // A start that leaves the session the claim records (leaves, StartWork's LeaveSession) forgets it
 // once the admission has bound the claim, so the launch spawns a fresh agent, as retry's fresh
@@ -101,16 +109,27 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
 // that is being run again, since an admission the lifecycle refuses leaves the claim exactly as
-// it was (retry, whose failure record and budgets go there).
+// it was (retry, whose failure record, budgets and new session go there).
+//
+// The admission is also where the claim's session passes to start's agent, and it is decided here
+// alone, for every decision that brings the claim back: a session that is another agent's
+// (SessionOfAnotherAgent) is left behind, so the launch spawns start's agent in a session of its
+// own, and start's agent is recorded as the agent of the session the launch begins or takes
+// (Claim.SessionAgent). A session the claim does not hold is left only once its role no longer
+// leads to the process under it (mayForget), which is judged before the admission; until then the
+// decision is refused and the claim left as it was. A refused admission leaves the session and the
+// record of its agent as they were, as it leaves the rest of the claim, so the agent that session
+// is of still resumes it at its own next start.
 //
 // The claims it starts — spawned, resumed, retried, a suspended claim given a task — record no
 // process, so its launch lets none go and records nothing of one (noEnd). Each was raised by a
 // request, which the pod's start gate puts first among the starts waiting in the claim's pod
 // (launchAfter's requested, podQueue.next).
-func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place, start StartWork, admitted func()) error {
-	leave := m.leaves(start)
-	if leave {
-		if err := m.mayForget(ctx, "start"); err != nil {
+func (m *Machine) revive(ctx context.Context, request string, exempt bool, place *wakepace.Place, start StartWork, admitted func()) error {
+	another := m.claim.SessionOfAnotherAgent(start.Agent)
+	leave := !another && m.leaves(start)
+	if another || leave {
+		if err := m.mayForget(ctx, request); err != nil {
 			return err
 		}
 	}
@@ -124,6 +143,22 @@ func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place
 		return err
 	}
 	m.claim.TreeEpoch = bound.TreeEpoch
+	if another {
+		held := m.claim.SessionAgent
+		m.log.Info("supervise: the step this start is for is another agent's than the one whose session the claim holds, so it starts in a new session",
+			"request", request, "agent", start.Agent, "sessionAgent", held, "session", m.claim.Session)
+		// The session it drops is recorded as the earlier agent's (AbandonedSession.Agent), so the
+		// new agent's first task tells it as another agent's (abandonedTask), as it tells one that
+		// agent lost before this start, where the claim holds no session to drop.
+		m.forgetSession(fmt.Sprintf("the step it was started for is another agent's (%s) than the one whose session it held (%s)",
+			start.Agent, held))
+		// The cause of a forget the machine keeps is the earlier agent's too, where its fresh
+		// session never registered (Machine.lostCause): the new agent's launch is built with none.
+		m.lostCause = ""
+	}
+	if start.Agent != "" {
+		m.claim.SessionAgent = start.Agent
+	}
 	if admitted != nil {
 		admitted()
 	}
@@ -134,6 +169,51 @@ func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place
 		m.forgetSession("its step's agent took a name a key's agent held in an earlier generation, so it starts in a session of its own: this session was that key's")
 	}
 	return m.launchAfter(ctx, false, exempt, true, place, noEnd, start)
+}
+
+// SessionOfAnotherAgent is whether the claim's session is the session of another agent than agent,
+// the agent of the step a start is a run of (StartWork.Agent): both are recorded and they differ.
+// A start that names no agent, and a claim that records none, take the session the claim holds.
+func (c Claim) SessionOfAnotherAgent(agent plan.AgentID) bool {
+	return otherAgent(c.SessionAgent, agent)
+}
+
+// otherAgent is whether held, an agent a claim recorded, and agent are two agents: both are
+// recorded, since "" names none (plan.AgentID), and they differ.
+func otherAgent(held, agent plan.AgentID) bool {
+	return agent != "" && held != "" && held != agent
+}
+
+// TakeSessionFor records agent, the agent of the step a start is a run of (StartWork.Agent), as
+// the agent of the session of a claim that runs a process and records no agent (SessionAgent ""):
+// a claim a release before the record started, or one an operator's spawn started for no step.
+// The start's task goes to that process, so the session is that agent's from here, and a later
+// start of another agent finds it so (SessionOfAnotherAgent) and starts its own agent in a new
+// session. Without it every agent whose start reached the running claim would share its session.
+// A claim that runs nothing is left alone: the decision that brings it back records the agent
+// once the claim is admitted (revive), and a refused admission leaves the record as it was. So is
+// a claim that records an agent, and a start that names none. Its one caller is the outbox's start,
+// under the machine's lock taken here, after the start's own record (StartedBy).
+//
+// The start read its step from the record before this lock, so it asks with the step's standing
+// (Standing), judged here under the lock before anything is recorded where no earlier act of the
+// start has passed it: a step its issue has left since, by a move or a later entry, is
+// ErrStepLeft, and the claim records no agent. Recorded for a stale start, the agent would hold
+// the session though its task is never delivered, and the next start, of the agent whose session
+// it is, would find another agent's and start a new session.
+func (m *Machine) TakeSessionFor(ctx context.Context, agent plan.AgentID) error {
+	m.mu.Lock()
+	defer m.unlock()
+	if agent == "" || m.claim.SessionAgent != "" || m.claim.RunsNothing() {
+		return nil
+	}
+	if err := judgeStanding(ctx, m.claim.Token, true); err != nil {
+		return fmt.Errorf("record the agent %s of the session of claim %s: %w", agent, m.claim.Token, err)
+	}
+	m.log.Info("supervise: a running claim that recorded no agent of its session takes the agent of the start that reached it",
+		"agent", agent, "session", m.claim.Session, "state", m.claim.State)
+	m.claim.SessionAgent = agent
+	return m.persist(ctx)
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
@@ -406,9 +486,13 @@ func judgeStanding(ctx context.Context, token claim.Token, pass bool) error {
 // prompt its agent takes says such a token is no longer its to use (roleChangedTask).
 //
 // The start read the step from the record before this lock, so it asks with the step's standing
-// (Standing), judged here under the lock: a step its issue has left since, by a move back or a
-// later entry, is ErrStepLeft, and the claim keeps the role it holds. A role is never stored for
-// a step the record no longer asks for, whatever reaches the claim next.
+// (Standing), and the first act of the start to pass that standing under a machine's lock commits
+// the start. Where Rerole is that first act, a step its issue has left since, by a move back or a
+// later entry, is ErrStepLeft, and the claim keeps the role it holds. Where a suspension the start
+// asked for landed at once, that suspension committed the start and Rerole judges nothing: a move
+// that committed in between leaves the claim with the step's role all the same, StartWork then
+// refuses to bring it back for the step the issue left (startHolds, through Deps.PhaseHolds), and
+// the next start of the claim's agent gives the claim the role of its own step.
 func (m *Machine) Rerole(ctx context.Context, role claim.Role) error {
 	m.mu.Lock()
 	defer m.unlock()

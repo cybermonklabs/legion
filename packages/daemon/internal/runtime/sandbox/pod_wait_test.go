@@ -131,10 +131,10 @@ func TestALaunchTheSupervisorMakesIntoAPodBuiltWithoutItsRoleIsRefusedNamingTheP
 
 // A claim runs in the slot of its agent (claim.Token.Slot) and on the role of its step, and a
 // launch into a pod the runtime keeps needs both of that pod: the slot's launcher, Secret and
-// volumes, and the role's own resources, its role_config_files overlays among them. A keyed
-// agent's slot and its step's role can be two names, so a launch into a pod built before a role of
-// the deployment waits where the pod lacks either, its text naming the one it lacks, and goes on
-// where it holds both.
+// volumes, and the role's own resources, its role_config_files overlays among them. A slot is named
+// by its agent, not by its step's role, so a launch into a pod built
+// before a role of the deployment waits where the pod lacks either, its text naming the one it
+// lacks, and goes on where it holds both.
 func TestALaunchIntoAKeptPodWaitsForTheSlotOfItsClaimAndTheRoleOfItsStep(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

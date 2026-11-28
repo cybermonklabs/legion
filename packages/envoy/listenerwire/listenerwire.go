@@ -673,8 +673,9 @@ type LegionAgentEntry struct {
 	Role string `json:"role"`
 	// RoleToken is the claim token of the session's agent,
 	// legion-<legion_project>-<issue lower-cased>-<agent>, byte for byte what claim.AgentToken
-	// builds: the agent's name is the role of its first step, and the token stays the agent's
-	// whatever role its later steps are on. A session keeps its token for good.
+	// builds: the agent's name is the role of its first step, or a numbered name such as
+	// `implementer-2` for a second agent of one role, and the token stays the agent's whatever role
+	// its later steps are on. A session keeps its token for good.
 	RoleToken string `json:"role_token"`
 	// Title is the session's title as stamped (`Legion tester · ACME-71`).
 	Title string `json:"title"`

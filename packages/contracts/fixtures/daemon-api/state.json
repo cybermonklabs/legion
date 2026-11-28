@@ -427,7 +427,7 @@
       ],
       "why": {
         "state": "claim_stopped",
-        "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
+        "reason": "Its phase is held and its implementer is stranded at failed, so nothing will wake it."
       },
       "architectStalls": [
         "claim-unreachable"
@@ -500,7 +500,7 @@
       },
       "why": {
         "state": "claim_stopped",
-        "reason": "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it."
+        "reason": "Its phase is implementing and its implementer is stranded at suspended, so nothing will wake it."
       },
       "phaseEntry": 2,
       "givenEntry": 1,
@@ -546,7 +546,7 @@
       },
       "why": {
         "state": "claim_stopped",
-        "reason": "Its phase is awaiting_person and the tester's claim is stranded at retired, so nothing will wake it."
+        "reason": "Its phase is awaiting_person and its tester is stranded at retired, so nothing will wake it."
       },
       "waitingOn": {
         "kind": "ask",
@@ -720,7 +720,10 @@
       "phase": "step",
       "stepRole": "checker",
       "startWaitsForPod": [
-        "checker"
+        {
+          "role": "checker",
+          "token": "legion-legion-legion-240-checker"
+        }
       ],
       "status": "in_progress",
       "tree": "LEGION-240",

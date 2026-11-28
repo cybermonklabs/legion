@@ -364,11 +364,14 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 	t.Helper()
 	ctx := context.Background()
 	// A rollback past the phase entry runs, before the phase entry's own block, the way back of
-	// each migration recorded above it, newest first (docs/kubernetes.md). Two of them strip a key
+	// each migration recorded above it, newest first (docs/kubernetes.md). Three of them strip a key
 	// this release writes on a start row, which the release before decodes strictly and would
-	// refuse: the way back of the plan step's agent takes `claim` off every queued row, the claim
-	// each phase worker's start names (record.SuperviseRequest.Claim), and the way back of the
-	// reviewed commit's migration deletes `roundNamed`, the key a reviewer's start carries. That
+	// refuse: the way back of the claim session's agent takes `agent` off every queued supervise
+	// row, the agent a step's start names (record.SuperviseRequest.Agent); the way back of the plan
+	// step's agent takes `claim` off every queued row, the claim each phase worker's start names
+	// (record.SuperviseRequest.Claim); and the way back of the reviewed commit's migration deletes
+	// `roundNamed`, the key a reviewer's start carries. The rows here name no agent, which the
+	// shape they are judged against holds, so the test runs the last two. That
 	// rollback's own steps are what make the rows readable to the release before.
 	for _, file := range []string{planStepAgentMigrationFile, reviewedHeadMigrationFile} {
 		newer := strings.Split(strings.TrimSuffix(wayBackBlockOfTheHeader(t, file), "\n"), "\n")
@@ -663,8 +666,9 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 // that release's decoder knows every key this struct knows and freshSession besides, so a
 // payload this one accepts it accepts. A row this branch's release queued can carry `claim`
 // besides, which the way back of 20261124213820_plan_step_agent takes off before this rollback
-// runs (its header, and upgradeRecoveryReadsAnswer runs it), so no payload this shape judges
-// carries it.
+// runs (its header, and upgradeRecoveryReadsAnswer runs it), and `agent`, which the way back of
+// 20261125114600_claim_session_agent takes off first of all (its header); the rows this test
+// queues name no agent, so no payload this shape judges carries either.
 type preEntrySuperviseRequest struct {
 	Op            record.SuperviseOp    `json:"op"`
 	Tree          string                `json:"tree"`

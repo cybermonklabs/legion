@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -470,6 +471,28 @@ func TestAClaimsAgentResumeGenerationRoundTrips(t *testing.T) {
 		t.Fatalf("put claim again: %v", err)
 	}
 	sameClaim(t, onlyClaim(t, store), want)
+}
+
+// The agent whose session a claim holds (SessionAgent) is a column of its own: a daemon restarted
+// between a step's start and the next reads it back, and with it whether the next step's agent
+// takes that session or starts in one of its own. A claim records none until a start for a step's
+// agent reaches it, and a later start for another agent replaces it.
+func TestAClaimsSessionAgentRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-implementer")
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+
+	for _, agent := range []plan.AgentID{"step:1:a", "key:b"} {
+		want.SessionAgent = agent
+		if err := store.PutClaim(ctx, want); err != nil {
+			t.Fatalf("put claim of agent %s: %v", agent, err)
+		}
+		sameClaim(t, onlyClaim(t, store), want)
+	}
 }
 
 // The turn a claim last started and the one it last ended are nullable columns of their own: a

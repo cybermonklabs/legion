@@ -278,9 +278,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	}
 	var decision workflow.IdleDecision
 	var quiet, holding bool
-	var waiting []claim.Role
-	var heldFor string
-	var byOperator, byController []string
+	var seen pods.IdleView
 	podUID := w.runningPod(issue)
 	// The mark's line and the wake of its lane are hooks of its commit, as the idle pass's are. The
 	// pass counts the release from what Transact answers, never from a hook, so a hook the watcher
@@ -307,9 +305,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 			}
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
-			holding = view.Holding
-			waiting, heldFor = view.StartsWaitingForPod, view.HeldFor
-			byOperator, byController = heldSuspensions(view)
+			holding, seen = view.Holding, view
 			if !decision.Release {
 				return store.IdleReleaseMark{}, nil
 			}
@@ -337,13 +333,9 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		// a wait nothing ends until the one who suspended the claim acts: the controller is told
 		// once for each streak of the hold, at the pass that opens it (HeldFor names no streak of
 		// it yet), before it is recorded.
-		if decision.Hold == workflow.IdleHoldUnownedSuspensionHolds && quiet && len(waiting) > 0 &&
-			heldFor != workflow.IdleHoldUnownedSuspensionHolds.String() {
-			notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: waiting[0],
-				Reason: podWaitHeldWords(issue, waiting, byOperator, byController, w.idlePeriod)}
-			if _, err := w.enqueueOutbox(ctx, issue, notice); err != nil {
-				w.log.Warn("unowned release: could not tell the controller of a pod a held suspension keeps", "issue", issue, "error", err)
-			}
+		if decision.Hold == workflow.IdleHoldUnownedSuspensionHolds && quiet && len(seen.StartsWaitingForPod) > 0 &&
+			seen.HeldFor != workflow.IdleHoldUnownedSuspensionHolds.String() {
+			w.tellPodWaitHeld(ctx, issue, seen)
 		}
 		// This rule names one reason per pass and no kinds beside it, so its holds carry no
 		// detail, as the teardown's do not.
@@ -353,14 +345,38 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	return workflow.IdleHoldNone, true
 }
 
+// tellPodWaitHeld tells the controller of the starts that wait for issue's pod, which a held
+// suspension of claims of view keeps (podWaitHeldWords), each by the claim it starts
+// (record.StartClaims), the claim the outbox's start acts on and the served state names it by. A
+// start whose claim the rule cannot give, which only a role or an issue no token spells gives, is a
+// fault of the record, as the served state reads it: nothing is told, and the warning names the
+// start and why, as it does for a notice the outbox does not take.
+func (w *workflowRuntime) tellPodWaitHeld(ctx context.Context, issue string, view pods.IdleView) {
+	starts, err := record.StartClaims(view.Project, view.Issue, view.StartsWaitingForPod, record.IdlePhaseRows(view))
+	if err != nil {
+		w.log.Warn("unowned release: could not name the starts that wait for a pod a held suspension keeps; the controller is not told",
+			"issue", issue, "error", err)
+		return
+	}
+	byOperator, byController := heldSuspensions(view)
+	notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: starts[0].Role,
+		Reason: podWaitHeldWords(issue, starts, byOperator, byController, w.idlePeriod)}
+	if _, err := w.enqueueOutbox(ctx, issue, notice); err != nil {
+		w.log.Warn("unowned release: could not tell the controller of a pod a held suspension keeps", "issue", issue, "error", err)
+	}
+}
+
 // heldSuspensions is each claim of view whose suspension holds (pods.IdleClaim.SuspensionHolds), as
-// `<role> (<state>)`: those the operator suspended, and those the project's controller suspended.
+// `<claim> (<state>)`: those the operator suspended, and those the project's controller suspended.
+// The claim is named as `legion state` names one (api.ClaimNameInIssue): by its role where it is the
+// role's own claim, and by its role with its token beside it for any other claim of the role, since
+// two claims of one issue can hold one role (record.WorkerClaim).
 func heldSuspensions(view pods.IdleView) (byOperator, byController []string) {
 	for _, c := range view.Claims {
 		if !c.SuspensionHolds() {
 			continue
 		}
-		held := fmt.Sprintf("%s (%s)", c.Role, c.State)
+		held := fmt.Sprintf("%s (%s)", api.ClaimNameInIssue(c.Role, c.Token), c.State)
 		if c.SuspendedBy == supervise.SuspendedByController {
 			byController = append(byController, held)
 		} else {
@@ -370,16 +386,20 @@ func heldSuspensions(view pods.IdleView) (byOperator, byController []string) {
 	return byOperator, byController
 }
 
-// podWaitHeldWords is what the controller is told of the roles waiting, whose start waits for
-// the pod of issue that a held suspension of its claims keeps, for the controller agent in plain
-// words. It names each claim by who suspended it: the operator (byOperator) or the controller
-// (byController).
-func podWaitHeldWords(issue string, waiting []claim.Role, byOperator, byController []string, idle time.Duration) string {
-	names := make([]string, len(waiting))
-	for i, role := range waiting {
-		names[i] = string(role)
+// podWaitHeldWords is what the controller is told of starts, the starts that wait for the pod of
+// issue that a held suspension of its claims keeps, for the controller agent in plain words. It
+// names each suspended claim as heldSuspensions names it, by who suspended it: the operator
+// (byOperator) or the controller (byController). Each start is named by the claim it starts
+// (record.WaitingClaim), as `legion state` names a claim (api.ClaimNameInIssue): by its role where
+// it starts the role's own claim, and by its role with the claim's token beside it for any other
+// claim of the role, since the role alone would name a second agent's start as a start of the
+// role's own agent.
+func podWaitHeldWords(issue string, starts []record.WaitingClaim, byOperator, byController []string, idle time.Duration) string {
+	names := make([]string, len(starts))
+	for i, start := range starts {
+		names[i] = api.ClaimNameInIssue(start.Role, start.Token)
 	}
-	roles := strings.Join(names, ", ")
+	waiting := strings.Join(names, ", ")
 	held := ""
 	if len(byOperator) > 0 {
 		held += fmt.Sprintf("The operator suspended %s. ", strings.Join(byOperator, ", "))
@@ -387,10 +407,10 @@ func podWaitHeldWords(issue string, waiting []claim.Role, byOperator, byControll
 	if len(byController) > 0 {
 		held += fmt.Sprintf("The controller suspended %s. ", strings.Join(byController, ", "))
 	}
-	return fmt.Sprintf("%s of %s cannot start. The pod of %s was made before the deployment defined the slot or the role that each of those starts needs, and no role runs in it. "+
+	return fmt.Sprintf("%s of %s cannot start. The pod of %s was made without the slot or the role that each of those starts needs, and no role runs in it. "+
 		"The daemon removes such a pod when it has had no activity for %d minutes, but not while the operator or the controller holds a claim of it. "+
 		"%sResume or stop that claim. Then the daemon replaces or removes the pod, and %s start in a new pod.",
-		roles, issue, issue, int(idle.Minutes()), held, roles)
+		waiting, issue, issue, int(idle.Minutes()), held, waiting)
 }
 
 // closeLeftPods finishes the close of each pod whose issue left the workflow while its tree runs
@@ -691,13 +711,12 @@ func releaseHold(cause store.ReleaseCause) (workflow.IdleHold, string) {
 //     because only a shim can read it and a shim dies with its claim's process, which act 2
 //     stops. It stops nothing itself, so a release it declines leaves the pod as it was;
 //  2. the claim stops: one `release` supervise row per live claim, each naming that claim
-//     (record.SuperviseRequest.Claim), stopping its process and keeping its session. Two claims
-//     can hold one role — a keyed agent on a step of another role, beside that role's own claim
-//     from an earlier version of the plan, or two agents at two steps of the role — so a stop
-//     names its claim rather than a role. The first of them is the release's boundary — the stop
-//     of the first claim process of the pod — which is what R4's cancel is read against, so a
-//     delivery queued while the check ran is still below it and cancels the whole release, save a
-//     start that waits for its pod, which the next pod serves;
+//     (record.SuperviseRequest.Claim), stopping its process and keeping its session. Two claims of
+//     one issue can hold one role (record.WorkerClaim), so a stop names its claim rather than a
+//     role. The first of them is the release's boundary — the stop of the first claim process of
+//     the pod — which is what a delivery's cancel of the release is read against
+//     (store.IssueReleaseStop), so a delivery queued while the check ran is still below it and
+//     cancels the whole release, save a start that waits for its pod, which the next pod serves;
 //  3. the teardown (record.IssueRelease): it deletes the pod, its disk and its Sandbox, and
 //     records the release. A Sandbox that owns the issue's kept volume stays, Suspended, with
 //     that volume: its pod and its Secrets go (runtime.IssueReleaser).

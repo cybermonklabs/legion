@@ -16,8 +16,7 @@ import (
 // take one type.
 //
 // Claim, from the stranded token's entry (strandedTokenContract), names the agent by its claim
-// token: two claims of one issue can hold one role — the agent of a key on a step of another
-// role, beside that role's own claim of an earlier version of the plan — and the issue and the
+// token: two claims of one issue can hold one role (record.WorkerClaim), and the issue and the
 // role reach the one that works the role's step, while a notice of provider errors can name the
 // other. It must be a claim of Issue that holds Role. Without it the request reaches the worker on
 // the role's step, as it did before that entry; a daemon below it refuses the member as unknown.

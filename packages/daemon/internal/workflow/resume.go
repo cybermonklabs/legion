@@ -246,7 +246,7 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 	if err != nil {
 		return false, err
 	}
-	return false, e.started(ctx, tx, owner.issue, owner.role, owner.token, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
+	return false, e.started(ctx, tx, owner.issue, owner.role, reach{claim: owner.token}, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 
 // sweepMerged closes every issue of the project that awaits a merge GitHub already reported

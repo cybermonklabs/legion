@@ -619,7 +619,8 @@ func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) 
 // Every forward row short of the close applies through intake with its status, start and notice,
 // and none suspends the worker whose phase it ends: a claim named for its role, as each here is,
 // stays live from its first assignment until its issue closes (only a step of another role than a
-// keyed agent's claim holds suspends that claim, to re-role it). (The merge's row is the close
+// keyed agent's claim holds suspends that claim, to re-role it, and a step of another agent than
+// the one whose session a claim holds, to leave that session behind). (The merge's row is the close
 // itself, which suspends the tree: TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
 func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 	t.Parallel()
@@ -742,7 +743,8 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 // Every backward edge applies through intake, and the worker that asked for it is not stopped: its
 // assignment ends with the move, and the start of the phase it moved to delivers the next one
 // (each claim here is named for its role; a keyed agent's claim is suspended at its turn's end
-// only where the step it moves to is of another role than it holds).
+// where the step it moves to is of another role than it holds, and any claim where that step is
+// another agent's than the one whose session it holds, and only there).
 // Every move a backward row serves applies, and counts the implementer one pass, as every move
 // back to an earlier phase does; the review rounds stand, since no review requested changes. A
 // move onto accepting starts no worker: the architect that owns the issue, whose phase it is, is

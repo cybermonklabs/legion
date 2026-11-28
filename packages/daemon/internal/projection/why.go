@@ -205,17 +205,22 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 // claimStoppedReason is the sentence of an issue a stranded claim names (api.WhyClaimStopped):
 // where the issue's work stands, which claim stopped and the state it stopped in, and that
 // nothing will take it up again. The two fills are the two kinds of claim the stranded set
-// reports — the worker of the issue's phase, named by its role, and the tree's architect, whose
-// claim is the tree's rather than this issue's — and each names the state the set carries with
-// the claim rather than one read of its own: the set is the daemon's judgement, and a claim at
-// suspended, failed or retired that is not in it is waiting for a start the daemon has queued.
+// reports — the worker of the issue's phase and the tree's architect, whose claim is the tree's
+// rather than this issue's — and each names the state the set carries with the claim rather than
+// one read of its own: the set is the daemon's judgement, and a claim at suspended, failed or
+// retired that is not in it is waiting for a start the daemon has queued.
+//
+// The worker is named as the state's lines name a claim (api.ClaimNameInIssue): by its role where
+// it is the role's own claim, and by its role with its token beside it where it is another claim
+// of the role. Two claims of one issue can hold one role (record.WorkerClaim), so the role alone
+// would name a second agent of the role, such as `implementer-2`, as the role's own agent.
 func claimStoppedReason(issue record.Issue, stopped supervise.Claim) string {
 	if stopped.Role == claim.RoleArchitect {
 		return fmt.Sprintf("Its phase is %s and its tree's architect claim is stranded at %s, so nothing will wake it.",
 			issue.Phase, stopped.State)
 	}
-	return fmt.Sprintf("Its phase is %s and the %s's claim is stranded at %s, so nothing will wake it.",
-		issue.Phase, stopped.Role, stopped.State)
+	return fmt.Sprintf("Its phase is %s and its %s is stranded at %s, so nothing will wake it.",
+		issue.Phase, api.ClaimNameInIssue(stopped.Role, stopped.Token), stopped.State)
 }
 
 // blockedReason is the sentence of an issue something holds where it stands (api.WhyBlocked),

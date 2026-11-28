@@ -332,10 +332,12 @@ type PodUpdateOpen struct {
 // a later round has already replaced it names the round it read, and is refused rather than
 // counted for the round it never saw (podUpdateSignalled).
 //
-// An answer from every role brings the round's end forward only while no role reports background
-// work: before endsAt the round ends once every role it asks has answered, no role is in a turn,
-// and no role with a process in the round's pod has an activity report that names a subagent or a
-// background job that runs, or no report since its last turn started. internal/daemon's
+// An answer from every claim it asks brings the round's end forward only while no claim reports
+// background work: before endsAt the round ends once every claim it asks has answered, no claim of
+// the issue is in a turn, and no claim with a process in the round's pod has an activity report
+// that names a subagent or a background job that runs, or no report since its last turn started;
+// two claims of one role, such as `…-implementer` and `…-implementer-2`, answer each for itself.
+// internal/daemon's
 // roundEnd.holding is the one statement of that rule. No answer, no turn and no background work
 // holds the pod past endsAt, so the text names that moment and what goes with the pod then: the
 // turn in progress, each subagent, each background job and each named service that still runs,
@@ -408,7 +410,7 @@ func UpdateTask(role claim.Role, round, reasons string, endsAt time.Time) string
 
 The round is %[1]s. The round ends at %[2]s (UTC). %[3]s The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
 
-If every role answers, the round can end before that moment. It then ends once each role's last report names no subagent and no background job that runs, and no role is in a turn. Your plugin sends that report at the end of each turn. If a role does not answer, the round still ends at %[2]s. A turn in progress does not delay that moment. A subagent or a background job that runs does not delay it either: when the daemon replaces the pod, the pod goes, whatever runs in it.
+If every agent the round asks answers, the round can end before that moment. It then ends once the last report of each agent in the pod names no subagent and no background job that runs, and no agent of the issue is in a turn. Your plugin sends that report at the end of each turn. If an agent does not answer, the round still ends at %[2]s. A turn in progress does not delay that moment. A subagent or a background job that runs does not delay it either: when the daemon replaces the pod, the pod goes, whatever runs in it.
 
 This message can arrive while you are in a turn. Do these five steps, in this order:
 
@@ -613,7 +615,9 @@ type ResumePause struct {
 type RequestRuleResume struct {
 	Claim  claim.Token
 	Reason string
-	// Start is the work a workflow start resumes the claim for, judged as RequestSpawn's is.
+	// Start is the work a workflow start resumes the claim for, judged as RequestSpawn's is. Where
+	// it names a step's agent whose session the claim does not hold, the resume starts that agent
+	// in a new session (revive).
 	Start StartWork
 }
 
@@ -1450,7 +1454,7 @@ func fillTable(t *builder) {
 	t.ignore(onResume, failedClaim, StateFailed)
 	t.ignore(onResume, retiredClaim, StateRetired)
 
-	t.row(onRuleResume, "resume the same session by rule, unless a suspension that holds is over it", resumeByRule,
+	t.row(onRuleResume, "resume by rule, unless a suspension that holds is over it: the same session, or a new one for a step's agent whose session the claim does not hold", resumeByRule,
 		[]ClaimState{StateLaunching, StateFailed}, StateSuspended)
 	t.row(onRuleResume, "the claim runs: nothing to resume", nothingToDo, nil, live...)
 	t.row(onRuleResume, "a queued claim is spawned by its start, not resumed", nothingToDo, nil, StateQueued)
@@ -1477,7 +1481,7 @@ func fillTable(t *builder) {
 	// backs: retiring is not a way past either.
 	t.row(onOperatorClose, "the tree is already closed", operatorCloseRetired, nil, StateRetired)
 
-	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one or no store holds it; a claim held for a cyber-policy refusal only by a retry someone decided, in a new session", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
+	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one, is for a step's agent whose session the claim does not hold, or no store holds it; a claim held for a cyber-policy refusal only by a retry someone decided, in a new session", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
 	t.ignore(onRetry, "an agent whose claim is queued is spawned, not retried", StateQueued)
 	t.ignore(onRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onRetry, "the claim has not failed", live...)
@@ -2947,13 +2951,15 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 }
 
 // spawn launches a queued claim, in the place its caller took for it when it carries one
-// (RequestSpawn.Place), and otherwise in the place the gate joins for it.
+// (RequestSpawn.Place), and otherwise in the place the gate joins for it. A claim queued again
+// after a launch (ReleasedLaunch) can hold a session, which a spawn for another step's agent
+// leaves behind once the claim is admitted, as every start does (revive).
 func spawn(m *Machine, ctx context.Context, ev Event) error {
 	spawn := ev.(RequestSpawn)
 	if err := m.startHolds(ctx, spawn.Start); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), spawn.Place, spawn.Start, nil)
+	return m.revive(ctx, "spawn", exemptWake(ev), spawn.Place, spawn.Start, nil)
 }
 
 // register records the session the agent became, once every name of it is held to this claim
@@ -3116,7 +3122,7 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), nil, StartWork{}, nil)
+	return m.revive(ctx, "resume", exemptWake(ev), nil, StartWork{}, nil)
 }
 
 // resumeRefusal is a RefusedError when a suspended claim's recorded session is one it does not
@@ -3162,9 +3168,11 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // (podStillRefuses), before its session is asked about, as resume asks them: the refusal answers
 // runtime.ErrAwaitsPodUpdate, on which an outbox start waits for the pod (internal/daemon's
 // startRowEnded says why). A claim recording a session it does not hold is not resumed by rule
-// either (resumeRefusal): it stays suspended, and the line says why. A start that leaves the
-// recorded session resumes none (StartWork's LeaveSession, revive), so that session is not asked
-// about.
+// either (resumeRefusal): it stays suspended, and the line says why. A resume for a step's agent
+// whose session the claim does not hold (RequestRuleResume.Start's Agent), or a start that leaves
+// the recorded session (StartWork's LeaveSession), leaves the recorded session behind instead once
+// the claim is admitted (revive), so the launch spawns that agent, and is not refused for a
+// session it does not resume.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	resume := ev.(RequestRuleResume)
 	rule := resume.Reason
@@ -3179,14 +3187,14 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 		m.log.Info("supervise: not resumed by rule: the pod that refused its last launch still stands", "rule", rule, "error", err)
 		return err
 	}
-	if !m.leaves(resume.Start) {
+	if !m.claim.SessionOfAnotherAgent(resume.Start.Agent) && !m.leaves(resume.Start) {
 		if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
 			m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
 			return nil
 		}
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx, exemptWake(ev), nil, resume.Start, nil)
+	return m.revive(ctx, "resume by rule", exemptWake(ev), nil, resume.Start, nil)
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
@@ -3203,7 +3211,10 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // other retry, whoever makes it, resumes the recorded session with fresh budgets, whatever the
 // claim's run of refused turns: a run that reached launch_failure_limit is the claim's own count
 // of refusals, mostly ones that can clear, such as a team limit's 429 that refuses every session
-// alike, and no sign that its session is bad (dispatch://INFRA-4508's R5).
+// alike, and no sign that its session is bad (dispatch://INFRA-4508's R5). The workflow's retry
+// for a step's agent whose session the claim does not hold leaves that session behind in the
+// admission (revive), so the retry asks nothing more of that session. Either session is left once
+// the claim is admitted, with the failure record below.
 //
 // The failure record goes with the counts it names, and both go once the claim is admitted. A
 // reader is served that record built from the counts the claim holds now (api.FailureViewOf),
@@ -3245,14 +3256,18 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		return err
 	}
 	fresh, why := freshSession(m.claim, ev)
-	if fresh {
+	switch {
+	case m.claim.SessionOfAnotherAgent(start.Agent) || m.leaves(start):
+		// The admission leaves another agent's or a key's session behind itself (revive).
+		fresh = false
+	case fresh:
 		// A session the claim does not hold is left behind only once its role no longer leads
 		// to the process under it (mayForget); the retry is refused, and the claim left as it
 		// was, until then.
 		if err := m.mayForget(ctx, "retry"); err != nil {
 			return err
 		}
-	} else if !m.leaves(start) {
+	default:
 		// A retry that relaunches the recorded session is refused it the way a resume is
 		// (resumeRefusal), before the budgets start over. A start that leaves that session
 		// resumes none (revive), so it is not asked.
@@ -3264,7 +3279,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 	if r, ok := ev.(RequestRetry); ok {
 		oneAttemptLeft = r.OneAttemptLeft
 	}
-	return m.revive(ctx, exemptWake(ev), nil, start, func() {
+	return m.revive(ctx, "retry", exemptWake(ev), nil, start, func() {
 		if fresh {
 			// lastRefusal is the provider's words for the newest refused turn, which the claim
 			// stores for the reason LastRefusal gives.
@@ -3352,13 +3367,14 @@ func stop(m *Machine, ctx context.Context, ev Event) error {
 func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ctx, noEnd) }
 
 // issueClose is the workflow's close of a child issue as done: it releases the claim through the
-// runtime, which ends at most this role's process and forgets the claim. It deletes no issue
+// runtime, which ends at most this claim's process and forgets the claim. It deletes no issue
 // Sandbox — under Agent Sandbox a release deletes only the controller's, whose Sandbox is that
 // claim's and nothing else (Runtime.Release, releaseControllerSandbox) — so an issue's pod and the
 // disk it owns go with the separately fenced IssueSuspend, or with the tree cleanup once every
 // claim of the tree has retired. That is why a merged close leaves the implementer's pod standing:
-// every other claim of the issue takes this close and no IssueSuspend is queued (workflow/linger.go). A release
-// that fails changes nothing, so the close can be asked again.
+// every other claim of the issue takes this close, of each other role and of each agent of its
+// plan in a slot of its own (`implementer-2`), and no IssueSuspend is queued (workflow/linger.go).
+// A release that fails changes nothing, so the close can be asked again.
 //
 // The claim keeps the session it recorded, both halves of it. A done issue is reopened — a person
 // moves it back, a production check fails — and its roles are started again on the same issue,
@@ -3576,7 +3592,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.queue(ctx, d); err != nil {
 		return err
 	}
-	return m.revive(ctx, d.ID == "", nil, StartWork{}, nil)
+	return m.revive(ctx, "deliver", d.ID == "", nil, StartWork{}, nil)
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is

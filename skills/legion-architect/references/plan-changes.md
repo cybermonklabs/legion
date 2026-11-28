@@ -10,6 +10,12 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
 
 - After `VERSION_NOT_IN_DISPATCH`, upload that version to Dispatch first.
 
+- A key keeps its name in every version: a later version that names the key again runs its steps in the same agent and session, and while a version leaves the key out, no other agent takes its name, so the agent that would have taken it takes a numbered name and a slot of its own, whose start can wait for the pod's update round.
+  A name that only agents with no key held is free again once no agent of the version holds it: a later agent of their role can take it, in a session of its own, and an agent of another role never does.
+
+- A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
+  The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
+
 ## The notices
 
 - **`task-stopped`:** Legion stopped the task and holds the issue.

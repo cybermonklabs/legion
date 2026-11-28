@@ -710,16 +710,20 @@ func TestTwoRenderedInstallsSerialiseOnTheSharedBunCache(t *testing.T) {
 	t.Fatalf("the lockless control never interleaved in %d attempts: the harness proves nothing, so the locked run above passed vacuously", controlAttempts)
 }
 
-// queuedInstalls and installBudget are what the wait must be big enough for, from the feature
-// rather than from the derivation: the last of the six roles of a pod whose deployment defines
-// none of its own queues behind the five installs before it, and a cold install of the plugin pair
-// measured 505 milliseconds in an issue pod of this cluster, so a second each is a generous
-// budget. They are the lower bound the derivation exists to leave room for, and nothing in
-// installLockWait computes them.
-const (
-	queuedInstalls = 5
-	installBudget  = time.Second
-)
+// installBudget is what the wait must give each install it queues behind, from the feature rather
+// than from the derivation: a cold install of the plugin pair measured 505 milliseconds in an issue
+// pod of this cluster, so a second each is a generous budget. The queue is the pod's own: the last
+// slot of a pod waits for the installs of every slot before it. They are the lower bound the
+// derivation exists to leave room for, and nothing in installLockWait computes either.
+const installBudget = time.Second
+
+// queuedPlanAgents are the agents of a plan of five steps that alternate the implementer and the
+// reviewer: three of them run beside their roles' own agents, each in a slot of its own name, so
+// the pod has nine slots and the last of them queues behind eight installs.
+var queuedPlanAgents = map[claim.Agent]claim.Role{
+	"implementer": claim.RoleImplementer, "reviewer": claim.RoleReviewer,
+	"implementer-2": claim.RoleImplementer, "reviewer-2": claim.RoleReviewer, "implementer-3": claim.RoleImplementer,
+}
 
 // The install lock's wait is a bound in proportion to the registration deadline, at every
 // configuration an operator can set rather than only at the defaults. Each case carries the wait
@@ -733,9 +737,12 @@ const (
 // derivation that renders different values is still held: the wait is positive, since `-w 0` is
 // byte for byte `-n` and would restore the race the lock is for; it is never more than its third
 // of that configuration's deadline, so two waits and the install that follows them still fit; and
-// — where the deadline leaves room for it — it covers the queue the lock itself creates, five
-// serialised installs at installBudget each, which is the half of the bound the derivation is
-// for and the half that was missing while the wait could shrink to a second unseen.
+// — where the deadline leaves room for it — it covers the queue the lock itself creates, the
+// installs of every slot before the last of a pod at installBudget each, which is the half of the
+// bound the derivation is for and the half that was missing while the wait could shrink to a
+// second unseen. The pod is one the runtime builds for a plan that runs three agents beside their
+// roles' own (queuedPlanAgents), and its slots are read off it (builtRoles), so the queue grows
+// with every slot a pod is built with rather than standing at the six roles.
 //
 // The tiny configuration is the honest case, not an excluded one: below a deadline of about three
 // seconds the one-second floor dominates, two waits cannot fit and the queue cannot be covered.
@@ -744,6 +751,16 @@ const (
 // there, conditional on the deadline rather than on the configuration's name.
 func TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline(t *testing.T) {
 	t.Parallel()
+	g := newRig(t, nil, withPlanAgents(queuedPlanAgents))
+	pod := g.pod(g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree)).Sandbox.Name)
+	if pod == nil {
+		t.Fatal("the launch built no pod")
+	}
+	slots := builtRoles(pod.Spec)
+	if want := len(claim.Roles) + 3; len(slots) != want {
+		t.Fatalf("the pod's slots are %v, want %d: the six roles' and one for each agent of the plan no role names", slots, want)
+	}
+	queued := len(slots) - 1
 	path := filepath.Join(t.TempDir(), "legion.yaml")
 	body := "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -790,9 +807,9 @@ func TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline(t *test
 			if spent := time.Duration(2*wait)*time.Second + installBudget; spent > deadline {
 				t.Errorf("two waits of %ds and a second of install take %s, past the %s registration deadline, so a stalled lock is retired by the deadline rather than failing the launch by its own branch", wait, spent, deadline)
 			}
-			if queue := queuedInstalls * installBudget; deadline >= 3*queue && time.Duration(wait)*time.Second < queue {
-				t.Errorf("the wait at boot %s x %d intervals is %ds, less than the %s the queue this lock creates needs: the last of Legion's six roles of a pod waits for the %d installs before it, so a wait this short fails the launch the lock was added to save",
-					tc.boot, tc.intervals, wait, queue, queuedInstalls)
+			if queue := time.Duration(queued) * installBudget; deadline >= 3*queue && time.Duration(wait)*time.Second < queue {
+				t.Errorf("the wait at boot %s x %d intervals is %ds, less than the %s the queue this lock creates needs: the last of the pod's %d slots %v waits for the %d installs before it, so a wait this short fails the launch the lock was added to save",
+					tc.boot, tc.intervals, wait, queue, len(slots), slots, queued)
 			}
 		})
 	}

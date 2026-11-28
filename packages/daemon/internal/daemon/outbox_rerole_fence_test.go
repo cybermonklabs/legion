@@ -169,11 +169,11 @@ func seedKeyedStepPlan(t *testing.T, pool *store.Pool, records record.Store, key
 		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
 		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := record.NameAgents(nil, []record.PlanStep{
+		steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "a"},
 			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "checker", Type: "testing", AgentKey: "a"},
 			{Issue: key, Generation: 1, Task: "a", Position: 3, Role: "linter", Type: "testing"},
-		}, nil)
+		})
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}
@@ -184,13 +184,14 @@ func seedKeyedStepPlan(t *testing.T, pool *store.Pool, records record.Store, key
 }
 
 // The start of the tester's entry finds key a's claim in a turn as the implementer, so the
-// suspension it asks is judged on the step then and held for the turn's end (reroleForStep). A
-// move back to implementing that commits before the turn ends raises the implementer's entry on
-// the same claim, and the held suspension lands at the turn's end on the judgment it passed when it
-// was asked. What that costs is one suspension and one resume of the claim on its own session, and
-// nothing else: the tester's start finishes without acting on its next attempt (the issue left
-// testing), the claim keeps the implementer's role, and the move back's own start resumes it as the
-// implementer on the session it recorded and hands it the implementer's task.
+// suspension it asks is judged on the step then and held for the turn's end
+// (prepareClaimForStep). A move back to implementing that commits before the turn ends raises the
+// implementer's entry on the same claim, and the held suspension lands at the turn's end on the
+// judgment it passed when it was asked. What that costs is one suspension and one resume of the
+// claim on its own session, and nothing else: the tester's start finishes without acting on its
+// next attempt (the issue left testing), the claim keeps the implementer's role, and the move
+// back's own start resumes it as the implementer on the session it recorded and hands it the
+// implementer's task.
 func TestAHeldSuspensionAMoveBackOvertakesCostsOneSuspendAndResume(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

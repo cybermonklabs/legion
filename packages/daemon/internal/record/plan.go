@@ -236,16 +236,16 @@ type PlanStep struct {
 	Type       plan.Type
 	AgentKey   string
 	// Agent is the name of the step's agent, the last part of its claim token, which NameAgents
-	// gives before the step is written and nothing else writes. A step of the key owner holds
-	// none (20261124213820 named every other step a release before the column wrote).
+	// gives before the step is written and nothing else writes. A step of the key owner holds none.
+	// 20261124213820 named every other step a release before the column wrote, except where the
+	// first form of that migration ran: a row it left holds "" and reads as no name, and the third
+	// pass of NameAgents leaves such a step to its fourth.
 	Agent claim.Agent
-	// LeaveSession is the session the claim of the step's agent recorded when the step was
-	// written, where that agent took a name a key's agent held in an earlier generation, so the
-	// claim's session is that key's: every start of the step's agent carries it
-	// (SuperviseRequest.LeaveSession), and the claim leaves it where it still records it
-	// (supervise's revive). Only the project's default steps set it (workflow's
-	// leaveKeySessions), since an owner's version that would give a key's name to another agent
-	// is refused (UnnamedAgents); every other step holds "".
+	// LeaveSession is the session the claim of the step's agent must not resume: every start of
+	// the step's agent carries it (SuperviseRequest.LeaveSession), and the claim leaves it where it
+	// still records it (supervise's revive). No writer sets it now: NameAgents gives no agent a name
+	// a key held, so every step is written with "", and only a stored row that already holds a
+	// session has its starts carry one.
 	LeaveSession string
 }
 
@@ -255,14 +255,12 @@ func (s PlanStep) PlanAgent() plan.Agent {
 	return plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey})
 }
 
-// AgentName is the name of the step's agent: the last part of its claim token, and the one reader
-// of Agent. A step of the key owner has none, since its agent is the tree's architect, whose token
-// names the tree and no name on the issue.
+// AgentName is the name of the step's agent, the last part of its claim token, by the one rule
+// every reader of a stored step names it by (plan.StoredAgentName), and the one reader of Agent:
+// none for a step of the key owner, since its agent is the tree's architect, whose token names the
+// tree and no name on the issue, and the stored name otherwise.
 func (s PlanStep) AgentName() claim.Agent {
-	if s.PlanAgent().Owner() {
-		return ""
-	}
-	return s.Agent
+	return claim.Agent(plan.StoredAgentName(s.AgentKey, string(s.Agent)))
 }
 
 // StepToken is the claim token of the agent of step, a step of issue, whose tree is tree, in

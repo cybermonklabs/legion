@@ -121,10 +121,9 @@ type ReleaseDecision struct {
 // ReleasedClaim is one claim of a release, by its token beside its role: a live claim the idle
 // rule decides the release suspends (workflow.IdleDecision.Claims), and a claim the release's own
 // stops suspended as `released`, as its mark records it, with the role the claim holds as the mark
-// is read ("" for a token the record holds no claim of). Two claims can hold one role — the agent
-// of a key works a step of another role than its name, beside that role's own claim of an earlier
-// version of the plan — so a release names each claim by its token, and the role only says what
-// the claim was doing.
+// is read ("" for a token the record holds no claim of). Two claims of one issue can hold one role
+// (record.WorkerClaim), so a release names each claim by its token, and the role only says what the
+// claim was doing.
 type ReleasedClaim struct {
 	Token claim.Token
 	Role  claim.Role

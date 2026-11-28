@@ -1,0 +1,24 @@
+kind: Added
+custom:
+  Issue: pr5158
+body: |-
+  A plan can run a second agent of one role in a task, which the change that let a task name one
+  role at two steps still refused: two agents that start with the same role now both run. In
+  `implementer reviewer implementer`, step 3 gets a fresh agent, `…-implementer-2`, with a session
+  of its own: it starts with none of the first implementer's conversation, and its first task says
+  so. Each agent of an issue runs in a pod slot of its own name, with its own launcher, boot Secret
+  and volumes; a pod built before its plan named such an agent is replaced by its update round,
+  after its agents push, and the new agent's start waits for that round. An agent whose first
+  step's role the deployment no longer defines gets no slot, and a stored claim of such a role,
+  which can never start, leaves its slot built as one no claim runs in, so neither fails the build
+  of a pod of its issue; the gh refresh, of a pod's slot or of a tmux pane, passes over such a
+  claim, where it logged a failure at every tick. A launch whose issue's
+  plan cannot be read builds the slots of its roles and of its own claim instead of failing, and
+  the update round reads each issue's plan once a sweep. Migration
+  `20261125114600_claim_session_agent` adds `claims.session_agent`, and records on each claim the
+  release before made the agent that ran on it last, else the agent the plan's rows give its name
+  last, so a key keeps its name and its session after later versions of the plan leave the key
+  out, and a new agent given a name starts in a session of its own. Before a rollback, finish or stop
+  each issue whose plan names a second agent of one role: the release before has no slot or
+  session rule for such an agent. Then run this migration's way back, in its header, before the way
+  back of any older migration.

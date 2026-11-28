@@ -130,7 +130,9 @@ type Runtime interface {
 	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
 	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
 	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, a holding
-	// suspension excepted.
+	// suspension excepted. The slots the issue's plan names are not among its reasons, and it reads
+	// nothing of the store: a runtime with such slots answers them once for each pod
+	// (PlanSlotsDrift).
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:
@@ -423,10 +425,11 @@ type IssuePodReader interface {
 
 // ErrAwaitsPodUpdate is a launch of a claim into its issue's live pod that the pod cannot run until
 // its update round or its release replaces it. Either the pod was built before the deployment
-// defined the slot the claim runs in (its agent's name) or the role of its step: it has no
-// launcher, Secret or volume of that slot, or none of that role's own resources, and a launch that
-// replaced it would end every role in it and delete the issue's disk with everything a role did not
-// push. Or the slot's launcher is of an image before the credential wait, and the launch would
+// defined or the issue's plan named the slot the claim runs in (its agent's name), or before the
+// deployment defined the role of its step: it has no launcher, Secret or volume of that slot, or
+// none of that role's own resources, and a launch that replaced it would end every role in it and
+// delete the issue's disk with everything a role did not push. Or the slot's launcher is of an
+// image before the credential wait, and the launch would
 // start the slot as another App than its gh files hold: that launcher starts a child at once, as
 // the App the files held. The launch writes nothing and answers this (AwaitsPodUpdate, which names
 // the pod), and the supervisor charges it nothing and keeps the claim suspended, trying no launch of
@@ -447,20 +450,35 @@ func (e AwaitsPodUpdate) Error() string { return e.Reason + ": " + ErrAwaitsPodU
 func (e AwaitsPodUpdate) Unwrap() error { return ErrAwaitsPodUpdate }
 
 // IssuePodRoles answers whether the issue's Sandbox holds a live pod whose launcher was built
-// without role, a name the caller asks both as the slot of a claim (claim.Token.Slot, a name the
-// pod's launcher of the role of that name serves) and as the role of its step, and that pod's uid;
-// and whether the launcher of slot in the issue's live pod starts a child only once the slot's gh
-// files hold the start's credential (SlotWaitsForCredential), with the pod's uid where it does not:
-// a launcher of an image before that wait, which a re-role into its slot waits out until the pod's
-// update round or its release. SlotWaitsForCredential refuses a slot no claim token of the issue
-// carries, which no launcher of it can serve. A runtime with no pods (tmux) does not implement it.
+// without a name, and that pod's uid (PodLacksRole), a name the caller asks both as the slot of a
+// claim (claim.Token.Slot: the agent the claim's token ends in, which can be a name no role has,
+// `implementer-2`, and which the pod's launcher of that name serves) and as the role of its step,
+// whose own resources a launch needs too, since a slot is named by its agent, not by its step's
+// role; and whether the launcher of slot in the issue's live pod starts a child only once the
+// slot's gh files hold the start's credential (SlotWaitsForCredential), with the pod's uid where
+// it does not: a launcher of an image before that wait, which a re-role into its slot waits out
+// until the pod's update round or its release. SlotWaitsForCredential refuses a slot no claim
+// token of the issue carries, which no launcher of it can serve. A runtime with no pods (tmux)
+// does not implement it.
 type IssuePodRoles interface {
 	PodLacksRole(issue string, role claim.Role) (pod string, lacks bool)
 	SlotWaitsForCredential(issue string, slot claim.Agent) (pod string, waits bool, err error)
 }
 
+// PlanSlotsDrift answers the one reason an issue's pod drifts by that the issue's plan in force
+// decides rather than the configuration: a plan that names an agent whose name no role has, such
+// as `implementer-2`, whose slot the pod k's process runs in was built without (PodSlotsDrift). It
+// reads the plan from the store, so the daemon's sweep asks it once for each issue's pod, beside
+// PodDrift of each claim in it, and a read that fails costs that sweep this one reason alone: the
+// pod's other reasons, and whether it is there, are still read. A runtime with no pods (tmux) does
+// not implement it.
+type PlanSlotsDrift interface {
+	PodSlotsDrift(ctx context.Context, k Known) ([]string, error)
+}
+
 // PodLacks is what an issue pod lacks of a launch whose claim runs in slot (claim.Token.Slot, its
-// agent's name, which the pod's launcher of the role of that name serves) on a step of role, where
+// agent's name, which the pod's launcher of that name serves, a role's or a plan agent's such as
+// `implementer-2`) on a step of role, where
 // lacks says whether the pod was built without a name: the role's name alone for a claim named for
 // its role, whose slot and role are one name; "<role>, the role of its step" or "<slot>, the slot
 // of the claim's agent" where the pod lacks one of two names; both where it lacks the two; and ""
@@ -589,9 +607,9 @@ type IssueVolumeReader interface {
 // claim in the pod too, where one runs (internal/daemon's readKeptPod). The idle release and
 // the close of a left pod with a live claim make it before they take the pod, and take it only
 // when the read finds no work: nothing keeps a copy of work a taken pod's workspace held. The claim
-// is named by its token, since a keyed agent can work a role's step in a claim another role
-// started. Its process must run in the issue's pod: its shim reads the workspace with the jj it
-// already works with. The read keeps nothing; it writes only jj's snapshot of the working copy
+// is named by its token, since two claims of one issue can hold one role (record.WorkerClaim).
+// Its process must run in the issue's pod: its shim reads the workspace with the jj it already
+// works with. The read keeps nothing; it writes only jj's snapshot of the working copy
 // (Conn.WorkspaceWork). A runtime whose processes share no workspace implements nothing here.
 type WorkspaceWorkReader interface {
 	WorkspaceWork(ctx context.Context, issue string, token claim.Token) (WorkspaceWork, error)
@@ -1165,10 +1183,9 @@ type ActsAs func(ctx context.Context, token claim.Token) (claim.Role, bool, erro
 // as where the slot records that launch for the stored claim's generation or a later one, and
 // otherwise the claim's stored role (the sandbox runtime's slotAppRole, the tmux runtime's
 // paneRole); and the sandbox runtime's slotAppChanges reads it of several roles of one claim,
-// which is why the ask and the rule are parted. It is never the slot's name: a keyed agent's slot
-// is named by its agent, and that agent can do a step of another role. Each write of a slot's gh
-// credential asks it, so a re-roled claim's slot holds the App of the role its process was
-// launched as.
+// which is why the ask and the rule are parted. It is never the slot's name: a slot is named by
+// its agent (claim.Token.Slot), not by its step's role. Each write of a slot's gh credential asks
+// it, so a re-roled claim's slot holds the App of the role its process was launched as.
 func SlotRoles(ctx context.Context, actsAs ActsAs, token claim.Token) (func(claim.Role) claim.Role, error) {
 	if actsAs == nil {
 		return func(role claim.Role) claim.Role { return role }, nil

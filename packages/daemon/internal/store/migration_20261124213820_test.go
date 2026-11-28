@@ -91,11 +91,11 @@ func TestThePlanStepAgentMigrationNamesEveryStepItFinds(t *testing.T) {
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the step's agent: %v", err)
 	}
-	first := record.NameAgents(nil, []record.PlanStep{
+	first := record.NameAgents(nil, nil, nil, []record.PlanStep{
 		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k"}, {Generation: 1, Task: "a", Position: 2, Role: "tester", AgentKey: "k"},
-		{Generation: 1, Task: "a", Position: 3, Role: "reviewer"}, {Generation: 1, Task: "a", Position: 4, Role: "acceptance", AgentKey: "owner"}}, nil)
-	second := record.NameAgents(first, []record.PlanStep{
-		{Generation: 2, Task: "a", Position: 1, Role: "tester", AgentKey: "k"}, {Generation: 2, Task: "a", Position: 2, Role: "reviewer"}}, nil)
+		{Generation: 1, Task: "a", Position: 3, Role: "reviewer"}, {Generation: 1, Task: "a", Position: 4, Role: "acceptance", AgentKey: "owner"}})
+	second := record.NameAgents(first, nil, nil, []record.PlanStep{
+		{Generation: 2, Task: "a", Position: 1, Role: "tester", AgentKey: "k"}, {Generation: 2, Task: "a", Position: 2, Role: "reviewer"}})
 	if second[0].Agent != "implementer" {
 		t.Fatalf("NameAgents named key k %q in generation 2, want implementer, its generation 1 name: the case is not the one this test holds", second[0].Agent)
 	}
@@ -221,5 +221,34 @@ func TestThePlanStepAgentWayBackPutsEachClaimInItsTokensRole(t *testing.T) {
 	// record kept is gone, which the way back's cost is.
 	if got, want := keyNamesOf(t, store), []string{"LEGION-208 implementer k 1"}; !slices.Equal(got, want) {
 		t.Fatalf("plan_key_names after the roll forward = %q, want %q: filled again from the named steps", got, want)
+	}
+}
+
+// A database that ran 20261124213820 in its first form holds every row that form found at the empty
+// string: that form added the column and named no row. An upgrade over it does not run
+// 20261124213820 again, since that version is already recorded, so every such row still holds the
+// empty string after it. A step that is not the owner's reads as the name its row holds
+// (plan.StoredAgentName), so such a row reads as no name. The names record.NameAgents gives the
+// steps of a version written over such rows are held by record's
+// TestAStepWithNoKeyTakesANameWhereItsPlacesRowHoldsNone.
+func TestTheStepAgentMigrationsFirstFormLeavesItsRowsUnnamedAfterTheUpgrade(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	migrateThrough(t, store, planStepAgentVersion-1)
+	seedPlanSteps(t, store, "LEGION-208", 1, [2]string{"implementer", ""}, [2]string{"reviewer", ""}, [2]string{"acceptance", "owner"})
+	for _, statement := range []string{
+		// The whole of the first form's statement.
+		`alter table plan_steps add column agent text not null default ''`,
+		fmt.Sprintf("insert into schema_version (version) values (%d)", planStepAgentVersion),
+	} {
+		if _, err := store.Pool().Exec(ctx, statement); err != nil {
+			t.Fatalf("run the first form of the step agent migration, %s: %v", statement, err)
+		}
+	}
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate over the first form: %v", err)
+	}
+	if got, want := planStepAgents(t, store), []string{"LEGION-208 1/a/1 ", "LEGION-208 1/a/2 ", "LEGION-208 1/a/3 "}; !slices.Equal(got, want) {
+		t.Fatalf("the steps after the upgrade = %q, want %q: every row the first form found unnamed", got, want)
 	}
 }

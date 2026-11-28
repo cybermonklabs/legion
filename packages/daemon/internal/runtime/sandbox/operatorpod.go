@@ -204,8 +204,11 @@ func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[str
 // postgres store alone has: under cloudsql-iam each pod signs in as itself, or as the service
 // account it impersonates, and mounts no session key at all), which the shim would export into Oh
 // My Pi's environment under the provider key's name. roles are every role whose launcher a pod of
-// the deployment can run (the runtime's issue roles, then the controller), whose own volumes the
-// operator's may not name. launchSecrets are the secrets every launch's
+// the deployment can run (the runtime's issue roles, then the controller), whose own volumes, each
+// slot volume of such a role among them, the operator's may not name. A volume named as the slot
+// volume of an agent a plan can name beside its role's own is taken here, and PodVolumeWarnings
+// warns of it.
+// launchSecrets are the secrets every launch's
 // spec carries, by name, and providersSecrets those of them the providers Secret carries, none of
 // which may be the session database's URL key. exchange is what the deployment's pods trade
 // (PodExchange): only where they carry the exchange identity are its variables (exchangeOwned),
@@ -306,6 +309,33 @@ func CheckPod(pod Pod, roles []claim.Role, providerKeys map[string]string, tools
 		}
 	}
 	return nil
+}
+
+// PodVolumeWarnings are the warnings of the operator's pod volumes (runtime.kubernetes.pod.volumes)
+// named as a volume Legion gives the slot of an agent an issue's plan can name beside its role's
+// own (agentSlotVolumeForm): `<prefix>-<role>-<n>`, a numbered agent's name of a role of roles,
+// the role cut so that the name holds at most 32 bytes (claim.NumberedAgentName), such as
+// `state-implementer-2`. An issue's plan gives such an agent a slot of its own name, and that
+// slot's volumes would then take such a volume's name, which Kubernetes refuses when it builds the
+// pod. No check at the daemon's boot can see the plans that come later. A configuration saved
+// before agents of plans had slots may hold such a name, so this release takes it with a warning,
+// and a later release refuses it. A name no agent can take, such as `gh-cache` where no role is
+// `cache`, gets no warning, and a role's own slot volumes CheckPod refuses. Each warning names the
+// volume, the slot form it could collide with and the agent name whose slot it would collide with,
+// and says that the later release refuses the name. roles are the roles CheckPod is given. The
+// daemon logs each warning at its boot, and `legion config check` prints each
+// (checkOperatorConfig).
+func PodVolumeWarnings(pod Pod, roles []claim.Role) []string {
+	var warnings []string
+	for i, volume := range pod.Volumes {
+		prefix, agent := agentSlotVolumeForm(volume.Name, roles)
+		if prefix == "" {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf("runtime.kubernetes.pod.volumes[%d].name %s has the form %s-<slot> of a volume Legion gives each slot of a pod, and collides with the %s volume of the slot of an agent named %s wherever an issue's plan names one; a later release refuses this name, so rename the volume",
+			i, volume.Name, prefix, prefix, agent))
+	}
+	return warnings
 }
 
 // overlaps reports whether one of two clean absolute paths is the other or lies under it.

@@ -228,23 +228,20 @@ own required checks.
 
 The table is the line of the **default steps**. Each architect of a tree, the root's or a
 sub-architect's, is an owner of each issue that stands in that tree now, and can give an issue a
-**plan** that picks which of these steps it runs and in what order: one task whose steps are
-some of `planner implementer tester reviewer acceptance:owner` and of the roles the deployment
-defines, in the order the owner names them, no two of the task's agents starting with one role,
-though one role can stand at two steps, one key's agent at both (`implementer:a reviewer implementer:a`)
-or the agent of either step starting with another role (`implementer reviewer:a implementer:a`,
-`implementer:a reviewer:a tester reviewer`),
+**plan** that picks which steps it runs and in what order.
+Its one task names the table's roles or roles the deployment defines,
 with `implementer` among them and before each `tester`, `reviewer` and `acceptance:owner` step,
 since each of those reads the pull request the implementer opens,
 and after each other step of the type implementation,
 since Legion's retro is done by the implementer,
-where `acceptance:owner` is the architect's own acceptance in `accepting`;
-any other step may carry a key after its role (`implementer:a tester:a`),
-the steps of one key running as one agent in one claim and one session.
-Where `implementer` stands at two steps, as in `implementer:a reviewer implementer:a`, the first of
-them is the one that stands before each `tester`, `reviewer` and `acceptance:owner` step and after
-each other step of the type implementation, and the later one may stand after them. It writes
-the plan as the issue's `plan.md` document, with one `plan_task` block such as
+where these ordering rules apply to the first `implementer` step.
+A later `implementer` step may come after the steps that read the pull request.
+
+`acceptance:owner` is the architect's acceptance in `accepting`. Other steps can carry a key, as in `implementer:a tester:a`. Steps with one key run as one agent in one claim and one session. A role at two steps can use a single key, as in `implementer:a reviewer implementer:a`, or two agents. In `implementer reviewer implementer`, step 3 starts `implementer-2` with a fresh session. In `implementer reviewer:a implementer:a`, step 3 uses the agent that started as the reviewer.
+
+A key keeps its name even when a plan version omits it. A new agent that would have used it gets a numbered name and a pod slot of its own. Its start can wait for the pod's update round. A name only unkeyed agents held can return to a new agent of their role once no agent of the current plan holds it. The new agent starts a fresh session. A different role cannot take the name: the stored claim or an earlier row records its role.
+
+The architect writes the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
 starts: for a child, before `release_children` releases it, since a released child can start its
@@ -680,7 +677,7 @@ Legion uses GitHub's own review mechanisms rather than labels:
   The cap's message names both numbers, the rounds counted and the conflict rounds left out.
 - Each move back is counted by its kind, as the pair `<from>-<to>` of the phase it leaves
   and the phase it goes to — `testing-implementing`, `reviewing-implementing`, `merging-implementing`,
-  or any other of the 41 moves back a task's line can make, such as `testing-reviewing` on a
+  or any other of the 49 moves back a task's line can make, such as `testing-reviewing` on a
   task whose reviewer step comes before its tester step —
   beside the round count, and a move made while the head conflicts with its base raises no pair.
   `GET /legion/v1/state` serves the counts as `workers.implementer.backwardMoves`, left out for an
@@ -885,9 +882,4 @@ still moving, and a call that carries a start and no end is the shape a turn tha
 leaves behind. The daemon's own backstop reads that record and nothing else before it ends such a
 turn (`worker_stall_backstop_hours` in
 [legion.yaml](/legion/legion/running-legion/#legionyaml)), and a person reads the same record
-three ways: `legion state`'s `agents in a tool call` line, which names each working claim in an
-open call by issue and role ([Observe](/legion/legion/running-legion/#observe)); `legion claims
-list`, whose last column is that call for each claim, the project controller's — which is on no
-issue, and so on no part of the `legion state` line — included; and `GET /legion/v1/state`, the
-bytes `legion state --json` prints, under `issues.<KEY>.architect.step` and
-`issues.<KEY>.workers.<role>.claim.step`.
+three ways: `legion state`'s `agents in a tool call` line names each working claim in an open call by issue and role. It includes the architect, the workers, and other claims. For an agent not named for its role, the line adds its token, as in `LEGION-208 implementer (claim legion-legion-legion-208-implementer-2)` ([Observe](/legion/legion/running-legion/#observe)). `legion claims list` prints the call in its last column, including for the controller's claim, which belongs to no issue. `GET /legion/v1/state` (`legion state --json`) carries the records under `issues.<KEY>.architect.step`, `issues.<KEY>.workers.<role>.claim.step`, and `issues.<KEY>.otherClaims[].claim.step`.

@@ -443,8 +443,9 @@ func TestACheckLookBoundAfterAPauseCountsFromTheCheckRolesReady(t *testing.T) {
 	}
 }
 
-// Two claims of one issue can hold the check's role: the agent of a key, which the role's phases
-// row names on its step, beside the role's own claim. The look's claim is the one its start
+// Two claims of one issue can hold the check's role (record.WorkerClaim): here the agent of a key,
+// which the role's phases row names on its step, beside the role's own claim. The look's claim is
+// the one its start
 // reaches, the step's worker (the outbox's workerOf), so its bound after a pause counts from that
 // claim's ready: here eleven minutes after the pause's end, while the role's own claim was last
 // ready before the pause. Read by the role's own token, the bound would count from the pause's end

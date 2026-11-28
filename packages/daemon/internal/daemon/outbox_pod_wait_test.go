@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -20,7 +21,8 @@ import (
 )
 
 // podRolesRuntime is the fake runtime with an issue pod built before some roles of the
-// deployment: lacks names each such role with the uid of the pod (runtime.IssuePodRoles).
+// deployment: lacks names each such role, and each slot the pod has none of, with the uid of the
+// pod (runtime.IssuePodRoles). A slot is the name its claim's token ends in.
 type podRolesRuntime struct {
 	*fake.Runtime
 	lacks map[claim.Role]string
@@ -126,8 +128,8 @@ func TestAKeyedAgentsStartWaitsWhereThePodLacksItsSlotOrTheRoleOfItsStep(t *test
 		// names is what the wait's text names that the pod lacks.
 		names string
 	}{
-		{"the pod holds the slot and lacks the role of the step", implementer, "checker", "defined checker, the role of its step"},
-		{"the pod lacks the slot and holds the role of the step", checker, claim.RoleTester, "defined checker, the slot of the claim's agent"},
+		{"the pod holds the slot and lacks the role of the step", implementer, "checker", "without checker, the role of its step"},
+		{"the pod lacks the slot and holds the role of the step", checker, claim.RoleTester, "without checker, the slot of the claim's agent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runner, sup, rt, issue := podWaitRunner(t, map[claim.Role]string{"checker": "pod-1"})
@@ -151,6 +153,15 @@ func TestAKeyedAgentsStartWaitsWhereThePodLacksItsSlotOrTheRoleOfItsStep(t *test
 			// is told of the wait, naming the same.
 			if notices := outboxPodWaitHeld(t, runner, issue.Key); len(notices) != 1 || !strings.Contains(notices[0], tc.names) {
 				t.Errorf("the pod-wait-held notices = %q, want one that names %q", notices, tc.names)
+			}
+			// The notice names the start as `legion state` names a claim (api.ClaimNameInIssue):
+			// neither claim here is named for the role of its step, so each is named by that role
+			// with its token beside it, and two claims of one role read apart.
+			start := api.ClaimNameInIssue(tc.role, tc.claim)
+			if notices := outboxPodWaitHeld(t, runner, issue.Key); len(notices) == 1 &&
+				!strings.Contains(notices[0], start) {
+				t.Errorf("the pod-wait-held notice %q does not name the start %q", notices[0],
+					start)
 			}
 		})
 	}
@@ -237,6 +248,16 @@ func TestAWaitUnderADeploymentWithNoIdleReleaseIsToldOnce(t *testing.T) {
 			if !strings.Contains(notices[0], want) {
 				t.Errorf("the notice's reason %q does not name %q", notices[0], want)
 			}
+		}
+		// The start names no claim, so it starts the checker's own claim, which the notice names
+		// by its role alone (api.ClaimNameInIssue).
+		own, err := claim.NewToken("legion", "LEGION-208", "checker")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(notices[0], string(own)) {
+			t.Errorf("the notice's reason %q names the checker's own claim by its token %s, "+
+				"want its role alone", notices[0], own)
 		}
 		for _, never := range []string{"remove", "delete"} {
 			if strings.Contains(notices[0], never) {

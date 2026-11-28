@@ -68,7 +68,11 @@ func legionName(name string) bool {
 // readRoles is `roles`: a mapping of a role's name to its block, read in the file's order. A name
 // outside the grammar, longer than Dispatch's step record takes, a name of Legion's own or named
 // twice is refused naming it; the block's type is judged in resolveRoles, once `role_types` is
-// read too, wherever the file names it.
+// read too, wherever the file names it. Once every name is read, a name that is the name Legion
+// gives a second or later agent of another role (claim.NumberedAgentRole), Legion's or one of
+// `roles` before or after it, is refused naming both: an agent of each role would hold one claim
+// token, and so one slot and one session. A plan's own roles are held to the same rule
+// (plan.Validate).
 func readRoles(value *yaml.Node, key string) ([]Role, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -100,6 +104,18 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 		}
 		role.Name = claim.Role(name)
 		roles = append(roles, role)
+	}
+	names := slices.Clone(claim.Roles)
+	for _, name := range slices.Sorted(maps.Keys(plan.BuiltinRoles())) {
+		names = append(names, claim.Role(name))
+	}
+	for _, role := range roles {
+		names = append(names, role.Name)
+	}
+	for _, role := range roles {
+		if of, ok := claim.NumberedAgentRole(string(role.Name), names); ok {
+			return nil, fmt.Errorf("%s.%s is the name Legion gives a second or later agent of the role %s, so an agent of each role would hold one claim: give the role another name", key, role.Name, of)
+		}
 	}
 	return roles, nil
 }

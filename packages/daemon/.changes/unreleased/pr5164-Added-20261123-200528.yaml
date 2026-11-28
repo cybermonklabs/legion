@@ -8,9 +8,9 @@ body: |-
   role's prompt, model, backend and App. Its completion reports pass or fail and the commit its
   workspace stands on. A fail may name `return_to`, the place of an earlier step of the task. A
   move back counts no review round. A review's request for changes counts one, and so does the fail
-  of a review step whose agent is not the owner. A hook's `moves` may name each of the 41 moves
+  of a review step whose agent is not the owner. A hook's `moves` may name each of the 44 moves
   back that some task's order makes, the moves of a step among them. The loader refuses the other
-  16 pairs. A task whose role the deployment no longer defines stops, and a todo does not start it
+  13 pairs. A task whose role the deployment no longer defines stops, and a todo does not start it
   again while the role is gone. The daemon API contract gains an entry for this change. State names
   the role of a running step (`stepRole`) and the roles that wait for the issue's pod
   (`startWaitsForPod`). A caller whose contract lacks the entry reads `step` as `implementing`. A

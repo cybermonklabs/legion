@@ -771,6 +771,34 @@ func TestABootStopsATaskWhoseAgentIsNamedForARoleTheDeploymentLost(t *testing.T)
 	}
 }
 
+// A second or later agent of a role takes a numbered name of that role (claim.NumberedAgentRole),
+// `implementer-2` or `checker-2`, which is no role itself: its slot is lost only where its role
+// is. The fault: the name was read as a role, so a second implementer's step stopped its task as
+// the work of a role the deployment no longer defines. The controls: an agent named for the lost
+// checker itself, and a numbered agent of it, are lost; a step of the key owner, with no name, is
+// not.
+func TestANumberedAgentIsLostOnlyWhereItsRoleIs(t *testing.T) {
+	withChecker := plan.BuiltinRoles()
+	withChecker["checker"] = plan.RoleDef{Name: "checker", Type: plan.TypeTesting}
+	defined, lost := plan.Deployment{Roles: withChecker}, plan.Deployment{Roles: plan.BuiltinRoles()}
+	for _, tc := range []struct {
+		name claim.Agent
+		d    plan.Deployment
+		lost bool
+	}{
+		{name: "implementer-2", d: lost},
+		{name: "checker-2", d: defined},
+		{name: "checker", d: defined},
+		{name: "checker", d: lost, lost: true},
+		{name: "checker-2", d: lost, lost: true},
+		{name: "", d: lost},
+	} {
+		if got := lostAgent(tc.name, tc.d); got != tc.lost {
+			t.Errorf("lostAgent(%q) under a deployment that defines the checker = %t: %t, want %t", tc.name, tc.d.Defines("checker"), got, tc.lost)
+		}
+	}
+}
+
 // A person's todo on a root held for its stopped task starts nothing while a step of the task names
 // a role the deployment no longer defines: the task stays stopped, its reason now the lost step's,
 // the issue stays held as it was, the status the record keeps is written back over the todo with

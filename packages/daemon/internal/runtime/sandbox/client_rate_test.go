@@ -528,7 +528,7 @@ func TestASuccessorHoldsItsOwnReadsWhateverALateReadOfItsPredecessorLeft(t *test
 	const name = "legion-legion-legion-208-tester-boot"
 	var c launcherCredentials
 	c.bind(name, "uid-old", launcherCredential{podUID: "uid-pod-old"})
-	c.forget(name)
+	c.forgetSandbox("legion-legion-legion-208")
 	c.store(name, "uid-old", launcherCredential{podUID: "uid-pod-old"})
 	if _, held := c.lookup(name, "uid-new"); held {
 		t.Fatal("the successor holds a credential before its own read")

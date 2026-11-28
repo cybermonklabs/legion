@@ -29,9 +29,10 @@ import (
 // closed (issue_close: retired, its session kept for a later todo). Its pod goes either way, and
 // the disk it ran on with it, so its Sandbox is deleted either way (record.IssueSuspend), while
 // its parent keeps running in a pod of its own. A child closed as done at its merge still owes its
-// production check, where the project opens one (Engine.checkRole): every claim of it but the
-// checking role's is closed, a role of the deployment's among them, no IssueSuspend is written, and the check opens in that
-// role's live session; the check's close writes the suspension (closeCheck). A project whose
+// production check, where the project opens one (Engine.checkRole): every claim of it is closed
+// but the claim of the worker on the checking role's step (record.WorkerClaim), no IssueSuspend
+// is written, and the check opens in that claim's live session; the check's close writes the
+// suspension (closeCheck). A project whose
 // `production_check` is off checks nothing in production, so its merged child close is like any
 // other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
 // A done child set back to todo opens a new run, and each of its claims comes back on the session
@@ -538,7 +539,8 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 	// Each row names the root generation whose linger it expires: a member keeps its own generation
 	// across re-admission, so only that tells this linger's rows from a later one's. The rows reach
 	// the claims every request of every claim of a member reaches (claimTargets): each stored claim
-	// by its token, so a claim of a role a keyed agent took over gets its close too, and each role
+	// by its token, so each of two claims of one issue that hold one role (record.WorkerClaim) gets
+	// its close, and each role
 	// whose step's claim is none of those by the role alone, so a claim that comes up after this read
 	// gets its close when the row runs. The tree's cleanup waits for every claim these rows reach.
 	for _, member := range members {

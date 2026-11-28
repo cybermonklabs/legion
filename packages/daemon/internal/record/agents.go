@@ -1,50 +1,185 @@
 package record
 
 import (
+	"maps"
 	"slices"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
+// NameClaims is what NameAgents keeps of the stored claims of one issue (NameClaimsOf): every
+// claim, by the name its token ends in, with the role the claim holds and the key whose agent's
+// session it holds (NameClaim).
+type NameClaims map[claim.Agent]NameClaim
+
+// NameClaim is what the stored claim of a name holds, for NameAgents: Role, the role the claim
+// holds, and Key, the key whose agent's session the claim holds (supervise.Claim.SessionAgent,
+// `key:<key>`), "" for a claim whose session is a step's agent with no key, the key owner's, or
+// none. A name whose claim holds a key's session is the name NameAgents keeps for that key where no
+// row names the key any longer (pass 2), and a name whose claim holds another role is no name for
+// an agent of a role (pass 4), since that claim's session is the other role's agent's.
+type NameClaim struct {
+	Role claim.Role
+	Key  string
+}
+
+// NameClaimsOf is the NameClaims of claims, the stored claims of one issue (Store.IssueClaims):
+// each claim by the name its token ends in, with its role, and with the key whose agent's session
+// it holds where that key is not the key owner's.
+func NameClaimsOf(claims []IssueClaim) NameClaims {
+	named := NameClaims{}
+	for _, c := range claims {
+		_, name, ok := c.Token.Cut()
+		if !ok {
+			continue
+		}
+		held := NameClaim{Role: c.Role}
+		if key, keyed := c.SessionAgent.Key(); keyed && !(plan.Agent{Key: key}).Owner() {
+			held.Key = key
+		}
+		named[name] = held
+	}
+	return named
+}
+
+// KeyName is one name a key held on an issue (KeyNames): the lasting record of every name a key's
+// agent held, which no later plan's write or deletion removes, since the name's claim records that
+// key's session in every later generation. Generation is the latest generation whose steps gave
+// the key that name.
+type KeyName struct {
+	Name       claim.Agent
+	AgentKey   string
+	Generation uint64
+}
+
 // NameAgents is steps, copied, with the name of each step's agent (PlanStep.Agent) given: the one
 // rule of a name, which reads no store of its own. earlier is every plan_steps row of the issue, of
 // every generation (PlanStepsOf), read before the version's steps are written, since the write
 // deletes the steps of each task it gives; held is the lasting record of every name a key held on
-// the issue (KeyNames), which outlives the rows. Both are required, and a caller with no history
-// passes nil for each: a writer that could leave held out would reserve the names by the rows
+// the issue (KeyNames), which outlives the rows; claims is the stored claims of the issue by name
+// (NameClaimsOf), read with earlier. All three are required, and a caller with no history passes
+// nil for each: a writer that could leave held or claims out would reserve the names by the rows
 // alone, and a name whose rows went would be given to another agent. Every writer of steps names
-// them so: a version an owner gives
-// (workflow's versionRefusal) and the project's default steps a run with no plan takes (workflow's
-// defaultRows). It names in four passes, in this order, so that a key the version names never
-// changes its name and no two agents of the version share one.
-//
-// A name a key held is that key's alone, in every later version and generation, whatever release
-// wrote the rows (keyNamesHeld, from earlier and held by one rule): no step with no key and no other
-// key takes it, so no agent but that key ever runs in the name's claim and resumes its session. A
-// key the version no longer names keeps its name for its return; the agent that would have taken
-// it is left with no name.
+// them from all three: a version an owner gives and the project's default steps a run with no plan
+// takes. It names in four passes, in this order, so that a key the version names never changes its
+// name and no new name can take that key's. A name a key held stays that key's while a version
+// leaves the key out: no other agent takes it, so the name's claim, and the session that claim
+// holds, wait for the key's return, and the agent that would have taken the name takes one of its
+// own (`implementer-2`) and so a slot of its own. A key holds the name an earlier row of it held,
+// and, since a version replaces the rows of each task it gives and so can leave no row that names
+// the key, the name the lasting record holds for it, and the name whose claim holds its session
+// (NameClaimsOf). That holds whatever release wrote the rows: a claim of a release before the
+// claim recorded its session's agent records, once 20261125114600 has run, the agent
+// that ran on it last where that release kept its latest start, else the agent the rows gave its
+// name last, so where that agent is a key's, the name stays the key's after the last row that said
+// so is gone. Where the agent recorded is one with no key that the release before gave a key's name
+// in a later version, the name stays the key's only while the key's earlier row, or its lasting
+// record, stands. A name only agents with no key held is free for their role, a numbered one as
+// much as the role's own: a new task's agent with no key takes the name of a stopped task's agent
+// of its role, and the claim of that name starts it in a session of its own
+// (supervise.Claim.SessionAgent), so each later agent with no key of a role needs no new number,
+// and so no new slot of its pod.
 //
 //  1. A step of the key owner has no name: its agent is the tree's architect, whose token names the
 //     tree and no name on the issue.
-//  2. Each other key that an earlier row names takes the name of its newest such row, where it is
-//     the key that holds that name (keyNamesHeld answers both) and no agent named
-//     before it in this pass took it; otherwise it keeps no name. Every such key is named before
-//     any other pass gives a name.
+//  2. Each other key that an earlier row names takes the name of its latest such row, and a key no
+//     earlier row names takes the name the lasting record holds for it, else the name whose claim
+//     holds its session, each only where it is the key that held that name last. The key that held
+//     a name last is the key of the latest earlier row of the name that names a key, and a later
+//     row of the name with no key does not end that hold; where no earlier row of the name names a
+//     key, it is the key the lasting record holds the name for, else the key whose session the
+//     name's claim holds. Every such key is named before any other pass gives a name. Rows written
+//     before a name a key held was kept for it can show another key holding the name after it,
+//     where that key took by pass 4 the name of a key its version did not name; the name's claim
+//     ran that other key's agent last, so the key whose row held it before is named by pass 4,
+//     whether or not the version names the other key, and no name passes from one key to another.
 //  3. Each step with no key takes the name of the latest earlier row of its task, place and role
-//     with no key, unless pass 2 or an earlier step of this pass gave that name, or a key holds it.
+//     with no key, where that row holds one, unless pass 2 or an earlier step of this pass gave
+//     that name, or a key holds it. A row that holds no name gives none: the first form of
+//     20261124213820 left every row it found at the empty string, and a step named "" has no
+//     claim token, so such a step is named by pass 4.
 //  4. Each agent still with no name, in the order of its first step, takes the role of that first
-//     step (RoleName), where no agent of steps has that name and no other key holds it.
-//
-// An agent left with no name would share its name with another agent, or take a key's: this
-// release runs one agent of each role for an issue, so the caller refuses an owner's version with
-// one before it writes anything (UnnamedAgents), and gives the default steps of a new generation
-// the name with a session of their own (workflow's defaultRows).
+//     step, cut to 32 bytes (claim.RoleAgentName), where no agent of steps has that name, no key
+//     holds it and neither an earlier row nor the name's stored claim held it on another role; and
+//     otherwise a name of its own, `<role>-2`, `<role>-3` and so on, the first that no agent of
+//     steps and no key holds and that neither an earlier row nor its claim held on another role
+//     (claim.NumberedAgentName). So two agents never share a name, and so a claim and a session,
+//     and an agent of one role never takes the name an agent of another role had. Two roles give
+//     one name where a role is named as another role's numbered agent, which the settings loader
+//     and plan.Validate refuse but rows written under earlier settings can hold, and where two
+//     roles of 30 bytes or more agree in their first 30, which claim.NumberedAgentName cuts to one
+//     name. The claim of such a name holds the role whose agent ran on it, so the name stays that
+//     role's while the claim stands, after the versions that replaced every row of it: its
+//     session is that agent's, and where that agent was a step's at the same task and place, the
+//     claim would resume it, since the agent of a step with no key is `step:<place>:<task>`
+//     whatever its role. Pass 3 never gives a name this pass passes over: it gives a step only a
+//     name its own role held at its place, and in the rows this rule and the release before
+//     write, a name stands on two roles only where a key's agent moved to another role under it,
+//     a name keyHeld passes over while those rows stand. A key that holds a name keeps it, since
+//     pass 2 names it first.
 //
 // The steps of one key are one agent (PlanStep.PlanAgent), so they share one name in every task.
-func NameAgents(earlier, steps []PlanStep, held []KeyName) []PlanStep {
+func NameAgents(earlier []PlanStep, held []KeyName, claims NameClaims, steps []PlanStep) []PlanStep {
 	named := slices.Clone(steps)
-	keyNames, holders := keyNamesHeld(earlier, held)
+	keyNames := map[string]claim.Agent{}
+	// lastHolder is the key that holds each name a key holds: the key of the latest earlier row of
+	// the name that names a key, else the key the lasting record holds it for, else the key whose
+	// agent's session the name's claim holds.
+	lastHolder := map[claim.Agent]string{}
+	keyHeld := func(name claim.Agent) bool {
+		_, ok := lastHolder[name]
+		return ok
+	}
+	// keepFor names key by name, and name by key, where no earlier source named either.
+	keepFor := func(key string, name claim.Agent) {
+		if _, ok := keyNames[key]; !ok {
+			keyNames[key] = name
+		}
+		if _, ok := lastHolder[name]; !ok {
+			lastHolder[name] = key
+		}
+	}
+	// heldOn is the roles each name was held on, by the earlier rows that hold it and by its stored
+	// claim (pass 4).
+	heldOn := map[claim.Agent]map[string]bool{}
+	holdOn := func(name claim.Agent, role string) {
+		if heldOn[name] == nil {
+			heldOn[name] = map[string]bool{}
+		}
+		heldOn[name][role] = true
+	}
+	for _, row := range earlier {
+		if agent := row.PlanAgent(); agent.Key != "" && !agent.Owner() && row.AgentName() != "" {
+			keyNames[agent.Key] = row.AgentName()
+			lastHolder[row.AgentName()] = agent.Key
+		}
+		if name := row.AgentName(); name != "" {
+			holdOn(name, row.Role)
+		}
+	}
+	heldOnAnotherRole := func(name claim.Agent, role string) bool {
+		for held := range heldOn[name] {
+			if held != role {
+				return true
+			}
+		}
+		return false
+	}
+	for _, h := range held {
+		if h.AgentKey == "" || h.Name == "" || (plan.Agent{Key: h.AgentKey}).Owner() {
+			continue
+		}
+		keepFor(h.AgentKey, h.Name)
+	}
+	for _, name := range slices.Sorted(maps.Keys(claims)) {
+		held := claims[name]
+		holdOn(name, string(held.Role))
+		if held.Key == "" {
+			continue
+		}
+		keepFor(held.Key, name)
+	}
 	names := map[plan.Agent]claim.Agent{}
 	taken := map[claim.Agent]bool{}
 	give := func(agent plan.Agent, name claim.Agent) {
@@ -53,11 +188,6 @@ func NameAgents(earlier, steps []PlanStep, held []KeyName) []PlanStep {
 			taken[name] = true
 		}
 	}
-	// heldByAnother is whether a key other than key holds name.
-	heldByAnother := func(name claim.Agent, key string) bool {
-		holder, held := holders[name]
-		return held && holder != key
-	}
 	for _, step := range named {
 		agent := step.PlanAgent()
 		if _, done := names[agent]; done {
@@ -65,14 +195,7 @@ func NameAgents(earlier, steps []PlanStep, held []KeyName) []PlanStep {
 		}
 		if agent.Owner() {
 			give(agent, "")
-			continue
-		}
-		name, ok := keyNames[agent.Key]
-		switch {
-		case agent.Key == "" || !ok:
-		case taken[name] || heldByAnother(name, agent.Key):
-			give(agent, "")
-		default:
+		} else if name, ok := keyNames[agent.Key]; ok && agent.Key != "" && lastHolder[name] == agent.Key {
 			give(agent, name)
 		}
 	}
@@ -81,7 +204,7 @@ func NameAgents(earlier, steps []PlanStep, held []KeyName) []PlanStep {
 		if agent.Key != "" {
 			continue
 		}
-		if name, ok := earlierPlaceName(earlier, step); ok && !taken[name] && !heldByAnother(name, "") {
+		if name := earlierPlaceName(earlier, step); name != "" && !taken[name] && !keyHeld(name) {
 			give(agent, name)
 		}
 	}
@@ -90,10 +213,13 @@ func NameAgents(earlier, steps []PlanStep, held []KeyName) []PlanStep {
 		if _, ok := names[agent]; ok {
 			continue
 		}
-		name := RoleName(step.Role)
-		if taken[name] || heldByAnother(name, agent.Key) {
-			give(agent, "")
-			continue
+		// The role's own name, or else the first numbered one, where no agent of steps and no key
+		// holds it and neither an earlier row nor the name's claim held it on another role: an
+		// earlier row's agent with no key of this role that the version no longer names frees it.
+		name := claim.RoleAgentName(claim.Role(step.Role))
+		for n := claim.FirstAgentNumber; taken[name] || keyHeld(name) ||
+			heldOnAnotherRole(name, step.Role); n++ {
+			name = claim.NumberedAgentName(claim.Role(step.Role), n)
 		}
 		give(agent, name)
 	}
@@ -103,112 +229,15 @@ func NameAgents(earlier, steps []PlanStep, held []KeyName) []PlanStep {
 	return named
 }
 
-// RoleName is the name an agent takes from the role of its first step (NameAgents' pass 4): the
-// role itself. A step's role is a role of the deployment's or one of Legion's (plan.Supported
-// refuses a plan's own role block), and config reads a role of the deployment's in the agent
-// grammar already (its roleWord, at most maxRoleWord bytes), so a role needs no cut to be a name.
-func RoleName(role string) claim.Agent { return claim.Agent(role) }
-
-// UnnamedAgent is an agent of a version that NameAgents gave no name: the agent's first step, the
-// name it would have taken, and Holder, the key that holds that name ("" where the agent of the
-// version that holds it has no key).
-type UnnamedAgent struct {
-	Step   PlanStep
-	Name   claim.Agent
-	Holder string
-}
-
-// UnnamedAgents is each agent of named, steps NameAgents gave from earlier and held, but the owner,
-// that has no name, with the name it would have taken — a key's newest earlier name, and
-// otherwise its role's (RoleName) — and the key that holds that name: the key of the agent of
-// named that holds it, and otherwise the key whose earlier row, or the lasting record, holds it
-// (keyNamesHeld). This release names each agent of an issue for a role and gives each name to one
-// agent, and a name a key held is that key's alone, so a version with one is refused before any
-// write. held is required, as it is of NameAgents: a caller with no history passes none of its
-// own, and one that forgets it would read the names from the rows alone.
-func UnnamedAgents(earlier, named []PlanStep, held []KeyName) []UnnamedAgent {
-	keyNames, holders := keyNamesHeld(earlier, held)
-	var unnamed []UnnamedAgent
-	seen := map[plan.Agent]bool{}
-	for _, step := range named {
-		agent := step.PlanAgent()
-		if seen[agent] || agent.Owner() {
-			continue
-		}
-		seen[agent] = true
-		if step.Agent != "" {
-			continue
-		}
-		name, ok := keyNames[agent.Key]
-		if agent.Key == "" || !ok {
-			name = RoleName(step.Role)
-		}
-		holder := holders[name]
-		if at := slices.IndexFunc(named, func(other PlanStep) bool { return other.Agent == name }); at >= 0 {
-			holder = named[at].AgentKey
-		}
-		unnamed = append(unnamed, UnnamedAgent{Step: step, Name: name, Holder: holder})
-	}
-	return unnamed
-}
-
-// KeyName is one name a key held on an issue (KeyNames): the lasting record of every name a key's
-// agent held, which no later plan's write or deletion removes, since the name's claim records that
-// key's session in every later generation. Generation is the latest generation whose steps gave
-// the key that name, which says whether a row with no key that shows the name came before the key
-// held it or after (workflow's handedBefore).
-type KeyName struct {
-	Name       claim.Agent
-	AgentKey   string
-	Generation uint64
-}
-
-// keyNamesHeld is, read newest first, the name each key but the owner's held and, by each such
-// name, the key that holds it: one walk of the rows and the record, since the two are the same
-// pairs with the keys and the values swapped. The name of a key is the name of its row of the
-// latest generation of earlier that names it, and for a key no row of earlier names, the name the
-// lasting record holds for it (held); the holder of a name is the key of the latest row of earlier
-// of that name that names a key, and for a name no such row holds, the key the record holds it
-// for. earlier is ordered by generation, as PlanStepsOf reads it, and the steps of one key in one
-// generation share one name, so a key named again since an earlier generation keeps the name it
-// holds now and not its oldest.
-//
-// A plan's rows go when a later version gives the task again or the plan of an earlier owner is
-// passed over, and the record stays, so the record is what keeps a name a key held that key's
-// after its rows went. A name a key held is that key's alone (NameAgents), so in rows NameAgents
-// wrote only that key's rows hold it; rows an earlier build wrote may show another key at it
-// later, and then the later key holds it, since the name's claim ran that key's agent last.
-func keyNamesHeld(earlier []PlanStep, held []KeyName) (names map[string]claim.Agent, holders map[claim.Agent]string) {
-	names, holders = map[string]claim.Agent{}, map[claim.Agent]string{}
-	take := func(key string, name claim.Agent) {
-		if key == "" || name == "" {
-			return
-		}
-		if _, ok := names[key]; !ok {
-			names[key] = name
-		}
-		if _, ok := holders[name]; !ok {
-			holders[name] = key
-		}
-	}
-	for i := len(earlier) - 1; i >= 0; i-- {
-		// AgentName is "" for a step of the key owner, as for a row that holds no name.
-		take(earlier[i].AgentKey, earlier[i].AgentName())
-	}
-	for _, h := range held {
-		take(h.AgentKey, h.Name)
-	}
-	return names, holders
-}
-
 // earlierPlaceName is the name of the latest row of earlier at step's task and place, on step's
-// role and with no key: the agent that place had, which a step with no key keeps (pass 3).
-func earlierPlaceName(earlier []PlanStep, step PlanStep) (claim.Agent, bool) {
+// role and with no key: the agent that place had, which a step with no key keeps (pass 3). It is
+// "" where no such row is, or where that row holds no name.
+func earlierPlaceName(earlier []PlanStep, step PlanStep) claim.Agent {
 	for i := len(earlier) - 1; i >= 0; i-- {
 		row := earlier[i]
 		if row.AgentKey == "" && row.Task == step.Task && row.Position == step.Position && row.Role == step.Role {
-			return row.AgentName(), true
+			return row.AgentName()
 		}
 	}
-	return "", false
+	return ""
 }

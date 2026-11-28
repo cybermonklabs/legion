@@ -1,0 +1,13 @@
+kind: Changed
+custom:
+  Issue: pr5158
+body: |-
+  At boot, and in `legion config check`, the daemon warns of an operator pod volume
+  (`runtime.kubernetes.pod.volumes`) named as the slot volume of an agent a plan can name beside
+  its role's own: `<launcher|private|state|gh|agent-secrets-key>-<role>-<n>` for a role that exists
+  now, the number from 2 and the role cut so that the agent's name holds at most 32 bytes, such as
+  `state-implementer-2`. Such a volume collides with that agent's slot volume wherever a plan names
+  the agent, and Kubernetes then refuses the issue's pod. This release takes the name with the
+  warning, and `legion config check` still exits 0; a later release refuses it, so rename such a
+  volume now. A name no agent can take, such as `gh-cache`, gets no warning. The refusal of a volume
+  named as the slot volume of a role that exists now, such as `gh-implementer`, is unchanged.

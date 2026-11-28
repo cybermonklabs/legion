@@ -199,7 +199,7 @@ func TestPauseCommands(t *testing.T) {
 
 		state := d.succeed("state")
 		lines := stateLines(state, "paused: ")
-		want := "paused: " + pauseLine + "; waits on 1 role — LEGION-208 implementer"
+		want := "paused: " + pauseLine + "; waits on 1 claim — LEGION-208 implementer"
 		if len(lines) != 1 || lines[0] != want {
 			t.Fatalf("legion state while paused printed %q among\n%s\nwant the one line %q", lines, state, want)
 		}
@@ -276,6 +276,30 @@ func TestPauseCommands(t *testing.T) {
 	})
 }
 
+// The paused line of `legion state` names each claim whose stop the open pause still waits on
+// (api.PausedView.WaitsOn) as the state's other lines name a claim (api.ClaimName): its issue and
+// role, and its token beside them for the claim of an agent not named for its role. A pause waits
+// on every claim of an issue, so it can wait on two claims of one role — the role's own and a
+// second agent such as `implementer-2`, or the agent of another role's name that holds the role
+// for a step — and the line names them apart, in the order the state lists them.
+func TestThePausedLineNamesTwoClaimsOfOneRoleApart(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	stop := func(agent, role string) string {
+		return `{"claim":"legion-legion-legion-208-` + agent + `","issue":"LEGION-208","role":"` + role + `","askedAt":"2026-11-16T08:00:05Z"}`
+	}
+	paused := `"paused":{"id":9,"since":"2026-11-16T08:00:00Z","by":{"kind":"operator"},"reason":"a provider outage",` +
+		`"waitsOn":[` + stop("implementer", "implementer") + `,` + stop("implementer-2", "implementer") + `,` +
+		stop("reviewer", "tester") + `],"held":[]}`
+	lines := stateLines(plainStateOf(t, "{"+daemon+","+paused+"}"), "paused: ")
+	want := "paused: pause 9 since 2026-11-16T08:00:00Z by the operator: a provider outage; waits on 3 claims — " +
+		"LEGION-208 implementer, LEGION-208 implementer (claim legion-legion-legion-208-implementer-2), " +
+		"LEGION-208 tester (claim legion-legion-legion-208-reviewer)"
+	if len(lines) != 1 || lines[0] != want {
+		t.Fatalf("legion state while paused printed %q, want the one line %q", lines, want)
+	}
+}
+
 // The pause lines of `legion state` and of the pause commands' answers show a pause's reason and
 // the controller's session as terminalText: the controller or the operator wrote them, so an ESC
 // or a BEL in them can neither set the window title nor ring.
@@ -290,7 +314,7 @@ func TestThePauseLinesShowAReasonAsTerminalText(t *testing.T) {
 		name, got, want string
 	}{
 		{name: "an open pause", got: pausedSummary(&api.PausedView{ID: 7, Since: since, By: by, Reason: reason}),
-			want: "paused: " + words + "; waits on no role"},
+			want: "paused: " + words + "; waits on no claim"},
 		{name: "the last pause", got: lastPauseSummary(&api.PauseView{ID: 7, Since: since, By: by, Reason: reason,
 			EndedAt: &ended, EndedBy: &api.PauseActorView{Kind: "operator"}}),
 			want: "last pause: " + words + "; ended 2026-11-16T09:20:00Z by the operator"},

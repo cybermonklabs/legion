@@ -161,7 +161,7 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 		if err != nil {
 			return err
 		}
-		if err := e.started(ctx, tx, issue, fact.Role, token, resume, 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
+		if err := e.started(ctx, tx, issue, fact.Role, reach{claim: token}, resume, 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
 			return err
 		}
 	}

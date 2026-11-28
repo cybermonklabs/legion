@@ -15,12 +15,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// A later version that this release cannot name an agent of is a plan the route answers as a
-// refused plan, 409 PLAN_REFUSED with its reason, through the engine itself: the workflow refuses
-// it before it writes anything, so the route never answers the write's error, 500
-// FACT_APPLY_FAILED. Version 1 names key a implementer; version 2 gives the role implementer to a
-// fresh step 1 beside key a, whose name that would take, so the reason names key a and the name.
-func TestARegisteredVersionThatWouldRenameAKeyIsAnswered409(t *testing.T) {
+// A later version that gives the role of a key's name to a fresh step is a plan the route takes,
+// through the engine itself: the fresh step's agent gets a name of its own (`implementer-2`), so
+// no agent would take another's name. Version 1 names key a implementer; version 2 gives the role
+// implementer to a fresh step 1 beside key a. The fault: the route answers 409 PLAN_REFUSED.
+func TestARegisteredVersionThatGivesAKeysRoleToAFreshStepIsTaken(t *testing.T) {
 	h := newHarness(t)
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories}, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -43,6 +42,7 @@ func TestARegisteredVersionThatWouldRenameAKeyIsAnswered409(t *testing.T) {
 	if recorder := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1); recorder.Code != http.StatusOK {
 		t.Fatalf("register version 1 = %d %s, want 200", recorder.Code, recorder.Body)
 	}
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2), PlanReason{Task: "a",
-		Reason: intake.AgentUnnamed("a", 1, "implementer", "a").Reason})
+	if recorder := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2); recorder.Code != http.StatusOK {
+		t.Fatalf("register version 2 = %d %s, want 200", recorder.Code, recorder.Body)
+	}
 }

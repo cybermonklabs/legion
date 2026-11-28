@@ -74,8 +74,9 @@ func seedStoredClaim(t *testing.T, pool *pgxpool.Pool, tree, issue string, token
 	}
 }
 
-// startsReaching is every supervise start of issue by the claim it reaches when it runs: the claim
-// the row names, else the claim of the role's worker as the record holds it now (record.WorkerClaim).
+// startsReaching is every supervise start of issue by the claim it reaches when it runs, by the rule
+// the outbox's start acts on (record.QueuedClaim): the claim the row names, else the claim of the
+// role's worker as the record holds it now.
 func startsReaching(t *testing.T, pool *pgxpool.Pool, issue string) map[claim.Token][]record.SuperviseRequest {
 	t.Helper()
 	project, err := claim.ProjectToken(testProject)
@@ -106,11 +107,9 @@ func startsReaching(t *testing.T, pool *pgxpool.Pool, issue string) map[claim.To
 			if request.Op != "start" {
 				continue
 			}
-			token := request.Claim
-			if token == "" {
-				if token, err = record.WorkerClaim(project, issue, request.Role, phases); err != nil {
-					t.Fatalf("the claim a start of %s's %s reaches: %v", issue, request.Role, err)
-				}
+			token, err := record.QueuedClaim(project, issue, request.Role, request.Claim, phases)
+			if err != nil {
+				t.Fatalf("the claim a start of %s's %s reaches: %v", issue, request.Role, err)
 			}
 			reached[token] = append(reached[token], request)
 		}

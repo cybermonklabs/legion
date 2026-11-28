@@ -2682,8 +2682,11 @@ type Store interface {
 	// no deletion of a plan removes: NameAgents reserves each for its key beside the plan_steps rows.
 	KeyNames(ctx context.Context, tx pgx.Tx, issue string) ([]KeyName, error)
 	// IssueClaims is every stored claim of issue in project (the claims' project token), in any
-	// state, with its stored role, ordered by token: what a walk over every claim of an issue
-	// reads, so each row it writes names one stored claim.
+	// state, with its stored role and the agent of its session, ordered by token: what a walk over
+	// every claim of an issue reads, so each row it writes names one stored claim, and what
+	// NameAgents reads of each name's claim (NameClaimsOf): its role, which keeps the name from an
+	// agent of another role, and the key whose session it holds, which keeps a key's name for it
+	// once no row names the key.
 	IssueClaims(ctx context.Context, tx pgx.Tx, project, issue string) ([]IssueClaim, error)
 	// PlansInForce is each owner's version of issue's plan that is the plan in force of its
 	// generation, generation 0 and each carried copy included, in the order they were given. It
@@ -2996,10 +2999,12 @@ type Store interface {
 	// row, that row while it runs — by next_at then id. A start behind a branch row no one is
 	// running is not listed. Issue "" is every issue of project.
 	HeldRows(ctx context.Context, tx pgx.Tx, project, issue string, now time.Time) ([]HeldRow, error)
-	// StartsWaitingForPod is, for each issue of project, the roles of the start rows that wait
-	// because the issue's pod lacks the slot of the start's claim or the role of its step (its last
-	// error begins with pods.StartWaitsForPodPrefix), distinct and in the order of their rows.
-	StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string) (map[string][]claim.Role, error)
+	// StartsWaitingForPod is, for each issue of project, the start rows that wait because the
+	// issue's pod lacks the slot of the start's claim or the role of its step (its last error
+	// begins with pods.StartWaitsForPodPrefix), each with its role and the claim it names, one for
+	// each row and in the order of the rows (StartClaims makes them distinct).
+	StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string,
+	) (map[string][]pods.WaitingStart, error)
 	// OpenIntakeGiveUps is what the state shows of project's open give-ups: each consumer's count
 	// and newest stream sequence, and the newest records, at most newest, without their headers
 	// and payload (intake_failures.go).
@@ -3468,11 +3473,12 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 // queuedFor and, at the phase step, at a step of role (StepIsOf). Every role a deployment defines
 // runs as step, so a start or a task queued for the step of one role names a phase that still
 // reads the same while the task stands at the step of another; the role is what tells the two
-// apart. At step the role names the step. A role can stand at two steps of a task, one agent doing
-// both or one agent each (plan.Supported), and work queued for either reads the same here: the
-// entry the work is of and the claim it is for tell the two apart, which the outbox's fence on a
-// start (the role's row now and its entry, StartLeft) and the claim's given entry compare beside
-// this. Away from step the phase alone is compared: one role works several phases (the implementer
+// apart. At step the role names the step. A role can stand at two steps of a task, of one agent or
+// of two (plan.Supported), a second agent of the role taking a name of its own (NameAgents), and
+// work queued for either reads the same here: the entry the work is of
+// and the claim it is for tell the two apart, which the outbox's fence on a start (the role's row
+// now and its entry, StartLeft) and the claim's given entry compare beside this. Away
+// from step the phase alone is compared: one role works several phases (the implementer
 // implementing and retro), and a phase names its one role. It is the one definition of that
 // question, which the four judges of queued work ask, each on its own read: the outbox before it
 // runs a start (daemon's supervise), the

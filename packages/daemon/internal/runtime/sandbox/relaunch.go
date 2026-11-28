@@ -249,6 +249,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err != nil {
 		return runtime.Locator{}, err
 	}
+	r.issueSlots(ctx, &l)
 	// prepare holds spec's claim to an agent's token of the issue or the controller's, each of
 	// which names the slot the claim's process runs in.
 	slot, _ := spec.Claim.Slot()
@@ -258,10 +259,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		return runtime.Locator{}, fmt.Errorf("launch %s: take its pod's launch turn: %w", spec.Claim, err)
 	}
 	defer release()
-	bounded, cancel := context.WithTimeout(ctx, r.launchBound)
+	tryBound := r.tryBound(l)
+	bounded, cancel := context.WithTimeout(ctx, tryBound)
 	defer cancel()
 	fail := func(step string, err error) (runtime.Locator, error) {
-		return runtime.Locator{}, fmt.Errorf("launch %s: %s: %w", spec.Claim, step, boundRanOut(ctx, bounded, r.launchBound, err))
+		return runtime.Locator{}, fmt.Errorf("launch %s: %s: %w", spec.Claim, step, boundRanOut(ctx, bounded, tryBound, err))
 	}
 	s, err := r.ensureSandbox(bounded, l)
 	if err != nil {
@@ -351,12 +353,12 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// round's reading that keeps the pod, and tells the issue it stays, would be followed at once
 	// by this launch's replacement of it (the Legion reviewer's point 10).
 	//
-	// A pod this launch would keep that was built before the deployment defined the slot the
-	// launching claim runs in or the role of its step (lacks, runtime.PodLacks over templateLacks)
-	// has no launcher, Secret or volume of that slot, or none of that role's own resources, so its
-	// bindings are not read for a replacement: replacing it would end every role in it and delete
-	// the issue's disk with whatever they did not push. An update round that is over still
-	// replaces it below, and otherwise the launch waits for the pod's round or its release
+	// A pod this launch would keep that was built before the deployment defined or the issue's plan
+	// named the slot the launching claim runs in or the role of its step (lacks, runtime.PodLacks
+	// over templateLacks) has no launcher, Secret or volume of that slot, or none of that role's own
+	// resources, so its bindings are not read for a replacement: replacing it would end every role
+	// in it and delete the issue's disk with whatever they did not push. An update round that is over
+	// still replaces it below, and otherwise the launch waits for the pod's round or its release
 	// (runtime.ErrAwaitsPodUpdate).
 	held := templateRoles(s)
 	lacks := ""
@@ -408,12 +410,13 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		}
 	}
 	if !replace {
-		// A pod it would keep that was built before the deployment defined the slot this claim
-		// runs in (claim.Token.Slot, its agent's name) or the role of its step has no launcher,
-		// Secret or volume of that slot, or none of that role's own resources (its role_config_files
-		// overlays; lacks, above), so the launch writes nothing and waits for the pod's update round
-		// or its release (runtime.ErrAwaitsPodUpdate, PodLacksRole, rolesDrift), naming what the pod
-		// lacks. A launch whose slot and role the template holds goes on.
+		// A pod it would keep that was built before the deployment defined or the issue's plan
+		// named the slot this claim runs in (claim.Token.Slot, its agent's name) or the role of its
+		// step has no launcher, Secret or volume of that slot, or none of that role's own resources
+		// (its role_config_files overlays; lacks, above), so the launch writes nothing and waits for
+		// the pod's update round or its release (runtime.ErrAwaitsPodUpdate, PodLacksRole,
+		// rolesDrift, slotsDrift), naming what the pod lacks. A launch whose slot and role the
+		// template holds goes on.
 		if lacks != "" {
 			return runtime.Locator{}, runtime.AwaitsPodUpdate{Pod: string(pod.UID), Reason: fmt.Sprintf("launch %s: the pod %s of %s was built without %s",
 				spec.Claim, pod.UID, spec.Issue, lacks)}
@@ -520,7 +523,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			r.forgetTaken(s.Name)
 		}
 		if err := l.kind.provision(bounded, r, &l, s); err != nil {
-			return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, boundRanOut(ctx, bounded, r.launchBound, err))
+			return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, boundRanOut(ctx, bounded, tryBound, err))
 		}
 		if err := r.writeLauncherSecrets(bounded, s, &l); err != nil {
 			return fail("write its launcher secrets", err)
@@ -897,8 +900,9 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // creates carries no record. And only a try whose Sandbox ensureSandbox found standing sends it,
 // for the same reason, so that try never spends the 3 calls of the wait for a Sandbox being
 // deleted. It thus spends 14 calls at the most, the cache's ensure apart, under the 17.
-// Per launcher role of the pod (relaunchRoleCalls, times roles, the most roles any pod of the
-// runtime has: its issue roles, Legion's six and each role the deployment defines): launcherBound's
+// Per launcher slot of the pod (relaunchRoleCalls, times roles, the most roles any pod of the
+// runtime has: its issue roles, Legion's six and each role the deployment defines; a pod with a
+// slot for an agent name of its plan beside them counts that slot too, tryBound): launcherBound's
 // Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get, Delete and Create
 // (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
 func relaunchCalls(roles int) int { return relaunchPodCalls + relaunchRoleCalls*roles }
@@ -924,6 +928,21 @@ const (
 func launchBound(bootTimeout, startBound, provisionBound, terminationGrace time.Duration, roles int) time.Duration {
 	waits := 3*bootTimeout + cacheWaits(bootTimeout) + launcherBackstop(startBound, bootTimeout, provisionBound) + terminationGrace
 	return waits + time.Duration(relaunchCalls(roles))*apiTimeout
+}
+
+// tryBound is the bound of one launch try of l once it holds its pod's launch turn (relaunch): the
+// runtime's launchBound, which counts the calls of every role of its issue pods, and the calls of
+// one more slot (relaunchRoleCalls) at apiTimeout for each slot of l's pod that is no role of its
+// kind, an agent name of the issue's plan (issueSlots).
+func (r *Runtime) tryBound(l launch) time.Duration {
+	roles := l.kind.roles(r)
+	extra := 0
+	for _, slot := range l.roles {
+		if !slices.Contains(roles, slot) {
+			extra++
+		}
+	}
+	return r.launchBound + time.Duration(relaunchRoleCalls*extra)*apiTimeout
 }
 
 // cacheWaits is the most a launch try's provision waits on its repository's cache: the cache's
@@ -1632,7 +1651,22 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 	// spec names its own, and each other slot's comes from the stored claims. A build that cannot
 	// read them mints each other slot for its own name: no other claim runs in a pod being built,
 	// and each one's next launch writes its slot's credential for its role, as the refresher does
-	// within a minute.
+	// within a minute. A slot of an agent of the plan that no stored claim runs in holds the App of
+	// that agent's first step (l.agentRoles), since its name is no role's.
+	//
+	// A stored claim of another slot whose role names no App (namesApp: a role the deployment no
+	// longer defines, such as a keyed agent's claim held at a step of the dropped checker) does not
+	// hold its slot here: it can never start, so no process of that role ever reads the slot's
+	// files. Its launch is refused before any child starts, on one of four paths: in a new pod, by
+	// this build (the launching claim's own slot, below); in a pod a launch keeps, by the pod's lack
+	// of that role where the pod was built after the role was dropped (runtime.PodLacks), and in one
+	// built with it by slotAppChanges for a launcher that waits for no start's credential, or by
+	// writeLaunchCredential for one that does, both asking the App of the launch's role. The slot is
+	// built as one no claim runs in: a role's slot holds its own name's App, and an agent's slot
+	// that of its agent's first step, which names an App (agentSlots). Without that, the one claim
+	// would fail the build of every pod of its issue, whichever claim the launch was for. The
+	// launching claim's own slot is never built so: a launch of a role that names no App is refused
+	// here, naming the role, and never runs as its slot's other App.
 	holders, err := r.slotHolders(ctx)
 	if err != nil {
 		r.log.Warn("sandbox runtime: a pod's build cannot read the stored claims; its other slots hold their own names' Apps until their launches",
@@ -1650,8 +1684,17 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 			bundle, err = r.controllerCredential(minting, "")
 		} else {
 			// The pod's launcher of role serves the slot of role's name.
-			var app claim.Role
-			if app, err = r.slotAppRole(minting, holders, l.name, claim.Agent(role), ""); err == nil {
+			slot := claim.Agent(role)
+			app, first := l.agentRoles[role]
+			if _, runs := holders[slotKey{sandbox: l.name, slot: slot}]; runs || !first {
+				app, err = r.slotAppRole(minting, holders, l.name, slot, "")
+				if err == nil && slot != launching && !r.namesApp(app) {
+					if app, first = l.agentRoles[role]; !first {
+						app, err = r.slotAppRole(minting, nil, l.name, slot, "")
+					}
+				}
+			}
+			if err == nil {
 				bundle, err = memo.Bundle(minting, app, l.spec.Repository)
 			}
 		}

@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
@@ -1104,12 +1105,12 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // reached, or has not moved (dispatch://INFRA-2614).
 //
 // A pod-wait-held notice names an issue whose pod a start waits for: one that lacks the slot of
-// the start's claim or the role of its step, built before the deployment defined that name (the
-// outbox's roleWaitsForItsPod), or one whose launcher of a re-roled claim's slot starts a child
-// before its gh files hold the new role's credential (reroleWaitsForCredential). The workflow
-// also tells it of a claim whose launch that pod refused, at the first refusal and hourly while
-// the pod stands (podRefusedLaunch), which the pod's replacement ends. Otherwise nothing ends
-// that wait until
+// the start's claim or the role of its step, built before the deployment defined or the issue's
+// plan named that name (the outbox's roleWaitsForItsPod), or one whose launcher of a re-roled
+// claim's slot starts a child before its gh files hold the new role's credential
+// (reroleWaitsForCredential). The workflow also tells it of a claim whose launch that pod refused,
+// at the first refusal and hourly while the pod stands (podRefusedLaunch), which the pod's
+// replacement ends. Otherwise nothing ends that wait until
 // an operator acts: the idle rule keeps the pod because an operator's suspension holds a claim of
 // it (the daemon's releaseUnownedPod, told once per streak of that hold), or the deployment's idle
 // release is off and no claim records a process in the pod, so no update round opens over it
@@ -1234,9 +1235,9 @@ type ArchitectStall struct {
 // It is told at exactly the sixth turn in a row and once for each run (supervise.Claim's
 // ProviderErrorRun says what ends a run), so a second claim's notice dropped behind the first
 // claim's would never be sent at all. Two claims of one issue are two such claims — an issue's
-// architect and its worker fail their turns in the same outage, and two claims can hold one role
-// (a keyed agent on a step of another role, beside that role's own claim) — so neither the issue
-// nor the issue and the role is the key: the claim is.
+// architect and its worker fail their turns in the same outage, and two claims of one issue can
+// hold one role (WorkerClaim) — so neither the issue nor the issue and the role is the key: the
+// claim is.
 //
 // A tree-stalled notice names one root whose tree has stopped, and carries no role: the stall
 // is the whole tree's and not one agent's. So its key is the issue alone, which is what an
@@ -1269,13 +1270,15 @@ func NoticePerClaim(kind NoticeKind) bool {
 // close — the request that ends the claim, the tree's root claim included; "issue_close" is a
 // child issue's close as done, which ends the claim as a tree close does and keeps its session, so
 // the issue's next run, should a person set it todo again, resumes each claim's session rather
-// than starting fresh (supervise's RequestIssueClose); "retire_task" takes back the task the
-// role's claim holds for a phase the workflow stopped under its worker (Phase, at the generation
-// and no later than Entry), and stops nothing: the worker keeps its process, its turn and its
-// session (workflow's StopForChildren, supervise.Machine.RetireStoppedTask); "pause_stop" is a
-// project pause's stop of one live claim (store's Pause), which stops its process and keeps its
-// session, phase and task as an idle release's stop does, and is its own op because it is bound to
-// its pause (Pause below) and does nothing once that pause has ended.
+// than starting fresh (supervise's RequestIssueClose), but where a start of that run is of another
+// agent than the one whose session the claim holds, which starts in a session of its own
+// (supervise.Claim.SessionAgent); "retire_task" takes back the task the role's claim holds for a
+// phase the workflow stopped under its worker (Phase, at the generation and no later than Entry),
+// and stops nothing: the worker keeps its process, its turn and its session (workflow's
+// StopForChildren, supervise.Machine.RetireStoppedTask); "pause_stop" is a project pause's stop of
+// one live claim (store's Pause), which stops its process and keeps its session, phase and task as
+// an idle release's stop does, and is its own op because it is bound to its pause (Pause below)
+// and does nothing once that pause has ended.
 // There is no plain stop: only a close ends a claim from the workflow, so the op states which.
 type SuperviseOp string
 
@@ -1454,6 +1457,23 @@ type SuperviseRequest struct {
 	// to the claim's retry, which forgets the session inside that one decision (supervise's
 	// RequestRetry), so a start that never ran leaves the session where it was.
 	FreshSession bool `json:"freshSession,omitempty"`
+	// Agent is the agent of the step the start is a run of, in the identity plan.Agent.ID gives
+	// (plan.AgentID): `key:<key>` for the agent of a key, `step:<place>:<task>` for the agent of a
+	// step with no key. The workflow writes it on every start of a step's agent of an issue with
+	// plan rows (enter's, the held phase's retry and the send of an owed entry), the retro's naming
+	// the agent that runs it, and on no other start. Where a start names none, of a claim that
+	// records none and has run nothing, whichever try of the start made the claim, the runner takes
+	// the agent the steps give the claim's name (store.ClaimAgentFromSteps, internal/daemon's
+	// startAgent), and nothing writes that agent into the row. The runner hands it to the decision
+	// that brings the claim back (supervise.StartWork.Agent), which leaves the claim's session
+	// behind where it is another agent's (supervise.Claim.SessionAgent) and records this agent as
+	// the agent of the session it begins or takes; a claim that runs another agent's process is
+	// suspended first. A run of the row again once the claim's session is this agent's asks
+	// nothing of the claim. The
+	// release before decodes strictly (DisallowUnknownFields), so the way back of
+	// 20261125114600_claim_session_agent takes the key off each queued supervise row this release
+	// wrote.
+	Agent plan.AgentID `json:"agent,omitempty"`
 	// Linger is the root generation whose linger a tree close expires. A member keeps its
 	// generation across re-admission, so the close acts only while its tree lingers at that root
 	// generation: never in the tree's next run, nor in a later linger of it.
@@ -2488,8 +2508,8 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // (MergeForwardReview).
 //
 // Role is the recipient, and Step the message (mergeForwardRoles says which role each step goes
-// to). Claim is the claim the message reaches: the claim of the worker on Role's step when the
-// workflow wrote the row (the workflow's addressRoles), so a keyed agent working that step is the
+// to). Claim is the claim the message reaches: the claim WorkerClaim gave Role's step when the
+// workflow wrote the row (the workflow's addressRoles), so the agent working that step is the
 // one told; "" for a row the release before wrote, which reaches the claim the record gives Role's
 // step when it runs. Head is the head that conflicted, Landed the head the merge left ("" before it
 // lands), Base the base branch, Phase the phase the issue stays in, PullRequest the pull request's
@@ -3236,7 +3256,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		// A move back is one by the order of the issue's task (workflow's Walk.MovesBack), which need
 		// not be today's, so the pair is any pair the daemon counts (phase.MovePairs): two different
-		// workflow phases, or step-step.
+		// workflow phases, step-step, or a phase a step runs as moved back to itself, which a task
+		// that names one role at two steps makes.
 		if !phase.IsMovePair(value.From, value.To) {
 			return fmt.Errorf("a hook prompt names the move back that fired it; %q to %q is no move back", value.From, value.To)
 		}

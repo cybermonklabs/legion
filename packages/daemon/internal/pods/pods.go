@@ -38,10 +38,8 @@ const (
 // activity route alone and are deliberately absent from the claim insert's conflict update, so a
 // machine's in-memory claim shows their zero values until the claim is read again.
 type IdleClaim struct {
-	// Token is the claim's token, which names its agent: a release suspends each live claim by
-	// it, since two claims of the pod can hold one role (a keyed agent on a step of another role,
-	// beside that role's own claim from an earlier version of the plan, or two agents at two steps
-	// of the role).
+	// Token is the claim's token, which names its agent: a release suspends each live claim by it,
+	// since two claims of one issue can hold one role (record.WorkerClaim).
 	Token          claim.Token
 	Role           claim.Role
 	State          supervise.ClaimState
@@ -151,9 +149,22 @@ type IdleRoot struct {
 
 // StartWaitsForPodPrefix begins the last error of a start row that waits because the issue's live
 // pod lacks the slot of the start's claim or the role of its step, built before the deployment
-// defined that name (the outbox's roleWaitsForItsPod): the one text the outbox writes and the idle
-// view, the release's boundary and the served state read.
+// defined or the issue's plan named that name, such as the slot `implementer-2` of a second agent
+// of one role (the outbox's roleWaitsForItsPod): the one text the outbox writes and the idle view,
+// the release's boundary and the served state read.
 const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
+
+// WaitingStart is one start row that waits because its issue's pod lacks the slot of the start's
+// claim or the role of its step (StartWaitsForPodPrefix): the role of the start's step, and the
+// claim the row names, "" for a row that names none, whose claim is the one record.QueuedClaim
+// gives it. Two claims of one issue can hold one role (record.WorkerClaim), so the role alone does
+// not say which agent a start brings up, and the claim the start acts on is another type
+// (record.WaitingClaim). It is a type of this package, which record imports, so the idle view and
+// the record's own read of these rows (record.Store.StartsWaitingForPod) share it.
+type WaitingStart struct {
+	Role  claim.Role
+	Claim claim.Token
+}
 
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
 // the pod, whether any queued outbox row is addressed to one of its roles, the issue's own place
@@ -185,10 +196,9 @@ type IdleView struct {
 	// highest entry: a role that stands at two steps has a row for each), keyed by the row's role:
 	// the claim the row names and the task of the plan's step it runs. The worker of the open phase
 	// is read from it as every reader of a role's worker reads it, through record.WorkerClaim
-	// (workflow's idlePhaseOpen): two claims of one issue can hold one role — the agent of a key on
-	// a step of another role, beside that role's own claim of an earlier version of the plan, or two
-	// agents at two steps of the role — and only one of them works the role's phase. This package
-	// sits below record, so the view carries the row's fields rather than the rule.
+	// (workflow's idlePhaseOpen): two claims of one issue can hold one role, and only one of them
+	// works the role's phase. This package sits below record, so the view carries the row's fields
+	// rather than the rule.
 	Phases map[claim.Role]IdlePhase
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
 	// role of its pod. A start queued for news of the approved design alone is not counted, and
@@ -201,11 +211,12 @@ type IdleView struct {
 	// in StartsWaitingForPod instead. The rule reads only whether there is one, so the store reads
 	// only that.
 	Waiting bool
-	// StartsWaitingForPod are the roles of the start rows, distinct and in the order the rows were
+	// StartsWaitingForPod are the start rows, one for each row and in the order the rows were
 	// queued, that wait because the issue's pod lacks the slot of the start's claim or the role of
 	// its step (an outbox start row whose last error begins with StartWaitsForPodPrefix): only the
-	// pod's update round or its release lets them start.
-	StartsWaitingForPod []claim.Role
+	// pod's update round or its release lets them start. record.StartClaims gives each the claim it
+	// starts, once (record.WaitingClaim).
+	StartsWaitingForPod []WaitingStart
 	// HeldFor is the reason of the pod's running hold streak (store's pod_holds), "" for none.
 	HeldFor string
 	// RoleStopQueued is whether a supervise row that stops a role of the issue still waits in

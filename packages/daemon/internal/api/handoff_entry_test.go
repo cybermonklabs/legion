@@ -216,13 +216,14 @@ func TestStaleEntryInstructionGolden(t *testing.T) {
 	// What decided the refusal stands in the middle of it (intake.BehindEntryClause), so the
 	// instruction is still the text the refusal ends with, whichever clause it carries.
 	decided := intake.BehindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false, false)
+	base := "LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2, and " + decided + "; nothing was recorded"
 	for clause, pending := range map[string]*supervise.Delivery{
-		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2, and " + decided + "; nothing was recorded": nil,
-		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session":                                                                       {ID: "outbox:78", Entry: 2},
+		base: nil,
+		base + ", and your turn began before the daemon's task for entry 2 (outbox:78) reached this session": {ID: "outbox:78", Entry: 2},
 	} {
 		refusal := intake.StaleEntry("LEGION-208", claim.RoleTester, phase.Testing, 2, 1, pending, decided)
-		if refusal.Code != intake.StaleEntryCode || !strings.HasSuffix(refusal.Message, clause+". "+intake.StaleEntryInstruction) {
-			t.Fatalf("intake.StaleEntry with pending %+v = %+v, want code %s, %q and then exactly %q", pending, refusal, intake.StaleEntryCode, clause, intake.StaleEntryInstruction)
+		if want := clause + ". " + intake.StaleEntryInstruction; refusal.Code != intake.StaleEntryCode || refusal.Message != want {
+			t.Fatalf("intake.StaleEntry with pending %+v = %+v, want code %s and message %q", pending, refusal, intake.StaleEntryCode, want)
 		}
 	}
 	golden(t, "stale-entry.json", map[string]string{"code": intake.StaleEntryCode, "instruction": intake.StaleEntryInstruction})

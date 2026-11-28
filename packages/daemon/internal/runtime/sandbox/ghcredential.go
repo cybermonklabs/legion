@@ -52,9 +52,12 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // refreshGitHubCredentials brings the slot Secrets of every live pod to the current render of the
 // GitHub credential each slot holds — the App of the role its process was launched as, which that
 // launch recorded on the Secret, else of the stored claim's role, and its own name's App where no
-// stored claim runs in it (slotAppRole) — so the gh files its container projects (GHConfigDir)
-// carry the tokens the daemon holds now: the kubelet rewrites the projection in place once the
-// Secret changes. It walks the pod store for the pods of this project (every launcher slot holds
+// stored claim runs in it and that name is a role's (slotAppRole) — so the gh files its container
+// projects (GHConfigDir) carry the tokens the daemon holds now: the kubelet rewrites the projection
+// in place once the Secret changes. A slot whose role so read names no App (appauth.AppRoleFor: a
+// role the deployment no longer defines, whose claim still runs in a pod the daemon keeps) is
+// written nothing, and its lease expires without another mint (refreshGitHubCredential).
+// It walks the pod store for the pods of this project (every launcher slot holds
 // an App's gh bundle, the controller's included; a repository cache's pod names no kind and holds
 // none, so it is passed over, its token refreshCacheTokens') that are Pending or Running and not
 // being deleted —
@@ -134,20 +137,31 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		}
 		// The pod's own repository is read once here, for every role of it and for its
 		// provisioning token: it is the pod's, not the role's, and a bundle is rendered for it
-		// (refreshGitHubCredential). Refresh only roles both built into the pod and still
-		// configured. A newly added role has no Secret in an old pod, and a dropped role's
-		// GitHub lease should expire without another mint.
+		// (refreshGitHubCredential). The roles are the ones the pod was built with (builtRoles), and
+		// of those a slot in which no stored claim runs is refreshed only where its role is still
+		// configured: a newly added role has no Secret in an old pod, and a dropped role's GitHub
+		// lease should expire without another mint. So the slot of an agent of the plan whose name
+		// is no role (`implementer-2`) is passed over while no stored claim runs in it: its name
+		// names no App (slotAppRole refuses it, and a refused refresh would log a warning at every
+		// tick), and nothing in it reads its files before a claim's launch writes them for that
+		// claim's role (writeLaunchCredential). Until a claim of its agent has run there, it holds
+		// the App of the agent's first step, which the pod's build wrote (gitHubBundles). A slot in
+		// which a stored claim runs is refreshed whatever its name, and only where the role it would
+		// be refreshed for names an App (refreshGitHubCredential): a claim of a role the deployment
+		// no longer defines leaves its slot's lease to expire, as that role's slot with no claim does.
 		repo, named := fetchRepository(pod)
 		configuredRoles := kind.roles(r)
 		for _, role := range builtRoles(pod.Spec) {
-			if !slices.Contains(configuredRoles, role) {
-				continue
-			}
 			if heldErr != nil && role != claim.RoleController {
 				continue
 			}
 			// The pod's launcher of each role serves the slot of that role's name.
-			r.refreshGitHubCredential(ctx, pod, owner.UID, claim.Agent(role), held, repo, bundles)
+			slot := claim.Agent(role)
+			if _, runs := held[slotKey{sandbox: pod.Name, slot: slot}]; !runs &&
+				(!slices.Contains(configuredRoles, role) || !slices.Contains(r.launcherRoles(), role)) {
+				continue
+			}
+			r.refreshGitHubCredential(ctx, pod, owner.UID, slot, held, repo, bundles)
 		}
 		if _, issue := kind.(issuePod); !issue || !named {
 			continue
@@ -222,6 +236,19 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // the files to hold, and a newer token of the same App written over it would leave them never
 // holding it. The refresher's next tick writes the slot as usual.
 //
+// A slot whose role, judged as above, names no App (appauth.AppRoleFor) is written nothing and
+// logs nothing (errSlotNamesNoApp): that is a role the deployment no longer defines, of a claim
+// the store still holds while the pod it runs in lives, and its lease expires without another
+// mint, as a dropped role's slot in which no claim runs is passed over by the walk. The test is of
+// the role the slot would be minted for, never of the slot's name, since no name tells the two
+// kinds apart: the slot of an agent of the plan whose name is no role (`implementer-2`), in which
+// a claim of the implementer runs, names the implement App and is refreshed, while the slot of
+// the dropped role `checker` is passed over. Asked for that role, the daemon's credential
+// function refuses it (appauth.ErrRoleNotDefined), and the refresh would log the refusal at
+// every tick for the pod's life. A pod built while such a claim is stored writes its slot as one
+// no claim runs in, since that claim can never start (gitHubBundles); the refresh passes over
+// that slot all the same, so the lease the build wrote expires too.
+//
 // A workflow role's credential is rendered for that repository, and not for the Secret's
 // recorded default, which names an owner and so could never name a repository: the repository
 // is what the bundle's default is routed by (ghconfig.RouteDir). A pod the previous daemon
@@ -293,11 +320,16 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 	var role claim.Role
 	judge := func(ctx context.Context, secret *corev1.Secret) (claim.Role, error) {
 		var err error
-		role, err = r.slotAppRole(ctx, held, pod.Name, slot, secret.Annotations[launchedRoleAnnotation])
-		return role, err
+		if role, err = r.slotAppRole(ctx, held, pod.Name, slot, secret.Annotations[launchedRoleAnnotation]); err != nil {
+			return role, err
+		}
+		if !r.namesApp(role) {
+			return role, errSlotNamesNoApp
+		}
+		return role, nil
 	}
 	_, err := r.writeSlotCredential(ctx, pod, uid, slot, repo, bundles, slotWrite{role: judge})
-	if err != nil && !errors.Is(err, errSecretNotOwned) && !errors.Is(err, errSlotLaunching) {
+	if err != nil && !errors.Is(err, errSecretNotOwned) && !errors.Is(err, errSlotLaunching) && !errors.Is(err, errSlotNamesNoApp) {
 		r.log.Warn("sandbox runtime: github credential refresh failed", "sandbox", pod.Name, "slot", slot, "role", role, "err", err)
 	}
 }
@@ -310,6 +342,21 @@ var errSecretNotOwned = errors.New("the slot's Secret is another Sandbox's")
 // (refreshUpdate): the slot is the launch's to hold until its start ends, and the refresher's next
 // tick writes it.
 var errSlotLaunching = errors.New("a launch into the slot is in flight")
+
+// errSlotNamesNoApp is a refresh of a slot whose role, judged on its Secret (slotAppRole), acts as
+// no App (appauth.ErrRoleNotDefined): a role the deployment no longer defines, of a claim still
+// stored while its pod lives. The slot keeps its last lease, which expires without another mint.
+var errSlotNamesNoApp = errors.New("the slot's role names no App the deployment defines")
+
+// namesApp is whether role acts as an App (appauth.AppRoleFor over the runtime's deploymentApps,
+// the map the daemon's credential function is built over): each of Legion's roles, the controller
+// and each role the deployment defines, and no role it no longer defines. It is the one test of a
+// slot's role that the refresh (refreshGitHubCredential), the slots of an issue pod and of its
+// sweep (agentSlots) and a pod's build (gitHubBundles) ask.
+func (r *Runtime) namesApp(role claim.Role) bool {
+	_, err := appauth.AppRoleFor(role, r.deploymentApps)
+	return err == nil
+}
 
 // markSlotLaunch marks key's slot as launched into until the answered func is called
 // (Runtime.launching), so no refresh writes it meanwhile (refreshUpdate). A refresh's write of the
@@ -653,16 +700,27 @@ func (r *Runtime) slotHolders(ctx context.Context) (map[slotKey]slotHolder, erro
 // slotAppRole is the role whose App slot of the pod of sandbox holds: runtime.SlotRole of the
 // stored claim that runs in it, for the role its process was launched as where launched, the
 // record a launch's write of the slot's Secret left (launchedRoleAnnotation), is of the stored
-// claim's generation or a later one, and otherwise for that claim's stored role in held; the slot's
-// own name where no stored claim runs in it. A record of a later generation than held's is a launch
-// held was read before, whose role is the one its process runs; a record of an earlier one is of a
-// process a later launch replaced, by a release that leaves no record, whose role the stored claim
-// holds. SlotRole gives the claim's role unless the runtime's ActsAs gives another. It is never the
-// slot's name for a claim that holds another role: a keyed agent's slot is named by its agent.
+// claim's generation or a later one, and otherwise for that claim's stored role in held. A record
+// of a later generation than held's is a launch held was read before, whose role is the one its
+// process runs; a record of an earlier one is of a process a later launch replaced, by a release
+// that leaves no record, whose role the stored claim holds. SlotRole gives the claim's role unless
+// the runtime's ActsAs gives another. A slot is named by its agent, not by the role its claim
+// holds: two claims of one issue can hold one role (record.WorkerClaim).
+//
+// Where no stored claim runs in the slot, it is the slot's own name, and only where that name is a
+// role the runtime writes a slot for with no claim (launcherRoles: its issue roles and the
+// controller), as the refresh walk passes over every other slot that runs no claim. The slot of an
+// agent of the plan whose name is no role (`implementer-2`) names no App, so it is
+// refused: the pod's build writes it for the App of its agent's first step (gitHubBundles), and
+// its claim's launch for that claim's role (writeLaunchCredential).
 func (r *Runtime) slotAppRole(ctx context.Context, held map[slotKey]slotHolder, sandbox string, slot claim.Agent, launched string) (claim.Role, error) {
 	h, ok := held[slotKey{sandbox: sandbox, slot: slot}]
 	if !ok {
-		return launcherOf(slot), nil
+		own := launcherOf(slot)
+		if !slices.Contains(r.launcherRoles(), own) {
+			return "", fmt.Errorf("the slot %s of %s runs no stored claim, and its name is no role, so it names no App", slot, sandbox)
+		}
+		return own, nil
 	}
 	if generation, role, ok := readLaunched(launched); ok && generation >= h.generation {
 		h.role = role

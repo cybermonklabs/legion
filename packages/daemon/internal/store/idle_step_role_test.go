@@ -42,10 +42,10 @@ func TestTheIdleViewAndTheIssueReadOneRunningRole(t *testing.T) {
 		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact",
 			Source: record.PlanSourceOwner, GivenBy: owner, GivenAt: givenAt}
 		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := record.NameAgents(nil, []record.PlanStep{
+		steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
 			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "checker", Type: "testing"},
-		}, nil)
+		})
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}

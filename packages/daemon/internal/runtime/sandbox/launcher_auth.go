@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -127,13 +128,14 @@ var (
 )
 
 // LauncherResolver rejects unknown pods from informer state before consulting credentials. An
-// issue pod's launcher must name a configured role or one in the pod's template. A role removed
-// from the deployment can still authenticate to let a pending stop reach its child. The project
-// controller pod accepts only the controller. The pod kind derives the claim (podKind.claimToken).
-// Tokens minted here are cached as hashes. After a restart, a known role's Secret is read once
-// however often its launcher says hello (launcherCredential), so unauthenticated hellos cannot
-// turn into an unbounded stream of Kubernetes requests. A hello waits for that read up to
-// apiTimeout.
+// issue pod's launcher must name a configured role or a slot of the pod's template (templateRoles:
+// the slots its stored template binds, an agent's of its plan among them). A role removed from
+// the deployment can still authenticate to let a pending stop reach its child. The project
+// controller pod accepts only the controller. The pod kind derives the claim (podKind.claimToken):
+// the agent the slot is named for. Tokens minted here are cached as hashes. After a restart, a
+// known slot's Secret is read once however often its launcher says hello (launcherCredential), so
+// unauthenticated hellos cannot turn into an unbounded stream of Kubernetes requests. A hello
+// waits for that read up to apiTimeout.
 //
 // A launcher holding its role's current token from the Sandbox's current pod, which no Secret
 // binds, is of a pod no launch made: the Agent Sandbox controller recreated it after an eviction or
@@ -462,26 +464,29 @@ func (c *launcherCredentials) store(name string, uid types.UID, credential launc
 	return credential
 }
 
-// forget drops whatever is held of name, for every Sandbox. A read that lands afterwards for a
-// Sandbox since deleted writes only that Sandbox's entry, which nothing looks up again, until the
-// name's next bind or forget drops it.
-func (c *launcherCredentials) forget(name string) {
+// forgetSandbox drops whatever is held of each slot Secret of the Sandbox named sandbox, for every
+// Sandbox, once that Sandbox is deleted or its Secrets are: each name of roleSecretName's form for
+// it, `<sandbox>-<slot>-boot`, whatever the slot (isSlotName), a role's, the deployment's among
+// them, or the name of an agent of the issue's plan. No other Sandbox's slot Secret has a name of
+// that form, since a slot's name begins with a letter and no other Sandbox's name is sandbox, a
+// dash and a letter: an issue's part ends in its number or in a hash at the name's full length. A
+// read that lands afterwards for a Sandbox since deleted writes only that Sandbox's entry, which
+// nothing looks up again, until the name's next bind or forget drops it.
+func (c *launcherCredentials) forgetSandbox(sandbox string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.secrets, name)
+	prefix := sandbox + "-"
+	for name := range c.secrets {
+		rest, ours := strings.CutPrefix(name, prefix)
+		slot, secret := strings.CutSuffix(rest, "-boot")
+		if ours && secret && isSlotName(claim.Role(slot)) {
+			delete(c.secrets, name)
+		}
+	}
 }
 
 // cacheLauncherCredential holds secret's credential, read under its pod's launch turn or written as
 // bound to its pod, for the Sandbox s (launcherCredentials.bind).
 func (r *Runtime) cacheLauncherCredential(s *sandbox, secret *corev1.Secret) {
 	r.launcherAuth.bind(secret.Name, s.UID, credentialFromSecret(secret))
-}
-
-// forgetLauncherCredentials drops what is held of every launcher role's Secret of the Sandbox named
-// name (launcherRoles: a role the deployment defines among them), once that Sandbox is deleted:
-// whichever roles its pod ran, no other Sandbox's Secret has a name of its.
-func (r *Runtime) forgetLauncherCredentials(name string) {
-	for _, role := range r.launcherRoles() {
-		r.launcherAuth.forget(roleSecretName(name, role))
-	}
 }

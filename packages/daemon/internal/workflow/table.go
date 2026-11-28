@@ -31,8 +31,8 @@ const (
 // EffectKind identifies the durable outbox consequences selected by a row. EffectSuspend is the
 // issue's close alone (Engine.leave): a phase worker stays live until its issue closes, so no row
 // that only moves the issue between phases suspends anyone. The one other suspension of a claim of
-// an open issue, of a keyed agent's claim whose next step is of another role, is that step's
-// start's, at the claim's turn's end, and no row's (the outbox's reroleForStep).
+// an open issue, of a keyed agent's claim whose next step is of another role or another agent, is
+// that step's start's, at the claim's turn's end, and no row's (the outbox's prepareClaimForStep).
 type EffectKind string
 
 const (

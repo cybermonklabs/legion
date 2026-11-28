@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -116,9 +117,11 @@ type givenVersion struct {
 //
 // Each step of the version is named from every row of the issue as it stands now
 // (record.NameAgents, Store.PlanStepsOf), before anything is written, since the write deletes the
-// steps of each task it gives: so a key keeps its name, and a version in which a fresh agent would
-// need the name a key holds from an earlier version is refused as a plan (intake.AgentUnnamed),
-// never by the write.
+// steps of each task it gives, from the lasting record of the names keys held (record.KeyNames),
+// and from the issue's stored claims by name (nameClaims), each with its role and the key whose
+// agent's session it holds, which keep a key's name once no row names the key and keep a name off
+// an agent of another role: so a key keeps its name, and a fresh agent that would need the name a
+// key holds gets a name of its own.
 //
 // A recorded issue whose group takes no plan from its owner (groupOf, takesNoPlan) is answered
 // PLAN_NOT_TAKEN, right after the generation is judged, so no plan of it is stored, also one given
@@ -204,15 +207,39 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 	if err != nil {
 		return givenVersion{}, nil, err
 	}
-	given.steps = record.NameAgents(earlier, given.steps, held)
-	if unnamed := record.UnnamedAgents(earlier, given.steps, held); len(unnamed) > 0 {
-		reasons := make([]plan.Refusal, len(unnamed))
-		for i, agent := range unnamed {
-			reasons[i] = intake.AgentUnnamed(agent.Step.Task, agent.Step.Position, string(agent.Name), agent.Holder)
+	var claims record.NameClaims
+	if issue != nil {
+		if claims, err = e.nameClaims(ctx, tx, *issue); err != nil {
+			return givenVersion{}, nil, err
 		}
-		return givenVersion{}, intake.PlanRefused(reasons), nil
 	}
+	given.steps = record.NameAgents(earlier, held, claims, given.steps)
 	return given, nil, nil
+}
+
+// nameClaims is issue's stored claims by name, each with its role and the key whose agent's
+// session it holds (record.NameClaimsOf), read in tx with the rows a version is named from: the
+// claim of a key's name and the session it holds wait for the key whatever the rows still name, and
+// a name whose claim holds another role is no name for an agent of a role (record.NameAgents).
+func (e *Engine) nameClaims(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.NameClaims, error) {
+	_, claims, err := e.issueClaims(ctx, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	return record.NameClaimsOf(claims), nil
+}
+
+// issueClaims is the claims' token of issue's project (claim.ProjectToken) and every stored claim
+// of issue under it, in any state (record.Store's IssueClaims): the one read of an issue's claims
+// the workflow makes, which the claims by name (nameClaims) and the claims a request reaches
+// (claimTargets) read.
+func (e *Engine) issueClaims(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, []record.IssueClaim, error) {
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", nil, fmt.Errorf("the claims of %s: %w", issue.Key, err)
+	}
+	claims, err := e.store.IssueClaims(ctx, tx, project, issue.Key)
+	return project, claims, err
 }
 
 // refusalUnless is refusal where err is nil, and nil where a read failed, which answers the error

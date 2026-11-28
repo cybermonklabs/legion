@@ -1,10 +1,12 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,9 +18,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // deploymentImplementer is the implementer of the rig's issue, LEGION-208.
@@ -183,6 +187,383 @@ func TestALauncherOfADroppedRoleCanReconnectAndStop(t *testing.T) {
 	}
 }
 
+// generationTokens is the daemon's lease source (appauth.Tokens) with a lease generation: each
+// token names its App, the generation lease holds when it is minted, and its owner, so a slot the
+// refresh re-minted holds the newer generation and a slot it passed over keeps the older.
+type generationTokens struct{ lease *atomic.Pointer[string] }
+
+func (t generationTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: "ghs_" + string(role) + "_" + *t.lease.Load() + "_" + strings.ToLower(owner), ExpiresAt: staticCredentialExpiry}, nil
+}
+
+func (t generationTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: "ghs_" + string(role) + "_" + *t.lease.Load() + "_read_" + strings.ToLower(owner), ExpiresAt: staticCredentialExpiry}, nil
+}
+
+// A slot in which a stored claim runs is refreshed only where the role the refresh would mint it
+// for names an App (appauth.AppRoleFor), and no slot's name tells which. The daemon restarts with
+// the checker taken out of its settings while a stored claim of the checker still runs in the
+// issue's pod, beside a stored claim of the implementer in the slot of `implementer-2`, an agent
+// of the plan whose name is no role. The tick asks no App for the checker, logs no refused
+// refresh, and leaves the checker's slot holding the lease its build wrote, which expires without
+// another mint, as a dropped role's slot in which no claim runs does. In the same tick the slot of
+// implementer-2 is re-minted with the implement App's newer lease, as the slot `implementer` is.
+// The two faults: a refresh of every slot a stored claim runs in asks the credential for the
+// checker at every tick, which refuses it and logs a failure each time, for the pod's life; a
+// refresh of the configured roles' slots alone leaves implementer-2 on the lease its build wrote,
+// which expires within the hour while its claim works.
+func TestTheRefreshPassesOverADroppedRolesClaimAndRefreshesAPlanAgentsClaim(t *testing.T) {
+	const checker claim.Role = "checker"
+	first, second := "first", "second"
+	tokens := generationTokens{lease: new(atomic.Pointer[string])}
+	tokens.lease.Store(&first)
+	g := newRig(t, nil,
+		withOptions(func(o *Options) {
+			o.DeploymentApps = appauth.DeploymentApps{checker: appauth.Implement, "critic": appauth.Review}
+		}),
+		withProjectTokens(tokens),
+		withPlanAgents(map[claim.Agent]claim.Role{"implementer-2": claim.RoleImplementer}))
+	checkerToken, err := claim.NewToken(testProject, testTree, checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc := g.spawn(testSpec(t, checkerToken, checker, testTree))
+	name := loc.Sandbox.Name
+	if planned := SandboxName(secondImplementer); planned != name {
+		t.Fatalf("implementer-2's claim names the Sandbox %s, want the checker's %s: the case's premise", planned, name)
+	}
+	g.store.mu.Lock()
+	g.store.claims = append(g.store.claims,
+		supervise.Claim{Token: checkerToken, Issue: testTree, Role: checker, Generation: 1},
+		supervise.Claim{Token: secondImplementer, Issue: testTree, Role: claim.RoleImplementer, Generation: 1})
+	g.store.mu.Unlock()
+
+	holds := func(slot claim.Role) string {
+		t.Helper()
+		return slotHostsToken(t, g, name, slot)
+	}
+	implement := func(lease string) string { return "ghs_" + string(appauth.Implement) + "_" + lease + "_sjawhar" }
+	for _, slot := range []claim.Role{checker, "implementer-2", claim.RoleImplementer} {
+		if got := holds(slot); got != implement(first) {
+			t.Fatalf("the build wrote %q into the %s slot, want the implement App's %q: the case's premise", got, slot, implement(first))
+		}
+	}
+
+	logs := &lockedLog{}
+	asked := &askedRoles{}
+	restarted := secondRuntime(t, g, func(o *Options) {
+		*o = g.opts
+		o.DeploymentApps = appauth.DeploymentApps{"critic": appauth.Review}
+		o.Log = slog.New(slog.NewTextHandler(logs, nil))
+		withProjectTokens(tokens)(g, o)
+		asked.wrap(o)
+	})()
+	if slices.Contains(restarted.issueRoles, checker) {
+		t.Fatal("the checker is still configured after the restart: the case's premise")
+	}
+
+	tokens.lease.Store(&second)
+	restarted.refreshGitHubCredentials(g.ctx)
+
+	if roles := asked.take(); slices.Contains(roles, checker) {
+		t.Errorf("the tick asked the credential for the roles %v, want no ask for the checker, which the deployment no longer defines", roles)
+	}
+	if failed := linesHolding(logs.String(), "github credential refresh failed"); len(failed) > 0 {
+		t.Errorf("the tick logged %q, want no refresh refused", failed)
+	}
+	if got := holds(checker); got != implement(first) {
+		t.Errorf("the tick left %q in the checker's slot, want the lease its build wrote, %q", got, implement(first))
+	}
+	for _, slot := range []claim.Role{"implementer-2", claim.RoleImplementer} {
+		if got := holds(slot); got != implement(second) {
+			t.Errorf("the tick left %q in the %s slot, want the implement App's re-minted %q", got, slot, implement(second))
+		}
+	}
+}
+
+// slotHostsToken is the token the hosts.yml of the default owner of slot's Secret in the pod of
+// sandbox holds; a slot with no Secret fails the test.
+func slotHostsToken(t *testing.T, g *rig, sandbox string, slot claim.Role) string {
+	t.Helper()
+	secret := g.secret(roleSecretName(sandbox, slot))
+	if secret == nil {
+		t.Fatalf("the Sandbox has no Secret for the slot %s", slot)
+	}
+	token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(string(secret.Data[GitHubDefaultKey]))])
+	if err != nil {
+		t.Fatalf("the %s slot's default hosts.yml: %v", slot, err)
+	}
+	return token
+}
+
+// askedRoles records each role a runtime asks its credential function for (wrap).
+type askedRoles struct {
+	mu    sync.Mutex
+	roles []claim.Role
+}
+
+// wrap makes o's credential function record each role it is asked for, then answer as it did.
+func (a *askedRoles) wrap(o *Options) {
+	credential := o.GitHubCredential
+	o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		a.mu.Lock()
+		a.roles = append(a.roles, role)
+		a.mu.Unlock()
+		return credential(ctx, role, repo)
+	}
+}
+
+// take is every role asked for since the last take.
+func (a *askedRoles) take() []claim.Role {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	roles := a.roles
+	a.roles = nil
+	return roles
+}
+
+// An agent of the plan whose first step's role names no App — here the checker, which the
+// deployment no longer defines, in a plan made while it did — gets no slot: a new pod of the issue
+// builds the slots of the runtime's roles and no `checker` or `checker-2`, owns no Secret for
+// either, and the implementer's launch into it starts. The update sweep reads the slots from the
+// same rule (agentSlots), so the pod does not drift for the two it lacks, sweep after sweep. Once
+// the deployment defines the checker again, the sweep does read `checker-2` as a slot the pod
+// lacks (`checker` is then a role's slot, which the roles' own drift answers for), so the rule is
+// of the role and the sweep is not blind to the slot. The fault: the build asks the App of the
+// agent's first step, which the credential refuses, and every launch into a new pod of the issue
+// fails while the plan names the agent.
+func TestAnAgentWhoseFirstStepsRoleNamesNoAppGetsNoSlotInTheBuildOrTheSweep(t *testing.T) {
+	const checker claim.Role = "checker"
+	g := newRig(t, nil,
+		withOptions(func(o *Options) { o.DeploymentApps = appauth.DeploymentApps{"critic": appauth.Review} }),
+		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}),
+		withPlanAgents(map[claim.Agent]claim.Role{"implementer": claim.RoleImplementer, "checker": checker, "checker-2": checker}))
+	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	name := loc.Sandbox.Name
+	built := templateRoles(g.sandbox(name))
+	if want := append(slices.Clone(claim.Roles), "critic"); !slices.Equal(built, want) {
+		t.Errorf("the pod's template binds the slots %v, want %v: no slot of an agent whose first step's role names no App", built, want)
+	}
+	for _, slot := range []claim.Role{checker, "checker-2"} {
+		if g.secret(roleSecretName(name, slot)) != nil {
+			t.Errorf("the Sandbox owns a Secret for the slot %s, whose agent's first step's role names no App", slot)
+		}
+	}
+	for sweep := 1; sweep <= 2; sweep++ {
+		if drifted := slotsDriftOf(t, g.ctx, g.r, loc); len(drifted) > 0 {
+			t.Errorf("PodSlotsDrift at sweep %d = %q, want nothing: the sweep reads the slots the build makes", sweep, drifted)
+		}
+	}
+
+	restarted := secondRuntime(t, g, func(o *Options) {
+		*o = g.opts
+		o.DeploymentApps = appauth.DeploymentApps{checker: appauth.Implement, "critic": appauth.Review}
+		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)})(g, o)
+	})()
+	want := "slots " + runtime.JoinRoles(built) + ", now " + runtime.JoinRoles(append(slices.Clone(restarted.issueRoles), "checker-2"))
+	if drifted := slotsDriftOf(t, g.ctx, restarted, loc); !slices.Equal(drifted, []string{want}) {
+		t.Errorf("PodSlotsDrift once the deployment defines the checker again = %q, want %q", drifted, []string{want})
+	}
+}
+
+// A stored claim whose role names no App holds no slot in a pod's build, since it can never start:
+// a keyed agent's claim held at a step of the checker, which the deployment no longer defines. Its
+// slot is built as one no claim runs in, and the refresher passes over it as it passes over every
+// slot whose claim's role names no App, so the lease the build wrote expires. Two places such a
+// claim can stand, each with a fault of its own:
+//   - B, the slot of an agent of the plan, `implementer-2`, whose first step is the implementer:
+//     it holds the implement App, its first step's. This pull request's slots of a plan's agents
+//     brought it.
+//   - C, the slot of one of Legion's roles, `reviewer`: it holds the review App, its own name's.
+//     The base built such a slot for its stored claim's role too.
+//
+// In each, the implementer's launch into a new pod starts, no role is asked of the credential that
+// names no App, at the build or at the tick after it, and the tick logs no refusal, re-mints the
+// implementer's slot and leaves this one on the lease its build wrote. The fault: the build asks
+// the App of the stored claim's role, which the credential refuses, and every launch into a new
+// pod of the issue fails while that claim is stored.
+func TestABuildWritesTheSlotOfAClaimWhoseRoleNamesNoAppAsOneNoClaimRunsIn(t *testing.T) {
+	const checker claim.Role = "checker"
+	reviewer, err := claim.NewToken(testProject, testTree, claim.RoleReviewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		agents map[claim.Agent]claim.Role
+		stored claim.Token
+		slot   claim.Role
+		app    appauth.AppRole
+	}{
+		{name: "B, a plan agent's slot, holds its first step's App", agents: map[claim.Agent]claim.Role{"implementer-2": claim.RoleImplementer},
+			stored: secondImplementer, slot: "implementer-2", app: appauth.Implement},
+		{name: "C, a role's slot, holds its own name's App", stored: reviewer, slot: claim.RoleReviewer, app: appauth.Review},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first, second := "first", "second"
+			tokens := generationTokens{lease: new(atomic.Pointer[string])}
+			tokens.lease.Store(&first)
+			logs := &lockedLog{}
+			asked := &askedRoles{}
+			g := newRig(t, nil,
+				withOptions(func(o *Options) {
+					o.DeploymentApps = appauth.DeploymentApps{"critic": appauth.Review}
+					o.Log = slog.New(slog.NewTextHandler(logs, nil))
+				}),
+				withProjectTokens(tokens),
+				withOptions(asked.wrap),
+				withPlanAgents(tc.agents))
+			g.store.mu.Lock()
+			g.store.claims = append(g.store.claims, supervise.Claim{Token: tc.stored, Issue: testTree, Role: checker, Generation: 1})
+			g.store.mu.Unlock()
+			loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+			name := loc.Sandbox.Name
+			lease := func(app appauth.AppRole, generation string) string {
+				return "ghs_" + string(app) + "_" + generation + "_sjawhar"
+			}
+			if roles := asked.take(); slices.Contains(roles, checker) {
+				t.Errorf("the build asked the credential for the roles %v, want no ask for the checker", roles)
+			}
+			if got := slotHostsToken(t, g, name, tc.slot); got != lease(tc.app, first) {
+				t.Fatalf("the build wrote %q into the %s slot, want %q", got, tc.slot, lease(tc.app, first))
+			}
+
+			tokens.lease.Store(&second)
+			g.r.refreshGitHubCredentials(g.ctx)
+			if roles := asked.take(); slices.Contains(roles, checker) {
+				t.Errorf("the tick asked the credential for the roles %v, want no ask for the checker", roles)
+			}
+			if failed := linesHolding(logs.String(), "github credential refresh failed"); len(failed) > 0 {
+				t.Errorf("the tick logged %q, want no refresh refused", failed)
+			}
+			if got := slotHostsToken(t, g, name, tc.slot); got != lease(tc.app, first) {
+				t.Errorf("the tick left %q in the %s slot, want the lease its build wrote, %q", got, tc.slot, lease(tc.app, first))
+			}
+			if got := slotHostsToken(t, g, name, claim.RoleImplementer); got != lease(appauth.Implement, second) {
+				t.Errorf("the tick left %q in the implementer's slot, want the re-minted %q: the tick wrote no slot", got, lease(appauth.Implement, second))
+			}
+		})
+	}
+}
+
+// The launch of a claim whose role names no App is refused, naming that role, whatever the slot
+// it runs in would hold were no claim in it: a keyed agent's claim at a step of the checker, which
+// the deployment no longer defines, launched into the slot `reviewer` of a new pod. The build's
+// rule for a stored claim that can never start (gitHubBundles) is never the launching claim's,
+// whose process would otherwise start as the checker holding the review App's lease.
+func TestALaunchOfAClaimWhoseRoleNamesNoAppIsRefusedNamingTheRole(t *testing.T) {
+	const checker claim.Role = "checker"
+	reviewer, err := claim.NewToken(testProject, testTree, claim.RoleReviewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := newRig(t, nil,
+		withOptions(func(o *Options) { o.DeploymentApps = appauth.DeploymentApps{"critic": appauth.Review} }),
+		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}))
+	g.launcher(reviewer)
+	_, err = g.r.Spawn(g.ctx, testSpec(t, reviewer, checker, testTree))
+	if err == nil || !strings.Contains(err.Error(), "the role checker is none of Legion's") {
+		t.Fatalf("Spawn of %s as the checker = %v, want it refused naming the role checker", reviewer, err)
+	}
+	if secret := g.secret(roleSecretName(SandboxName(reviewer), claim.RoleReviewer)); secret != nil {
+		t.Errorf("the refused launch wrote the Secret %s", secret.Name)
+	}
+	if got := commandsOf(g.sent(reviewer)); got != "" {
+		t.Errorf("the refused launch sent the reviewer's launcher %q, want nothing", got)
+	}
+}
+
+// A launch of a claim whose role names no App into a pod the launch keeps is refused before any
+// child starts, on each of the three paths of a kept pod (gitHubBundles names all four). Each row
+// has its control: the same launch of a role that names an App, which starts in the same pod, so no
+// refusal below is the rig's own.
+//   - A pod built after the checker was dropped lacks that role (runtime.PodLacks): the reviewer's
+//     claim launched as the checker is refused. Launched as the reviewer, it starts in that pod.
+//   - A pod built while the deployment defined the checker, then a restart without it, the
+//     checker's launcher waiting for no start's credential: slotAppChanges asks the App of the
+//     role and is refused. With the checker still defined, generation 2 starts.
+//   - The same pod, the launcher waiting for its credential: writeLaunchCredential asks the App of
+//     the role and is refused. With the checker still defined, generation 2 starts.
+//
+// In each refusal the launcher receives no start. The fault each row guards against is the
+// checker's process starting in a kept pod holding the lease its slot held before, an App the
+// deployment no longer gives that role.
+func TestALaunchOfAClaimWhoseRoleNamesNoAppIntoAKeptPodIsRefusedBeforeAnyStart(t *testing.T) {
+	const checker claim.Role = "checker"
+	dropped := appauth.DeploymentApps{"critic": appauth.Review}
+	t.Run("a pod built after the drop lacks the role", func(t *testing.T) {
+		reviewer, err := claim.NewToken(testProject, testTree, claim.RoleReviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g := newRig(t, nil,
+			withOptions(func(o *Options) { o.DeploymentApps = dropped }),
+			withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}))
+		kept := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+		g.launcher(reviewer)
+		_, err = g.r.Spawn(g.ctx, testSpec(t, reviewer, checker, testTree))
+		if err == nil || !strings.Contains(err.Error(), "was built without checker, the role of its step") {
+			t.Fatalf("Spawn of %s as the checker into the kept pod = %v, want it refused because the pod lacks the checker", reviewer, err)
+		}
+		if got := commandsOf(g.sent(reviewer)); got != "" {
+			t.Fatalf("the refused launch sent the reviewer's launcher %q, want nothing", got)
+		}
+		loc, err := g.r.Spawn(g.ctx, testSpec(t, reviewer, claim.RoleReviewer, testTree))
+		if err != nil || loc.Sandbox == nil || loc.Sandbox.PodUID != kept.Sandbox.PodUID {
+			t.Fatalf("the control, Spawn of %s as the reviewer = %+v, %v, want it started in the kept pod %s", reviewer, loc.Sandbox, err, kept.Sandbox.PodUID)
+		}
+		if got := commandsOf(g.sent(reviewer)); got != "start 1" {
+			t.Errorf("the control sent the reviewer's launcher %q, want start 1", got)
+		}
+	})
+	for _, tc := range []struct {
+		name     string
+		deployed appauth.DeploymentApps
+		waits    bool
+		refusal  string
+	}{
+		{name: "slotAppChanges, the launcher waiting for no credential, the checker dropped", deployed: dropped,
+			refusal: "read the App its slot holds: the role checker is none of Legion's"},
+		{name: "slotAppChanges's control, the checker still defined",
+			deployed: appauth.DeploymentApps{checker: appauth.Implement, "critic": appauth.Review}},
+		{name: "writeLaunchCredential, the launcher waiting for its credential, the checker dropped", deployed: dropped, waits: true,
+			refusal: "write its slot's github credential: the role checker is none of Legion's"},
+		{name: "writeLaunchCredential's control, the checker still defined", waits: true,
+			deployed: appauth.DeploymentApps{checker: appauth.Implement, "critic": appauth.Review}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := deploymentRig(t)
+			token, err := claim.NewToken(testProject, testTree, checker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			loc := g.spawn(testSpec(t, token, checker, testTree))
+			restarted := secondRuntime(t, g, func(o *Options) {
+				*o = g.opts
+				o.DeploymentApps = tc.deployed
+				withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)})(g, o)
+			})()
+			launcher := redialWaiting(t, g, token, 0, false, tc.waits)
+			again, err := restarted.Spawn(g.ctx, nextGeneration(testSpec(t, token, checker, testTree), 2))
+			if tc.refusal == "" {
+				if err != nil || again.Sandbox == nil || again.Sandbox.PodUID != loc.Sandbox.PodUID {
+					t.Fatalf("Spawn of generation 2 as the checker = %+v, %v, want it started in the kept pod %s", again.Sandbox, err, loc.Sandbox.PodUID)
+				}
+				if got := launcher.commands(); got != "start 2" {
+					t.Errorf("the checker's launcher received %q, want start 2", got)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.refusal) {
+				t.Fatalf("Spawn of generation 2 as the checker = %v, want it refused with %q", err, tc.refusal)
+			}
+			if got := launcher.commands(); got != "" {
+				t.Errorf("the refused launch sent the checker's launcher %q, want nothing", got)
+			}
+		})
+	}
+}
+
 // A line of a pod's log that a role of the deployment wrote is that role's, never the launcher's
 // own, and the bound of a launch counts the calls of every role of the runtime's issue pods: a
 // runtime with one role more than Legion's six has a bound longer by that role's calls.
@@ -208,16 +589,33 @@ func TestAPodsLogAndBoundCountItsDeploymentsRoles(t *testing.T) {
 
 // An operator's pod volume may not take the name of a volume Legion gives a role of the
 // deployment, as it may not take one of Legion's own roles': the role's launcher volume in the
-// pod would collide with it.
+// pod would collide with it. Where no role has that name it is taken with no warning, since no
+// agent of a plan takes the name of a role that does not exist. The slot volume of a numbered
+// agent of the role, `launcher-checker-2`, is warned of while the role exists and taken with no
+// warning once it does not (TestAnOperatorVolumeOfASlotsFormIsTakenAndOneOfARolesSlotRefused).
 func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
-	pod := Pod{Volumes: []corev1.Volume{{Name: "launcher-checker", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
+	podOf := func(name string) Pod {
+		return Pod{Volumes: []corev1.Volume{{Name: name, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
+	}
+	pod := podOf("launcher-checker")
 	legion := append(slices.Clone(claim.Roles), claim.RoleController)
+	withChecker := append(slices.Clone(legion), "checker")
 	want := "runtime.kubernetes.pod.volumes[0].name launcher-checker is a volume Legion puts in every pod"
-	if err := CheckPod(pod, append(slices.Clone(legion), "checker"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err == nil || err.Error() != want {
+	if err := CheckPod(pod, withChecker, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err == nil || err.Error() != want {
 		t.Errorf("CheckPod with the checker among the roles = %v, want %q", err, want)
 	}
 	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err != nil {
-		t.Errorf("CheckPod with no checker among the roles = %v, want no refusal", err)
+		t.Errorf("CheckPod with no checker among the roles = %v, want it taken", err)
+	}
+	if warnings := PodVolumeWarnings(pod, legion); len(warnings) != 0 {
+		t.Errorf("PodVolumeWarnings of launcher-checker with no checker among the roles = %q, want none: no agent takes the name checker", warnings)
+	}
+	numbered := podOf("launcher-checker-2")
+	if warnings := PodVolumeWarnings(numbered, withChecker); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "runtime.kubernetes.pod.volumes[0].name launcher-checker-2 has the form launcher-<slot>") {
+		t.Errorf("PodVolumeWarnings of launcher-checker-2 with the checker among the roles = %q, want the one warning of launcher-checker-2", warnings)
+	}
+	if warnings := PodVolumeWarnings(numbered, legion); len(warnings) != 0 {
+		t.Errorf("PodVolumeWarnings of launcher-checker-2 with no checker among the roles = %q, want none: no agent takes the name checker-2", warnings)
 	}
 }
 
@@ -237,7 +635,7 @@ func TestTheLauncherCredentialOfADeploymentRoleIsForgottenWithItsSandbox(t *test
 	if _, held := r.launcherAuth.lookup(secret.Name, s.UID); !held {
 		t.Fatalf("the checker's credential was not cached")
 	}
-	r.forgetLauncherCredentials(name)
+	r.launcherAuth.forgetSandbox(name)
 	if _, held := r.launcherAuth.lookup(secret.Name, s.UID); held {
 		t.Errorf("the checker's launcher credential is still held after its Sandbox %s was forgotten", name)
 	}

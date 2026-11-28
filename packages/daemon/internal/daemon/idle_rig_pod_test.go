@@ -34,8 +34,9 @@ import (
 // generation as the init of new user, mount, PID and IPC namespaces over the worker image's
 // layout (`legion launcher role-init`, internal/launcher/roleinit_linux.go), and this container
 // has neither that layout nor a way to make its mount points. The daemon's side of the protocol is
-// the same either way: one authenticated launcher connection per role, each reporting its own
-// child's state.
+// the same either way: one authenticated launcher connection per slot of the pod (a role's, or a
+// plan agent's whose name no role has, such as implementer-2), each reporting its own child's
+// state.
 //
 // Each launcher's generations keep their Oh My Pi session in the rig's Postgres, through the
 // launcher's own session proxy: the runtime is configured with the cloudsql-iam store, so a

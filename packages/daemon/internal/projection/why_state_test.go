@@ -3,6 +3,7 @@ package projection
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -240,7 +241,7 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		"LEGION-100": {State: api.WhyClaimStopped,
 			Reason: "Its phase is accepting and its tree's architect claim is stranded at suspended, so nothing will wake it."},
 		"LEGION-101": {State: api.WhyClaimStopped,
-			Reason: "Its phase is implementing and the implementer's claim is stranded at failed, so nothing will wake it."},
+			Reason: "Its phase is implementing and its implementer is stranded at failed, so nothing will wake it."},
 		// Neither root has a priority, so each waits after P3 and its sentence says so.
 		"LEGION-200": {State: api.WhyWaiting,
 			Reason: "It has not started. It has no priority, so it waits after every issue at P0 to P3. " +
@@ -302,5 +303,63 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 	if line.Reason != "It has not started. It has no priority, so it waits after every issue at P0 to P3. "+
 		"It is 2nd of 2 issues with no priority that have not started, by its own Dispatch rank." {
 		t.Errorf("LEGION-201's waitingLine.reason = %q, want the place alone", line.Reason)
+	}
+}
+
+// The claim_stopped answer names the stranded claim as the state names a claim elsewhere. Two
+// claims of one issue can hold one role (record.WorkerClaim): LEGION-801's stranded worker is a
+// second agent of the implementer role, `implementer-2`, and its answer names that claim by its
+// token beside the role, so it reads apart from LEGION-802's, whose stranded worker is the role's
+// own claim and is named by the role alone. Each case holds the values its answer is built from
+// (the role, the claim's token, the state it stopped in), not the sentence.
+func TestTheClaimStoppedAnswerNamesTheStrandedClaimByItsClaim(t *testing.T) {
+	second, err := claim.AgentToken("legion", "LEGION-801", "implementer-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, err := claim.NewToken("legion", "LEGION-802", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranded := []supervise.Claim{
+		{Token: second, Project: "legion", Tree: "LEGION-801", Issue: "LEGION-801",
+			Role: claim.RoleImplementer, State: supervise.StateFailed},
+		{Token: own, Project: "legion", Tree: "LEGION-802", Issue: "LEGION-802",
+			Role: claim.RoleImplementer, State: supervise.StateFailed},
+	}
+	store := projectionStore{issues: []record.Issue{
+		lineIssue("LEGION-801", "LEGION-801", "in_progress", phase.Implementing, "A"),
+		lineIssue("LEGION-802", "LEGION-802", "in_progress", phase.Implementing, "B"),
+	}}
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION",
+		Claims: stranded, Stranded: stranded, Now: projectedAt})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	role, failed := string(claim.RoleImplementer), string(supervise.StateFailed)
+	for _, want := range []struct {
+		key string
+		// names are the values the answer must hold, and leaves those it must not.
+		names, leaves []string
+	}{
+		{key: "LEGION-801", names: []string{role, string(second), failed}},
+		{key: "LEGION-802", names: []string{role, failed}, leaves: []string{string(own)}},
+	} {
+		why := got.Issues[want.key].Why
+		if why == nil || why.State != api.WhyClaimStopped {
+			t.Errorf("%s's why = %+v, want claim_stopped", want.key, why)
+			continue
+		}
+		for _, value := range want.names {
+			if !strings.Contains(why.Reason, value) {
+				t.Errorf("%s's answer %q does not name %q", want.key, why.Reason, value)
+			}
+		}
+		for _, value := range want.leaves {
+			if strings.Contains(why.Reason, value) {
+				t.Errorf("%s's answer %q names %q, want the role's own claim named by its role alone",
+					want.key, why.Reason, value)
+			}
+		}
 	}
 }

@@ -104,12 +104,14 @@ const startName = "legion-start"
 // worse than racing — an unserialised cold fill fails the launch anyway.
 //
 // The other half of the bound is the queue the lock itself creates, and it is why the wait may
-// not shrink freely: the last of the six roles of a pod whose deployment defines none of its own
-// waits for the five installs before it, which the defaults' 120 seconds allows 24 seconds each,
-// and each role of the deployment queues one install more. That lower bound is held by
-// TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline against the installs
-// themselves rather than against this derivation, so a divisor that made the wait too small to
-// cover the queue fails there rather than passing as a different proportion.
+// not shrink freely: the last slot of a pod waits for the installs of every slot before it, five
+// in a pod of Legion's six roles and one more for each role the deployment defines and for each
+// agent a plan runs beside its role's own, in a slot of its own name (issueSlots). The defaults'
+// 120 seconds allow the five 24 seconds each and a queue of 120 installs a second each. That lower
+// bound is held by TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline against the
+// installs of the slots of a pod the runtime builds rather than against this derivation, so a
+// divisor that made the wait too small to cover the queue fails there rather than passing as a
+// different proportion.
 //
 // The sum at the defaults is the sanity check: worker_boot_timeout_seconds (120) times
 // worker_boot_registration_deadline_intervals (3) is a 360 second deadline, two waits take two
@@ -177,10 +179,10 @@ func installLockWait(boot time.Duration, intervals int) int {
 // failure is reliable and its rate is not (the one probe whose rate was measured, over chalk and
 // lodash, is scoped where it belongs, under "Sharing BUN_INSTALL_CACHE_DIR" in docs/kubernetes.md).
 // This script is exposed to that race because the issue's roles share one install cache
-// (roleEnvironment, manifest.go) and an installing launch renders it for every role of a kept pod
+// (roleEnvironment, manifest.go) and an installing launch renders it for every slot of a kept pod
 // whose recorded contract differs from the daemon's, so a plugin-version bump makes the pair cold
-// for every role of the pod at once; a failed `bun add` here takes the failure branch and the
-// role's agent never execs.
+// for all of them at once; a failed `bun add` here takes the failure branch and the slot's agent
+// never execs.
 //   - The lock, /usr/bin/flock on the cache directory, covers the installs Legion itself renders,
 //     which is the case that reaches production. It waits at most lockWait seconds, which the
 //     runtime derives from the registration deadline (installLockWait), because

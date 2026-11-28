@@ -3,7 +3,9 @@
 // The live proof's driver of the agents of an owner's plan: the owner of an issue gives the steps
 // `implementer:a tester:a reviewer`, and a person reads with the real `dispatch` CLI that steps 1 and
 // 2 ran in one agent and step 3 in another; the owner of another gives `implementer:a reviewer
-// implementer:a`, and the person reads that steps 1 and 3 ran in one agent and step 2 in another.
+// implementer:a`, and the person reads that steps 1 and 3 ran in one agent and step 2 in another;
+// the owner of a third gives `implementer reviewer implementer`, and the person reads that step 3
+// ran in a second agent of the role implementer, `…-implementer-2`, beside the agent of step 1.
 // scripts/e2e/agents.sh builds this driver with `-tags e2e` and owns the nats-server and the
 // PostgreSQL it runs against.
 //
@@ -12,8 +14,9 @@
 // whole daemon (run, through startDaemonWithin) with dispatch_url at that server, so register_plan
 // reads the plan from Dispatch with the daemon's own client, and each step record goes through the
 // daemon's outbox to the real route. The issues walk as the package's whole-daemon tests walk them
-// (walkOneKey and walkRoleTwice, agents_test.go). The reader of the steps is the same CLI as a
-// person of the project, with the personal token Dispatch minted for that person (stepRecordsLive).
+// (walkOneKey, walkRoleTwice and walkSecondAgent, agents_test.go). The reader of the steps is the
+// same CLI as a person of the project, with the personal token Dispatch minted for that person
+// (stepRecordsLive).
 //
 // What is stood in for lies outside the key: GitHub's REST API (stepRecordsGitHub), the Apps'
 // tokens, Envoy's listener, and the panes, which the package's fake runtime launches and the driver
@@ -29,16 +32,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// TestAgentsLive drives the proof's checks against one booted daemon and one Dispatch, over four
+// TestAgentsLive drives the proof's checks against one booted daemon and one Dispatch, over five
 // issues of one project: the first walks `implementer:a tester:a reviewer`, the second, its
 // control, `implementer:a tester reviewer`; the third walks `implementer:a reviewer implementer:a`
-// through a failed review, and the fourth, its control, is given `implementer:a reviewer
-// implementer`, which is refused.
+// through a failed review, and the fourth, its control, `implementer:a reviewer implementer`,
+// whose step 3 is a second agent of the role implementer; the fifth walks `implementer reviewer
+// implementer`, a second agent of one role with no key anywhere.
 func TestAgentsLive(t *testing.T) {
-	l := newOwnerStepsLive(t, "scripts/e2e/agents.sh", 4)
-	keyed, control, twice, unkeyed := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key
-	l.note("Dispatch %s (database of its own), project %s mapped to %s, issues %s, %s, %s and %s; daemon at dispatch_url %s",
-		l.dispatch.base, l.cfg.Project, liveRepo, keyed, control, twice, unkeyed, l.cfg.DispatchURL)
+	l := newOwnerStepsLive(t, "scripts/e2e/agents.sh", 5)
+	keyed, control, twice, unkeyed, second := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key, l.issues[4].key
+	l.note("Dispatch %s (database of its own), project %s mapped to %s, issues %s, %s, %s, %s and %s; daemon at dispatch_url %s",
+		l.dispatch.base, l.cfg.Project, liveRepo, keyed, control, twice, unkeyed, second, l.cfg.DispatchURL)
 	l.check("one-key-two-roles", func() {
 		l.on(keyed)
 		l.oneKeyRead(oneKeyPlan, true)
@@ -53,8 +57,11 @@ func TestAgentsLive(t *testing.T) {
 	})
 	l.check("control-no-key-on-step-3", func() {
 		l.on(unkeyed)
-		body := l.roleTwiceRefused()
-		l.note("control: register_plan of `%s`: 409 %s; %s holds no plan rows", strings.Join(roleTwiceUnkeyedPlan, " "), strings.TrimSpace(body), l.key)
+		l.secondAgentRead(roleTwiceUnkeyedPlan)
+	})
+	l.check("second-agent", func() {
+		l.on(second)
+		l.secondAgentRead(secondAgentPlan)
 	})
 }
 
@@ -99,6 +106,26 @@ func (l *ownerStepsLive) roleTwiceRead() {
 		}
 	}
 	l.printedFirstRuns([]stepRecordRead{first[1], first[2], first[3]})
+}
+
+// secondAgentRead walks the walk's issue through steps, `implementer reviewer implementer` with or
+// without a key on step 1 (walkSecondAgent), holds its step records to three agents, step 3's the
+// second agent of the role implementer, `…-implementer-2`, each in a session of its own
+// (secondAgentHolds), and holds that `dispatch steps --issue <KEY>`, run as the person, prints the
+// agent of each step as the records name it: three agents.
+func (l *ownerStepsLive) secondAgentRead(steps []string) {
+	t := l.t
+	t.Helper()
+	records := l.walkSecondAgent(steps)
+	if err := secondAgentHolds(l.ownerStepsRig, records); err != nil {
+		t.Fatal(err)
+	}
+	l.note("%s walked %s, retro and merging to done; the records name step 1 %s in %s, step 2 %s in %s, step 3 %s in %s",
+		l.key, strings.Join(steps, " "), records[0].Agent, records[0].Session, records[1].Agent, records[1].Session, records[2].Agent, records[2].Session)
+	agents := l.printedFirstRuns(records)
+	if agents[0] == agents[1] || agents[2] == agents[0] || agents[2] == agents[1] {
+		t.Fatalf("`dispatch steps --issue %s` prints the agents %q of steps 1 to 3; want three agents", l.key, agents)
+	}
 }
 
 // printedFirstRuns runs `dispatch steps --issue <KEY>` as the person until it prints an agent for

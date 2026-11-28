@@ -36,10 +36,18 @@ func TestAHookPromptOfAMoveOfAnyOrderIsWritten(t *testing.T) {
 			t.Fatalf("the message of a hook prompt of %s lists no count of it:\n%s", pair, message)
 		}
 	}
-	_, err := NewOutboxRow("LEGION-208", HookPrompt{Hook: "work-back", Role: claim.RoleTester, From: phase.Testing, To: phase.Testing,
-		Count: 1, Counts: map[string]int{"testing-testing": 1}, Prompt: "Say what is in your way."}, now)
-	want := `a hook prompt names the move back that fired it; "testing" to "testing" is no move back`
+	// A phase a step runs as, moved back to itself, is a move a task that names one role at two
+	// steps makes (phase.StepPhases), so its hook prompt is written like any other. Retro stands
+	// once at the end of every line, so no line moves back from it to itself and its prompt is
+	// refused.
+	if _, err := NewOutboxRow("LEGION-208", HookPrompt{Hook: "work-back", Role: claim.RoleTester, From: phase.Testing, To: phase.Testing,
+		Count: 1, Counts: map[string]int{"testing-testing": 1}, Prompt: "Say what is in your way."}, now); err != nil {
+		t.Fatalf("NewOutboxRow(testing to testing): %v, want it written: a role at two steps of one task makes that move back", err)
+	}
+	_, err := NewOutboxRow("LEGION-208", HookPrompt{Hook: "work-back", Role: claim.RoleMerger, From: phase.Retro, To: phase.Retro,
+		Count: 1, Counts: map[string]int{"retro-retro": 1}, Prompt: "Say what is in your way."}, now)
+	want := `a hook prompt names the move back that fired it; "retro" to "retro" is no move back`
 	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("NewOutboxRow(testing to testing) error = %v, want %q", err, want)
+		t.Fatalf("NewOutboxRow(retro to retro) error = %v, want %q", err, want)
 	}
 }

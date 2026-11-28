@@ -416,6 +416,26 @@ func TestATokenEndsInItsAgent(t *testing.T) {
 	}
 }
 
+// A claim's token names the Dispatch key of its issue whole, whatever its agent's name: the key's
+// project, which the token lowercases, reads back upper-cased, and the token of an agent of any key
+// gives that key again. The controller's token names no issue.
+func TestATokenNamesTheKeyOfItsIssue(t *testing.T) {
+	for _, key := range []string{"INFRA-12", "LEGION-208", "A2B-1"} {
+		for _, agent := range []Agent{"implementer", "implementer-2", "security-reviewer"} {
+			token, err := AgentToken("legion", key, agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, ok := token.IssueKey(); !ok || got != key {
+				t.Errorf("IssueKey of %s = %q, %v; want %s", token, got, ok, key)
+			}
+		}
+	}
+	if key, ok := ControllerToken("legion").IssueKey(); ok {
+		t.Errorf("IssueKey of the controller's token = %q, want none: it names no issue", key)
+	}
+}
+
 // A claim token gives back the project token it was built from, so the token of another claim of
 // its issue can be built with NewToken's checks, and a token that names no agent of an issue gives
 // none.

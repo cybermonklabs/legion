@@ -789,12 +789,16 @@ type Issue struct {
 	// phase names, so the phase alone does not say who works the issue. Absent at every other
 	// phase, whose role the phase names (phase.RoleFor).
 	StepRole string `json:"stepRole,omitempty"`
-	// StartWaitsForPod are the roles of the starts that wait because the issue's live pod lacks
-	// the slot of the start's claim or the role of its step, the pod having been built before the
-	// deployment defined that name (record.Store.StartsWaitingForPod): a start that creates its
-	// claim has none to show yet, and only the pod's update round or its release lets it start.
-	// Absent where none waits.
-	StartWaitsForPod []string `json:"startWaitsForPod,omitempty"`
+	// StartWaitsForPod are the starts that wait because the issue's live pod lacks the slot of the
+	// start's claim or the role of its step, the pod having been built before the deployment
+	// defined or the issue's plan named that name, such as the slot `implementer-2` of a second
+	// agent of one role: each named by its role and the token of the claim it starts
+	// (StartWaitView), in the order the starts were queued (record.Store.StartsWaitingForPod). A
+	// start that creates its claim has none to show yet, and only the pod's update round or its
+	// release lets it start. Absent where none waits. A caller below shaping.go's
+	// startWaitTokenContract is served the role of each start, each role once
+	// (withoutStartWaitTokens).
+	StartWaitsForPod []StartWaitView `json:"startWaitsForPod,omitempty"`
 	// Status is the status the daemon means the issue to have and writes to Dispatch
 	// (record.Issue.Status). It is not the status Dispatch shows: that is
 	// record.Issue.DispatchStatus, which this state does not carry. The two differ while a status
@@ -881,10 +885,9 @@ type Issue struct {
 	Workers map[claim.Role]PhaseView `json:"workers"`
 	// OtherClaims is every claim of the issue that neither `architect` nor `workers` shows, each
 	// with the role it holds, in token order, and absent where there is none (the stranded
-	// token's entry, strandedTokenContract). Two claims of one issue can hold one role — the
-	// agent of a key on a step of another role, beside that role's own claim of an earlier
-	// version of the plan, or two agents at two steps of the role — and `workers` holds one entry
-	// per role, so a reader finds the other one here, by its token (ClaimView.Token).
+	// token's entry, strandedTokenContract). Two claims of one issue can hold one role
+	// (record.WorkerClaim), and `workers` holds one entry per role, so a reader finds the other
+	// one here, by its token (ClaimView.Token).
 	OtherClaims []OtherClaimView `json:"otherClaims,omitempty"`
 	PullRequest *PullRequestView `json:"pullRequest,omitempty"`
 	DesignGate  *GateView        `json:"designGate,omitempty"`
@@ -946,8 +949,8 @@ type Issue struct {
 	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase, and at step the role
 	// of the running step, StepRole), and GivenEntry the entry of the last task the claim of the
 	// worker on that role's step was queued (supervise.Claim.GivenEntry; the worker is the claim
-	// the record gives the step, record.WorkerClaim, which can be a keyed agent's beside the
-	// role's own claim). The daemon sends the entry's own work to a worker whose given number is
+	// record.WorkerClaim gives the step). The daemon sends the entry's own work to a worker whose
+	// given number is
 	// below the entry its row names, on every admission pass and on a sweep of its own each minute
 	// (workflow.OwedEntry, admit's resumeSlottedWorkers), so a reader tells a role holding the
 	// work its row names from one the daemon has still to reach.
@@ -1030,6 +1033,12 @@ type Issue struct {
 	// issue of the body the route serves a caller below podHoldContract (shapeIssue,
 	// withoutPodHold).
 	PodHold *PodHoldView `json:"podHold,omitempty"`
+	// startWaitsHidden is set on the copy the state route serves a caller below shaping.go's
+	// deploymentRolesContract (withoutDeploymentRoles), whose reader knows no `startWaitsForPod`:
+	// MarshalJSON leaves the key off. The list itself stays, so the band of
+	// startWaitTokenContract, which writes it in the shape of the contracts between, finds the
+	// same list whichever of the two runs first.
+	startWaitsHidden bool
 }
 
 // PodHoldView is one pod's standing hold as the state shows it (store.PodHold): Reason, the idle
@@ -1130,12 +1139,17 @@ func (p *PriorityView) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON keeps `workers` an object on the wire for an issue that has no worker yet.
+// MarshalJSON keeps `workers` an object on the wire for an issue that has no worker yet, and
+// leaves `startWaitsForPod` off the copy served a caller below deploymentRolesContract
+// (startWaitsHidden).
 func (i Issue) MarshalJSON() ([]byte, error) {
 	type wire Issue
 	out := wire(i)
 	if out.Workers == nil {
 		out.Workers = map[claim.Role]PhaseView{}
+	}
+	if i.startWaitsHidden {
+		out.StartWaitsForPod = nil
 	}
 	return json.Marshal(out)
 }
@@ -1456,6 +1470,31 @@ func CapabilityReportViewOf(report capabilities.Report) *CapabilityReportView {
 type OtherClaimView struct {
 	Role  claim.Role `json:"role"`
 	Claim ClaimView  `json:"claim"`
+}
+
+// StartWaitView is one start that waits for its issue's pod (Issue.StartWaitsForPod): the role of
+// the start's step and the token of the claim the start brings up, which the outbox acts on when
+// the pod is replaced. Two claims of one issue can hold one role (record.WorkerClaim), so the role
+// alone names a second agent of the role, such as `implementer-2`, as the role's own agent, and
+// the token is what names them apart, as it does on a claim view and a stranded claim.
+//
+// asRole is set on each entry of the copy the state route serves a caller below shaping.go's
+// startWaitTokenContract (withoutStartWaitTokens): that caller reads the list as the roles of the
+// starts, a list of strings, and MarshalJSON writes such an entry as its role alone.
+type StartWaitView struct {
+	Role   claim.Role  `json:"role"`
+	Token  claim.Token `json:"token"`
+	asRole bool
+}
+
+// MarshalJSON writes the entry as an object of its role and its token, and as its role alone on
+// the copy served a caller below startWaitTokenContract (asRole).
+func (v StartWaitView) MarshalJSON() ([]byte, error) {
+	if v.asRole {
+		return json.Marshal(v.Role)
+	}
+	type wire StartWaitView
+	return json.Marshal(wire(v))
 }
 
 // PhaseView is one phase worker's claim, the handoff of its current phase — the commit its
@@ -1936,8 +1975,8 @@ type HeldOutboxRow struct {
 
 // StrandedClaim is one claim nothing will wake — a worker of its issue's phase, or its tree's
 // architect, in a tree that runs — named by its issue, its role, its state and its claim token;
-// the issue's own entry under `issues` carries the rest. Two claims of one issue can hold one
-// role, a keyed agent's on another role's step among them, so the token is what tells them apart;
+// the issue's own entry under `issues` carries the rest. Two claims of one issue can hold one role
+// (record.WorkerClaim), so the token is what tells them apart;
 // a caller below strandedTokenContract, which knows no `token`, is served each entry without it
 // (shaping.go's withoutStrandedTokens).
 // Its state, its role and who suspended it say the move that brings it back (Move), and that
@@ -2067,7 +2106,7 @@ func StrandedClaimsOf(stranded []supervise.Claim) []StrandedClaim {
 	return claims
 }
 
-// StrandedByMove is each stranded claim by its name (StrandedClaim.Name), grouped by its Move under
+// StrandedByMove is each stranded claim by its name (ClaimName), grouped by its Move under
 // suspended, which it reads by the claim's token, so two claims of one role on one issue each take
 // their own move; each group is in stranded's order, and every move has a group, empty when no
 // claim takes it.
@@ -2078,22 +2117,30 @@ func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[Stranded
 	}
 	for _, c := range stranded {
 		move := c.Move(suspended.Of(c))
-		grouped[move] = append(grouped[move], c.Name())
+		grouped[move] = append(grouped[move], ClaimName(c.Issue, c.Role, c.Token))
 	}
 	return grouped
 }
 
-// Name is the claim as the boot's line and `legion state` name it: `<issue> <role>` for the role's
-// own claim, whose token the issue and the role spell (and for an entry that names no token), and
-// `<issue> <role> (claim <token>)` for the claim of an agent named for another role, which holds
-// the role for its step. Two claims of one role on one issue are then named apart, and the token
-// is what `legion claims` takes.
-func (c StrandedClaim) Name() string {
-	named := c.Issue + " " + string(c.Role)
-	if _, agent, ok := c.Token.Cut(); ok && string(agent) != string(c.Role) {
-		return named + " (claim " + string(c.Token) + ")"
+// ClaimName is a claim of issue on role whose token is token as the boot's line and `legion state`
+// name it: the issue, then the claim as a line that has named the issue already names it
+// (ClaimNameInIssue).
+func ClaimName(issue string, role claim.Role, token claim.Token) string {
+	return issue + " " + ClaimNameInIssue(role, token)
+}
+
+// ClaimNameInIssue is a claim on role whose token is token as a line that has named the claim's
+// issue already names it: `<role>` for the claim of an agent named for its role, whose token the
+// issue and the role spell (and for an entry that names no token), and `<role> (claim <token>)`
+// for every other claim: the agent of another role's name that holds the role for a step, or
+// `implementer-2` on an issue whose plan runs the role twice. Two claims of one issue can hold one
+// role (record.WorkerClaim), and they are then named apart; the token is what `legion claims`
+// takes.
+func ClaimNameInIssue(role claim.Role, token claim.Token) string {
+	if _, agent, ok := token.Cut(); ok && string(agent) != string(role) {
+		return string(role) + " (claim " + string(token) + ")"
 	}
-	return named
+	return string(role)
 }
 
 // WakeWaiting is one wake the daemon's pacing holds until its turn, as the state names it

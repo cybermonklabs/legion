@@ -229,8 +229,9 @@ export async function pollAgentListEvery(context: BrowserContext, pollMs: number
 
 /** One Legion agent registry entry as the daemon writes it to the listener
  *  (`packages/envoy/internal/legionagents` `Entry`); `role_token` is the claim token of the
- *  session's agent, `legion-<legion_project>-<issue>-<agent>`, and `role` the role of the step
- *  that agent runs, which for a keyed agent can be another role than its token's last part. */
+ *  session's agent, `legion-<legion_project>-<issue>-<agent>`, and `role` the role of the step that
+ *  agent runs, which need not be its token's last part: a token names its agent, not the role of
+ *  its step. */
 export interface FakeLegionAgent {
   session_id: string;
   legion_project: string;

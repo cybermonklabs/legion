@@ -11,17 +11,16 @@ import (
 
 // suspendToLeave makes machine's claim run nothing where work, the start's, leaves the session the
 // claim records (supervise.Machine.Leaves, the one test of that) and the claim still runs a
-// process: that process runs the session of the key whose name the start's agent took, which the
-// agent must not resume (workflow's leaveKeySessions). It suspends the claim and waits until it
-// runs nothing, as reroleForStep does (suspendUntilIdle). The start then brings the claim back,
-// and the decision that does leaves the session (supervise's revive). A start that leaves no
-// session, or one the claim no longer records, and a claim that already runs nothing, ask nothing.
+// process: that process runs the session the start's stored step names to leave
+// (record.PlanStep.LeaveSession, which no writer sets now), which the agent must not resume. It
+// suspends the claim and waits until it runs nothing, as prepareClaimForStep does for a re-role
+// (suspendUntilIdle). The start then brings the claim back, and the decision that does leaves the
+// session (supervise's revive). A start that leaves no session, or one the claim no longer
+// records, and a claim that already runs nothing, ask nothing.
 //
-// A start of a step's entry asks the suspension with the step's standing, which its one caller,
-// readyClaimForStart, builds once and hands in ctx (supervise.Standing, stepStands): a step the
-// issue left before the machine's lock is supervise.ErrStepLeft, with nothing of the claim changed.
-// It is the one place that asks whether the start leaves a session and whether the claim still
-// runs a process: after reroleForStep has suspended the claim, it finds the claim running nothing.
+// ctx carries the standing of the step the start is for where it has one (stepStanding): a step
+// the issue left before the machine's lock is supervise.ErrStepLeft, with nothing of the claim
+// changed.
 func suspendToLeave(ctx context.Context, machine *supervise.Machine, token claim.Token, issue string,
 	role claim.Role, work supervise.StartWork) error {
 	if !machine.Leaves(work) || machine.Claim().RunsNothing() {
