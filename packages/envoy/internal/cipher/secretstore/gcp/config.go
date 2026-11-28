@@ -34,6 +34,10 @@ func (c config) Store() string        { return Name }
 func (c config) Prefix() string       { return c.prefix }
 func (c config) SecondPrefix() string { return c.second }
 
+// SourcePrefixes are the two prefixes as they are: a Secret Manager source is the secret's
+// resource name, which its prefix opens.
+func (c config) SourcePrefixes() (prefix, second string) { return c.prefix, c.second }
+
 // Settings are the key's name and the project the prefix names.
 func (c config) Settings() map[string]string {
 	return settingsfields.Of(SettingsFields{KMSKeyName: c.keyName, GCPProject: Project(c.prefix)})

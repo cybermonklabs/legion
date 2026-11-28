@@ -45,13 +45,15 @@ var secondPrefixRows = map[string]secondPrefixRow{
 // TestEachStoreTakesAStandOnTheSecondPrefix: every store the registry holds takes a stand on
 // BROKER_SECRETS_SECOND_PREFIX (secretstore.SecondPrefixVariable), which config.Load reads only
 // through the store (Config.SecondPrefix). With the variable set, its ParseConfig either refuses
-// the start, naming the variable, or reads it and answers it as SecondPrefix, and its row says
-// which; one that does neither would start a broker that counts no move and says nothing. A store
+// the start, naming the variable, or reads it and answers it as SecondPrefix, and both prefixes in
+// its sources' own form (SourcePrefixes), which the grant re-checks compare in; its row says
+// which. One that does neither would start a broker that counts no move and says nothing. A store
 // that reads one in a form of its own refuses a value of another form, naming the variable. With
-// the variable unset, every store answers no second prefix.
+// the variable unset, every store answers no second prefix, in either form.
 //
 // The named reverts: have the memory store's ParseConfig drop the value, and the memory row fails
-// as neither refusing nor reading; take a store's row out, and the test names the store.
+// as neither refusing nor reading; have it answer no second source prefix, and the memory row
+// fails naming SourcePrefixes; take a store's row out, and the test names the store.
 func TestEachStoreTakesAStandOnTheSecondPrefix(t *testing.T) {
 	stores := backends.All()
 	if len(stores) == 0 {
@@ -78,6 +80,9 @@ func TestEachStoreTakesAStandOnTheSecondPrefix(t *testing.T) {
 			if got := base.SecondPrefix(); got != "" {
 				t.Fatalf("SecondPrefix with the variable unset = %q, want none", got)
 			}
+			if _, second := base.SourcePrefixes(); second != "" {
+				t.Fatalf("SourcePrefixes with the variable unset answers the second source prefix %q, want none", second)
+			}
 			cfg, err := b.ParseConfig(row.prefix, getenv(row.second))
 			switch {
 			case err != nil && !strings.Contains(err.Error(), secretstore.SecondPrefixVariable):
@@ -90,6 +95,11 @@ func TestEachStoreTakesAStandOnTheSecondPrefix(t *testing.T) {
 				t.Fatalf("ParseConfig with %s=%s accepted it, answering %q; its row says the store refuses every one", secretstore.SecondPrefixVariable, row.second, cfg.SecondPrefix())
 			case cfg.SecondPrefix() != row.second:
 				t.Fatalf("ParseConfig with %s=%s accepted it and answers %q: the store neither refuses the variable nor reads it", secretstore.SecondPrefixVariable, row.second, cfg.SecondPrefix())
+			}
+			// A store that reads one hands the grant re-checks both prefixes in its sources' own
+			// form (SourcePrefixes); with either empty, or the two the same, they count no move.
+			if prefix, second := cfg.SourcePrefixes(); prefix == "" || second == "" || prefix == second {
+				t.Fatalf("SourcePrefixes = %q, %q; a store that reads %s answers both prefixes in its sources' form, and two of them", prefix, second, secretstore.SecondPrefixVariable)
 			}
 			if row.malformed == "" {
 				return

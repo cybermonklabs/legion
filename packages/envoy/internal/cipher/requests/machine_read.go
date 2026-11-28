@@ -577,10 +577,11 @@ func sourceMoved(name string) error {
 // for a name (requestedSecret.source), counts as the source the policy serves that name from now
 // (policy.Secret.Source). Every compare of the two calls counts: the re-check of a release and of
 // Create's reuse of a live grant (stillAllowed), the re-check after a release's reads
-// (recheckStoredSources), and the release's read itself (readSource). prefix is
-// BROKER_SECRETS_PREFIX and second BROKER_SECRETS_SECOND_PREFIX (Machine.SecretsPrefix and
-// Machine.SecondPrefix); with second empty the rule counts equal sources alone, which is every
-// broker that does not set it.
+// (recheckStoredSources), and the release's read itself (readSource). prefix and second are the
+// prefixes every source of the store begins with under BROKER_SECRETS_PREFIX and under
+// BROKER_SECRETS_SECOND_PREFIX (Machine.SecretsPrefix and Machine.SecondPrefix, which the store
+// answers: secretstore.Config.SourcePrefixes); with second empty the rule counts equal sources
+// alone, which is every broker that does not set it.
 type sourceRule struct{ prefix, second string }
 
 // sourceRule is the rule this machine holds a frozen source to.
@@ -599,13 +600,9 @@ func (m *Machine) sourceRule() sourceRule {
 // the policy serves the second's, since the policy lists under the configured prefix alone. Such a
 // source no longer names the secret the policy decides about, so its grant ends (sourceMoved).
 //
-// The configured prefix is read where it first appears in served's store source, not only at its
-// start, and the part before it must open frozen's too: a store whose source is the secret's name
-// behind a lead of its own, as the memory store's memory:<name> is, counts a move as Secret
-// Manager does. A Secret Manager source is its resource name, projects/<number>/secrets/<id>, which
-// a Secret Manager prefix opens, and an id holds no "/", so there the prefix is at the start alone
-// and the lead is empty: TestSourceRuleOnSecretManagerSourcesIsMains holds every such answer to
-// main's.
+// The two prefixes are the store's source prefixes, so a store whose sources carry a lead of their
+// own before the secret's name (the memory store's memory:<name>) is compared from where its name
+// begins, whatever the prefix spells: the rule never looks for a prefix inside a source.
 func (r sourceRule) counts(frozen, served string) bool {
 	if frozen == served {
 		return true
@@ -621,12 +618,8 @@ func (r sourceRule) counts(frozen, served string) bool {
 	if err != nil || frozenMinted != servedMinted || frozenType != servedType {
 		return false
 	}
-	at := strings.Index(servedStore, r.prefix)
-	if at < 0 {
-		return false
-	}
-	lead, rest := servedStore[:at], servedStore[at+len(r.prefix):]
-	return rest != "" && frozenStore == lead+r.second+rest
+	rest, under := strings.CutPrefix(servedStore, r.prefix)
+	return under && rest != "" && frozenStore == r.second+rest
 }
 
 // readSource is the type and the store source a release of g reads, and whether it mints, all

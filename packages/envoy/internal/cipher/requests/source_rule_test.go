@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // movedOtherProject is a second prefix in another project than movedConfigured's, which a move
@@ -79,41 +81,69 @@ func TestSourceRuleOnSecretManagerSourcesIsMains(t *testing.T) {
 }
 
 // TestSourceRuleOnMemorySources holds sourceRule.counts on the memory store's sources,
-// memory:<name> (memory.Source), where the configured prefix stands behind the store's own lead:
-// a move from the second prefix counts, stored and minted, with the lead kept; and a source with
-// no lead or another one, the setting empty, a source under the configured prefix where the
-// policy serves the second's, and the bare prefixes do not.
+// memory:<name> (memory.Source), with the rule built as the broker builds it: from the memory
+// store's own configuration (secretstore.Config.SourcePrefixes), whose prefixes stand behind the
+// store's lead. For each pair of prefixes, an ordinary one and two that spell part of the lead
+// itself (mem and memory:), a move from the second prefix counts, stored and minted, and an equal
+// source counts with the setting empty; a source with no lead or another one, one under the second
+// prefix with the setting empty, one under the configured prefix where the policy serves the
+// second's, and the bare prefixes do not.
 //
-// The named reverts: cut the prefix from the start of the store source alone, as main did, and the
-// two moves do not count; drop the lead from what frozen must hold, and the row with no lead
-// counts.
+// The named reverts: have the memory store answer its prefixes without the lead, and no move
+// counts; find the prefix where it first appears in the source, with the prefixes as given (the
+// rule this replaced), and the moves between the prefixes that spell part of the lead do not count.
 func TestSourceRuleOnMemorySources(t *testing.T) {
-	const (
-		lead       = "memory:"
-		configured = "example/agent-secrets/"
-		second     = "example/old-secrets/"
-	)
-	moved := sourceRule{prefix: configured, second: second}
-	unset := sourceRule{prefix: configured}
 	app := func(store string) string { return policy.TypeSource(policy.TypeGitHubApp, store) }
-	for _, row := range []struct {
-		name           string
-		rule           sourceRule
-		frozen, served string
-		counts         bool
-	}{
-		{"a stored source under the second prefix with the same remainder", moved, lead + second + "deel-api-key", lead + configured + "deel-api-key", true},
-		{"a minted source of the same type under the second prefix", moved, app(lead + second + "app-key"), app(lead + configured + "app-key"), true},
-		{"an equal stored source with the setting empty", unset, lead + configured + "deel-api-key", lead + configured + "deel-api-key", true},
-
-		{"a source under the second prefix with no lead", moved, second + "deel-api-key", lead + configured + "deel-api-key", false},
-		{"a source under the second prefix behind another lead", moved, "other:" + second + "deel-api-key", lead + configured + "deel-api-key", false},
-		{"a source under the second prefix with the setting empty", unset, lead + second + "deel-api-key", lead + configured + "deel-api-key", false},
-		{"a source under the configured prefix where the policy serves one under the second", moved, lead + configured + "deel-api-key", lead + second + "deel-api-key", false},
-		{"a source that is the second prefix itself, where the policy serves the configured prefix itself", moved, lead + second, lead + configured, false},
+	for _, pair := range []struct{ configured, second string }{
+		{"example/agent-secrets/", "example/old-secrets/"},
+		{"mem", "old"},
+		{"memory:", "old:"},
 	} {
-		if got := row.rule.counts(row.frozen, row.served); got != row.counts {
-			t.Errorf("%s: counts(%q, %q) = %t, want %t", row.name, row.frozen, row.served, got, row.counts)
-		}
+		t.Run(pair.configured, func(t *testing.T) {
+			moved := memoryRule(t, pair.configured, pair.second)
+			unset := memoryRule(t, pair.configured, "")
+			c, s := pair.configured, pair.second
+			for _, row := range []struct {
+				name           string
+				rule           sourceRule
+				frozen, served string
+				counts         bool
+			}{
+				{"a stored source under the second prefix with the same remainder", moved, memory.Source(s + "deel-api-key"), memory.Source(c + "deel-api-key"), true},
+				{"a minted source of the same type under the second prefix", moved, app(memory.Source(s + "app-key")), app(memory.Source(c + "app-key")), true},
+				{"an equal stored source with the setting empty", unset, memory.Source(c + "deel-api-key"), memory.Source(c + "deel-api-key"), true},
+
+				{"a source under the second prefix with no lead", moved, s + "deel-api-key", memory.Source(c + "deel-api-key"), false},
+				{"a source under the second prefix behind another lead", moved, "other:" + s + "deel-api-key", memory.Source(c + "deel-api-key"), false},
+				{"a source under the second prefix with the setting empty", unset, memory.Source(s + "deel-api-key"), memory.Source(c + "deel-api-key"), false},
+				{"a source under the configured prefix where the policy serves one under the second", moved, memory.Source(c + "deel-api-key"), memory.Source(s + "deel-api-key"), false},
+				{"a source that is the second prefix itself, where the policy serves the configured prefix itself", moved, memory.Source(s), memory.Source(c), false},
+			} {
+				if got := row.rule.counts(row.frozen, row.served); got != row.counts {
+					t.Errorf("%s: counts(%q, %q) = %t, want %t", row.name, row.frozen, row.served, got, row.counts)
+				}
+			}
+		})
 	}
+}
+
+// memoryRule is the rule a broker on the memory store holds frozen sources to, for the prefix
+// BROKER_SECRETS_PREFIX and the second prefix second ("" for none): the store's configuration
+// parsed as the broker parses it, and its source prefixes, as cmd/cipherd hands them the machine.
+func memoryRule(t *testing.T, prefix, second string) sourceRule {
+	t.Helper()
+	cfg, err := memory.Backend{}.ParseConfig(prefix, func(name string) string {
+		switch name {
+		case secretstore.SecondPrefixVariable:
+			return second
+		case "BROKER_MEMORY_SECRETS_FILE":
+			return "memory-secrets.json"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("the memory store's ParseConfig(%q, second %q): %v", prefix, second, err)
+	}
+	configured, moved := cfg.SourcePrefixes()
+	return sourceRule{prefix: configured, second: moved}
 }

@@ -1553,17 +1553,18 @@ func metricsHandler(registry *metrics.Registry, callout *atomic.Pointer[natscall
 // decisions, revokes and lists and its chain check ask who is a member of a group.
 func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secretstore.Store, replay func(context.Context, string, time.Time) (bool, error), ca *proxy.Authority, retry *secrets.Retry, dispatch *judge.Dispatch, groupReader record.Directory) *requests.Machine {
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
-	// config.Load always sets the store's configuration; a Config a test builds by hand may hold
-	// none, and then names no prefix, as an unset BROKER_SECRETS_PREFIX would.
-	var secretsPrefix string
+	// The grant re-checks compare a frozen source under the two prefixes in the store's own source
+	// form (secretstore.Config.SourcePrefixes), the second one a store move leaves or reaches
+	// (BROKER_SECRETS_SECOND_PREFIX), and nothing else of the broker reads the second. config.Load
+	// always sets the store's configuration; a Config a test builds by hand may hold none, and then
+	// names no prefix, as an unset BROKER_SECRETS_PREFIX would.
+	var sourcePrefix, secondSourcePrefix string
 	if cfg.Secrets != nil {
-		secretsPrefix = cfg.Secrets.Prefix()
+		sourcePrefix, secondSourcePrefix = cfg.Secrets.SourcePrefixes()
 	}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
-		// The grant re-checks read both prefixes, the second one a store move leaves or reaches
-		// (BROKER_SECRETS_SECOND_PREFIX), and nothing else of the broker reads the second.
-		SecretsPrefix: secretsPrefix, SecondPrefix: cfg.SecretsSecondPrefix,
+		SecretsPrefix: sourcePrefix, SecondPrefix: secondSourcePrefix,
 		Audience: cfg.PublicURL, EdgeAudience: cfg.EdgeURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,

@@ -37,6 +37,11 @@ func (c config) Prefix() string { return c.prefix }
 // SecondPrefix is none: ParseConfig refuses BROKER_SECRETS_SECOND_PREFIX with this store.
 func (c config) SecondPrefix() string { return "" }
 
+// SourcePrefixes are none: a Secrets Manager source is an ARN whose region, account and closing
+// suffix no prefix fixes, and the store refuses a second prefix, so the grant re-checks compare its
+// sources whole.
+func (c config) SourcePrefixes() (prefix, second string) { return "", "" }
+
 // Settings are the key's ARN, with the account and region it names.
 func (c config) Settings() map[string]string {
 	region, account := KeyARNParts(c.keyARN)

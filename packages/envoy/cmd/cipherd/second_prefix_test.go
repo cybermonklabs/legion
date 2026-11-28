@@ -81,15 +81,16 @@ const (
 // source. The brokers run on the memory store, the development store, which reads a second prefix
 // so that this move can be rehearsed: every source a row freezes is a memory source,
 // memory:<name> (memory.Source), whose name opens with the prefix behind the store's own lead, as
-// a Secret Manager source is the resource name the prefix opens.
-// TestSourceRuleOnSecretManagerSourcesIsMains, in internal/cipher/requests, holds the rule's answers
-// on Secret Manager's own names.
+// a Secret Manager source is the resource name the prefix opens; the broker hands the rule both
+// prefixes in that form (secretstore.Config.SourcePrefixes).
+// TestSourceRuleOnSecretManagerSourcesIsMains, in internal/cipher/requests, holds the rule's
+// answers on Secret Manager's own names.
 //
 // The named reverts: compare a frozen source with the policy's by string alone, and step 1's
 // second broker ends both grants; release the frozen source, and its releases are refused
 // SECRET_NOT_IN_STORE; count a source under any prefix with the same remainder, and step 2's
-// grants go on; and cut the configured prefix from the start of a source alone, as main's rule
-// did, and step 1's second broker ends both grants, since a memory source opens with memory:.
+// grants go on; and hand the rule the prefixes as configured, without the store's lead, and step
+// 1's second broker ends both grants, since a memory source opens with memory:.
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestSecondPrefixCarriesGrantsAcrossAStoreMove(t *testing.T) {

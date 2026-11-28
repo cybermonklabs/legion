@@ -41,6 +41,18 @@ type config struct{ prefix, second, file string }
 func (c config) Store() string        { return Name }
 func (c config) Prefix() string       { return c.prefix }
 func (c config) SecondPrefix() string { return c.second }
+
+// SourcePrefixes are the two prefixes behind the store's lead (Source), memory:<prefix>, second ""
+// when no second prefix is read: a memory source's name begins after memory:, whatever a prefix
+// spells.
+func (c config) SourcePrefixes() (prefix, second string) {
+	prefix = Source(c.prefix)
+	if c.second != "" {
+		second = Source(c.second)
+	}
+	return prefix, second
+}
+
 func (c config) Settings() map[string]string {
 	return settingsfields.Of(SettingsFields{File: c.file})
 }

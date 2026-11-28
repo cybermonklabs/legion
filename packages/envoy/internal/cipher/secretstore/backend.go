@@ -18,9 +18,14 @@ type Config interface {
 	Settings() map[string]string
 	// SecondPrefix is BROKER_SECRETS_SECOND_PREFIX as the store read it (SecondPrefixVariable),
 	// "" for none: the prefix a move of the store leaves or reaches, which config.Load holds to
-	// what any two prefixes keep and the grant re-checks count a frozen source under. A store that
-	// refuses the variable answers "".
+	// what any two prefixes keep. A store that refuses the variable answers "".
 	SecondPrefix() string
+	// SourcePrefixes are the prefixes every source the store answers (Listing.Source) begins with
+	// for a secret under Prefix and for one under SecondPrefix, second "" when SecondPrefix is:
+	// the forms the grant re-checks compare a frozen source in (requests' sourceRule), since a
+	// store's source can carry a lead of its own before the secret's name. A store whose sources
+	// begin with no fixed prefix answers "" for both, and must refuse a second prefix.
+	SourcePrefixes() (prefix, second string)
 }
 
 // SecondPrefixVariable is BROKER_SECRETS_SECOND_PREFIX, the prefix a deployment's move of its store
