@@ -260,7 +260,7 @@ func PruneMergedPullRequestProgress(ctx context.Context, pool *store.Pool, keep 
 
 // PullRequestColumns is the delivery_pull_requests select list ScanPullRequest reads, in scan
 // order.
-const PullRequestColumns = `repo, number, title, url, author, created_at, merged_at, first_commit_at, merge_commit_sha, additions, deletions, rework, issue_key, sessions, partial, unfetchable_at, unfetchable_reason, updated_at, attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys`
+const PullRequestColumns = `repo, number, title, url, author, created_at, merged_at, first_commit_at, merge_commit_sha, additions, deletions, rework, issue_key, sessions, partial, unfetchable_at, unfetchable_reason, updated_at, attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys, attribution_body_trailer_keys, attribution_commit_trailer_keys`
 
 // ScanPullRequest decodes one PullRequestColumns row into a DeliveryPullRequest.
 func ScanPullRequest(row pgx.Row) (DeliveryPullRequest, error) {
@@ -277,6 +277,7 @@ func scanPullRequest(row pgx.Row, extra ...any) (DeliveryPullRequest, error) {
 		&pr.FirstCommitAt, &pr.MergeCommitSHA, &pr.Additions, &pr.Deletions, &pr.Rework,
 		&pr.IssueKey, &pr.Sessions, &pr.Partial, &pr.UnfetchableAt, &pr.UnfetchableReason, &pr.UpdatedAt,
 		&inputs.TitleKeys, &inputs.CitedIssues, &inputs.BranchKeys, &inputs.CommitKeys,
+		&inputs.BodyTrailerKeys, &inputs.CommitTrailerKeys,
 	}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return DeliveryPullRequest{}, err
@@ -313,18 +314,20 @@ func UpsertPullRequest(ctx context.Context, pool *store.Pool, pr DeliveryPullReq
 	}
 	// A write that carries no attribution inputs (a search result, a partial envelope row) keeps
 	// the ones stored: they are what GitHub said about the merged pull request, which does not
-	// change. A write that carries them stores all four, never a nil slice (SQL NULL).
-	var inputs [4][]string
+	// change. A write that carries them stores all six, never a nil slice (SQL NULL).
+	var inputs [6][]string
 	if a := pr.Attribution; a != nil {
-		inputs = [4][]string{nonNil(a.TitleKeys), nonNil(a.CitedIssues), nonNil(a.BranchKeys), nonNil(a.CommitKeys)}
+		inputs = [6][]string{nonNil(a.TitleKeys), nonNil(a.CitedIssues), nonNil(a.BranchKeys), nonNil(a.CommitKeys),
+			nonNil(a.BodyTrailerKeys), nonNil(a.CommitTrailerKeys)}
 	}
 	_, err := pool.Exec(ctx, `
 		insert into delivery_pull_requests (
 			repo, number, title, url, author, created_at, merged_at, first_commit_at,
 			merge_commit_sha, additions, deletions, rework, issue_key, sessions, partial,
-			attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys
+			attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys,
+			attribution_body_trailer_keys, attribution_commit_trailer_keys
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		on conflict (repo, number) do update set
 			title = excluded.title,
 			url = excluded.url,
@@ -343,6 +346,8 @@ func UpsertPullRequest(ctx context.Context, pool *store.Pool, pr DeliveryPullReq
 			attribution_cited_issues = coalesce(excluded.attribution_cited_issues, delivery_pull_requests.attribution_cited_issues),
 			attribution_branch_keys = coalesce(excluded.attribution_branch_keys, delivery_pull_requests.attribution_branch_keys),
 			attribution_commit_keys = coalesce(excluded.attribution_commit_keys, delivery_pull_requests.attribution_commit_keys),
+			attribution_body_trailer_keys = coalesce(excluded.attribution_body_trailer_keys, delivery_pull_requests.attribution_body_trailer_keys),
+			attribution_commit_trailer_keys = coalesce(excluded.attribution_commit_trailer_keys, delivery_pull_requests.attribution_commit_trailer_keys),
 			unfetchable_at = null,
 			unfetchable_reason = null,
 			updated_at = now()
@@ -350,7 +355,7 @@ func UpsertPullRequest(ctx context.Context, pool *store.Pool, pr DeliveryPullReq
 	`,
 		pr.Repo, pr.Number, pr.Title, pr.URL, pr.Author, pr.CreatedAt, pr.MergedAt, pr.FirstCommitAt,
 		pr.MergeCommitSHA, pr.Additions, pr.Deletions, pr.Rework, pr.IssueKey, sessions, pr.Partial,
-		inputs[0], inputs[1], inputs[2], inputs[3],
+		inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5],
 	)
 	return err
 }
@@ -371,10 +376,11 @@ func StoreAttributionInputs(ctx context.Context, pool *store.Pool, repo string, 
 		update delivery_pull_requests
 		set attribution_title_keys = $3, attribution_cited_issues = $4, attribution_branch_keys = $5,
 			attribution_commit_keys = $6, sessions = $7, issue_key = $8, attribution_checked_at = now(),
+			attribution_body_trailer_keys = $9, attribution_commit_trailer_keys = $10,
 			updated_at = now()
 		where repo = $1 and number = $2 and attribution_title_keys is null
 	`, repo, number, nonNil(inputs.TitleKeys), nonNil(inputs.CitedIssues), nonNil(inputs.BranchKeys),
-		nonNil(inputs.CommitKeys), nonNil(sessions), issueKey)
+		nonNil(inputs.CommitKeys), nonNil(sessions), issueKey, nonNil(inputs.BodyTrailerKeys), nonNil(inputs.CommitTrailerKeys))
 	return err
 }
 

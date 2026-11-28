@@ -31,6 +31,15 @@ import (
 //  4. a key in its title or body, title first;
 //  5. a key in its commit messages, in commit order.
 //
+// Sources 4 and 5 each read their `Dispatch:` trailer lines first (dispatchTrailer): a key on such
+// a line ranks above every key the same text only mentions, as a source of its own. A trailer is
+// the pull request's own statement of its issue, so where a trailer names an issue the walk stops
+// there, and a key the body or the commits only mention is never reached: a body whose trailer
+// names an issue of another repository is credited to nobody, not to an issue of this repository
+// its prose mentions, and a merge commit's prose does not outrank the last commit's trailer
+// (dispatch://INFRA-3992/ask/27e8000f-5a0b-417b-a855-f824dc7054c5). Trailer keys keep the order
+// they were read in, the commits' in commit order.
+//
 // The prototype's collector/attribution.py tried the title and the body first, and ranks 1 to 3
 // below them. R8 of INFRA-1522 moved them above: a branch name and a link are acts that name the
 // issue — someone branched for it, someone linked it — while a key in a title or a body is a
@@ -79,7 +88,8 @@ import (
 // 10 is the rule of 8 with the walk stopped at the first source that names an issue (above): where
 // that source names no issue of the pull request's repository, nobody is credited rather than an
 // issue a later source names, and the commit messages are read only where no earlier source names
-// an issue. It is 10, not 9, because cybermonklabs/legion#4230 numbers its own rule 9.
+// an issue; a `Dispatch:` trailer line ranks above every key its own source only mentions. It is
+// 10, not 9, because cybermonklabs/legion#4230 numbers its own rule 9.
 //
 // Raising this is how a later change to the attribution, or to what a merged row stores, reaches
 // the merged rows already stored. Nothing else revisits one — an open row comes round at every
@@ -103,13 +113,31 @@ const (
 
 // AttributionInputs is what the attribution reads from GitHub, as stored on the pull request's
 // row: the issue keys its title and body name, the GitHub issue URLs its body cites, the keys its
-// head branch names and the keys its commit messages name, each deduplicated in first-seen order.
-// Nil on a DeliveryPullRequest means they have not been read.
+// head branch names and the keys its commit messages name, each deduplicated in first-seen order,
+// and of those the keys the body's and the commits' `Dispatch:` trailer lines name
+// (dispatchTrailer). Nil on a DeliveryPullRequest means they have not been read; a row stored
+// before the trailer keys were holds nil trailer keys, which the attribution reads as no trailer.
 type AttributionInputs struct {
-	TitleKeys   []string
-	CitedIssues []string
-	BranchKeys  []string
-	CommitKeys  []string
+	TitleKeys         []string
+	CitedIssues       []string
+	BranchKeys        []string
+	CommitKeys        []string
+	BodyTrailerKeys   []string
+	CommitTrailerKeys []string
+}
+
+// dispatchTrailer matches a `Dispatch:` trailer line, whatever its case and its indentation, and
+// captures what follows the colon. The colon must be followed by a space or a tab, so a line that
+// starts with a dispatch:// reference is no trailer.
+var dispatchTrailer = regexp.MustCompile(`(?im)^[ \t]*dispatch:[ \t]+(.*)$`)
+
+// trailerKeys is every key text's `Dispatch:` trailer lines name, deduplicated in first-seen order.
+func trailerKeys(text string) []string {
+	keys := []string{}
+	for _, line := range dispatchTrailer.FindAllStringSubmatch(text, -1) {
+		keys = appendUnique(keys, issueKeyCandidate.FindAllString(line[1], -1)...)
+	}
+	return keys
 }
 
 // attributionFacts is what GitHub says about one pull request that the attribution reads.
@@ -214,11 +242,14 @@ func isHostByte(b byte) bool {
 }
 
 func (a *Attributor) attributionInputsFrom(facts attributionFacts) AttributionInputs {
+	commits := strings.Join(facts.CommitMessages, "\n")
 	return AttributionInputs{
-		TitleKeys:   uniqueKeys(facts.Title + "\n" + facts.Body),
-		CitedIssues: citedIssues(a.renames, facts.Repo, citebody.New(facts.Body, nil)),
-		BranchKeys:  uniqueKeys(strings.ToUpper(facts.HeadRef)),
-		CommitKeys:  uniqueKeys(strings.Join(facts.CommitMessages, "\n")),
+		TitleKeys:         uniqueKeys(facts.Title + "\n" + facts.Body),
+		CitedIssues:       citedIssues(a.renames, facts.Repo, citebody.New(facts.Body, nil)),
+		BranchKeys:        uniqueKeys(strings.ToUpper(facts.HeadRef)),
+		CommitKeys:        uniqueKeys(commits),
+		BodyTrailerKeys:   trailerKeys(facts.Body),
+		CommitTrailerKeys: trailerKeys(commits),
 	}
 }
 
@@ -269,14 +300,14 @@ func citedIssues(renames refs.Renames, repo string, body citebody.Body) []string
 }
 
 // attributionColumns are the SQL expressions attributionCandidates reads a pull request's URL
-// and its four stored inputs from: bound parameters for one pull request
+// and its six stored inputs from: bound parameters for one pull request
 // (resolveAttributionCandidates), or a stored row's own columns (attributionRowColumns, which
-// AttributePullRequests and ResolvedCandidates read). Named, so the callers cannot hand the four
+// AttributePullRequests and ResolvedCandidates read). Named, so the callers cannot hand the six
 // text[] inputs over in another order. The repository the candidates are held to is not read
 // here: it reaches the SQL through attributionHeld alone, from attributionOneRepo or the batch's
 // own c.pr_repo.
 type attributionColumns struct {
-	URL, TitleKeys, CitedIssues, BranchKeys, CommitKeys string
+	URL, TitleKeys, CitedIssues, BranchKeys, CommitKeys, BodyTrailerKeys, CommitTrailerKeys string
 }
 
 // attributionCandidateBound is how many ranked candidates one attribution carries out of the
@@ -324,9 +355,15 @@ func attributionCandidates(renames refs.Renames, c attributionColumns) string {
 			from unnest(` + c.BranchKeys + `) with ordinality b(key, n) join issues i on i.key = b.key
 		union all
 		select t.key, '` + string(sourceTitleBody) + `', 3, t.n
+			from unnest(` + c.BodyTrailerKeys + `) with ordinality t(key, n) join issues i on i.key = t.key
+		union all
+		select t.key, '` + string(sourceTitleBody) + `', 4, t.n
 			from unnest(` + c.TitleKeys + `) with ordinality t(key, n) join issues i on i.key = t.key
 		union all
-		select m.key, '` + string(sourceCommitMessage) + `', 4, m.n
+		select m.key, '` + string(sourceCommitMessage) + `', 5, m.n
+			from unnest(` + c.CommitTrailerKeys + `) with ordinality m(key, n) join issues i on i.key = m.key
+		union all
+		select m.key, '` + string(sourceCommitMessage) + `', 6, m.n
 			from unnest(` + c.CommitKeys + `) with ordinality m(key, n) join issues i on i.key = m.key
 	) s order by s.rank, s.n, s.key collate "C" limit ` + strconv.Itoa(attributionCandidateBound)
 }
@@ -352,12 +389,13 @@ func attributionHeld(renames refs.Renames, repo string) string {
 }
 
 // attributionOneColumns are the bound parameters one pull request's candidates are read from:
-// its URL, then its four inputs; attributionOneRepo is the last parameter, the repository the
-// pull request is in, which attributionHeld reads. resolveAttributionCandidates binds the six
-// in that order.
+// its URL, then its first four inputs; attributionOneRepo, the sixth parameter, is the repository
+// the pull request is in, which attributionHeld reads; the seventh and the eighth are the two
+// trailer inputs. resolveAttributionCandidates binds the eight in that order.
 var attributionOneColumns = attributionColumns{
 	URL: "$1", TitleKeys: "$2::text[]", CitedIssues: "$3::text[]",
 	BranchKeys: "$4::text[]", CommitKeys: "$5::text[]",
+	BodyTrailerKeys: "$7::text[]", CommitTrailerKeys: "$8::text[]",
 }
 
 const attributionOneRepo = "$6"
@@ -398,6 +436,7 @@ order by c.rank, c.n, c.key collate "C"`
 var attributionRowColumns = attributionColumns{
 	URL: "src.url", TitleKeys: "src.attribution_title_keys", CitedIssues: "src.attribution_cited_issues",
 	BranchKeys: "src.attribution_branch_keys", CommitKeys: "src.attribution_commit_keys",
+	BodyTrailerKeys: "src.attribution_body_trailer_keys", CommitTrailerKeys: "src.attribution_commit_trailer_keys",
 }
 
 // attributionRowTerms is the terms the two statements over stored rows splice after their batch
@@ -424,7 +463,8 @@ func attributionBatchQuery(renames refs.Renames) string {
 	return `
 		with recursive batch as (
 			select repo, number, url, issue_key, attribution_title_keys, attribution_cited_issues,
-				attribution_branch_keys, attribution_commit_keys
+				attribution_branch_keys, attribution_commit_keys, attribution_body_trailer_keys,
+				attribution_commit_trailer_keys
 			from delivery_pull_requests
 			where attribution_title_keys is not null
 			order by attribution_checked_at nulls first, repo, number
@@ -473,7 +513,8 @@ func resolvedCandidatesQuery(renames refs.Renames) string {
 	return `
 		with recursive batch as (
 			select pr.repo, pr.number, pr.url, pr.attribution_title_keys, pr.attribution_cited_issues,
-				pr.attribution_branch_keys, pr.attribution_commit_keys
+				pr.attribution_branch_keys, pr.attribution_commit_keys, pr.attribution_body_trailer_keys,
+				pr.attribution_commit_trailer_keys
 			from unnest($1::text[], $2::int[]) as given(repo, number)
 			join delivery_pull_requests pr on pr.repo = given.repo and pr.number = given.number
 			where pr.attribution_title_keys is not null
@@ -544,7 +585,8 @@ type attributionCandidate struct {
 // read.
 func (a *Attributor) resolveAttributionCandidates(ctx context.Context, pool *store.Pool, repo, url string, inputs AttributionInputs) ([]attributionCandidate, error) {
 	rows, err := pool.Query(ctx, a.candidatesQuery,
-		url, inputs.TitleKeys, inputs.CitedIssues, inputs.BranchKeys, inputs.CommitKeys, repo)
+		url, inputs.TitleKeys, inputs.CitedIssues, inputs.BranchKeys, inputs.CommitKeys, repo,
+		inputs.BodyTrailerKeys, inputs.CommitTrailerKeys)
 	if err != nil {
 		return nil, fmt.Errorf("resolve the issue of %s: %w", url, err)
 	}

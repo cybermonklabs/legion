@@ -290,6 +290,12 @@ func TestADispatchTrailerOutranksAMentionInTheSameSource(t *testing.T) {
 			want: "", from: sourceNone, readsCommits: true,
 		},
 		{
+			name:   "the title mentions an unrelated issue of this repository, the body's trailer names the pull request's own",
+			number: 402,
+			pull:   firstSourcePull{title: "Follow " + bystander, body: "Dispatch: " + own, branch: "topic"},
+			want:   own, from: sourceTitleBody,
+		},
+		{
 			name:   "with no trailer, one source naming an issue of another repository and then one of this repository still takes this one's",
 			number: 409,
 			pull: firstSourcePull{
