@@ -1219,7 +1219,7 @@ func TestRunRetriesSubscriptionRemovedWhenTheAuthorRoutePublishFails(t *testing.
 	// author-route publish must leave the event unpublished so the outbox
 	// retries, rather than losing the removed session's only notice for good.
 	publisher := &recordingPublisher{failTopic: "notifications.agent.planner"}
-	stop := run(t, database, publisher, broker)
+	stop, retryNow := startRetryTest(t, outboxOn(database, publisher, broker))
 	defer stop()
 
 	waitFor(t, "issue-topic publication despite the failing author route", func() bool {
@@ -1230,6 +1230,7 @@ func TestRunRetriesSubscriptionRemovedWhenTheAuthorRoutePublishFails(t *testing.
 	}
 
 	publisher.setFailTopic("")
+	retryNow(event.ID)
 	waitFor(t, "retried publication once the author route succeeds", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
@@ -1709,13 +1710,14 @@ func TestRunRetriesEventWhenRequiredRoleRouteFails(t *testing.T) {
 		Payload: model.Message{ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", IssueKey: new("T-1"), Body: "Retry role delivery"},
 	})
 	publisher := &recordingPublisher{failTopic: "notifications.role.legion-controller-x"}
-	stop := run(t, database, publisher, broker)
+	stop, retryNow := startRetryTest(t, outboxOn(database, publisher, broker))
 	defer stop()
 
 	waitFor(t, "issue topic publication despite a failing role route", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) == nil
 	})
 	publisher.setFailTopic("")
+	retryNow(event.ID)
 	waitFor(t, "retried publication once the role route succeeds", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
@@ -1746,13 +1748,14 @@ func TestRunRetriesEventWhenRequiredAuthorRouteFails(t *testing.T) {
 		}},
 	})
 	publisher := &recordingPublisher{failTopic: "notifications.agent.writer"}
-	stop := run(t, database, publisher, broker)
+	stop, retryNow := startRetryTest(t, outboxOn(database, publisher, broker))
 	defer stop()
 
 	waitFor(t, "issue topic publication despite a failing author route", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) == nil
 	})
 	publisher.setFailTopic("")
+	retryNow(event.ID)
 	waitFor(t, "retried publication once the author route succeeds", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
@@ -1778,13 +1781,14 @@ func TestRunRetriesFailedIssuePublication(t *testing.T) {
 		Payload: model.Message{ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", IssueKey: new("T-1"), Body: "Retry me"},
 	})
 	publisher := &recordingPublisher{failures: 1, attempt: make(chan struct{}, 1)}
-	stop := run(t, database, publisher, broker)
+	stop, retryNow := startRetryTest(t, outboxOn(database, publisher, broker))
 	defer stop()
 
 	testwait.Receive(t, "the initial publication attempt", publisher.attempt)
 	if publishedAt(t, database, event.ID) != nil {
 		t.Fatal("event was marked published after failed issue publication")
 	}
+	retryNow(event.ID)
 	waitFor(t, "the back-off's retry publication", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) != nil
 	})
@@ -2206,20 +2210,11 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 // only makes the same reading come later, but for these bounds, each kept on purpose because it
 // tells a correct outbox from a broken one, and each set from the product's own value it tells
 // apart, with the slack that leaves for load:
-//   - TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack: half the 64 s
-//     back-off a scan that read past the owner would wait for (32 s);
 //   - TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds and
 //     TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents: 60 s
-//     (hangGuard), against the 10 min acknowledgement wait a held batch would add;
+//     (hangGuard), while the acknowledgement clock is never moved;
 //   - TestTheOutboxDoesNotScanWhileIdle: backOffDue, 10 s, inside which the insert's
 //     notification and the scan it wakes must arm the back-off's timer, millisecond work;
-//   - TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold: its client must read connected
-//     before natsLossGrace (3 s) after serve began. The test uses the real clock and sets the
-//     client to connected 200 ms in, leaving 2.8 s of slack;
-//   - TestAnExpiryPassThatReturnsAfterAnAnsweredProbeIsProbedAgain: the pass's return, sent half
-//     a second after the watcher's first probe answered, probeTimeout (2 s) after the pass began,
-//     must come after the watcher read that answer, microsecond work, and before the next probe
-//     is due, probeTimeout after the first. The test uses the real clock, leaving 1.5 s of slack;
 //   - a mention attempt's claim a test writes as this moment's (claimed_at = now()):
 //     agedUnnamedAttempts in TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound
 //     and TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents, and the rows
@@ -2231,7 +2226,7 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 // (window_test.go, order_test.go, lease_test.go, publisher_test.go, the owner lane and attempt
 // tests) is a lower bound on quiet, which load can only shorten, so it can let a defect through
 // on a loaded run but never fail a correct outbox. Each is set inside a product wait the test
-// holds open past any run - forwardAckWait, a back-off, a timer it never arms - so its end
+// holds open past any run - an acknowledgement on a fixed fake, a back-off, a timer it never arms - so its end
 // cannot run into the next send.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.

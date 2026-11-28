@@ -16,6 +16,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // busyPoolSize is the shared pool's size in the busy case. A full pool is what the case needs, of
@@ -347,23 +349,16 @@ type throughputRig struct {
 	marks  markers
 }
 
-// outstandingSends counts how many of the outbox's sends are outstanding at once. It wraps the
-// publisher the outbox sends through: a send counts from the moment the outbox makes it until
-// its answer is in. One outstandingSends counts across every window the publisher hands out,
-// because a scan runs up to concurrentBatches batches at once and each takes a window of its
-// own, so the reading is the peak over the whole drain: the most sends that were outstanding at
-// any one moment.
-//
-// The row reads that peak because it is what the outbox's throughput is made of, and unlike a
-// rate no load on the machine can change it. A drain that sends while earlier sends are
-// unanswered holds many at once, so a remote hub's round trips overlap and the peak is tens. A
-// drain that waits for each answer before it makes the next send holds about one send per batch
-// however fast or slow the machine runs, so its peak is the number of batches.
+// outstandingSends counts sends across the windows of one drain. In the backlog cases it
+// withholds their answers from the outbox until the outstanding count reaches the floor.
 type outstandingSends struct {
 	Publisher
 	mu          sync.Mutex
 	outstanding int
 	peak        int
+	floor       int
+	ready       chan struct{}
+	stop        <-chan struct{}
 }
 
 // WindowUntil wraps the real window, so every send of it is counted.
@@ -378,6 +373,9 @@ func (c *outstandingSends) began() {
 	c.outstanding++
 	if c.outstanding > c.peak {
 		c.peak = c.outstanding
+		if c.peak == c.floor {
+			close(c.ready)
+		}
 	}
 }
 
@@ -422,28 +420,57 @@ func (s outstandingWindow) count(answer <-chan error) <-chan error {
 	s.sends.began()
 	relayed := make(chan error, 1)
 	go func() {
-		err := <-answer
-		s.sends.answered()
-		relayed <- err
+		select {
+		case <-s.sends.ready:
+		case <-s.sends.stop:
+			return
+		}
+		select {
+		case err := <-answer:
+			s.sends.answered()
+			relayed <- err
+		case <-s.sends.stop:
+		}
 	}()
 	return relayed
 }
 
-func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
+// runProxyClock fires the next held chunk, whenever one is armed. InHelper asks at the
+// shared wait's pace. Its result is joined on the test goroutine.
+func runProxyClock(t *testing.T, fake *clocktest.Fake) {
 	t.Helper()
-	server, url := testnats.Start(t)
-	_ = server
-	proxied := testnats.StartProxy(t, url, testnats.ProxyLatency(rtt)).URL()
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- testwait.InHelper(t.Name(), "the proxy clock driver to stop", func() bool {
+			select {
+			case <-stop:
+				return true
+			default:
+				fireNext(fake)
+				return false
+			}
+		})
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		if err := testwait.Receive(t, "the proxy clock driver returning", done); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func newThroughputRig(t *testing.T, rtt time.Duration, fake *clocktest.Fake) *throughputRig {
+	t.Helper()
+	_, url := testnats.Start(t)
+	proxied := testnats.StartProxy(t, url, testnats.ProxyLatency(rtt), testnats.ProxyClock(fake)).URL()
+	runProxyClock(t, fake)
 	client, err := bus.ConnectOwningStream([]string{proxied})
 	if err != nil {
 		t.Fatalf("connect the outbox's client through the latency proxy: %v", err)
 	}
 	t.Cleanup(client.Close)
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
-	t.Cleanup(reader.Close)
+	reader := testnats.Connect(t, url)
 	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
 	if _, err := reader.Subscribe(contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg) {
 		if rig.marks.took(message) {
@@ -456,7 +483,7 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	}); err != nil {
 		t.Fatalf("subscribe the role's holder: %v", err)
 	}
-	if err := reader.Flush(); err != nil {
+	if err := reader.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the holder's subscription: %v", err)
 	}
 	registry, err := envoystore.Open(t.Context(), reader)
@@ -498,16 +525,9 @@ func (r *throughputRig) roleArrivals() []int64 {
 // sessions. The destinations each event type reached are logged for comparison; the count of
 // destinations is checked last, so a publisher that reaches fewer still reports its order.
 //
-// The reading is how many sends the outbox held outstanding at once, at its peak over the drain
-// (outstandingSends, minOutstanding). The rate is logged beside it and nothing is asserted of it:
-// a floor of 25 events/s failed in 20 of 20 runs that published every event, each run in at
-// least one of its cases: 118 of the 240 readings were below 25 events/s, the slowest 9.6, under
-// 48 busy loops on a 2-CPU box on 2026-11-09, so the rate read the machine rather than the
-// outbox. The cases run beside each other and beside the package's other tests (TestMain's
-// outboxTestParallelism), so a rate logged in a package run reads the load of those too: to
-// compare a reading with THROUGHPUT.md's, which were taken one case at a time, run this test
-// alone with -parallel 1 (go test -run TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency
-// -parallel 1).
+// The verdict is how many sends the outbox holds outstanding at once. The gate releases answers
+// at minOutstanding, regardless of machine load. The rate and drain time are logged on the proxy
+// clock for each case. They are not wall-time measurements or verdicts (see THROUGHPUT.md).
 //
 // The burst cases put a batch of messages on one issue, the shape whose events share every
 // destination, so each destination takes them one round trip after another, and log the drain
@@ -587,21 +607,34 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 				name := load.name + ", " + shape
 				t.Run(shape, func(t *testing.T) {
 					t.Parallel()
-					rig := newThroughputRig(t, rtt)
+					fake := clocktest.New(time.Time{})
+					rig := newThroughputRig(t, rtt, fake)
 					seeded := load.seed(t, rig.database, rig.broker, issues, count)
 					outboxStore := rig.database
 					if tc.busy {
 						outboxStore = busySharedPool(t, rig.database)
 					}
 
-					started := time.Now()
-					sends := &outstandingSends{Publisher: rig.client}
-					stop := runOutboxThrough(t, outboxStore, rig.client, sends, rig.broker)
+					started := fake.Now()
+					release := make(chan struct{})
+					sends := &outstandingSends{Publisher: rig.client, floor: minOutstanding, ready: make(chan struct{}), stop: release}
+					if tc.burst {
+						sends.floor = 0
+						close(sends.ready)
+					}
+					outbox := wiredOutbox(t, outboxStore, rig.client, sends, rig.broker)
+					stop := runOn(t, outbox)
 					defer stop()
-					// The drain's one bound is the test binary's deadline: how long it takes is
-					// logged, never asserted, so a loaded machine only reads a lower rate.
+					defer close(release)
+					if !tc.burst {
+						testwait.Until(t, fmt.Sprintf("%s: at least %d sends outstanding at the peak", name, minOutstanding),
+							func() (int, bool) {
+								peak := sends.peakOutstanding()
+								return peak, peak >= minOutstanding
+							})
+					}
 					waitFor(t, name+": every event published", func() bool { return unpublishedCount(t, rig.database) == 0 })
-					elapsed := time.Since(started)
+					elapsed := fake.Now().Sub(started)
 					rate := float64(count) / elapsed.Seconds()
 					peak := sends.peakOutstanding()
 					if tc.burst {
@@ -701,18 +734,10 @@ func logDestinations(t *testing.T, name string, seeded []model.Event, stream []i
 // the returned func stops it.
 func runOutbox(t *testing.T, database *store.Store, client *bus.Client, broker *events.Broker) func() {
 	t.Helper()
-	return runOutboxThrough(t, database, client, client, broker)
+	return runOn(t, wiredOutbox(t, database, client, client, broker))
 }
 
-// runOutboxThrough is runOutbox publishing through publisher rather than through client itself,
-// for a row that reads what the outbox's own sends do (outstandingSends). Role routes still
-// resolve on client's connection, as cmd/dispatch has them.
-func runOutboxThrough(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) func() {
-	t.Helper()
-	return runOn(t, wiredOutbox(t, database, client, publisher, broker))
-}
-
-// wiredOutbox builds the outbox runOutboxThrough runs, so a test can set its clock before Run.
+// wiredOutbox builds an outbox without running it, so a test can set its clock or wrap its publisher.
 func wiredOutbox(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) *Outbox {
 	t.Helper()
 	pool, err := database.Pool.Outbox()

@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -90,17 +91,7 @@ type roleRig struct {
 
 func newRoleRig(t *testing.T) *roleRig {
 	t.Helper()
-	return newRoleRigWith(t)
-}
-
-// newRoleRigWithSessionMaxAge is a roleRig whose session bucket keeps a record for maxAge only,
-// shorter than the gone horizon as a deployed bucket's own maximum age can be: a holder that
-// stops heartbeating loses the record the bucket stored for it well before it is gone. The
-// bucket is created with that age (WithSessionTTL), which is the one way to put an age on it
-// under the duplicates window a KV bucket of two minutes' age carries.
-func newRoleRigWithSessionMaxAge(t *testing.T, maxAge time.Duration) *roleRig {
-	t.Helper()
-	return newRoleRigWith(t, session.WithSessionTTL(maxAge))
+	return newRoleRigWithClient(t, nil)
 }
 
 // keeperHeld is the keeper's period (bus.WithKeepInterval) of an outbox client on a stream a row
@@ -112,17 +103,30 @@ func newRoleRigWithSessionMaxAge(t *testing.T, maxAge time.Duration) *roleRig {
 // unacknowledged or refused is stored.
 const keeperHeld = time.Hour
 
-// newRoleRigWith is a roleRig on a server of its own, its session registry opened with options. Its
-// outbox client holds its keeper off (keeperHeld), so a row's narrowAgentCapture stands.
-func newRoleRigWith(t *testing.T, options ...session.SessionRegistryOption) *roleRig {
+// newRoleRigWithClient lets a row drive the client's acknowledgement clock instead of the wall clock.
+func newRoleRigWithClient(t *testing.T, acknowledgement *clocktest.Fake) *roleRig {
 	t.Helper()
 	_, url := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithKeepInterval(keeperHeld))
+	clientOptions := []bus.ConnectOption{bus.WithKeepInterval(keeperHeld)}
+	if acknowledgement != nil {
+		clientOptions = append(clientOptions, bus.WithPublishAcknowledgementClock(acknowledgement))
+	}
+	client, err := bus.ConnectOwningStream([]string{url}, clientOptions...)
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
 	t.Cleanup(client.Close)
-	return newRoleRigOn(t, url, client, testnats.Connect(t, url), options...)
+	return newRoleRigOn(t, url, client, testnats.Connect(t, url))
+}
+
+// expireForwardAck advances the bus's acknowledgement clock, leaving the flush on its own clock.
+func expireForwardAck(t *testing.T, ack *clocktest.Fake) {
+	t.Helper()
+	deadline := ack.Now().Add(roleForwardAckTimeout)
+	ack.AwaitArmedAt(t, "the forward's acknowledgement deadline", deadline)
+	ack.Set(deadline.Add(-time.Nanosecond))
+	ack.AwaitArmedAt(t, "the forward still waiting one tick before its acknowledgement deadline", deadline)
+	ack.Set(deadline)
 }
 
 // newRoleRigOn is a roleRig on the server at url, with client as the outbox's client and conn as
@@ -201,24 +205,6 @@ func (r *roleRig) sessionBucket(t *testing.T) (natsgo.KeyValue, error) {
 		t.Fatalf("open JetStream: %v", err)
 	}
 	return js.KeyValue(bus.SessionBucket)
-}
-
-// waitForExpiredSessionKey waits until the session bucket holds no record for sessionID: its
-// maximum age passed and the server dropped the record it stored. Its one bound is the test
-// binary's deadline.
-func (r *roleRig) waitForExpiredSessionKey(t *testing.T, sessionID string) {
-	t.Helper()
-	kv, err := r.sessionBucket(t)
-	if err != nil {
-		t.Fatalf("open the session bucket: %v", err)
-	}
-	waitFor(t, fmt.Sprintf("%s's record to leave the session bucket past its maximum age", sessionID), func() bool {
-		_, err := kv.Get(sessionID)
-		if err != nil && !errors.Is(err, natsgo.ErrKeyNotFound) {
-			t.Fatalf("read %s's record: %v", sessionID, err)
-		}
-		return errors.Is(err, natsgo.ErrKeyNotFound)
-	})
 }
 
 // roleClaim is role's claim as the role bucket holds it now.
@@ -806,14 +792,33 @@ func TestARoleRouteIsJudgedOnTheWindowsDispatchWasGiven(t *testing.T) {
 // on the next event routed to the role (dispatch://INFRA-392).
 func TestARoleRouteWhoseHolderSessionKeyExpiredKeepsTheClaimAndStaysPending(t *testing.T) {
 	t.Parallel()
-	rig := newRoleRigWithSessionMaxAge(t, time.Second)
+	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_expired"
 	rig.claimRegisteredAt(t, role, holder, session.LiveWindow+time.Minute)
 	claimedAt := rig.roleClaim(t, role).ClaimedAt
 	rig.silent(t, contracts.RoleTopicPrefix+role)
 	rig.silent(t, contracts.LegacyAgentSubject(holder))
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
-	rig.waitForExpiredSessionKey(t, holder)
+	js, err := rig.conn.JetStream(testnats.MaxWait(t))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	kv, err := js.KeyValue(bus.SessionBucket)
+	if err != nil {
+		t.Fatalf("open the session bucket: %v", err)
+	}
+	if _, err := kv.Get(holder); err != nil {
+		t.Fatalf("read the session record before expiry: %v", err)
+	}
+	// Expiry removes the record without leaving a delete marker.
+	if err := js.PurgeStream("KV_"+bus.SessionBucket, &natsgo.StreamPurgeRequest{
+		Subject: "$KV." + bus.SessionBucket + "." + holder,
+	}); err != nil {
+		t.Fatalf("remove the expired session record: %v", err)
+	}
+	if _, err := kv.Get(holder); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("the purged record reads %v, want key not found", err)
+	}
 
 	holding(t, rig.deps()).scan(context.Background(), unfenced{})
 
@@ -965,15 +970,26 @@ func TestAForwardHeldByItsHoldersResolutionIsAWaitNotAFailure(t *testing.T) {
 // acknowledges the forward - and no session answers one.
 func TestAForwardTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
 	t.Parallel()
-	rig := newRoleRig(t)
+	ack := clocktest.New(time.Time{})
+	rig := newRoleRigWithClient(t, ack)
 	const role, holder = "reviewer", "ses_unacknowledged"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+role)
 	rig.narrowAgentCapture(t)
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 	deps, registry := rig.countingDeps(t)
+	topicAck := make(chan error, 1)
+	deps.Publisher = reportTopicAck{Publisher: rig.client, result: topicAck}
 
-	holding(t, deps).scan(context.Background(), unfenced{})
+	// Drive the deadline while the scan is waiting for the stream's answer.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := holding(t, deps)
+	done := make(chan struct{})
+	go func() { defer close(done); outbox.scan(ctx, unfenced{}) }()
+	awaitTopicAck(t, topicAck)
+	expireForwardAck(t, ack)
+	testwait.Receive(t, "the scan after its forward acknowledgement deadline", done)
 
 	if publishedAt(t, rig.database, event.ID) != nil {
 		t.Fatal("the event whose role forward the stream did not acknowledge was published")
@@ -984,6 +1000,43 @@ func TestAForwardTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
 	}
 	if strings.Contains(body, `reason="failed"`) {
 		t.Fatalf("/metrics body = %q counts a forward NATS took as a publish failure", body)
+	}
+}
+
+// reportTopicAck observes the issue topic's ordinary send before the test expires a role
+// forward. The same clock drives both waits, but only the forward should time out.
+type reportTopicAck struct {
+	Publisher
+	result chan<- error
+}
+
+func (p reportTopicAck) WindowUntil(deadline func() time.Time) bus.Sender {
+	return reportedTopicWindow{Sender: p.Publisher.WindowUntil(deadline), result: p.result}
+}
+
+type reportedTopicWindow struct {
+	bus.Sender
+	result chan<- error
+}
+
+func (w reportedTopicWindow) PublishAsync(item contracts.Envelope) <-chan error {
+	answer := w.Sender.PublishAsync(item)
+	relayed := make(chan error, 1)
+	go func() {
+		err := <-answer
+		relayed <- err
+		select {
+		case w.result <- err:
+		default:
+		}
+	}()
+	return relayed
+}
+
+func awaitTopicAck(t *testing.T, result <-chan error) {
+	t.Helper()
+	if err := testwait.Receive(t, "the stream acknowledging the issue topic before the forward's deadline", result); err != nil {
+		t.Fatalf("publish to the issue topic: %v", err)
 	}
 }
 
@@ -2727,7 +2780,8 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 func TestAFallbackCopyTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithTransactionTracking(context.Background())
-	rig := newRoleRig(t)
+	ack := clocktest.New(time.Time{})
+	rig := newRoleRigWithClient(t, ack)
 	const role, holder = "reviewer", "ses_fallback_unacknowledged"
 	roleTopic := contracts.RoleTopicPrefix + role
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
@@ -2739,7 +2793,13 @@ func TestAFallbackCopyTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T
 	commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 	rig.narrowAgentCapture(t)
 
-	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+	holderID := holdingProcess(t, deps.Store)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); publishFallbackCopies(ctx, deps, unfenced{}, holderID) }()
+	expireForwardAck(t, ack)
+	testwait.Receive(t, "the fallback pass after its forward acknowledgement deadline", done)
 
 	if held := readHeldCopy(t, rig.database, commentID, roleTopic); held.published || held.settled {
 		t.Fatalf("the copy whose forward the stream did not acknowledge is published=%v settled=%v, want it left unsettled for a later pass",

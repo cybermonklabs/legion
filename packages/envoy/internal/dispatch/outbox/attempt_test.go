@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -88,22 +89,18 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	unreachable := fmt.Errorf("bus: %w: waiting for NATS to reconnect: context deadline exceeded", bus.ErrUnavailable)
 	publisher := &countingPublisher{fail: unreachable}
 	outbox := outboxOn(database, publisher, broker)
+	timers := clocktest.New(time.Time{})
+	outbox.clock = timers
 	atRest := restReading(t, outbox)
 	defer runOn(t, outbox)()
 
 	waitFor(t, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
-	// The hold's first scan and the LISTEN connection's catch-up each wake one scan; after them
-	// nothing does. The window below starts once both are over, as the outbox reports it
-	// (restReading), not after a span of time a slow LISTEN dial can outlast.
+	// Read after both the hold's scan and the LISTEN connection's catch-up scan have returned.
 	atRest("the outbox resting after the hold's first scan and the LISTEN connection's catch-up")
-	settled := len(publisher.attempted())
-	// A lower bound on quiet, not an upper bound on work: nothing is due and no wake comes, so a
-	// send in this second is one made with no wake, and load can only make the window see less.
-	time.Sleep(time.Second)
-	topics := publisher.attempted()
-	if len(topics) != settled {
-		t.Fatalf("sent %d more envelopes with no wake while NATS was unreachable", len(topics)-settled)
+	if armed := timers.Armed(); len(armed) != 0 {
+		t.Fatalf("the released batch armed %v while NATS was unreachable, want only a wake to scan again", armed)
 	}
+	topics := publisher.attempted()
 	firstHeads := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, "notifications.agent.writer"}
 	for index, topic := range topics {
 		if topic != firstHeads[index%len(firstHeads)] {

@@ -7,10 +7,9 @@ Treat the numbers as order-of-magnitude figures.
 
 `TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency` (`throughput_test.go`):
 
-- A real Postgres (pgvector pg16) and a real JetStream server.
-- The outbox's bus client reaches NATS through a TCP proxy that holds each chunk for half the
-  round trip, in order (`testnats.StartProxy` with `testnats.ProxyLatency`), as a remote NATS hub
-  does.
+- The test uses real Postgres and JetStream. The outbox sends through a TCP proxy.
+- Each chunk waits for half of the configured 50 ms or 150 ms round trip on the proxy's fake
+  clock. The test moves that clock to the next pending proxy deadline.
 - Load: 200 events across 20 issues, each routed to `role:reviewer`, whose holder is a
   self-subscribed session the stream acknowledges every forward for. Half are human replies to a
   session's message, which take an author lookup and a third destination. That is 500
@@ -25,16 +24,13 @@ Treat the numbers as order-of-magnitude figures.
   at 150 ms for the one-window design.
 - The single-issue burst: 100 events on one issue, every one of them bound for the same three
   destinations.
-- The rate is (events marked published) / (time from start until none is left).
-- The peak reading is the most sends the outbox held outstanding at any one moment over the
-  drain, counted by a wrapper around every window its batches publish through
-  (`outstandingSends`).
-- Every reading below was taken one case at a time. The test's cases now run beside each other
-  and beside the package's other tests (`outboxTestParallelism`), so a reading to compare with
-  these comes from the test run alone, one case at a time:
-  `go test -run TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency -parallel 1`.
+- The test logs the drain time and rate on the proxy clock, not the wall clock. Do not compare
+  these numbers with the historical wall-time measurements below.
+- A wrapper around each publish window counts unanswered sends (`outstandingSends`). The backlog
+  cases hold answers until 20 sends are outstanding. A drain that waits for its answers before it
+  issues enough sends cannot open this gate. The single-issue burst has no gate.
 
-## Results
+## Historical wall-time results
 
 | Design | 50 ms idle | 50 ms busy | 150 ms idle | 150 ms busy | 50 ms burst | 150 ms burst |
 |---|---|---|---|---|---|---|
@@ -45,10 +41,9 @@ Treat the numbers as order-of-magnitude figures.
 | Chains, role routes forwarded to the holder with a receipt (#2395, two runs on 2026-10-27) | 196-199 ev/s | 171-188 ev/s | 73-74 ev/s | 71-72 ev/s | 17.3-17.6 ev/s | 6.2 ev/s |
 | The same, the #2395 head `891e854b`, same machine as the harness-commit row | 175.5 ev/s | 183.9 ev/s | 71.3 ev/s | 70.5 ev/s | 16.7 ev/s (100 in 5.99 s) | 6.2 ev/s (100 in 16.2 s) |
 
-The test requires at least 20 sends outstanding at the peak in the backlog cases
-(`minOutstanding`) and asserts no rate; the burst cases, where one issue is one chain, assert
-neither. Both readings are logged, and `throughput_test.go` carries the peaks measured and the
-readings that floor was drawn from. Chains cost one round trip per event per destination of one
+The results above predate the fake clock and the answer gate. The test checks the backlog's peak
+count, and checks the order and destination counts in every case. It asserts no rate.
+Chains cost one round trip per event per destination of one
 issue: a batch of the backlog holds five events of each issue, so it takes five round trips, and
 a burst on one issue takes one round trip per event, which is the price of each destination
 taking an issue's events in order whatever fails (`planChains`). With role routes forwarded to

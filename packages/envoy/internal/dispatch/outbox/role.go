@@ -26,8 +26,6 @@ import (
 // and nothing else: the batch waiting on it settles and releases every other owner as their own
 // sends come in, and the batches beside it read and publish the owners it does not hold
 // (Outbox.scan, lanes).
-//
-// An outbox waits this long unless a test set Deps.forwardAckWait (Deps.forwardAckTimeout).
 const roleForwardAckTimeout = 5 * time.Second
 
 // errNoRoleReaders is a role route's holder resolved with no role-claim or session reader in Deps.
@@ -812,7 +810,7 @@ func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envel
 	}
 	item.DedupeKey = contracts.RoleForwardDedupeKey(item, f.holder)
 	subject := contracts.LegacyAgentSubject(f.holder)
-	ackWindow := deps.forwardAckTimeout()
+	ackWindow := roleForwardAckTimeout
 	stored := sender.Request(subject, item, bus.RequestOptions{
 		MsgID:   bus.ForwardMsgID(item.DedupeKey, subject),
 		Timeout: ackWindow,

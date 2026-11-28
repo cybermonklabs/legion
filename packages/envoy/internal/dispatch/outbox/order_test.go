@@ -18,6 +18,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -169,7 +170,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	reader := testnats.Connect(t, url)
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -197,16 +198,18 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 		})
 	}
 	first := write("first")
-	stop := runOutbox(t, database, client, broker)
+	stop, retryNow := stageBlockedRetry(t, wiredOutbox(t, database, client, client, broker), first.ID, nil)
 	defer stop()
-	waitFor(t, "the first event backed off for S's subject", func() bool {
-		_, attempts := publishedDestinations(t, database, first.ID)
-		return attempts > 0
-	})
 	if _, err := js.UpdateStream(&capturing); err != nil {
 		t.Fatalf("let the stream capture agent subjects again: %v", err)
 	}
 	second, third := write("second"), write("third")
+	topic := "notifications.dispatch.issue.T-1.message.created"
+	waitFor(t, "the later events on the topic family while the session route is backed off", func() bool {
+		bySubject, _ := streamOrder(t, reader)
+		return slices.Contains(bySubject[topic], second.ID) && slices.Contains(bySubject[topic], third.ID)
+	})
+	retryNow(first.ID, second.ID, third.ID)
 
 	waitFor(t, "all three events published", func() bool {
 		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil &&
@@ -217,7 +220,6 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 			t.Fatalf("event %d counted %d attempts, want none: it only waited on the first event", event.ID, attempts)
 		}
 	}
-	topic := "notifications.dispatch.issue.T-1.message.created"
 	session := contracts.LegacyAgentSubject("S")
 	order := map[string][]int64{}
 	sequence := map[string]uint64{}
@@ -252,7 +254,8 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 
 func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	t.Parallel()
-	rig := newRoleRig(t)
+	ack := clocktest.New(time.Time{})
+	rig := newRoleRigWithClient(t, ack)
 	const role, holder = "reviewer", "S"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+role)
@@ -278,7 +281,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 		t.Fatalf("subscribe S: %v", err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	if err := rig.conn.Flush(); err != nil {
+	if err := rig.conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush S's subscription: %v", err)
 	}
 	taken := func() []int64 {
@@ -293,12 +296,13 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 			Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: body},
 		})
 	}
-	stop := runOutbox(t, rig.database, rig.client, rig.broker)
-	defer stop()
-	waitFor(t, "the first event backed off for S", func() bool {
-		_, attempts := publishedDestinations(t, rig.database, first.ID)
-		return attempts > 0
+	topicAck := make(chan error, 1)
+	publisher := reportTopicAck{Publisher: rig.client, result: topicAck}
+	stop, retryNow := stageBlockedRetry(t, wiredOutbox(t, rig.database, rig.client, publisher, rig.broker), first.ID, func() {
+		awaitTopicAck(t, topicAck)
+		expireForwardAck(t, ack)
 	})
+	defer stop()
 	second, third := write("second"), write("third")
 
 	topic := "notifications.dispatch.issue.T-1.message.created"
@@ -318,6 +322,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 
 	capturing()
+	retryNow(first.ID, second.ID, third.ID)
 	waitFor(t, "all three events published", func() bool {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil &&
 			publishedAt(t, rig.database, third.ID) != nil
@@ -340,6 +345,35 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 	if want := []int64{first.ID, second.ID, third.ID}; !slices.Equal(order, want) {
 		t.Fatalf("S took events %v, want %v: each only after the one before it", order, want)
+	}
+}
+
+// stageBlockedRetry records a failed first scan, then keeps that row backed off while later
+// events arrive. Run takes its own hold with the same instance after the staged scan returns.
+func stageBlockedRetry(t *testing.T, outbox *Outbox, id int64, driveAck func()) (stop func(), retryNow func(ids ...int64)) {
+	t.Helper()
+	database := outbox.deps.Store
+	check := recordAttemptMoment(t, database)
+	holdRow(t, database, outbox.instance)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	scanned := make(chan scanEnd, 1)
+	go func() { scanned <- outbox.scan(ctx, unfenced{}) }()
+	if driveAck != nil {
+		driveAck()
+	}
+	testwait.Receive(t, "the initial scan recording the failed attempt", scanned)
+	check(id)
+	// A real LISTEN wake after the one-second back-off must not retry the first event while
+	// the test arranges the later events.
+	backOffIn(t, database, id, 1, stagedAhead)
+	timers := clocktest.New(time.Time{})
+	outbox.clock = timers
+	atRest := restReading(t, outbox)
+	return runOn(t, outbox), func(ids ...int64) {
+		t.Helper()
+		atRest("the holder resting after reading the later events against the first's back-off")
+		plantRetry(t, database, timers, ids...)
 	}
 }
 
@@ -546,14 +580,12 @@ func keepsTheOrderOnTheSessionsOwnSubject(t *testing.T) {
 	rig.refuse(t, contracts.AgentTopicPrefix)
 	person := model.Actor{Kind: "user", ID: "alice"}
 	first := rig.write(t, person, "first, by a person")
-	stop := runOutbox(t, rig.database, rig.client, rig.broker)
+	stop, retryNow := stageBlockedRetry(t, wiredOutbox(t, rig.database, rig.client, rig.client, rig.broker), first.ID, nil)
 	defer stop()
-	waitFor(t, "the first event backed off for S's subject", func() bool {
-		_, attempts := publishedDestinations(t, rig.database, first.ID)
-		return attempts > 0
-	})
 	rig.captureAgain(t)
 	second := rig.write(t, person, "second, by a person")
+	waitFor(t, "the second event settled behind the first", func() bool { return rig.settled(t, second.ID) })
+	retryNow(first.ID, second.ID)
 	waitFor(t, "both events published", func() bool {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
 	})
@@ -1240,34 +1272,24 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 			for range published {
 				seeded = append(seeded, tc.seed(t, database, broker))
 			}
-			updates := func() int64 {
+			settled := func() int64 {
+				// A backend's pending counters are local to that connection. The scan has
+				// returned, so every connection that could have written is idle.
+				func() {
+					for _, conn := range database.Pool.AcquireAllIdle(ctx) {
+						defer conn.Release()
+						// Force a flush when this statement's transaction ends.
+						if _, err := conn.Exec(ctx, `select pg_stat_force_next_flush()`); err != nil {
+							t.Fatalf("flush this session's statistics: %v", err)
+						}
+					}
+				}()
 				var count int64
-				if err := database.Pool.QueryRow(ctx, `select pg_stat_force_next_flush()`).Scan(new(any)); err != nil {
-					t.Fatalf("flush this session's statistics: %v", err)
-				}
 				if err := database.Pool.QueryRow(ctx,
 					`select n_tup_upd from pg_stat_user_tables where relid = 'events'::regclass`).Scan(&count); err != nil {
 					t.Fatalf("read the events table's updates: %v", err)
 				}
 				return count
-			}
-			// A backend reports its statistics within a second of going idle: read the count once
-			// it has held still that long. The asking's one bound is the test binary's deadline less
-			// testwait's margin; its first read is the count to compare, each later read 1.5 s after
-			// the one before, and a give-up prints the last count read.
-			settled := func() int64 {
-				var last int64
-				first := true
-				return testwait.UntilPolling(t, 1500*time.Millisecond, "the events table's update count to hold still for 1.5 s", func() (int64, bool) {
-					now := updates()
-					if first {
-						first, last = false, now
-						return now, false
-					}
-					held := now == last
-					last = now
-					return now, held
-				})
 			}
 			before := settled()
 			holding(t, withHeldRoles(Deps{Store: database, Publisher: &recordingPublisher{}})).scan(ctx, unfenced{})
@@ -1279,7 +1301,6 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 					t.Fatalf("event %d reached %v, want %d destinations", event.ID, destinations, tc.destinations)
 				}
 			}
-			waitFor(t, "the scan's updates reported", func() bool { return updates()-before >= published })
 			if written := settled() - before; written != published {
 				t.Fatalf("publishing %d events of %d destinations each updated events %d times, want %d: one write per event",
 					published, tc.destinations, written, published)
@@ -1628,9 +1649,19 @@ func someIDs(ids []int64) string {
 // that runs this row, so the row asserts the counts and only logs the time.
 func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 	t.Parallel()
-	small := measureClaim(t, 5000)
-	big := measureClaim(t, 20000)
-	costs := []claimCost{small, big}
+	costs := make([]claimCost, 2)
+	t.Run("measure", func(t *testing.T) {
+		for i, rows := range []int{5000, 20000} {
+			t.Run(strconv.Itoa(rows), func(t *testing.T) {
+				t.Parallel()
+				costs[i] = measureClaim(t, rows)
+			})
+		}
+	})
+	if t.Failed() {
+		return
+	}
+	small, big := costs[0], costs[1]
 	for _, cost := range costs {
 		t.Logf("with %d backed-off events and %d pending commands the claim read %d rows from events, %d of them sequentially, fetched %d blocks from the indexes of events, and returned %d of the %d events waiting; it ran in %.3f ms at its fastest of %d:\n%s",
 			cost.backlog, cost.backlog, cost.rowsRead, cost.seqRead, cost.indexBlocks, len(cost.kept), len(cost.unpublished),

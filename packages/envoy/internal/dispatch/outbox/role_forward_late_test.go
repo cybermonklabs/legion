@@ -85,7 +85,7 @@ func TestAForwardStoredAfterItsFenceAndAckWindowIsNotADelivery(t *testing.T) {
 	// The role moves to the next holder while the forward waits, and the forward is stored past
 	// its resolution's fence and acknowledgement window.
 	rig.claim(t, role, second, session.SessionEntry{SelfSubscribed: true})
-	offset.Store(int64(roles.ForwardFenceAge + deps.forwardAckTimeout() + 10*time.Minute))
+	offset.Store(int64(roles.ForwardFenceAge + roleForwardAckTimeout + 10*time.Minute))
 	close(publisher.release)
 	select {
 	case <-scanned:

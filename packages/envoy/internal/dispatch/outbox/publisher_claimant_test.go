@@ -571,7 +571,7 @@ func TestRunRecordsTheClaimantRouteSoARetryDoesNotRepublishIt(t *testing.T) {
 	// The asker's follower route comes after the claimant's, so failing it ends the first attempt
 	// with the claimant already reached.
 	publisher := &recordingPublisher{failTopic: askerTopic}
-	stop := run(t, database, publisher, broker)
+	stop, retryNow := startRetryTest(t, outboxOn(database, publisher, broker))
 	defer stop()
 
 	waitFor(t, "the first attempt backed off after reaching the claimant", func() bool {
@@ -582,6 +582,7 @@ func TestRunRecordsTheClaimantRouteSoARetryDoesNotRepublishIt(t *testing.T) {
 		t.Fatalf("published_destinations after the first attempt = %#v, want the issue topic and the claimant", destinations)
 	}
 	publisher.setFailTopic("")
+	retryNow(event.ID)
 	waitFor(t, "the retry published the event", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -451,9 +452,9 @@ func (p *answeredOnce) Probe(time.Duration) error {
 //
 // The watcher runs alone, on an outbox whose publisher has no NATS (answeredOnce), with no
 // connection-change channel: the first probe, due probeTimeout after began, answers, and every
-// probe after it fails. The pass's return is sent half a second after that answer, so after the
-// watcher read it, and before the next probe is due, 2 x probeTimeout after began, so only the
-// return can bring on the second probe. Each subtest is one value of the failed the pass reports.
+// probe after it fails. Once the first answer is in and the watcher is blocked again, return the
+// pass without moving the clock to the second probe's due time. Only the return can cause that
+// probe. Each subtest is one value of the failed the pass reports.
 func TestAnExpiryPassThatReturnsAfterAnAnsweredProbeIsProbedAgain(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -465,35 +466,36 @@ func TestAnExpiryPassThatReturnsAfterAnAnsweredProbeIsProbedAgain(t *testing.T) 
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			publisher := &answeredOnce{answered: make(chan struct{})}
-			outbox := New(Deps{Publisher: publisher})
-			pass, endPass := context.WithCancel(context.Background())
-			defer endPass()
-			returned := make(chan bool, 1)
-			watched := make(chan expiryPassEnd, 1)
-			began := time.Now()
-			go func() { watched <- outbox.watchExpiryPass(context.Background(), nil, returned, endPass, began) }()
+			testwait.Bubble(t, func(t testing.TB) {
+				publisher := &answeredOnce{answered: make(chan struct{})}
+				outbox := New(Deps{Publisher: publisher})
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				pass, endPass := context.WithCancel(ctx)
+				defer endPass()
+				returned := make(chan bool, 1)
+				watched := make(chan expiryPassEnd, 1)
+				began := time.Now()
+				go func() { watched <- outbox.watchExpiryPass(ctx, nil, returned, endPass, began) }()
 
-			testwait.Receive(t, "the first probe, due probeTimeout after the pass began, answering", publisher.answered)
-			// The watcher reads that answer at once; the return comes after it.
-			time.Sleep(500 * time.Millisecond)
-			if since := time.Since(began); since >= 2*probeTimeout {
-				t.Fatalf("the pass returns %s after it began, at or past the second probe's due time (%s): the return no longer brings that probe on by itself",
-					since.Round(time.Millisecond), 2*probeTimeout)
-			}
-			returned <- row.failed
-			end := testwait.Receive(t, "the watcher's answer once the pass returned", watched)
-
-			if end != expiryPassSilent {
-				t.Fatalf("the watcher answered %d, want expiryPassSilent (%d); it made %d probes, want 2: the one due probeTimeout after the pass began, and the one as the pass returned, which failed",
-					end, expiryPassSilent, publisher.probes.Load())
-			}
-			if probes := publisher.probes.Load(); probes != 2 {
-				t.Fatalf("the watcher made %d probes, want 2: the one due probeTimeout after the pass began, and the one as the pass returned", probes)
-			}
-			if pass.Err() == nil {
-				t.Fatal("the watcher answered silent and left the pass's context standing, want it ended")
-			}
+				testwait.Receive(t, "the first probe answering", publisher.answered)
+				synctest.Wait()
+				if probes := publisher.probes.Load(); probes != 1 {
+					t.Fatalf("the watcher made %d probes before the pass returned, want only the first probe", probes)
+				}
+				returned <- row.failed
+				end := testwait.Receive(t, "the watcher's answer once the pass returned", watched)
+				if end != expiryPassSilent {
+					t.Fatalf("the watcher answered %d, want expiryPassSilent (%d); it made %d probes, want 2",
+						end, expiryPassSilent, publisher.probes.Load())
+				}
+				if probes := publisher.probes.Load(); probes != 2 {
+					t.Fatalf("the watcher made %d probes, want 2: the scheduled probe and the one at the pass's return", probes)
+				}
+				if pass.Err() == nil {
+					t.Fatal("the watcher answered silent and left the pass's context standing, want it ended")
+				}
+			})
 		})
 	}
 }

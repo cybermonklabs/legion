@@ -13,11 +13,13 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // heldPublisher answers no publish until the test answers it, as NATS answers a publish a round
@@ -256,7 +258,7 @@ func TestABacklogPublishedAcrossANATSOutageKeepsItsOrder(t *testing.T) {
 	const issues, count = 2, 20
 	_, url := testnats.Start(t)
 	proxy := testnats.StartProxy(t, url)
-	client, err := bus.ConnectOwningStream([]string{proxy.URL()})
+	client, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithPromptReconnect())
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
@@ -272,20 +274,33 @@ func TestABacklogPublishedAcrossANATSOutageKeepsItsOrder(t *testing.T) {
 	const wantOnDestinations, wantKept = count + count/2, count
 
 	proxy.Cut()
-	stop := runOutbox(t, database, client, broker)
+	waitFor(t, "the outbox's client reading disconnected", func() bool { return !client.Connected() })
+	timers := clocktest.New(time.Time{})
+	outbox := wiredOutbox(t, database, client, client, broker)
+	outbox.clock = timers
+	standby := make(chan struct{}, 1)
+	outbox.afterStandbyWait = func() {
+		select {
+		case standby <- struct{}{}:
+		default:
+		}
+	}
+	stop := runOn(t, outbox)
 	defer stop()
-	// Long enough for the outbox to have tried, and failed, more than one send.
-	time.Sleep(12 * time.Second)
+	testwait.Receive(t, "the standby waiting while NATS is disconnected", standby)
+	if armed := timers.Armed(); len(armed) != 0 || outbox.Publishing() {
+		t.Fatalf("while cut, standby armed %v and Publishing() is %v, want neither", armed, outbox.Publishing())
+	}
 	if left := unpublishedCount(t, database); left != count {
 		t.Fatalf("%d events were marked published while NATS was down", count-left)
 	}
 	proxy.Restore()
-	restarted := time.Now()
+	waitFor(t, "the outbox's client reconnected", client.Connected)
 
 	waitFor(t, "the backlog published once NATS is back", func() bool {
+		fireNext(timers)
 		return unpublishedCount(t, database) == 0
 	})
-	t.Logf("the backlog of %d events was published %s after NATS came back", count, time.Since(restarted).Round(time.Millisecond))
 	assertStreamInOrderPerDestination(t, url, wantOnDestinations)
 	assertKeptLaneInOrder(t, url, "reviewer", seeded, wantKept)
 }
@@ -533,11 +548,7 @@ func TestAnOutboxThatDiesBetweenAckAndMarkPublishesAgainWithoutDuplicates(t *tes
 	}
 
 	stop := runOutbox(t, database, client, broker)
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
-	defer reader.Close()
+	reader := testnats.Connect(t, url)
 	waitFor(t, "every destination and the kept lane acknowledged", func() bool {
 		_, all := streamOrder(t, reader)
 		return len(all) == wantOnDestinations+wantKept
@@ -546,26 +557,51 @@ func TestAnOutboxThatDiesBetweenAckAndMarkPublishesAgainWithoutDuplicates(t *tes
 	if left := unpublishedCount(t, database); left != count {
 		t.Fatalf("%d events were marked published though every mark failed", count-left)
 	}
-	// What a process killed mid-batch leaves: the hold's row still naming it, lapsing a TTL after
-	// its last renewal.
+	// Keep the dead holder's row live until the standby has read it and armed its lapse timer.
 	dead := uuid.New()
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into duty_holds (name, holder, expires_at) values ($1, $2, now() + make_interval(secs => $3))
-	`, publisherHold, dead, publisherHoldOptions.TTL.Seconds()); err != nil {
+	`, publisherHold, dead, stagedAhead.Seconds()); err != nil {
 		t.Fatalf("leave the dead holder's row: %v", err)
 	}
-	died := time.Now()
-
 	if _, err := database.Pool.Exec(context.Background(), `drop trigger refuse_mark on events`); err != nil {
 		t.Fatalf("let the mark succeed: %v", err)
 	}
-	stop = runOutbox(t, database, client, broker)
+	timers := clocktest.New(time.Time{})
+	standby := wiredOutbox(t, database, client, client, broker)
+	standby.clock = timers
+	stop = runOn(t, standby)
 	defer stop()
+	lapseTimer := testwait.Until(t, "the standby's timer for the still-live dead holder", func() (time.Time, bool) {
+		armed := timers.Armed()
+		if standby.Publishing() {
+			t.Fatal("the next holder took the publisher hold while the dead holder's row was live")
+		}
+		if len(armed) == 0 || !armed[0].After(timers.Now().Add(publisherHoldOptions.TTL)) {
+			return time.Time{}, false
+		}
+		return armed[0], true
+	})
+	if left := unpublishedCount(t, database); left != count || standby.Publishing() {
+		t.Fatalf("before the lapse: %d events unpublished, publishing=%v; want %d unpublished and no publisher",
+			left, standby.Publishing(), count)
+	}
+	var lapsedAt time.Time
+	if err := database.Pool.QueryRow(t.Context(), `
+		update duty_holds set expires_at = now() where name = $1 and holder = $2 returning expires_at
+	`, publisherHold, dead).Scan(&lapsedAt); err != nil {
+		t.Fatalf("make the dead holder's row lapse: %v", err)
+	}
+	timers.Set(lapseTimer)
 	waitFor(t, "the backlog marked published by the next holder", func() bool {
 		return unpublishedCount(t, database) == 0
 	})
-	if took := time.Since(died); took < publisherHoldOptions.TTL-time.Second {
-		t.Fatalf("the next holder published %s after the death, before the dead holder's hold lapsed", took.Round(time.Millisecond))
+	var firstPublished time.Time
+	if err := database.Pool.QueryRow(t.Context(), `select min(published_at) from events`).Scan(&firstPublished); err != nil {
+		t.Fatalf("read the first publication: %v", err)
+	}
+	if firstPublished.Before(lapsedAt) {
+		t.Fatalf("first publication at %s preceded the dead holder's lapse at %s", firstPublished, lapsedAt)
 	}
 	assertStreamInOrderPerDestination(t, url, wantOnDestinations)
 	assertKeptLaneInOrder(t, url, "reviewer", seeded, wantKept)

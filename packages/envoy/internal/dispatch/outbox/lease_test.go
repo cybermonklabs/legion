@@ -32,6 +32,78 @@ import (
 // stagedAhead leaves a row live for the whole test, until the test makes it due.
 const stagedAhead = 24 * time.Hour
 
+// recordAttemptMoment records the same database transaction moment that the back-off uses.
+func recordAttemptMoment(t *testing.T, database *store.Store) func(id int64) {
+	t.Helper()
+	if _, err := database.Pool.Exec(t.Context(), `
+		create table test_outbox_attempts (id bigint primary key, attempted_at timestamptz not null);
+		create function test_outbox_attempt() returns trigger language plpgsql as $$
+		begin
+			insert into test_outbox_attempts values (new.id, now())
+				on conflict (id) do update set attempted_at = excluded.attempted_at;
+			return new;
+		end $$;
+		create trigger test_outbox_attempt after update on events for each row
+			when (new.attempt_count > old.attempt_count) execute function test_outbox_attempt();
+	`); err != nil {
+		t.Fatalf("record the database moment of each failed attempt: %v", err)
+	}
+	return func(id int64) {
+		t.Helper()
+		var attempt int
+		var attemptedAt, due time.Time
+		if err := database.Pool.QueryRow(t.Context(), `
+			select e.attempt_count, a.attempted_at, e.next_attempt_at
+			from events e join test_outbox_attempts a using (id) where e.id = $1
+		`, id).Scan(&attempt, &attemptedAt, &due); err != nil {
+			t.Fatalf("read event %d's failed attempt and back-off: %v", id, err)
+		}
+		if want := attemptedAt.Add(retry.Delay(attempt)); attempt != 1 || !due.Equal(want) {
+			t.Fatalf("event %d has attempt %d due at %s, want attempt 1 due at %s (attempt's database moment + retry delay)",
+				id, attempt, due, want)
+		}
+	}
+}
+
+// startRetryTest holds the retry timer until the caller has repaired the failed destination.
+func startRetryTest(t *testing.T, outbox *Outbox) (stop func(), retryNow func(id int64)) {
+	t.Helper()
+	database := outbox.deps.Store
+	check := recordAttemptMoment(t, database)
+	timers := clocktest.New(time.Time{})
+	outbox.clock = timers
+	atRest := restReading(t, outbox)
+	return runOn(t, outbox), func(id int64) {
+		t.Helper()
+		atRest("the holder resting after recording the failed attempt")
+		check(id)
+		plantRetry(t, database, timers, id)
+	}
+}
+
+// plantRetry makes the failed event and any rows it blocked due on the database, then fires the
+// retry timer that the resting holder already armed. Updating an event does not wake the holder.
+func plantRetry(t *testing.T, database *store.Store, timers *clocktest.Fake, ids ...int64) {
+	t.Helper()
+	if _, err := database.Pool.Exec(t.Context(), `update events set next_attempt_at = now() where id = any($1)`, ids); err != nil {
+		t.Fatalf("make events %v due: %v", ids, err)
+	}
+	waitFor(t, fmt.Sprintf("the holder's armed retry timer for events %v", ids), func() bool {
+		return fireNext(timers)
+	})
+}
+
+// fireNext moves to precisely the earliest pending deadline, if there is one.
+func fireNext(timers *clocktest.Fake) bool {
+	_, moved := timers.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+		if len(armed) == 0 {
+			return now, false
+		}
+		return armed[0], true
+	})
+	return moved
+}
+
 // process is one envoy-dispatch process's outbox under test: its own pool, its own events broker
 // and its own NATS client, which counts every envelope it sends.
 type process struct {
@@ -871,6 +943,16 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 	database := storetest.Open(t)
 	publisher := &reconnectedQuietly{}
 	outbox := New(Deps{Store: database, Publisher: publisher})
+	epoch := time.Time{}
+	timers := clocktest.New(epoch)
+	outbox.clock = timers
+	waiting := make(chan struct{}, 1)
+	outbox.afterServeWait = func() {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	hold, _ := outbox.tryHold(ctx)
@@ -881,15 +963,21 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 
 	ended := make(chan holdEnd, 1)
 	go func() { ended <- outbox.serve(ctx, hold) }()
-	time.Sleep(200 * time.Millisecond)
+	testwait.Receive(t, "the disconnected holder entering its serve wait", waiting)
+	deadline := epoch.Add(natsLossGrace)
+	timers.AwaitArmedAt(t, "the end of the NATS loss grace", deadline)
+	timers.Set(deadline.Add(-time.Nanosecond))
+	select {
+	case end := <-ended:
+		t.Fatalf("serve ended %s before the grace expired", end)
+	default:
+	}
 	if outbox.claims.Load() != 0 {
 		t.Fatal("the holder scanned while its client read disconnected")
 	}
 	publisher.connected.Store(true)
-	// The holder reads its client's status as the grace ends, natsLossGrace after serve began,
-	// however late a loaded machine runs that: wait for what it does then - a scan, or the end of
-	// serving - rather than for a span of time. Serve ending afterwards for any reason but ctx is
-	// caught below, where it must end with stopping.
+	timers.Advance(time.Nanosecond)
+	// Wait for what the holder does at the grace deadline, without another clock move.
 	var stopped *holdEnd
 	waitFor(t, "the holder scanning or ending its serve once the grace ends", func() bool {
 		select {

@@ -202,7 +202,7 @@ func TestTheRetryAfterAGrantDeliversOnlyTheDeniedRoute(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
-	stop := run(t, database, client, broker)
+	stop, retryNow := startRetryTest(t, outboxOn(database, client, broker))
 	defer stop()
 
 	waitFor(t, "the first attempt backed off", func() bool {
@@ -210,6 +210,7 @@ func TestTheRetryAfterAGrantDeliversOnlyTheDeniedRoute(t *testing.T) {
 		return attempts > 0
 	})
 	grant.Grant(t, append(allow, holderSubject)...)
+	retryNow(event.ID)
 	waitFor(t, "the retry after the grant", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
@@ -222,7 +223,7 @@ func TestTheRetryAfterAGrantDeliversOnlyTheDeniedRoute(t *testing.T) {
 	testwait.Receive(t, "the role holder's forward after the grant", forwarded)
 	// Everything the two attempts published was answered before the event was marked published,
 	// so the server has queued it to the subscriber ahead of the PONG this flush waits for.
-	if err := subscriber.Flush(); err != nil {
+	if err := subscriber.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscriber: %v", err)
 	}
 	if sent := len(authorReceived); sent != 1 {
