@@ -2215,6 +2215,38 @@ func TestSubscribeHandlerWarnsWhenAGitHubTopicSpellsARepositoryWithADot(t *testi
 	}
 }
 
+// A controller subscribes the default-branch copy of each watched workflow's runs
+// (contracts.GithubDefaultBranchWorkflowSubject). The copy's first token after the repository,
+// default_branch, is a GitHub topic kind, so the listener reads the repository the topic was built
+// for, a dotted name written with `_` among them, looks in the stream for that repository's events
+// alone, and warns nothing. A listener without the kind reads default_branch as the second token of
+// a dotted repository name, warns that the topic misspells it, and looks for a repository nobody has.
+func TestSubscribeHandlerReadsADefaultBranchWorkflowTopicsRepositoryWithoutWarning(t *testing.T) {
+	t.Parallel()
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	inspector := &fakeStreamInfo{info: &nats.StreamInfo{State: nats.StreamState{Subjects: map[string]uint64{"notifications.github.example-org.example-repo.workflow.nightly_yaml.completed": 1}}}}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client), streamName: "notifications", streamInfo: inspector}
+	for _, tc := range []struct{ topic, filter string }{
+		{
+			topic:  contracts.GithubDefaultBranchWorkflowSubject("example-org", "example-repo", "nightly.yaml", "completed", "schedule"),
+			filter: "notifications.github.example-org.example-repo.>",
+		},
+		{
+			topic:  contracts.GithubDefaultBranchWorkflowSubject("example-org", "site.io", "nightly.yaml", "completed", "workflow_dispatch"),
+			filter: "notifications.github.example-org.site_io.>",
+		},
+	} {
+		calls := inspector.calls
+		if got := subscribeWarnings(t, state, tc.topic); len(got) != 0 {
+			t.Errorf("subscribe %s: warnings %q, want none", tc.topic, got)
+		}
+		if inspector.calls != calls+1 || inspector.subjectsFilter != tc.filter {
+			t.Errorf("subscribe %s read the stream %d times, the last for %q; want once, for %q", tc.topic, inspector.calls-calls, inspector.subjectsFilter, tc.filter)
+		}
+	}
+}
+
 func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)

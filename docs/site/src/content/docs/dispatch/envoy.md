@@ -51,6 +51,7 @@ notifications.github.<owner>.<repo>.pr.<n>.mention    comments that mention the 
 notifications.github.<owner>.<repo>.pr.<n>.checks     a commit's checks have all finished
 notifications.github.<owner>.<repo>.push.branch.<ref> a branch push
 notifications.github.<owner>.<repo>.workflow.<file>.<action>  a workflow run with no pull request
+notifications.github.<owner>.<repo>.default_branch.workflow.<file>.<action>.<event>  the same run, when it ran on the default branch
 notifications.github.<owner>.<repo>.job.<run_id>.completed    a finished Actions job on the default branch, of a run with no pull request
 ```
 
@@ -58,6 +59,18 @@ A dot in an owner, repository, or ref name is written `_` in the subject, so `ac
 `notifications.github.acme.site_io`. A redelivered webhook is recognised and stored once: an event
 is keyed by its `X-GitHub-Delivery` GUID, which GitHub gives one event in every webhook that
 receives it, so the copies two Apps installed on one repository deliver are stored once too.
+
+A workflow run's payload names the run's trigger event as `event` (`schedule`, `push`,
+`workflow_dispatch` and GitHub's others), beside its `run_id`, `head_branch`, `status` and
+`conclusion`. A run whose `head_branch` is the repository's `default_branch`, and whose head
+repository is the repository itself rather than a fork, is published a second time on its
+`default_branch.workflow` topic, which ends in that event: a subscriber to
+`notifications.github.acme.widgets.default_branch.workflow.nightly_yaml.completed.schedule` hears
+each finished scheduled run of `nightly.yaml` on `acme/widgets`' default branch and no other run.
+The copy is published before the `workflow` envelope, with the same payload and dedupe key, so a
+session that follows both topics is handed the run once, on the copy's topic. A copy whose topic
+would be longer than the bus takes is not published, the listener logs the run, and the `workflow`
+envelope still goes out.
 
 The listener logs one `github published` line for each topic of each delivery it publishes, with
 the delivery's GUID, its event and action, the topic, the key, the hook target's id

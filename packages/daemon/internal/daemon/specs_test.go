@@ -490,6 +490,64 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 	}
 }
 
+// The daemon's controller is told the project's watched workflows after its Slack channels: each
+// entry as `<owner>/<repo>/<file>` with its events, the runs its session hears while it holds the
+// controller role, and the skill reference that says what a run asks of it. The system prompt is
+// what a turn an Envoy card starts still reads after a compaction, so the line is there rather
+// than in a message. A project that watches none gets no line. No variable of the spec carries
+// the list: the plugin reads it from its registration's answer.
+func TestTheControllersLaunchNamesTheProjectsWatchedWorkflows(t *testing.T) {
+	t.Parallel()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	launch := func(channels []string, watched []config.WatchedWorkflow) runtime.SpawnSpec {
+		t.Helper()
+		s := specs{
+			stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(),
+			slackChannels: channels, watchedWorkflows: watched, appOwners: noAppOwners,
+		}
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController})
+		if err != nil {
+			t.Fatalf("SpawnSpec: %v", err)
+		}
+		return spec
+	}
+	const reach = "Design gate steps: none. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
+	const line = "Watched workflows: `acme/widgets/x.yaml` (`schedule`, `push`), `Acme/Gadgets/nightly.yml` (`schedule`): " +
+		"your session hears each one's completed runs on its repository's default branch, of the events named, " +
+		"while it holds the controller role. Read skill://legion-controller/references/watched-workflows.md at every start and on each delivered run."
+	watched := []config.WatchedWorkflow{
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
+		{Repository: ghrepo.MustParse("Acme/Gadgets"), File: "nightly.yml", Events: []string{"schedule"}},
+	}
+	for _, tc := range []struct {
+		name     string
+		channels []string
+		watched  []config.WatchedWorkflow
+		want     string
+	}{
+		{"two workflows, after the Slack channels", []string{"C00000000"}, watched,
+			reach + " Slack channels: `C00000000`: your session hears each one's app mentions while it holds the controller role; " +
+				"answer each in its thread, and nothing from any other channel (skill://legion-controller/references/slack-mentions.md). " + line},
+		{"two workflows and no channel", nil, watched, reach + " " + line},
+		{"no workflow", nil, nil, reach},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := launch(tc.channels, tc.watched)
+			if spec.Prompt.Addressing != tc.want {
+				t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, tc.want)
+			}
+			for name, value := range spec.Env {
+				if strings.Contains(value, "x.yaml") || strings.Contains(value, "nightly.yml") {
+					t.Errorf("the spec's %s carries the watched workflows (%q); only the registration's answer does", name, value)
+				}
+			}
+		})
+	}
+}
+
 // The controller's addressing gains the reach its GitHub App gives it after its design gate
 // steps, as a sentence of its own, so `legion controller start`'s operator and the
 // daemon-launched controller both read how far the project's token reaches; a worker's
