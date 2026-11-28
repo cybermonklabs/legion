@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -1273,6 +1275,54 @@ func TestANoticeIsKeptWhileItsArchitectsSessionIsUnresponsive(t *testing.T) {
 	state = "gone"
 	if dropped := runner.noticeAnswered(context.Background(), row, notice, treeSnapshot{}, architect, refused()); dropped != nil {
 		t.Fatalf("answer to a holder that is gone = %v, want the notice finished undelivered", dropped)
+	}
+}
+
+// A notice whose owning architect has no claim yet, but whose start is queued, is held until that
+// architect is here, not finished: the addressee is coming. The case is a root at its first
+// admission, whose architect's start waits behind the issue's branch row on the lifecycle lane
+// while the branch row's own branch-refused notice runs on the board lane. Finished there, as
+// claimEnded("") read the unsupervised claim, the notice was lost, and the branch-refused record
+// then silenced every later row of the generation, so the architect was never told. The control is
+// the same answer once no start is queued, which finishes the notice undelivered as before.
+func TestANoticeWaitsForAnArchitectWhoseStartIsQueued(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	root := record.Issue{Key: "LEGION-2", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-2",
+		Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "A"}
+	putOutboxIssue(t, pool, records, root)
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	runner := &outbox{supervisor: sup, records: records, pool: pool, log: quietLogger()}
+	architect, err := claim.NewToken("legion", root.Key, claim.RoleArchitect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := treeSnapshot{noticeRoute: noticeRoute{project: "legion", root: root, issues: map[string]record.Issue{root.Key: root}}}
+	notice := record.Notice{Kind: record.BranchRefusedNotice, Role: claim.RoleArchitect, Reason: "GitHub refused the branch's create"}
+	row := mustOutboxRow(t, root.Key, notice, time.Now())
+	row.ID = 72
+	noHolder := fmt.Errorf("publish notice: %w", notify.ErrNoHolder)
+
+	start := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect,
+		Generation: root.GenerationOf("start", claim.RoleArchitect), Task: "open the tree"}, time.Now())
+	var startID int64
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		startID, err = records.EnqueueID(ctx, tx, start)
+		return err
+	}); err != nil {
+		t.Fatalf("queue the architect's start: %v", err)
+	}
+	if held := runner.noticeAnswered(context.Background(), row, notice, tree, architect, noHolder); !errors.Is(held, errNoticeWaits) {
+		t.Fatalf("answer for an architect whose start is queued = %v, want the notice held for it (errNoticeWaits)", held)
+	}
+
+	if _, err := pool.Exec(context.Background(), `delete from outbox where id = $1`, startID); err != nil {
+		t.Fatalf("finish the architect's start: %v", err)
+	}
+	if finished := runner.noticeAnswered(context.Background(), row, notice, tree, architect, noHolder); finished != nil {
+		t.Fatalf("answer for an architect with no claim and no start queued = %v, want the notice finished undelivered", finished)
 	}
 }
 
