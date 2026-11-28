@@ -299,10 +299,10 @@ lines_hold() {
     fi
   fi
   python3 -c '
-import json, sys, yaml
-said, outputs, workflow = sys.argv[1], dict(l.split("=", 1) for l in sys.argv[2].splitlines() if "=" in l), sys.argv[3]
+import json, sys
+said, outputs = sys.argv[1], dict(l.split("=", 1) for l in sys.argv[2].splitlines() if "=" in l)
 jobs = {}
-for job, output in json.loads(yaml.safe_load(open(workflow))["env"]["CI_OK_SELECTED_BY"]).items():
+for job, output in json.loads(sys.argv[3]).items():
     jobs.setdefault(output, []).append(job)
 lines = said.splitlines()
 for line in lines:
@@ -317,17 +317,23 @@ for name in sys.argv[4:]:
     runs = mine[0].startswith(job + ": runs")
     if runs != (outputs.get(name) == "true"):
         print(f"{job}: the line says {mine[0][len(job) + 2:]!r} and output {name} is {outputs.get(name)}")
-' "$said" "$1" "$repo/.github/workflows/ci.yaml" "${held[@]}"
+' "$said" "$1" "$selected_by" "${held[@]}"
 }
 # lines_with <text>: how many lines say <text>.
 lines_with() { grep -cF -- "$1" <<<"$said" || true; }
 ci_yaml="$repo/.github/workflows/ci.yaml"
+# CI_OK_SELECTED_BY as ci.yaml's env holds it, the map lines_hold names each output's jobs by.
+selected_by=$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["env"]["CI_OK_SELECTED_BY"])' "$ci_yaml")
+# The outputs the cases below hold the lines to, beside $baseline: a merge group's, and a pull
+# request's with lane:envoy_go_race.
+merge_group_outputs=$(outputs --event merge_group)
+race_outputs=$(outputs --event pull_request --label lane:envoy_go_race)
 queue_text=", so changes holds it back; the merge queue runs the suites its own generator selects against its own base, which may be fewer than this head's selection"
 
 echo "case: each suite's line is its output, on each run this file starts"
 statement_of "$ci_yaml" pull_request
 check "a pull request with no label: the script exits 0" "$(is "$said_status" 0)"
-check "  every line is its output" "$(is "$(lines_hold "$(outputs --event pull_request)")" "")"
+check "  every line is its output" "$(is "$(lines_hold "$baseline")" "")"
 check "  and all ${#held[@]} say their paths matched and that they do not run on this head" \
   "$(is "$(lines_with ": does not run on this head: its paths matched and the pull request does not carry lane:")" "${#held[@]}")"
 check "  in the queue's own words" "$(is "$(lines_with "$queue_text")" "${#held[@]}")"
@@ -335,7 +341,7 @@ check "  naming no full-ci, which runs nothing a need names" "$(is "$(lines_with
 check "  and it writes no annotation" "$(is "$(grep -c '^::' <<<"$said" || true)" 0)"
 statement_of "$ci_yaml" pull_request --label lane:envoy_go_race
 check "a pull request with lane:envoy_go_race: every line is its output" \
-  "$(is "$(lines_hold "$(outputs --event pull_request --label lane:envoy_go_race)")" "")"
+  "$(is "$(lines_hold "$race_outputs")" "")"
 check "  and the race suite's says it runs under that label" \
   "$(contains "$said" '^envoy-go-race: runs on this head: its paths matched and the pull request carries lane:envoy_go_race$')"
 statement_of "$ci_yaml" pull_request --label full-ci
@@ -343,7 +349,7 @@ check "a pull request with full-ci: every line is its output" \
   "$(is "$(lines_hold "$(outputs --event pull_request --label full-ci)")" "")"
 check "  and all ${#held[@]} run on this head" "$(is "$(lines_with ': runs on this head: ')" "${#held[@]}")"
 statement_of "$ci_yaml" merge_group
-check "a merge group: every line is its output" "$(is "$(lines_hold "$(outputs --event merge_group)")" "")"
+check "a merge group: every line is its output" "$(is "$(lines_hold "$merge_group_outputs")" "")"
 check "  and all ${#held[@]} run there" "$(is "$(lines_with ': runs on this merge_group run: its paths matched')" "${#held[@]}")"
 statement_of "$ci_yaml" pull_request --verdicts false
 check "a pull request whose filters say no: every line is its output" \
@@ -365,11 +371,11 @@ check "a dispatch of a branch whose filters say no: every line is its output" \
   "$(is "$(lines_hold "$(outputs --event workflow_dispatch --ref refs/heads/feature --verdicts false)")" "")"
 
 echo "case: a filters file whose widening cannot be read is an ::error::, never paths that matched"
-# The refusals, each with a file no generator writes: none, a directory, and the two first lines
-# review 6087621955 probed, which name the forms ci-filters-generate.sh writes in other words.
+# The refusals, each with a file no generator writes: none, a directory, and two first lines that
+# name the forms ci-filters-generate.sh writes in other words.
 printf '# FORCED: envoy_go_race differ from main%ss filters, so each matches every path.\nx: []\n' "'" > "$work/forced-other-words.yaml"
 printf '# FORCED: each filter matches every path: x.\nx: []\n' > "$work/forced-each.yaml"
-# The computed filters' own header with its tail changed, as review 6088422101 probed it.
+# The computed filters' own header with its tail changed.
 { head -1 "$filters" | sed 's/computed by .*/computed by hand/'; echo 'x: []'; } > "$work/computed-by-hand.yaml"
 printf '\377\376# not UTF-8\nx: []\n' > "$work/not-utf8.yaml"
 for pair in "no file:$work/no-such-filters.yaml" "a directory:$work" \
@@ -382,7 +388,7 @@ for pair in "no file:$work/no-such-filters.yaml" "a directory:$work" \
   check "  no suite's line says its paths matched" "$(is "$(lines_with 'its paths matched and')" 0)"
   check "  all ${#held[@]} say the widening is UNKNOWN" "$(is "$(lines_with 'whether that filter was widened to every path is UNKNOWN')" "${#held[@]}")"
   check "  and each still says what its output does" \
-    "$(is "$(lines_hold "$(outputs --event pull_request)" | grep -c 'the line says' || true)" 0)"
+    "$(is "$(lines_hold "$baseline" | grep -c 'the line says' || true)" 0)"
 done
 
 echo "case: a statement step that reads another file than the paths filter is refused by the case"
@@ -391,16 +397,17 @@ broken=$(copy_with "$work/statement-other-file" ci.yaml \
 statement_of "$broken" pull_request
 check "statement_of stops with 3" "$(is "$said_status" 3)"
 check "  naming both files" "$(contains "$said_err" "reads FILTERS_FILE='/home/runner/work/_temp/ci-filters.computed.yaml' and the paths-filter step reads '/home/runner/work/_temp/ci-filters.yaml'")"
+stopped=$(lines_hold "$baseline")
 check "  which lines_hold reports as the harness's" \
-  "$(contains "$(lines_hold "$(outputs --event pull_request)")" '^the harness stopped the case (status 3) before lane-verdicts.py ran')"
-check "  and not as the script's" "$(is "$(lines_hold "$(outputs --event pull_request)" | grep -c '^lane-verdicts.py exited' || true)" 0)"
+  "$(contains "$stopped" '^the harness stopped the case (status 3) before lane-verdicts.py ran')"
+check "  and not as the script's" "$(is "$(grep -c '^lane-verdicts.py exited' <<<"$stopped" || true)" 0)"
 
 echo "case: a byte that is not UTF-8 after a good first line does not refuse it"
-# Review 6089168911: text-mode readline decodes a buffered chunk, not one line.
+# Text-mode readline decodes a buffered chunk, not one line.
 { head -5 "$filters"; printf '# \351 is not UTF-8\n'; tail -n +6 "$filters"; } > "$work/later-byte.yaml"
 statement_of "$ci_yaml" pull_request --filters-file "$work/later-byte.yaml"
 check "the script exits 0" "$(is "$said_status" 0)"
-check "  every line is its output" "$(is "$(lines_hold "$(outputs --event pull_request)")" "")"
+check "  every line is its output" "$(is "$(lines_hold "$baseline")" "")"
 check "  and all ${#held[@]} say their paths matched" \
   "$(is "$(lines_with ": does not run on this head: its paths matched and the pull request does not carry lane:")" "${#held[@]}")"
 
@@ -409,12 +416,12 @@ broken=$(copy_with "$work/statement-wrong-step" ci.yaml \
   'FILTER: ${{ toJSON(steps.filter.outputs) }}' 'FILTER: ${{ toJSON(steps.scope.outputs) }}')
 statement_of "$broken" pull_request --label lane:envoy_go_race
 check "a step reading another step's outputs: lines that are not their outputs are named" \
-  "$(contains "$(lines_hold "$(outputs --event pull_request --label lane:envoy_go_race)")" '^envoy-go-race: the line says')"
+  "$(contains "$(lines_hold "$race_outputs")" '^envoy-go-race: the line says')"
 broken=$(copy_with "$work/statement-every-job" ci.yaml \
   'EVERY_JOB: ${{ steps.scope.outputs.every_job }}' "EVERY_JOB: 'true'")
 statement_of "$broken" pull_request
 check "a step told every job runs on a pull request: lines that are not their outputs are named" \
-  "$(contains "$(lines_hold "$(outputs --event pull_request)")" '^envoy-go-race: the line says')"
+  "$(contains "$(lines_hold "$baseline")" '^envoy-go-race: the line says')"
 broken=$(copy_with "$work/statement-misspelt-label" ci.yaml "'lane:envoy_smoke'" "'lane:envoy_smok'")
 statement_of "$broken" pull_request --label lane:envoy_smoke
 check "an output whose label term is misspelt: the line its label then cannot turn on is an ::error::" \
@@ -431,7 +438,7 @@ said_err=$(cat "$work/said.err")
 check "a script that cannot read its input exits non-zero" "$(is "$([ "$said_status" -ne 0 ] && echo nonzero)" nonzero)"
 check "  and says why" "$(contains "$said_err" 'JSONDecodeError')"
 check "  which lines_hold reads as a line that does not hold" \
-  "$(contains "$(lines_hold "$(outputs --event pull_request)")" "^lane-verdicts.py exited $said_status")"
+  "$(contains "$(lines_hold "$baseline")" "^lane-verdicts.py exited $said_status")"
 
 echo "case: an output whose event term is broken stays in the set and fails the merge-group case"
 broken=$(copy_with "$work/no-event" ci.yaml \
@@ -886,14 +893,14 @@ check "none of them runs" "$(is "$(running "$got")" "")"
 echo "case: a filter the generator widened is named as widened, never as paths that matched"
 statement_of "$ci_yaml" merge_group --filters-file "$work/fallback.yaml"
 check "filters that fell open (the generator's fail-open file): the script exits 0" "$(is "$said_status" 0)"
-check "  every line is its output" "$(is "$(lines_hold "$(outputs --event merge_group)")" "")"
+check "  every line is its output" "$(is "$(lines_hold "$merge_group_outputs")" "")"
 check "  and all ${#held[@]} say their filter was widened" \
   "$(is "$(lines_with ': runs on this merge_group run: its filter was widened to every path')" "${#held[@]}")"
 
 echo "case: an engine that does not import still has its fail-open file read, and its header is refused"
-# Review 6089168911: the fail-open file is what the generator writes when the filter engine fails,
-# and then the engine may not import. The script reads that line without it, and imports the
-# engine only to check a computed header, which it then refuses rather than trusts.
+# The fail-open file is what the generator writes when the filter engine fails, and then the
+# engine may not import. The script reads that line without it, and imports the engine only to
+# check a computed header, which it then refuses rather than trusts.
 # import_error <dir>: `import ci_filter_coverage` run from <dir>: empty when it imports, else its
 # failure as lane-verdicts.py names it, `<type>: <message>`, whose message a SyntaxError ends with
 # the file and line it names.
@@ -917,7 +924,7 @@ check "the copied engine does not import" \
   "$(contains "$(import_error "$engine/.github/scripts")" '^SyntaxError: .*(go_build_tags\.py, line ')"
 statement_of "$engine/.github/workflows/ci.yaml" merge_group --filters-file "$work/fallback.yaml"
 check "  on its fail-open file the script exits 0" "$(is "$said_status" 0)"
-check "  every line is its output" "$(is "$(lines_hold "$(outputs --event merge_group)")" "")"
+check "  every line is its output" "$(is "$(lines_hold "$merge_group_outputs")" "")"
 check "  and all ${#held[@]} say their filter was widened" \
   "$(is "$(lines_with ': runs on this merge_group run: its filter was widened to every path')" "${#held[@]}")"
 statement_of "$engine/.github/workflows/ci.yaml" pull_request
@@ -946,7 +953,7 @@ check "the script wrote an every-filter FORCED file for a base it cannot read" \
   "$(contains "$(head -1 "$work/forced-all.yaml")" '^# FORCED: every filter matches every path: the base commit 0123456789abcdef0123456789abcdef01234567 cannot be read')"
 statement_of "$ci_yaml" pull_request --filters-file "$work/forced-all.yaml"
 check "  on it the script exits 0" "$(is "$said_status" 0)"
-check "  every line is its output" "$(is "$(lines_hold "$(outputs --event pull_request)")" "")"
+check "  every line is its output" "$(is "$(lines_hold "$baseline")" "")"
 check "  and all ${#held[@]} say their filter was widened and that they do not run on this head" \
   "$(is "$(lines_with ': does not run on this head: its filter was widened to every path')" "${#held[@]}")"
 
@@ -973,7 +980,7 @@ check "the script wrote a FORCED file naming envoy_go_race, whose base differs" 
   "$(is "$(head -1 "$work/forced-names.yaml")" "# FORCED: envoy_go_race differ from the base tree's filters, so each matches every path.")"
 statement_of "$ci_yaml" pull_request --filters-file "$work/forced-names.yaml"
 check "  on it the script exits 0" "$(is "$said_status" 0)"
-check "  every line is its output" "$(is "$(lines_hold "$(outputs --event pull_request)")" "")"
+check "  every line is its output" "$(is "$(lines_hold "$baseline")" "")"
 check "  the race suite's line says its filter was widened" \
   "$(contains "$said" '^envoy-go-race: does not run on this head: its filter was widened to every path')"
 check "  and the other $((${#held[@]} - 1)) say their paths matched" "$(is "$(lines_with ': does not run on this head: its paths matched')" "$((${#held[@]} - 1))")"

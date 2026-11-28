@@ -328,6 +328,11 @@ def run_step(step, env, context):
     return outputs
 
 
+def evaluated_env(step, evaluator):
+    """A step's whole `env:`, every value evaluated by `evaluator` and written as text_of writes it."""
+    return {str(name): text_of(interpolate(value, evaluator)) for name, value in (step.get("env") or {}).items()}
+
+
 def run_steps(job, context, filter_outputs, base, given):
     """Each step of the job in order, as the runner takes them, its outputs into
     context["steps"] under its `id`: a step given with --step-outputs has those outputs, the
@@ -358,8 +363,7 @@ def run_steps(job, context, filter_outputs, base, given):
         elif step_id == "generate":
             outputs = {}
         elif "run" in step:
-            env = {str(name): text_of(interpolate(value, evaluator)) for name, value in (step.get("env") or {}).items()}
-            outputs = run_step(step, env, context)
+            outputs = run_step(step, evaluated_env(step, evaluator), context)
         else:
             raise Refused(f"step {step_id} uses {step.get('uses')}, whose outputs this reader does not model")
         context["steps"][step_id] = {"outputs": outputs}
@@ -381,7 +385,7 @@ def step_env(started, chosen, what):
     step, at_start, ran = started_step(started, chosen, what)
     if not ran:
         raise Refused(f"the {what} is skipped, so it is handed no env")
-    return {str(name): text_of(interpolate(value, Evaluator(at_start))) for name, value in (step.get("env") or {}).items()}
+    return evaluated_env(step, Evaluator(at_start))
 
 
 def dispatch_inputs(document, event, given):

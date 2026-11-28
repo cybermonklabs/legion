@@ -196,7 +196,7 @@ include "ci-ok";
       selection($job) as $s
       | ["info", "\($job): \($result) (\(if $s.selected then "selected" else "not selected" end): \($s.why))"],
         (select($s.gated and $result == "skipped")
-         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request; the merge queue runs the suites its own generator selects against its own base, which may be fewer than this head's selection, and lane:\($map[$job]) runs it here only for a need the pull request names)"]),
+         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request; \(queue_runs), and lane:\($map[$job]) runs it here only for a need the pull request names)"]),
         if $result == "absent" then
           ["error", "\($job) is absent from NEEDS, but SELECTED_BY maps it to needs.changes.outputs.\($map[$job]); the ci-ok job's toJSON(needs) and ci-ok-report.sh both give every SELECTED_BY job a result, so this is a defect of whichever of them built NEEDS"]
         elif $s.selected and $result != "success" then
@@ -247,10 +247,8 @@ if [ "${#not_run[@]}" -gt 0 ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "**Ran and passed at this head:** $passed_text"
   } >>"$GITHUB_STEP_SUMMARY"
 fi
-# The same jobs as one notice annotation, which GitHub shows on the pull request's checks beside
-# ci-ok itself, so a reader of a green ci-ok sees what it did not run without opening this log or
-# the run's summary. One annotation for all of them: Actions keeps at most ten notices a step.
-# %0A is a workflow command's newline.
+# The same jobs as one notice annotation (the header says why). One annotation for all of them:
+# Actions keeps at most ten notices a step. %0A is a workflow command's newline.
 if [ "${#not_run[@]}" -gt 0 ]; then
   notice=$(printf '%s%%0A' "${not_run[@]}")
   echo "::notice title=ci-ok did not run every job this head's paths selected::${notice%\%0A}"

@@ -142,7 +142,7 @@ def main():
     labels = [str(label) for label in read_json("LABELS", [])]
     filter_outputs = read_json("FILTER", {})
     every_job = os.environ.get("EVERY_JOB", "") == "true"
-    wide, unknown = widened(os.environ.get("FILTERS_FILE", ""))
+    widened_names, unknown = widened(os.environ.get("FILTERS_FILE", ""))
     if unknown:
         print(f"::error::lane-verdicts.py: {unknown}")
     document = yaml.safe_load(WORKFLOW.read_text())
@@ -170,7 +170,7 @@ def main():
     for name, runs in decided.items():
         carried = [x for x in ("full-ci", f"lane:{name}") if x in lowered]
         text, error = line(", ".join(jobs_of.get(name, [name])), name, runs, event, every_job,
-                           None if wide is None else ("*" in wide or name in wide),
+                           None if widened_names is None else ("*" in widened_names or name in widened_names),
                            filter_outputs.get(name) == "true", carried)
         print(text)
         errors += error
