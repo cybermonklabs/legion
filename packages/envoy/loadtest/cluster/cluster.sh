@@ -351,6 +351,10 @@ PG_DISK_POLL_SECONDS=30
 # the guard's 3 tries, the failure record, the kill in the runner and typing_stop's wait of up
 # to 120 s. Past this bound the watcher is stuck, and no path out of a step may hang on it.
 PG_DISK_STOP_SECONDS=300
+# Most watchers leave as soon as TERM ends their nap, so check sooner at first.
+# Count short naps because the harness's fake clock advances only on whole-second naps.
+PG_DISK_STOP_FINE_POLLS=20
+PG_DISK_STOP_FINE_SECONDS=0.05
 # The last reading of the volume (pg_disk_sample), in bytes, each empty when that read failed,
 # and the pid of the step's watcher while one runs, with the step it watches, for the line
 # pg_disk_watch_stop writes when it has to kill it.
@@ -1575,12 +1579,12 @@ pg_disk_watch() {
 
 # pg_disk_watch_stop: the step's disk watcher ended and reaped, with the nap it is in; nothing
 # when none runs, so every path out of a step may call it. A watcher that is acting takes the
-# TERM as a flag and leaves at the end of that act, so this waits PG_DISK_STOP_SECONDS for it --
-# longer than the longest act -- and then kills it, and the children of its act with it, so no
-# path out of a step hangs on a watcher that is stuck. The line it writes names the step, since
-# a watcher killed there left whatever it was doing in the copy half done.
+# TERM as a flag and leaves at the end of that act. This checks after short naps first, then
+# after whole-second naps, up to PG_DISK_STOP_SECONDS -- longer than the longest act. At the
+# bound it kills the watcher and the children of its act so no path out of a step hangs. The
+# line it writes names the step, since a watcher killed there left its work in the copy half done.
 pg_disk_watch_stop() {
-  local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline kids=() NOW
+  local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline kids=() NOW fine_naps=0
   [ -n "$pid" ] || return 0
   PG_DISK_WATCHER="" PG_DISK_WATCH_STEP=""
   kill -- "$pid" 2>/dev/null || true
@@ -1594,7 +1598,12 @@ pg_disk_watch_stop() {
       note "step $name: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed"
       break
     fi
-    sleep 1
+    if ((fine_naps < PG_DISK_STOP_FINE_POLLS)); then
+      sleep "$PG_DISK_STOP_FINE_SECONDS"
+      fine_naps=$((fine_naps + 1))
+    else
+      sleep 1
+    fi
   done
   wait "$pid" 2>/dev/null || true
 }
