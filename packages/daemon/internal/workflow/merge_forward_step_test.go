@@ -204,3 +204,51 @@ func TestAMergeForwardTellsNoRoleTheDeploymentLost(t *testing.T) {
 		})
 	}
 }
+
+// The review a landed merge forward asks of a reviewer whose step already ran tells that reviewer
+// to tell what it decided to the architect and to the worker of the place the issue stands at: at
+// step, the role of the running step. On the task `implementer reviewer checker`, standing at the
+// checker's step, the landing tells the checker it landed and asks the reviewer to read the merge,
+// and the review names the checker beside the architect (record.MergeForwardMessage.Tells), so the
+// checker hears whether the reviewer rejects the head it works at. A rule that reads the worker
+// from the phase alone (phase.RoleFor) names nobody at step. The control is the same task at the
+// tester's place of `implementer reviewer tester`, whose review names the tester.
+func TestTheReviewOfAMergeForwardAtAStepTellsTheStepsRole(t *testing.T) {
+	t.Parallel()
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	for _, tc := range []struct {
+		name   string
+		at     phase.Phase
+		status string
+		steps  []string
+		worker claim.Role
+	}{
+		{name: "the checker's step", at: phase.Step, status: "in_progress", steps: []string{"implementer", "reviewer", "checker"}, worker: "checker"},
+		{name: "control: the tester's step", at: phase.Testing, status: "testing", steps: []string{"implementer", "reviewer", "tester"}, worker: claim.RoleTester},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := seedConflictIssue(t, tc.at, tc.status, settledGreen("lint"))
+			seedStepsPlan(t, pool, "LEGION-208", 1, tc.steps...)
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 3}, record.TaskRunning)
+			})
+			if tc.at == phase.Step {
+				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: tc.worker, Claim: claim.Token(string(tc.worker) + "-claim"), Entry: 1})
+			}
+			confirmsConflict(t, pool, requiresCI)
+			asked := len(mergeForwardMessages(t, pool))
+			landsMergeForward(t, pool)
+			landed := mergeForwardMessages(t, pool)[asked:]
+			if got, want := toldWho(landed), []string{string(tc.worker) + " landed", "reviewer review"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("the landing queued %v, want %v", got, want)
+			}
+			review := landed[1]
+			if got := review.Tells(); got != tc.worker {
+				t.Errorf("the review tells %q beside the architect, want %q", got, tc.worker)
+			}
+			if says := "Then tell the architect and the " + string(tc.worker) + " what you decided"; !strings.Contains(review.Message("LEGION-208", record.PullRequest{Repo: "sjawhar/legion"}), says) {
+				t.Errorf("the review reads %q, want it to say %q", review.Message("LEGION-208", record.PullRequest{Repo: "sjawhar/legion"}), says)
+			}
+		})
+	}
+}

@@ -266,6 +266,64 @@ func TestAPromotionsStartOfARoleThatRanComesBackAtAnotherRolesStep(t *testing.T)
 	}
 }
 
+// The promotion's start of a role that ran, at another role's step, is judged again by the machine
+// under its own lock, as every other start is (supervise.StartWork, startHolds): the outbox's read
+// of the issue does not hold the workflow's move off, and a launch the wake pacing parks waits tens
+// of minutes, so the issue can leave the step before the machine brings the claim back. Here the
+// move commits after the outbox's read and before the machine's judge (the judge's first call
+// writes it, then answers as the daemon does): the member leaves step for implementing, and the
+// implementer brought back for step starts no process. A start handed to the machine with no work
+// to judge (the zero StartWork) is judged by nothing and starts the process. The control is the
+// same start with no move, which starts once (TestAPromotionsStartOfARoleThatRanComesBackAtAnotherRolesStep).
+func TestAPromotionsStartAtAStepIsJudgedAgainByTheMachine(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	member := record.Issue{Key: stepStartKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: stepStartKey, Title: "Workflow", Phase: phase.Step, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+	putOutboxIssue(t, pool, records, member)
+	openTree(t, pool, "LEGION", stepStartKey)
+	holdSlot(t, pool, stepStartKey)
+	seedStepStartPlan(t, pool, records, 2)
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	daemonHolds := (&workflowRuntime{pool: pool, records: records}).phaseHolds
+	var judged []supervise.Delivery
+	sup.deps.PhaseHolds = func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error) {
+		if len(judged) == 0 {
+			moved := member
+			moved.Phase = phase.Implementing
+			putOutboxIssue(t, pool, records, moved)
+		}
+		judged = append(judged, d)
+		return daemonHolds(ctx, c, d)
+	}
+	token := mustClaimToken(t, stepStartKey, claim.RoleImplementer)
+	machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: stepStartKey, Issue: stepStartKey,
+		Role: claim.RoleImplementer, Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon,
+		Session: "ses_implementer", SessionFile: "/sessions/implementer.jsonl"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
+		tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), now: time.Now,
+		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
+		},
+	}
+	start := mustOutboxRow(t, stepStartKey, record.SuperviseRequest{Op: "start", Tree: stepStartKey, Role: claim.RoleImplementer,
+		Generation: 2, Phase: phase.Step}, time.Now())
+	start.ID = 98
+	execErr := runner.execute(ctx, start)
+	machine.Wait()
+	if len(judged) == 0 || judged[0].Phase != phase.Step || judged[0].Generation != 2 {
+		t.Fatalf("the machine judged the start %+v, want it judged for step at run 2", judged)
+	}
+	if spawned := len(rt.CallsOf("Spawn")) + len(rt.CallsOf("Resume")); execErr != nil || spawned != 0 {
+		t.Fatalf("the brought-back start after the member left step: execute = %v, started %d processes; want no error and none", execErr, spawned)
+	}
+}
+
 // The answer supervise asks for before it sends a queued task, at the phase step: a task queued
 // for the step of one role is not the work of the step of another, though both run as step. The
 // linter's task of step 3 is dropped while the task stands at the checker's step 2, and held at

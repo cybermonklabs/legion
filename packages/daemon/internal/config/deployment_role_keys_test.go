@@ -53,6 +53,54 @@ func TestTheCheckAcrossKeysSeesEveryKeyItJudges(t *testing.T) {
 	}
 }
 
+// A token pasted where a role's name goes is named by its line or its place, never as written,
+// though it fits the role grammar (claim.IsRole, `^[a-z][a-z0-9-]{0,31}$`): a 32-hex API key that
+// starts with a letter, and a short lower-case base36 token. Before the grammar took a role of the
+// deployment, only Legion's six passed it, and main's token guard (keyShape) saw every other name;
+// now such a token passes the grammar, so each reader of a role's name refuses a name holding a
+// token's run (tokenShaped) before any refusal can name it: the three role-keyed settings, a role
+// `roles` defines, a hook's `roles` and a project's `default_steps`. The control is a role of the
+// grammar that no token is (`ghost`), named as written by the check across keys.
+//
+// It reads the refusal's text for each 8-character piece of the token, not whether a guard ran or
+// which error was returned. The leak this test exists for was a guard that ran, on a path the
+// printer had already passed: a check that a guard was called would have passed then too. Keep it
+// on the text whatever the readers become.
+func TestATokenThatFitsTheRoleGrammarIsNeverPrinted(t *testing.T) {
+	hookOf := func(role string) string {
+		return "hooks: [{name: nudge, on: work_back, every: 1, roles: [" + role + "], prompt: Look again.}]\n"
+	}
+	stepsOf := func(role string) string {
+		return strings.Replace(minimalFile, "projects:\n  DEMO: {}\n", "projects:\n  DEMO: {default_steps: [implementer, "+role+"]}\n", 1)
+	}
+	for _, token := range []string{"deadbeefcafe0123456789abcdef0123", "kq7zm2xw9rt4pvn8ys3lgj5"} {
+		for name, body := range map[string]string{
+			"worker_backends":             minimalFile + "worker_backends: {" + token + ": omp}\n",
+			"role_config_files":           minimalFile + "role_config_files: {" + token + ": [/etc/a.yml]}\n",
+			"worker_stall_backstop_hours": minimalFile + "worker_stall_backstop_hours: {" + token + ": 6}\n",
+			"roles":                       minimalFile + "roles: {" + token + ": {type: testing, prompt_file: checker.md}}\n",
+			"a hook's roles":              minimalFile + hookOf(token),
+			"default_steps":               stepsOf(token),
+		} {
+			t.Run(name+"/"+token[:3], func(t *testing.T) {
+				_, err := Load(configFileWith(t, body, "checker.md"), noEnv)
+				if err == nil {
+					t.Fatalf("Load took the token as a role's name, want it refused")
+				}
+				for i := 0; i+8 <= len(token); i++ {
+					if strings.Contains(err.Error(), token[i:i+8]) {
+						t.Fatalf("the refusal %q holds %q of the token", err, token[i:i+8])
+					}
+				}
+			})
+		}
+	}
+	want := `worker_backends names "ghost", which is not an issue role (architect, planner, implementer, tester, reviewer, merger)`
+	if _, err := Load(rolesFile(t, "worker_backends: {ghost: omp}\n"), noEnv); err == nil || err.Error() != want {
+		t.Fatalf("Load of a role of the grammar = %v, want it named as written: %q", err, want)
+	}
+}
+
 // role_config_files and worker_stall_backstop_hours take a role the deployment defines as a key,
 // and each check of the key walks it as it walks Legion's roles: its overlays are refused while
 // it runs on Claude Code, and its bound below its own stall ladder. A file that defines no such

@@ -637,6 +637,21 @@ test("retro gives a ci_check that no run answers to the architect, not to the im
   ).toBe(true);
 });
 
+// Retro sends back a check with no `ci_check` whose only evidence is a unit test, as main's rule
+// does: on a task with no tester step (`implementer checker`) retro is the step that holds it,
+// and the tester's own rule that a unit test is never a check's result does not run there. The
+// whole-suite `run`, a wrong check, is the item before it, which goes to the architect, so the two
+// rules name different checks.
+test("retro sends back a check whose only evidence is a unit test, beside the whole-suite finding", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  expect(retro).toContain(
+    "Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit test: `request_backward_move` with `to: implementing`"
+  );
+  expect(retro).toContain(
+    "Send a check whose `run` is a whole test suite to the architect as a finding."
+  );
+});
+
 test("a job held back without its label is a check with no pass, not wrong words, for the tester and the architect", () => {
   const ciChecks = collapsed(path.join(staged, "legion-worker", "references", "ci-checks.md"));
   expect(ciChecks).toContain(
