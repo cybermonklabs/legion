@@ -14,14 +14,14 @@ body: |-
   bookmark `legion/<KEY>` on the workspace's working-copy commit where neither the shared clone
   nor origin has it, rather than reporting the workspace on a bookmark it never set. Where origin
   has the branch and the shared clone does not, it refuses the workspace by name, with the way out
-  for origin's row: provision again where concurrent fetches conflicted it; restore the bookmark,
-  cancel its deletion and delete the workspace's directory, or delete the branch on GitHub, where
-  the bookmark was deleted in the shared clone and the deletion never pushed; and delete the
-  workspace's directory where GitHub made the branch after the workspace was added. A workspace
-  whose sparse patterns an agent cleared carries no marker, so its untracked files stay untouched.
-  A workspace an earlier release registered, such as one on a tmux host or on a microVM pod's kept
-  volume, carries no marker either, so its next provision checks out over whatever a cut-short
-  checkout of it left, as before.
+  for origin's row: provision again where concurrent fetches conflicted it; restore the bookmark
+  or cancel its deletion, either one followed by deleting the workspace's directory, or delete the
+  branch on GitHub, where the bookmark was deleted in the shared clone and the deletion never
+  pushed; and delete the workspace's directory where GitHub made the branch after the workspace
+  was added. A workspace whose sparse patterns an agent cleared carries no marker, so its
+  untracked files stay untouched. A workspace an earlier release registered, such as one on a
+  tmux host or on a microVM pod's kept volume, carries no marker either, so its next provision
+  checks out over whatever a cut-short checkout of it left, as before.
 time: 2026-11-27T19:50:12Z
 custom:
     Issue: INFRA-4133

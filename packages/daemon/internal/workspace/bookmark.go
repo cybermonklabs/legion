@@ -82,6 +82,7 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 	local, origin := rows.local, rows.origin
 	var revision string
 	var setAside []string
+	notCreated := "workspace " + workspace.Dir + " was not created"
 	switch {
 	case local.conflict:
 		if local.hasDeletedSide() && origin.tracked && !origin.present {
@@ -96,9 +97,9 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 	case local.present:
 		revision = local.added[0]
 	case origin.conflict:
-		return conflictedOriginRefusal(workspace, origin, "workspace "+workspace.Dir+" was not created")
+		return conflictedOriginRefusal(workspace, origin, notCreated)
 	case origin.present && origin.tracked:
-		return deletedLocalBookmarkRefusal(workspace, origin, "workspace "+workspace.Dir+" was not created", "and the next provisioning adopts origin's branch")
+		return deletedLocalBookmarkRefusal(workspace, origin, notCreated, "")
 	case origin.present:
 		if _, err := runCheckedOnClone(ctx, run, cloneDir, "bookmark", "track", originRow(workspace.Bookmark)); err != nil {
 			return err
@@ -253,18 +254,21 @@ func conflictedOriginRefusal(workspace Workspace, origin bookmarkRow, consequenc
 // deletedLocalBookmarkRefusal refuses the issue's bookmark deleted in the shared clone (`jj
 // bookmark delete`) and never pushed while origin's row is tracked, with consequence, what the
 // refusal leaves of the workspace, and the operator's three ways out: restore the bookmark; cancel
-// the deletion (`jj bookmark forget`), which leaves origin's row untracked, where cancelled says
-// what follows the cancel up to origin's branch being adopted; or start from the default branch,
-// by deleting the branch on GitHub, after which the next provisioning's fetch drops the row.
-func deletedLocalBookmarkRefusal(workspace Workspace, origin bookmarkRow, consequence, cancelled string) error {
+// the deletion (`jj bookmark forget`), which leaves origin's row untracked, so the next
+// provisioning adopts origin's branch; or start from the default branch, by deleting the branch on
+// GitHub, after which the next provisioning's fetch drops the row. then is what the restore and the
+// cancel each need besides their command before the next provisioning starts at origin's branch:
+// nothing ("") for a workspace not yet added, and the deletion of its directory for one added
+// without the branch (finishUnfinishedRegistration).
+func deletedLocalBookmarkRefusal(workspace Workspace, origin bookmarkRow, consequence, then string) error {
 	cloneDir := workspace.Clone
 	return fmt.Errorf("Bookmark %s was deleted in the shared clone %s and the deletion never pushed, while %s is tracked at %s; %s. "+
-		"Restore it: %s. "+
-		"Cancel the deletion, %s: %s. "+
+		"Restore it%s: %s. "+
+		"Cancel the deletion%s, and the next provisioning adopts origin's branch: %s. "+
 		"Start from %s instead: delete the branch on GitHub (the pull request's Delete branch button, or %s), and the next provisioning starts at %s",
 		workspace.Bookmark, cloneDir, workspace.Bookmark+"@origin", origin.added[0], consequence,
-		wayOut(cloneDir, "bookmark", "set", jjString(workspace.Bookmark), "-r", originRow(workspace.Bookmark)),
-		cancelled, wayOut(cloneDir, "bookmark", "forget", exactName(workspace.Bookmark)),
+		then, wayOut(cloneDir, "bookmark", "set", jjString(workspace.Bookmark), "-r", originRow(workspace.Bookmark)),
+		then, wayOut(cloneDir, "bookmark", "forget", exactName(workspace.Bookmark)),
 		workspace.DefaultBranch, deleteOnGitHub(workspace), workspace.DefaultBranch)
 }
 
@@ -442,8 +446,9 @@ func (e *unreadableBookmark) refusal(consequence string) error {
 //     is replaced the same way, and the replacement logged with the refusal: a provision killed
 //     between RecordCreated's truncation and its write leaves an empty one, and the workspace is
 //     marked, so the record is Legion's own and no role has worked there. RecordCreated refuses a
-//     linked .jj or record as Created does, and a FIFO with no reader at the record, so none of
-//     them is replaced, followed or waited on.
+//     linked .jj as Created does, and anything at the record but a regular file
+//     (rolefile.OpenRegular), so a link, a FIFO or another special file there is not replaced,
+//     followed, written to or waited on.
 //   - The issue's bookmark, where neither the shared clone nor origin has it: the workspace was
 //     added at the default branch (baseCommit), and its `jj bookmark set` did not finish. It is
 //     set on the working-copy commit (setBookmarkOnWorkingCopy).
@@ -455,22 +460,23 @@ func (e *unreadableBookmark) refusal(consequence string) error {
 //   - A conflicted row, as createWorkspace refuses it (conflictedOriginRefusal): the next
 //     provisioning's fetch sets the row to origin's branch as it is then.
 //   - A tracked row, a local deletion never pushed, as createWorkspace refuses it
-//     (deletedLocalBookmarkRefusal), but for the cancel of the deletion: it leaves the row
-//     untracked, which this workspace, added without the branch, does not adopt, so its directory
-//     is deleted as well.
+//     (deletedLocalBookmarkRefusal), but for the restore of the bookmark and the cancel of the
+//     deletion: this workspace was added at the default branch, and neither moves it to origin's
+//     branch (a restored bookmark is a local bookmark, left where it is, and the untracked row is
+//     not adopted), so each is followed by the directory's deletion, after which the next
+//     provisioning adds the workspace again at origin's branch.
 //   - An untracked row, a branch GitHub has had since the workspace was added without it: the way
 //     out is the directory's deletion, after which the next provisioning adds the workspace again
 //     at origin's branch. A marked workspace never finished a checkout, so no role worked in it
 //     and the deletion loses no work.
 func finishUnfinishedRegistration(ctx context.Context, run Runner, workspace Workspace, log func(string)) error {
 	if _, ok, unreadable := Created(workspace.Dir); unreadable != nil || !ok {
-		if err := RecordCreated(workspace.Dir, time.Now()); err != nil {
-			if unreadable != nil {
-				return fmt.Errorf("%v, and it could not be replaced: %w", unreadable, err)
-			}
+		switch err := RecordCreated(workspace.Dir, time.Now()); {
+		case err != nil && unreadable != nil:
+			return fmt.Errorf("%v, and it could not be replaced: %w", unreadable, err)
+		case err != nil:
 			return err
-		}
-		if unreadable != nil {
+		case unreadable != nil:
 			log(fmt.Sprintf("Workspace %s: replaced the creation record it could not read with this provisioning's moment: %v", workspace.Dir, unreadable))
 		}
 	}
@@ -486,7 +492,7 @@ func finishUnfinishedRegistration(ctx context.Context, run Runner, workspace Wor
 	case origin.conflict:
 		return conflictedOriginRefusal(workspace, origin, notCheckedOut)
 	case origin.present && origin.tracked:
-		return deletedLocalBookmarkRefusal(workspace, origin, notCheckedOut, "then delete its directory, which holds no work, and the next provisioning adopts origin's branch")
+		return deletedLocalBookmarkRefusal(workspace, origin, notCheckedOut, ", then delete its directory, which holds no work")
 	case origin.present:
 		return fmt.Errorf("Bookmark %s is not in the shared clone %s while %s is at %s, and workspace %s holds no checkout: the provision that added the workspace stopped before it set the bookmark, and GitHub has had the branch since, so the workspace does not start at origin's branch and is not checked out. "+
 			"Delete its directory, which holds no work, and the next provisioning adds it again at origin's branch as it is then",

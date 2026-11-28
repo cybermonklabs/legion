@@ -67,12 +67,7 @@ func TestCreateWorkspaceRefusesAnOriginRowConcurrentFetchesConflicted(t *testing
 	}
 	workspace.DefaultBranch = req.DefaultBranch
 	clone := workspace.Clone
-	fromOrigin(t, run, clone, "jj", "git", "fetch", "-R", clone)
-	operation := strings.TrimSpace(runSetup(t, clone, "jj", "op", "log", "--no-graph", "-T", "id.short()", "--limit", "1", "--ignore-working-copy", "-R", clone))
-	moved := pushRemoteBranch(t, run.remote, "legion/WIDGETS-42", "moved.txt")
-	fromOrigin(t, run, clone, "jj", "--at-op", operation, "git", "fetch", "-R", clone)
-	runSetup(t, req.StateDir, "git", "--git-dir="+run.remote, "update-ref", "-d", "refs/heads/legion/WIDGETS-42")
-	fromOrigin(t, run, clone, "jj", "--at-op", operation, "git", "fetch", "-R", clone)
+	moved := conflictOriginRowWithDeletion(t, run, clone, "legion/WIDGETS-42")
 
 	before := len(run.Calls())
 	err = createWorkspace(context.Background(), run, workspace, req.Log)
@@ -89,6 +84,22 @@ func TestCreateWorkspaceRefusesAnOriginRowConcurrentFetchesConflicted(t *testing
 	if parent, main := commitOf(t, working.Dir, "@-"), commitOf(t, clone, "main@origin"); parent != main {
 		t.Errorf("after provisioning again the workspace's @- is %s, want main's %s", parent, main)
 	}
+}
+
+// conflictOriginRowWithDeletion leaves branch's origin row in the shared clone at clone conflicted
+// with one side a deletion, as two fetches that race leave it, and returns the moved side: it
+// fetches the branch as origin has it, pushes a commit onto it on origin (moved), fetches that at
+// the first fetch's operation, deletes the branch on origin, and fetches that at the same
+// operation.
+func conflictOriginRowWithDeletion(t *testing.T, run *recordingRunner, clone, branch string) (moved string) {
+	t.Helper()
+	fromOrigin(t, run, clone, "jj", "git", "fetch", "-R", clone)
+	operation := strings.TrimSpace(runSetup(t, clone, "jj", "op", "log", "--no-graph", "-T", "id.short()", "--limit", "1", "--ignore-working-copy", "-R", clone))
+	moved = pushRemoteBranch(t, run.remote, branch, "moved.txt")
+	fromOrigin(t, run, clone, "jj", "--at-op", operation, "git", "fetch", "-R", clone)
+	runSetup(t, run.remote, "git", "--git-dir="+run.remote, "update-ref", "-d", "refs/heads/"+branch)
+	fromOrigin(t, run, clone, "jj", "--at-op", operation, "git", "fetch", "-R", clone)
+	return moved
 }
 
 // Two fetches that race on an untracked main@origin (main forgotten in the shared clone, so no

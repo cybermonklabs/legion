@@ -89,16 +89,17 @@ const createdFile = "legion-created"
 const createdRecordLimit = 128
 
 // RecordCreated records at, in UTC, as the moment the workspace at dir was created. It writes the
-// record through .jj's descriptor (openJJ), and refuses a .jj that is a link or a record that is.
-// The record is opened with O_NONBLOCK, so a FIFO planted there with no reader is refused (ENXIO)
-// rather than waited on, under whatever lock the caller holds.
+// record through .jj's descriptor (openJJ), and refuses a .jj that is a link. The record is opened
+// with rolefile.OpenRegular, so anything there but a regular file (a link, a FIFO whether or not a
+// reader holds it, a directory, a socket, a device) is refused before anything is written, rather
+// than written to or waited on under whatever lock the caller holds.
 func RecordCreated(dir string, at time.Time) error {
 	jj, err := openJJ(dir, nil)
 	if err != nil {
 		return fmt.Errorf("record the creation of workspace %s: %w", dir, err)
 	}
 	defer jj.Close()
-	file, err := openIn(jj, createdFile, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_NONBLOCK, 0o644)
+	file, err := rolefile.OpenRegular(int(jj.Fd()), createdFile, filepath.Join(jj.Name(), createdFile), unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("record the creation of workspace %s: %w", dir, err)
 	}
