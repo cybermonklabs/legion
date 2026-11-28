@@ -481,6 +481,13 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// series and its min_n. The change's repo holds that project and its ref the eval
 		// (migrations 20261117100012 to 20261117100014).
 		//
+		// Of the evals views of that project, a reading or a day row marks those whose answer can
+		// hold the eval (listsChanged): a view of one kind lists the evals of that kind alone, and a
+		// write of one of them moves no other eval's values, so a job write, which the refresher
+		// folds into the delivery and CI evals' rows, recomputes no Legion view, and a Legion fact
+		// no delivery or CI view. A version marks every one of them, since it can register an eval,
+		// list it or move it to another kind.
+		//
 		// No other kind marks an evals view. A computed eval's value moves when the refresher
 		// rewrites its day rows, after its input's own change (a pull request, a run, a stored
 		// fact, a filing, the settings row) was logged: a view woken by the input would read the
@@ -521,7 +528,7 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// delivery view does, so the settings rewrite's changes mark it too.
 		switch view.spec.classes().reads {
 		case viewReadsEvals:
-			return view.spec.project == change.Repo || delivery.SettingsApplied(change)
+			return delivery.SettingsApplied(change) || view.spec.project == change.Repo && view.listsChanged(change)
 		case viewReadsEvalItems:
 			return change.Ref == evals.EvalID(view.spec.project, view.spec.slug) || delivery.SettingsApplied(change)
 		}
@@ -573,6 +580,31 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		}
 		return false
 	}
+}
+
+// listsChanged reports whether change, an eval change of the view's project, can move the answer
+// of an evals view. A version can register an eval, list one or move it to another kind, and a
+// change of no eval is the publishing of the project's defaults, so each moves it whatever it
+// lists. A reading or a day row moves it where the view holds no answer yet, or a read of it is
+// under way (reading), whose answer can list what the one it holds does not; where the change
+// spans a day at or past the end of the days the answer folded (through), as the refresher's write
+// of a new day does when a preset's window moves onto it; where it spans no day at all; and else
+// where its eval is one the answer lists. A page of the list holds its evals by project and slug,
+// whatever their values, so a write of one eval's rows moves no page it is not on.
+func (view *deliveryView) listsChanged(change delivery.Change) bool {
+	if change.Kind == delivery.ChangeKindEvalVersions || change.Ref == "" || view.body == nil || view.reading {
+		return true
+	}
+	if change.TOld == nil && change.TNew == nil {
+		return true
+	}
+	for _, at := range []*time.Time{change.TOld, change.TNew} {
+		if at != nil && !at.Before(view.through) {
+			return true
+		}
+	}
+	_, listed := view.body.revs.Items["items"][change.Ref]
+	return listed
 }
 
 // touchedByItemsRun is whether a change of a delivery row can move the answer of an items view:

@@ -363,6 +363,10 @@ type deliveryView struct {
 	// where it states none.
 	from, at time.Time
 	expiry   time.Time
+	// through is, of an evals view, the end of the days its last answer folded: the later of its
+	// window's end and its compare range's (the midnight after each one's last day). An eval change
+	// of a day at or past it can move the answer whatever evals it lists (listsChanged).
+	through time.Time
 	// issues are the issue keys the population names, ancestors theirs, and sessions each
 	// session the population names with the title it shows.
 	issues, ancestors map[string]struct{}

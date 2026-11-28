@@ -178,6 +178,7 @@ type deliveryViewRead struct {
 	pop               deliveryPopulation
 	pipe              pipelinePopulation
 	from, at          time.Time
+	through           time.Time
 	body              deliveryLiveEncoded
 	expiry            time.Time
 	issues, ancestors map[string]struct{}
@@ -241,7 +242,7 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 		}
 		view.rules, view.pop, view.pipe, view.readFrom = read.rules, read.pop, read.pipe, read.from
 		view.body, view.seq, view.changedAt = &read.body, read.seq, read.changedAt
-		view.from, view.at, view.expiry = read.from, read.at, read.expiry
+		view.from, view.at, view.expiry, view.through = read.from, read.at, read.expiry, read.through
 		view.issues, view.ancestors, view.sessions = read.issues, read.ancestors, read.sessions
 		sent = h.sendLocked(g, view)
 		if classes.reads != viewReadsDelivery {
@@ -369,13 +370,15 @@ func (h *deliveryHub) readLegionReadView(ctx context.Context, spec deliveryLiveS
 // those versions mark the view, whose next read answers it.
 //
 // It reads no delivery settings: what moves its rows is a write of its project's readings,
-// versions or day rows, each of which the change log carries (touchedBy). A window is whole UTC
-// days, which move at midnight, and the refresher's pass at midnight writes every project's rows of
-// the new day, its unowned-p0 row at least, whatever its inputs (evals' walkDaily), whose change
-// marks the view. The refresher's age the body states moves with the clock, which no change
-// carries: the read keeps its step (refresherAgeStep) in the freshness revision, and the view
-// expires when the age reaches the next step, when runDue reads it again, so its pages hold an age
-// at most one step behind while no write moves it, a refresher that stopped among them. A body
+// versions or day rows, each of which the change log carries (touchedBy), a reading or a day row
+// only where its eval is one the answer lists (listsChanged). A window is whole UTC days, which
+// move at midnight, and the refresher's pass at midnight writes every project's rows of the new
+// day, its unowned-p0 row at least, whatever its inputs (evals' walkDaily), whose change of a day
+// at or past the end of the days the answer folded (through, which the read records) marks the
+// view whatever evals it lists. The refresher's age the body states moves with the clock, which no
+// change carries: the read keeps its step (refresherAgeStep) in the freshness revision, and the
+// view expires when the age reaches the next step, when runDue reads it again, so its pages hold an
+// age at most one step behind while no write moves it, a refresher that stopped among them. A body
 // that states no age, where no pass has run, sets no expiry. A narrowed view
 // (deliveryLiveSpec.narrowed) builds its evals that count pull requests from the delivery rows
 // themselves, so a change of one marks it too (touchedByDeliveryRow), and it names, as a timeline
@@ -386,6 +389,10 @@ func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, 
 	answer, narrowing, err := h.server.readProjectEvalList(ctx, spec.evalsQuery(now), spec.project, now)
 	if err != nil {
 		return nil, err
+	}
+	read.through = answer.Window.To
+	if answer.Compare != nil && answer.Compare.To.After(read.through) {
+		read.through = answer.Compare.To
 	}
 	if narrowing != nil && narrowing.issues != nil {
 		read.issues, read.sessions = narrowing.issues, narrowing.sessions

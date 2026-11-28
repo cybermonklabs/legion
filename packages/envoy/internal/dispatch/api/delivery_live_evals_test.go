@@ -216,6 +216,92 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 		filingMarks, len(views), len(others), evalsMarks)
 }
 
+// TestAnEvalsRowsMarkTheEvalsViewsThatListIt (dispatch://INFRA-2918, D25 step 6): a reading or a
+// day row of an eval marks the evals views of its project whose answer lists it, and no view whose
+// answer lists other evals alone, as a view of another kind does: the delivery and CI rows a job
+// write moves recompute no Legion view, and a Legion fact's rows no delivery view. The tab's
+// recompute Jobs read each write to the page through its evals views, and every write of either
+// family recomputed all four kinds' views, the Legion view, the largest, among them. A version
+// marks every evals view of its project, since it can register an eval, list one or move it to
+// another kind, and so does a change of no eval (the publishing of the project's defaults), a
+// change of a day at or past the end of the days the answer folded (the refresher's write of the
+// new day, onto which a preset's window moves at midnight), a change with no span, and any change
+// while the view holds no answer or a read of it is under way.
+func TestAnEvalsRowsMarkTheEvalsViewsThatListIt(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	today := measures.Midnight(now)
+	through := today.AddDate(0, 0, 1)
+	hourAgo, dayAgo, weekAgo := now.Add(-time.Hour), now.Add(-24*time.Hour), today.AddDate(0, 0, -7)
+	// answered is an evals view of INFRA over 28 days whose last answer lists slugs, read through
+	// the end of today.
+	answered := func(slugs ...string) *deliveryView {
+		t.Helper()
+		body := evalListResponse{
+			Items: []evalListItem{}, Total: len(slugs), Limit: evalPageMax,
+			Window: evalRange{From: today.AddDate(0, 0, -27), To: through, Days: 28},
+		}
+		for _, slug := range slugs {
+			body.Items = append(body.Items, evalListItem{ID: evals.EvalID("INFRA", slug), evalItem: evalItem{Series: []evals.SeriesValues{}}})
+		}
+		encoded, err := encodeDeliveryBody(evalsView, body)
+		if err != nil {
+			t.Fatalf("encode the answer listing %v: %v", slugs, err)
+		}
+		view := evalsViewOf("INFRA", 28, time.Time{}, time.Time{})
+		view.body, view.through = &encoded, through
+		return view
+	}
+	delivered := answered(evals.SlugDeployFrequency, evals.SlugDeployRunSuccess)
+	legion := answered(evals.SlugLegionRework, evals.SlugLegionWorkTime)
+	reading := answered(evals.SlugLegionRework, evals.SlugLegionWorkTime)
+	reading.reading = true
+	unanswered := evalsViewOf("INFRA", 28, time.Time{}, time.Time{})
+	other := evalsViewOf("OTHER", 28, time.Time{}, time.Time{})
+	views := []struct {
+		what string
+		view *deliveryView
+	}{
+		{"INFRA's delivery evals", delivered}, {"INFRA's Legion evals", legion}, {"INFRA's Legion evals while read", reading},
+		{"INFRA's evals with no answer yet", unanswered}, {"OTHER's evals", other},
+	}
+	every := []string{"INFRA's delivery evals", "INFRA's Legion evals", "INFRA's Legion evals while read", "INFRA's evals with no answer yet"}
+	defaults := delivery.Change{Seq: 1, Kind: delivery.ChangeKindEvalDays, RunKind: delivery.EvalDaysWrittenByDefaults, Repo: "INFRA"}
+	applied := delivery.Change{Seq: 1, Kind: delivery.ChangeKindEvalDays, RunKind: delivery.EvalDaysWrittenBySettingsRewrite}
+	unspanned := evalsChange(delivery.ChangeKindEvalDays, "INFRA", evals.SlugDeployFrequency, nil, nil)
+	cases := []struct {
+		what   string
+		change delivery.Change
+		marks  []string
+	}{
+		{"deploy-frequency's day row of a week ago", evalsChange(delivery.ChangeKindEvalDays, "INFRA", evals.SlugDeployFrequency, &weekAgo, &weekAgo),
+			[]string{"INFRA's delivery evals", "INFRA's Legion evals while read", "INFRA's evals with no answer yet"}},
+		{"deploy-frequency's day rows through today", evalsChange(delivery.ChangeKindEvalDays, "INFRA", evals.SlugDeployFrequency, &weekAgo, &today),
+			[]string{"INFRA's delivery evals", "INFRA's Legion evals while read", "INFRA's evals with no answer yet"}},
+		{"a reading of deploy-run-success", evalsChange(delivery.ChangeKindEvalReadings, "INFRA", evals.SlugDeployRunSuccess, &dayAgo, &hourAgo),
+			[]string{"INFRA's delivery evals", "INFRA's Legion evals while read", "INFRA's evals with no answer yet"}},
+		{"legion-rework's day row of today", evalsChange(delivery.ChangeKindEvalDays, "INFRA", evals.SlugLegionRework, &today, &today),
+			[]string{"INFRA's Legion evals", "INFRA's Legion evals while read", "INFRA's evals with no answer yet"}},
+		{"pr-ci's day row of today, which neither answer lists", evalsChange(delivery.ChangeKindEvalDays, "INFRA", evals.SlugPRCI, &today, &today),
+			[]string{"INFRA's Legion evals while read", "INFRA's evals with no answer yet"}},
+		{"a version of legion-rework", evalsChange(delivery.ChangeKindEvalVersions, "INFRA", evals.SlugLegionRework, nil, nil), every},
+		{"a version of deploy-frequency", evalsChange(delivery.ChangeKindEvalVersions, "INFRA", evals.SlugDeployFrequency, nil, nil), every},
+		{"unowned-p0's day row of tomorrow", evalsChange(delivery.ChangeKindEvalDays, "INFRA", evals.SlugUnownedP0, &through, &through), every},
+		{"deploy-frequency's day row with no span", unspanned, every},
+		{"the publishing of INFRA's defaults", defaults, every},
+		{"the settings applied", applied, append(slices.Clone(every), "OTHER's evals")},
+		{"OTHER's day row of deploy-frequency", evalsChange(delivery.ChangeKindEvalDays, "OTHER", evals.SlugDeployFrequency, &today, &today), []string{"OTHER's evals"}},
+	}
+	for _, c := range cases {
+		for _, view := range views {
+			if got, want := view.view.touchedBy(c.change, now), slices.Contains(c.marks, view.what); got != want {
+				t.Errorf("%s: touchedBy(%s) = %t, want %t", c.what, view.what, got, want)
+			}
+		}
+	}
+	t.Logf("%d eval changes checked against %d evals views", len(cases), len(views))
+}
+
 // TestAVersionOfAnEvalADeliveryViewReadsMarksIt: the timeline's and the measures' KPIs and the
 // Pipeline's lead-time cards are judged by the targets of the delivery evals, and the Pipeline
 // ranks its slowest jobs by the min_n of pr-ci's job series, each of the project the deploy
