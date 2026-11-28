@@ -8,13 +8,13 @@
  *   that in the agent's own sandbox, and refuses the run (exit 2) where it does not hold.
  * - It does not hide the system's directories. A checkout or an --out under one of them, such as
  *   /usr/local/src, is in the agent's reach, so the probe refuses that run and names the path.
- * - It does not cut the network, which reaches the stack and the model gateway, so a copy of the
+ * - It does not cut the network, which reaches the stack and the model's API, so a copy of the
  *   repository from the network is in the agent's reach (EVALUATION_NAMES in answer.ts says what
  *   catches such a copy, and what does not).
  *
  * The agent's omp gets no models.yml of the caller's, which would put every provider's key in its
- * reach: it reaches the model only through GATEWAY_VARIABLES. So the command refuses to run where
- * one of them is not set, and proveSandbox refuses a model that omp in the sandbox does not list.
+ * reach: it reaches the model only through MODEL_VARIABLES. So the command refuses to run where
+ * MODEL_KEY is not set, and proveSandbox refuses a model that omp in the sandbox does not list.
  */
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -42,7 +42,10 @@ const SYSTEM = [
   "/etc",
   "/run/systemd/resolve",
 ];
-/** How long one agent run may take before it is killed and counted as a failed run. */
+/**
+ * How long one command in an agent's sandbox may take before it is killed: a killed agent run
+ * fails, and a killed probe or model check refuses the run.
+ */
 const RUN_TIMEOUT_MS = 600_000;
 
 /** The caller's bwrap, and the omp and compiled `dispatch` that every sandbox binds read-only. */
@@ -61,8 +64,13 @@ export interface Run {
   readonly code: number;
 }
 
-/** The caller's two variables that reach the model gateway: the only values the agent takes from it. */
-export const GATEWAY_VARIABLES = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"] as const;
+/**
+ * The key without which the agent's omp lists and calls no model. With it, omp lists Anthropic's
+ * models and calls Anthropic's own API.
+ */
+export const MODEL_KEY = "ANTHROPIC_API_KEY";
+/** MODEL_KEY, and the address of a gateway that omp calls in place of that API where it is set. */
+export const MODEL_VARIABLES = [MODEL_KEY, "ANTHROPIC_BASE_URL"] as const;
 
 export function promptOf(issue: string): string {
   return `You review a change request. Read ${SKILL} and follow it for issue ${issue}, document spec.md.`;
@@ -70,8 +78,8 @@ export function promptOf(issue: string): string {
 
 /**
  * The environment of an agent: its own home, state and TMPDIR, a PATH of its own `dispatch` and
- * the system's directories, the stack's address and token, and the two variables that reach the
- * model gateway, which are the only values it takes from the caller.
+ * the system's directories, the stack's address and token, and each of MODEL_VARIABLES that the
+ * caller sets, which are the only values it takes from the caller.
  */
 export function environmentOf(
   stack: { readonly url: string; readonly token: string },
@@ -88,9 +96,9 @@ export function environmentOf(
     DISPATCH_SESSION_ID: session,
     DISPATCH_STATE_DIR: STATE,
   };
-  for (const name of GATEWAY_VARIABLES) {
+  for (const name of MODEL_VARIABLES) {
     const value = caller[name];
-    if (value !== undefined) environment[name] = value;
+    if (value !== undefined && value !== "") environment[name] = value;
   }
   return environment;
 }
@@ -187,9 +195,7 @@ export function probeProblems(
 
 /**
  * What is wrong where `printed`, the output of `omp models find <model> --json` in the agent's
- * sandbox, lists no model `model` by its id or its selector; null where it lists it. omp there
- * lists a model of the gateway only with both GATEWAY_VARIABLES, and never a model that only the
- * caller's models.yml defines.
+ * sandbox, lists no model `model` by its id or its selector; null where it lists it.
  */
 export function modelProblem(printed: string, model: string): string | null {
   let models: unknown;
@@ -207,7 +213,7 @@ export function modelProblem(printed: string, model: string): string | null {
   });
   return listed
     ? null
-    : `omp in the agent's sandbox lists no model ${model}: the agent reaches a model only through ${GATEWAY_VARIABLES.join(" and ")}, and it gets no models.yml`;
+    : `omp in the agent's sandbox lists no model ${model}: the agent gets no models.yml, so omp there lists only Anthropic's models, and those only with ${MODEL_KEY}`;
 }
 
 /** What a command in the agent's sandbox printed, and its exit status. */
@@ -222,8 +228,7 @@ async function sandboxed(
   sandbox: Sandbox,
   own: string,
   environment: Record<string, string>,
-  command: readonly string[],
-  timeout?: number
+  command: readonly string[]
 ): Promise<Sandboxed> {
   const child = Bun.spawn({
     cmd: [sandbox.bwrap, ...sandboxArgs(sandbox, own), ...command],
@@ -231,7 +236,7 @@ async function sandboxed(
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    ...(timeout === undefined ? {} : { timeout }),
+    timeout: RUN_TIMEOUT_MS,
   });
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).text(),
@@ -307,32 +312,26 @@ export async function review(
   prompt: string,
   environment: Record<string, string>
 ): Promise<Run> {
-  const { stdout, stderr, code } = await sandboxed(
-    sandbox,
-    own,
-    environment,
-    [
-      OMP,
-      "--profile",
-      PROFILE,
-      "--cwd",
-      WORK,
-      "--model",
-      model,
-      "--tools",
-      "read,bash",
-      "--no-skills",
-      "--no-extensions",
-      "--no-rules",
-      "--no-context-files",
-      "--no-session",
-      "--no-title",
-      "--mode",
-      "json",
-      "-p",
-      prompt,
-    ],
-    RUN_TIMEOUT_MS
-  );
+  const { stdout, stderr, code } = await sandboxed(sandbox, own, environment, [
+    OMP,
+    "--profile",
+    PROFILE,
+    "--cwd",
+    WORK,
+    "--model",
+    model,
+    "--tools",
+    "read,bash",
+    "--no-skills",
+    "--no-extensions",
+    "--no-rules",
+    "--no-context-files",
+    "--no-session",
+    "--no-title",
+    "--mode",
+    "json",
+    "-p",
+    prompt,
+  ]);
   return { ...answerOf(stdout), stdout, stderr, code };
 }

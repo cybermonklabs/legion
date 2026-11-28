@@ -20,8 +20,8 @@ describe("the exit status of a command that cannot run", () => {
     await rm(scratch, { recursive: true, force: true });
   });
 
-  // Each case sets the two gateway variables, which the command refuses to run without, unless
-  // `change` takes one out.
+  // Each case sets ANTHROPIC_API_KEY, which the command refuses to run without, and
+  // ANTHROPIC_BASE_URL, unless `change` takes one out.
   async function command(
     out: string,
     change: Record<string, string | undefined> = {}
@@ -71,6 +71,17 @@ describe("the exit status of a command that cannot run", () => {
     expect(code).toBe(2);
     expect(await readdir(out)).toEqual([]);
     expect(await readdir(temporary)).toEqual([]);
+  }, 30_000);
+
+  // omp lists and calls Anthropic's models with the key alone, so a missing gateway is no refusal:
+  // the command goes on to the stack, which this case gives no database.
+  test("goes past the model's variables with no ANTHROPIC_BASE_URL", async () => {
+    const out = join(scratch, "no-gateway");
+    await mkdir(out);
+    const { code, stderr } = await command(out, { ANTHROPIC_BASE_URL: undefined });
+    expect(stderr).not.toContain("ANTHROPIC_BASE_URL");
+    expect(stderr).toContain("DISPATCH_TEST_DATABASE_URL must name the PostgreSQL server");
+    expect(code).toBe(2);
   }, 30_000);
 
   test("is 2 with an --out that an earlier run used, and names what it holds", async () => {

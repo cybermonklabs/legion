@@ -63,7 +63,7 @@ export interface Comparison {
   readonly problems: readonly string[];
 }
 
-const FINDING_LINE = /^FINDING (\S+) (\S+) (.+?): (.+)$/;
+const FINDING_LINE = /^FINDING (\S+) (\S+) (.+?): .+$/;
 const NOT_REVIEWED = "NOT REVIEWED:";
 /** A verdict's word, which no line holds after its own opening: `FINDING`, `NO FINDING` or `NOT REVIEWED`. */
 const VERDICT_WORD = /\b(?:FINDING|NOT REVIEWED)\b/;

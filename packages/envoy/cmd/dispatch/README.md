@@ -7560,7 +7560,7 @@ Each item below names a path with its method and identity, then its purpose.
   These are no part of the list of terms until a person approves the document.
   `texts` counts both: the count of each kind is the number of its `nodes`, and the count of definitions is the number of `definitions`.
   So the reviewer of R25 finds each statement, check and term of the version by its node, and it needs no second reader of the form.
-  It still reads the prose that Dispatch does not judge, and each text in the forms that the rules do not read (Which texts Dispatch judges, below).
+  It still reads the prose that Dispatch does not judge, and each text in the forms that the rules do not read (Which texts Dispatch judges, above).
   A version that the document does not have is `404 VERSION_NOT_FOUND`.
   A `version` that is not a whole number of 1 or more is `400 INVALID_QUERY`.
   Without `version`, a document with no settled version is `409 NO_VERSION`.

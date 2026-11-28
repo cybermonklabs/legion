@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { MODEL } from "../../approval-eval/fresh-agent";
 import {
   environmentOf,
   modelProblem,
@@ -15,7 +16,7 @@ import {
 const STACK = { url: "http://127.0.0.1:40000", token: "dispatch-stack-token" };
 
 describe("environmentOf", () => {
-  test("gives the agent its own TMPDIR and PATH, and takes only the two gateway variables from the caller", () => {
+  test("gives the agent its own TMPDIR and PATH, and takes only the two model variables from the caller", () => {
     const environment = environmentOf(STACK, "session-1", {
       PATH: "/home/someone/tools/bin",
       TMPDIR: "/srv/scratch",
@@ -36,6 +37,17 @@ describe("environmentOf", () => {
       ANTHROPIC_BASE_URL: "https://gateway.example",
       ANTHROPIC_API_KEY: "a-key",
     });
+  });
+
+  test("takes no ANTHROPIC_BASE_URL that the caller leaves unset or empty", () => {
+    for (const caller of [
+      { ANTHROPIC_API_KEY: "a-key" },
+      { ANTHROPIC_API_KEY: "a-key", ANTHROPIC_BASE_URL: "" },
+    ]) {
+      const environment = environmentOf(STACK, "session-1", caller);
+      expect(environment.ANTHROPIC_API_KEY).toBe("a-key");
+      expect("ANTHROPIC_BASE_URL" in environment).toBe(false);
+    }
   });
 });
 
@@ -78,8 +90,6 @@ describe("probeProblems", () => {
 });
 
 describe("modelProblem", () => {
-  const MODEL = "claude-opus-5-5";
-
   test("passes a list that holds the model by its id or by its selector", () => {
     expect(
       modelProblem(`{"models":[{"id":"${MODEL}","selector":"anthropic/${MODEL}"}]}`, MODEL)
@@ -92,9 +102,9 @@ describe("modelProblem", () => {
     ).toBe(null);
   });
 
-  test("fails a list without the model, as omp prints with no key, and names the two variables", () => {
+  test("fails a list without the model, as omp prints with no key, and names the key", () => {
     expect(modelProblem('{"models":[]}', MODEL)).toBe(
-      `omp in the agent's sandbox lists no model ${MODEL}: the agent reaches a model only through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY, and it gets no models.yml`
+      `omp in the agent's sandbox lists no model ${MODEL}: the agent gets no models.yml, so omp there lists only Anthropic's models, and those only with ANTHROPIC_API_KEY`
     );
   });
 
@@ -114,8 +124,7 @@ const bwrapRuns =
   Bun.spawnSync({ cmd: [bwrap, "--ro-bind", "/", "/", "true"], stderr: "ignore" }).exitCode === 0;
 
 describe.skipIf(!bwrapRuns && process.env.GITHUB_ACTIONS !== "true")("proveSandbox", () => {
-  const MODEL = "claude-opus-5-5";
-  const GATEWAY = { ANTHROPIC_BASE_URL: "https://gateway.example", ANTHROPIC_API_KEY: "a-key" };
+  const CALLER = { ANTHROPIC_BASE_URL: "https://gateway.example", ANTHROPIC_API_KEY: "a-key" };
   const EXPECTED = resolve(import.meta.dir, "..", "expected.json");
   let scratch = "";
   let sandbox: Sandbox;
@@ -161,7 +170,7 @@ describe.skipIf(!bwrapRuns && process.env.GITHUB_ACTIONS !== "true")("proveSandb
       own,
       [earlier, EXPECTED],
       MODEL,
-      environmentOf(STACK, "session-1", GATEWAY)
+      environmentOf(STACK, "session-1", CALLER)
     );
   });
 
@@ -172,9 +181,19 @@ describe.skipIf(!bwrapRuns && process.env.GITHUB_ACTIONS !== "true")("proveSandb
         own,
         [earlier, "/usr/bin/env"],
         MODEL,
-        environmentOf(STACK, "session-1", GATEWAY)
+        environmentOf(STACK, "session-1", CALLER)
       )
     ).rejects.toThrow("the agent's sandbox shows it /usr/bin/env, which holds the answers");
+  });
+
+  test("passes with the key alone, as omp lists Anthropic's models with no gateway", async () => {
+    await proveSandbox(
+      sandbox,
+      own,
+      [earlier, EXPECTED],
+      MODEL,
+      environmentOf(STACK, "session-1", { ANTHROPIC_API_KEY: CALLER.ANTHROPIC_API_KEY })
+    );
   });
 
   test("refuses the run where omp in the sandbox, with the agent's environment, lists no model", async () => {
@@ -184,7 +203,7 @@ describe.skipIf(!bwrapRuns && process.env.GITHUB_ACTIONS !== "true")("proveSandb
         own,
         [earlier, EXPECTED],
         MODEL,
-        environmentOf(STACK, "session-1", { ANTHROPIC_BASE_URL: GATEWAY.ANTHROPIC_BASE_URL })
+        environmentOf(STACK, "session-1", { ANTHROPIC_BASE_URL: CALLER.ANTHROPIC_BASE_URL })
       )
     ).rejects.toThrow(`omp in the agent's sandbox lists no model ${MODEL}`);
   });

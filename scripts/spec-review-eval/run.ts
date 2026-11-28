@@ -2,15 +2,15 @@
  * Runs a fresh agent with skills/spec-statement-review on each fixed change request of
  * expected.json, against a Dispatch server of this checkout, and judges each answer.
  *
- *   ANTHROPIC_BASE_URL=<gateway> ANTHROPIC_API_KEY=<key> DISPATCH_TEST_DATABASE_URL=<postgres> \
+ *   ANTHROPIC_API_KEY=<key> [ANTHROPIC_BASE_URL=<gateway>] DISPATCH_TEST_DATABASE_URL=<postgres> \
  *     bun scripts/spec-review-eval/run.ts [--runs N] [--omp <omp executable>] [--model <model>]
  *     [--fixture <id>]... [--out <dir>]
  *
  * Each agent runs in a bubblewrap sandbox (agent.ts), so `bwrap` must be installed. The exit
  * status is 0 when every run passes, 1 when one fails, and 2 when the command cannot run: a flag
- * it refuses, ANTHROPIC_BASE_URL or ANTHROPIC_API_KEY not set, an --out that is no directory or is
- * not empty, a stack that does not start, a sandbox that cannot hide the answers, a model that omp
- * in the sandbox does not list, or any other error before every run has its verdict.
+ * it refuses, ANTHROPIC_API_KEY not set, an --out that is no directory or is not empty, a stack
+ * that does not start, a sandbox that cannot hide the answers, a model that omp in the sandbox
+ * does not list, or any other error before every run has its verdict.
  */
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -26,7 +26,7 @@ import { MODEL } from "../approval-eval/fresh-agent";
 import {
   compileDispatch,
   environmentOf,
-  GATEWAY_VARIABLES,
+  MODEL_KEY,
   promptOf,
   proveSandbox,
   review,
@@ -63,7 +63,7 @@ interface Flags {
 }
 
 const USAGE =
-  "usage: ANTHROPIC_BASE_URL=<gateway> ANTHROPIC_API_KEY=<key> DISPATCH_TEST_DATABASE_URL=<postgres> bun scripts/spec-review-eval/run.ts [--runs N] [--omp <omp executable>] [--model <model>] [--fixture <id>]... [--out <dir>]";
+  "usage: ANTHROPIC_API_KEY=<key> [ANTHROPIC_BASE_URL=<gateway>] DISPATCH_TEST_DATABASE_URL=<postgres> bun scripts/spec-review-eval/run.ts [--runs N] [--omp <omp executable>] [--model <model>] [--fixture <id>]... [--out <dir>]";
 
 function readFlags(
   argv: readonly string[],
@@ -86,10 +86,9 @@ function readFlags(
   } catch (error) {
     throw new CannotRunError(`${error instanceof Error ? error.message : String(error)}\n${USAGE}`);
   }
-  const unset = GATEWAY_VARIABLES.filter((name) => (caller[name] ?? "") === "");
-  if (unset.length > 0) {
+  if ((caller[MODEL_KEY] ?? "") === "") {
     throw new CannotRunError(
-      `${unset.join(" and ")} ${unset.length === 1 ? "is" : "are"} not set, and no agent can reach a model without ${GATEWAY_VARIABLES.join(" and ")}: the agent's omp gets no models.yml\n${USAGE}`
+      `${MODEL_KEY} is not set, and without it the agent's omp, which gets no models.yml, lists and calls no model\n${USAGE}`
     );
   }
   const runs = Number(values.runs ?? "1");
