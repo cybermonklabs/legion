@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/reearth/ygo/crdt"
@@ -92,29 +93,43 @@ func TestARepairsUpdateWaitsForItsOwnWriterBehindAnotherWritersSlot(t *testing.T
 // writers' slots stand queued, neither finished: finishing the second leaves the call waiting, and
 // finishing the first lets it go by with both slots still queued for their own writers' updates.
 func TestABrowsersUpdateWaitsOnTheFirstSlotAndTakesNone(t *testing.T) {
-	// Not parallel: it reads every goroutine's stack in the process (goroutinesIn), where another
-	// test's goroutines would count as its own.
-	service := &Service{}
-	firstUpdate, secondUpdate := []byte("the first writer's update"), []byte("the second writer's update")
-	first, second := service.prepareSuppressedPersistence("room"), service.prepareSuppressedPersistence("room")
-	consumed := startParkedConsume(t, service, []byte("a browser's update"), "the browser's update")
-	service.finishSuppressedPersistence(second, secondUpdate)
-	// A call that waited on the second slot, or on any slot, goes by once it is finished; one that
-	// waits on the first does not.
-	if testwait.Holds(200*time.Millisecond, testwait.Poll, func() bool { return len(consumed) > 0 }) {
-		t.Fatalf("the browser's update went by (took a slot: %t) once the second slot was finished, before the first", <-consumed)
-	}
-	service.finishSuppressedPersistence(first, firstUpdate)
-	if testwait.Receive(t, "the browser's update to go by once the first writer finished", consumed) {
-		t.Fatal("a browser's update took a writer's slot")
-	}
-	requireSlotsQueued(t, service, "room", 2)
-	for _, update := range [][]byte{firstUpdate, secondUpdate} {
-		if !service.consumeSuppressedPersistence("room", update) {
-			t.Fatalf("%q went by as no writer's", update)
+	t.Parallel()
+	testwait.Bubble(t, func(t testing.TB) {
+		service := &Service{}
+		firstUpdate, secondUpdate := []byte("the first writer's update"), []byte("the second writer's update")
+		first, second := service.prepareSuppressedPersistence("room"), service.prepareSuppressedPersistence("room")
+		defer service.finishSuppressedPersistence(first, firstUpdate)
+		defer service.finishSuppressedPersistence(second, secondUpdate)
+		consumed := make(chan bool, 1)
+		go func() { consumed <- service.consumeSuppressedPersistence("room", []byte("a browser's update")) }()
+		synctest.Wait()
+		select {
+		case taken := <-consumed:
+			t.Fatalf("the browser's update went by (took a slot: %t) before either writer finished", taken)
+		default:
 		}
-	}
-	requireSlotsQueued(t, service, "room", 0)
+
+		service.finishSuppressedPersistence(second, secondUpdate)
+		// Let any worker made runnable by finishing the second slot run until it blocks
+		// or returns. A worker waiting on the first slot still cannot return.
+		synctest.Wait()
+		select {
+		case taken := <-consumed:
+			t.Fatalf("the browser's update went by (took a slot: %t) once the second slot was finished, before the first", taken)
+		default:
+		}
+		service.finishSuppressedPersistence(first, firstUpdate)
+		if testwait.Receive(t, "the browser's update to go by once the first writer finished", consumed) {
+			t.Fatal("a browser's update took a writer's slot")
+		}
+		requireSlotsQueued(t, service, "room", 2)
+		for _, update := range [][]byte{firstUpdate, secondUpdate} {
+			if !service.consumeSuppressedPersistence("room", update) {
+				t.Fatalf("%q went by as no writer's", update)
+			}
+		}
+		requireSlotsQueued(t, service, "room", 0)
+	})
 }
 
 // startParkedConsume hands update to service's persistence for "room" in a call of its own and
@@ -192,18 +207,21 @@ func TestAStampIsStoredAfterTwoWritersCommittedOutOfTheirSlotsOrder(t *testing.T
 		// The stamp has committed: its update reaches the room's worker before the settlement
 		// stores the stamp (commitRepairs). A class already gone is the worker's having removed
 		// it, which is the fault this test catches.
-		testwait.Eventually(t, "the stamp's update to reach the room's persistence", func() bool {
+		testwait.Until(t, "the stamp's update to reach the room's persistence", func() (string, bool) {
 			state := service.lockExistingState(artifactID)
 			if state == nil {
-				return true
+				return "no room state", true
 			}
 			defer service.unlockState(artifactID, state)
 			for _, class := range state.updateClasses {
 				if !class.durable {
-					return class.handed
+					if class.handed {
+						return "the stamp's class reached persistence", true
+					}
+					return "the stamp's class has not reached persistence", false
 				}
 			}
-			return true
+			return "no undurable class", true
 		})
 	}
 	settleCurrentGeneration(t, service, artifactID)
@@ -240,7 +258,7 @@ func storedBlocksWithoutID(t *testing.T, service *Service, artifactID string) in
 }
 
 // requireSlotsQueued fails the test unless want suppression slots are queued for room.
-func requireSlotsQueued(t *testing.T, service *Service, room string, want int) {
+func requireSlotsQueued(t testing.TB, service *Service, room string, want int) {
 	t.Helper()
 	service.suppressMu.Lock()
 	queued := len(service.suppressed[room])

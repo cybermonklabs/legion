@@ -5,12 +5,14 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The fixture every test of two envoy-dispatch processes on one database runs on: the rooms
@@ -52,13 +54,21 @@ func newProcessPairTo(t *testing.T, logger *slog.Logger) processPair {
 	return pair
 }
 
+// answerWait gives each process what is left of the shared wait when its fixture is built.
+// The room query takes a duration, not an absolute deadline. Production's roomQueryWait
+// is a latency budget: on a loaded machine an answer can take longer to cross Postgres
+// twice (INFRA-3904). TestAMemberThatNeverAnswersCostsTheWaitAndAWarn sets that budget
+// itself. With -timeout 0, use the largest duration the query's timer can take.
+func answerWait(t *testing.T) time.Duration {
+	t.Helper()
+	if end, bounded := testwait.GiveUpAt(t); bounded {
+		return max(time.Until(end), time.Nanosecond)
+	}
+	return 1<<63 - 1
+}
+
 // newSeededProcessPair is the pair on a document seeded with markdown and not settled, which
-// leaves task A holding no room of its own: where the room-query tests start. Each process's
-// queries wait for the other's answers for roomWait, not production's roomQueryWait: what the
-// tests over the pair check is what an answer holds and what a write does with it, and on a loaded
-// machine an answer can take longer than that latency budget to cross Postgres twice, which
-// failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch with no answer at all
-// (dispatch://INFRA-3904). TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the budget itself.
+// leaves task A holding no room of its own: where the room-query tests start.
 func newSeededProcessPair(t *testing.T, markdown string) processPair {
 	t.Helper()
 	return newSeededProcessPairTo(t, markdown, nil)
@@ -73,7 +83,11 @@ func newSeededProcessPairTo(t *testing.T, markdown string, logger *slog.Logger) 
 	artifactID := createDocument(t, database, "# First")
 	taskA, serverA := newTestServiceInstanceTo(t, database, logger)
 	taskB, gateB := newGatedServiceInstanceTo(t, storetest.SecondProcess(t, database), logger)
-	taskA.roomQueries.wait, taskB.roomQueries.wait = roomWait(t), roomWait(t)
+	taskA.roomQueries.wait = answerWait(t)
+	taskB.roomQueries.wait = answerWait(t)
+	// ygo's real-clock sweeper must not close an idle room on a slow run. Set both timeouts
+	// before the first room loads.
+	taskA.srv.RoomIdleTimeout, taskB.srv.RoomIdleTimeout = time.Hour, time.Hour
 	serverB := newTestServer(t, taskB)
 	seedServiceText(t, taskA, artifactID, markdown)
 	return processPair{
@@ -95,7 +109,7 @@ func (pair processPair) runRoomSync(t *testing.T) {
 func (pair processPair) openReader(t *testing.T, server *httptest.Server, login string) *docstest.Peer {
 	t.Helper()
 	reader := connectPeer(t, server.URL, pair.artifactID, login)
-	if err := reader.WaitForText(peerMarkdown, storedMarkdown(t, pair.database, pair.artifactID), roomWait(t)); err != nil {
+	if err := reader.AwaitText(t, peerMarkdown, storedMarkdown(t, pair.database, pair.artifactID)); err != nil {
 		t.Fatalf("%s's reader never received the document: %v", login, err)
 	}
 	return reader
@@ -108,7 +122,10 @@ func (pair processPair) heldEditOnB(t *testing.T, connection uint64, actor model
 	pair.gateB.hold()
 	pair.taskB.addConnection(pair.artifactID, connection, actor)
 	editAsPeer(t, pair.taskB, pair.artifactID, edit)
-	waitFor(t, roomWait(t), "task B's append of the edit to wait at the gate", func() bool { return pair.gateB.waiting.Load() == 1 })
+	testwait.Until(t, "task B's append of the edit to wait at the gate", func() (int32, bool) {
+		waiting := pair.gateB.waiting.Load()
+		return waiting, waiting == 1
+	})
 }
 
 // leaveTaskABehind loads task A's room, then has a browser on task B edit the document: task A's

@@ -3,12 +3,12 @@ package docs
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestATickLocksNoOwnerOfACommentThatNamesANode holds the block-index tick's read of the events
@@ -28,7 +28,8 @@ import (
 func TestATickLocksNoOwnerOfACommentThatNamesANode(t *testing.T) {
 	t.Parallel()
 	database, service := blockIndexService(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(testwait.Context(t))
+	defer cancel()
 
 	// This build's first tick that reads a proven horizon starts the build's cursor at it, so the
 	// comment's event below is after the cursor.
@@ -44,9 +45,7 @@ func TestATickLocksNoOwnerOfACommentThatNamesANode(t *testing.T) {
 	if !commentNamesItsNode(t, database, comment) {
 		t.Fatalf("comment %s names no node after its write, so this test proves nothing", comment)
 	}
-	horizon, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-	if _, err := service.blockIndexHorizon().Await(horizon); err != nil {
+	if _, err := service.blockIndexHorizon().Await(ctx); err != nil {
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
 
@@ -69,32 +68,28 @@ func TestATickLocksNoOwnerOfACommentThatNamesANode(t *testing.T) {
 		_, _, err := service.readEventsAfterCursor(ctx, &tick)
 		answered <- answer{tick, err}
 	}()
-	deadline := time.Now().Add(time.Minute)
-	for {
+	got := testwait.Until(t, "the tick's read of the events after its build's cursor to answer without taking an owner lock", func() (answer, bool) {
 		select {
 		case got := <-answered:
-			if got.err != nil {
-				t.Fatalf("the tick's read of the events after its build's cursor: %v", got.err)
-			}
-			if got.tick.Events == 0 || got.tick.Comments != 0 {
-				t.Errorf("the tick read %d event(s) and gave %d comment(s) their nodes, want the comment's event read and no comment written: its row names its node already",
-					got.tick.Events, got.tick.Comments)
-			}
-			return
+			return got, true
 		default:
 		}
 		if waiting, _ := storetest.OwnerLockWaiters(t, database); waiting > 0 {
 			if err := holder.Rollback(ctx); err != nil {
 				t.Fatalf("release issue CORE-1's owner lock: %v", err)
 			}
-			got := <-answered
+			got := testwait.Receive(t, "the tick to answer after the owner lock is released", answered)
 			t.Fatalf("the tick waited on an owner lock while this test held issue CORE-1's, whose one comment the events after the cursor name already names its node (once released it read %d event(s), gave %d comment(s) their nodes, error %v): it locks the owner of a comment it has nothing to write",
 				got.tick.Events, got.tick.Comments, got.err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the tick's read of the events after its build's cursor neither answered nor waited on an owner lock within a minute")
-		}
-		time.Sleep(5 * time.Millisecond)
+		return answer{}, false
+	})
+	if got.err != nil {
+		t.Fatalf("the tick's read of the events after its build's cursor: %v", got.err)
+	}
+	if got.tick.Events == 0 || got.tick.Comments != 0 {
+		t.Errorf("the tick read %d event(s) and gave %d comment(s) their nodes, want the comment's event read and no comment written: its row names its node already",
+			got.tick.Events, got.tick.Comments)
 	}
 }
 

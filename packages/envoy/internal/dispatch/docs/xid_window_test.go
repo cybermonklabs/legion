@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The document service's own write transactions under storetest's xid rig (INFRA-636, plan test
@@ -377,8 +378,7 @@ func settlementFixture(t *testing.T, service *Service, database *store.Store, ed
 	editAsConnectedPeer(t, service, artifactID, 1, editor, replaceRun("Revision token r0", "Revision token r1"))
 	before := latestVersionNumber(t, service, artifactID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for live updates to reach persistence: %v", err)
 	}
