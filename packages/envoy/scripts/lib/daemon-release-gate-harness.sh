@@ -70,8 +70,8 @@ readonly dispatch_listener_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e004"
 #     FAKE_ROOT/marketplaces/<owner>/<repo>/<path>.
 # An endpoint with a file at FAKE_ROOT/refuse/<endpoint with / as _> fails with that file's text.
 # Any other call is refused as unexpected.
-cat >"${temporary_dir}/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"${temporary_dir}/bin/gh"
+cat >>"${temporary_dir}/bin/gh" <<'EOF'
 printf 'gh %s\n' "$*" >>"${FAKE_CALLS:?}"
 [ "$1" = api ] || { echo "fake gh: unexpected command: $*" >&2; exit 2; }
 shift
@@ -170,12 +170,12 @@ PY
     [ "${FAKE_API_DOWN:-0}" != 1 ] || { echo "error connecting to api.github.com" >&2; exit 1; }
     head="${path##*...}"
     [ -f "${FAKE_ROOT}/compare/${head}" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
-    cat "${FAKE_ROOT}/compare/${head}"
+    printf '%s\n' "$(<"${FAKE_ROOT}/compare/${head}")"
     ;;
   repos/cybermonklabs/legion/commits/refs/tags/*)
     tag=${path#repos/cybermonklabs/legion/commits/refs/tags/}
     [ -f "${FAKE_ROOT}/tags/${tag}" ] || { echo "gh: No commit found for SHA: refs/tags/${tag} (HTTP 422)" >&2; exit 1; }
-    cat "${FAKE_ROOT}/tags/${tag}"
+    printf '%s\n' "$(<"${FAKE_ROOT}/tags/${tag}")"
     ;;
   repos/*/contents/.claude-plugin/marketplace.json)
     repo=${path#repos/}
@@ -199,8 +199,8 @@ EOF
 # A ref with no fs/ is one the registry does not hold, and docker answers `run` as it does then.
 # `run` takes the options the gate runs an image under (--rm, --quiet, --network, --read-only,
 # --cap-drop, --security-opt) and refuses any other.
-cat >"${temporary_dir}/bin/docker" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"${temporary_dir}/bin/docker"
+cat >>"${temporary_dir}/bin/docker" <<'EOF'
 printf 'docker %s\n' "$*" >>"${FAKE_CALLS:?}"
 if [ "$1" = run ]; then
   shift
@@ -225,6 +225,7 @@ if [ "$1" = run ]; then
   case "$entrypoint $*" in
     "cat "*)
       [ -f "$dir/fs$1" ] || { echo "cat: $1: No such file or directory" >&2; exit 1; }
+      # The entrypoint serves raw fixture files, including any trailing newlines.
       cat "$dir/fs$1"
       ;;
     "/opt/legion/bin/legion version")
@@ -233,7 +234,9 @@ if [ "$1" = run ]; then
         printf '\nRun '"'"'docker run --help'"'"' for more information\n' >&2
         exit 127
       fi
-      cat "$dir/legion-version"
+      # Read to EOF to preserve the exact line endings of the version fixture.
+      IFS= read -r -d '' version <"$dir/legion-version"
+      printf '%s' "$version"
       ;;
     *) echo "fake docker: unexpected run: $entrypoint $*" >&2; exit 2 ;;
   esac
@@ -248,7 +251,7 @@ case "$6" in
   '{{json .Image.Config.Labels}}')
     case "$mediatype" in
       *index*) echo null ;;
-      *) cat "$dir/labels" ;;
+      *) printf '%s\n' "$(<"$dir/labels")" ;;
     esac
     ;;
   '{{range .Manifest.Manifests}}'*) printf '%s' "$(<"$dir/platforms")" ;;
@@ -257,7 +260,7 @@ case "$6" in
     platform=${platform%%'"'*}
     file="$dir/platform-${platform//\//_}"
     [ -f "$file" ] || { echo "ERROR: template: :1:17: executing \"\" at <index .Image \"$platform\">: nil pointer evaluating *v1.Image.Config" >&2; exit 1; }
-    cat "$file"
+    printf '%s\n' "$(<"$file")"
     ;;
   *) echo "fake docker: unexpected format: $6" >&2; exit 2 ;;
 esac
@@ -286,13 +289,20 @@ EOF
 # the fake runs the command itself. The harness runs the real `npm exec`, with these same flags,
 # once when it starts: an npm that no longer takes them fails the suite there. A call of any other
 # shape is refused rather than emulated.
-cat >"${temporary_dir}/bin/npm" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"${temporary_dir}/bin/npm"
+cat >>"${temporary_dir}/bin/npm" <<'EOF'
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
 printf 'npm-cwd %s\n' "$PWD" >>"$FAKE_CALLS"
-env | grep '^npm_config_' | sort | sed 's/^/npm-config /' >>"$FAKE_CALLS"
+# Sort complete lines under the caller's locale, just as the old env log did.
+while IFS= read -r name; do
+  while IFS= read -r line; do
+    [[ $line != npm_config_* ]] || printf '%s\n' "$line"
+  done <<<"$name=${!name}"
+done < <(compgen -e npm_config_) | sort | while IFS= read -r line; do
+  printf 'npm-config %s\n' "$line"
+done >>"$FAKE_CALLS"
 if [ "$1" = exec ] || { [ "$1" = pack ] && [ "${FAKE_NPM_REAL_PACK:-0}" = 1 ]; }; then
-  mapfile -t real_npm <"$(dirname "$0")/../real-npm"
+  mapfile -t real_npm <"${0%/*}/../real-npm"
   if [ "$1" != exec ]; then
     exec "${real_npm[0]}" "${real_npm[1]}" "$@"
   fi
@@ -377,15 +387,19 @@ refuse() {
 tag() {
   printf '%s\n' "$2" >"${case_root}/tags/$1"
 }
-# image_dir <ref>: the directory of the fake docker's answers for <ref>.
+# image_dir <ref> [<variable>]: print the fake docker's directory for <ref>, or assign it.
 image_dir() {
-  printf '%s/images/%s' "$case_root" "${1//[\/:@]/_}"
+  if [ "$#" -eq 2 ]; then
+    printf -v "$2" '%s/images/%s' "$case_root" "${1//[\/:@]/_}"
+  else
+    printf '%s/images/%s' "$case_root" "${1//[\/:@]/_}"
+  fi
 }
 # single <ref> <source> <revision>: a single image labelled with source and revision; an empty
 # source or revision leaves that label out.
 single() {
   local dir
-  dir=$(image_dir "$1")
+  image_dir "$1" dir
   mkdir -p "$dir"
   printf '"application/vnd.oci.image.manifest.v1+json"' >"$dir/mediatype"
   labels "$2" "$3" >"$dir/labels"
@@ -396,7 +410,7 @@ single() {
 # holds the two attestation entries alone.
 index() {
   local dir
-  dir=$(image_dir "$1")
+  image_dir "$1" dir
   mkdir -p "$dir"
   printf '"application/vnd.oci.image.index.v1+json"' >"$dir/mediatype"
   if [ "$2" = attestations-only ]; then
@@ -425,7 +439,7 @@ labels() {
 readonly linked_envoy="17.42.0"
 worker_image() {
   local dir
-  dir=$(image_dir "$1")
+  image_dir "$1" dir
   rm -rf "$dir/fs"
   mkdir -p "$dir/fs/opt/legion/pi-envoy" "$dir/fs/opt/legion/claude-envoy"
   printf '{"name": "@sjawhar/pi-envoy", "version": "16.12.1"}\n' >"$dir/fs/opt/legion/pi-envoy/package.json"
@@ -440,9 +454,10 @@ worker_image() {
 }
 # plugins_line <ref> <line>: the second line <ref>'s `legion version` prints, in place of its own.
 plugins_line() {
-  local file
-  file="$(image_dir "$1")/legion-version"
-  printf '%s\n%s\n' "$(head -n 1 "$file")" "$2" >"$file"
+  local dir first
+  image_dir "$1" dir
+  IFS= read -r first <"$dir/legion-version" || true
+  printf '%s\n%s\n' "$first" "$2" >"$dir/legion-version"
 }
 # dotfiles <pi-envoy pin> [<claude-envoy enabled>]: the developer box's ~/.dotfiles, with
 # ~/.omp/plugins linked to its plugin tree, the pin installed there, and a settings.json whose
@@ -500,11 +515,10 @@ image: ${worker_smoke}"
 # generated SDK registers it, inside the body of its own NewNatsHub, and in the SDK's switch of the
 # types it rebuilds, neither of which declares a hub; with declares, main.go calls it.
 envoy_program() {
-  local dir="${case_root}/files/envoy"
+  local dir="${case_root}/files/envoy" transform
   mkdir -p "$dir/sdks/gcp" "$dir/testdata" "${case_root}/files/shared" "${case_root}/files/envoy-cluster"
   printf 'module example.org/deployment/envoy\n\nreplace example.org/sdk => ./sdks/gcp // the generated SDK\n\nreplace (\n\texample.org/shared => ../shared\n\texample.org/nats v1.0.0 => example.org/nats v1.0.1\n)\n' >"$dir/go.mod"
-  cat >"$dir/sdks/gcp/natsHub.go" <<'GO'
-package gcp
+  printf '%s' 'package gcp
 
 // NewNatsHub registers a hub.
 func NewNatsHub(ctx *pulumi.Context,
@@ -518,9 +532,8 @@ func NewNatsHub(ctx *pulumi.Context,
 }
 
 func (m *module) NewNatsHub(name string) {}
-GO
-  cat >"$dir/sdks/gcp/init.go" <<'GO'
-package gcp
+' >"$dir/sdks/gcp/natsHub.go"
+  printf '%s' 'package gcp
 
 func (m *module) Construct(ctx *pulumi.Context, name, typ, urn string) (r pulumi.Resource, err error) {
 	switch typ {
@@ -529,17 +542,18 @@ func (m *module) Construct(ctx *pulumi.Context, name, typ, urn string) (r pulumi
 	}
 	return
 }
-GO
+' >"$dir/sdks/gcp/init.go"
   printf 'package main\n\nfunc TestHub() { _ = envoygcp.NewNatsHub(ctx, "hub") }\n' >"$dir/main_test.go"
   printf 'package fixture\n\n// envoygcp.NewNatsHub(ctx, "hub") once ran here\n' >"$dir/testdata/fixture.go"
   printf 'package main\n\n// envoy/main.go gives envoygcp.NewNatsHub as Zone.\n' >"${case_root}/files/envoy-cluster/alerts.go"
-  cat >"$dir/hub_transform.go" <<'GO'
+  IFS= read -r -d '' transform <<'GO' || :
 package main
 
 /* envoygcp.NewNatsHub(ctx, "hub") made the VM hub */
 const note = "NewNatsHub(\"" + `NewNatsHub(`
 const quote = '"'
 GO
+  printf '%s' "$transform" >"$dir/hub_transform.go"
   printf 'package shared\n\nfunc Names() []string { return nil }\n' >"${case_root}/files/shared/names.go"
   if [ "$1" = declares ]; then
     printf 'package main\n\n\thub, err := envoygcp.NewNatsHub(ctx, "hub", &envoygcp.NatsHubArgs{})\n' >"$dir/main.go"

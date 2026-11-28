@@ -30,31 +30,26 @@ golden() {
   printf 'project: %s\nruntime:\n  kubernetes:\n    namespace: legion\n    image: %s\n' "$1" "$lean_image" >"$file"
   [ -z "${2:-}" ] || printf '    plugins:\n      pi_legion: 19.28.1\n      pi_envoy: %s\n' "$2" >>"$file"
 }
+readonly linux_fleet="    - key: LINUX
+      replicas: 1
+      image: ${lean_image}
+      daemonImage: ${worker_a}"
 readonly client_fleet="    - key: SMOKE
       replicas: 0
       image: ${worker_smoke}
-    - key: LINUX
-      replicas: 1
-      image: ${lean_image}
-      daemonImage: ${worker_a}
+${linux_fleet}
     - key: INFRA
       replicas: 1
       image: ${infra_image}
       daemonImage: ${worker_a}"
-# clients_open: every surface --clients reads at or after the commit: each image of client_fleet by
-# its build, each daemonImage by the pi-envoy its legion links (linked_envoy, which the projects'
-# rendered legion.yaml does not override), the sessions/ stack's image by its build, and the
-# developer box (dotfiles) by its release tags; the manifests' own versions name release tags
-# behind the commit.
-clients_open() {
-  legion_stack "$client_fleet"
+
+# clients_fixture <fleet> <sessions image>: the shared LINUX, sessions and box fixtures.
+clients_fixture() {
+  legion_stack "$1"
   golden LINUX
-  golden INFRA
   worker_image "$worker_a" "$ahead_rev"
   worker_image "$lean_image" "$identical_rev"
-  worker_image "$infra_image" "$ahead_rev"
-  sessions_stack "$session_image"
-  worker_image "$session_image" "$ahead_rev"
+  sessions_stack "$2"
   dotfiles 17.40.0
   tag pi-envoy-v17.40.0 "$ahead_rev"
   tag "pi-envoy-v${linked_envoy}" "$ahead_rev"
@@ -65,12 +60,28 @@ clients_open() {
   compare "$identical_rev" identical 0
   compare "$behind_rev" behind 12
 }
+
+# clients_open: every surface --clients reads at or after the commit: each image of client_fleet by
+# its build, each daemonImage by the pi-envoy its legion links (linked_envoy, which the projects'
+# rendered legion.yaml does not override), the sessions/ stack's image by its build, and the
+# developer box (dotfiles) by its release tags; the manifests' own versions name release tags
+# behind the commit.
+clients_open() {
+  clients_fixture "$client_fleet" "$session_image"
+  golden INFRA
+  worker_image "$infra_image" "$ahead_rev"
+  worker_image "$session_image" "$ahead_rev"
+}
 # clients_background: clients_open for the scenarios of another surface (the developer box, its
 # versions, a project's fields), with the release tags the images' manifests name ahead of the
 # commit too, so the images pass whatever they are judged by and those scenarios' rows answer for
 # their own surface alone.
 clients_background() {
   clients_open
+  clients_background_tags
+}
+
+clients_background_tags() {
   tag pi-envoy-v16.12.1 "$ahead_rev"
   tag claude-envoy-v1.0.0 "$ahead_rev"
 }
@@ -79,11 +90,24 @@ readonly envoy_behind_rev="ffffffffffffffffffffffffffffffffffffffff"
 readonly pi_envoy_ahead="pi-envoy 17.40.0 from pi-envoy-v17.40.0 at ${ahead_rev} (ahead of ${commit})"
 readonly claude_note="; the version legion-plugins serves for >=1.0.0"
 readonly claude_served="claude-envoy 4.0.0 from claude-envoy-v4.0.0 at ${identical_rev} (identical to ${commit})${claude_note}"
-# box_case <name>: a case whose fleet and developer box carry the commit (clients_background), with
-# a release tag behind it for pi-envoy 17.39.0 and claude-envoy 3.3.0.
+# box_case <name>: for developer-box, developer-box-surfaces, short-reads and versions cases
+# whose checks read no line of SMOKE, INFRA or the sessions image. LINUX alone is enough.
 box_case() {
   new_case "$1"
+  clients_fixture "$linux_fleet" "$lean_image"
+  clients_background_tags
+  box_release_tags
+}
+
+# box_case_full_fleet <name>: the image-clients cases that check INFRA keep the full background.
+box_case_full_fleet() {
+  new_case "$1"
   clients_background
+  box_release_tags
+}
+
+# Release tags behind the commit for pi-envoy 17.39.0 and claude-envoy 3.3.0.
+box_release_tags() {
   tag pi-envoy-v17.39.0 "$envoy_behind_rev"
   tag claude-envoy-v3.3.0 "$behind_rev"
   compare "$envoy_behind_rev" behind 300

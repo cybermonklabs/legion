@@ -265,7 +265,7 @@ check "never runs docker with it" "$(grep '^docker run' "$calls" | grep -qF 'age
 # one, else the pair `legion version` names on its second line, each judged by its release tag and
 # never by the image's build commit.
 echo "case: --clients, a daemonImage whose linked pi-envoy is behind the commit, its build ahead"
-box_case clients-daemon-linked-behind
+box_case_full_fleet clients-daemon-linked-behind
 plugins_line "$worker_a" "plugins @sjawhar/pi-legion 19.28.1 @sjawhar/pi-envoy 17.39.0"
 run_gate -- --clients "$commit"
 check "exits 1" "$(is "$status" 1)"
@@ -280,7 +280,7 @@ check "the verdict is GATE SHUT" "$(last_line_is "GATE SHUT")"
 # project's rendered legion.yaml sets an older pi-envoy, which is what its daemon installs, so a gate
 # that read the linked pair alone would open on this fixture.
 echo "case: --clients, a daemonImage whose every pin passes, its rendered legion.yaml setting an older pi-envoy"
-box_case clients-daemon-golden
+box_case_full_fleet clients-daemon-golden
 golden LINUX 17.39.0
 run_gate -- --clients "$commit"
 check "exits 1" "$(is "$status" 1)"
