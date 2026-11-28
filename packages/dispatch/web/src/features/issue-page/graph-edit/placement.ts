@@ -320,10 +320,12 @@ export function placingOf({ node, place }: PlacingInput): Placing {
 /**
  * Whether `held` holds `node`, a new row's, where its placing `PATCH` of `body` put it, `answer`
  * the server's answer to it, null for a landing that gave none: ranked under the parent the answer
- * names; where no answer came, ranked under the body's parent at the place the body asked for, as
- * `siblingPlace` gives it with no answer: right before the issue's memo where the place stands
- * before it by rank, else right after the child the body's `after` names, or right before the
- * child that place stands before, and last where it stands before no child `held` holds.
+ * names; where no answer came, ranked under the body's parent at the body's place: right after the
+ * child the body's `after` names, or first in the node's band where that `after` is null, which
+ * for a node of the spec's band under the issue is right after a memo of the spec's band. The node
+ * stands right before the issue's memo where that place stands before the memo by rank, else right
+ * after the child the place follows or right before the child it stands before, and last where it
+ * stands before no child `held` holds.
  *
  * Once an answer came, the parent it names alone decides. Its `after` can name a sibling no read
  * holds: the server answers a null `after` with the last ranked sibling of an earlier band it
@@ -484,9 +486,10 @@ export type SiblingPlace = (
  * The issue's memo (`memoOf`) is never that child: the walk stands it first, before the issue's
  * conversation (`memoFirst`, `docs/query_record.go`). An `after` that names the memo is right
  * after it by rank: right before the first child past the memo, after the conversation. Any other
- * place the memo stands at or past by band is before it by rank - a null `after` or a gone one
- * means a gone block of the spec stood before the memo - and makes the node the first child past
- * the conversation, so the walk then stands the memo right after it, not first.
+ * place the memo stands at or past by band is before it by rank - where the node and the memo are
+ * both of the spec's band, a null `after` or a gone one means a gone block of the spec stood before
+ * the memo - and makes the node the first child past the conversation, so the walk then stands the
+ * memo right after it, not first.
  */
 export function siblingPlace(
   held: TreeAnswer,
@@ -506,32 +509,33 @@ function placeAmong(
   walk: Walk,
   parent: string,
   node: TreeAnswerNode,
-  { answer, body }: { readonly answer: Place | null; readonly body: MoveBody }
+  { answer, body }: TakenPlace | { readonly answer: null; readonly body: Place }
 ): SiblingPlace {
   const band = bandOf(node);
   const children = childrenIn(walk, parent);
   const memo = memoOf(issue, parent, children, node.id);
   const memoAt = (first: boolean) => (memo === undefined ? undefined : { first, node: memo });
-  // The memo held at its rank, not first, shows each child of the conversation before it.
+  // The memo held at its rank, not first, shows each child of the conversation before it, so a
+  // place before the memo by rank, the first child past the conversation, is shown.
   const atRank = memo !== undefined && children[0] !== memo;
-  const beforeFirst = (start: number, first: boolean): SiblingPlace => {
+  const beforeBand = (start: number, memoFirst: boolean): SiblingPlace => {
     const child = children.find(
       (each) => each.id !== node.id && each !== memo && atOrPastBand(each, start)
     );
-    const shown = child !== undefined || atRank || !walk.open.has(parent);
-    return { child, kind: "before", memo: memoAt(first), shown };
+    const shown = child !== undefined || (atRank && !memoFirst) || !walk.open.has(parent);
+    return { child, kind: "before", memo: memoAt(memoFirst), shown };
   };
   const before = (start: number) =>
-    beforeFirst(start, memo === undefined || !atOrPastBand(memo, start));
+    beforeBand(start, memo === undefined || !atOrPastBand(memo, start));
   // Every child but the conversation stands past the memo, the first of the ranked children.
-  const pastMemo = () => beforeFirst(BAND.spec, true);
-  const { after } = answer ?? body;
+  const pastMemo = () => beforeBand(BAND.spec, true);
+  const after = answer === null ? body.after : answer.after;
   if (after === null) {
     const afterMemo =
       answer === null && memo !== undefined && band === BAND.spec && bandOf(memo) === BAND.spec;
     return afterMemo ? pastMemo() : before(band);
   }
-  const named = after === undefined ? undefined : children.find((child) => names(child, after));
+  const named = children.find((child) => names(child, after));
   if (named === undefined) return before(body.after === null ? band : band + 1);
   if (named === memo) return pastMemo();
   return { child: named, kind: "after", memo: memoAt(true), shown: true };
