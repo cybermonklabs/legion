@@ -2102,19 +2102,21 @@ describe("label_tree", () => {
   });
 
   const controls = path.join(scenarios, "controls");
-  /** The two files of #4902's head (6b0ece5c101b1d63bec807f90417a6c75bb0870f) that the control
-   * manifests change, committed as controls/pr-4902-head/ (controls/patches/README.md): each
-   * fixture, the path it has in the head, and its blob there. */
+  /** The two files of #4902's plan guidance change at its head
+   * (64d99a04992535295b81d43cdf976359b1bf80a9, on branch legion/INFRA-4115, whose pull request
+   * carries the change since #4902 closed) that the control manifests change, committed as
+   * controls/pr-4902-head/ (controls/patches/README.md): each fixture, the path it has in the head,
+   * and its blob there. The names here say #4902, whose change it is. */
   const PR_4902_FILES = [
     [
       "architect-common.md",
       "packages/daemon/internal/prompts/go/architect-common.md",
-      "f77cd71515fd18717867424b23ab9994cd725504",
+      "815a575fe91e47d3bf1d4f23dea5e890e4c02df4",
     ],
     [
       "plan.md",
       "skills/legion-architect/references/plan.md",
-      "15df444d14aa31cdfc192f83a047fc93164550d7",
+      "d29ab7a6a895a01c7ab054d8904cb176a9be1045",
     ],
   ] as const;
   /** A repository of one commit that holds #4902's head's two files at their paths, built from the
@@ -2305,7 +2307,9 @@ describe("a label older than its entry", () => {
     const entry = path.join(co, "packages/pi-legion/scripts/skill-scenarios/label-texts.sh");
     mkdirSync(path.dirname(entry), { recursive: true });
     // A label whose TestRigLaunch takes no plan guidance: it refuses the field by name, as
-    // rig_launch_test.go's decodeRigLaunchRequest does with DisallowUnknownFields.
+    // rig_launch_test.go's decodeRigLaunchRequest does with DisallowUnknownFields at a label from
+    // before the field (main 1a37a9ffe738 among them). This checkout's takes the field; the
+    // stand-in refuses it, which is what this row tests.
     writeFileSync(
       entry,
       [
