@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -37,12 +39,12 @@ const (
 )
 
 // documentSearchStatement is one of R1's five statements: the package's own text, the oracle it
-// is held against (document_search_oracle_test.go), and the arguments each is run with. sorted
-// says the statement declares no order of its own, so its rows are compared as a set; holds and
-// lacks are what the rows must and must not name, which is what says the comparison decided
-// something rather than comparing two empty answers. A statement the plan assertion alone reads
-// (excludingStatements) carries no oracle and no holds: the equality test runs the statements
-// that have one.
+// is held against (document_search_oracle_test.go, search_oracle_test.go), and the arguments
+// each is run with. sorted says the statement declares no order of its own, so its rows are
+// compared as a set; holds and lacks are what the rows must and must not name, which is what
+// says the comparison decided something rather than comparing two empty answers. A statement the
+// plan assertion alone reads (excludingStatements) carries no oracle and no holds: the equality
+// test runs the statements that have one.
 type documentSearchStatement struct {
 	name      string
 	statement string
@@ -209,11 +211,11 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 			// that is what the route sends for one (runMeaningSearch).
 			name:      "search, meaning and keywords",
 			statement: searchQueryMeaningScoped,
-			// This release's own meaning body over main's keyword legs, for the reason
-			// document_search_oracle_test.go gives: main's own meaning arms read the whole-text
-			// rows this release deletes. It opens with the package's own q, so it takes the
-			// statement's own arguments rather than main's eight.
-			oracle:    searchQueryMeaningOverMainsDocumentArm,
+			// Main's own meaning statement at 497581c7, written out whole (search_oracle_test.go):
+			// the older main's meaning arms read the whole-text rows this release deletes, for the
+			// reason document_search_oracle_test.go gives. It binds the eighteen parameters the
+			// statement does, so it takes the statement's own arguments rather than main's eight.
+			oracle:    mainAt4975SearchQueryMeaningScoped,
 			arguments: searchMeaningArguments,
 			holds:     documents,
 		},
@@ -228,7 +230,7 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 		{
 			name:      "the related-item check's meaning stage",
 			statement: relatedMeaningScopedQuery,
-			oracle:    relatedMeaningQueryOverMainsDocumentArm,
+			oracle:    mainAt4975RelatedMeaningScopedQuery,
 			arguments: slices.Concat(relatedMeaning, documentSearchSeen()),
 			holds:     documents,
 		},
@@ -346,15 +348,13 @@ func TestMainsDocumentArmSearchesNoDocumentSearchIndex(t *testing.T) {
 }
 
 // A2. Each statement of R1 answers exactly what its oracle answers over the same rows. For the
-// three whose text main still runs - search's keyword query, the related-item check's keyword
-// stage and the related-terms probe - the oracle is main's released text, held in the test
-// rather than built from this package's helpers, so an edit that changed what the document arm
-// returns would move one side and not the other. For the two meaning statements it is this
-// release's meaning body over main's keyword legs: main's meaning arms read whole-text vectors
-// this release no longer writes, so main's meaning text answers nothing over these rows and
-// would decide nothing, where the substitute differs from the statement under test in the
-// document keyword arm and in nothing else. Either way the one thing that can move a side is the
-// arm this change rewrote.
+// three whose text the older main ran - search's keyword query, the related-item check's
+// keyword stage and the related-terms probe - the oracle is that release's text, held in the
+// test rather than built from this package's helpers, so an edit that changed what the document
+// arm returns would move one side and not the other. For the two meaning statements it is
+// main's text at 497581c7, written out whole in the test as well (search_oracle_test.go): the
+// older main's meaning arms read whole-text vectors this release no longer writes, so its
+// meaning text answers nothing over these rows and would decide nothing.
 func TestEveryDocumentArmAnswersWhatMainsStatementDoes(t *testing.T) {
 	t.Parallel()
 	fixture := newDocumentSearchFixture(t)
@@ -406,9 +406,10 @@ type documentSearchPlanNode struct {
 // arm reads the latest version through the unique key and tests `v.search @@ q.tsq` as the join
 // filter of the lateral's Nested Loop, which names no relation of its own, so the condition is
 // matched against the relations below it rather than against the node's own. The page's lateral
-// still reads artifact_versions for the snippet's markdown and the meaning candidates for a
-// version's created_at, and neither tests a tsquery, so the assertion is about the match and not
-// about the table.
+// still reads artifact_versions for the snippet's markdown, and tests no tsquery there, so the
+// assertion is about the match and not about the table. The meaning candidates read no
+// artifact_versions at all: a document's date comes from document_search
+// (TestNoMeaningDocumentArmReadsArtifactVersions).
 func artifactVersionsTestingATSQuery(t *testing.T, planJSON json.RawMessage) []string {
 	t.Helper()
 	var root documentSearchPlanNode
@@ -448,11 +449,28 @@ func readsRelation(node documentSearchPlanNode, relation string) bool {
 // the statement answers them.
 func documentSearchRows(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments []any, settings []string) []string {
 	t.Helper()
+	read := []string{}
+	runSearchStatement(t, ctx, database, statement, arguments, settings, func(row pgx.CollectableRow) error {
+		values, err := row.Values()
+		if err != nil {
+			return err
+		}
+		read = append(read, fmt.Sprint(values...))
+		return nil
+	})
+	return read
+}
+
+// runSearchStatement runs statement bound to arguments in a transaction of its own under
+// settings, as the route runs a search's statement in the scan it opens (beginKeywordScan,
+// beginMeaningScan), and hands each row to read, in the order the statement answers them.
+func runSearchStatement(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments []any, settings []string, read func(pgx.CollectableRow) error) {
+	t.Helper()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the read's transaction: %v", err)
+		t.Fatalf("begin the statement's transaction: %v", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	for _, setting := range settings {
 		if _, err := tx.Exec(ctx, setting); err != nil {
 			t.Fatalf("%s: %v", setting, err)
@@ -463,16 +481,12 @@ func documentSearchRows(t *testing.T, ctx context.Context, database *store.Store
 		t.Fatalf("run the statement: %v", err)
 	}
 	defer rows.Close()
-	read := []string{}
 	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
+		if err := read(rows); err != nil {
 			t.Fatalf("read a row: %v", err)
 		}
-		read = append(read, fmt.Sprint(values...))
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate the statement: %v", err)
+		t.Fatalf("read the statement's rows: %v", err)
 	}
-	return read
 }

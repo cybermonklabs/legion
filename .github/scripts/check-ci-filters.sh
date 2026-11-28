@@ -78,10 +78,23 @@
 #      such a job's steps are - that starts a go command (test, vet, build, run, list, install,
 #      generate) no Run of a gate on that job claims and no exact entry's step holds, or a
 #      claimed line in the simple form (below) whose packages, -tags, -race or mode (test, vet,
-#      or build) are not exactly its Run's. A job that calls a reusable workflow keeps its id,
-#      its needs: changes and the whole if: that tests its filter in ci.yaml and holds its steps
-#      in the called file, which runs them inside the caller's own run, so the steps of every one
-#      of those files are read here and each refusal names the file the step is in,
+#      or build) are not exactly its Run's. A job that calls a reusable workflow keeps its id, its
+#      needs: changes and the whole if: that tests its filter in ci.yaml and holds its steps in
+#      the called file, which runs them inside the caller's own run, so the steps of every one of
+#      those files are read here and each refusal names the file the step is in.
+#
+#      Rule 4's script half (ci_filter_coverage.check_script_steps): a step that a filter gates
+#      and whose text names a script a Run's go command is in (its `source`) fails unless, for
+#      each filter that gates it, a Run of that script in a gate of that filter on the step's job
+#      cites the step with at(), and no other step of the job answers to that citation. The
+#      failure names the file, the job, the step, the script and the filter. A step's text is its
+#      run:, or the values of its with: and the run: of each step of a composite action of this
+#      repository that it uses, through the composite actions those steps use in turn. The check
+#      visits each action once per step and does not follow a uses: path outside the repository.
+#      A word is a run of that text between blanks, quotes, = and ;&|()<>, less one leading ./.
+#      It names a script when the shorter of the word and the script's path is the end of the
+#      longer, whole or after a /. No shell or expression syntax is evaluated: a name spelled
+#      another way is the review's to catch, as rules 10 and 15 say for their own cases.
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
 #      job no longer has, a step its exact entry pins whose run: script or directory is not the
 #      entry's, or whose env, shell, container or job could move what it compiles (below), or a

@@ -1802,20 +1802,190 @@ edits for every run, which is what A9 measures: run it after the statement timin
 before anything reads a row count again. `--requests`, `--body-bytes`, `--artifact` and
 `--large-artifact` are the knobs; `--help` lists them.
 
+### The split of search's buffer reads
+
+`TestSearchReadSplitScript` and `TestSearchReadSplitReport` (`internal/dispatch/api/search_split_test.go`)
+split the shared buffer reads of search's keyword statement and meaning statement.
+For the rare, the medium and the common word, in the every-project form and the one-project form,
+they compare `main`'s statements at 497581c7 (`search_oracle_test.go`) with the head's. Each run is
+split into the keyword arms' ranking, the keyword arms' reads of their matches, each meaning arm,
+the page and `CTE q`. The ranking is the keyword arms' reads less those of the same statement with
+a constant rank in place of `ts_rank_cd`. Unlike the measurements above, this one also runs against
+production: psql runs every statement, so the production run needs only the read login's command
+(below). The tests skip unless their variable is set, so CI runs neither.
+
+The pipeline has five steps. `$OUT` is an empty directory under `$TMPDIR`, and `$URL` is the
+database measured.
+
+```bash
+cd packages/envoy
+# 1. Write subjects.sql: benchtime's rules for the project, its issue's vector and the three words.
+DISPATCH_SEARCH_SPLIT_OUT=$OUT go test -count=1 -run '^TestSearchReadSplitScript$' ./internal/dispatch/api
+# 2. Read the subjects of the database measured.
+psql "$URL" -X -q -At -v ON_ERROR_STOP=1 -f "$OUT/subjects.sql" -o "$OUT/subjects.json"
+# 3. Write split.sql and split.json. The test prepares each statement on a migrated database of its own
+#    to learn its parameter types; on the seeded database it also holds subjects.json to benchtime's rules.
+DISPATCH_SEARCH_SPLIT_OUT=$OUT DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" DISPATCH_BENCH_DATABASE_URL="$URL" \
+  go test -count=1 -run '^TestSearchReadSplitScript$' -v ./internal/dispatch/api
+# 4. Explain every run; psql writes each plan under $OUT/plans.
+psql "$URL" -X -q -v ON_ERROR_STOP=1 -f "$OUT/split.sql"
+# 5. Print each part's medians, spreads and match counts, and apply the rule.
+DISPATCH_SEARCH_SPLIT_IN=$OUT go test -count=1 -run '^TestSearchReadSplitReport$' -v ./internal/dispatch/api
+```
+
+Each run is `explain (analyze, buffers, verbose, format json) execute` of a statement prepared once,
+in a read-only transaction that is rolled back, under `plan_cache_mode = force_custom_plan` and the
+meaning scan's settings without the server's 15 s bound. The meaning statement is the one the
+server picks for the form, from whether the embeddings `project_key` fill is done (`filled` in
+`subjects.json`). Each side takes 5 runs of each statement unless `DISPATCH_SEARCH_SPLIT_RUNS`
+says otherwise, alternating `main`'s side and the head's, and each run is followed by its run with
+the constant rank. The 240 plans of 5 runs at `--scale 0.01` took one minute in the pod.
+
+A word that this public repository may not name (a person, a customer, a company, a repository
+or a host) is passed over for the next word by the same rule: give step 2
+`-v pass_over='{word,...}'`. split.sql writes each plan to the absolute path of `$OUT` where step 3
+ran, so run psql where that path is writable.
+
+The report prints each run's parts with their shared hit and read blocks, and their sum beside
+the run's total. Then it prints each part's median and spread (the largest run less the smallest)
+on each side. The meaning document arm passes when the head's median is below `main`'s; every
+other part but `CTE q` passes when the head's median is within `main`'s spread of `main`'s
+median. It also prints the matches of each of the head's keyword arms, and fails when the common
+word matches 1,000 or fewer items of every kind. Last, apart from the split and judged by no rule,
+it prints the joined statement's plans: each plan file with its top node and total cost, and for a
+custom plan its execution time and shared buffers, and then for each side and word one line that
+names the custom plan with its median time and buffers, the same plan explained without
+`ANALYZE`, and the side's generic plan with its top node and total cost. A run cut twice reads as
+cut, with its refusal; a plan file that is not there reads as not run, which is every plan beside
+the split after `split.sql`. The plans the parser was written from are in
+`internal/dispatch/api/testdata/search_split`, and its `README.md` says how they were captured.
+
+#### The production form
+
+On production the reads go through a production read-only login. The rules in the deployment
+repository's read-only database guide (`reads.md`) allow
+one run of its one command for each read: `psql -X -q -w -v ON_ERROR_STOP=1 --single-transaction
+-c 'SET TRANSACTION READ ONLY' -f - <conninfo>`, with the query on its input and a token of the
+login as the password. psql opens the read-only transaction itself, so a read sends no `BEGIN`,
+`ROLLBACK`, `SET TRANSACTION`, `PREPARE`, `EXECUTE`, session `SET` or psql backslash command, and a
+read written by hand writes `public.` before each name of the database. `subjects.sql` and
+`split.sql` break those rules, so steps 1 and 3 also write a production form beside them, in the
+same `$OUT`:
+
+- `subjects-read.sql`, written at step 1: the read of `subjects.sql`, which also writes each name
+  with its schema (`public.issues`), with the words to pass over written in in place of psql's
+  variable. `DISPATCH_SEARCH_SPLIT_PASS_OVER` lists them, comma-separated, for step 1; unset or
+  empty, it passes over none. It prints the same JSON as `subjects.sql`.
+- `split-read/NNN-<name>.sql`, written at step 3: one file for each explain, numbered in the order
+  `split.sql` runs them. A file holds `set local search_path = public`, the run's settings and one
+  `explain (analyze, buffers, verbose, format json)` of the server's statement text byte for byte,
+  with each parameter written in as its value cast to its type, such as `(20::bigint)`. Postgres
+  plans that text as it plans the prepared statement for the same values under
+  `plan_cache_mode = force_custom_plan`. Under that `search_path` it looks up each bare name of the
+  text in `pg_catalog` and then in `public` alone, matching explicit `public.` qualification while
+  keeping the server's exact SQL text intact. Each plan goes to
+  the file `split.sql` writes for the same run, so step 5 reads either form alike.
+- After the split's runs, the plans of the joined meaning statement in the one-project form, on
+  both sides, which the report prints apart from the split and judges by no rule. A search runs
+  that statement for a request that names a filter, and for a project while the fill is not done,
+  and its plan can change to the generic plan after a connection's fifth run of it. Where the fill
+  is done, so that the one-project form runs the scoped statement, these are runs of the joined
+  statement, as many a side as the split's, alternating the sides; where it is not done, the
+  split's own runs of it serve. Then, for each word and side, the same custom plan explained
+  without `ANALYZE`, which runs nothing, and for each side `explain (generic_plan, verbose, format
+  json)` of the text with its parameters. Their plan files are under `joined/`, and `split.sql`
+  runs none of them.
+- `split-read/list.tsv`: one line for each file, in their order, tab-separated: the file, the plan
+  file it writes, and its part. The part is `split` for a run of the split, which the rule judges,
+  and `joined-custom`, `joined-plain` or `joined-generic` for the joined statement's plans beside
+  it. The paths are relative to `$OUT`.
+
+psql prints a plan as clean JSON only with `-A` (unaligned) and `-t` (tuples only). Without `-A`
+it pads the text and ends each line with `+`; without `-t` it adds a header and a row count. Both
+are output options and send nothing, so the production run adds them to the command, and writes
+each answer to its file with shell redirection. The files hold UTF-8, the headline options' two
+private-use characters among them, which psql sends as they are: the pod's client encoding is
+UTF8.
+
+Each file runs in a session of its own, where `split.sql` runs every plan in one session, so a plan
+of the production form also counts the catalog pages a new session reads as it runs the
+statement. On the seeded database at `--scale 0.01`, the 240 plans of the production form had the
+nodes, indexes and estimated costs of `split.sql`'s 240 plans of the same runs, and read 0 to 211
+shared buffers a plan more; `main`'s run and the head's read the same more in 117 of the 120 pairs.
+The 248 files took 3 minutes in the pod.
+
+The production run, outside the agents' peak hours. `read_file` is the read login's command with
+the `PGPASSWORD` line of `reads.md`, its query read from the file `$1` and its answer written to
+`$2`. Step 3 takes 3 runs a side, and has no `DISPATCH_BENCH_DATABASE_URL`:
+
+```bash
+cd packages/envoy
+read_file() {
+  PGPASSWORD="$(<the token command of reads.md>)" \
+    psql -X -q -w -v ON_ERROR_STOP=1 -A -t --single-transaction -c 'SET TRANSACTION READ ONLY' -f - "<the conninfo of reads.md>" \
+    < "$1" > "$2" 2> "$2.err"
+}
+# 1. Write subjects.sql and subjects-read.sql.
+DISPATCH_SEARCH_SPLIT_PASS_OVER='<word>,...' DISPATCH_SEARCH_SPLIT_OUT=$OUT \
+  go test -count=1 -run '^TestSearchReadSplitScript$' ./internal/dispatch/api
+# 2. Read the subjects: one run of the command.
+(cd "$OUT" && read_file subjects-read.sql subjects.json) || cat "$OUT/subjects.json.err"
+# 3. Write split.sql, split.json and split-read/.
+DISPATCH_SEARCH_SPLIT_OUT=$OUT DISPATCH_SEARCH_SPLIT_RUNS=3 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" \
+  go test -count=1 -run '^TestSearchReadSplitScript$' -v ./internal/dispatch/api
+# 4. One run of the command for each file, in turn, in list.tsv's order.
+(cd "$OUT" && while IFS=$'\t' read -r file output part <&3; do
+  if [ -s "$output" ] || [ -e "$output.refused" ]; then continue; fi    # written, or recorded as cut, by an earlier pass of this loop
+  cut=0
+  until read_file "$file" "$output"; do
+    if grep -q 'too many connections for role' "$output.err"; then sleep 30; continue; fi
+    if ! grep -q 'canceling statement due to statement timeout' "$output.err"; then
+      echo "stopped at $file ($part):" >&2; cat "$output.err" >&2; exit 1
+    fi
+    if [ $((cut += 1)) -eq 1 ]; then echo "$output" >> warm-second.txt; continue; fi    # cut once: run again at once, warm
+    if [ "$part" != joined-custom ]; then
+      echo "stopped at $file ($part), cut twice:" >&2; cat "$output.err" >&2; exit 1
+    fi
+    mv "$output.err" "$output.refused"; break    # a joined run cut twice is recorded as cut, and the run goes on
+  done
+  rm -f "$output.err"
+done 3< split-read/list.tsv)
+# 5. Print each part's medians, spreads and match counts, apply the rule, and print the joined plans.
+DISPATCH_SEARCH_SPLIT_IN=$OUT go test -count=1 -run '^TestSearchReadSplitReport$' -v ./internal/dispatch/api
+```
+
+Step 4 keeps the read login's rules. Runs take turns: it runs one file at a time, one `psql` for
+each, which exits when its explain ends, and never two at once, since the login's connection limit
+of 2 is for every pod together. On `too many connections for role` it waits 30 s and runs the file
+again. The 30 s rule: the login holds every statement to its `statement_timeout` of 30 s, which no
+file sets, since the login refuses a `SET` of it. A file that stops with `canceling statement due
+to statement timeout` runs again at once, so the second run reads warm caches, and
+`warm-second.txt` lists its plan file. A run of the split that stops again stops step 4: it has no
+result, and the run reports it with its plan file (`split.json` names its word, form, statement and
+side) and the refusal text, rather than measure it another way, since an `explain` without
+`analyze` reads no buffers. A joined custom run that stops again is recorded as cut: its refusal
+goes to `<plan file>.refused`, and step 4 goes on. Any other refusal stops step 4 with the file and
+psql's error, and `reads.md` says what each refusal means. Step 4 passes over a plan file already
+written or recorded as cut, so the same loop, run again, goes on from the file that stopped it.
+
 ## coverage-scale.sh
 
-Measures the search coverage statement as the route runs it (the head: `coverageQuery` under the settings `planCoverage` sets) against the statement it replaced (`mainCoverageQuery`, the base) at production's size and twice it,
-in six states of `embeddings`, four of its visibility map and statistics and two after an embedder change,
-and states the corpus size at which the head would reach its 10 s bound in the slowest of them.
+Times the coverage counts' fill and recount (`FillCoverage` and `recountCoverage`, the statements of the counts that read every row they count) at production's size and a larger scale,
+the recount in six states of `embeddings`, four of its visibility map and statistics and two after an embedder change,
+and judges them against the bounds the counts loop holds them to:
+four times the fill at the largest scale must stay within `coverageFillTimeout`, and four times the longest whole recount there within `coverageRecountTimeout`.
+The route reads the kept counts and never `main`'s coverage statement, so the test no longer times that statement as the route's.
 It runs `TestCoverageStatementScale` (`internal/dispatch/embedqueue`), which builds a synthetic corpus in a database of its own at each scale:
 `testdata/coverage_corpus.sql`, production's counts and proportions of 2026-11-17 times the scale
 (11,151 issues, 216,414 document versions and 984,012 window rows at scale 1),
 with texts cut from this repository's `docs/` and `skills/` and each issue's spec of a size sampled from real specs.
+The load runs with its tables' triggers off, so no count holds anything of the corpus, as at the first deploy of the counts.
 Autovacuum is off on `embeddings`, so nothing but the test sets its visibility map or its statistics.
-Once the corpus is loaded it drops the two window indexes, `embeddings_window_embedded` and `embeddings_window_unembedded`, and builds each again with its migration's own statement, read from its file under `internal/dispatch/store/migrations` and run outside a transaction as the migration runner runs it,
+Once the corpus is loaded and the record step has run, it drops the two window indexes, `embeddings_window_embedded_since` and `embeddings_window_unembedded_since`, and builds each again with its migration's own statement, read from its file under `internal/dispatch/store/migrations` and run outside a transaction as the migration runner runs it,
 timing each build and reading each index's size:
 the downtime a deploy of those migrations takes, since Dispatch migrates before it serves.
-On each corpus it then measures six states in turn:
+It then times the fill once, before any count, so its refresh computes every issue's state row.
+On each corpus it then times the whole recount in six states in turn:
 `fresh`, every table vacuumed and analyzed;
 `third`, one row of every third heap page of `embeddings` updated and the table analyzed, so about a third of its pages are not all-visible;
 `all`, one row of every page updated and the table analyzed, so no page is all-visible;
@@ -1823,14 +1993,11 @@ On each corpus it then measures six states in turn:
 so no page is all-visible while the statistics still record about half of them all-visible;
 `embedder`, the configured embedder changed to another identity, whose identity step (`dropForeignVectors`, over every covered kind) drops every vector the corpus holds, with no analyze after it, so the statistics are the `stale` state's;
 and `embedder-analyzed`, the same table analyzed.
-The test fails the `stale` state unless its statistics record at least 0.3 of the pages all-visible (`laggingVisibleShare`), the share from which an earlier version of this statement read the windows by index-only scans, which fetched every window row from the heap one at a time in such a state (dispatch://INFRA-4241/artifact/tester-r2-job-2f9a6fc1-log),
+The test fails the `stale` state unless its statistics record at least 0.3 of the pages all-visible (`laggingVisibleShare`), the share from which an earlier version of `main`'s coverage statement read the windows by index-only scans, which fetched every window row from the heap one at a time in such a state,
 and the `embedder` state unless the identity step dropped a vector; it logs how many it dropped.
-In each state it checks that the base and the head answer the same rows in one snapshot, for the state's configured identity (the new one from `embedder` on),
-and times both on one connection, one warm-up and then five alternating runs each under `EXPLAIN (ANALYZE, BUFFERS)`:
-the base on the connection,
-the head in a read-only transaction that `planCoverage` plans, as the route runs it, with no `statement_timeout`.
-In every state it also runs a negative control:
-the head's text once with none of `planCoverage`'s settings, the planner free.
+The fill and each recount run under a bound of 3 hours rather than their own, so each is timed to its end, on a pool whose statements a tracer times, so each group statement's time is read too:
+the refresh of the issues' state rows, then the issue's group, the window kinds' group and each not-indexed kind's.
+After each recount it checks that the kept counts and `main`'s two statements answer the same rows in one snapshot, for the state's configured identity (the new one from `embedder` on).
 It drops the database before the next scale.
 
 It runs as a Job in the cluster's `builds` namespace, never in an issue pod.
@@ -1839,7 +2006,8 @@ and a corpus of production's size is more disk than an issue pod may use;
 the script refuses to start where a server already answers on that port.
 It needs the worker image, which carries Go, the PostgreSQL 18 server with pgvector and `legion-testpg`,
 and a scratch disk of about 10 GB for scales 1 and 2:
-one scale's database at a time, the write-ahead log, the Go caches and the clone.
+one scale's database at a time, the write-ahead log, the Go caches and the clone;
+under `COVERAGE_SCALE_SERVE=1`, room for a second database at the largest scale, the copy below.
 The Job runs it from `packages/envoy` of a clone:
 
 ```bash
@@ -1847,28 +2015,67 @@ cd packages/envoy && COVERAGE_SCALE_SCRATCH=/scratch scripts/coverage-scale.sh
 ```
 
 `COVERAGE_SCALE_SCRATCH` (default `/scratch`) names the scratch disk.
-The server's data directory (`LEGION_TESTPG_DIR`), `GOCACHE`, `GOTMPDIR`, `GOMODCACHE` and the test's log, `coverage-scale.log`, go under it.
+The server's data directory (`LEGION_TESTPG_DIR`), `GOCACHE`, `GOTMPDIR`, `GOMODCACHE` and the tests' logs, `coverage-scale.log` and `coverage-fill.log`, go under it.
 `DISPATCH_COVERAGE_SCALES` (default `1 2`) lists the scales, space-separated, and reaches the test as it is.
+The fit needs two scales, so a run names at least two.
 The script sets `LEGION_TEST_PG_DSN` and `DISPATCH_COVERAGE_SCALE_URL` itself,
 both to `postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable`.
 
 It prints the server's version and the settings the times depend on
 (`shared_buffers`, `work_mem`, `maintenance_work_mem`, `jit`, `max_parallel_workers_per_gather`, `effective_cache_size`),
-then the test's output: for each scale the corpus's counts, each window index's build time and size, the head's report kind by kind and the items;
+then the test's output: for each scale the corpus's counts, each window index's build time and size, the fill's time, the report kind by kind and the items;
 and for each state how many vectors its embedder change dropped, how many pages of `embeddings` the statistics record as all-visible and that share, the database's size,
-each statement's median and every run, one plan of each,
-and the negative control's time and whether it read `embeddings` by a Seq Scan.
-Read the result from the line that starts `coverage-scale:`, which the script prints again as its last line.
-It names each window index's build time and size at the two smallest scales;
-then, for each state, the vectors dropped where the state changes the embedder, the share of pages the statistics record as all-visible, the head's and the base's medians, the negative control's times and whether it read `embeddings` by a Seq Scan, at both scales;
-and the item count at which the head would reach 10 s by a linear fit and by a power law `t = a × s^k` through the two points,
+and the whole recount's time with each of its statements'.
+Each scale ends with a line that starts `coverage-scale: scale`, which names its items, the fill's time and each state's whole recount, each with its statements' times.
+Read the result from the last line that starts `coverage-scale:`, which the script prints again, after every scale's line, as its last line.
+It names the scales and S, the largest of them, with its items;
+the fill at S and four times it against `coverageFillTimeout`;
+the longest whole recount at S, its state, and four times it against `coverageRecountTimeout`;
+each window index's build time and size at every scale;
+then, for each state, the vectors dropped where the state changes the embedder, the share of pages the statistics record as all-visible and the whole recount, at the two smallest scales,
+and the item count at which the whole recount would reach `coverageRecountTimeout` by a linear fit and by a power law `t = a × s^k` through the two points,
 with the smaller of the two as a multiple of the 1 × corpus's items.
-It ends with the slowest state, the one with the smallest multiple, and its multiple;
-where a state has no fit, it says the slowest state is not known and names the slowest of the others.
-`pass` means that multiple is at least 4.
-`FAIL` means it is below 4, or that the head's time did not grow between the two scales in some state, so no fit is defined.
+It ends with the slowest state, the one with the smallest multiple, with the corpus size in items at which its whole recount would reach `coverageRecountTimeout` and that size's multiple,
+or the states where the recount did not grow between the two scales and no fit is defined.
+`pass` means four times the fill at S is within `coverageFillTimeout` and four times the longest whole recount at S within `coverageRecountTimeout`;
+`FAIL` means one of them is not.
 The script exits with the test's own status, and with 1 when the test printed no `coverage-scale:` line.
 CI never runs it: the test skips while `DISPATCH_COVERAGE_SCALE_URL` is unset.
+
+### A server's start at the largest scale (`COVERAGE_SCALE_SERVE=1`)
+
+`COVERAGE_SCALE_SERVE=1`, which reaches the test as it is, adds the fill-length check's start of the head's server on the corpus at S, the largest scale (`TestTheServerFillsTheCoverageCountsAtScale`):
+
+```bash
+cd packages/envoy && COVERAGE_SCALE_SCRATCH=/scratch COVERAGE_SCALE_SERVE=1 DISPATCH_COVERAGE_SCALES="1 $S" scripts/coverage-scale.sh
+```
+
+At S, once the corpus is loaded, analyzed, its issues' sources recorded and the corpus checked, and before the window indexes are built again or anything is counted,
+the test closes every connection to that scale's database and copies it (`create database <name>_serve template <name> strategy file_copy`).
+The load ran with its tables' triggers off, so the copy holds the corpus with every vector and no row of `search_coverage_filled`, `search_coverage_counts`, `search_coverage_deltas` or `search_coverage_issues`:
+`done_at` is unset, as the first deploy of the counts finds production.
+On a connection of its own, closed before the test goes on, it makes the copy what a production database is beside that:
+autovacuum on `embeddings` as the migrations leave it, every session committing synchronously,
+the boot's `document_search` pass (`store.FillDocumentSearch`) recorded as done, as on every database a server has booted on since that table's release
+(the load writes the document versions with their triggers off, so none holds the search vector the pass copies, and the pass would end the boot),
+and the corpus's tables vacuumed and analyzed, so the server's fill reads pages whose hint bits and visibility map are set, as the scale test's own fill does.
+It prints the copy's name on a line that starts `coverage-scale-database:` and leaves the copy.
+
+The script then runs `TestTheServerFillsTheCoverageCountsAtScale` (`cmd/dispatch/coverage_fill_scale_test.go`) with `DISPATCH_COVERAGE_FILL_URL` naming the copy, whatever the scale test's verdict,
+and drops the copy after it.
+The test starts the head's binary on the copy, reads from the server's own lines `since_start_ms` of `dispatch: listening`,
+the timeout the fill's start line names (`coverageFillTimeout` in force), the fill's `elapsed_ms`, and the fill's end against the listening line's time,
+and stops the server once the fill line is logged.
+It starts it again, now with `done_at` set, and reads whether it logged a fill, `since_start_ms`, the timeout the recount's start line names (`coverageRecountTimeout` in force), the recount's `elapsed_ms`, and the recount's end against the listening line's time.
+It prints one line that starts `fill-length:` for each of these, and last a line that starts `fill-length: pass` or `fill-length: FAIL` naming every one.
+A missing line fails it at once.
+The first start fails it when the server listened after its fill ended, when the fill failed or reached its timeout, or when `coverageFillTimeout` is less than four times the fill's time;
+the second when it logged a fill, when the server listened after its recount ended, when the recount failed or reached its bound, or when `coverageRecountTimeout` is less than four times the recount's time.
+The test hands `DISPATCH_TEST_COVERAGE_FILL_TIMEOUT`, when its own environment sets it, to both starts: the negative control's way to run the server with a fill timeout below four times the fill.
+
+The script prints the `coverage-scale:` lines again and then the `fill-length:` lines, each test's verdict last.
+It exits with the scale test's status when that is not 0, and otherwise with the server test's;
+and with 1 also when the test printed no `coverage-scale-database:` line, when the server test printed no `fill-length:` line, or when the copy was not dropped.
 
 ## session-titles-scale.sh
 
