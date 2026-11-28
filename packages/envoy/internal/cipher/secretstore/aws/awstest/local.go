@@ -4,13 +4,9 @@
 package awstest
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,9 +23,9 @@ import (
 // Local stands in, in memory, for the AWS calls the broker and the agent-secrets CLI make: Secrets
 // Manager's ListSecrets, DescribeSecret and GetSecretValue, which the broker reads with, its
 // CreateSecret, PutSecretValue, TagResource, UntagResource, DeleteSecret and RestoreSecret, which
-// the CLI writes with, and KMS's ListAliases. Tests build one with NewLocal, or over a file with
-// FromFile. A secret holding a value has one version, whose id changes each time the value's
-// bytes do, however they were written (number).
+// the CLI writes with, and KMS's ListAliases. Tests build one with NewLocal. A secret holding a
+// value has one version, whose id changes each time the value's bytes do, however they were
+// written (number).
 type Local struct {
 	mu      sync.Mutex
 	secrets map[string]LocalSecret
@@ -40,10 +36,6 @@ type Local struct {
 	// never a digest of the value.
 	version map[string]uint64
 	serial  uint64
-	// path is the file a FromFile Local follows, and file the bytes its secrets were last
-	// read from; empty for a NewLocal one.
-	path string
-	file []byte
 	// now is the clock DeleteSecret dates a deletion by.
 	now func() time.Time
 }
@@ -51,30 +43,25 @@ type Local struct {
 // LocalSecret is one secret a Local holds.
 type LocalSecret struct {
 	// Name is the secret's whole Secrets Manager name, its namespace prefix included.
-	Name string `json:"name"`
+	Name string
 	// KmsKeyID is the key it is encrypted with, as Secrets Manager reports it; empty is the
 	// AWS-managed key.
-	KmsKeyID string `json:"kms_key_id"`
+	KmsKeyID string
 	// Tags are its tags.
-	Tags map[string]string `json:"tags"`
+	Tags map[string]string
 	// Value is its current value. Empty is a secret created without a value: as in Secrets
 	// Manager, it is listed with no version and reading it answers ResourceNotFoundException; one
 	// holding a value is listed with a version labelled AWSCURRENT, whose id Local numbers itself.
-	Value string `json:"value"`
+	Value string
 	// DeletedAt, when set, is when the secret was deleted with a recovery window: as in Secrets
 	// Manager, it is then scheduled for deletion, ListSecrets lists it only when asked for planned
 	// deletions, DescribeSecret answers DeletedAt as its DeletedDate, and every other call but
 	// RestoreSecret is refused.
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	DeletedAt *time.Time
 	// CreatedAt, when set, is when the secret was created, which ListSecrets and DescribeSecret
 	// answer as its CreatedDate. Unset, they answer none, which the policy reads as a secret whose
 	// age it cannot tell (secretstore.Listing.Created).
-	CreatedAt *time.Time `json:"created_at,omitempty"`
-}
-
-// localFile is FromFile's file shape.
-type localFile struct {
-	Secrets []LocalSecret `json:"secrets"`
+	CreatedAt *time.Time
 }
 
 // ARN is the ARN a Local gives the secret named name.
@@ -104,88 +91,6 @@ func NewLocal(secrets ...LocalSecret) *Local {
 	return l
 }
 
-// FromFile reads path, a JSON file {"secrets": [LocalSecret, ...]},
-// into a Local that follows it: each call reads the file again and, when its bytes have changed,
-// answers from it, so an edit to the file is a write as Secrets Manager sees one. A secret Put
-// directly, or written with one of Local's write calls, stands until the file next changes. An
-// error names path and, for a file that does not parse, only the byte offset and field it failed
-// at, never the file's content: no secret value reaches an error message, local development
-// included.
-func FromFile(path string) (*Local, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-	secrets, err := parseLocalFile(path, data)
-	if err != nil {
-		return nil, err
-	}
-	l := NewLocal(secrets...)
-	l.path, l.file = path, data
-	return l, nil
-}
-
-// parseLocalFile reads data, the content of path, as FromFile's file shape.
-func parseLocalFile(path string, data []byte) ([]LocalSecret, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var f localFile
-	if err := dec.Decode(&f); err != nil {
-		var syntax *json.SyntaxError
-		var typeErr *json.UnmarshalTypeError
-		switch {
-		case errors.As(err, &syntax):
-			return nil, fmt.Errorf("%s: not JSON (at byte %d)", path, syntax.Offset)
-		case errors.As(err, &typeErr):
-			return nil, fmt.Errorf("%s: %s is not a %s (at byte %d)", path, typeErr.Field, typeErr.Type, typeErr.Offset)
-		case strings.HasPrefix(err.Error(), "json: unknown field "):
-			return nil, fmt.Errorf("%s: %s", path, strings.TrimPrefix(err.Error(), "json: "))
-		default:
-			return nil, fmt.Errorf("%s: not a fake secrets file", path)
-		}
-	}
-	for i, s := range f.Secrets {
-		if s.Name == "" {
-			return nil, fmt.Errorf("%s: secrets[%d] has no name", path, i)
-		}
-	}
-	return f.Secrets, nil
-}
-
-// follow reads a FromFile Local's file again and, when its bytes have changed since they were
-// last read, takes its secrets from it, each value numbered against the one its name held before
-// (number), so a value the edit changed gets a new version id and one it left alone keeps its id.
-// A file it cannot read or parse fails the call. The caller holds l.mu.
-func (l *Local) follow() error {
-	if l.path == "" {
-		return nil
-	}
-	data, err := os.ReadFile(l.path)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", l.path, err)
-	}
-	if bytes.Equal(data, l.file) {
-		return nil
-	}
-	secrets, err := parseLocalFile(l.path, data)
-	if err != nil {
-		return err
-	}
-	previous := l.secrets
-	l.secrets = make(map[string]LocalSecret, len(secrets))
-	for _, s := range secrets {
-		l.number(previous[s.Name], s)
-		l.secrets[s.Name] = s
-	}
-	for name := range l.version {
-		if _, held := l.secrets[name]; !held {
-			delete(l.version, name)
-		}
-	}
-	l.file = data
-	return nil
-}
-
 // hold makes s the secret of its name, numbering its value against the one that name held
 // (number). The caller holds l.mu, or is building l.
 func (l *Local) hold(s LocalSecret) {
@@ -195,9 +100,9 @@ func (l *Local) hold(s LocalSecret) {
 
 // number numbers the value of next, which is to be held under its name in place of held (the zero
 // LocalSecret for a name not held): a value of other bytes than held's takes the next serial as
-// its version, and the same bytes keep the version they had. PutSecretValue, Put, CreateSecret and
-// an edit of the followed file all number a value this way, so a version id changes when, and
-// only when, the value's bytes do. The caller holds l.mu, or is building l.
+// its version, and the same bytes keep the version they had. PutSecretValue, Put and CreateSecret
+// all number a value this way, so a version id changes when, and only when, the value's bytes do.
+// The caller holds l.mu, or is building l.
 func (l *Local) number(held, next LocalSecret) {
 	if _, numbered := l.version[next.Name]; !numbered || held.Value != next.Value {
 		l.serial++
@@ -241,9 +146,6 @@ func (l *Local) Alias(keyARN, alias string) {
 func (l *Local) ListSecrets(_ context.Context, in *secretsmanager.ListSecretsInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if err := l.follow(); err != nil {
-		return nil, err
-	}
 	out := &secretsmanager.ListSecretsOutput{}
 	for _, s := range l.secrets {
 		if (s.DeletedAt != nil && !aws.ToBool(in.IncludePlannedDeletion)) || !matchesNameFilters(s.Name, in.Filters) {
@@ -273,12 +175,9 @@ func (l *Local) DescribeSecret(_ context.Context, in *secretsmanager.DescribeSec
 	}, nil
 }
 
-// held follows the file and answers the secret id names, by name or by ARN;
-// ResourceNotFoundException for one Local does not hold. The caller holds l.mu.
+// held answers the secret id names, by name or by ARN; ResourceNotFoundException for one Local
+// does not hold. The caller holds l.mu.
 func (l *Local) held(id *string) (LocalSecret, error) {
-	if err := l.follow(); err != nil {
-		return LocalSecret{}, err
-	}
 	s, ok := l.secrets[strings.TrimPrefix(aws.ToString(id), ARN(""))]
 	if !ok {
 		return LocalSecret{}, &types.ResourceNotFoundException{Message: aws.String("Secrets Manager can't find the specified secret.")}
@@ -375,9 +274,6 @@ func (l *Local) CreateSecret(_ context.Context, in *secretsmanager.CreateSecretI
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if err := l.follow(); err != nil {
-		return nil, err
-	}
 	if s, ok := l.secrets[name]; ok {
 		if s.DeletedAt != nil {
 			return nil, &types.InvalidRequestException{Message: aws.String("You can't create this secret because a secret with this name is already scheduled for deletion.")}
