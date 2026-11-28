@@ -96,7 +96,7 @@ describe("a claim the daemon refuses while Oh My Pi's stop runs", () => {
 
       expect(await claim.lines).toEqual(["ready", "release", "delete"]);
       // Oh My Pi ends the process itself once its stop has ended, before the claim's own exit runs.
-      expect(status).toBe(143);
+      expect(status).toBe(144);
     },
     ROW_TIMEOUT_MS
   );
