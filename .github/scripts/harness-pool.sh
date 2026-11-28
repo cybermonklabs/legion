@@ -33,12 +33,18 @@
 #     of them rightly starts none.
 #     A TERM or INT stops the wait (the runner signals a step it cancels): it then prints the log
 #     so far of each harness still running, names each as unfinished with its seconds, names each
-#     that had ended while its recorder had not yet written its status, names each still waiting
-#     for a slot, and exits 1, so a harness that hung is named in the job's log rather than lost
-#     with the step. --now does the same at once, for a job cancelled before its
-#     wait step began (a step of its own, `if: cancelled()`). The wait step runs the wait with
-#     `exec` under `if: ${{ !cancelled() }}`, so a cancel's signal reaches the wait itself: the
-#     runner signals a running step only when its condition no longer holds.
+#     that had ended while its recorder had not yet written its status, and names each still
+#     waiting for a slot, so a harness that hung is named in the job's log rather than lost with
+#     the step. It then exits 128 plus the number of the signal that stopped it first, 130 for an
+#     INT and 143 for a TERM, whatever signal follows (the runner follows a cancel's INT with a
+#     TERM 7.5 s later). A runner shutdown sends the step a TERM, and
+#     .github/scripts/runner-shutdown.sh reads a job as shut down from the annotations
+#     `The runner has received a shutdown signal` and `Process completed with exit code 143`, so
+#     a wait that turned that TERM into exit 1 would hide the shutdown. --now does the same at
+#     once and exits 1, since no signal stopped it, for a job cancelled before its wait step began
+#     (a step of its own, `if: cancelled()`). The wait step runs the wait with `exec` under
+#     `if: ${{ !cancelled() }}`, so a cancel's signal reaches the wait itself: the runner signals
+#     a running step only when its condition no longer holds.
 #
 # Each harness inherits the starting step's environment, `env:` included, and its working
 # directory, but for the runner's per-step files: the step that queued it has ended by the time
@@ -398,7 +404,7 @@ children_cpu() {
 }
 
 wait_all() {
-  local allow_none="" stopped=""
+  local allow_none="" stopped="" stop_status=1
   while (($# > 0)); do
     case $1 in
       --allow-none) allow_none=1 ;;
@@ -426,8 +432,11 @@ wait_all() {
     exit 2
   fi
   echo "${#entries[@]}" > "$dir/judged" 2> /dev/null || true
-  trap 'stopped=1' INT TERM
-  # Said once the trap is set, so a reader of the log, and the test, know the wait now answers a
+  # The first INT or TERM stops the wait and decides its status, 128 plus that signal's number,
+  # whatever signal follows it; --now, which no signal stopped, keeps 1 (the header says why).
+  trap '[[ -n $stopped ]] || { stopped=1; stop_status=130; }' INT
+  trap '[[ -n $stopped ]] || { stopped=1; stop_status=143; }' TERM
+  # Said once the traps are set, so a reader of the log, and the test, know the wait now answers a
   # TERM with its report.
   if [[ -n $stopped ]]; then
     echo "harness-pool: the job was cancelled; judging the ${#entries[@]} harnesses queued as they are now"
@@ -541,7 +550,7 @@ wait_all() {
   fi
   if [[ -n $stopped ]]; then
     echo "harness-pool: ${#entries[@]} harnesses, $failed failed, $unfinished unfinished when the wait was stopped"
-    exit 1
+    exit "$stop_status"
   fi
   echo "harness-pool: ${#entries[@]} harnesses, $failed failed"
   ((failed == 0))

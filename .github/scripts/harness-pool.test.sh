@@ -617,7 +617,16 @@ kill -INT -- "-$waiter"
 status=0
 wait "$waiter" || status=$?
 out=$(cat "$m/int.out")
-check "an INT alone stops the wait, which fails" "$(is "$status" 1)"
+check "an INT alone stops the wait, which exits 130, 128 plus the INT's number" "$(is "$status" 130)"
+check "naming the harness still running" "$(contains "$out" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
+# A TERM alone, as a runner shutdown sends: 143, the status .github/scripts/runner-shutdown.sh
+# reads a shutdown by, which an exit 1 would hide.
+start_waiter "$m/term.out"
+kill -TERM -- "-$waiter"
+status=0
+wait "$waiter" || status=$?
+out=$(cat "$m/term.out")
+check "a TERM alone stops the wait, which exits 143, 128 plus the TERM's number" "$(is "$status" 143)"
 check "naming the harness still running" "$(contains "$out" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
 # Then an INT followed by TERMs, as the runner sends one 7.5 s after the INT, here one every 10 ms
 # until the wait has ended, so some land while it writes its report.
@@ -644,7 +653,7 @@ check "and leaves that record as a part, not as a whole one" "$(is "$hung_record
 check "--now fails at once" "$(is "$status_now" 1)"
 check "and says the job was cancelled" "$(contains "$out_now" '^harness-pool: the job was cancelled; judging the 3 harnesses queued as they are now$')"
 check "naming the harness still running" "$(contains "$out_now" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
-check "the stopped wait fails" "$(is "$status" 1)"
+check "the stopped wait exits 130, for the INT that stopped it first, whatever TERMs followed" "$(is "$status" 130)"
 check "it names the harness still running, with its seconds" "$(contains "$out" '^::group::hung: still running after [0-9.]* s when the wait was stopped; its log so far$')"
 check "and prints its log so far" "$(contains "$out" '^before the hang$')"
 check "and an error naming it" "$(contains "$out" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
