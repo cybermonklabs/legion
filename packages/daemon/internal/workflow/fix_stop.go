@@ -37,14 +37,11 @@ func (e *Engine) dropFixWay(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return nil
 	}
 	if said == "" {
-		runs, err := factRunsOf(ctx)
-		if err != nil {
+		// TESTER CONTROL (C2): the deletion is queued here, as before db6f9de941a7, before the
+		// settle ends the old starts.
+		if err := e.queueBesideDelete(ctx, tx, issue, w.Task); err != nil {
 			return err
 		}
-		if runs.deleteAfterOldRuns == nil {
-			runs.deleteAfterOldRuns = map[runAt]record.Issue{}
-		}
-		runs.deleteAfterOldRuns[runAt{issue: issue.Key, generation: issue.Generation, place: record.StepPlace{Task: w.Task}}] = issue
 	}
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
 	if err != nil || fix == nil || fix.Way != 0 {
