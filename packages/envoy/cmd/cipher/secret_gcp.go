@@ -170,14 +170,14 @@ func credentialsFileRefusal(file string, err error) error {
 const metadataGenericPrincipal = "this machine's or this pod's identity"
 
 // gcpMetadataToken answers the machine's own credentials, whose access tokens come from the
-// metadata server (googleidentity.AccessTokenSource), reading the first token at once so the
+// metadata server (googleidentity.AccessTokenSourceOn), reading the first token at once so the
 // source is available exactly when the server yields one. googleidentity.ErrNoMetadataServer - no
-// connection within googleidentity.ProbeTimeout, no answer within the token read's bound, or an
-// answer that is not Google's - is the absence newGCPBackend skips; any other error is a Google
-// server that is present but could not mint a token, which stops the command. It never reads the
-// email: that is gcpMetadataPrincipal's separate, best-effort job. Tests replace it.
+// connection within googleidentity.ProbeTimeout, no answer within the token read's bound on
+// gcpMetadataClock, or an answer that is not Google's - is the absence newGCPBackend skips; any
+// other error is a Google server that is present but could not mint a token, which stops the
+// command. It never reads the email, gcpMetadataPrincipal's best-effort job. Tests replace it.
 var gcpMetadataToken = func(ctx context.Context) (*google.Credentials, error) {
-	source := googleidentity.AccessTokenSource()
+	source := googleidentity.AccessTokenSourceOn(gcpMetadataClock)
 	first, err := source.Token()
 	if err != nil {
 		return nil, err
@@ -186,11 +186,11 @@ var gcpMetadataToken = func(ctx context.Context) (*google.Credentials, error) {
 }
 
 // gcpMetadataPrincipal is the account the metadata server names for this machine
-// (googleidentity.Probe, within ProbeTimeout), best effort: "" where the read fails or is slow,
-// so the refusal falls back to metadataGenericPrincipal rather than making a flaky email read
-// decide whether a command runs. Tests replace it.
+// (googleidentity.ProbeOn, within ProbeTimeout on gcpMetadataClock), best effort: "" where the
+// read fails or is slow, so the refusal falls back to metadataGenericPrincipal rather than making
+// a flaky email read decide whether a command runs. Tests replace it.
 var gcpMetadataPrincipal = func(ctx context.Context) string {
-	email, err := googleidentity.Probe(ctx)
+	email, err := googleidentity.ProbeOn(ctx, gcpMetadataClock)
 	if err != nil {
 		return ""
 	}

@@ -33,6 +33,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -44,9 +45,9 @@ const (
 	defaultMetadataHost = "metadata.google.internal"
 	// identityPath mints an identity token for the instance's default service account.
 	identityPath = "/computeMetadata/v1/instance/service-accounts/default/identity"
-	// timeout bounds one token fetch. The metadata server is on the host's own link, so a fetch
-	// that takes longer than this is a fault, not a slow network.
-	timeout = 10 * time.Second
+	// TokenTimeout bounds one token fetch. The metadata server is on the host's own link, so a
+	// fetch that takes longer than this is a fault, not a slow network.
+	TokenTimeout = 10 * time.Second
 )
 
 // client is the proxy-free transport this package's reason for being rests on; the package
@@ -67,7 +68,7 @@ func tokenURL(audience string) string {
 // names the server as server() does and never the token.
 func Token(ctx context.Context, audience string) (string, error) {
 	callURL, at := tokenURL(audience), server()
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, TokenTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, callURL, nil)
 	if err != nil {
@@ -93,11 +94,11 @@ func Token(ctx context.Context, audience string) (string, error) {
 	return token, nil
 }
 
-// ErrNoMetadataServer is the answer of Probe and of AccessTokenSource's token where no Google
-// listened at its address: its host name did not resolve, no connection came within
-// ProbeTimeout, nothing answered within the read's own bound (ProbeTimeout for Probe, the 10 s
-// token-fetch bound for a token), or what answered did not say it is Google's. A caller reads it
-// as the absence of a machine identity, not as a fault.
+// ErrNoMetadataServer is the answer of Probe and of AccessTokenSource's token, on any clock
+// (ProbeOn, AccessTokenSourceOn), where no Google listened at its address: its host name did not
+// resolve, no connection came within ProbeTimeout, nothing answered within the read's own bound
+// (ProbeTimeout for Probe, TokenTimeout for a token), or what answered did not say it is Google's.
+// A caller reads it as the absence of a machine identity, not as a fault.
 var ErrNoMetadataServer = errors.New("no metadata server")
 
 // ProbeTimeout bounds Probe, and the dial of every read here (client). A machine that has a
@@ -144,10 +145,17 @@ func server() string {
 // (wrapped with what it saw) where no Google metadata server answered: a dial error, a host name
 // that does not resolve, a timeout, or an answer without the Metadata-Flavor: Google header that
 // every answer of Google's carries. A Google metadata server that answers anything but a success,
-// or an empty email, is a fault, and its error is not ErrNoMetadataServer.
-func Probe(ctx context.Context) (string, error) {
+// or an empty email, is a fault, and its error is not ErrNoMetadataServer. It is ProbeOn on the
+// wall clock.
+func Probe(ctx context.Context) (string, error) { return ProbeOn(ctx, clock.Real()) }
+
+// ProbeOn is Probe with the read's ProbeTimeout on clk; the dial's stays on the wall clock
+// (client). The bound ends the read through the request's context, so a deadline of a fake clock
+// (clocktest), which reports no Deadline, ends it once the test moves the fake there, as the wall
+// clock's ends it once the time has passed.
+func ProbeOn(ctx context.Context, clk clock.Clock) (string, error) {
 	callURL, at := metadataURL(emailPath), server()
-	probeCtx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+	probeCtx, cancel := clk.WithTimeout(ctx, ProbeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, callURL, nil)
 	if err != nil {
@@ -183,26 +191,34 @@ func Probe(ctx context.Context) (string, error) {
 // from the metadata server through the package's proxy-free transport, each token expiring when
 // the metadata server's expires_in says. It is not cloud.google.com/go/compute/metadata's
 // ComputeTokenSource, whose OnGCE answer that library caches for the whole process. A caller
-// that asks for several tokens wraps it in oauth2.ReuseTokenSource.
-func AccessTokenSource() oauth2.TokenSource { return metadataTokenSource{} }
+// that asks for several tokens wraps it in oauth2.ReuseTokenSource. It is AccessTokenSourceOn on
+// the wall clock.
+func AccessTokenSource() oauth2.TokenSource { return AccessTokenSourceOn(clock.Real()) }
 
-// metadataTokenSource is AccessTokenSource's oauth2.TokenSource. Its errors name the server as
-// server() does and never a token. It answers ErrNoMetadataServer, wrapped with what it saw, where
-// no Google metadata server answered (ErrNoMetadataServer says when), as Probe does; a Google
-// server that answers anything but a success, or no token, is a fault, and its error is not
-// ErrNoMetadataServer. The connection comes within ProbeTimeout or not at all (client); once it
-// has, the server's own minting of the token has the whole 10 s token-fetch bound.
-type metadataTokenSource struct{}
+// AccessTokenSourceOn is AccessTokenSource with each token read's TokenTimeout on clk, as ProbeOn
+// is Probe with its bound on clk. A token's expiry stays on the wall clock, which
+// oauth2.Token.Valid reads it against.
+func AccessTokenSourceOn(clk clock.Clock) oauth2.TokenSource { return metadataTokenSource{clk: clk} }
 
-func (metadataTokenSource) Token() (*oauth2.Token, error) {
+// metadataTokenSource is AccessTokenSourceOn's oauth2.TokenSource, whose reads' bound runs on clk.
+// Its errors name the server as server() does and never a token. It answers ErrNoMetadataServer,
+// wrapped with what it saw, where no Google metadata server answered (ErrNoMetadataServer says
+// when), as Probe does; a Google server that answers anything but a success, or no token, is a
+// fault, and its error is not ErrNoMetadataServer. The connection comes within ProbeTimeout or
+// not at all (client); once it has, the server's own minting of the token has the whole
+// TokenTimeout.
+type metadataTokenSource struct{ clk clock.Clock }
+
+func (s metadataTokenSource) Token() (*oauth2.Token, error) {
 	callURL, at := metadataURL(tokenPath), server()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := s.clk.WithTimeout(context.Background(), TokenTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, callURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ask %s: %w", at, redact.Class(err))
 	}
 	req.Header.Set("Metadata-Flavor", "Google")
+	// The wall clock, not s.clk: oauth2.Token.Valid compares Expiry with time.Now.
 	asked := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
