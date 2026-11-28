@@ -2060,7 +2060,8 @@ That wait can outlive the usual shutdown reserve only while `Client.Close` waits
 ### The Legion state intake
 
 The Legion state intake (`legion.Intake`, `internal/dispatch/legion/intake.go`) takes every Legion daemon's state events from the durable `legion-state-events` on `notifications.legion.*.state`, under a hold as the GitHub intake's is (`delivery.NewHeldDurable`), and runs whenever the process has NATS, with or without the GitHub App.
-A daemon publishes one message for each transaction it committed that moved what Dispatch observes: an issue's phase, tree, slot or wait, a role's claim, the admission block, or its boot.
+A daemon publishes one message for each transaction it committed that moved what Dispatch observes: an issue's phase, tree, slot, wait or step role, a role's claim, the admission block, or its boot.
+An issue's step role (`stepRole`) is the role of the deployment whose step the issue runs or is held from, so a move from one step of the deployment to another, which moves no phase, publishes a message that names the step role.
 Each message names the store its sequence is counted in (`stateId`, which the state route serves as `daemon.stateId`), and the intake applies no message of another store than the one its starting point read, and no message at all while no good whole read has given the project's cursor a store.
 A write of the project's Legion setting that names another daemon, and a delete of the setting, record the store the cursor held as the store of the daemon the setting named before, with the URL the cursor followed (`legion_event_cursors.previous_state_id`, `previous_state_url`).
 The intake finishes each message of that store unapplied while the cursor holds no store or another store, and logs `legion intake: a state message of the daemon the project's Legion setting named before is dropped` at INFO, at most once an hour for each project.

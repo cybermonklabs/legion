@@ -18,7 +18,9 @@ package api
 // state. It carries the whole state's daemon block, its `settings` and its `admission` block,
 // unfiltered and in the same order, and `issues`, every issue the whole state lists with only its
 // `key`, `phase`, `tree`, `slot.index`, `waitingOn`, `architect.state` and
-// `workers.<role>.claim.state`, each absent where the whole state's is absent. The view is
+// `workers.<role>.claim.state`, each absent where the whole state's is absent. The entry
+// 20261125180539 deployment-roles, which ranks after this one in main's merge order, adds
+// `stepRole` to those members, which a caller below that entry's number is not served. The view is
 // shaping.go's answer AnswerObservedState, which is no row of Answers, served at the caller's
 // contract as observedFor says: a caller below this entry's number reads no `stateSeq`, `stateId`
 // or `stateRun` in either body, and a caller below 51 no `admission.trees` and no issue's `tree`.

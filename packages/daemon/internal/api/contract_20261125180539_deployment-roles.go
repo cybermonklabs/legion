@@ -4,7 +4,15 @@ package api
 // issue whose running step is of such a role stands at a new phase, `step`, of `GET
 // /legion/v1/state`'s `phase`, `heldFrom` and a claim view's `pendingTask.phase`, and names that
 // role in a new key, `issues.<key>.stepRole`; a stranded claim, a waiting wake and a pause stop may
-// name such a role. An issue names, in a new key `issues.<key>.startWaitsForPod`, the roles whose
+// name such a role. The observed view of the route, `GET /legion/v1/state?view=observed`
+// (api.ObservedIssue), carries `issues.<key>.stepRole` too: the whole state's value, for an issue
+// at such a role's step or held from one, and absent at every other phase. A state event
+// (`notifications.legion.<token>.state`) names the step role as a change of the field `stepRole`
+// (stateevent.FieldStepRole), its `old` and `new` the role or null. So a move from one step of the
+// deployment to another, which moves no phase, publishes an event that names `stepRole` and no
+// phase (record.IssueObservation, which reads the role before the write from
+// `issues.observed_step_role`, the column the migration 20261127224354_observed_step_role adds).
+// An issue names, in a new key `issues.<key>.startWaitsForPod`, the roles whose
 // start waits because its pod was built before the deployment defined them, absent where none
 // waits. A caller whose contract is below this entry's number is served an issue at step as at
 // work, at `implementing`, its hold from step as one from `implementing`, a pending task at step as
@@ -12,7 +20,9 @@ package api
 // an issue as a strict object and would refuse the whole state over it), and no stranded claim,
 // waiting wake or pause stop of a role outside Legion's six (the entry's one band), and the daemon
 // logs one line for each claim it leaves out (`leftAClaimOut`); the issue stays in `issues` and in
-// `admission.active`. A claim of such a role that registers from a plugin below this entry's
+// `admission.active`. The observed view is read from the state that band shaped (shaping.go's
+// observedFor), so such a caller reads an issue at step there as at `implementing` and no
+// `stepRole` either. A claim of such a role that registers from a plugin below this entry's
 // number is answered `409` with a refusal that names both numbers, in place of its registration.
 // Such a role's agent completes its step with `POST
 // /legion/v1/handoff/complete` and the verdict `pass` or `fail` and a commit, and no handoff record
@@ -22,8 +32,22 @@ package api
 // (below 1 `400 INVALID_RETURN_TO`; a place the workflow may not name, or a `to` that is not the
 // phase that step runs as, `409 BACKWARD_REFUSED`). `fresh_session` and `compact` name the roles
 // `architect, planner, implementer, tester, reviewer, merger, or a role of this deployment`, and so
-// do the agent routes `POST /legion/v1/agents/stop`, `retry`, `suspend` and `resume`, which the
-// entry 20261125182642 agent-actions adds after this one.
+// do the agent routes `POST /legion/v1/agents/stop`, `retry`, `suspend` and `resume` of the entry
+// 20261125182642 agent-actions, which ranks before this one in main's merge order.
+//
+// Roll this release's worker image out before the deployment's first `roles` entry. The table of
+// each role's git identity that every workflow role's launch carries (LEGION_ROLE_IDENTITIES, the
+// entry 20261125161436 role-identities) holds each role the deployment defines beside Legion's six
+// (the daemon's specs.roleIdentities). runtime.ReadRoleIdentities in a `legion` before this release
+// refuses the whole table when it holds a key outside claim.Roles, which is Legion's six there
+// (claim.IsRole). That release's `legion jj` then prints `legion jj: LEGION_ROLE_IDENTITIES is a
+// table with "<role>", which is no role; the push runs with no author step`, and its push step
+// re-authors no commit the push sends, for any role. A pod is built whole from the worker image
+// pinned when it was launched, and only its update round replaces a live issue pod that runs
+// another image. So once the deployment defines a role, a role launched into a pod built on an
+// earlier image pushes with no author step until that round replaces the pod. Pin this release's
+// worker image first, and add the first entry once the daemon's log names no issue pod still on
+// another image (warnPodDrift: `runs image <image>, the configured image is <image>`).
 //
 // The entry adds `step` to the four enumerated fields that take an issue's phase (its
 // enumeratedValues), and the record answer takes it at its own key paths (withValuesAdded). It

@@ -20,6 +20,16 @@ body: |-
   such a role. A state event names the step role as its field `stepRole` whenever a write moves it,
   a move from one step of the deployment to another included.
 
+  Roll this release's worker image out before the first `roles` entry. Each workflow role's launch
+  carries `LEGION_ROLE_IDENTITIES`, the table of each role's git identity, and once the deployment
+  defines a role the table holds that role beside Legion's six. The `legion` of an earlier release
+  refuses the whole table when it holds a key outside Legion's six roles: its `legion jj` prints
+  `LEGION_ROLE_IDENTITIES is a table with "<role>", which is no role; the push runs with no author
+  step`, and its push step re-authors no commit, for any role. An issue pod keeps the worker image
+  it was built on until its update round replaces it. So pin this release's worker image first,
+  and add the first `roles` entry once the daemon's log names no issue pod that runs another image
+  than the configured one (`runs image <image>, the configured image is <image>`).
+
   The migration `20261124192838_deployment_roles` widens the role and phase checks, and an
   earlier release cannot read a row at `step` or of such a role. Before a rollback past this
   release, finish or stop each issue whose plan names such a role. `docs/kubernetes.md`, "Rolling

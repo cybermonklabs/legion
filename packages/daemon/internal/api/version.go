@@ -348,8 +348,9 @@ package api
 // workspace was lost. The controller's pod loses its init container with them, since the sessions
 // directory it made is gone. `runtime.kubernetes.session_store` must name a store that keeps
 // sessions in a database, `postgres` or `cloudsql-iam` — an omitted key is the same refusal as an
-// explicit `pvc` — since a session kept as a file on the pod's disk would die with the pod and the
-// next launch's resume would fail on the missing file, failing the claim after three failures. A
+// explicit `pvc` — since a session kept as a file on the pod's disk would die with the pod, and the
+// next launch would find no session to resume, so the claim would start a fresh agent without that
+// conversation (internal/supervise's startFresh). A
 // daemon before 37 sets `LEGION_EXPECT_ISSUE_VOLUME=true` on a pod whose `workspace-init` from
 // this commit knows neither that name nor exit 3, so a lost disk is
 // provisioned afresh and reported as provisioned, and that daemon resumes a role onto a session

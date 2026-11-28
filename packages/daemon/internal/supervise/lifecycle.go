@@ -274,7 +274,11 @@ type waitingRelaunch struct {
 //   - relaunchRefused records the kind its own callers hand it: launchAfter and
 //     relaunchAfterFailure read it off the machine's intent, which the retry relaunchRefused arms
 //     restores, and runWake passes its wake's kind, read where that wake was made off the intent
-//     the wake's retry restores (reserveWake, heldTryWake, retryHolding).
+//     the wake's retry restores (reserveWake, heldTryWake, retryHolding). startLeftWhileParked,
+//     whose read of the start or of the task the claim holds failed, passes on the kind its own
+//     caller hands it: launchAfter's, read off the machine's intent (pluginIntent.waitsUnder), and
+//     runWake's and podStartDue's, their wake's kind, read where that wake was made as above
+//     (podStartDue's wake is always heldTryWake's, whose retry, launchFromTop, restores the intent).
 //   - relaunchAtProbe reads it off the intent of the try's launch, the one its retry restores
 //     (launchFromTop).
 //   - startWaitsForStore and startWaitsForPodRound pass WakeLaunch whatever launch they retry,

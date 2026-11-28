@@ -110,7 +110,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	// The release of a waiting parent's quiet pod arms no backstop for any role of it: the release
 	// in implementing arms the released implementer's, and the same release once the tick has
 	// moved the parent into awaiting_children cancels that earlier backstop and arms none, since
-	// no role works the phase (outbox.armBackstops, workflow.OpenPhaseRole).
+	// no role works the phase (outbox.armBackstops, workflow.OpenRoleOf).
 	t.Run("a release of the waiting parent's pod arms no backstop", func(t *testing.T) {
 		ctx := context.Background()
 		pool := isolatedOutboxPool(t)
