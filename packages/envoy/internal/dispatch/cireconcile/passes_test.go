@@ -3,6 +3,7 @@ package cireconcile
 import (
 	"context"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -176,9 +177,10 @@ func waitForRow(t *testing.T, pool *store.Pool, instance string) int64 {
 // writing the row at the start of the pass rather than at its end -- a person who asks why
 // nothing has settled wants to know that a pass is running now, not only what the last one did.
 //
-// The pass here is held open by a GitHub that does not answer the second page of the repository,
-// and it is run under its lease exactly as the loop runs it (duty.Exclusive), so the lease the
-// read asks about is held by the pass itself.
+// The pass here is held open by a GitHub that does not answer the second page of the repository.
+// The test waits for that request before reading its row or ending its bound: the row is opened
+// before the pass binds its writer or reads GitHub, so a running row alone is not the stall.
+// It runs under its lease exactly as the loop runs it (duty.Exclusive).
 func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, reviewerAppID)
@@ -191,8 +193,12 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	h.reconciler.PassTimeout = 10 * time.Second
 	h.boundByTheTest()
 	h.github.stallQuery(gitHubRepository, 1, time.Minute)
+	stalled := make(chan struct{})
+	var once sync.Once
+	h.github.atStall(func() { once.Do(func() { close(stalled) }) })
 
 	_, _, finished := holdLease(t, h.pool, h.reconciler.Pass)
+	testwait.Receive(t, "GitHub holding the second-page query open", stalled)
 	id := waitForRow(t, h.pool, instance)
 
 	running := waitForPass(t, h.pool, id, PassStateRunning)
@@ -220,8 +226,8 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 // just expired, and a write made on it would land nowhere, leaving a row that reads as a pass
 // that vanished -- the one state that must mean a process died.
 func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
-	// Not parallel: outside the pacing tests, this is the real-timer deadline control. Its 2 s
-	// bound uses context.WithTimeout, and the pass must read the first page inside it.
+	// Not parallel: this is the real-timer deadline control. Its 2 s bound uses
+	// context.WithTimeout, and the pass must read the first page inside it.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)
@@ -378,6 +384,39 @@ func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
 	// record is what tells a cancelled pass from one that finished.
 	if line := h.passLine(); line["deadline_reached"] != false {
 		t.Errorf("the pass reports deadline_reached = %v, want false: its own bound did not end it: %v", line["deadline_reached"], line)
+	}
+}
+
+// A pass whose caller is already cancelled when it begins still records a row, and that row says
+// the caller cancelled it. Cancelling first is a shorter road to the same insert than a shutdown
+// landing while the insert is in flight. Were the insert on the pass's context, pgxpool would
+// refuse at the acquire on this road, before any insert was sent. On the in-flight road, the read
+// of the id would fail after Postgres had committed the row. On both roads, the pass would hold
+// no row's id and record nothing of how it ended. beginPass says why the insert runs on a context
+// of its own.
+func TestAPassWhoseCallerIsAlreadyCancelledStillRecordsTheCancellation(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, reviewerAppID)
+	instance := registerProcess(t, h.pool, 0)
+	h.reconciler.Instance = func() string { return instance }
+
+	shutting, shutdown := context.WithCancel(h.ctx)
+	shutdown()
+	h.reconciler.Pass(shutting)
+
+	passes := recent(t, h.pool)
+	if len(passes) != 1 {
+		t.Fatalf("the pass left %d rows, want the one row a pass writes: a pass that holds no row's id records nothing of how it ended", len(passes))
+	}
+	pass := passes[0]
+	if pass.State != outcomeCancelled {
+		t.Errorf("the pass reads %q, want %q: its caller had cancelled it before it began: %+v", pass.State, outcomeCancelled, pass)
+	}
+	if pass.EndedAt == nil {
+		t.Error("the pass has no end time, so nothing tells it from a pass whose process died in the middle of it")
+	}
+	if pass.Instance != instance {
+		t.Errorf("the row names instance %q, want this process's %q", pass.Instance, instance)
 	}
 }
 
