@@ -808,6 +808,35 @@ test("Save keeps the focus once the save lands and draws the stored record, and 
   }
 });
 
+// Held by `aria-disabled` while its save is out, Save draws as a control that cannot be pressed:
+// its look is the `refused:` variant's (`styles.css`), which covers `aria-disabled` as it covers
+// `disabled`. A `disabled:` look would leave the held Save drawn as one that can be pressed.
+test("a Save held while its save is out draws as one that cannot be pressed", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<DeliverySettings>();
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockReturnValue(answer.promise);
+  try {
+    renderForm();
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Deploy repository", "acme/gadgets");
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    await user.click(save);
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    await afterFrameAndTasks();
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).not.toBeDisabled();
+    expect(save.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["refused:cursor-not-allowed", "refused:opacity-50"])
+    );
+  } finally {
+    answer.resolve(record);
+    cleanup();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
 // The save has its answer, and Save stays held while the Delivery page, which holds the record,
 // is still to draw it (`useHoldUntilDrawn`). Held, Save keeps the reader's focus: it is
 // `aria-disabled`, not `disabled`, which Chromium answers by taking the focus off the button

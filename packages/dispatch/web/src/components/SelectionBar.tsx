@@ -13,6 +13,7 @@ import {
 import { focusOnDocument } from "../features/shell/roving";
 import { useMediaQuery } from "../features/shell/useDialog";
 import { afterFootPass, footPassNow, useFootInset } from "../hooks/useFootInset";
+import { inputMethodKey } from "../lib/input-method-key";
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
 import {
@@ -1018,13 +1019,19 @@ const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
  *  for (`armOnPress`), and Escape from a control inside the bar besides, which the bar's hand-off
  *  counts as the reader's own (`SelectionBar`): on a page whose keymap clears the selection on
  *  Escape, as the Inbox's does, Escape there clears the selection the bar holds (the project List
- *  binds no such key), where a component's root reads it as the reader leaving a control. Each
+ *  binds no such key), where a component's root reads it as the reader leaving a control. The
+ *  Escape that ends an input method's composition (`inputMethodKey`) is the input method's: it
+ *  falls to `armOnPress`, which arms nothing for it, as for every key of an input method. Each
  *  arm takes the rows the page names (`SelectionBarProps`'s `rows`). */
 function armOnBarKey(
   event: KeyboardEvent<HTMLDivElement>,
   rows: (() => readonly Element[]) | undefined
 ): void {
-  if (event.key === "Escape" && event.target instanceof Element) {
+  if (
+    event.key === "Escape" &&
+    !inputMethodKey(event.nativeEvent) &&
+    event.target instanceof Element
+  ) {
     armHandOff(event.target, event.currentTarget, rows);
   } else {
     armOnPress(event, rows);

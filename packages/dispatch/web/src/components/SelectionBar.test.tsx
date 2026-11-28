@@ -678,6 +678,49 @@ test("the bar emptied by the reader's press on the last row's mark hands the foc
   }
 });
 
+// The Escape that ends an input method's composition in a control inside the bar is the input
+// method's (`inputMethodKey`): it commits or cancels what the reader was composing and arms
+// nothing, as it arms nothing at every other root (`armOnPress`). Chromium and Firefox send it
+// with `isComposing`, and Safari after the composition's end with keyCode 229. So a refetch that
+// empties the selection after it takes the bar away as a going nobody caused: the focus stays on
+// the body, and the page is never asked where it goes.
+test("an Escape that ends an input method's composition in the bar arms nothing, so the bar emptied after it hands the focus to no row", () => {
+  let asked = 0;
+  const returnFocus = () => {
+    asked += 1;
+    return rowBox("CORE-2");
+  };
+  /** Escape pressed on the bar's Clear selection, with what `composing` adds to its keydown. */
+  const escapeInBar = (composing: KeyboardEventInit) => {
+    const clear = screen.getByRole("button", { name: "Clear selection" });
+    act(() => {
+      clear.focus();
+      clear.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Escape", ...composing })
+      );
+    });
+  };
+  const view = render(<MarkedTable count={2} returnFocus={returnFocus} />);
+  try {
+    for (const composing of [{ isComposing: true }, { keyCode: 229 }]) {
+      escapeInBar(composing);
+      view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
+      expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+      expect(document.activeElement).toBe(document.body);
+      expect(asked).toBe(0);
+      view.rerender(<MarkedTable count={2} returnFocus={returnFocus} />);
+    }
+    // The same going after the reader's own Escape there hands the focus on: what kept it still
+    // above is that the key was the input method's.
+    escapeInBar({});
+    view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
+    expect(rowBox("CORE-2")).toHaveFocus();
+    expect(asked).toBe(1);
+  } finally {
+    view.unmount();
+  }
+});
+
 /** The keys of `EpicList`'s rows, in its order: the reader marks the middle two. */
 const EPIC_KEYS = ["CORE-1", "CORE-2", "CORE-3", "CORE-4"];
 

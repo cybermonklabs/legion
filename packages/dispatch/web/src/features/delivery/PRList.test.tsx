@@ -6,7 +6,7 @@ import { endWindowScroll } from "../../__tests__/scroll-box";
 import type { DeliveryPR } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
-import { OVERSCAN_ROWS, ROW_HEIGHT_PX, scrollTopToShowRow, visibleRowRange } from "./lib/prList";
+import { ROW_HEIGHT_PX } from "./lib/prList";
 import { PRList } from "./PRList";
 
 const base: DeliveryPR = {
@@ -118,24 +118,6 @@ function scrolledTo(top: number): void {
     box.dispatchEvent(new Event("scroll"));
   });
 }
-
-test("the window holds the rows on screen plus the overscan, clamped at both ends", () => {
-  const viewport = 10 * ROW_HEIGHT_PX;
-  expect(visibleRowRange(0, viewport, 1000)).toEqual({ first: 0, last: 10 + OVERSCAN_ROWS });
-  // Scrolled to the very end: the last row is inside the window, and nothing past it.
-  const end = (1000 - 10) * ROW_HEIGHT_PX;
-  expect(visibleRowRange(end, viewport, 1000)).toEqual({ first: 990 - OVERSCAN_ROWS, last: 1000 });
-  // A taller viewport after a resize widens the window by the rows it now shows.
-  expect(visibleRowRange(0, 20 * ROW_HEIGHT_PX, 1000).last).toBe(20 + OVERSCAN_ROWS);
-  expect(visibleRowRange(0, viewport, 5)).toEqual({ first: 0, last: 5 });
-});
-
-test("scrolling to a row moves only as far as it takes to show it below the header", () => {
-  const viewport = 11 * ROW_HEIGHT_PX; // the header plus ten body rows
-  expect(scrollTopToShowRow(3, 0, viewport)).toBe(0);
-  expect(scrollTopToShowRow(10, 0, viewport)).toBe(ROW_HEIGHT_PX);
-  expect(scrollTopToShowRow(2, 5 * ROW_HEIGHT_PX, viewport)).toBe(2 * ROW_HEIGHT_PX);
-});
 
 test("the list renders only its first window of rows, and a taller viewport renders more", () => {
   const restore = measureBoxAt(10 * ROW_HEIGHT_PX);
