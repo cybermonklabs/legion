@@ -1413,7 +1413,7 @@ export function renderInbound(
             skip: false,
             content:
               frame.event.type === "ask.follower_added"
-                ? `Now following ask ${ask} on ${owner} (added by ${who}): its answer and replies reach you directly; ${commandLine("dispatch_follow", { ask, action: "unfollow" })} to stop.`
+                ? `Now following ask ${ask} on ${owner} (added by ${who}): its answer and replies reach you directly; ${commandLine("dispatch_unfollow", { ask })} to stop.`
                 : `No longer following ask ${ask} on ${owner} (removed by ${who}).`,
             envelope,
           };
@@ -1435,8 +1435,8 @@ export function renderInbound(
             skip: false,
             content:
               frame.event.type === "thread.follower_added"
-                ? `Now following the thread of comment ${comment} on ${owner} (added by ${who}): its replies reach you directly; ${commandLine("dispatch_follow", { comment, action: "unfollow" })} to stop.`
-                : `No longer following the thread of comment ${comment} on ${owner} (removed by ${who}): its replies reach you only when one mentions you; ${commandLine("dispatch_follow", { comment, action: "follow" })} to rejoin.`,
+                ? `Now following the thread of comment ${comment} on ${owner} (added by ${who}): its replies reach you directly; ${commandLine("dispatch_unfollow", { comment })} to stop.`
+                : `No longer following the thread of comment ${comment} on ${owner} (removed by ${who}): its replies no longer reach you; a reply that mentions you still does, and while you hold the issue's claim or route every reply still reaches you; ${commandLine("dispatch_follow", { comment })} to rejoin.`,
             envelope,
           };
         }

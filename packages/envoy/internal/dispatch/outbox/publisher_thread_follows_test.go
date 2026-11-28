@@ -134,6 +134,65 @@ func TestASessionThatLeftAThreadIsLeftOutOfItsReplies(t *testing.T) {
 				}
 			},
 		},
+		{
+			// On an issue nobody routes or claims, a person's comment reaches every session that
+			// wrote the issue's spec, whatever thread it is in; a spec writer that left this
+			// thread is left out of its replies there too. The control is the spec's other writer.
+			name: "a writer of the issue's spec that left the thread is left out of its replies on an unclaimed, unrouted issue",
+			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) []recipientCheck {
+				spec := seedDocument(t, database, new("T-1"), "spec", writer, []model.Actor{writer, stayer})
+				makePrimary(t, database, spec)
+				root := seedThreadComment(t, database, "T-1", "", alice, nil)
+				chooseThread(t, database, root, writer.ID, false)
+				reply := seedThreadComment(t, database, "T-1", "", alice, &root)
+				created := appendCommentEvent(t, database, broker, "comment.created", alice, model.Comment{ID: reply, ReplyTo: &root})
+				edited := appendCommentEvent(t, database, broker, "comment.edited", alice, model.Comment{ID: reply, ReplyTo: &root})
+				otherRoot := seedThreadComment(t, database, "T-1", "", alice, nil)
+				control := appendCommentEvent(t, database, broker, "comment.created", alice, model.Comment{ID: otherRoot})
+				return []recipientCheck{
+					{event: created, want: []string{stayer.ID}},
+					{event: edited, want: []string{stayer.ID}},
+					{event: control, want: []string{writer.ID, stayer.ID}},
+				}
+			},
+		},
+		{
+			// An edit or a delete of the comment that heads a thread is that thread's: a writer of
+			// the document it is anchored on that left the thread hears neither.
+			name: "an edit and a delete of a thread's first comment skip a credit of its document that left the thread",
+			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) []recipientCheck {
+				notes := seedDocument(t, database, new("T-1"), "notes", writer, []model.Actor{writer, stayer})
+				root := seedThreadComment(t, database, "T-1", notes, alice, nil)
+				chooseThread(t, database, root, writer.ID, false)
+				anchored := model.Comment{ID: root, Anchor: &model.Anchor{ArtifactID: notes}}
+				edited := appendCommentEvent(t, database, broker, "comment.edited", alice, anchored)
+				deleted := appendCommentEvent(t, database, broker, "comment.deleted", alice, anchored)
+				return []recipientCheck{
+					{event: edited, want: []string{stayer.ID}},
+					{event: deleted, want: []string{stayer.ID}},
+				}
+			},
+		},
+		{
+			// A leave and the session's newest comment in the thread at one instant: the leave
+			// stands, as the API and the read of the thread root's author take it.
+			name: "a leave made at the very instant of the session's newest comment in the thread stands",
+			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) []recipientCheck {
+				root := seedThreadComment(t, database, "T-1", "", alice, nil)
+				own := seedThreadComment(t, database, "T-1", "", leaver, &root)
+				seedThreadComment(t, database, "T-1", "", stayer, &root)
+				chooseThread(t, database, root, leaver.ID, false)
+				if _, err := database.Pool.Exec(context.Background(), `
+					update comment_thread_follows set since = (select created_at from comments where id = $2)
+					where comment_id = $1 and session_id = $3
+				`, root, own, leaver.ID); err != nil {
+					t.Fatalf("set the leave to the instant of the session's comment: %v", err)
+				}
+				reply := seedThreadComment(t, database, "T-1", "", alice, &root)
+				created := appendCommentEvent(t, database, broker, "comment.created", alice, model.Comment{ID: reply, ReplyTo: &root})
+				return []recipientCheck{{event: created, want: []string{stayer.ID}}}
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

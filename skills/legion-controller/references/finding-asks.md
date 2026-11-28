@@ -18,7 +18,7 @@ The reply's form and the five steps are in `skill://legion-controller/references
 
 ## Follow it
 
-A finding ask another role opened reaches you as `dispatch://<KEY>/ask/<id>`. Follow it, so its answer reaches you (`dispatch follow --ask '<that reference>' --action follow`); when `dispatch read --ref` shows it answered already, act on its answer now.
+A finding ask another role opened reaches you as `dispatch://<KEY>/ask/<id>`. Follow it, so its answer reaches you (`dispatch follow --ask '<that reference>'`); when `dispatch read --ref` shows it answered already, act on its answer now.
 
 ## Act on its answer
 

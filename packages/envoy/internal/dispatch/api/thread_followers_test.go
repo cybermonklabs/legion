@@ -71,6 +71,35 @@ func TestLeavingAThreadByAReplysIDLeavesTheWholeThread(t *testing.T) {
 	}
 }
 
+// A comment as deep in a legacy nested thread as the outbox counts in it names that thread: the
+// walk up to the root is bound edge for edge like the outbox's (maxThreadFollowDepth).
+func TestLeavingAThreadByItsDeepestCommentTheOutboxCountsRecordsTheLeaveOnItsRoot(t *testing.T) {
+	t.Parallel()
+	f := newAnswersFixture(t)
+	root := f.comment(t, map[string]any{"body": "Which day do we cut the release?"}, "alice")
+	ctx := context.Background()
+	deepest := root
+	for range maxThreadFollowDepth {
+		if err := f.database.Pool.QueryRow(ctx, `
+			insert into comments (issue_key, author, body, reply_to)
+			values ($1, '{"kind":"user","id":"alice"}', 'A legacy nested reply.', $2)
+			returning id::text
+		`, f.issue, deepest).Scan(&deepest); err != nil {
+			t.Fatalf("seed a nested reply: %v", err)
+		}
+	}
+	f.followThread(t, http.MethodDelete, deepest, answersSession)
+	var recorded string
+	if err := f.database.Pool.QueryRow(ctx, `
+		select comment_id::text from comment_thread_follows where session_id = $1 and not follows
+	`, answersSession).Scan(&recorded); err != nil {
+		t.Fatalf("read the recorded leave: %v", err)
+	}
+	if recorded != root {
+		t.Fatalf("the leave is recorded on %s, want the thread's root %s", recorded, root)
+	}
+}
+
 // A reply that mentions a session that left the thread still reaches it: the mention is a
 // delivery of its own, which leaving a thread does not stop.
 func TestAReplyThatMentionsASessionThatLeftTheThreadStillReachesIt(t *testing.T) {

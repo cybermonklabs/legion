@@ -152,29 +152,29 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Method: http.MethodPost, Pattern: "/api/v1/comments/{id}/resolve",
 		Path: map[string]string{"id": "comment"},
 	}},
+	// A follow and an unfollow each name an ask or a comment, never both and never neither
+	// (goingOneOfArguments, which Do checks before it chooses a row), so the row of the one it
+	// names is the one whose placeholders fill. A comment thread's follow records the session's
+	// choice on the thread and makes no edge of the graph.
 	"dispatch_follow": {
-		{
-			Method: http.MethodDelete, Pattern: "/api/v1/asks/{id}/followers/{session_id}",
-			Path:         map[string]string{"id": "ask", "session_id": goingCallerSession},
-			WhenArgument: "action", WhenValue: "unfollow",
-			Relations: []string{"followed_by"},
-		},
 		{
 			Method: http.MethodPut, Pattern: "/api/v1/asks/{id}/followers/{session_id}",
 			Path:      map[string]string{"id": "ask", "session_id": goingCallerSession},
 			Relations: []string{"followed_by"},
 		},
-		// A follow names an ask or a comment, never both (the tool's own check refuses that
-		// before a call), so the rows of the one it names are the ones whose placeholders fill.
-		// A comment thread's follow records the session's choice on the thread and makes no
-		// edge of the graph.
-		{
-			Method: http.MethodDelete, Pattern: "/api/v1/comments/{id}/followers/{session_id}",
-			Path:         map[string]string{"id": "comment", "session_id": goingCallerSession},
-			WhenArgument: "action", WhenValue: "unfollow",
-		},
 		{
 			Method: http.MethodPut, Pattern: "/api/v1/comments/{id}/followers/{session_id}",
+			Path: map[string]string{"id": "comment", "session_id": goingCallerSession},
+		},
+	},
+	"dispatch_unfollow": {
+		{
+			Method: http.MethodDelete, Pattern: "/api/v1/asks/{id}/followers/{session_id}",
+			Path:      map[string]string{"id": "ask", "session_id": goingCallerSession},
+			Relations: []string{"followed_by"},
+		},
+		{
+			Method: http.MethodDelete, Pattern: "/api/v1/comments/{id}/followers/{session_id}",
 			Path: map[string]string{"id": "comment", "session_id": goingCallerSession},
 		},
 	},
@@ -575,6 +575,9 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 	if reason := checkGoingArguments(entry.Request, arguments); reason != "" {
 		return nil, GoingArgumentError{Action: action, Reason: reason}
 	}
+	if reason := checkGoingOneOf(action, arguments); reason != "" {
+		return nil, GoingArgumentError{Action: action, Reason: reason}
+	}
 	route, path, chosen := chooseGoingRoute(entry, arguments, c.Session)
 	if !chosen {
 		return nil, GoingArgumentError{Action: action, Reason: goingNoRouteReason(entry)}
@@ -600,6 +603,35 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 	}
 	request.Header.Set("Content-Type", "application/json")
 	return c.Doer.Do(request)
+}
+
+// goingOneOfArguments names, for a tool whose spec refuses a call that names more or fewer than
+// one of a set of its arguments, that set. The rule is the tool spec's own cross-field check
+// (packages/contracts/src/dispatch-tools.ts), which the generated schema does not carry, so the
+// caller states it here: without it a follow naming both an ask and a comment would take the
+// first row that fills, the ask's, and send it.
+var goingOneOfArguments = map[string][]string{
+	"dispatch_follow":   {"ask", "comment"},
+	"dispatch_unfollow": {"ask", "comment"},
+}
+
+// checkGoingOneOf answers the refusal of a call of action that names more or fewer than one of
+// the arguments goingOneOfArguments sets for it, empty for any other call.
+func checkGoingOneOf(action string, arguments map[string]any) string {
+	set, ruled := goingOneOfArguments[action]
+	if !ruled {
+		return ""
+	}
+	named := 0
+	for _, argument := range set {
+		if _, held := arguments[argument]; held {
+			named++
+		}
+	}
+	if named == 1 {
+		return ""
+	}
+	return fmt.Sprintf("name exactly one of %s; this call names %d", strings.Join(set, " and "), named)
 }
 
 // chooseGoingRoute is the row a call performs and the path it performs it on: the action's first

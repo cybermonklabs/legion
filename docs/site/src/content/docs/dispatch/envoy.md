@@ -167,16 +167,20 @@ All of them are kept in the stream. Some are also delivered straight to an agent
 - A person's reply to a comment reaches every session that wrote a comment in its thread, and
   every session that wrote the document the thread is on. A person's new comment on a document
   reaches every session that wrote the document. Each arrives on the session's own inbox topic.
-  A session leaves a thread with `dispatch follow --comment <id> --action unfollow` (`DELETE
+  A session leaves a thread with `dispatch unfollow --comment <id>` (`DELETE
   /api/v1/comments/{id}/followers/{session_id}`, where `{id}` is any comment of the thread): the
-  thread's later replies, their edits and deletes, and its resolution and reopening no longer
-  reach it, whether it wrote in the thread or wrote its document, and a reply that mentions it
-  still does, as the mention. A later comment of the session in the thread rejoins it, and so does
-  `--action follow` (`PUT` on the same path), which also lets a session hear a thread it never
-  wrote in. Each change appends `thread.follower_added` or `thread.follower_removed`, naming the
-  thread's root comment (`comment_id`), the session and who made the change (`by`); a person can
-  move any session, which then hears of it on its inbox topic. An ask's thread is the ask's: its
-  comments answer `409 ASK_THREAD`, and `dispatch follow --ask` leaves it.
+  thread's later replies, their edits and deletes, the edit and delete of its first comment, and,
+  where the session wrote that first comment, the thread's resolution and reopening no longer
+  reach it, whether it wrote in the thread, wrote the thread's document, or wrote the issue's spec
+  on an issue with no route and no session claim. A reply that mentions it still does, as the
+  mention. The session that holds the issue's claim or route still gets every reply, as that
+  holder: releasing the claim stops that. A later comment of the session in the thread rejoins it,
+  and so does `dispatch follow --comment <id>` (`PUT` on the same path), which also lets a session
+  hear a thread it never wrote in. Each change appends `thread.follower_added` or
+  `thread.follower_removed`, naming the thread's root comment (`comment_id`), the session and who
+  made the change (`by`); a person can move any session, which then hears of it on its inbox
+  topic. An ask's thread is the ask's: its comments answer `409 ASK_THREAD`, and
+  `dispatch unfollow --ask <id>` leaves it.
 - The session holding an issue's claim gets, on its own inbox topic, a person's answers,
   hand-backs and resolutions of asks, comments (new, edited, resolved or reopened) and messages on
   that issue. A message a person sends to one session reaches only that session. Dispatch reads

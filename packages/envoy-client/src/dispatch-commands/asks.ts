@@ -249,7 +249,8 @@ function openAskHints(asks: readonly Pick<OpenAsk, "id" | "question">[]): string
 }
 
 /**
- * The ask uuid `dispatch_edit_ask`, `dispatch_resolve_ask`, and `dispatch_follow` write to.
+ * The ask uuid `dispatch_edit_ask`, `dispatch_resolve_ask`, `dispatch_follow` and
+ * `dispatch_unfollow` write to.
  * A full uuid passes through; an 8+ hex prefix resolves against this session's own open asks;
  * anything else is refused before the write, naming those asks so the next call carries a real
  * id. An open-asks read that fails never masks that rule. An ask named by a dispatch:// reference
@@ -432,15 +433,17 @@ export async function resolveAskCommand(context: CommandContext): Promise<Dispat
   };
 }
 
-/** `dispatch follow --ask`: have an ask's answer and replies reach this session, or stop them.
- *  `followCommand` (conversation.ts) sends a call that names a comment thread elsewhere. */
-export async function followAskCommand(context: CommandContext): Promise<DispatchToolResult> {
+/** `dispatch follow --ask` and `dispatch unfollow --ask`: have an ask's answer and replies reach
+ *  this session, or stop them. `followCommand` and `unfollowCommand` (conversation.ts) read the
+ *  session and send a call that names a comment thread elsewhere. */
+export async function setAskFollow(
+  context: CommandContext,
+  sessionId: string,
+  follow: boolean
+): Promise<DispatchToolResult> {
   const { args, client, actor, input } = context;
-  const sessionId = input.sessionId?.trim();
-  if (!sessionId) throw new Error("host session id is required for dispatch follow");
   const { id: ask, read: refRead } = await resolveAskArgument(input.tool, args, client, sessionId);
-  const action = stringArg(args, "action");
-  if (action === "unfollow") {
+  if (!follow) {
     await client.unfollowAsk(ask, sessionId, actor);
     return { text: `Unfollowed ask ${ask}.`, details: { ask } };
   }

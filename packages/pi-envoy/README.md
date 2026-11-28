@@ -612,15 +612,18 @@ against the GitHub repository of the working directory. `dispatch doc-read` and 
 also accept `--ref` with a `dispatch://` reference, including `dispatch://PROJECT/artifact/<slug>`.
 `dispatch search` needs only `--query`. `dispatch edit-ask` and `dispatch resolve-ask` instead
 identify an existing ask with `--ask`, and `dispatch resolve-comment` a comment with `--comment`;
-`dispatch follow` takes one of the two, `--ask` for an ask or `--comment` for the comment thread
-that comment is in. No result carries a subscription topic: opening an ask, or replying to one
-with `dispatch comment --reply-to-ask`, makes the session a follower of that ask (its answer and
-replies reach the session directly, server-side), and the command prints
-`Following ask <id> on <owner>: …` after its result the first time the session follows that ask.
-Writing a comment in a thread makes the session a follower of that thread in the same way: its
-later replies reach the session until `dispatch follow --comment <id> --action unfollow` leaves
-it, after which only a reply that mentions the session still does, and the session's next
-comment there, or `--action follow`, joins it again.
+`dispatch follow` and `dispatch unfollow` each take one of the two, `--ask` for an ask or
+`--comment` for the comment thread that comment is in. No result carries a subscription topic:
+opening an ask, or replying to one with `dispatch comment --reply-to-ask`, makes the session a
+follower of that ask (its answer and replies reach the session directly, server-side), and the
+command prints `Following ask <id> on <owner>: …` after its result the first time the session
+follows that ask. Writing a comment in a thread makes the session a follower of that thread in
+the same way: its later replies, and their edits and deletes, reach the session, and the thread's
+resolution and reopening reach the author of its first comment. `dispatch unfollow --comment <id>`
+stops them all, including what reached the session as a writer of the thread's document or of the
+issue's spec. After it, a reply that mentions the session still reaches it, the session's next
+comment in the thread rejoins it, and so does `dispatch follow --comment <id>`; the session that
+holds the issue's claim or route keeps getting every reply until it releases the claim.
 Whole-issue or whole-document subscription is the model's own `envoy_subscribe` of the topic a
 write result names (`notifications.dispatch.issue.<KEY>.>` or
 `notifications.dispatch.document.<PROJECT>.<SLUG>.>`), which it names only when none of the

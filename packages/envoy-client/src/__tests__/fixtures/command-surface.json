@@ -1,6 +1,6 @@
 {
-  "commands": 46,
-  "refusals": 32,
+  "commands": 47,
+  "refusals": 34,
   "runs": [
     {
       "tool": "dispatch_answers",
@@ -907,7 +907,6 @@
       "tool": "dispatch_follow",
       "call": "refusal: ask that is not an ask reference",
       "args": {
-        "action": "follow",
         "ask": "dispatch://DSP-1/comment/<id>"
       },
       "requests": [],
@@ -915,15 +914,14 @@
       "text": [
         "dispatch follow was not called: 1 problem",
         "- ask must be a bare ask id or a dispatch://.../ask/<id> reference",
-        "- Allowed flags: --ask, --ask-file, --comment, --comment-file, --action, --action-file, --help, --dry-run",
-        "- Example: dispatch follow --ask 01234567-0000-4000-8000-000000000001 --action follow"
+        "- Allowed flags: --ask, --ask-file, --comment, --comment-file, --help, --dry-run",
+        "- Example: dispatch follow --ask 01234567-0000-4000-8000-000000000001"
       ]
     },
     {
       "tool": "dispatch_follow",
       "call": "refusal: both an ask and a comment",
       "args": {
-        "action": "follow",
         "ask": "<id>",
         "comment": "<id>"
       },
@@ -932,46 +930,27 @@
       "text": [
         "dispatch follow was not called: 1 problem",
         "- Name exactly one of ask and comment: ask for an ask, comment for a comment thread.",
-        "- Allowed flags: --ask, --ask-file, --comment, --comment-file, --action, --action-file, --help, --dry-run",
-        "- Example: dispatch follow --ask 01234567-0000-4000-8000-000000000001 --action follow"
-      ]
-    },
-    {
-      "tool": "dispatch_follow",
-      "call": "refusal: comment that is not a comment reference",
-      "args": {
-        "action": "unfollow",
-        "comment": "dispatch://DSP-1/ask/<id>"
-      },
-      "requests": [],
-      "outcome": "error",
-      "text": [
-        "dispatch follow was not called: 1 problem",
-        "- comment must be a bare comment id - a whole uuid, or a prefix of at least 8 hex characters - or a dispatch://.../comment/<id> reference",
-        "- Allowed flags: --ask, --ask-file, --comment, --comment-file, --action, --action-file, --help, --dry-run",
-        "- Example: dispatch follow --ask 01234567-0000-4000-8000-000000000001 --action follow"
+        "- Allowed flags: --ask, --ask-file, --comment, --comment-file, --help, --dry-run",
+        "- Example: dispatch follow --ask 01234567-0000-4000-8000-000000000001"
       ]
     },
     {
       "tool": "dispatch_follow",
       "call": "refusal: neither an ask nor a comment",
-      "args": {
-        "action": "unfollow"
-      },
+      "args": {},
       "requests": [],
       "outcome": "error",
       "text": [
         "dispatch follow was not called: 1 problem",
         "- Name exactly one of ask and comment: ask for an ask, comment for a comment thread.",
-        "- Allowed flags: --ask, --ask-file, --comment, --comment-file, --action, --action-file, --help, --dry-run",
-        "- Example: dispatch follow --ask 01234567-0000-4000-8000-000000000001 --action follow"
+        "- Allowed flags: --ask, --ask-file, --comment, --comment-file, --help, --dry-run",
+        "- Example: dispatch follow --ask 01234567-0000-4000-8000-000000000001"
       ]
     },
     {
       "tool": "dispatch_follow",
       "call": "valid",
       "args": {
-        "action": "follow",
         "ask": "<id>"
       },
       "requests": [
@@ -2281,6 +2260,84 @@
       "outcome": "result",
       "text": [
         "Posted suggestion 01234567-0000-4000-8000-000000000001"
+      ]
+    },
+    {
+      "tool": "dispatch_unfollow",
+      "call": "refusal: both an ask and a comment",
+      "args": {
+        "ask": "<id>",
+        "comment": "<id>"
+      },
+      "requests": [],
+      "outcome": "error",
+      "text": [
+        "dispatch unfollow was not called: 1 problem",
+        "- Name exactly one of ask and comment: ask for an ask, comment for a comment thread.",
+        "- Allowed flags: --ask, --ask-file, --comment, --comment-file, --help, --dry-run",
+        "- Example: dispatch unfollow --comment 01234567-0000-4000-8000-000000000001"
+      ]
+    },
+    {
+      "tool": "dispatch_unfollow",
+      "call": "refusal: comment that is not a comment reference",
+      "args": {
+        "comment": "dispatch://DSP-1/ask/<id>"
+      },
+      "requests": [],
+      "outcome": "error",
+      "text": [
+        "dispatch unfollow was not called: 1 problem",
+        "- comment must be a bare comment id - a whole uuid, or a prefix of at least 8 hex characters - or a dispatch://.../comment/<id> reference",
+        "- Allowed flags: --ask, --ask-file, --comment, --comment-file, --help, --dry-run",
+        "- Example: dispatch unfollow --comment 01234567-0000-4000-8000-000000000001"
+      ]
+    },
+    {
+      "tool": "dispatch_unfollow",
+      "call": "refusal: neither an ask nor a comment",
+      "args": {},
+      "requests": [],
+      "outcome": "error",
+      "text": [
+        "dispatch unfollow was not called: 1 problem",
+        "- Name exactly one of ask and comment: ask for an ask, comment for a comment thread.",
+        "- Allowed flags: --ask, --ask-file, --comment, --comment-file, --help, --dry-run",
+        "- Example: dispatch unfollow --comment 01234567-0000-4000-8000-000000000001"
+      ]
+    },
+    {
+      "tool": "dispatch_unfollow",
+      "call": "valid",
+      "args": {
+        "comment": "<id>"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/comments/01234567-0000-4000-8000-000000000001/followers/session-1",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Left the thread of comment 01234567-0000-4000-8000-000000000001: its replies no longer reach this session; a reply that mentions it still does, and while this session holds the issue's claim or route every reply still reaches it."
       ]
     },
     {

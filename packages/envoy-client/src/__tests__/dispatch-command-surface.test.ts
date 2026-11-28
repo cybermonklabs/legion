@@ -297,6 +297,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
   }
   if (segments[2] === "comments" && segments.length >= 4) {
     if (rest === "" || rest === "resolve") return response(commentBody());
+    if (rest.startsWith("followers")) return new Response(null, { status: 204 });
   }
   if (segments[2] === "messages" && segments.length >= 4) {
     if (rest === "") return response(messageBody());
@@ -464,22 +465,32 @@ const refusals: readonly RefusalCase[] = [
   {
     tool: "dispatch_follow",
     call: "ask that is not an ask reference",
-    args: { ask: commentRef, action: "follow" },
-  },
-  {
-    tool: "dispatch_follow",
-    call: "comment that is not a comment reference",
-    args: { comment: askRef, action: "unfollow" },
+    args: { ask: commentRef },
   },
   {
     tool: "dispatch_follow",
     call: "both an ask and a comment",
-    args: { ask: UUID, comment: OTHER_UUID, action: "follow" },
+    args: { ask: UUID, comment: OTHER_UUID },
   },
   {
     tool: "dispatch_follow",
     call: "neither an ask nor a comment",
-    args: { action: "unfollow" },
+    args: {},
+  },
+  {
+    tool: "dispatch_unfollow",
+    call: "comment that is not a comment reference",
+    args: { comment: askRef },
+  },
+  {
+    tool: "dispatch_unfollow",
+    call: "both an ask and a comment",
+    args: { ask: UUID, comment: OTHER_UUID },
+  },
+  {
+    tool: "dispatch_unfollow",
+    call: "neither an ask nor a comment",
+    args: {},
   },
   {
     tool: "dispatch_resolve_comment",

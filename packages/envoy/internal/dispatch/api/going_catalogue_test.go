@@ -400,7 +400,7 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 	t.Run("a row addressing the calling session takes it from the caller", func(t *testing.T) {
 		doer := &countingDoer{}
 		caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Session: "sess-7", Doer: doer}
-		arguments := map[string]any{"ask": "01234567-0000-4000-8000-000000000001", "action": "follow"}
+		arguments := map[string]any{"ask": "01234567-0000-4000-8000-000000000001"}
 		if _, err := caller.Do(context.Background(), "dispatch_follow", arguments); err != nil {
 			t.Fatalf("follow an ask: %v", err)
 		}
@@ -420,6 +420,42 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 		}
 		if len(doer.requests) != 0 {
 			t.Fatalf("the caller sent %d request(s) for a call no row takes", len(doer.requests))
+		}
+	})
+
+	t.Run("a follow and an unfollow name an ask or a comment, and one naming both or neither is refused with no request", func(t *testing.T) {
+		const ask, comment = "01234567-0000-4000-8000-000000000001", "01234567-0000-4000-8000-000000000002"
+		for _, row := range []struct{ action, argument, id, method, path string }{
+			{"dispatch_follow", "ask", ask, http.MethodPut, "/api/v1/asks/" + ask + "/followers/sess-7"},
+			{"dispatch_unfollow", "ask", ask, http.MethodDelete, "/api/v1/asks/" + ask + "/followers/sess-7"},
+			{"dispatch_follow", "comment", comment, http.MethodPut, "/api/v1/comments/" + comment + "/followers/sess-7"},
+			{"dispatch_unfollow", "comment", comment, http.MethodDelete, "/api/v1/comments/" + comment + "/followers/sess-7"},
+		} {
+			doer := &countingDoer{}
+			caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Session: "sess-7", Doer: doer}
+			if _, err := caller.Do(context.Background(), row.action, map[string]any{row.argument: row.id}); err != nil {
+				t.Fatalf("%s an %s: %v", row.action, row.argument, err)
+			}
+			if sent := doer.requests[0]; sent.Method != row.method || sent.URL.Path != row.path {
+				t.Fatalf("%s an %s was sent as %s %s, want %s %s", row.action, row.argument, sent.Method, sent.URL.Path, row.method, row.path)
+			}
+		}
+		for _, action := range []string{"dispatch_follow", "dispatch_unfollow"} {
+			for name, arguments := range map[string]map[string]any{
+				"both":    {"ask": ask, "comment": comment},
+				"neither": {},
+			} {
+				doer := &countingDoer{}
+				caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Session: "sess-7", Doer: doer}
+				_, err := caller.Do(context.Background(), action, arguments)
+				var refused GoingArgumentError
+				if !errors.As(err, &refused) || !strings.Contains(refused.Reason, "exactly one of ask and comment") {
+					t.Fatalf("%s naming %s answered %v, want the exactly-one refusal", action, name, err)
+				}
+				if len(doer.requests) != 0 {
+					t.Fatalf("%s naming %s sent %d request(s)", action, name, len(doer.requests))
+				}
+			}
 		}
 	})
 }

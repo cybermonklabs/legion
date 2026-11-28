@@ -5,7 +5,7 @@ import {
   type MessageDelivery,
   type MessageDeliveryMode,
 } from "@legion/contracts";
-import { commandLine } from "../dispatch-command";
+import { commandLine, commandName } from "../dispatch-command";
 import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import {
   dispatchChildRef,
@@ -15,7 +15,7 @@ import {
 } from "../dispatch-owner";
 import { ToolInputError } from "../tool-input-errors";
 import { legionRunsPostedIssue, renderAdvice } from "./advice";
-import { followAskCommand, movedApprovalLine, resolveReplyToAsk } from "./asks";
+import { movedApprovalLine, resolveReplyToAsk, setAskFollow } from "./asks";
 import {
   type CommandContext,
   type DispatchToolResult,
@@ -36,6 +36,7 @@ import {
   messageArgumentId,
   messageArgumentProblem,
   messageInReplyTo,
+  normalizeUUID,
   refOwnerName,
   refuseItemOffRef,
   resolveIdPrefix,
@@ -168,27 +169,53 @@ export async function resolveCommentCommand(context: CommandContext): Promise<Di
 }
 
 /**
- * `dispatch follow`: with `ask`, `followAskCommand`; with `comment`, have the replies of the
- * thread that comment is in reach this session, or stop them. Any comment of the thread names
- * it, and Dispatch records the choice on the thread's root. After a leave, a reply that mentions
- * the session still reaches it, and the session's next comment in the thread rejoins it. The
- * contract refused a call that names both or neither, and `argumentProblems` a comment value
- * that is no comment id or comment reference.
+ * The full id of the comment `reference` names for a follow or a leave of its thread. A reference
+ * resolves as every comment argument does (`resolveCommentArgument`); a bare whole uuid is that
+ * comment; a bare 8+ hex prefix is read from Dispatch, whose prefix layer resolves it as the
+ * follower routes do, so the write names the comment's full id and the result can print it.
+ * `argumentProblems` refused a value that is none of these.
  */
-export async function followCommand(context: CommandContext): Promise<DispatchToolResult> {
+async function threadCommentId(
+  tool: string,
+  reference: string,
+  client: DispatchClient
+): Promise<string> {
+  if (reference.startsWith("dispatch://")) {
+    return (await resolveCommentArgument(tool, reference, client)).id;
+  }
+  const whole = normalizeUUID(reference);
+  if (whole !== undefined) return whole;
+  const read = await client.getComment(reference).catch((error: unknown) => {
+    throw refuseMissingPost(error, { kind: "comment", id: reference });
+  });
+  return read.comment.id;
+}
+
+/**
+ * `dispatch follow` and `dispatch unfollow`: with `ask`, `setAskFollow`; with `comment`, have the
+ * later replies of the thread that comment is in reach this session, or stop them. Any comment of
+ * the thread names it, and Dispatch records the choice on the thread's root. After a leave, a
+ * reply that mentions the session still reaches it, the session's next comment in the thread
+ * rejoins it, and while it holds the issue's claim or route every reply still reaches it. The
+ * contract refused a call that names both or neither, and `argumentProblems` a comment value that
+ * is no comment id or comment reference.
+ */
+async function setFollow(context: CommandContext, follow: boolean): Promise<DispatchToolResult> {
   const { args, client, actor, input } = context;
-  const reference = optionalString(args, "comment");
-  if (reference === undefined) return followAskCommand(context);
   const sessionId = input.sessionId?.trim();
-  if (!sessionId) throw new Error("host session id is required for dispatch follow");
-  const { id } = await resolveCommentArgument(input.tool, reference, client);
+  if (!sessionId) {
+    throw new Error(`host session id is required for dispatch ${commandName(input.tool)}`);
+  }
+  const reference = optionalString(args, "comment");
+  if (reference === undefined) return setAskFollow(context, sessionId, follow);
+  const id = await threadCommentId(input.tool, reference, client);
   const missing = (error: unknown): never => {
     throw refuseMissingPost(error, { kind: "comment", id });
   };
-  if (stringArg(args, "action") === "unfollow") {
+  if (!follow) {
     await client.unfollowCommentThread(id, sessionId, actor).catch(missing);
     return {
-      text: `Left the thread of comment ${id}: its replies no longer reach this session; a reply that mentions it still does.`,
+      text: `Left the thread of comment ${id}: its replies no longer reach this session; a reply that mentions it still does, and while this session holds the issue's claim or route every reply still reaches it.`,
       details: { comment: id },
     };
   }
@@ -197,6 +224,16 @@ export async function followCommand(context: CommandContext): Promise<DispatchTo
     text: `Following the thread of comment ${id}: its replies reach this session directly.`,
     details: { comment: id },
   };
+}
+
+/** `dispatch follow`: follow an ask or a comment thread (`setFollow`). */
+export function followCommand(context: CommandContext): Promise<DispatchToolResult> {
+  return setFollow(context, true);
+}
+
+/** `dispatch unfollow`: unfollow an ask or leave a comment thread (`setFollow`). */
+export function unfollowCommand(context: CommandContext): Promise<DispatchToolResult> {
+  return setFollow(context, false);
 }
 
 /** `dispatch edit-comment`: the author replaces the body of their own comment. */

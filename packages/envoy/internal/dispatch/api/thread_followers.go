@@ -67,20 +67,28 @@ func (s *server) changeThreadFollower(w http.ResponseWriter, r *http.Request, fo
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The thread's head, climbed under the owner's lock as a reply's is (threadHeadFrom): its
-	// root comment, or the ask it hangs under.
-	head, err := s.threadHeadFrom(ctx, tx, own, comment)
+	// The thread's head, climbed under the owner's lock: its root comment, or the ask it hangs
+	// under.
+	root, askID, err := threadRootOf(ctx, tx, comment.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if head.AskID != nil {
+	if askID != "" {
+		verb := "unfollow"
+		if follow {
+			verb = "follow"
+		}
 		writeError(w, "ASK_THREAD", http.StatusConflict, fmt.Sprintf(
-			"comment %s is in the thread of ask %s: follow or unfollow the ask (PUT or DELETE /api/v1/asks/%s/followers/%s)",
-			comment.ID, *head.AskID, *head.AskID, sessionID))
+			"comment %s is in the thread of ask %s, which is the ask's to follow: run `dispatch %s --ask %s` (%s /api/v1/asks/%s/followers/%s)",
+			comment.ID, askID, verb, askID, r.Method, askID, sessionID))
 		return
 	}
-	root := *head.ReplyTo
+	if root == "" {
+		writeError(w, "INVALID_COMMENT", http.StatusConflict, fmt.Sprintf(
+			"comment %s's thread has no root comment within %d replies above it", comment.ID, maxThreadFollowDepth))
+		return
+	}
 	changed, err := setThreadFollow(ctx, tx, root, sessionID, follow)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -162,9 +170,40 @@ const threadFollowStateQuery = `
 	left join comment_thread_follows f on f.comment_id = $1 and f.session_id = $2
 `
 
-// maxThreadFollowDepth bounds the walk down a thread, as the outbox's maxCommentThreadDepth bounds
-// its walks: comments.reply_to has no acyclicity constraint.
+// maxThreadFollowDepth bounds the walks up and down a thread, as the outbox's
+// maxCommentThreadDepth bounds its walks, edge for edge (outbox.commentRecipientsQuery): a comment
+// the outbox counts in a thread names that thread here. comments.reply_to has no acyclicity
+// constraint, so a cycle ends at the bound rather than spinning.
 const maxThreadFollowDepth = 32
+
+// threadRootOf climbs reply_to from commentID to the head of its thread, as the outbox's walk up
+// does: the root comment's id, or, where a comment of the chain is in an ask's thread, that ask's
+// id instead. Both are empty for a chain that reaches no root within maxThreadFollowDepth replies,
+// which only a cycle or a legacy chain deeper than the outbox reads can be.
+func threadRootOf(ctx context.Context, tx pgx.Tx, commentID string) (root, askID string, err error) {
+	var rootID, ask *string
+	if err := tx.QueryRow(ctx, `
+		with recursive up as (
+			select id, reply_to, ask_id, 0 as depth from comments where id = $1
+			union
+			select c.id, c.reply_to, c.ask_id, u.depth + 1
+			from up u
+			join comments c on c.id = u.reply_to
+			where u.depth < $2
+		)
+		select (select id::text from up where reply_to is null order by depth limit 1),
+		       (select ask_id::text from up where ask_id is not null order by depth limit 1)
+	`, commentID, maxThreadFollowDepth).Scan(&rootID, &ask); err != nil {
+		return "", "", fmt.Errorf("find the thread of comment %s: %w", commentID, err)
+	}
+	if ask != nil {
+		return "", *ask, nil
+	}
+	if rootID == nil {
+		return "", "", nil
+	}
+	return *rootID, "", nil
+}
 
 // setThreadFollow records that sessionID follows (follow) or left the thread rooted at root, in the
 // caller's transaction, and reports whether that changed anything: a follow changes nothing for a

@@ -20,6 +20,7 @@ import {
   resolveCommentCommand,
   sendToAgentCommand,
   suggestCommand,
+  unfollowCommand,
 } from "./conversation";
 import { deployCommand, deploysCommand } from "./deploy";
 import {
@@ -165,6 +166,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_edit_ask: acting(editAskCommand),
   dispatch_resolve_ask: acting(resolveAskCommand),
   dispatch_follow: acting(followCommand),
+  dispatch_unfollow: acting(unfollowCommand),
   dispatch_open_asks: readingOnSession(openAsksCommand),
   dispatch_comment: acting(commentCommand),
   dispatch_suggest: acting(suggestCommand),

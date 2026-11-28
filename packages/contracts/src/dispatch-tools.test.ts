@@ -113,7 +113,8 @@ const validCalls = {
     reason: "A newer question supersedes this one.",
   },
   dispatch_resolve_comment: { comment: "dispatch://DSP-1/comment/comment-1" },
-  dispatch_follow: { ask: "ask-1", action: "follow" },
+  dispatch_follow: { ask: "ask-1" },
+  dispatch_unfollow: { comment: "comment-1" },
   dispatch_comment: { issue: "DSP-1", body: "Looks good." },
   dispatch_suggest: {
     issue: "DSP-1",
@@ -264,6 +265,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_resolve_ask",
       "dispatch_resolve_comment",
       "dispatch_follow",
+      "dispatch_unfollow",
       "dispatch_comment",
       "dispatch_suggest",
       "dispatch_edit_comment",
@@ -1960,40 +1962,45 @@ describe("dispatchToolSpecs", () => {
     }
   );
 
-  test("dispatch_follow takes one ask or one comment and follow or unfollow, nothing else", () => {
-    const schema = schemaFor("dispatch_follow");
-    expect(schema.safeParse({ ask: "ask-1", action: "unfollow" }).success).toBe(true);
-    expect(schema.safeParse({ comment: "comment-1", action: "unfollow" }).success).toBe(true);
-    expect(schema.safeParse({ ask: "ask-1", action: "mute" }).success).toBe(false);
-    expect(schema.safeParse({ ask: "ask-1" }).success).toBe(false);
-    expect(schema.safeParse({ ask: "ask-1", action: "follow", issue: "DSP-1" }).success).toBe(
-      false
-    );
-    // Both, or neither, is one refusal that names the two.
-    for (const call of [
-      { ask: "ask-1", comment: "comment-1", action: "follow" },
-      { action: "unfollow" },
-    ]) {
-      const parsed = schema.safeParse(call);
-      expect(parsed.success, JSON.stringify(call)).toBe(false);
-      expect(parsed.error?.issues.map((issue) => issue.message)).toEqual([
-        "Name exactly one of ask and comment: ask for an ask, comment for a comment thread.",
-      ]);
+  test.each(["dispatch_follow", "dispatch_unfollow"] as const)(
+    "%s takes one ask or one comment, nothing else",
+    (name) => {
+      const schema = schemaFor(name);
+      expect(schema.safeParse({ ask: "ask-1" }).success).toBe(true);
+      expect(schema.safeParse({ comment: "comment-1" }).success).toBe(true);
+      // The tool is the action: the argument that named it once is gone.
+      expect(schema.safeParse({ ask: "ask-1", action: "follow" }).success).toBe(false);
+      expect(schema.safeParse({ ask: "ask-1", issue: "DSP-1" }).success).toBe(false);
+      // Both, or neither, is one refusal that names the two.
+      for (const call of [{ ask: "ask-1", comment: "comment-1" }, {}]) {
+        const parsed = schema.safeParse(call);
+        expect(parsed.success, JSON.stringify(call)).toBe(false);
+        expect(parsed.error?.issues.map((issue) => issue.message)).toEqual([
+          "Name exactly one of ask and comment: ask for an ask, comment for a comment thread.",
+        ]);
+      }
     }
-  });
+  );
 
-  test("dispatch_follow says how a session leaves a comment thread and what still reaches it", () => {
-    const follow = specFor("dispatch_follow");
-    expect(follow.description).toContain("Follow or unfollow an ask or a comment thread.");
-    expect(follow.description).toContain(
-      "its later replies, their edits and deletes, and the thread's resolution and reopening reach that session directly"
+  test("dispatch_follow says what a thread's follower hears, and dispatch_unfollow what still reaches a session that left", () => {
+    const follow = specFor("dispatch_follow").description;
+    expect(follow).toContain(
+      "its later replies, and their edits and deletes, reach that session; the thread's resolution and reopening reach only the author of its first comment"
     );
-    expect(follow.description).toContain(
-      "a reply there that mentions the session still reaches it, and the session's next comment in the thread rejoins it"
+    expect(follow).toContain("409 ASK_THREAD");
+    const unfollow = specFor("dispatch_unfollow").description;
+    expect(unfollow).toContain(
+      "Leaving a comment thread stops its later replies, their edits and deletes, and its resolution and reopening from reaching this session, including what reached it as a writer of the thread's document or of the issue's spec."
     );
-    expect(follow.description).toContain("409 ASK_THREAD");
+    expect(unfollow).toContain(
+      "A reply that mentions this session still reaches it, and this session's next comment in the thread rejoins it."
+    );
+    expect(unfollow).toContain(
+      "The session that holds the issue's claim or route keeps getting every reply: release the claim (dispatch claim --release) to stop it."
+    );
+    expect(unfollow).toContain("409 ASK_THREAD");
     expect(specFor("dispatch_answers").description).toContain(
-      "dispatch follow --comment <id> --action unfollow leaves a comment thread"
+      "dispatch unfollow --comment <id> leaves a comment thread"
     );
   });
 

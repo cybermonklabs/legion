@@ -59,6 +59,7 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_edit_message: true,
   dispatch_delete_message: true,
   dispatch_follow: true,
+  dispatch_unfollow: true,
   dispatch_search: true,
   dispatch_related: true,
   dispatch_issues: true,
@@ -137,9 +138,9 @@ const ownerStandInIssue = "OWNER-1";
  * answers with its router's no-route 404, whatever its age, and that 404 is this release's own
  * tell for a server without the correction routes (dispatch://INFRA-1523). No reading of that
  * answer separates the two, so the id is refused here, before anything is sent, for dispatch
- * resolve-comment and dispatch follow as much as for the two corrections, since all four read
- * this argument the same way. The rule is the server's own: a whole uuid, or a prefix of at
- * least eight hex characters.
+ * resolve-comment, dispatch follow and dispatch unfollow as much as for the two corrections, since
+ * all five read this argument the same way. The rule is the server's own: a whole uuid, or a
+ * prefix of at least eight hex characters.
  */
 function commentArgumentProblem(comment: string | undefined): string | undefined {
   if (comment === undefined) return undefined;
@@ -162,14 +163,16 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
   switch (tool) {
     case "dispatch_edit_ask":
     case "dispatch_resolve_ask":
-    case "dispatch_follow": {
+    case "dispatch_follow":
+    case "dispatch_unfollow": {
       const ask = optionalString(args, "ask");
       if (ask?.startsWith("dispatch://") && parseDispatchRef(ask)?.kind !== "ask") {
         problems.push(itemRefProblem(ask) ?? askIdProblem);
       }
-      // dispatch_follow names a comment thread by any comment of it instead of an ask.
+      // dispatch_follow and dispatch_unfollow name a comment thread by any comment of it instead
+      // of an ask.
       const comment =
-        tool === "dispatch_follow"
+        tool === "dispatch_follow" || tool === "dispatch_unfollow"
           ? commentArgumentProblem(optionalString(args, "comment"))
           : undefined;
       if (comment !== undefined) problems.push(comment);

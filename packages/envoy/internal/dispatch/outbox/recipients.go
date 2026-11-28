@@ -58,10 +58,13 @@ const sessionCreditSQL = `author->>'kind' = 'session' and coalesce(author->>'id'
 // /api/v1/comments/{id}/followers/{session_id}) is read beside where the read found it. A leave
 // stands over every reason the read found the session by, a member's and a credit's alike, until
 // the session writes a comment in the thread after it: that comment rejoins the thread, as a reply
-// to an ask follows the ask, so a leave counts only where it is later than the session's newest
-// comment in the thread (written_at, on the clock both are written on). A follow makes the session
-// a member of the thread whether or not it wrote there, and a session the read finds by nothing
-// but its follow ranks after every other, in the order the follows were made.
+// to an ask follows the ask, so a leave counts where it is no earlier than the session's newest
+// comment in the thread (written_at, on the clock both are written on; a tie keeps the leave, as
+// the API and loadRootCommentAuthors read it). A follow makes the session a member of the thread
+// whether or not it wrote there, and a session the read finds by nothing but its follow ranks
+// after every other, in the order the follows were made. A session that left the thread and that
+// the read finds by nothing else is listed too, marked not reached (reached), so the read names
+// every session whose leave stands, which the other routes of a reply ask (threadLeave).
 const commentRecipientsQuery = `
 	with recursive
 	up as (
@@ -121,10 +124,10 @@ const commentRecipientsQuery = `
 	select coalesce(found.key, chosen.key)::text,
 		coalesce(found.session_id, chosen.session_id),
 		coalesce(chosen.follows, false) or coalesce((found.rank)[1] = 0, false) as from_thread,
-		coalesce(not chosen.follows and (found.written_at is null or chosen.since > found.written_at), false) as left_thread
+		coalesce(not chosen.follows and (found.written_at is null or chosen.since >= found.written_at), false) as left_thread,
+		found.session_id is not null or coalesce(chosen.follows, false) as reached
 	from found
 	full join chosen on chosen.key = found.key and chosen.session_id = found.session_id
-	where found.session_id is not null or chosen.follows
 	order by 1, found.rank nulls last, chosen.since, 2
 `
 
@@ -132,11 +135,13 @@ const commentRecipientsQuery = `
 // found it: fromThread for a session that wrote a comment in the thread or follows it, false for
 // one the thread's document credits alone (commentRecipientsQuery, addAuthorRoutes). left is a
 // session that left the thread and has not written in it since, which the reply reaches only by a
-// mention of it (addAuthorRoutes).
+// mention of it (addAuthorRoutes, threadLeave). reached is false for a session the read names only
+// because it left the thread: no route of the thread reaches it, and it is listed for its leave.
 type threadRecipient struct {
 	sessionID  string
 	fromThread bool
 	left       bool
+	reached    bool
 }
 
 // loadCommentRecipients reads, in one query for a whole batch (or for half of a refused one's ids,
@@ -206,10 +211,10 @@ func loadKeyedSessions(ctx context.Context, db queryer, what, query string, args
 }
 
 // loadThreadRecipients runs query, loadCommentRecipients' one statement for a whole batch, whose
-// every row is a key, a session id, whether the read found that session in the thread and whether
-// its leave of the thread stands, and returns each key's recipients in the order of its rows. The
-// other two recipient reads carry no such marks and run through loadKeyedSessions. what names the
-// load in its error.
+// every row is a key, a session id, whether the read found that session in the thread, whether
+// its leave of the thread stands and whether the thread reaches it at all, and returns each key's
+// recipients in the order of its rows. The other two recipient reads carry no such marks and run
+// through loadKeyedSessions. what names the load in its error.
 func loadThreadRecipients(ctx context.Context, db queryer, what, query string, args ...any) (map[string][]threadRecipient, error) {
 	rows, err := db.Query(ctx, query, args...)
 	if err != nil {
@@ -217,9 +222,9 @@ func loadThreadRecipients(ctx context.Context, db queryer, what, query string, a
 	}
 	recipients := map[string][]threadRecipient{}
 	var key, sessionID string
-	var fromThread, left bool
-	if _, err := pgx.ForEachRow(rows, []any{&key, &sessionID, &fromThread, &left}, func() error {
-		recipients[key] = append(recipients[key], threadRecipient{sessionID: sessionID, fromThread: fromThread, left: left})
+	var fromThread, left, reached bool
+	if _, err := pgx.ForEachRow(rows, []any{&key, &sessionID, &fromThread, &left, &reached}, func() error {
+		recipients[key] = append(recipients[key], threadRecipient{sessionID: sessionID, fromThread: fromThread, left: left, reached: reached})
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("%s: %w", what, err)
