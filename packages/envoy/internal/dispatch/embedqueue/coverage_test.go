@@ -400,18 +400,6 @@ func TestCoverChangesNothingTheTriggersAlreadyEnqueued(t *testing.T) {
 	}
 }
 
-// transactionNow is the database's now() in a statement of its own. A coverage pass stamps what
-// it writes with the database's clock, so a test reads that clock before the pass and has the
-// database judge the stamps against it.
-func transactionNow(t *testing.T, database *store.Store) time.Time {
-	t.Helper()
-	var now time.Time
-	if err := database.Pool.QueryRow(context.Background(), `select now()`).Scan(&now); err != nil {
-		t.Fatalf("read the database's now(): %v", err)
-	}
-	return now
-}
-
 // A row whose text changed with the triggers off is repaired to the item's text with fresh
 // attempts, and then embedded at it. The repair leaves the row due now and pending from the pass,
 // both read on the database's clock: its next_attempt_at at or before the database's now(), and
@@ -432,7 +420,7 @@ func TestCoverRepairsAStaleRow(t *testing.T) {
 		where kind = 'issue' and id = 'STLE-1'`, configuredIdentity)
 	fillCounts(t, database)
 
-	started := transactionNow(t, database)
+	started := databaseNow(t, database)
 	cover(t, deps)
 	var text, hash, wantHash string
 	var attempts, confirmed int
@@ -703,7 +691,7 @@ func TestCoverDropsAnotherIdentitysVectors(t *testing.T) {
 
 	embedder := newPlaceEmbedder(configuredIdentity)
 	deps := Deps{Store: database, Embedder: embedder}
-	started := transactionNow(t, database)
+	started := databaseNow(t, database)
 	cover(t, deps)
 	read := func(id string) (hasVector bool, model, embeddedHash *string, attempts int, next, pending time.Time, dueNow, pendingSinceThePass bool) {
 		t.Helper()

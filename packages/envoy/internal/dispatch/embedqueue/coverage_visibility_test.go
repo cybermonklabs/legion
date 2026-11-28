@@ -53,7 +53,7 @@ import (
 func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *testing.T) {
 	// Not parallel: it builds the shared small-corpus template (openSmallCoverageCorpus) once for
 	// this test process while the parallel tests are paused, so the two parallel corpus tests clone
-	// it and wait for no build. The build is listed as an exception, with its warm control.
+	// it and wait for no build.
 	database := openSmallCoverageCorpus(t)
 	ctx := context.Background()
 	recordOnce(t, database)

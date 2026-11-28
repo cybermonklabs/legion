@@ -1986,7 +1986,7 @@ written or recorded as cut, so the same loop, run again, goes on from the file t
 
 ## coverage-scale.sh
 
-Times the coverage counts' fill and recount (`FillCoverage` and `CountsDeps.recount`, the statements of the counts that read every row they count) at production's size and a larger scale,
+Times the coverage counts' fill and recount (`CountsDeps.fill` and `CountsDeps.recount`, the statements of the counts that read every row they count) at production's size and a larger scale,
 the recount in six states of `embeddings`, four of its visibility map and statistics and two after an embedder change,
 and judges them against the bounds the counts loop holds them to:
 four times the fill at the largest scale must stay within `coverageFillTimeout`, and four times the longest whole recount there within `coverageRecountTimeout`.

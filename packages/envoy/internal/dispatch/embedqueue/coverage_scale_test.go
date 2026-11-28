@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io/fs"
 	"math"
@@ -21,7 +20,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -835,38 +833,40 @@ func inMilliseconds(d time.Duration) string {
 	return strconv.FormatFloat(float64(d)/float64(time.Millisecond), 'f', 1, 64) + " ms"
 }
 
-// dropScaleDatabase drops name as storetest drops a test's database: plainly, again while
-// Postgres answers that it is in use (SQLSTATE 55006, a backend of the closed pools still being
-// torn down), through the shared wait (testwait.Until), which names a database still in use at its
-// give-up, and with force where the plain drop answers any other error.
+// dropScaleDatabase drops name once no session is connected to it (awaitNoSessionOn): a backend of
+// the closed pools can still be being torn down when t ends. The drop is made once, and an error it
+// answers fails t.
 func dropScaleDatabase(t *testing.T, admin *pgx.Conn, name string) {
-	ctx := context.Background()
-	err := testwait.Until(t, "the drop of "+name+", which Postgres refuses while the database is in use (the last error)", func() (error, bool) {
-		_, err := admin.Exec(ctx, "drop database "+name)
-		return err, !databaseInUse(err)
-	})
-	if err != nil {
-		if _, forced := admin.Exec(ctx, "drop database "+name+" with (force)"); forced != nil {
-			t.Errorf("drop %s: %v, after the plain drop answered: %v", name, forced, err)
-		}
+	awaitNoSessionOn(t, admin, name, "so Postgres drops it")
+	if _, err := admin.Exec(context.Background(), "drop database "+name); err != nil {
+		t.Errorf("drop %s: %v", name, err)
 	}
 }
 
-// databaseInUse reports whether err is Postgres's answer that a database is in use (SQLSTATE
-// 55006, object_in_use).
-func databaseInUse(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "55006"
+// awaitNoSessionOn waits, through the shared wait (testwait.Until), until pg_stat_activity lists
+// no session connected to name but an autovacuum worker: Postgres drops no database, and copies
+// no template, while another session is connected to it, and it ends an autovacuum worker there
+// itself. why says what the wait is for; a failure names the sessions counted last.
+func awaitNoSessionOn(t *testing.T, admin *pgx.Conn, name, why string) {
+	t.Helper()
+	testwait.Until(t, "no session connected to "+name+", "+why+" (the sessions pg_stat_activity counted last)", func() (int, bool) {
+		var sessions int
+		if err := admin.QueryRow(context.Background(), `select count(*) from pg_stat_activity
+			where datname = $1 and backend_type <> 'autovacuum worker'`, name).Scan(&sessions); err != nil {
+			t.Fatalf("count the sessions connected to %s: %v", name, err)
+		}
+		return sessions, sessions == 0
+	})
 }
 
-// copyForServerStart copies name, a scale's database that no session is connected to, to
-// name_serve (create database ... template ... strategy file_copy), again while Postgres answers
-// that name is in use (SQLSTATE 55006, a backend of the closed pool still being torn down), through
-// the shared wait (testwait.Until), and prints the copy's name on a line that starts
-// `coverage-scale-database:`, which scripts/coverage-scale.sh reads to start the server on it and
-// drop it. It is the database a server's first start meets at the first deploy of the counts: the
-// corpus as loaded with its tables' triggers off, analyzed and its issues' sources recorded, and
-// no row of search_coverage_filled, search_coverage_counts, search_coverage_deltas or
+// copyForServerStart copies name, a scale's database whose pool has closed, to name_serve (create
+// database ... template ... strategy file_copy) once no session is connected to name
+// (awaitNoSessionOn: a backend of the closed pool can still be being torn down), the copy made
+// once, and prints the copy's name on a line that starts `coverage-scale-database:`, which
+// scripts/coverage-scale.sh reads to start the server on it and drop it. It is the database a
+// server's first start meets at the first deploy of the counts: the corpus as loaded with its
+// tables' triggers off, analyzed and its issues' sources recorded, and no row of
+// search_coverage_filled, search_coverage_counts, search_coverage_deltas or
 // search_coverage_issues, so done_at is unset. On one connection of its own, closed before it
 // answers, it then makes the copy what production is beside that: autovacuum on embeddings as the
 // migrations leave it, which the scale test turned off on the database it copied; every session
@@ -883,10 +883,8 @@ func copyForServerStart(t *testing.T, admin *pgx.Conn, server, name string) {
 	t.Helper()
 	ctx := context.Background()
 	copied := name + "_serve"
-	if err := testwait.Until(t, "the copy of "+name+" to "+copied+", which Postgres refuses while "+name+" is in use (the last error)", func() (error, bool) {
-		_, err := admin.Exec(ctx, "create database "+copied+" template "+name+" strategy file_copy")
-		return err, !databaseInUse(err)
-	}); err != nil {
+	awaitNoSessionOn(t, admin, name, "so Postgres copies it to "+copied)
+	if _, err := admin.Exec(ctx, "create database "+copied+" template "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("copy %s to %s for the server's start: %v", name, copied, err)
 	}
 	fmt.Printf("coverage-scale-database: %s\n", copied)

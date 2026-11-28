@@ -76,7 +76,7 @@ type Deps struct {
 	Wake <-chan struct{}
 	// Clock is the time the queue's own timers, waits and stamps run on: the scan loop's one
 	// timer and its gap (duty.WokenLoop.Clock), the floor a scan pass holds its due time to
-	// (scanPass), the pauses between batches and after a throttle (pauseFor), the pace's wait and
+	// (scanPass), the pauses between batches and after a throttle (scan), the pace's wait and
 	// a reservation's wait on the shared token budget (waitOutDebt), each Embed call's bound
 	// (embed.Bounded), a claim's age (claimRenewal), the moment a failed row's retry is counted
 	// from (retryRows), and the coverage loop's wait for its next identity recheck (runCoverage).
@@ -328,7 +328,8 @@ func scanPass(ctx context.Context, deps Deps) time.Time {
 // batch per scan. While the model service is throttling it backs off the whole batch cadence (not
 // just the rows it just saw) by retryInterval plus batchBackoff before each next batch, inside the
 // scan, so wakes arriving meanwhile cannot hurry the next call to a provider that has already
-// said to slow down. Each pause runs on the queue's clock (Deps.Clock, pauseFor).
+// said to slow down. Each pause runs on the queue's clock (Deps.Clock) and ends early once ctx
+// ends: a cancelled Run should stop promptly, not finish out its pacing delay.
 func scan(ctx context.Context, deps Deps) {
 	consecutiveThrottles := 0
 	for {
@@ -339,7 +340,7 @@ func scan(ctx context.Context, deps Deps) {
 		}
 		if throttled {
 			consecutiveThrottles++
-			if !pauseFor(ctx, deps.clock(), retryInterval+batchBackoff(consecutiveThrottles)) {
+			if deps.clock().Sleep(ctx, retryInterval+batchBackoff(consecutiveThrottles)) != nil {
 				return
 			}
 			continue
@@ -348,7 +349,7 @@ func scan(ctx context.Context, deps Deps) {
 		if succeeded+failed < deps.Embedder.Limits().MaxBatchTexts || blocked {
 			return
 		}
-		if !pauseFor(ctx, deps.clock(), batchPause) {
+		if deps.clock().Sleep(ctx, batchPause) != nil {
 			return
 		}
 	}
@@ -360,19 +361,6 @@ func scan(ctx context.Context, deps Deps) {
 func batchBackoff(consecutiveThrottles int) time.Duration {
 	base := retry.Delay(consecutiveThrottles)
 	return base + time.Duration(rand.Int64N(int64(base)/2+1))
-}
-
-// pauseFor waits d on c, or returns false without waiting out the rest of it if ctx ends first -
-// a cancelled Run should stop promptly, not finish out its pacing delay.
-func pauseFor(ctx context.Context, c clock.Clock, d time.Duration) bool {
-	timer := c.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C():
-		return true
-	}
 }
 
 type pendingRow struct {

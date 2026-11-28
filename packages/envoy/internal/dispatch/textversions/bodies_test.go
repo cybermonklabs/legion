@@ -35,9 +35,7 @@ import (
 // order, and the row written with insertVersions holds the vector of the body the comment was
 // written with.
 func TestACutCommentBodyIsRebuiltFromItsFirstRevision(t *testing.T) {
-	// Not parallel: the package's first test to open a database, it builds the template every
-	// test of the package clones (storetest.Open), with this tree's migrations; serial, it runs
-	// before every parallel test, so they clone the template it built rather than wait in its build.
+	t.Parallel()
 	ctx := t.Context()
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)

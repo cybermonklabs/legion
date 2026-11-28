@@ -84,9 +84,9 @@ func TestTheReReadsLogReadUsesItsIndex(t *testing.T) {
 }
 
 // rereadLogStatistics states the statistics the plan of TestTheReReadsLogReadUsesItsIndex rests
-// on, those ANALYZE left on the log the test wrote until INFRA-6353: 30,200 events, 200 of them of
-// the re-read's four types, 50 of each, and 7,500 of each of four other types. The planner reads a
-// relation's rows as its reltuples over its relpages times the pages it holds on disk
+// on, those ANALYZE leaves on a log of 30,200 events, 200 of them of the re-read's four types, 50
+// of each, and 7,500 of each of four other types. The planner reads a relation's rows as its
+// reltuples over its relpages times the pages it holds on disk
 // (table_block_relation_estimate_size), so each relation's relpages is stated as the pages the
 // test's few events take, and its reltuples as the log's: 30,200 rows of events, and 200 of
 // events_post_text_changes. The most common values of events.type are the eight types, at those

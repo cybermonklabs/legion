@@ -35,8 +35,7 @@ import (
 // the cursor the first left, among the issue's events: its first batch reads the event after the
 // cursor first, and it writes the rest in more than one batch. At the end every event has exactly
 // the rows it starts, none twice and none missing, and the cursor row says this build's rules
-// version (RulesVersion) wrote them. (Until INFRA-6353 it wrote 177 issues' 3,009 events at the
-// production bound of batchEvents, 500: two batches before the restart and five after.)
+// version (RulesVersion) wrote them.
 func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -575,9 +574,7 @@ func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
 //     three do not, and the fill writes them in two batches of two. These are the fewest issues and
 //     events, and the smallest document, that give more than one batch of more than one event with
 //     a retitle and a new version. A count of their payloads alone, as the fill counted at
-//     a5078553, puts the 4 issue events in one batch, which reads about 2.8 MB. (Until INFRA-6353
-//     the log held 24 issues with a document of about 1 MiB, each retitled and 4 of them given a
-//     new version: 52 rows reading about 52 MB of markdown.)
+//     a5078553, puts the 4 issue events in one batch, which reads about 2.8 MB.
 //   - A comment of 10 KB, carried whole, and 400 comment.edited events that leave it as it was,
 //     so they start no row: their payloads still count, about 4 MB, so they take two batches at
 //     least.
@@ -587,7 +584,6 @@ func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
 //     blocks, over 2 MiB in all, where the comment's row holds the few words, so the fill writes
 //     each comment and its edit in a batch of its own; a count of the row's body puts them in one
 //     batch. Two are the fewest that give a batch of more than one event and more than one batch.
-//     (Until INFRA-6353 the log held 30 comments of about 100 KB, about 3 MB.)
 func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 	t.Parallel()
 	t.Run("the markdown each issue row reads", func(t *testing.T) {

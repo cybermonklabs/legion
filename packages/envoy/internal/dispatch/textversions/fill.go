@@ -149,18 +149,6 @@ func newFiller(pool txBeginner, horizon *events.Horizon, c clock.Clock, reachMar
 	}
 }
 
-// sleep waits d, or until ctx ends with its error: the wait between the pause's asks (pauser).
-func sleep(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
 // toHorizon runs passes until one leaves no id an observation saw above the horizon it read: a
 // pass that ends with the horizon held below such an id (Horizon.Gap), or with the horizon proven
 // past the safe it read by another reader of it, is followed by another 1 s later on the fill's

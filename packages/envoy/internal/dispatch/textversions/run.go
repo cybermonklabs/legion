@@ -128,12 +128,11 @@ func Run(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-// runner is one process's fill under the hold: its Config, the clock its timers run on
-// (Config.clock), the filler its passes run, whose holder it takes the hold as and whose logger
-// it logs to, and when it last logged where the fill stands.
+// runner is one process's fill under the hold: its Config, the filler its passes run, whose clock
+// (Config.clock) its timers run on too, whose holder it takes the hold as and whose logger it logs
+// to, and when it last logged where the fill stands.
 type runner struct {
 	cfg        Config
-	clock      clock.Clock
 	fill       *filler
 	caughtUpAt time.Time
 }
@@ -163,7 +162,7 @@ func newRunner(cfg Config) (*runner, error) {
 	fill.logger = logger
 	fill.holder = uuid.New()
 	fill.pause = newPauser(cfg.Latency, logger).waitUntilFast
-	return &runner{cfg: cfg, clock: c, fill: fill}, nil
+	return &runner{cfg: cfg, fill: fill}, nil
 }
 
 // The lines the hold logs.
@@ -209,7 +208,7 @@ func (r *runner) run(ctx context.Context) {
 // standbyRetry on the fill's clock, whose next tick is armed once the try of the last is done. It
 // says it stands by once, at the first refusal.
 func (r *runner) standBy(ctx context.Context) *duty.Hold {
-	ticker := clock.NewTicker(r.clock, standbyRetry, false)
+	ticker := clock.NewTicker(r.fill.clock, standbyRetry, false)
 	defer ticker.Stop()
 	said, ticked := false, false
 	for {
@@ -244,10 +243,10 @@ func (r *runner) standBy(ctx context.Context) *duty.Hold {
 // fill's clock. The hold runs on that clock too (duty.HoldOptions.Clock): its renewals every
 // holdOptions.Renew and its loss deadline, which lost reads on the same clock.
 func (r *runner) tryHold(ctx context.Context) (*duty.Hold, error) {
-	bounded, cancel := r.clock.WithTimeout(ctx, holdOptions.Renew)
+	bounded, cancel := r.fill.clock.WithTimeout(ctx, holdOptions.Renew)
 	defer cancel()
 	opts := holdOptions
-	opts.Clock = r.clock
+	opts.Clock = r.fill.clock
 	return duty.TryHold(bounded, r.cfg.Leases, fillHoldName, r.fill.holder, opts)
 }
 
@@ -307,7 +306,7 @@ func (r *runner) fillUnder(ctx context.Context, hold *duty.Hold) {
 // hold's own timer has told it.
 func (r *runner) lost(held context.Context, hold *duty.Hold, err error) bool {
 	return held.Err() != nil || errors.Is(err, duty.ErrHoldLost) ||
-		(err != nil && !r.clock.Now().Before(hold.Deadline()))
+		(err != nil && !r.fill.clock.Now().Before(hold.Deadline()))
 }
 
 // await waits for the next pass: due later on the fill's clock when due is not zero, at
@@ -316,7 +315,7 @@ func (r *runner) lost(held context.Context, hold *duty.Hold, err error) bool {
 func (r *runner) await(held context.Context, due time.Duration, woken bool) bool {
 	var timer <-chan time.Time
 	if due > 0 {
-		t := r.clock.NewTimer(due)
+		t := r.fill.clock.NewTimer(due)
 		defer t.Stop()
 		timer = t.C()
 	}
@@ -348,7 +347,7 @@ const caughtUpQuery = `select f.event_id, f.reach, (extract(epoch from now() - f
 // (its lag), and how many ids the cursor stands below the newest event. A fill with nothing to do
 // runs no pass, and so writes no line and sends no statement for it.
 func (r *runner) caughtUp(ctx context.Context) {
-	now := r.clock.Now()
+	now := r.fill.clock.Now()
 	if !r.caughtUpAt.IsZero() && now.Sub(r.caughtUpAt) < caughtUpEvery {
 		return
 	}
@@ -388,7 +387,7 @@ func (r *runner) release(hold *duty.Hold) {
 // one renewal interval on the fill's clock, since it must reach the database when the process's
 // context has ended. It answers whether the release reached the database.
 func (r *runner) end(hold *duty.Hold) bool {
-	releasing, cancel := r.clock.WithTimeout(context.Background(), holdOptions.Renew)
+	releasing, cancel := r.fill.clock.WithTimeout(context.Background(), holdOptions.Renew)
 	defer cancel()
 	if err := hold.Release(releasing); err != nil {
 		r.fill.logger.Error("dispatch: the keyword fill could not release its hold", "holder", r.fill.holder, "error", err)

@@ -1762,6 +1762,16 @@ func (l *scanLoop) fire(wait scanWait) {
 	l.release()
 }
 
+// letOn lets the loop on from wait, a report it made: it fires the timer the wait armed (fire),
+// or lets a rest on (release).
+func (l *scanLoop) letOn(wait scanWait) {
+	if wait.armed {
+		l.fire(wait)
+		return
+	}
+	l.release()
+}
+
 // wake signals the loop's wake channel as Cover and the relay do (Deps.signalEnqueued), without
 // blocking: a signal already waiting there earns the same pass.
 func (l *scanLoop) wake() {
@@ -1799,11 +1809,7 @@ func (l *scanLoop) until(t *testing.T, what string, read func() (string, bool)) 
 	testwait.Until(t, what, func() (string, bool) {
 		select {
 		case wait := <-l.waits:
-			if wait.armed {
-				l.fire(wait)
-			} else {
-				l.release()
-			}
+			l.letOn(wait)
 		default:
 		}
 		return read()
@@ -2103,11 +2109,7 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 		case wait := <-loop.waits:
 			// The pass a signal earns is held to its gap on the queue's clock, which the test moves
 			// there; a rest the loop reported before it took the signal is let on to take it.
-			if wait.armed {
-				loop.fire(wait)
-			} else {
-				loop.release()
-			}
+			loop.letOn(wait)
 		default:
 		}
 		return len(loop.enqueued), settled
@@ -2350,11 +2352,12 @@ func TestAThrottledScanWaitsAtLeastRetryIntervalBeforeItsNextBatch(t *testing.T)
 	}()
 	// The call's own bound (embed.Bounded) is armed on the same clock while the call is out, at
 	// callBound; the pause is the other deadline.
+	isPause := func(at time.Time) bool { return !at.Equal(start.Add(callBound)) }
 	paused := testwait.Until(t, "the scan's pause after its throttled batch, armed on the queue's clock", func() ([]time.Time, bool) {
 		armed := fake.Armed()
-		return armed, slices.ContainsFunc(armed, func(at time.Time) bool { return !at.Equal(start.Add(callBound)) })
+		return armed, slices.ContainsFunc(armed, isPause)
 	})
-	pause := paused[slices.IndexFunc(paused, func(at time.Time) bool { return !at.Equal(start.Add(callBound)) })].Sub(start)
+	pause := paused[slices.IndexFunc(paused, isPause)].Sub(start)
 	if low, high := retryInterval+retry.Delay(1), retryInterval+retry.Delay(1)+retry.Delay(1)/2; pause < low || pause > high {
 		t.Errorf("the scan pauses %v after its first throttled batch, want retryInterval (%v) plus its backoff, %v to %v", pause, retryInterval, low, high)
 	}

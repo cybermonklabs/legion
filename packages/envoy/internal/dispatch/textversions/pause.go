@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 )
 
@@ -38,7 +39,7 @@ type pauser struct {
 
 // newPauser is the pause on latency's reads, logging to logger, on the process's clock.
 func newPauser(latency *sessionanswers.Latency, logger *slog.Logger) pauser {
-	return pauser{latency: latency, now: time.Now, wait: sleep, logger: logger}
+	return pauser{latency: latency, now: time.Now, wait: clock.Real().Sleep, logger: logger}
 }
 
 // waitUntilFast returns at once while the answers reads are fast. Otherwise it logs that the fill

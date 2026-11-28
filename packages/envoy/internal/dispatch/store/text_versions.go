@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -269,9 +270,7 @@ const textVersionsReachMargin = time.Second
 //
 // The fill calls it inside each batch's transaction, and TextVersionsReach inside its own.
 func ComputeTextVersionsReach(ctx context.Context, tx pgx.Tx, cursor int64, margin time.Duration) (time.Time, bool, error) {
-	if margin == 0 {
-		margin = textVersionsReachMargin
-	}
+	margin = cmp.Or(margin, textVersionsReachMargin)
 	var t0 time.Time
 	var isolation string
 	var near bool

@@ -229,7 +229,7 @@ func waitOutDebt(ctx context.Context, c clock.Clock, wait time.Duration, renewal
 	end := c.Now().Add(wait)
 	for end.Sub(c.Now()) > 0 && ctx.Err() == nil {
 		renewal.renew(ctx, 0)
-		if !pauseFor(ctx, c, min(end.Sub(c.Now()), renewal.due(0))) {
+		if c.Sleep(ctx, min(end.Sub(c.Now()), renewal.due(0))) != nil {
 			return
 		}
 	}

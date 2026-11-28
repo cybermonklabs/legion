@@ -54,7 +54,7 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 	first := startFillWith(t, storetest.SecondProcess(t, database), nil, true, func(config *Config) { config.clock = clocktest.New(fakeStart) })
-	firstHolder := awaitLiveHolder(t, database)
+	firstHolder := awaitLiveHolder(t, database, "a fill to take the hold")
 	plantHoldExpiry(t, database, firstHolder, 24*time.Hour)
 	standbyClock := clocktest.New(fakeStart)
 	second := startFillWith(t, storetest.SecondProcess(t, database), nil, true, func(config *Config) { config.clock = standbyClock })
@@ -157,7 +157,7 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
-	firstHolder := awaitLiveHolder(t, database)
+	firstHolder := awaitLiveHolder(t, database, "a fill to take the hold")
 	standbyStore := storetest.SecondProcess(t, database)
 	released := releasedWake(t, standbyStore)
 	standbyClock := clocktest.New(fakeStart)
@@ -178,13 +178,7 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 	id := commitComment(t, database, broker, textversionstest.Issue).id
 	// Nothing wakes the standby's events before its take, and its clock stands still: only the
 	// release's notification can bring the take.
-	var standby string
-	testwait.Until(t, "the standby to take the released hold on the release's notification", func() (string, bool) {
-		if standby = liveHolder(t, database); standby != "" {
-			return "the hold names " + standby, true
-		}
-		return holdRow(t, database), false
-	})
+	standby := awaitLiveHolder(t, database, "the standby to take the released hold on the release's notification")
 	// The standby's clock never moves, so its hold is never renewed: its expiry is planted a day
 	// ahead, so the hold stays live while the standby writes.
 	plantHoldExpiry(t, database, standby, 24*time.Hour)
@@ -222,7 +216,7 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
-	firstHolder := awaitLiveHolder(t, database)
+	firstHolder := awaitLiveHolder(t, database, "a fill to take the hold")
 	standbyClock := clocktest.New(fakeStart)
 	second := startFillWith(t, storetest.SecondProcess(t, database), make(chan struct{}), true, func(config *Config) { config.clock = standbyClock })
 	second.AwaitLine(t, standingByMessage)
@@ -363,7 +357,7 @@ func TestACaughtUpFillSendsNoStatement(t *testing.T) {
 			waited.seen, waited.woken, waited.due, waited.others = true, len(config.Events) > 0, due, tracer.others.Count()
 		}
 	})
-	awaitLiveHolder(t, database)
+	awaitLiveHolder(t, database, "a fill to take the hold")
 	var ids []int64
 	for range 3 {
 		ids = append(ids, commitComment(t, database, broker, textversionstest.Issue).id)
@@ -548,11 +542,12 @@ func liveHolder(t *testing.T, database *store.Store) string {
 }
 
 // awaitLiveHolder waits, through the shared wait, until the fill's hold names a live holder, and
-// answers it. A read that finds none reads what duty_holds holds for the hold (holdRow).
-func awaitLiveHolder(t *testing.T, database *store.Store) string {
+// answers it; what names what the test waits for. A read that finds none reads what duty_holds
+// holds for the hold (holdRow).
+func awaitLiveHolder(t *testing.T, database *store.Store, what string) string {
 	t.Helper()
 	var holder string
-	testwait.Until(t, "a fill to take the hold", func() (string, bool) {
+	testwait.Until(t, what, func() (string, bool) {
 		if holder = liveHolder(t, database); holder != "" {
 			return "the hold names " + holder, true
 		}

@@ -816,8 +816,10 @@ redeliver, routes, sessionanswers, startup, textversions and pglisten) run 4 at 
 `TestMain` calls `storetest.SetDefaultParallel` before `storetest.Main` or `storetest.Run`, and
 `storetest.DefaultParallel` says why it is 4. Each test has a database of its own
 (`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
-In textversions the first test to open a database also stays serial, with its comment: it builds
-the template the others clone, before any parallel test runs, so none of them waits in that build.
+In textversions the first test to open a database is `TestTheFillWritesNothingUntilTheServerListens`
+(`hold_test.go`), which stays serial for its span of real time: Go resumes no parallel top-level
+test until every serial one has run, so it builds the template the others clone (`storetest.Open`)
+before any of them runs, and none of them waits in that build.
 
 `internal/dispatch/refs` follows the same rule and runs 4 at once through the same
 `storetest.SetDefaultParallel`. Five of its tests stay serial, each with its comment: the grammar
