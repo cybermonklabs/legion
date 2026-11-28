@@ -57,20 +57,14 @@ func bashScripts() []string {
 	return bashShapes(commands)
 }
 
-// bashShapes is each of commands after each of bashPrefixes, and after each of bashNestedBy inside
-// each of bashWrappings: the shapes of bashScripts.
+// bashShapes is each of commands in each shape of bashShapeList, one shape after another: after
+// each of bashPrefixes, and after each of bashNestedBy inside each of bashWrappings; the shapes of
+// bashScripts.
 func bashShapes(commands []string) []string {
 	var scripts []string
-	for _, prefix := range bashPrefixes {
+	for _, shape := range bashShapeList() {
 		for _, command := range commands {
-			scripts = append(scripts, prefix+command)
-		}
-	}
-	for _, wrap := range bashWrappings {
-		for _, prefix := range bashNestedBy {
-			for _, command := range commands {
-				scripts = append(scripts, wrap(prefix+command))
-			}
+			scripts = append(scripts, shape.of(command))
 		}
 	}
 	return scripts
@@ -109,8 +103,7 @@ func bashShapeList() []bashShape {
 // --dir a, of the name spec-check and of ./bin/spec-check, in each shape of bashScripts. Each shape
 // of bashShapeList runs as three parallel subtests, each with a third of the files of that shape and
 // the four controls in that shape, so that a part of the slowest shapes, those inside two shells,
-// is short too. Before they run, the test checks that the controls of each shape are in that
-// shape, that the shapes between them hold each control once, and the subtests each file once.
+// is short too.
 func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
@@ -131,40 +124,23 @@ func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 			files = append(files, bashFile{"run: " + style, raw, workflow.Jobs["spec"].Steps[0].Run})
 		}
 	}
-	// bashShapes writes each of its commands in one shape, then each in the next, so the files of
-	// bashScripts, three to a script, fall into runs of one shape each, in the order of
-	// bashShapeList; the controls, which bashShapes makes too, show that order.
+	// bashShapes writes each of its commands in one shape of bashShapeList, then each in the next,
+	// so the files of bashScripts, three to a script, fall into runs of one shape each, in the order
+	// of bashShapeList.
 	shapes := bashShapeList()
 	groups := make([]bashGroup, len(shapes))
 	for k, run := range inRuns(t, files, len(shapes)) {
 		groups[k] = bashGroup{name: shapes[k].name, files: run}
-	}
-	var controls []bashControl
-	for _, sub := range []string{"compare", "tree"} {
-		commands := []string{"spec-check " + sub + " --dir a", "./bin/spec-check " + sub + " --dir a"}
-		made := bashShapes(commands)
-		for k, run := range inRuns(t, made, len(shapes)) {
-			want := make([]string, len(commands))
-			for j, command := range commands {
-				want[j] = shapes[k].of(command)
-			}
-			if !slices.Equal(run, want) {
-				t.Fatalf("bashShapes makes the controls %q in its shape %d, and the shape %s makes %q, so the subtests would not hold the shapes that they name", run, k+1, shapes[k].name, want)
-			}
-			for _, script := range run {
-				groups[k].controls = append(groups[k].controls, bashControl{script, sub == "compare"})
+		for _, sub := range []string{"compare", "tree"} {
+			for _, command := range []string{"spec-check " + sub + " --dir a", "./bin/spec-check " + sub + " --dir a"} {
+				groups[k].controls = append(groups[k].controls, bashControl{shapes[k].of(command), sub == "compare"})
 			}
 		}
-		for _, script := range made {
-			controls = append(controls, bashControl{script, sub == "compare"})
-		}
 	}
-	expectEachInOneGroup(t, controls, groups, func(g bashGroup) []bashControl { return g.controls })
 	var parts []bashGroup
 	for _, g := range groups {
 		parts = append(parts, g.inParts(3)...)
 	}
-	expectEachInOneGroup(t, files, parts, func(g bashGroup) []bashFile { return g.files })
 	for _, g := range parts {
 		t.Run(g.name, func(t *testing.T) {
 			t.Parallel()
@@ -173,13 +149,13 @@ func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 	}
 }
 
-// bashEarlierParts and bashEarlierForms are the pieces of the scripts that the Bash test of the
-// round-6 reader (6823f4702b) built, whose comparisons each head of the text rule names too: a
-// part is a text before the command, and a form writes the command, with {w} the subcommand and
-// {h} and {t} its two halves. The forms that only that reader named are left out, since they are
-// outside the text rule's claim (TestCIFilesThatCompareLeavesAFormOutsideTheClaim): a $ and an
-// ANSI-C escape that a line continuation splits, and a redirection or a here-document between the
-// two words.
+// bashEarlierParts, bashEarlierForms and bashEarlierWords are the pieces of the scripts that the
+// Bash test of the round-6 reader (6823f4702b) built, whose comparisons each head of the text rule
+// names too: a part is a text before the command, a form writes the command, with {w} the
+// subcommand and {h} and {t} its two halves, and a word is a subcommand, in the order of the
+// scripts. The forms that only that reader named are left out, since they are outside the text
+// rule's claim (TestCIFilesThatCompareLeavesAFormOutsideTheClaim): a $ and an ANSI-C escape that a
+// line continuation splits, and a redirection or a here-document between the two words.
 var (
 	bashEarlierParts = []string{
 		": x; ", ": 'say \"x\"'; ", ": \"it's\"; ", ": $'it\\'s \"x\"'; ", ": a \\\nb; ", ": a\\\nb; ",
@@ -197,6 +173,7 @@ var (
 		": \"\nspec-check {w} --dir a\n\"\n", ": $'\nspec-check {w} --dir a\n'\n", "spec-check {w} --dir a # it's \\\n",
 		"spec-check {w} --dir a <<'END'\nit's\nEND\n", "spec-check {h}\\\n{t} --dir a\n",
 	}
+	bashEarlierWords = []string{"compare", "tree"}
 )
 
 // bashEarlierScripts is each form of bashEarlierForms after no part and after each part of
@@ -205,7 +182,7 @@ var (
 // two parts again inside each of bashWrappings, as the round-6 test gave them to nested shells.
 func bashEarlierScripts() []string {
 	var scripts, wrapped []string
-	for _, word := range []string{"compare", "tree"} {
+	for _, word := range bashEarlierWords {
 		head, tail := "com", "pare"
 		if word == "tree" {
 			head, tail = "tr", "ee"
@@ -248,8 +225,7 @@ func bashEarlierScripts() []string {
 // with every control, so that each subtest's check of the controls is the whole corpus's. A group
 // is one subtest, but for a tree group of the forms and the two-part scripts: the guard names few of
 // those, so Bash runs most, and each shell of the wrapping adds to each one's time, so such a group
-// runs in three parts and three more for each shell. Before they run, the test checks that the
-// subtests between them hold each script once.
+// runs in three parts and three more for each shell.
 func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
@@ -261,7 +237,7 @@ func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.
 		files = append(files, bashFile{"script", script, script})
 	}
 	var controls []bashControl
-	for _, word := range []string{"compare", "tree"} {
+	for _, word := range bashEarlierWords {
 		command := strings.ReplaceAll(bashEarlierForms[0], "{w}", word)
 		scripts := []string{command}
 		for _, p := range bashEarlierParts {
@@ -277,18 +253,17 @@ func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.
 	// bashEarlierScripts writes the three-part scripts of compare and then of tree, each word's in
 	// runs of one first part, then the forms and the two-part scripts of each word, and then those
 	// again inside each of bashWrappings.
-	words := []string{"compare", "tree"}
-	threePart := len(words) * len(bashEarlierParts) * len(bashEarlierParts) * len(bashEarlierParts)
+	threePart := len(bashEarlierWords) * len(bashEarlierParts) * len(bashEarlierParts) * len(bashEarlierParts)
 	partsOf := func(w, shells int) int {
-		if words[w] != "tree" {
+		if bashEarlierWords[w] != "tree" {
 			return 1
 		}
 		return 3 * (1 + shells)
 	}
 	var groups []bashGroup
-	for w, ofWord := range inRuns(t, files[:threePart], len(words)) {
+	for w, ofWord := range inRuns(t, files[:threePart], len(bashEarlierWords)) {
 		for p, run := range inRuns(t, ofWord, len(bashEarlierParts)) {
-			name := fmt.Sprintf("%s in the three-part scripts after the first part %q", words[w], bashEarlierParts[p])
+			name := fmt.Sprintf("%s in the three-part scripts after the first part %q", bashEarlierWords[w], bashEarlierParts[p])
 			for _, f := range run {
 				if !strings.HasPrefix(f.script, bashEarlierParts[p]) {
 					t.Fatalf("the group %s holds %q, so the subtests would not hold the groups that they name", name, f.script)
@@ -298,14 +273,14 @@ func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.
 		}
 	}
 	sets := inRuns(t, files[threePart:], 1+len(bashWrappings))
-	unwrapped := inRuns(t, sets[0], len(words))
+	unwrapped := inRuns(t, sets[0], len(bashEarlierWords))
 	for w, run := range unwrapped {
-		groups = append(groups, bashGroup{name: words[w] + " in the forms and the two-part scripts", files: run, controls: controls}.inParts(partsOf(w, 0))...)
+		groups = append(groups, bashGroup{name: bashEarlierWords[w] + " in the forms and the two-part scripts", files: run, controls: controls}.inParts(partsOf(w, 0))...)
 	}
 	for i, wrap := range bashWrappings {
 		shells := strings.Count(wrap("…"), "sh ") // the shells that the wrapping starts, each a sh or a bash
-		for w, run := range inRuns(t, sets[1+i], len(words)) {
-			name := fmt.Sprintf("%s in the forms and the two-part scripts inside %q", words[w], wrap("…"))
+		for w, run := range inRuns(t, sets[1+i], len(bashEarlierWords)) {
+			name := fmt.Sprintf("%s in the forms and the two-part scripts inside %q", bashEarlierWords[w], wrap("…"))
 			for j, f := range run {
 				if want := wrap(unwrapped[w][j].script); f.script != want {
 					t.Fatalf("the group %s holds %q where %q is due, so the subtests would not hold the groups that they name", name, f.script, want)
@@ -314,7 +289,6 @@ func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.
 			groups = append(groups, bashGroup{name: name, files: run, controls: controls}.inParts(partsOf(w, shells))...)
 		}
 	}
-	expectEachInOneGroup(t, files, groups, func(g bashGroup) []bashFile { return g.files })
 	for _, g := range groups {
 		t.Run(g.name, func(t *testing.T) {
 			t.Parallel()
@@ -364,41 +338,7 @@ func inRuns[T any](t *testing.T, list []T, n int) [][]T {
 	if len(list)%n != 0 {
 		t.Fatalf("%d items make no %d runs of one length", len(list), n)
 	}
-	size := len(list) / n
-	runs := make([][]T, n)
-	for k := range runs {
-		runs[k] = list[k*size : (k+1)*size : (k+1)*size]
-	}
-	return runs
-}
-
-// expectEachInOneGroup fails the test unless the lists that of reads from groups hold, between
-// them, each of all, as often as all holds it, and each in one group only: so the groups run what
-// the test ran whole.
-func expectEachInOneGroup[T comparable](t *testing.T, all []T, groups []bashGroup, of func(bashGroup) []T) {
-	t.Helper()
-	left := make(map[T]int, len(all))
-	for _, x := range all {
-		left[x]++
-	}
-	in := make(map[T]string, len(all))
-	held := 0
-	for _, g := range groups {
-		for _, x := range of(g) {
-			if other, ok := in[x]; ok && other != g.name {
-				t.Fatalf("both %s and %s hold %#v", other, g.name, x)
-			}
-			if left[x] == 0 {
-				t.Fatalf("%s holds %#v more often than the test whole holds it", g.name, x)
-			}
-			in[x] = g.name
-			left[x]--
-			held++
-		}
-	}
-	if held != len(all) {
-		t.Fatalf("the groups hold %d between them, and the test whole %d", held, len(all))
-	}
+	return slices.Collect(slices.Chunk(list, len(list)/n))
 }
 
 // expectEachComparisonNamed fails the test for each file of files where Bash runs the comparison

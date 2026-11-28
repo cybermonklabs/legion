@@ -261,7 +261,7 @@ func (r stopRun) print(t *testing.T, dir string, fsys fileSystem) (int, string) 
 	t.Helper()
 	var stderr strings.Builder
 	code := printApproved(io.Discard, &stderr, fsys, r.path, r.a, r.ids, dir, printBounds{limit: r.limit, wait: 0})
-	if strings.Contains(stderr.String(), "holds the lock of the directory") {
+	if refusedForLock(stderr.String()) {
 		t.Fatalf("print refused a run for the lock of a directory that no other run uses: %s", stderr.String())
 	}
 	return code, stderr.String()

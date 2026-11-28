@@ -1,6 +1,6 @@
 package specgraph
 
-//ci:builds packages/envoy/internal/dispatch/specgraph . TestEachHistoryOfThePackageIsAnInputType go list -deps -export .
+//ci:builds packages/envoy/internal/dispatch/specgraph . TestEachHistoryOfThePackageIsAnInputType runs go list -deps -export over the imports of the package's non-test source
 
 import (
 	"bytes"
@@ -117,7 +117,8 @@ var libraryInputTypes = []reflect.Type{reflect.TypeFor[Input](), reflect.TypeFor
 // and fails for each exported type of it that implements History, by value or by pointer, that
 // libraryInputTypes does not name, and when it finds no such type at all, since it then read none.
 // It reads each package that the source imports from the export data that go list -deps -export
-// writes for it, not from that package's source. A caller gives only an exported type; an
+// writes for it, not from that package's source; it lists those imports, and not the package
+// itself, whose export data the check never reads. A caller gives only an exported type; an
 // unexported one, such as fixtureTrees, the judge's view of a FixtureHistory, is built by the
 // package from an input whose members the marks already read.
 func TestEachHistoryOfThePackageIsAnInputType(t *testing.T) {
@@ -132,6 +133,7 @@ func TestEachHistoryOfThePackageIsAnInputType(t *testing.T) {
 	}
 	fset := token.NewFileSet()
 	var files []*ast.File
+	imports := map[string]bool{}
 	for _, path := range paths {
 		if !strings.HasSuffix(path, "_test.go") {
 			f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
@@ -139,9 +141,16 @@ func TestEachHistoryOfThePackageIsAnInputType(t *testing.T) {
 				t.Fatal(err)
 			}
 			files = append(files, f)
+			for _, imp := range f.Imports {
+				imported, err := strconv.Unquote(imp.Path.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				imports[imported] = true
+			}
 		}
 	}
-	list := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Export", ".")
+	list := exec.Command("go", append([]string{"list", "-deps", "-export", "-json=ImportPath,Export"}, slices.Sorted(maps.Keys(imports))...)...)
 	list.Dir = dir
 	var stderr bytes.Buffer
 	list.Stderr = &stderr

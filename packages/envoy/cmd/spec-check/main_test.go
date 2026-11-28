@@ -68,8 +68,8 @@ func TestTheBuiltBinary(t *testing.T) {
 		return "spec-check: " + dir + ": 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid\n"
 	}
 
-	// The fill of a directory runs first: its 80 processes make it the longest subtest here, so it
-	// starts with the package's first parallel tests and not last.
+	// The fill of a directory is declared first because its 80 processes make it the longest
+	// subtest of TestTheBuiltBinary.
 	t.Run("print keeps each file within the bound as it fills a directory", func(t *testing.T) {
 		t.Parallel()
 		testFormFill(t, binary)

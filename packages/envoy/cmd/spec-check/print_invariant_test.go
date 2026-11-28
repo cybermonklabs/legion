@@ -148,7 +148,7 @@ func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 		case 2:
 			// No other run takes the lock of the seed's own directory, so a refusal for the lock is
 			// a fault of the lock, not an answer of print.
-			if strings.Contains(stderr.String(), "holds the lock of the directory") {
+			if refusedForLock(stderr.String()) {
 				t.Fatalf("seed %d: print refused a run for the lock of a directory that no other run uses: %s", seed, stderr.String())
 			}
 			if got := readDir(t, dir); !maps.EqualFunc(got, files, bytes.Equal) {
@@ -170,6 +170,13 @@ func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 		}
 	}
 	return answers
+}
+
+// refusedForLock is whether stderr, what a run of print wrote there, holds lockSpecDir's refusal
+// in lock.go for a lock of the directory that another run holds. print_stop_test.go, which builds
+// on linux and darwin alone, reads it too, so it lives in this file, which builds everywhere.
+func refusedForLock(stderr string) bool {
+	return strings.Contains(stderr, "holds the lock of the directory")
 }
 
 // plantFault is content, a file that print wrote, as an editor or another tool can leave it, and

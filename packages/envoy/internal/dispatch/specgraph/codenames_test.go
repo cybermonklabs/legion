@@ -125,7 +125,7 @@ func TestCodeNamesIsItsFormAtTheMergeBase(t *testing.T) {
 			end++
 		}
 		group := sorted[start:end]
-		t.Run(fmt.Sprintf("texts %d to %d", start+1, end), func(t *testing.T) {
+		t.Run(fmt.Sprintf("texts %d to %d", start, end-1), func(t *testing.T) {
 			t.Parallel()
 			for _, text := range group {
 				if got, want := CodeNames(text), codeNamesAtMergeBase(text); !slices.Equal(got, want) {

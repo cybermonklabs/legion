@@ -131,13 +131,16 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 
 // baseStates is the state of each check, statement and wait of the base (scenarioStates), a copy of
 // its caller's own. The states are a function of the files of the base alone, so the test process
-// derives them once for each base, by the key of its files (filesKey), and holds the derivation and
-// its refusal (baseStatesOf): a base that the reader or the derivation refuses fails each test that
-// asks with the same message.
+// derives them once for each base, by the key of its files (filesKey), from a copy of the files of
+// its own, and holds the derivation and its refusal (baseStatesOf): a base that the reader or the
+// derivation refuses fails each test that asks with the same message.
 func baseStates(t *testing.T, base fstest.MapFS) map[string]string {
 	t.Helper()
-	files := cloneFiles(base)
-	derive, _ := baseStatesOf.LoadOrStore(filesKey(files), sync.OnceValues(func() (map[string]string, error) { return scenarioStates(files) }))
+	key := filesKey(base)
+	derive, held := baseStatesOf.Load(key)
+	if !held {
+		derive, _ = baseStatesOf.LoadOrStore(key, sync.OnceValues(func() (map[string]string, error) { return scenarioStates(cloneFiles(base)) }))
+	}
 	whole, err := derive.(func() (map[string]string, error))()
 	if err != nil {
 		t.Fatalf("the base: %v", err)
@@ -272,30 +275,25 @@ const sweepChunk = 50
 // inside the subtest group, and gives what each of them counted (judge), in the order of the
 // inputs. Each subtest is named by what its first and its last input changed (what), so that its
 // name says which inputs it judges; judge judges the inputs of one subtest, in that subtest. A
-// subtest puts its count in its own place under the lock, and the group returns only once each of
-// its parallel subtests has ended, so each count is whole when sweepChunks gives them.
+// subtest puts its count in its own place, which no other subtest writes, and the group returns
+// only once each of its parallel subtests has ended, so each count is whole when sweepChunks gives
+// them.
 func sweepChunks[In, Count any](t *testing.T, group string, inputs []In, what func(In) string, judge func(t *testing.T, chunk []In) Count) []Count {
 	t.Helper()
-	var mu sync.Mutex
-	counts := make([]Count, (len(inputs)+sweepChunk-1)/sweepChunk)
+	chunks := slices.Collect(slices.Chunk(inputs, sweepChunk))
+	counts := make([]Count, len(chunks))
 	t.Run(group, func(t *testing.T) {
-		for i := range counts {
-			chunk := inputs[i*sweepChunk : min((i+1)*sweepChunk, len(inputs))]
+		for i, chunk := range chunks {
 			name := what(chunk[0])
 			if len(chunk) > 1 {
 				name += " to " + what(chunk[len(chunk)-1])
 			}
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				count := judge(t, chunk)
-				mu.Lock()
-				counts[i] = count
-				mu.Unlock()
+				counts[i] = judge(t, chunk)
 			})
 		}
 	})
-	mu.Lock()
-	defer mu.Unlock()
 	return counts
 }
 

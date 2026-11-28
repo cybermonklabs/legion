@@ -507,8 +507,7 @@ func TestPrintWritesNothingWhenOneFileCannotBeWritten(t *testing.T) {
 // the bubble is durably blocked, as a run is while it sleeps between two tries of the lock and
 // never while it works. So a slow run that holds the lock does not run out the wait of another,
 // and the test passes or fails on no reading of the machine's clock (INFRA-3149's R4). The trials
-// ran as processes of the built binary before, each waiting on the machine's clock; they run in
-// the test process as INFRA-3149's architect answered
+// run in the test process as INFRA-3149's architect answered
 // (dispatch://INFRA-3149/comment/64d6112b-3323-456f-b30d-912609a640c4). TestTheBuiltBinary runs
 // the binary's own print.
 func TestPrintRunsOneAtATimeOnADirectory(t *testing.T) {
