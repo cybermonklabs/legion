@@ -883,6 +883,18 @@ What each part is for:
   store and its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
+- **`nats_daemon_service_token_file`** (optional) names the file of the daemon's own projected
+  ServiceAccount token, which its NATS connection presents in place of a seed, as user `service`,
+  to a hub whose connections the [Secrets Broker](/legion/broker/)'s NATS auth service admits.
+  Mount the token for the broker's `BROKER_NATS_K8S_AUDIENCE`, for at most 3600 seconds, and list
+  the daemon's account under a `daemon/-/*` entry of the broker's `BROKER_NATS_SERVICES`. The
+  daemon reads the file again at each connect. The key outranks the variable
+  `NATS_DAEMON_SERVICE_TOKEN_FILE`. Either one beside a setting of the daemon's own seed
+  (`nats_daemon_nkey_seed_file`, `NATS_DAEMON_NKEY_SEED_FILE`, `NATS_DAEMON_NKEY_SEED`) refuses
+  the start, naming both; the agents' seed stays allowed beside it. The daemon waits out a refusal
+  of the token
+  ([Configuration](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#configuration)
+  in docs/kubernetes.md).
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
   [Secrets Broker](/legion/broker/): `url` is the broker, and `token_file` is where the daemon's own
   projected ServiceAccount token for the broker's audience is mounted. The daemon logs in with that
