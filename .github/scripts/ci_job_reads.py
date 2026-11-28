@@ -2519,7 +2519,7 @@ GUARD_SCRIPT = ("go test -count=1 -run "
 
 # The claim model's job: the mention sender's claim model and the test of the rules it restates,
 # by name (CLAIM_MODEL_TESTS), the same declaration that leaves exactly those two out of envoy-go's
-# plain step. -run and -v are outside the simple form, so the step is pinned whole. A -run moves
+# plain step. A -run is outside the simple form, so the step is pinned whole. A -run moves
 # no closure: the step compiles every test file of internal/dispatch/api, the source guards that
 # walk the module's source among them, so this gate reads what the API's plain tests read.
 CLAIM_MODEL_JOB = "envoy-go-claim-model"

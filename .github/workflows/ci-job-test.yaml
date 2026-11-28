@@ -689,7 +689,7 @@ jobs:
       # script, fixture and test there. The answers of the plan ratings read and the step records
       # read are typed to the contract. The root package pins their TypeScript and Bun types. The
       # tests themselves run in the test job's bun test of scripts/e2e/lib.
-      - name: Typecheck the e2e read tools and their tests
+      - name: Typecheck the e2e scripts and their tests
         run: bunx tsc --noEmit -p scripts/e2e/lib
 
       - name: Report ci-ok when this job decides a merge-group run
