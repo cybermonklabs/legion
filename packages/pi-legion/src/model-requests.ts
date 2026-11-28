@@ -38,8 +38,10 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * of its answer.
  *
  * **When it is sent.** One pending batch per reporter. One timer is armed for the earliest
- * deadline pending, a request's end plus `MODEL_REQUEST_REPORT_BOUND_MS`, and never for before a
- * failed call's hold ends. A request that joins the batch moves no request's deadline: it moves
+ * deadline pending, and never for before a failed call's hold ends. A request's deadline is its
+ * end plus `MODEL_REQUEST_REPORT_BOUND_MS` less `MODEL_REQUEST_SEND_MARGIN_MS`, since a timer
+ * fires late, never early, and the call that carries the report starts only once it has
+ * fired. A request that joins the batch moves no request's deadline: it moves
  * the timer only where its own deadline comes before the one the timer is armed for, as a request
  * read late does, which then goes by its own deadline. The turn's end (`agent_end`) sends what is
  * pending at once and drops the timer. A send the timer or the turn's end makes goes at once,
@@ -64,6 +66,13 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * sent", above): a quarter of the minute the headroom reads, so the timer sends about four times
  * a minute (spec, "The model requests"). */
 export const MODEL_REQUEST_REPORT_BOUND_MS = 15_000;
+
+/** How much sooner than `MODEL_REQUEST_REPORT_BOUND_MS` after a request's end its report falls
+ * due: a timer fires late, never early, and the call that carries the report starts only once it
+ * has fired, so a timer armed for the bound itself sends the report after it. The Claude Code
+ * bridge leaves the same room, `requestSendMargin` in
+ * `packages/daemon/internal/claudebridge/modelrequests.go`, so both hosts state one rule. */
+export const MODEL_REQUEST_SEND_MARGIN_MS = 250;
 
 /** Requests older than the daemon's hour of history are not useful on a retry. */
 const MODEL_REQUEST_KEEP_MS = 60 * 60_000;
@@ -301,7 +310,11 @@ export function createModelRequestsReporter(
           ? {}
           : { uncachedInputTokens: tokens(usage.input) + tokens(usage.cacheWrite) }),
       };
-      pending.push({ owner, request, due: endedAt + MODEL_REQUEST_REPORT_BOUND_MS });
+      pending.push({
+        owner,
+        request,
+        due: endedAt + MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS,
+      });
       arm();
     },
     turnEnded: () => {

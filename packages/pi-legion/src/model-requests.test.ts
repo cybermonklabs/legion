@@ -6,6 +6,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   createModelRequestsReporter,
   MODEL_REQUEST_REPORT_BOUND_MS,
+  MODEL_REQUEST_SEND_MARGIN_MS,
   type ModelRequestCredential,
   type ModelRequestsReporter,
 } from "./model-requests";
@@ -209,7 +210,7 @@ test("partial while active", async () => {
   const { reporter, batches, advance, now } = rig();
 
   reporter.messageEnded(role, answered(now()));
-  await advance(MODEL_REQUEST_REPORT_BOUND_MS - 1);
+  await advance(MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS - 1);
   expect(batches()).toEqual([]);
 
   await advance(1);
@@ -273,7 +274,7 @@ test("batch across minutes", async () => {
   const second = now();
   reporter.messageEnded(role, answered(second));
 
-  await advance(MODEL_REQUEST_REPORT_BOUND_MS - 10_000 - 1);
+  await advance(MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS - 10_000 - 1);
   expect(batches()).toEqual([]);
   await advance(1);
   const [batch] = batches();
@@ -298,14 +299,15 @@ test("a request read late goes by its own deadline, before the armed timer", asy
   const late = now() - 13_000;
   reporter.messageEnded(role, answered(late));
 
-  // The late request falls due 2 s from now; the first, 10 s from now.
-  await advance(2_000 - 1);
+  // The late request falls due 2 s less the margin from now; the first, 10 s less the margin from
+  // now.
+  await advance(2_000 - MODEL_REQUEST_SEND_MARGIN_MS - 1);
   expect(batches()).toEqual([]);
   await advance(1);
   expect(
     batches().map((batch) => (batch.requests as { id: string }[]).map(({ id }) => id).sort())
   ).toEqual([["req-1", "req-2"]]);
-  expect(now() - late).toBe(MODEL_REQUEST_REPORT_BOUND_MS);
+  expect(now() - late).toBe(MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS);
 
   await advance(MODEL_REQUEST_REPORT_BOUND_MS * 2);
   expect(batches()).toHaveLength(1);
@@ -395,7 +397,7 @@ test("retry and next batch", async () => {
 // report on its way carries, and waits for no answer. The second request's `message_end` is read
 // while the first report is on its way, stamped 12 s before (a request read late, as the tester
 // measured on the Claude Code bridge): it falls due while the daemon holds the first answer, and
-// every request reaches the daemon within the bound of its end.
+// every request reaches the daemon before the bound of its end.
 test("a report that falls due while another is on its way goes at once", async () => {
   const answerMs = 6_000;
   /** Each report: the ids it carries, and when the daemon took it and answered it, on the rig's
@@ -416,14 +418,18 @@ test("a report that falls due while another is on its way goes at once", async (
 
   const first = now();
   reporter.messageEnded(role, answered(first));
-  await advance(MODEL_REQUEST_REPORT_BOUND_MS);
-  // The first report reached the daemon at its request's end plus the bound, and is held.
-  expect(reports).toEqual([{ ids: ["req-1"], sent: first + MODEL_REQUEST_REPORT_BOUND_MS }]);
+  await advance(MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS);
+  // The first report reached the daemon at its request's end plus the bound less the margin, and
+  // is held.
+  expect(reports).toEqual([
+    { ids: ["req-1"], sent: first + MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS },
+  ]);
 
-  // The second request ended 12 s ago and is read only now: it falls due 3 s from now.
+  // The second request ended 12 s ago and is read only now: it falls due 3 s less the margin
+  // from now.
   const second = now() - 12_000;
   reporter.messageEnded(role, answered(second));
-  await advance(3_000);
+  await advance(3_000 - MODEL_REQUEST_SEND_MARGIN_MS);
   // Its report reached the daemon then, alone, while the first is still unanswered.
   expect(reports.map(({ ids }) => ids)).toEqual([["req-1"], ["req-2"]]);
   expect(reports.map(({ answered }) => answered)).toEqual([undefined, undefined]);
@@ -436,11 +442,11 @@ test("a report that falls due while another is on its way goes at once", async (
   ]);
   await advance(MODEL_REQUEST_REPORT_BOUND_MS * 2);
   expect(reports).toHaveLength(2);
-  // Every request reached the daemon within the bound of its end.
+  // Every request reached the daemon before the bound of its end.
   const ended: Record<string, number> = { "req-1": first, "req-2": second };
   for (const { ids, sent } of reports) {
     for (const id of ids) {
-      expect(sent - (ended[id] ?? Number.NaN)).toBeLessThanOrEqual(MODEL_REQUEST_REPORT_BOUND_MS);
+      expect(sent - (ended[id] ?? Number.NaN)).toBeLessThan(MODEL_REQUEST_REPORT_BOUND_MS);
     }
   }
 });
@@ -639,11 +645,11 @@ test("session inventory", async () => {
     reporter.messageEnded({ session: OTHER_SESSION, subagent: false }, answered(at));
   };
 
-  // While the turn goes on: nothing before the bound of the first request's end, every request at
-  // it.
+  // While the turn goes on: nothing before the first request's end plus the bound less the margin,
+  // every request then.
   const during = now();
   endEach(during);
-  await advance(MODEL_REQUEST_REPORT_BOUND_MS - 1);
+  await advance(MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS - 1);
   expect(batches()).toEqual([]);
   await advance(1);
   expect(reported(0)).toEqual(want(during));
