@@ -17,7 +17,8 @@ the count of errors from the ` N error` line in bun's last summary block. The bl
 bun's report leaves out a file that did not load and an error between tests. When bun has ended,
 the copy goes on for at most DRAIN_SECONDS more, for a process that still holds bun's standard
 error.
-Once bun has ended and the copy has read its summary, later output cannot replace that summary.
+The copy keeps bun's summary count even if later output fills the buffer, before or after the
+wrapper reaps bun.
 
 When bun exits 0 and its run breaks a clause of bun_test_record.py's rule (bun 1.4.4 exits 0 and
 writes no report when it cannot write its outfile, and when a test calls process.exit), this
@@ -171,20 +172,37 @@ def main(argv: list) -> int:
         print(f"::error::bun_test_run.py: bun could not start: {error}", file=sys.stderr)
         return 127
     tail = bytearray()
+    tail_lock = threading.Lock()
+    last_errors = None
+    summary_end_suffix = re.compile(rb" files?\.")
 
     def copy() -> None:
+        nonlocal last_errors
         frozen = False
+        check_freeze = True
         while chunk := os.read(bun.stderr.fileno(), 65536):
             sys.stderr.buffer.write(chunk)
             sys.stderr.buffer.flush()
-            # wait() may return before the copier reads bun's last bytes. Keep buffering until
-            # bun has ended and the buffer has a summary, then just copy any remaining output.
-            if not frozen:
-                frozen = bun.returncode is not None and summary_errors(
-                    bytes(tail).decode(errors="replace")) is not None
-                if not frozen:
-                    tail.extend(chunk)
-                    del tail[:-TAIL_BYTES]
+            if frozen:
+                continue
+            with tail_lock:
+                # wait() may return before the copy reads bun's summary. Check once after the
+                # reap, and check again only if another read finds a summary.
+                if check_freeze and bun.returncode is not None:
+                    check_freeze = False
+                    if summary_errors(tail.decode(errors="replace")) is not None:
+                        frozen = True
+                        continue
+                # Search only for a suffix ending in this chunk. Include enough old bytes for
+                # " files." to straddle the read, and parse before trimming can remove the count.
+                start = max(0, len(tail) - len(b" files"))
+                tail.extend(chunk)
+                if summary_end_suffix.search(tail, start):
+                    errors = summary_errors(tail.decode(errors="replace"))
+                    if errors is not None:
+                        last_errors = errors
+                        check_freeze = True
+                del tail[:-TAIL_BYTES]
 
     copier = threading.Thread(target=copy, daemon=True)
     copier.start()
@@ -197,7 +215,11 @@ def main(argv: list) -> int:
     status = bun.wait()
     copier.join(DRAIN_SECONDS)
     status = 128 - status if status < 0 else status
-    write_exit(ended, status, summary_errors(bytes(tail).decode(errors="replace")))
+    with tail_lock:
+        errors = summary_errors(tail.decode(errors="replace"))
+        if errors is None:
+            errors = last_errors
+    write_exit(ended, status, errors)
     if status == 0:
         _, reasons = read_run(report, report.name)
         for reason in reasons:

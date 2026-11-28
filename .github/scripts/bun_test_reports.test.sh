@@ -325,7 +325,7 @@ check "the wrapper ended within DRAIN_SECONDS (5) and a margin, not with the chi
 check "and wrote bun's status, its summary read" \
   "$(is "$(exit_of "$work/t-holder/bun-test-reports/packages/holder/test.xml")" '{"status": 0, "errors": 0}')"
 
-echo "case: a child writes past the summary buffer's limit after bun exits"
+echo "case: a child writes past the summary buffer's limit after the wrapper reaps bun"
 STANDIN_LATE_STDERR=yes standin "$work/t-late-stderr" test "$honest" "$summary_ok" 0
 check "the wrapper exits 0 despite the child's output" "$(is "$wrapped" 0)"
 check "and wrote bun's status and summary before the child could replace it" \
