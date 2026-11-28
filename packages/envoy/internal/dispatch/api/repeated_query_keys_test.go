@@ -139,6 +139,15 @@ func TestEverySingleValueQueryKeyRefusesARepeat(t *testing.T) {
 						"want it run once with both values", name, key, ran, key, handed[key], response.Code,
 						strings.TrimSpace(response.Body.String()))
 				}
+			case key == asOfParameter:
+				// asOfGate, outside the repeated-key layer, refuses a repeat of as_of itself.
+				oneValueKeys++
+				if refusal := gateRefusalOf(response); ran != 0 || response.Code != http.StatusBadRequest ||
+					refusal.Code != "INVALID_AS_OF" || !strings.Contains(refusal.Error, asOfParameter) {
+					t.Errorf("%s: %q, one value in the contract, named twice: the handler ran %d times (%d %s), "+
+						"want it run none and 400 INVALID_AS_OF naming as_of", name, key, ran, response.Code,
+						strings.TrimSpace(response.Body.String()))
+				}
 			default:
 				what := "one value in the contract"
 				if !declaredHere {
@@ -154,6 +163,13 @@ func TestEverySingleValueQueryKeyRefusesARepeat(t *testing.T) {
 				}
 			}
 
+			if key == asOfParameter {
+				// A single as_of reaches the handler only as a time asOfGate reads against the
+				// database's now(), and this walk has no database: #4639's
+				// TestEveryRowThatDoesNotAnswerAsOfRefusesIt drives a valid as_of on every row that
+				// answers it to its handler.
+				continue
+			}
 			once := url.Values{key: {"first"}}
 			if response := send(once); ran != 1 || response.Code != http.StatusNoContent || !maps.EqualFunc(handed, once, slices.Equal) {
 				t.Errorf("%s: %q named once: the handler ran %d times with %v (%d %s), want it run once with %v",

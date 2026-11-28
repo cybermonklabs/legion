@@ -8,7 +8,7 @@ import type {
 } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import { commandName } from "../dispatch-command";
-import type { DispatchClient } from "../dispatch-http";
+import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import { dispatchDocumentRef, documentLabel, issueTopic } from "../dispatch-owner";
 import { shownPictureLine } from "../dispatch-picture-tools";
 import {
@@ -23,6 +23,7 @@ import { messageFor } from "../errors";
 import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
+import { leftOutAt, leftOutWords } from "./as-of";
 import {
   askOnceWithinDryRun,
   type CommandContext,
@@ -34,6 +35,7 @@ import {
   optionalNumber,
   optionalPrecondition,
   optionalString,
+  type ReadingContext,
   stringArg,
 } from "./context";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
@@ -84,7 +86,8 @@ import { artifactNameExistsProblem, artifactUnderName, uploadKindOf } from "./up
  * version list, so no other read is made for them, and a Dispatch or a version that states none
  * prints no line: such a Dispatch takes no token on a file's upload. A file carries no anchors or
  * approval, so nothing else is read. A picture is shown whatever `shown` holds, and joins it
- * under its address, so the session's later reads name it instead of sending it.
+ * under its address, so the session's later reads name it instead of sending it. At `read`'s
+ * cut, the version is the one that stood then.
  */
 async function readUploadedFile(
   client: DispatchClient,
@@ -92,7 +95,8 @@ async function readUploadedFile(
   details: Record<string, unknown>,
   requested: number | undefined,
   owner: string,
-  shown: Set<string> | undefined
+  shown: Set<string> | undefined,
+  read: AsOfRead = {}
 ): Promise<DispatchToolResult> {
   const versions = artifact.versions ?? [];
   const latest = Math.max(0, ...versions.map((version) => version.number));
@@ -121,7 +125,7 @@ async function readUploadedFile(
   ) {
     return tooLarge(stated.mime ?? "image", stated.size);
   }
-  const file = await client.fileVersion(artifact.id, number);
+  const file = await client.fileVersion(artifact.id, number, read);
   const size = `${file.bytes.length.toLocaleString("en-US")} bytes`;
   if (artifact.kind === "image") {
     const image = toolImage(file.bytes);
@@ -161,6 +165,14 @@ async function readUploadedFile(
  *  apart without printing the document twice. */
 const BLOCK_OPENING_CHARS = 60;
 
+/** A table row's or cell's id as `dispatch doc-read --blocks` prints it: "no id yet" for one that
+ *  Dispatch gave no id, and the words for one the answer left out (`leftOutWords`), as an answer
+ *  at a cut does, since no record at the cut gives the ids of a table's rows and cells. */
+function tablePartId(id: string | undefined, asOf: string | undefined): string {
+  if (id === undefined) return `id ${leftOutWords(asOf)}`;
+  return id === "" ? "no id yet" : `id ${id}`;
+}
+
 /**
  * `dispatch doc-read --blocks`: the live document's blocks in document order, one line each, a
  * block indented under the block whose markdown range holds it. Each line carries the id, type,
@@ -171,13 +183,15 @@ const BLOCK_OPENING_CHARS = 60;
  * said to report none, never answered from the markdown, since a column read from the markdown is
  * not the index `delete_column` takes once a cell spans columns. The markdown, the blocks, the
  * token and the version come from one answer (`liveBlocks`), so no write between two reads can
- * leave the offsets slicing text they were not computed over.
+ * leave the offsets slicing text they were not computed over. At `read`'s cut each member the
+ * answer left out prints as left out at that cut.
  */
 async function listDocumentBlocks(
   client: DispatchClient,
-  artifact: Artifact
+  artifact: Artifact,
+  read: AsOfRead = {}
 ): Promise<{ text: string; token: string | undefined; version: number | null }> {
-  const live = await liveBlocks(client, artifact);
+  const live = await liveBlocks(client, artifact, read);
   const { bytes, blocks } = live;
   const decoder = new TextDecoder();
   const lines = [
@@ -194,10 +208,18 @@ async function listDocumentBlocks(
       points.length > BLOCK_OPENING_CHARS
         ? `${points.slice(0, BLOCK_OPENING_CHARS).join("")}…`
         : flat;
-    const { comments, asks } = block.references;
-    lines.push(
-      `${indent}${block.id} ${block.type} (${block.token ?? "no token"}; ${comments} comment${comments === 1 ? "" : "s"}, ${asks} ask${asks === 1 ? "" : "s"}): ${opening}`
-    );
+    // At a cut a block's token and anchored counts are left out, and so is the id of an untyped
+    // block of a version no index holds: none prints as a value, nor as "no token".
+    const { asOf } = read;
+    const id: string | undefined = block.id;
+    const shownId = id === undefined ? `(id ${leftOutWords(asOf)})` : id;
+    const token = block.token ?? (asOf === undefined ? "no token" : `token ${leftOutAt(asOf)}`);
+    const references: ArtifactBlock["references"] | undefined = block.references;
+    const anchored =
+      references === undefined
+        ? `anchored comments and asks ${leftOutWords(asOf)}`
+        : `${references.comments} comment${references.comments === 1 ? "" : "s"}, ${references.asks} ask${references.asks === 1 ? "" : "s"}`;
+    lines.push(`${indent}${shownId} ${block.type} (${token}; ${anchored}): ${opening}`);
     // Every pointer a typed block holds, in the order its type declares them: a reader follows
     // these between documents, and a `block[]` attribute a type declares later must not go
     // silently unprinted. A pointer is what the schema declares `block[]`, never what reads like
@@ -215,13 +237,11 @@ async function listDocumentBlocks(
         );
       } else {
         for (const row of block.table.rows ?? []) {
-          lines.push(
-            `${indent}  row ${row.index}, ${row.id === "" ? "no id yet" : `id ${row.id}`}`
-          );
+          lines.push(`${indent}  row ${row.index}, ${tablePartId(row.id, asOf)}`);
           for (const cell of row.cells ?? []) {
             const under = cell.header === "" ? "" : `, under ${JSON.stringify(cell.header)}`;
             lines.push(
-              `${indent}    row ${cell.row} column ${cell.column}, ${cell.id === "" ? "no id yet" : `id ${cell.id}`}${under}: ${cell.text === "" ? "(empty)" : cell.text}`
+              `${indent}    row ${cell.row} column ${cell.column}, ${tablePartId(cell.id, asOf)}${under}: ${cell.text === "" ? "(empty)" : cell.text}`
             );
           }
         }
@@ -339,13 +359,17 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
-/** `dispatch doc-read`: a document's markdown, its blocks, or an uploaded file's content. */
-export async function docReadCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, ownerArguments, shown, documentOwner, resolveDocument } = context;
+/** `dispatch doc-read`: a document's markdown, its blocks, or an uploaded file's content; at a
+ *  cut, each of them as it stood then. */
+export async function docReadCommand(
+  context: ReadingContext<CommandContext>
+): Promise<DispatchToolResult> {
+  const { args, client, ownerArguments, shown, documentOwner, resolveDocument, reading } = context;
+  const { cut } = reading;
   const { agentArtifact } = ownerArguments;
   if (agentArtifact !== undefined) {
     // A conversation's upload is a file or picture; Dispatch keeps no document there.
-    const artifact = await client.getAgentArtifact(agentArtifact.session, agentArtifact.slug);
+    const artifact = await client.getAgentArtifact(agentArtifact.session, agentArtifact.slug, cut);
     if (optionalBoolean(args, "blocks") === true) {
       throw new Error(
         `${artifact.name} is an uploaded ${artifact.kind}, not a document, so it has no blocks. Read it with dispatch doc-read without --blocks.`
@@ -357,7 +381,8 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
       { session: agentArtifact.session, artifact: artifact.slug },
       optionalNumber(args, "version") ?? agentArtifact.version,
       `agent/${agentArtifact.session}`,
-      shown
+      shown,
+      cut
     );
   }
   const artifactReference =
@@ -373,7 +398,7 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
         `${resolved.artifact.name} is an uploaded ${resolved.artifact.kind}, not a document, so it has no blocks. Read it with dispatch doc-read without --blocks.`
       );
     }
-    const listed = await listDocumentBlocks(client, resolved.artifact);
+    const listed = await listDocumentBlocks(client, resolved.artifact, cut);
     // The token and the version come from the one answer the blocks came from, so the
     // trailer names the document this listing was read from and nothing else.
     const trailer = [
@@ -404,11 +429,12 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
         : { issue: resolved.issue?.key },
       version,
       resolved.owner.kind === "project" ? resolved.owner.project : resolved.owner.issue,
-      shown
+      shown,
+      cut
     );
   }
-  const documentPromise = client.docRead(resolved.artifact.id, version);
-  const threadsPromise = openAnchoredThreads(client, resolved);
+  const documentPromise = client.docRead(resolved.artifact.id, version, cut);
+  const threadsPromise = openAnchoredThreads(client, resolved, cut);
   const threadsResultPromise = threadsPromise.then(
     (value) => ({ status: "fulfilled" as const, value }),
     (reason) => ({ status: "rejected" as const, reason })

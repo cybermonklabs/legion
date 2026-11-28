@@ -18,23 +18,29 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // searchParameters is one validated search: the words, the filters every leg of it is narrowed
 // by, the project a bare issue number is read in, and the page. numberProject is the project the
 // page a person searched from names, which narrows nothing at all (numberScope). ownKeys is what
 // runSearch resolves the words to when they name an issue (searchOwnIssueKeys) and empty
-// otherwise. broaden is empty for the query as typed, which is what every search runs first and
-// what nearly every search runs alone; it holds the rarest words of a query that matched nothing
-// (searchRarestWords) on the one second run such a query is given, and the statement then
-// searches for those words alone (searchQOpener). excluded is the -word terms the statement ANDs
-// onto that OR (readSearchQuery, excludedWords), set with broaden and empty whenever broaden is:
-// the query as typed needs none of it, because websearch_to_tsquery is already reading each
-// -word in $1 itself. keywordsOnly is the request's own ?keywords_only=true: the search runs the
-// keyword statement and makes no embedding call, whatever embedder the deployment configured
-// (runSearch). trees is whether the caller reads display trees (wantsDisplayTrees), which each
-// hit's snippet is cut and marked into beside its text (scanSearchRows); the answerer's own
-// search reads a hit's title and href alone and asks for none.
+// otherwise. stopWordsOnly is whether runSearch found that no plain word of the query gives
+// PostgreSQL a lexeme, every one of them a stop word (ranksFirstAtACut); runSearch reads it only
+// for a search at a cut, and it is false wherever runSearch did not read it (a search of the
+// present, a query that names an issue by key, the answerer's own search and the package's
+// tests), and the words alone then choose. broaden is empty for the query as typed, which is what
+// every search runs first and what nearly every search runs alone; it holds the rarest words of a
+// query that matched nothing (searchRarestWords) on the one second run such a query is given, and
+// the statement then searches for those words alone (searchQOpener).
+// excluded is the -word terms the statement ANDs onto that OR (readSearchQuery, excludedWords),
+// set with broaden and empty whenever broaden is: the query as typed needs none of it, because
+// websearch_to_tsquery is already reading each -word in $1 itself. keywordsOnly is the request's
+// own ?keywords_only=true: the search runs the keyword statement and makes no embedding call,
+// whatever embedder the deployment configured (runSearch). trees is whether the caller reads
+// display trees (wantsDisplayTrees), which each hit's snippet is cut and marked into beside its
+// text (scanSearchRows); the answerer's own search reads a hit's title and href alone and asks
+// for none.
 //
 // who is the credential the search acts for, which every statement binds last
 // (searchQueryArguments) so that no read answers a node that credential may not see
@@ -44,6 +50,10 @@ import (
 // reading is text read as the words a person wrote and the operators around them
 // (readSearchQuery), taken once by whoever builds the parameters and handed to every reader of
 // it through queryReading.
+//
+// versions is the keyword table at the cut of a search at a past time (store.TextVersionsAt), and
+// nil for a search of the present: the search then runs the statements at the cut
+// (searchAsOfQuery, searchAsOfMeaningQuery) and never broadens (runSearch).
 type searchParameters struct {
 	text          string
 	project       string
@@ -53,16 +63,18 @@ type searchParameters struct {
 	since         *time.Time
 	// kinds are the kinds this search leaves out of the ranking, the count and the page
 	// (searchKinds), so its zero value searches every kind the index holds.
-	kinds        searchKinds
-	limit        int
-	offset       int
-	keywordsOnly bool
-	trees        bool
-	ownKeys      []string
-	broaden      []string
-	excluded     string
-	reading      *searchReading
-	who          model.Actor
+	kinds         searchKinds
+	limit         int
+	offset        int
+	keywordsOnly  bool
+	trees         bool
+	ownKeys       []string
+	stopWordsOnly bool
+	broaden       []string
+	excluded      string
+	reading       *searchReading
+	versions      *store.TextVersions
+	who           model.Actor
 }
 
 // numberScope is the project a bare issue number names: the project filter when the request
@@ -86,6 +98,20 @@ func (p searchParameters) numberScope() string {
 // statements differ over, and each of them carries it.
 func (p searchParameters) filtered() bool {
 	return p.status != "" || p.author != "" || p.since != nil
+}
+
+// ranksFirstAtACut reports whether a search at a cut ranks each post kind on its rank before it
+// reads a post's row and its issue at the cut (searchAsOfBoundedPosts): only when no filter reads
+// a column at the cut (filtered), and only when the query has a word to rank by. A word to rank
+// by is a plain word of the query (searchReading.words) that gives PostgreSQL a lexeme, which a
+// stop word does not: websearch_to_tsquery drops it, so `the -draft` is !'draft'. runSearch reads
+// whether any plain word gives one in the round trip it already makes (stopWordsOnly). A query
+// with no word to rank by, of excluded words alone or of stop words beside them, ranks every
+// match 0, so every row ties at the boundary and the bound only adds its own reads: on a copy of
+// production's event log, a query of excluded words alone at its newest event took 56 s ranked
+// first and 21 s read whole. Both paths answer the same; only the cost differs.
+func (p searchParameters) ranksFirstAtACut() bool {
+	return !p.filtered() && len(p.queryReading().words) > 0 && !p.stopWordsOnly
 }
 
 // queryReading is this search's text read as words and operators, which the search route reads

@@ -75,6 +75,7 @@ import {
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
+import { abortOnReaderAct } from "../reader-acts";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
 import { treeContext } from "../target-naming";
@@ -90,7 +91,7 @@ import {
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { issueAsksQuery } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
-import { abortOnReaderAct, nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
+import { nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
 import { treeItemOf, useAddressActed, useAddressLanding } from "./address-landing";
