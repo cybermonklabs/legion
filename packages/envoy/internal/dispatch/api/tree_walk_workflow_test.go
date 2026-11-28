@@ -96,15 +96,42 @@ func TestTheTreeWalkLeavesOutTheWorkflowsRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk the tree of %s: %v", issue.Key, err)
 	}
-	requirement := false
+	requirement, required := false, refs.Target{}
 	for _, walked := range tree.Nodes {
 		if kind, held := left[refs.Target{Kind: walked.Kind, ID: walked.ID}]; held {
 			t.Errorf("the walk of %s answers the %s node %s", issue.Key, kind, walked.ID)
 		}
-		requirement = requirement || walked.Type == requirementBlockType
+		if walked.Type == requirementBlockType {
+			requirement, required = true, refs.Target{Kind: walked.Kind, ID: walked.ID}
+		}
 	}
 	if !requirement {
 		t.Errorf("the walk of %s answers no requirement", issue.Key)
+	}
+	// The walk's tuples are the part_of rows its reads of the subtrees answered (IssueTree.Children,
+	// keyed by the parent), and the part_of each node it took stands under (TreeNode.Parent): none of
+	// them names the step, the plan, the handoff or the lens under the step. The rows hold the
+	// requirement's, so the walk's rows were read.
+	rowed := false
+	for parent, rows := range tree.Children {
+		for _, row := range rows {
+			rowed = rowed || row.Node == required
+			for _, end := range []refs.Target{parent, row.Node} {
+				if kind, held := left[end]; held {
+					t.Errorf("the walk of %s answers the %s node %s in a part_of tuple from %s:%s to %s:%s",
+						issue.Key, kind, end.ID, row.Node.Kind, row.Node.ID, parent.Kind, parent.ID)
+				}
+			}
+		}
+	}
+	if requirement && !rowed {
+		t.Errorf("the walk of %s holds no part_of row of its requirement %s:%s, so its rows prove nothing", issue.Key, required.Kind, required.ID)
+	}
+	for _, walked := range tree.Nodes {
+		if kind, held := left[walked.Parent]; held {
+			t.Errorf("the walk of %s answers the %s node %s in a part_of tuple from %s:%s to %s:%s",
+				issue.Key, kind, walked.Parent.ID, walked.Kind, walked.ID, walked.Parent.Kind, walked.Parent.ID)
+		}
 	}
 
 	read := treeRead(t, handler, issue.Key, "", "alice", false)

@@ -8,13 +8,13 @@
 # It runs against the `bun run dispatch:local` server of the Verification preamble, over
 # infra_1253, as the agent bearer and as the people the dev sign-in signs in: DEV_SIGNIN_LOGIN
 # (alice), who writes where a person writes, and bob, who reads. The issues it seeds:
-#   A  born converted: a comment thread alice wrote; a criterion alice wrote into the issue's tree
-#      under the thread's first block; a requirement r1 under that criterion; an agent's decision d1
-#      with its shaped tuple to r1 and the reading g1 under it; r1's constrained_by to a constraint
-#      of the catalogue (a source written with `lens-kind-add`, not the `pre-mortem` kind's
-#      source); a check c1 serving r1 with one result; plan tasks t0 and t1 serving r1, t1
-#      needing t0; an ask a1 alice answered, with an agent's reading g2 under it; and alice's
-#      approval of the Verification query.
+#   A  born converted, its spec opening on its memo callout: a comment thread alice wrote; a
+#      criterion alice wrote into the issue's tree under the thread's first block; a requirement r1
+#      under that criterion; an agent's decision d1 with its shaped tuple to r1 and the reading g1
+#      under it; r1's constrained_by to a constraint of the catalogue (a source written with
+#      `lens-kind-add`, not the `pre-mortem` kind's source); a check c1 serving r1 with one result;
+#      plan tasks t0 and t1 serving r1, t1 needing t0; an ask a1 alice answered, with an agent's
+#      reading g2 under it; and alice's approval of the Verification query.
 #   B  a child of A, born converted and holding no requirement: a check cc1 and plan tasks t0 and t1
 #      that serve A's r1, t1 needing B's own t0 and sharing its block id with A's t1, the check with
 #      one result; and a design block in B's own tree.
@@ -22,11 +22,17 @@
 #      the driver writes and takes back through DATABASE_URL, as the Go tests' holdIssuesUnconverted
 #      does): a requirement set proposed and a check set overtaken through the /state route.
 #   D  born converted: a paragraph, then requirements o2 and o1 alice wrote into its spec in that
-#      order, so o2 holds the lower rank against the order of their ids; a comment alice wrote and
-#      then an ask the agent opened; and o3, alice's, whose From: line names that comment, so it
+#      order, so o2 holds the lower rank against the order of their ids; an ask the agent opened
+#      and then a comment alice wrote; and o3, alice's, whose From: line names that comment, so it
 #      stands under the comment.
-# What it asserts, section by section, is the check's text in its order; each section's comment
-# names what it reads. A failure names the node, the tuple or the route it found wrong.
+# What it asserts, section by section, is the check's text in its order, but for two sections. The
+# order of D's children comes first, so a read that orders the ranked siblings before the
+# conversation fails on the issue whose order the check's last paragraph names, before the comments
+# section reads the same rule on A.
+# The links section, which reads the digest alice's approval of A's Verification query recorded,
+# comes before the results section changes c1's words, a node of that query, which moves the
+# digest. Each section's comment names what it reads. A failure names the node, the tuple or the
+# route it found wrong.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (the agent bearer, read
 # here and never printed), PROJECT (CORE), DEV_SIGNIN_LOGIN (alice) and DATABASE_URL (infra_1253,
@@ -230,6 +236,108 @@ tree_read_views_ask_id() {
   tree_field "$1" "the ask of the block $3 of $2" "[.[] | select(.block_id == \"$3\") | .id] | if length == 1 then .[0] else empty end"
 }
 
+# tree_read_views_members SECTION READ DECISIONS: the decision node of d1 in READ, a read with no
+# view, answers every member GET /api/v1/issues/{key}/decisions, kept in DECISIONS, answers for d1,
+# each equal, and a stale on each of its links; else FAIL names the decision and each member that is
+# missing or unequal.
+tree_read_views_members() {
+  local members
+  members="$(jq -r --slurpfile read "$3" --arg d "$decision_node" '
+    ([$read[0].decisions[]? | select(.block_id == "d1")][0]) as $want
+    | ([.nodes[] | select(.id == $d) | .decision][0] // {}) as $got
+    | if $want == null then ["the decisions read answers no decision d1"] else
+        [$want | keys_unsorted[] as $k | select(($got | has($k)) | not) | "\($k) is missing"]
+        + [$want | keys_unsorted[] as $k | select(($got | has($k)) and $got[$k] != $want[$k]) | "\($k) reads \($got[$k] | tojson), want \($want[$k] | tojson)"]
+        + [($want.links // []) | keys[] as $i | select(($got.links[$i]? // {}) | has("stale") | not) | "the stale of its link \($i) is missing"]
+      end
+    | .[]' "$2")"
+  [[ -z "$members" ]] ||
+    fail "$1" "the read with no view answers on d1 every member GET /api/v1/issues/{key}/decisions answers for it, each equal" \
+      "the decision $decision_node: ${members//$'\n'/; }"
+  pass "$1" "the read with no view answers on d1 every member the decisions read answers for it, each equal"
+}
+
+# tree_read_views_parents SECTION FILE WHAT GRAPH...: each node of the read kept in FILE, which WHAT
+# names, carries its parent's id, supertag and first line, as the reads with no view kept in GRAPH...
+# answer that parent: its kind and id, its supertag, the first line of its words and its issue. The
+# first line is the one the read names a parent by (treeFirstLine): past a typed block's opening
+# line, the first line that is not blank or a closing fence, its leading space and markdown marks
+# trimmed. The issue read's own node, and a context node of the catalogue (a lens_kind or a
+# constraint), an interaction, a person or a session, stand under none (model.IssueTreeNode.Parent).
+tree_read_views_parents() {
+  local section="$1" file="$2" what="$3" wrong
+  shift 3
+  jq -s '{nodes: (map(.nodes) | add)}' "$@" >"$work/graph.json"
+  wrong="$(jq -r --slurpfile graph "$work/graph.json" '
+    def first_line:
+      [split("\n") | to_entries[] | .value |= gsub("^\\s+|\\s+$"; "")
+        | select(.value != "" and .value != ":::" and ((.key == 0 and (.value | startswith(":::"))) | not))][0]
+      | if . == null then "" else .value | sub("^[#>*+ -]+"; "") | gsub("^\\s+|\\s+$"; "") end;
+    ($graph[0].nodes | map({key: "\(.kind):\(.id)", value: .}) | from_entries) as $g
+    | .issue as $key
+    | .nodes[]
+    | if (.kind == "issue" and .id == $key)
+         or (.role == "context" and (.kind | IN("lens_kind", "constraint", "interaction", "person", "session"))) then
+        select(.parent != null) | "\(.kind):\(.id) stands under \(.parent.kind):\(.parent.id), where it stands under none"
+      elif (.parent.id // "") == "" then "\(.kind):\(.id) (\(.role)) names no parent"
+      else
+        $g["\(.parent.kind):\(.parent.id)"] as $p
+        | if $p == null then "\(.kind):\(.id) names the parent \(.parent.kind):\(.parent.id), which no read with no view answers"
+          else
+            [.parent.supertag, .parent.first_line, (.parent.issue // "")] as $got
+            | [$p.supertag, ($p.text // "" | first_line), ($p.issue // "")] as $want
+            | select($got != $want)
+            | "\(.kind):\(.id) names its parent \(.parent.kind):\(.parent.id) by \($got | tojson), want \($want | tojson)"
+          end
+      end' "$file")"
+  [[ -z "$wrong" ]] || fail "$section" "each node $what answers carries its parent's id, supertag and first line" "${wrong//$'\n'/; }"
+  pass "$section" "each node $what answers carries its parent's id, supertag and first line"
+}
+
+# tree_read_views_context SECTION FILE VIEW: each node the view VIEW of the read kept in FILE answers
+# as context is one of that view's fixed context (R8), each named by a tuple of the answer: on every
+# view, the person or the session a decided_by of a node it answers names, and a comment on the text
+# of a node it answers, with the comments of its thread and their blocks; on the spec and the
+# verification views, a child's spec view (VIEW child-spec) included, each decision and each
+# answered ask whose shaped names a node of the query or a requirement of the answer, and each
+# constraint a constrained_by of one of those names; on the verification view, each requirement of
+# the issue and each one a check of the answer serves, and the checks and results of an issue under
+# the one read; on the plan view, an issue's node and the plan nodes of an issue under the one read;
+# on a child's spec view, its design blocks and the requirements of an issue above it. Else FAIL
+# names each context node no rule admits.
+tree_read_views_context() {
+  local wrong
+  wrong="$(jq -r --arg v "$3" '
+    def addr: "\(.kind):\(.id)";
+    (.nodes | map({key: addr, value: .}) | from_entries) as $n
+    | .tuples as $t
+    | ([.nodes[] | select(.role == "query" or .supertag == "requirement") | addr]) as $anchors
+    | ([$t[] | select(.kind == "shaped" and ((.to | addr) | IN($anchors[]))) | .from | addr]) as $shapers
+    | ([$t[] | select(.kind == "constrained_by" and ((.from | addr) | IN($anchors[]))) | .to | addr]) as $constraints
+    | ([$t[] | select(.kind == "decided_by") | .to | addr]) as $deciders
+    | ([$t[] | select(.kind == "serves" and $n[.from | addr].supertag == "check") | .to | addr]) as $served
+    | def up: $n["\(.parent.kind // ""):\(.parent.id // "")"];
+    def carried: (.kind == "comment" or .kind == "comment_block")
+      and (up as $p | $p != null and (($p | carried) or ($p.kind != "comment" and $p.kind != "comment_block")));
+    [.nodes[] | select(.role == "context") | addr as $a
+     | select(
+         ((.kind == "person" or .kind == "session") and ($a | IN($deciders[])))
+         or carried
+         or ($v != "plan" and $v != "decisions" and (.supertag == "decision" or .kind == "ask") and ($a | IN($shapers[])))
+         or ($v != "plan" and $v != "decisions" and .kind == "constraint" and ($a | IN($constraints[])))
+         or ($v == "verification" and .supertag == "requirement" and ((.issue // "") == "" or ($a | IN($served[]))))
+         or ($v == "verification" and (.supertag == "check" or .kind == "result") and (.issue // "") != "")
+         or ($v == "plan" and (.kind == "issue" or ((.supertag == "plan_task" or .supertag == "plan_role") and (.issue // "") != "")))
+         or ($v == "child-spec" and ((.supertag == "requirement" and (.issue // "") != "")
+           or (.kind == "block" and (.issue // "") == "" and (.supertag | IN("callout", "ask", "criterion", "requirement", "check", "plan_task", "plan_role", "decision", "reading") | not))))
+         | not)
+     | "\($a) (\(.supertag))"] | .[]' "$2")"
+  [[ -z "$wrong" ]] ||
+    fail "$1" "?view=${3#child-} answers as context only its fixed context, each node named by a tuple of the answer" \
+      "it answers as context ${wrong//$'\n'/, }, which no rule of its context admits"
+  pass "$1" "?view=${3#child-} answers as context only its fixed context"
+}
+
 # --- setup -------------------------------------------------------------------------------------
 
 tree_section setup
@@ -258,10 +366,72 @@ unnamed_constraint="$(jq -er --arg k "$unnamed_kind" '.lens_kinds[] | select(.id
 readonly pre_mortem_source named_constraint unnamed_constraint named_constraint_ref="dispatch://constraint/$named_constraint"
 pass setup "r1 will name $named_constraint, not $pre_mortem_source (pre-mortem's source) or $unnamed_constraint"
 
+# --- the order of an issue's children ---------------------------------------------------------------
+
+# D's top-level children in the order the read answers them (R8 at spec v246): its ask and its
+# comment first, in the order they were written, then its ranked requirements by rank - o2 before
+# o1, whose id sorts first - and o3, whose From: line names the comment, under that comment. A
+# person writes the requirements, as she writes r1 of A. A failure names the first node out of that
+# order. This section runs first, before the seed of A: a read that orders the ranked siblings before
+# the conversation fails here, on D, naming the first node out of order, before the comments section
+# reads the same rule on A. The agent opens D's ask before alice writes its comment, so the order
+# they were written is also the order of their addresses (`ask:` before `comment:`): a read that
+# orders the conversation by address rather than by when each was made passes here and fails on
+# A's two comments, which the comments section writes until their ids sort against their order.
+tree_section order
+printf 'The order of the list, as its issue states it.\n' >"$work/spec-d.md"
+tree_read_views_create order "The order of an issue's children" "$work/spec-d.md"
+readonly order_key="$corpus_key" order_spec="$corpus_spec"
+tree_person_edit order "$login writes o2 and then o1 into the spec of $order_key" "$order_spec" "$(jq -cn \
+  '[{op: "insert", after: "end", markdown: ":::requirement{#o2}\nThe list shows the urgent asks first.\n:::\n\n:::requirement{#o1}\nThe list shows the urgency of each ask.\n:::"}]')"
+corpus_ask order "$order_key" "Does urgency come before age?"
+readonly order_ask="$corpus_item"
+corpus_comment person order "$order_key" "Which asks does the list show first?"
+readonly order_comment="$corpus_item"
+tree_person_edit order "$login writes o3, whose From: line names the comment $order_comment" "$order_spec" "$(jq -cn \
+  --arg c "dispatch://$order_key/comment/$order_comment" \
+  '[{op: "insert", after: "end", markdown: (":::requirement{#o3}\nThe list answers the question of the comment.\n\nFrom: " + $c + "\n:::")}]')"
+corpus_wait_settled order
+tree_read_views_get order agent "/api/v1/issues/$order_key/tree" "$work/d.json"
+tree_read_views_node order "$work/d.json" o2
+readonly order_first="$node_kind:$node_id" order_first_id="$node_id"
+tree_read_views_node order "$work/d.json" o1
+readonly order_second="$node_kind:$node_id" order_second_id="$node_id"
+tree_read_views_node order "$work/d.json" o3
+readonly order_from="$node_id"
+held="$(jq -r --arg a "$order_first_id" --arg b "$order_second_id" '
+  [([.nodes[] | select(.id == $a) | .rank][0]), ([.nodes[] | select(.id == $b) | .rank][0])]
+  | if .[0] != null and .[1] != null and .[0] < .[1] and $a > $b then ""
+    else "o2 (\($a)) holds the rank \(.[0]) and o1 (\($b)) the rank \(.[1])" end' "$work/d.json")"
+[[ -z "$held" ]] ||
+  fail order "o2 holds a lower rank than o1, whose id sorts first, so the order by rank is not the order by id" "$held"
+order="$(jq -r --arg k "$order_key" --argjson want "$(jq -cn --arg a "ask:$order_ask" --arg c "comment:$order_comment" \
+  --arg f "$order_first" --arg s "$order_second" '[$a, $c, $f, $s]')" '
+  [.nodes[] | select(.parent != null and .parent.kind == "issue" and .parent.id == $k) | "\(.kind):\(.id)"] as $children
+  | [$children[] | select(. as $c | $want | index($c) != null)] as $got
+  | ([range(0; $want | length) | select($got[.] != $want[.])] | first) as $at
+  | if $children[0:2] != $want[0:2] then
+      "\($children[0] // "nothing") stands first among the issue'"'"'s children, where its ask \($want[0]) and then its comment \($want[1]) belong: the read answers \($children | join(", "))"
+    elif $at != null then "\($got[$at] // "nothing") stands where \($want[$at]) belongs: the read answers \($got | join(", "))"
+    else "" end' "$work/d.json")"
+[[ -z "$order" ]] ||
+  fail order "the read answers $order_key's ask and its comment first, in the order they were written, then its ranked requirements by rank" "$order"
+pass order "the read answers $order_key's ask $order_ask, then its comment $order_comment, then o2 and o1 by rank"
+tree_kept_expect "$work/d.json" order "o3, whose From: line names the comment $order_comment, stands under that comment, after it" \
+  "$(jq -cn --arg c "$order_comment" '["comment", $c, true]')" --arg c "$order_comment" --arg r "$order_from" \
+  '(.nodes | to_entries) as $all
+   | ([$all[] | select(.value.id == $r)][0]) as $o3
+   | ([$all[] | select(.value.kind == "comment" and .value.id == $c) | .key][0]) as $at
+   | [$o3.value.parent.kind, $o3.value.parent.id, ($at != null and $at < $o3.key)]'
+
 # --- the seed ------------------------------------------------------------------------------------
 
 tree_section seed
 cat >"$work/spec-a.md" <<SPEC
+:::callout{#memo kind="note" title=""}
+The memo: the tree read answers one graph, and each view filters it.
+:::
+
 The summary paragraph: we $quote, said the summary, before the decision says it again.
 
 :::ask{#a1 urgency="med" multiple="false"}
@@ -414,6 +584,40 @@ tree_want 409 converted "a requirement written on $child is refused"
 expect converted "the refusal is REQUIREMENT_BELONGS_TO_ANCESTOR naming $key" '[true,true]' \
   --arg k "$key" '[.code == "REQUIREMENT_BELONGS_TO_ANCESTOR", (.error | contains($k))]'
 
+# --- the seed, read back -----------------------------------------------------------------------
+
+# What the seed wrote, as the read with no view and the reviews read answer it: the thread is
+# alice's, a person's (the author its nodes carry: a tuple to her person node stands in the answer
+# only where some other rule brings that node in, as a decided_by does); the criterion k1 stands
+# under the thread's first block and the requirement r1 under k1, each with its part_of tuple; and
+# alice's approval of the Verification query is a person's, at the version she approved, recording
+# that version's digest.
+tree_section placement
+tree_kept_expect "$work/a.json" placement "the comment thread $head and its reply $head_reply are $login's, a person's" \
+  "$(jq -cn --arg l "$login" '[[["user", $l]], [["user", $l]]]')" --arg h "$head" --arg r "$head_reply" \
+  '. as $read | [$h, $r] | map(. as $c | [$read.nodes[] | select(.kind == "comment" and .id == $c) | [.author[] | [.kind, .id]]][0])'
+readonly head_block_node="comment/$head#$(jq -r '.blocks[0].id' "$work/head-blocks.json")"
+tree_read_views_node placement "$work/a.json" k1
+readonly criterion_node="$node_id"
+tree_kept_expect "$work/a.json" placement "the criterion k1 stands under the first block of the thread $head, and r1 under k1, each with its part_of tuple" \
+  "$(jq -cn --arg b "$head_block_node" --arg k "$criterion_node" '[["comment_block", $b, 1], ["block", $k, 1]]')" \
+  --arg k "$criterion_node" --arg r "$requirement_node" \
+  '. as $read | [$k, $r] | map(. as $n | ([$read.nodes[] | select(.kind == "block" and .id == $n)][0].parent) as $p
+    | [$p.kind, $p.id, ([$read.tuples[] | select(.kind == "part_of" and .from.id == $n and .to.kind == $p.kind and .to.id == $p.id)] | length)])'
+tree_read_views_get placement agent "/api/v1/artifacts/$verification" "$work/a-verification-read.json"
+readonly approved_version="${corpus_approved[$verification]:-}"
+approved_digest="$(jq -r --argjson v "${approved_version:-0}" '[.versions[] | select(.number == $v) | .digest][0] // empty' "$work/a-verification-read.json")"
+[[ -n "$approved_version" && -n "$approved_digest" ]] ||
+  fail placement "the Verification document $verification holds the version $login approved, with its digest" \
+    "version '$approved_version': $(head -c 600 "$work/a-verification-read.json")"
+readonly approved_digest
+tree_read_views_get placement agent "/api/v1/artifacts/$verification/reviews" "$work/a-reviews.json"
+tree_kept_expect "$work/a-reviews.json" placement \
+  "$login's approval of the Verification query is a person's, at version $approved_version, recording that version's digest $approved_digest" \
+  "$(jq -cnS --arg l "$login" --argjson v "$approved_version" --arg d "$approved_digest" \
+    '[{state: "approved", kind: "person", actor: [$l, "user"], version: $v, content_sha256: $d}]')" \
+  '[.[] | {state, kind, actor: [.actor.id, .actor.kind], version, content_sha256}]'
+
 # --- the spec view's context -----------------------------------------------------------------------
 
 tree_section spec-context
@@ -524,12 +728,45 @@ serves="$(jq -c --arg r "$requirement_node" --arg a "$parent_t1" --arg c "$child
   fail parent "each serves tuple of the two plan tasks t1 names its from end by its own id" \
     "the shared block id t1: the serves tuples to $requirement_node from them are $serves"
 pass parent "the plan tasks t1 of $key ($parent_t1) and of $child ($child_t1) share the block id and answer their own tuples"
+# Each of the child's two plan tasks, t0 as t1, reaches the parent's read through its own serves
+# tuple to r1, and hangs from the child issue in the store (R3), as the child's check does.
+tree_kept_expect "$work/a.json" parent "the read answers the serves tuple to r1 of each of the child's plan tasks, named by its own id" \
+  "$(jq -cn --arg a "$child_t0" --arg b "$child_t1" '[$a, $b] | sort')" --arg r "$requirement_node" --arg a "$child_t0" --arg b "$child_t1" \
+  '[.tuples[] | select(.kind == "serves" and .to.id == $r and (.from.id == $a or .from.id == $b)) | .from.id] | sort'
+for task in "$child_t0" "$child_t1"; do
+  tree_node_far parent "$task" part_of
+  [[ "$answer" == "issue/$child" ]] ||
+    fail parent "the child's plan task $task hangs from $child in the store" "its stored part_of names '$answer'"
+done
+pass parent "the child's plan tasks $child_t0 and $child_t1 hang from $child in the store, under it in the answer"
 
 # --- each view of the one graph ----------------------------------------------------------------
 
 tree_section views
 tree_read_views_get views agent "/api/v1/issues/$key/tree?view=decisions" "$work/a-decisions.json"
 tree_read_views_get views agent "/api/v1/issues/$key/tree?view=spec" "$work/a-spec.json"
+# GET /api/v1/issues/{key}/decisions answers the decision nodes ?view=decisions answers, each with the
+# same review state, as the decisions-read section reads them again at the end: here is where the
+# driver first expects them from that route.
+tree_read_views_get views agent "/api/v1/issues/$key/decisions" "$work/a-decisions-read.json"
+tree_kept_expect "$work/a-decisions.json" views \
+  "GET /api/v1/issues/{key}/decisions answers the decision nodes of ?view=decisions, each with the same review state" \
+  "$(jq -cS '[.decisions[] | {block_id, waiting_review, kept: (.kept != null), replaced}] | sort_by(.block_id)' "$work/a-decisions-read.json")" \
+  '[.nodes[] | select(.decision != null) | .decision | {block_id, waiting_review, kept: (.kept != null), replaced}] | sort_by(.block_id)'
+# The agent's reading g2 under the answered ask a1, read by its id: the id the read with no view, the
+# graph, answers for it.
+reading_id="$(jq -r '[.nodes[] | select(.block_id == "g2" and .supertag == "reading" and (.issue // "") == "") | .id]
+  | if length == 1 then .[0] else empty end' "$work/a.json")"
+[[ -n "$reading_id" ]] || fail views "the read with no view answers the agent's reading g2 once" \
+  "it answers $(jq -c '[.nodes[] | select(.block_id == "g2") | {kind, id, supertag}]' "$work/a.json")"
+reading="$(jq -c --arg g "$reading_id" '[.nodes[] | select(.id == $g) | [.supertag, .role, .parent.kind, .parent.id]]' "$work/a-decisions.json")"
+[[ "$reading" == "$(jq -cn --arg a "$answered_ask" '[["reading", "query", "ask", $a]]')" ]] ||
+  fail views "?view=decisions answers the agent's reading under the person's answered ask, once, the query's, under the ask's node" \
+    "it answers no reading $reading_id under the ask $answered_ask: it answers that id as $reading"
+pass views "?view=decisions answers the reading $reading_id, by its id, once, the query's, under the answered ask $answered_ask"
+# The spec view answers the memo callout first, then the criterion and the requirement, as its query.
+tree_kept_expect "$work/a-spec.json" views "?view=spec answers the memo callout first, then the criterion k1 and the requirement r1, as the query's" \
+  '[["memo","callout","query"],["memo","k1","r1"]]' '[(.nodes[0] | [.block_id, .supertag, .role]), [.nodes[] | select(.role == "query") | .block_id]]'
 jq -c '[.nodes[] | "\(.kind):\(.id)"]' "$work/a.json" >"$work/a-nodes.json"
 for view in spec verification plan decisions; do
   file="$work/a-$view.json"
@@ -537,15 +774,31 @@ for view in spec verification plan decisions; do
   # answers.
   tree_kept_expect "$file" views "?view=$view answers no node the read with no view does not" '[]' \
     --slurpfile graph "$work/a-nodes.json" '[.nodes[] | "\(.kind):\(.id)" | select(. as $n | $graph[0] | index($n) == null)]'
-  tree_kept_expect "$file" views "each node ?view=$view answers as the query's carries its parent's id, supertag and first line" '[]' \
-    '[.nodes[] | select(.role == "query")
-      | select(.parent == null or (.parent.id // "") == "" or (.parent.supertag // "") == "" or (.parent.first_line // "") == "")
-      | "\(.kind):\(.id)"]'
+  tree_read_views_parents views "$file" "?view=$view" "$work/a.json"
+  tree_read_views_context views "$file" "$view"
 done
+tree_read_views_parents views "$work/a.json" "the read with no view" "$work/a.json"
 tree_kept_expect "$work/a-spec.json" views "?view=spec answers as the query's only criteria, requirements and the memo callout" '[]' \
   '[.nodes[] | select(.role == "query" and ((.supertag == "criterion" or .supertag == "requirement" or .supertag == "callout") | not)) | "\(.kind):\(.id)"]'
 tree_kept_expect "$work/a-verification.json" views "?view=verification answers as the query's only checks and results" '[]' \
   '[.nodes[] | select(.role == "query" and ((.kind == "result" or .supertag == "check") | not)) | "\(.kind):\(.id)"]'
+# Every check and result of the issue is the query's, and every requirement a check of the answer
+# serves stands in it as context. The child's check and its result, which the parent's query does
+# not hold (its record holds no node of the child), are context, marked with the child. The answer
+# holds c1 and the child's cc1, each with a result under it, so neither reading is empty.
+tree_kept_expect "$work/a-verification.json" views "?view=verification answers the checks c1 of $key and cc1 of $child, each with a result under it" \
+  "$(jq -cn --arg c "$child" '[["", "c1", true], [$c, "cc1", true]]')" \
+  '. as $read | [.nodes[] | select(.supertag == "check") | . as $check
+    | [(.issue // ""), .block_id, any($read.nodes[]; .kind == "result" and .parent.id == $check.id)]] | sort'
+tree_kept_expect "$work/a-verification.json" views \
+  "?view=verification answers each check and result of $key as the query's, each of $child as context marked with $child, and each requirement a check serves as context" '[]' \
+  --arg c "$child" \
+  '(.nodes | map({key: "\(.kind):\(.id)", value: .}) | from_entries) as $n
+   | [.nodes[] | select(.supertag == "check" or .kind == "result")
+      | select(if (.issue // "") == "" then .role != "query" else .role != "context" or .issue != $c end)
+      | "\(.kind):\(.id) of \(.issue // "the issue") reads \(.role)"]
+     + [.tuples[] | select(.kind == "serves" and $n["\(.from.kind):\(.from.id)"].supertag == "check") | "\(.to.kind):\(.to.id)"
+      | select($n[.].role != "context") | "the requirement \(.) a check serves reads \($n[.].role // "absent")"]'
 tree_kept_expect "$work/a-plan.json" views "?view=plan answers as the query's only plan nodes" '[]' \
   '[.nodes[] | select(.role == "query" and ((.supertag == "plan_task" or .supertag == "plan_role") | not)) | "\(.kind):\(.id)"]'
 tree_kept_expect "$work/a-decisions.json" views "?view=decisions answers as the query's only asks, decisions and readings" '[]' \
@@ -555,28 +808,31 @@ tree_kept_expect "$work/a-decisions.json" views "?view=decisions answers the ans
   --arg a "$answered_ask" --arg d "$decision_node" \
   '[([.nodes[] | select(.kind == "ask" and .id == $a) | .id] | first), ([.nodes[] | select(.kind == "ask" and .id == $a) | .attributes.answer] | first),
     ([.nodes[] | select(.id == $d and .supertag == "decision") | .id] | first), ([.nodes[] | select(.block_id == "g1") | .parent.id] | first)]'
-reading="$(jq -c --arg a "$answered_ask" '[.nodes[] | select(.block_id == "g2" and .supertag == "reading" and .role == "query" and .parent.kind == "ask" and .parent.id == $a) | .id]' \
-  "$work/a-decisions.json")"
-reading_id="$(jq -r '[.nodes[] | select(.block_id == "g2") | .id][0] // "g2"' "$work/a.json")"
-[[ "$(jq 'length' <<<"$reading")" == 1 ]] ||
-  fail views "?view=decisions answers the agent's reading under the person's answered ask, once, the query's, under the ask's node" \
-    "it answers no reading $reading_id under the ask $answered_ask: $reading"
-pass views "?view=decisions answers the reading $reading_id under the answered ask $answered_ask"
 
 # --- each node's members ---------------------------------------------------------------------------
 
 tree_section members
+tree_read_views_get members agent "/api/v1/issues/$key/tree" "$work/a.json"
+tree_read_views_get members agent "/api/v1/issues/$key/decisions" "$work/a-decisions-read.json"
+# Every member the decisions read answers for d1, on the decision node of the read with no view, as
+# it stands before the Keep; the comments section reads it again after the Keep.
+tree_read_views_members members "$work/a.json" "$work/a-decisions-read.json"
 tree_read_views_trees members "/api/v1/issues/$key/tree" "$work/a-trees.json"
-tree_kept_expect "$work/a-trees.json" members "every node of the read with no view carries visibility and made_at" '[]' \
-  '[.nodes[] | select((has("visibility") and has("made_at")) | not) | "\(.kind):\(.id)"]'
+tree_kept_expect "$work/a-trees.json" members "every node of the read with no view carries its visibility and the time it was made" '[]' \
+  '[.nodes[] | select(((.visibility == "project" or .visibility == "author")
+      and (.made_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"))) | not)
+    | "\(.kind):\(.id) reads visibility \(.visibility | tojson) and made_at \(.made_at | tojson)"]'
 tree_kept_expect "$work/a-trees.json" members "the comment thread reads project and the time the driver wrote it, within one second" '[true]' \
   --arg h "$head" --argjson from "$written_before" --argjson to "$written_after" \
   '[.nodes[] | select(.kind == "comment" and .id == $h)
     | .visibility == "project" and ((.made_at | sub("\\.[0-9]+"; "") | fromdateiso8601) as $t | $t >= $from - 1 and $t <= $to + 1)]'
 tree_kept_expect "$work/a-trees.json" members "the lens reads the visibility the driver wrote it with" '["project"]' \
   --arg l "$lens" '[.nodes[] | select(.kind == "lens" and .id == $l) | .visibility]'
-tree_kept_expect "$work/a-trees.json" members "each node of the tree but an issue's whose text is not empty carries text_tree" '[]' \
-  '[.nodes[] | select(.role == "tree" and .kind != "issue" and (.text // "") != "" and (.text_tree == null)) | "\(.kind):\(.id)"]'
+# Every node carries its display tree but a person and a session, the deciders a decided_by brings in
+# as context, which hold no words (text "") and so no tree.
+tree_kept_expect "$work/a-trees.json" members "every node of the read with no view carries text_tree, the issue's node and the context included, but a person or a session, which holds no words" '[]' \
+  '[.nodes[] | select(.text_tree == null and (((.kind == "person" or .kind == "session") and (.text // "") == "") | not))
+    | "\(.kind):\(.id) (\(.role), text \(.text | tojson))"]'
 tree_read_views_trees members "/api/v1/issues/$key/artifacts/spec/blocks" "$work/a-spec-blocks.json"
 tree_read_views_trees members "/api/v1/issues/$key/comments" "$work/a-comments.json"
 tree_read_views_trees members "/api/v1/issues/$key/decisions" "$work/a-decisions-read.json"
@@ -629,18 +885,27 @@ tree_section comments
 tree_read_views_comment comments "$key" "Does urgency come before age?" \
   "$(jq -cn --arg a "$spec" --arg q "$quote" '{artifact: $a, quote: $q, block_id: "d1"}')"
 readonly anchored="$tree_value"
-tree_read_views_comment comments "$key" "The first of two comments on the issue."
-readonly earlier_comment="$tree_value"
-later_comment=""
-for attempt in $(seq 1 40); do
-  tree_read_views_comment comments "$key" "The second of two comments on the issue, written again ($attempt) until its id sorts below the first's."
-  if [[ "$(jq -rn --arg a "$tree_value" --arg b "$earlier_comment" '$a < $b')" == true ]]; then
+# Two comments on the issue whose ids sort against the order they were written. Comments are written
+# one after another, and the pair is the first inversion of that order: the comment whose id sorts
+# highest of those written so far, and the first later one whose id sorts below it. A comment's id
+# is random, so n writes hold no inversion only where their ids rise in the order they were
+# written, one order in n!: 20 writes leave that chance near 4e-19, where waiting for a comment
+# that sorts below one fixed first comment gave up after 40 writes in about 9% of the runs whose
+# first id sorted low.
+earlier_comment="" later_comment=""
+for attempt in $(seq 1 20); do
+  tree_read_views_comment comments "$key" "A comment on the issue, number $attempt of those written until one sorts below an earlier one."
+  if [[ -n "$earlier_comment" && "$(jq -rn --arg a "$tree_value" --arg b "$earlier_comment" '$a < $b')" == true ]]; then
     later_comment="$tree_value"
     break
   fi
+  if [[ -z "$earlier_comment" || "$(jq -rn --arg a "$tree_value" --arg b "$earlier_comment" '$a > $b')" == true ]]; then
+    earlier_comment="$tree_value"
+  fi
 done
-[[ -n "$later_comment" ]] || fail comments "write a later comment whose id sorts below $earlier_comment" "40 writes found none"
-readonly later_comment
+[[ -n "$later_comment" ]] ||
+  fail comments "write two comments whose ids sort against the order they were written" "the ids of 20 writes rose in the order they were written"
+readonly earlier_comment later_comment
 tree_read_views_get comments agent "/api/v1/issues/$key/tree" "$work/a.json"
 tree_kept_expect "$work/a.json" comments "the comment anchored inside d1's paragraph by its block stands under the decision" \
   "\"$decision_node\"" --arg c "$anchored" '[.nodes[] | select(.kind == "comment" and .id == $c) | .parent.id][0]'
@@ -670,22 +935,61 @@ tree_read_views_get comments agent "/api/v1/issues/$key/tree" "$work/a.json"
 tree_kept_expect "$work/a.json" comments "the next read answers d1 kept by $login" "\"$login\"" \
   --arg d "$decision_node" '[.nodes[] | select(.id == $d) | .decision.kept.kept_by][0]'
 tree_read_views_get comments agent "/api/v1/issues/$key/decisions" "$work/a-decisions-read.json"
-# Every member the decisions read answers for d1, equal on the decision node of the read with no view.
-members="$(jq -r --slurpfile read "$work/a-decisions-read.json" --arg d "$decision_node" '
-  ([$read[0].decisions[] | select(.block_id == "d1")][0]) as $want
-  | ([.nodes[] | select(.id == $d) | .decision][0] // {}) as $got
-  | [$want | keys_unsorted[] as $k | select(($got | has($k)) | not) | "\($k) is missing"]
-    + [$want | keys_unsorted[] as $k | select(($got | has($k)) and $got[$k] != $want[$k]) | "\($k) reads \($got[$k] | tojson), want \($want[$k] | tojson)"]
-    + (if $want.links != null and ($want.links | length) > 0 and ([$got.links[]? | has("stale")] | all | not) then ["the link'"'"'s stale is missing"] else [] end)
-  | .[]' "$work/a.json")"
-[[ -z "$members" ]] ||
-  fail comments "the read with no view answers on d1 every member GET /api/v1/issues/{key}/decisions answers for it, each equal" \
-    "the decision $decision_node: ${members//$'\n'/; }"
-pass comments "the read with no view answers on d1 every member the decisions read answers for it, each equal"
+tree_read_views_members comments "$work/a.json" "$work/a-decisions-read.json"
 decided="$(jq -c --arg d "$decision_node" '[.tuples[] | select(.kind == "decided_by" and .from.id == $d) | .to] | first // empty' "$work/a.json")"
 [[ -n "$decided" ]] || fail comments "the read answers d1's decided_by tuple" "it holds none: $(jq -c '[.tuples[] | select(.kind == "decided_by")]' "$work/a.json")"
 tree_kept_expect "$work/a.json" comments "the read answers the node d1's decided_by names as context" '["context"]' \
   --argjson e "$decided" '[.nodes[] | select(.kind == $e.kind and .id == $e.id) | .role]'
+# The decider each decided_by names, answered as context: d1, which the agent recorded, names the
+# agent's session; a1, the decision alice made by answering it, names the person alice.
+tree_kept_expect "$work/a.json" comments \
+  "the decided_by of d1, the agent's decision, names the session $session, and that of a1, which $login answered, the person $login, each answered as context" \
+  "$(jq -cn --arg s "$session" --arg l "$login" '[["session", $s, ["context"]], ["person", $l, ["context"]]]')" \
+  --arg d "$decision_node" --arg a "$answered_ask" \
+  '. as $read | [$d, $a] | map(. as $from
+    | ([$read.tuples[] | select(.kind == "decided_by" and .from.id == $from) | .to] | first // {kind: null, id: null}) as $to
+    | [$to.kind, $to.id, [$read.nodes[] | select(.kind == $to.kind and .id == $to.id) | .role]])'
+
+# --- a link's two facts, and the digest the Verification approval records ----------------------
+
+tree_section links
+# tree_read_views_link WHAT CHANGED STALE: the decision node's one link reads changed_since_tie
+# CHANGED and stale STALE, and answers the link as GET /api/v1/issues/{key}/decisions answers it,
+# member for member.
+tree_read_views_link() {
+  tree_read_views_get links agent "/api/v1/issues/$key/tree" "$work/a.json"
+  tree_read_views_get links agent "/api/v1/issues/$key/decisions" "$work/a-decisions-read.json"
+  tree_kept_expect "$work/a.json" links "$1: d1's link reads changed_since_tie $2 and stale $3" "[$2,$3]" \
+    --arg d "$decision_node" '[.nodes[] | select(.id == $d) | .decision.links[0] | .changed_since_tie, .stale]'
+  tree_kept_expect "$work/a.json" links "$1: d1's link is answered as the decisions read answers it, member for member" \
+    "$(jq -cS '[.decisions[] | select(.block_id == "d1") | .links][0]' "$work/a-decisions-read.json")" \
+    --arg d "$decision_node" '[.nodes[] | select(.id == $d) | .decision.links][0]'
+}
+# tree_read_views_approval WHAT: once the documents settle, the digest alice's approval of the
+# Verification query recorded (approved_digest, read back in the placement section) is still the
+# digest of the document's newest version, and its approval reads approved, the digest it records
+# the current one: the digest walks the query's nodes alone, so WHAT moves no node of it.
+tree_read_views_approval() {
+  corpus_wait_settled links
+  tree_read_views_version links "$verification"
+  [[ "$newest_digest" == "$approved_digest" ]] ||
+    fail links "$1 leaves the digest $login's approval of the Verification query recorded unchanged" \
+      "the digest moved from $approved_digest, which the approval of version $approved_version records, to $newest_digest (version $newest_version)"
+  expect links "$1 leaves $login's approval of the Verification query standing at the digest it recorded" \
+    "$(jq -cn --arg d "$approved_digest" --argjson v "$approved_version" '["approved", $v, $d, $d]')" \
+    '[.approval.state, .approval.version, .approval.content_sha256, .approval.current_sha256]'
+}
+tree_read_views_link "with the tie written" false false
+tree_read_views_approval "the seed, the reads and the Keep since the approval"
+corpus_edit links "change the words of r1, which d1's shaped names" "$spec" \
+  "$(jq -cn --arg f "$requirement_words" --arg w "$requirement_changed" '[{op: "replace", find: $f, with: $w}]')"
+tree_read_views_link "after r1's words changed" true false
+tree_read_views_approval "a change to the words of r1, a context requirement of the Verification query,"
+corpus_result links "$child" cc1 fail "$corpus_commit_two" implementer
+tree_read_views_approval "a second result on the child's check"
+corpus_edit links "change d1's own words" "$spec" \
+  "$(jq -cn --arg f "$decision_words" --arg w "$decision_changed" '[{op: "replace", find: $f, with: $w}]')"
+tree_read_views_link "after d1's own words changed" true true
 
 # --- a result against the words it was recorded for ---------------------------------------------
 
@@ -715,42 +1019,6 @@ tree_person_send POST "/api/v1/results/$result/retract" "$(jq -cn --arg r "$retr
 tree_read_views_get results agent "/api/v1/issues/$key/tree" "$work/a.json"
 tree_kept_expect "$work/a.json" results "the retracted result answers retracted with the reason" "\"$retraction_reason\"" \
   --arg r "$result" '[.nodes[] | select(.kind == "result" and .id == $r) | .result.retracted.reason][0]'
-
-# --- a link's two facts, and the digest the Verification approval records ----------------------
-
-tree_section links
-# tree_read_views_link WHAT CHANGED STALE: the decision node's one link reads changed_since_tie
-# CHANGED and stale STALE, and answers the link as GET /api/v1/issues/{key}/decisions answers it,
-# member for member.
-tree_read_views_link() {
-  tree_read_views_get links agent "/api/v1/issues/$key/tree" "$work/a.json"
-  tree_read_views_get links agent "/api/v1/issues/$key/decisions" "$work/a-decisions-read.json"
-  tree_kept_expect "$work/a.json" links "$1: d1's link reads changed_since_tie $2 and stale $3" "[$2,$3]" \
-    --arg d "$decision_node" '[.nodes[] | select(.id == $d) | .decision.links[0] | .changed_since_tie, .stale]'
-  tree_kept_expect "$work/a.json" links "$1: d1's link is answered as the decisions read answers it, member for member" \
-    "$(jq -cS '[.decisions[] | select(.block_id == "d1") | .links][0]' "$work/a-decisions-read.json")" \
-    --arg d "$decision_node" '[.nodes[] | select(.id == $d) | .decision.links][0]'
-}
-tree_read_views_link "with the tie written" false false
-tree_read_views_version links "$verification"
-readonly approved_digest="$newest_digest"
-corpus_edit links "change the words of r1, which d1's shaped names" "$spec" \
-  "$(jq -cn --arg f "$requirement_words" --arg w "$requirement_changed" '[{op: "replace", find: $f, with: $w}]')"
-tree_read_views_link "after r1's words changed" true false
-tree_read_views_version links "$verification"
-[[ "$newest_digest" == "$approved_digest" ]] ||
-  fail links "a change to a context requirement's words leaves the Verification digest unchanged" \
-    "the digest moved from $approved_digest to $newest_digest (version $newest_version)"
-pass links "a change to a context requirement's words leaves the Verification digest $approved_digest unchanged"
-corpus_result links "$child" cc1 fail "$corpus_commit_two" implementer
-tree_read_views_version links "$verification"
-[[ "$newest_digest" == "$approved_digest" ]] ||
-  fail links "a second result on the child's check leaves the Verification digest unchanged" \
-    "the digest moved from $approved_digest to $newest_digest (version $newest_version)"
-pass links "a second result on the child's check leaves the Verification digest unchanged"
-corpus_edit links "change d1's own words" "$spec" \
-  "$(jq -cn --arg f "$decision_words" --arg w "$decision_changed" '[{op: "replace", find: $f, with: $w}]')"
-tree_read_views_link "after d1's own words changed" true true
 
 # --- an answered ask that shaped the requirement ----------------------------------------------------
 
@@ -987,57 +1255,17 @@ tree_kept_expect "$work/b-spec.json" child "the child's ?view=spec answers its d
   --arg w "$design_words" '[.nodes[] | select((.text // "" | sub("\\s+$"; "")) == $w) | .role]'
 tree_kept_expect "$work/b-spec.json" child "the child's ?view=spec answers the ancestor's requirement its check serves as context" \
   "$(jq -cn --arg k "$key" '[["context", $k]]')" --arg r "$requirement_node" '[.nodes[] | select(.id == $r) | [.role, .issue]]'
-
-# --- the order of an issue's children ---------------------------------------------------------------
-
-# D's top-level children in the order the read answers them (R8 at spec v246): its comment and its
-# ask first, in the order they were written, then its ranked requirements by rank - o2 before o1,
-# whose id sorts first - and o3, whose From: line names the comment, under that comment. A person
-# writes the requirements, as she writes r1 of A. A failure names the first node out of that order.
-tree_section order
-printf 'The order of the list, as its issue states it.\n' >"$work/spec-d.md"
-tree_read_views_create order "The order of an issue's children" "$work/spec-d.md"
-readonly order_key="$corpus_key" order_spec="$corpus_spec"
-tree_person_edit order "$login writes o2 and then o1 into the spec of $order_key" "$order_spec" "$(jq -cn \
-  '[{op: "insert", after: "end", markdown: ":::requirement{#o2}\nThe list shows the urgent asks first.\n:::\n\n:::requirement{#o1}\nThe list shows the urgency of each ask.\n:::"}]')"
-corpus_comment person order "$order_key" "Which asks does the list show first?"
-readonly order_comment="$corpus_item"
-corpus_ask order "$order_key" "Does urgency come before age?"
-readonly order_ask="$corpus_item"
-tree_person_edit order "$login writes o3, whose From: line names the comment $order_comment" "$order_spec" "$(jq -cn \
-  --arg c "dispatch://$order_key/comment/$order_comment" \
-  '[{op: "insert", after: "end", markdown: (":::requirement{#o3}\nThe list answers the question of the comment.\n\nFrom: " + $c + "\n:::")}]')"
-corpus_wait_settled order
-tree_read_views_get order agent "/api/v1/issues/$order_key/tree" "$work/d.json"
-tree_read_views_node order "$work/d.json" o2
-readonly order_first="$node_kind:$node_id" order_first_id="$node_id"
-tree_read_views_node order "$work/d.json" o1
-readonly order_second="$node_kind:$node_id" order_second_id="$node_id"
-tree_read_views_node order "$work/d.json" o3
-readonly order_from="$node_id"
-held="$(jq -r --arg a "$order_first_id" --arg b "$order_second_id" '
-  [([.nodes[] | select(.id == $a) | .rank][0]), ([.nodes[] | select(.id == $b) | .rank][0])]
-  | if .[0] != null and .[1] != null and .[0] < .[1] and $a > $b then ""
-    else "o2 (\($a)) holds the rank \(.[0]) and o1 (\($b)) the rank \(.[1])" end' "$work/d.json")"
-[[ -z "$held" ]] ||
-  fail order "o2 holds a lower rank than o1, whose id sorts first, so the order by rank is not the order by id" "$held"
-order="$(jq -r --arg k "$order_key" --argjson want "$(jq -cn --arg c "comment:$order_comment" --arg a "ask:$order_ask" \
-  --arg f "$order_first" --arg s "$order_second" '[$c, $a, $f, $s]')" '
-  [.nodes[] | select(.parent != null and .parent.kind == "issue" and .parent.id == $k) | "\(.kind):\(.id)"] as $children
-  | [$children[] | select(. as $c | $want | index($c) != null)] as $got
-  | ([range(0; $want | length) | select($got[.] != $want[.])] | first) as $at
-  | if $children[0:2] != $want[0:2] then
-      "\($children[0] // "nothing") stands first among the issue'"'"'s children, where its comment \($want[0]) and then its ask \($want[1]) belong: the read answers \($children | join(", "))"
-    elif $at != null then "\($got[$at] // "nothing") stands where \($want[$at]) belongs: the read answers \($got | join(", "))"
-    else "" end' "$work/d.json")"
-[[ -z "$order" ]] ||
-  fail order "the read answers $order_key's comment and its ask first, in the order they were written, then its ranked requirements by rank" "$order"
-pass order "the read answers $order_key's comment $order_comment, then its ask $order_ask, then o2 and o1 by rank"
-tree_kept_expect "$work/d.json" order "o3, whose From: line names the comment $order_comment, stands under that comment, after it" \
-  "$(jq -cn --arg c "$order_comment" '["comment", $c, true]')" --arg c "$order_comment" --arg r "$order_from" \
-  '(.nodes | to_entries) as $all
-   | ([$all[] | select(.value.id == $r)][0]) as $o3
-   | ([$all[] | select(.value.kind == "comment" and .value.id == $c) | .key][0]) as $at
-   | [$o3.value.parent.kind, $o3.value.parent.id, ($at != null and $at < $o3.key)]'
+# Its fixed kinds and context and nothing else: no node of the query but a criterion, a requirement
+# or the memo callout (the child holds none); as context its design blocks, the ancestor's
+# requirements a check of the child serves - read in the parent's graph, where the serves tuple of
+# the child's check stands - and the ties of those requirements.
+tree_kept_expect "$work/b-spec.json" child "the child's ?view=spec answers as the query's only criteria, requirements and the memo callout" '[]' \
+  '[.nodes[] | select(.role == "query" and ((.supertag == "criterion" or .supertag == "requirement" or .supertag == "callout") | not)) | "\(.kind):\(.id)"]'
+tree_read_views_context child "$work/b-spec.json" child-spec
+tree_kept_expect "$work/b-spec.json" child "each ancestor requirement the child's ?view=spec answers is one a check of $child serves" '[]' \
+  --slurpfile parent "$work/a.json" --arg c "$child" \
+  '[$parent[0].tuples[] | select(.kind == "serves") | . as $t
+    | select(any($parent[0].nodes[]; .id == $t.from.id and .supertag == "check" and .issue == $c)) | .to.id] as $served
+   | [.nodes[] | select(.supertag == "requirement" and (.issue // "") != "" and (.id | IN($served[]) | not)) | "\(.kind):\(.id)"]'
 
 printf 'PASS: %s complete %d sections\n' "$driver" "$sections"
