@@ -38,7 +38,10 @@ import (
 //   - (c) its fresh session of that retired worker, whose start is that same restart once the
 //     forget has run;
 //   - (d) its fresh session of a claim it suspended, whose start is the resume of a claim the
-//     request found suspended once the forget has run (api's freshSession).
+//     request found suspended once the forget has run (api's freshSession);
+//   - (e) its fresh session of a live worker, ready in its session, whose own suspension of the
+//     agent runs before the forget, which the close then refuses (api's freshSession,
+//     itsSuspensionStands).
 //
 // A claim the hold stopped is in none of them: the door refuses it from the claim alone, with no
 // read of the row to come before the close (supervise.Claim.WorkHeld).
@@ -288,6 +291,90 @@ func TestWorkHoldRefusesTheControllersFreshSessionOfARetiredWorkerWhenTheGateClo
 func TestWorkHoldRefusesTheControllersFreshSessionOfASuspendedWorkerWhenTheGateClosesAfterTheForget(t *testing.T) {
 	t.Parallel()
 	startRefusedAfterTheForget(t, suspendedBeforeTheClose)
+}
+
+// Decision 16, (e): the controller's fresh session of a live worker, the implementer ready in its
+// session with the close in the store and its stop not yet run, the gate open at the agent door's
+// read and closed at the forget's (supervise's forgetSession). The request's own suspension of the
+// agent ran between those two reads, and nothing takes it over: the controller's suspension
+// outranks the hold's stop (supervise's suspensionRank), and the gate's opening starts only the
+// claims the hold stopped (workflow's openHeldClaims). So the refusal is 409 HELD_BY_WORK_HOLD
+// saying that the suspension stands with the session kept, that no fresh session was made, and
+// that the controller's own fresh_session or resume_agent starts the agent once the gate opens
+// (api's itsSuspensionStands), and not that the suspension was taken over. The claim stays
+// suspended by the controller with its session through the outbox's passes, which run the close's
+// stop, and through the opening, which launches nothing; the controller's fresh_session after the
+// opening then starts the agent and leaves that session behind.
+func TestWorkHoldAnswersTheControllersFreshSessionOfALiveWorkerWhoseForgetTheCloseRefuses(t *testing.T) {
+	t.Parallel()
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	gate := closingGate(r)
+	r.live(claim.RoleImplementer)
+	r.close(4)
+	if c := r.machine(claim.RoleImplementer).Claim(); (c.State != supervise.StateReady && c.State != supervise.StateIdle) || c.Session != heldSession {
+		t.Fatalf("before the controller's fresh_session the implementer is %s on session %q, want it ready or idle on %q",
+			c.State, c.Session, heldSession)
+	}
+
+	said := refusedOnceTheGateCloses(r, gate, agentFreshSession, claim.RoleImplementer, 1)
+
+	token := r.token(claim.RoleImplementer)
+	stands := "a fresh session by the controller went no further than its own suspension of the agent, which stands, " +
+		"with the session its claim recorded, and no fresh session was made: the hold's stop does not take that " +
+		"suspension over, so the gate's opening does not start the agent, and the controller's own fresh_session or " +
+		"resume_agent, each refused while the gate is closed, starts it once the gate opens"
+	if want := heldByTheWorkHold(token) + stands + theTwoWaysOut(token); said != want {
+		t.Fatalf("the refusal says\n%q\nwant\n%q", said, want)
+	}
+	wantSuspendedByTheController(r, "after the refused fresh_session")
+	r.drain()
+	wantSuspendedByTheController(r, "after the outbox's passes that run the close's stop")
+
+	launched := r.launches(claim.RoleImplementer)
+	r.approve(4, 12)
+	r.drain()
+	wantSuspendedByTheController(r, "after the opening")
+	if got := r.launches(claim.RoleImplementer); got != launched {
+		t.Fatalf("the opening launched the implementer %d times, want none", got-launched)
+	}
+
+	recorder := askTheControllerDoor(r, agentFreshSession, claim.RoleImplementer)
+	if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+		t.Fatalf("the controller's fresh_session once the gate opened = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
+	}
+	// The answer came once the start was under way: the machine's claim is read through the
+	// decision that runs it, so the start has ended before anything is counted.
+	r.machine(claim.RoleImplementer).Claim()
+	r.drain()
+	if got := r.launches(claim.RoleImplementer); got <= launched {
+		t.Fatalf("the controller's fresh_session once the gate opened launched the implementer %d times, want it started", got-launched)
+	}
+	c := r.machine(claim.RoleImplementer).Claim()
+	if c.State == supervise.StateSuspended || supervise.FailedOrRetired(c.State) || c.Abandoned.Session != heldSession {
+		t.Fatalf("after the controller's fresh_session once the gate opened the implementer is %s by %q, having left behind %q; want it started, having left %q behind",
+			c.State, c.SuspendedBy, c.Abandoned.Session, heldSession)
+	}
+}
+
+// wantSuspendedByTheController fails the test where the implementer's claim, in its machine or in
+// the store, is not suspended by the controller on the session it was ready in, or is held by the
+// work hold; when names the moment the claim is read at.
+func wantSuspendedByTheController(r *workHoldRig, when string) {
+	r.t.Helper()
+	for _, held := range []struct {
+		where string
+		claim supervise.Claim
+	}{
+		{"its machine", r.machine(claim.RoleImplementer).Claim()},
+		{"the store", r.storedClaimOf(claim.RoleImplementer)},
+	} {
+		c := held.claim
+		if c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByController || c.WorkHeld() ||
+			c.Session != heldSession || c.SessionFile != heldSessionFile {
+			r.t.Fatalf("%s the implementer's claim in %s is %s by %q on session %q (%s), WorkHeld %v; want it suspended by the controller on %q (%s)",
+				when, held.where, c.State, c.SuspendedBy, c.Session, c.SessionFile, c.WorkHeld(), heldSession, heldSessionFile)
+		}
+	}
 }
 
 // startRefusedAfterTheForget is the controller's fresh session of the implementer walk leaves

@@ -62,7 +62,10 @@ body: |-
   too. The hold survives a daemon restart.
   While the hold stands, the controller starts no phase worker of the tree: its `resume_agent`,
   `retry` and `fresh_session` of such a worker are refused `409 HELD_BY_WORK_HOLD`, whatever
-  suspended the worker, and the agent is left as it was. One case is answered as every refusal
+  suspended the worker, and the agent is left as it was. A worker the controller suspended is not
+  started by the opening: the controller's own resume or `fresh_session` starts it once the gate
+  is open. That includes a live worker whose `fresh_session` suspended it before the close refused
+  its forget; the `409` then says that suspension stands. One case is answered as every refusal
   after a fresh session's forget is: where the gate closes after `fresh_session` has dropped the
   worker's recorded session, the answer is `200`, with the hold's words, its two ways out and the
   session left behind in `phaseNotRestarted`, and no start; a caller below contract entry

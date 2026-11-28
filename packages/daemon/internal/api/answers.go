@@ -311,8 +311,11 @@ type EnumeratedValue struct {
 // `awaiting_children` to a held row's `reason` and to an issue's `phase`, `heldFrom` and
 // `pendingTask.phase`, and `open_on_basis` and `pending_on_basis` to `gatedSteps[].status`, and
 // the approval route's entry adds `held` to an issue's `why.state`. (`suspendedBy` gained
-// `released` at 48 and `hold` in the approval route's entry; the operator claim answers carry it
-// and no plugin parses them.)
+// `released` at 48, and `hold` in the approval route's entry; the operator claim answers carry
+// both, and no plugin parses them. That entry also adds `hold` to two rows of the agent actions'
+// answer (AnswerAgentAction), `suspendedBy` and `suspensionHeldBy`, which pi-legion's `tools.ts`
+// parses (`LegionAgentActionResponse`), and shapeAnswer serves a caller below the entry that
+// answer without the source that names `hold`.)
 func EnumeratedFields() []EnumeratedField { return registry().enumeratedFields }
 
 // enumeratedFields is every row the numbered entries wrote: the state's own, the record's taken

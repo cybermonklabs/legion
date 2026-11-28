@@ -123,10 +123,11 @@ var contractComparisonRows = []contractComparisonRow{
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(claimStartContract)"),
 	}},
 	// The work hold's row of shapeAnswer (contract_20261126175637_approval-route.go), which serves a
-	// caller below the entry the agent actions' answer without a source that names `hold`; the
-	// Design's table predates the entry.
+	// caller below the entry the agent actions' answer without a source that names `hold`. `hold`
+	// is a value, so the row reads restore, as the value strips do; the Design's table predates
+	// the entry.
 	{row: "The agent actions' answer without the work hold's source", compares: []comparisonSite{
-		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(workHoldContract)"),
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "restore < entryNumber(workHoldContract)"),
 	}},
 	{row: "A plan rating is required", compares: []comparisonSite{
 		comparedIn("internal/api/handoff.go", "server.answerCompletion", "c.PluginContract >= PlanRatingContract"),

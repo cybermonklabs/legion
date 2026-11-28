@@ -275,12 +275,18 @@ func outcomeOf(started bool) freshOutcome {
 // workHoldWaits), and the start of a failed or retired one, its phase's restart or the machine's
 // retry (retryStart). Each of those refusals met before the forget dropped the session is
 // answered in the hold's code with its two ways out, saying what this request did to the agent
-// before it (refuseHold, outcome): nothing, or its own suspension. One met after the forget — the
-// resume of an agent this request found suspended, or the start of a failed or retired one — is
-// answered as every refusal after the forget is, 200 with the hold's words and its two ways out
-// in the sentence, and to a caller below claimStartContract in the hold's code, saying the
-// session the forget left behind (refusedByAHold). Two are sentences of the answer instead: the
-// resume refused after this request's own suspension, as every refusal of that resume is
+// before it (refuseHold, outcome): nothing, or its own suspension, where the gate closed between
+// that suspension and the forget's read. Nothing takes that suspension over: the controller's
+// suspension outranks the hold's stop (supervise's suspensionRank), and the gate's opening starts
+// only the claims the hold stopped (workflow's openHeldClaims, supervise.Claim.WorkHeld). So the
+// claim stays suspended by the controller with the session it recorded, and the answer says so and
+// names what starts it, the controller's own fresh_session or resume_agent once the gate opens,
+// rather than the opening (itsSuspensionStands). One met after the forget — the resume of an
+// agent this request found suspended, or the start of a failed or retired one — is answered as
+// every refusal after the forget is, 200 with the hold's words and its two ways out in the
+// sentence, and to a caller below claimStartContract in the hold's code, saying the session the
+// forget left behind (refusedByAHold). Two are sentences of the answer instead: the resume
+// refused after this request's own suspension, as every refusal of that resume is
 // (notStartedAgain), and the phase's restart refused after a resume that started the agent, as
 // every refusal of that restart is.
 //
@@ -383,11 +389,12 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	stopped := false
 	// outcome is what a hold's refusal met from here on says this request did to the agent
 	// (refuseHold), moved forward at each step that acts on the agent: nothing yet; its own
-	// suspension of the agent, once it ran (itsSuspensionTakenOver); the agent's recorded session
-	// left behind, once the forget dropped it (sessionLeftBehind). After the forget it is read for
-	// the resume of an agent this request found suspended, since a refusal of the resume of an
-	// agent it stopped is a sentence of the answer, and for the start of an agent that failed or
-	// retired, which the work hold of its tree can refuse (retryStart).
+	// suspension of the agent, once it ran (itsSuspensionTakenOver, which the forget's refusal by
+	// the work hold rather than a suspension reads as itsSuspensionStands); the agent's recorded
+	// session left behind, once the forget dropped it (sessionLeftBehind). After the forget it is
+	// read for the resume of an agent this request found suspended, since a refusal of the resume
+	// of an agent it stopped is a sentence of the answer, and for the start of an agent that failed
+	// or retired, which the work hold of its tree can refuse (retryStart).
 	outcome := nothingChanged
 	hold := c.HeldAgainst(by)
 	switch {
@@ -429,10 +436,19 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	if session := m.Claim().Session; session != "" {
 		switch err := s.forgetRecordedSession(r, m, token, session, by); {
 		case holdRefusal(err):
-			// A suspension above the caller took the agent over since the read at the request,
-			// so the forget kept the session, and the hold is the answer: the caller's resume
-			// would be refused it, and only its holder, or the operator, starts the agent now.
-			s.log.Warn("api: a suspension above the caller took the agent over before the fresh session's forget, which kept its session",
+			// A hold above the caller that came after the read at the request refused the
+			// forget, which kept the session, and the hold is the answer: the caller's resume
+			// would be refused it. The operator's suspension took the agent over, from this
+			// request's own suspension where that ran, and only the operator starts the agent
+			// now (itsSuspensionTakenOver). The work hold of the agent's tree took nothing over,
+			// the gate having closed after the agent door's read: this request's own suspension,
+			// where it ran, stands, and the gate's opening does not start a claim the controller
+			// suspended, so the answer names the controller's own start once the gate opens
+			// (itsSuspensionStands).
+			if stopped && errors.Is(err, supervise.ErrHeldByWorkHold) {
+				outcome = itsSuspensionStands
+			}
+			s.log.Warn("api: a hold above the caller refused the fresh session's forget, which kept its session",
 				"claim", token, "session", session, "stopped", stopped, "error", err)
 			s.refuseHold(w, r, token, freshSessionOp, by, err, outcome)
 			return 0, "", freshStarted, false

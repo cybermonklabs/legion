@@ -64,28 +64,42 @@ const suspendedByOperator = "SUSPENDED_BY_OPERATOR"
 // controller's resume, its retry and its fresh session, whatever suspended the agent — the hold's
 // stop, the controller's own suspension before the close or after it — since the controller is no
 // operator and starts no phase worker of the tree while its standing design gate is closed
-// (decision 16 of dispatch://INFRA-4528's plan). Nothing of the claim changes. The sentence names
-// the two ways out: the gate's opening, and an operator's own resume or retry.
+// (decision 16 of dispatch://INFRA-4528's plan). Nothing of the claim changes where the door
+// refuses it; where the gate closed after the door's read, the refusal says what the request did
+// to the agent before it (outcome). The sentence names the two ways out: the gate's opening, and
+// an operator's own resume or retry.
 const heldByWorkHold = "HELD_BY_WORK_HOLD"
 
 // What a refusal of a hold says the request did to the agent (refuseHold): nothing, for a request
-// the hold refused before it did anything, which is every such refusal but three; its own
-// suspension of the agent and nothing more, for the fresh session whose forget a suspension above
-// the caller refused after taking the agent over from that suspension, after which the claim's
-// state is suspended, by the holder, with the session it recorded; and the agent's session left
-// behind and nothing more, for the fresh session of an agent it found suspended whose resume such
-// a suspension refused after the forget had dropped that session, after which the claim's state
-// is suspended, by the holder, with no session to resume (freshSession), and for the fresh session
-// of a failed or retired phase worker whose start the work hold of its tree refused after the
-// forget had dropped that session, the gate having closed after the agent door's read, after which
-// the claim stands as it stood with no session (retryStart). Those last two refusals are served
-// to a caller below claimStartContract alone: a caller at or above it is answered 200 with the
-// hold in phaseNotRestarted (refusedAfterTheForget, refusedByAHold, dispatch://INFRA-5649 R2).
-// Each reads after
-// "so <operation> by <caller>", or after "so it" in the daemon's sentence.
+// the hold refused before it did anything, which is every such refusal but four.
+//
+//   - itsSuspensionTakenOver: its own suspension of the agent and nothing more, for the fresh
+//     session whose forget the operator's suspension refused after taking the agent over from that
+//     suspension, after which the claim's state is suspended, by the operator, with the session it
+//     recorded.
+//   - itsSuspensionStands: its own suspension of the agent and nothing more, for the fresh session
+//     whose forget the work hold of the agent's tree refused, the gate having closed after the
+//     agent door's read. Nothing took that suspension over: the hold's stop does not take the
+//     controller's over (supervise's suspensionRank), so the claim's state is suspended, by the
+//     controller, with the session it recorded. The gate's opening starts only the claims the hold
+//     stopped (workflow's openHeldClaims, supervise.Claim.WorkHeld), so it does not start this
+//     one. The controller's own fresh_session or resume_agent does once the gate opens, and the
+//     agent door refuses both while the gate is closed (agentDoor), which the sentence says.
+//   - sessionLeftBehind: the agent's session left behind and nothing more, for the fresh session
+//     of an agent it found suspended whose resume such a suspension refused after the forget had
+//     dropped that session, after which the claim's state is suspended, by the holder, with no
+//     session to resume (freshSession), and for the fresh session of a failed or retired phase
+//     worker whose start the work hold of its tree refused after the forget had dropped that
+//     session, the gate having closed after the agent door's read, after which the claim stands
+//     as it stood with no session (retryStart). Those two refusals are served to a caller below
+//     claimStartContract alone: a caller at or above it is answered 200 with the hold in
+//     phaseNotRestarted (refusedAfterTheForget, refusedByAHold, dispatch://INFRA-5649 R2).
+//
+// Each reads after "so <operation> by <caller>", or after "so it" in the daemon's sentence.
 const (
 	nothingChanged         = "is refused and nothing of the claim changed"
 	itsSuspensionTakenOver = "went no further than its own suspension of the agent, which that suspension then took over, and the agent keeps the session its claim recorded"
+	itsSuspensionStands    = "went no further than its own suspension of the agent, which stands, with the session its claim recorded, and no fresh session was made: the hold's stop does not take that suspension over, so the gate's opening does not start the agent, and the controller's own fresh_session or resume_agent, each refused while the gate is closed, starts it once the gate opens"
 	sessionLeftBehind      = "went no further than leaving behind the session the claim recorded before that suspension took the agent over, so the agent starts in a new session once it is started"
 )
 
@@ -299,9 +313,10 @@ func holdRefusal(err error) bool {
 // stands in the way of, err being the machine's word for which (holdRefusal): the operator's own
 // suspension (suspendedByOperator), or the work hold of the agent's tree (heldByWorkHold), 409
 // either way. The sentence names who lifts the hold, in the words holdSentences gives it, and
-// outcome says what the request did to the agent (nothingChanged, itsSuspensionTakenOver). An
-// error it does not know is no hold it can name: it is logged and answered 500 in its own words,
-// as the daemon's own failure, rather than given the words of a hold it may not be.
+// outcome says what the request did to the agent (nothingChanged, itsSuspensionTakenOver,
+// itsSuspensionStands, sessionLeftBehind). An error it does not know is no hold it can name: it is
+// logged and answered 500 in its own words, as the daemon's own failure, rather than given the
+// words of a hold it may not be.
 func (s *server) refuseHold(w http.ResponseWriter, r *http.Request, token claim.Token, op agentAction, by supervise.SuspendSource,
 	err error, outcome string) {
 	code, heldBy, lifts, held := holdSentences(token, err)

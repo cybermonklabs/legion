@@ -356,8 +356,10 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		}
 		// `hold` arrived at workHoldContract, and a reader below it parses both sources with a
 		// strict enumeration that lacks it, so it is served the answer without the source it
-		// cannot name, as the state serves it an issue without a `why` it cannot read.
-		if strip < entryNumber(workHoldContract) {
+		// cannot name, as the state serves it an issue without a `why` it cannot read. `hold` is
+		// a value of two keys, so the strip follows restore, as every value strip does, and not
+		// strip, which a key follows (followsRestore).
+		if restore < entryNumber(workHoldContract) {
 			if action.SuspendedBy == string(supervise.SuspendedByHold) {
 				action.SuspendedBy = ""
 			}

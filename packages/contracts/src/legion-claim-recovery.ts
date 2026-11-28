@@ -30,12 +30,16 @@ const nonEmptyString = z.string().min(1);
  * `fresh_session` of a phase worker of a tree whose work hold stands (`gates.hold: work`, the
  * tree's standing design gate closed), whatever suspended the worker — the hold's stop, or the
  * controller's own suspension before the close or after it — before it reads anything else of the
- * claim, and the agent is left as it was. The gate's opening, or an operator's own resume or
- * retry, starts it. One case is answered no code: where the gate closes after a `fresh_session`'s
- * forget has left the recorded session behind, the refusal is answered 200 with the hold's words,
- * its two ways out and that session in `phaseNotRestarted` (dispatch://INFRA-5649 R2), as every
- * refusal after that forget is; a plugin below the claim-start contract entry still reads
- * `HELD_BY_WORK_HOLD` there.
+ * claim, and the agent is left as it was. The gate's opening starts a worker the hold stopped, and
+ * an operator's own resume or retry starts any worker of the tree. A worker the controller
+ * suspended stays suspended: the opening does not start it, and the controller's own resume or
+ * `fresh_session` does once the gate is open. The same is true of a live worker whose
+ * `fresh_session` the gate's close met after the controller's suspension and before its forget:
+ * the answer is the same 409, and says that suspension stands. One case is answered no code: where
+ * the gate closes after a `fresh_session`'s forget has left the recorded session behind, the
+ * refusal is answered 200 with the hold's words, its two ways out and that session in
+ * `phaseNotRestarted` (dispatch://INFRA-5649 R2), as every refusal after that forget is; a plugin
+ * below the claim-start contract entry still reads `HELD_BY_WORK_HOLD` there.
  *
  * The controller's door gives `SUSPENDED_BY_OPERATOR` (409) to every request that would get past a
  * suspension the operator holds, held for the agent's turn or landed, before it reads anything else
