@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // signedInPerson is the person signedInBox signs in on the box.
@@ -79,8 +80,10 @@ func signedInBox(t *testing.T, tokenURL string) *cipherclient.SignInAuthority {
 	}); err != nil {
 		t.Fatalf("keep the sign-in: %v", err)
 	}
+	// No timeout of the fixture's own: the row holds the trade at its gate for as long as it
+	// needs, and a client timeout would end that hold, and the row, on a slow host.
 	return &cipherclient.SignInAuthority{
-		Store: store, Machine: boxMachine{}, Flow: flow, BrokerURL: cipheraddr.New(tokenURL), HTTP: &http.Client{Timeout: 30 * time.Second},
+		Store: store, Machine: boxMachine{}, Flow: flow, BrokerURL: cipheraddr.New(tokenURL), HTTP: &http.Client{},
 	}
 }
 
@@ -101,20 +104,18 @@ func signedInBox(t *testing.T, tokenURL string) *cipherclient.SignInAuthority {
 // carries the same text after a refused enroll.
 //
 // The trade waits at a gate the row opens once it has read its answer, so the trade lasts as long
-// as the row needs and no longer. The row runs under a bound of 1 s rather than the real 20 s,
-// with brokerCall's timer timerSlack after it (slowTimer), so the op's own answer at the bound
-// cannot lose to the timer under load. The answer must still come within answerMargin of the
-// bound: in production a later one loses to the 1 s timer.
+// as the row needs and no longer. The bound and brokerCall's timer run on the server's fake clock
+// (newRigOn): the row moves it to the bound and never to the timer, so the answer can be no one's
+// but the op's.
 //
 // The named revert: put a sync.Mutex back as SignInAuthority.mu, as it was before ctxlock. The
-// op then waits out the trade with no context, and brokerCall's timer answers it
-// ENROLL_OUTCOME_UNKNOWN, as TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter
-// reads, and not an empty reply: the code, the text and the time fail, though the broker made
+// op then waits out the trade with no context and never answers while the trade is held, and the
+// row fails at the shared wait's bound on its reply; under the real clock brokerCall's timer would
+// answer it ENROLL_OUTCOME_UNKNOWN at the bound plus 1 s, as
+// TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter reads, though the broker made
 // nothing.
 func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testing.T) {
 	t.Parallel()
-	// bound is the row's bound on the op.
-	const bound = time.Second
 	var trades atomic.Int64
 	tradeStarted := make(chan struct{})
 	tradeGate := make(chan struct{})
@@ -140,9 +141,9 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testi
 	}))
 	t.Cleanup(tokens.Close)
 
-	r := startRig(t, "")
+	r := newRigOn(t, "")
+	r.login(t)
 	r.srv.Broker.SignIns = signedInBox(t, tokens.URL)
-	slowTimer(r.srv, bound)
 	// Registered after the rig and the token server, so the trade is let go before their Close.
 	t.Cleanup(releaseTrade)
 
@@ -159,46 +160,32 @@ func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testi
 		})
 		registered <- err
 	}()
-	select {
-	case <-tradeStarted:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the registered session's enrollment never traded for the person's token")
-	}
+	testwait.Receive(t, "the registered session's enrollment to trade for the person's token", tradeStarted)
 
-	started := time.Now()
-	resp, err := Call(r.sock, Request{Op: "enroll-session-key", RuntimeID: "rt-during-the-trade", Thumbprint: "tp-during-the-trade"}, BrokerCallWait)
-	waited := time.Since(started)
+	const what = "enroll-session-key while the box's sign-in is trading"
+	replies := sendCall(t, r.sock, Request{Op: "enroll-session-key", RuntimeID: "rt-during-the-trade", Thumbprint: "tp-during-the-trade"})
+	armBrokerCall(t, r.clock, replies, what)
+	r.clock.Advance(DefaultBrokerCallBound)
+	resp := replyOf(t, replies, what)
 	// Read before the trade is let go: the registered session's own enroll follows its trade.
 	r.fake.mu.Lock()
 	arrivals := r.fake.enrollArrivals
 	r.fake.mu.Unlock()
-	if err != nil {
-		t.Fatalf("enroll-session-key while the box's sign-in is trading: %v after %s; the client must read one JSON reply, never an empty one (the bound is %s)",
-			err, waited, bound)
-	}
 	// Each is checked apart, so a failing row reports every one that is wrong.
 	if resp.OK || resp.Code != CodeEnrollFailed {
-		t.Errorf("enroll-session-key while the box's sign-in is trading: %+v after %s; want %s, a known failure: the op sent the broker nothing", resp, waited, CodeEnrollFailed)
+		t.Errorf("%s: %+v; want %s, a known failure: the op sent the broker nothing", what, resp, CodeEnrollFailed)
 	}
 	if want := "timed out waiting for " + signedInPerson + "'s sign-in on this machine"; !strings.Contains(resp.Error, want) {
-		t.Errorf("enroll-session-key while the box's sign-in is trading: error %q; want it to name the sign-in it waited on: %q", resp.Error, want)
+		t.Errorf("%s: error %q; want it to name the sign-in it waited on: %q", what, resp.Error, want)
 	}
 	if arrivals != 0 {
 		t.Errorf("the fake received %d POST /v1/enrollments while enroll-session-key waited for the sign-in; want none", arrivals)
-	}
-	if waited >= bound+answerMargin {
-		t.Errorf("enroll-session-key answered after %s, past its %s bound plus %s: the wait for the sign-in did not end with the op's context", waited, bound, answerMargin)
 	}
 
 	// The trade the op stood behind goes on to its own answer, and the registered session enrols
 	// under the person's credential.
 	releaseTrade()
-	select {
-	case err := <-registered:
-		if err != nil {
-			t.Fatalf("the registered session's enrollment, once its trade ended: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the registered session's enrollment did not end after its trade was let go")
+	if err := testwait.Receive(t, "the registered session's enrollment to end once its trade was let go", registered); err != nil {
+		t.Fatalf("the registered session's enrollment, once its trade ended: %v", err)
 	}
 }

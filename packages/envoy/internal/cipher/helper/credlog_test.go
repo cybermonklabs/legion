@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // proofShaped matches what a bearer in a log line would look like: a JWS or JWT (base64url JSON,
@@ -52,13 +53,12 @@ func TestTheHelperLogsEveryChangeOfTheLauncherCredential(t *testing.T) {
 	f.mu.Lock()
 	f.loginOutcome = "issued"
 	f.mu.Unlock()
-	deadline := time.Now().Add(15 * time.Second) // pollLogin's next poll comes 2 s after the pending one
-	for b.LoginStatus().State != "issued" {
-		if time.Now().After(deadline) {
-			t.Fatalf("the login never issued: %+v", b.LoginStatus())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// pollLogin's next poll comes a second after the pending one, the interval the fake names, on
+	// its own wait (loginWait), which this row asserts nothing of.
+	testwait.Until(t, "the login to issue", func() (loginState, bool) {
+		ls := b.LoginStatus()
+		return ls, ls.State == "issued"
+	})
 	// pollLogin logs the login after it records it; wait for the line so it lands before the
 	// refusal's own.
 	waitForRecord(t, &out, "machine login issued; the helper holds a launcher credential")

@@ -28,6 +28,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -49,13 +51,13 @@ const failAlways = 1 << 30
 // thumbprint it carries — exactly the conflict a fresh Recover enroll racing ahead of the old
 // row's revoke can hit for real, which byTP alone (keyed on the NEW session's fresh thumbprint)
 // can never reproduce. conflicts counts how many times that 409 fired, so a test can assert none
-// ever did. revokeFirstDelay, when set, delays the FIRST DELETE this fake receives (dropped to
-// zero for every later one) so a test can hold an old row "live" for a window and prove the
-// helper never calls Enroll for that runtime_id before the delayed DELETE actually clears it —
-// without holding f.mu for the delay itself, which would just serialize the racing Enroll behind
+// ever did. revokeFirstGate, when set, holds the FIRST DELETE this fake receives (dropped for
+// every later one) until the test closes it, so a test can hold an old row "live" and prove the
+// helper never calls Enroll for that runtime_id before the held DELETE actually clears it —
+// without holding f.mu while it waits, which would just serialize the racing Enroll behind
 // the DELETE instead of letting a genuinely concurrent (buggy) caller collide with it.
 // revokeFailFirst, when set, answers the next N DELETEs with 503 before any of them touches the
-// row — an unreachable broker, as opposed to revokeFirstDelay's merely slow one — so a revoke
+// row — an unreachable broker, as opposed to revokeFirstGate's merely slow one — so a revoke
 // stuck retrying with backoff can be observed and torn down mid-retry. revokeAttempts counts
 // every DELETE this fake received, whether it failed or actually deleted the row, independent of
 // revokeFailFirst, so a test can poll for exactly when an attempt has been answered instead of
@@ -90,7 +92,7 @@ type fakeBroker struct {
 	renews             int
 	conflicts          int           // 409 ALREADY_ENROLLED answers from the runtime_id-keyed conflict path
 	failFirst          int           // 503 this many enroll calls first
-	revokeFirstDelay   time.Duration // sleep this long before the first DELETE actually removes its row
+	revokeFirstGate    chan struct{} // the first DELETE waits for this to close before it removes its row
 	revokeFailFirst    int           // 503 this many DELETE calls first, row untouched (an unreachable broker)
 	revokeAttempts     int           // every DELETE this fake received, failed or not
 	lease              time.Duration // lease length the fake grants; 900 s unless a test shortens it
@@ -168,6 +170,13 @@ type fakeBroker struct {
 	// it, so every later one gets lease. A test gives one enrollment a lease short enough that it
 	// renews soon, and nothing it re-enrolls can lapse under the test however the steps interleave.
 	nextLease time.Duration
+	// clock, when set, is the clock the fake's leases and credential lifetimes run on: the end it
+	// gives an enrollment or a renew, the moment it reads a renew's lease at, and the expiry it
+	// names for an issued or refreshed credential. Nil is the wall clock. A test that fires the
+	// helper's renews or refreshes on a fake clock sets the same clock here, so no lease or
+	// credential can end while the test holds that clock still, however slow the host is, and a
+	// refresh the test fires names a later expiry than the one it replaces.
+	clock func() time.Time
 	// refuseKinds answers an enroll naming one of these kinds 400 INVALID_KIND, as a broker before
 	// the session kind refuses "session".
 	refuseKinds map[string]bool
@@ -175,9 +184,12 @@ type fakeBroker struct {
 	// of the broker's OAuth front door, whose 503 can come after the broker acted.
 	deviceAuthFail int
 	// deviceAuthHold, when set, holds every device authorization until its request's context ends
-	// (the client has given up on it), and deviceAuthEnded counts each such end, so a test can tell
-	// that the helper ended the request rather than left it running.
+	// (the client has given up on it). deviceAuthHeld counts each such request once the hold has
+	// read it, so a test can tell the request reached the broker before it ends it, and
+	// deviceAuthEnded counts each end, so a test can tell that the helper ended the request rather
+	// than left it running.
 	deviceAuthHold  bool
+	deviceAuthHeld  int
 	deviceAuthEnded int
 	// revokeGate, when set, holds every DELETE until the test closes it, after revokeAttempts has
 	// counted it, so a test can keep a revoke in flight for exactly as long as it needs.
@@ -295,7 +307,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		if f.nextLease > 0 {
 			d, f.nextLease = f.nextLease, 0
 		}
-		lease := time.Now().Add(d)
+		lease := f.now().Add(d)
 		f.enrolled[id], f.byTP[tp] = tp, id
 		f.leaseExpiry[id] = lease
 		f.runtimeIDToID[rid] = id
@@ -330,14 +342,14 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 			writeJSON(w, 503, map[string]string{"code": "DATABASE", "error": "postgres unreachable"})
 			return
 		}
-		delay := f.revokeFirstDelay
-		f.revokeFirstDelay = 0
+		firstGate := f.revokeFirstGate
+		f.revokeFirstGate = nil
 		f.mu.Unlock()
-		if delay > 0 {
-			// Deliberately outside the lock: a delayed DELETE must let a concurrent (buggy)
-			// Enroll for the same runtime_id observe the row as still live during this window,
+		if firstGate != nil {
+			// Deliberately outside the lock: a held DELETE must let a concurrent (buggy)
+			// Enroll for the same runtime_id observe the row as still live while it waits,
 			// which holding f.mu here would instead serialize away.
-			time.Sleep(delay)
+			<-firstGate
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -407,12 +419,12 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		}
 		// The enrollment row itself survives its own lease — a renew past that stored expiry is
 		// refused, but nothing about the enrollment is deleted; only Revoke deletes it.
-		if exp, ok := f.leaseExpiry[id]; ok && !time.Now().Before(exp) {
+		if exp, ok := f.leaseExpiry[id]; ok && !f.now().Before(exp) {
 			writeJSON(w, 401, map[string]string{"code": "ENROLLMENT_NOT_LIVE", "error": "enrollment is not live"})
 			return
 		}
 		f.renews++
-		lease := time.Now().Add(f.lease)
+		lease := f.now().Add(f.lease)
 		f.leaseExpiry[id] = lease
 		writeJSON(w, 200, map[string]string{"lease_expires_at": lease.UTC().Format(time.RFC3339Nano)})
 	})
@@ -423,6 +435,9 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 			// The server watches the connection for the client's close, which is what ends the
 			// request's context, only once the request's body is read.
 			_ = r.ParseForm()
+			f.mu.Lock()
+			f.deviceAuthHeld++
+			f.mu.Unlock()
 			<-r.Context().Done()
 			f.mu.Lock()
 			f.deviceAuthEnded++
@@ -534,7 +549,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 				return
 			case "no_refresh_token":
 				answer := map[string]any{"acc" + "ess_token": "access-bare", "token_type": "DPoP", "expires_in": 900,
-					"credential_id": id, "credential_expires_at": time.Now().Add(f.loginLifetime).UTC().Format(time.RFC3339)}
+					"credential_id": id, "credential_expires_at": f.now().Add(f.loginLifetime).UTC().Format(time.RFC3339)}
 				writeJSON(w, 200, answer)
 				return
 			}
@@ -574,7 +589,7 @@ func (f *fakeBroker) writeTokens(w http.ResponseWriter, credentialID string) {
 		"refresh_token": refresh, "credential_id": credentialID,
 	}
 	if f.loginLifetime != 0 {
-		answer["credential_expires_at"] = time.Now().Add(f.loginLifetime).UTC().Format(time.RFC3339)
+		answer["credential_expires_at"] = f.now().Add(f.loginLifetime).UTC().Format(time.RFC3339)
 	}
 	writeJSON(w, 200, answer)
 }
@@ -660,6 +675,15 @@ func (f *fakeBroker) snapshot() (posts []map[string]any, deletes []string, renew
 	return append([]map[string]any(nil), f.posts...), append([]string(nil), f.deletes...), f.renews
 }
 
+// now is the moment the fake's leases and credential lifetimes are read at: clock's when a test
+// set one, the wall clock's otherwise. The caller holds f.mu.
+func (f *fakeBroker) now() time.Time {
+	if f.clock != nil {
+		return f.clock()
+	}
+	return time.Now()
+}
+
 func operatorFile(t *testing.T, operator string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -678,10 +702,14 @@ func machineFilePath(t *testing.T) string {
 
 // loggedInBroker builds a Broker against f, logs it in against the fake's default "issued"
 // outcome, and waits for the credential to install, so a test can exercise Enroll/Renew/Revoke
-// without exercising Login itself.
-func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
+// without exercising Login itself. Each tune runs on the Broker before it logs in, so a field
+// it sets — a clock of the row's own, say — is set before any goroutine of the broker reads it.
+func loggedInBroker(t *testing.T, f *fakeBroker, operator string, tune ...func(*Broker)) *Broker {
 	t.Helper()
 	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, operator), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	for _, apply := range tune {
+		apply(b)
+	}
 	t.Cleanup(b.Close)
 	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
 		t.Fatalf("login: %v", err)
@@ -690,18 +718,25 @@ func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 	return b
 }
 
-// waitFor polls cond every 5 ms until it is true, failing the test when it never is. Its one bound
-// is testwait's margin before the test binary's deadline (testwait.UntilPolling), so a host too
-// loaded to reach cond within a fixed span is not a failure: with a span of 5 s, a test process
-// frozen 12 s at a time failed TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs here, though the
-// helper did what the test waited for. A login's first token poll comes a second after its device
-// authorization (the interval the fake names).
+// waitFor waits until cond is true, through the shared wait (testwait.Until), whose one bound is
+// testwait's margin before the test binary's deadline, so a host too loaded to reach cond within a
+// fixed span is not a failure: with a span of 5 s, a test process frozen 12 s at a time failed
+// TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs here, though the helper did what the test
+// waited for. A login's first token poll comes a second after its device authorization (the
+// interval the fake names), so a row that waits for an issued login waits for that poll.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	testwait.UntilPolling(t, 5*time.Millisecond, "the condition waitFor asks for", func() (bool, bool) {
-		held := cond()
-		return held, held
-	})
+	waitUpTo(t, cond, "the condition the row waits on")
+}
+
+// fireArmedAt waits for a timer of fake armed for at (clocktest.Fake.AwaitArmedAt) and moves fake
+// there, which fires it. It waits for that one deadline rather than taking the earliest armed:
+// other timers (a credential's expiry watch, the refresh or renew loop's own) can stand armed
+// beside it, and the code arms the one the row means only once what came before it has run.
+func fireArmedAt(t *testing.T, fake *clocktest.Fake, at time.Time, what string) {
+	t.Helper()
+	fake.AwaitArmedAt(t, what, at)
+	fake.Set(at)
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
@@ -828,8 +863,10 @@ func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
 // records that the broker refused it in one write under stateMu. A login-status read between the
 // two would find no credential and no refusal, and report the denied re-login before it as the
 // answer, where the answer is the refused credential. The test hook reads login-status between the
-// clear and the record; it waits up to 200 ms for that read, which returns at once unless the lock
-// holds it back until the refusal is recorded.
+// clear and the record, on a goroutine of its own, and holds the drop until that reader is parked
+// on stateMu inside LoginStatus (its goroutine's state, read from the goroutine dump): parked
+// there, it cannot answer until the drop lets the state go. A read that answers before it parks
+// read the state half-written, and fails the row by name.
 func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 	t.Parallel()
 	f := newFakeBroker(t)
@@ -843,19 +880,28 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 	}
 	waitFor(t, func() bool { return b.LoginStatus().State == "denied" })
 	read := make(chan loginState, 1)
+	reader := make(chan uint64, 1)
 	b.testClearHook = func() {
-		go func() { read <- b.LoginStatus() }()
-		select {
-		case got := <-read:
-			read <- got
-		case <-time.After(200 * time.Millisecond):
-		}
+		go func() {
+			reader <- goroutinetest.ID()
+			read <- b.LoginStatus()
+		}()
+		id := testwait.Receive(t, "the login-status reader to start", reader)
+		testwait.Until(t, "the login-status read to wait on stateMu while the drop holds the state", func() (string, bool) {
+			select {
+			case got := <-read:
+				t.Fatalf("a login-status read answered while the drop held the state: %+v; it must wait for the drop's record of why", got)
+			default:
+			}
+			trace, state := goroutineState(id)
+			return trace, state == "sync.Mutex.Lock" && strings.Contains(trace, ".(*Broker).LoginStatus(")
+		})
 	}
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
 	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
-	if got := <-read; got.State != "expired" || !got.Refused || got.CredentialHeld {
+	if got := testwait.Receive(t, "the login-status read the drop held, once the drop let the state go", read); got.State != "expired" || !got.Refused || got.CredentialHeld {
 		t.Fatalf("login-status read as the credential was refused after a denied re-login: %+v, want expired, refused, no credential", got)
 	}
 }
@@ -886,10 +932,10 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 	f.mu.Lock()
 	f.loginOutcome = "denied"
 	f.mu.Unlock()
-	deadline := time.Now().Add(15 * time.Second) // pollLogin backs off 2 s, then 4 s, between polls
-	for b.login.Load().State == "pending" && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	// pollLogin polls again a second after the pending poll, the interval the fake names, on its
+	// own wait (loginWait), which this row asserts nothing of: the row waits for the denial that
+	// poll brings.
+	waitFor(t, func() bool { return b.login.Load().State != "pending" })
 	if got := b.LoginStatus(); got.State != "denied" || got.Refused || got.CredentialHeld {
 		t.Fatalf("that re-login once denied: %+v, want denied, not refused, no credential", got)
 	}
@@ -943,10 +989,17 @@ func TestEnrollSendsKindSessionAndAcceptsBothStatuses(t *testing.T) {
 	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
+	// The fake grants its lease on a clock the row holds still, so the lease the helper reads must
+	// be exactly the one the fake granted, read against no clock.
+	leases := clocktest.New(time.Now())
+	f.mu.Lock()
+	f.clock = leases.Now
+	granted := leases.Now().Add(f.lease)
+	f.mu.Unlock()
 	sess, _ := newSession(1234, 77, "example-host-devbox:1234:77", "", nil, nil)
 	id, lease, err := b.EnrollIdentity(context.Background(), sess.identity())
-	if err != nil || id == "" || time.Until(lease) < 10*time.Minute {
-		t.Fatalf("enroll: %q %v %v", id, lease, err)
+	if err != nil || id == "" || !lease.Equal(granted) {
+		t.Fatalf("enroll: %q %v %v; want the lease the broker granted, %s", id, lease, err, granted)
 	}
 	posts, _, _ := f.snapshot()
 	post := posts[0]
