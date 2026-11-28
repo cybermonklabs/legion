@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -66,38 +67,137 @@ func FootnoteDefinitionLabels(doc *Node) []string {
 }
 
 // FootnoteLabelKeys is the labels a document defines, as FootnoteDefinitionLabels gives them, in
-// document order, held so that the reading of each block of that document (Written) is made from
-// one value made once for the document (KeyFootnoteLabels).
+// document order, each kept under its key as a call writes it, made once for the document
+// (KeyFootnoteLabels), so that the reading of each block of that document (Written) folds only the
+// calls the block writes and looks each up among those keys.
 type FootnoteLabelKeys struct {
 	labels []string
+	// byKey is, for each key, the labels with that key.
+	byKey map[string]footnoteKeyLabels
+	// longest is the byte length of the longest key.
+	longest int
+}
+
+// footnoteKeyLabels is the index in a document's labels of each label with one key: first, that of
+// the first of them, and later, in order, those of the others, which equal it only up to case,
+// since FootnoteDefinitionLabels keeps apart labels that are not equal byte for byte.
+type footnoteKeyLabels struct {
+	first int
+	later []int
 }
 
 // KeyFootnoteLabels is the FootnoteLabelKeys of labels, the labels a document defines as
-// FootnoteDefinitionLabels gives them. It is made once for the document, and each block of the
-// document is read against it (Written).
+// FootnoteDefinitionLabels gives them: each label under the key of the label as a call writes it,
+// written as the renderer writes one (escapeFootnoteLabel) and folded (footnoteLabelKey), two
+// labels equal only up to case under the same key, and the byte length of the longest key. It
+// folds each label once, and is made once for the document, each block of which is read against
+// it (Written).
 func KeyFootnoteLabels(labels []string) FootnoteLabelKeys {
-	return FootnoteLabelKeys{labels: labels}
+	keys := FootnoteLabelKeys{labels: labels, byKey: make(map[string]footnoteKeyLabels, len(labels))}
+	var keyer footnoteKeyer
+	for index, label := range labels {
+		key := keyer.key(escapeFootnoteLabel(label))
+		keys.longest = max(keys.longest, len(key))
+		if held, ok := keys.byKey[key]; ok {
+			held.later = append(held.later, index)
+			keys.byKey[key] = held
+			continue
+		}
+		keys.byKey[key] = footnoteKeyLabels{first: index}
+	}
+	return keys
 }
 
-// Written is each of the labels of keys that markdown writes as a footnote call, in the order of
-// the labels: `[^label]`, the label written as the renderer writes one (escapeFootnoteLabel),
-// compared up to case (footnoteLabelKey), as a reference resolves to a definition whose label
-// matches it only up to case. It reads markdown's characters, not its parse, so it also answers a
-// label markdown writes in a call that is escaped or in code, which reads as text, and one
-// markdown defines itself, whose calls resolve to that definition. A stand-in definition of either
-// after markdown (WithStandInDefinitions) is one nothing in markdown refers to.
+// Written is each of the labels of keys that markdown writes as a footnote call, `[^label]`, the
+// label written as the renderer writes one (escapeFootnoteLabel) and compared up to case
+// (footnoteLabelKey), as a reference resolves to a definition whose label matches it only up to
+// case: each label once, in the order of the labels, which is the order the document defines them
+// in, and nil where markdown writes none. It reads markdown's characters, not its parse, so it also
+// answers a label markdown writes in a call that is escaped or in code, which reads as text, and
+// one markdown defines itself, whose calls resolve to that definition. A stand-in definition of
+// either after markdown (WithStandInDefinitions) is one nothing in markdown refers to.
+//
+// It reads markdown in one pass, so its time grows with markdown's length and the calls markdown
+// writes, not with the labels of keys. Each `[^` opens a call whose label starts after the caret,
+// wherever the `[^` stands, after a backslash or inside the label of another call too. A backslash
+// takes the byte after it, so a `]` it takes closes nothing, and the first `]` no backslash takes
+// closes every call open, each label running up to that `]`. Each label is folded once and looked
+// up among the keys, but for a label of more than four bytes for each byte of the longest key,
+// which is not folded, since it folds to no key: a character is at most four bytes and folds to one
+// byte at least. Without that bound, `[^[^[^…]` would fold a label for each `[^`, each longer than
+// the last. That answers as a search of markdown folded for each label's call folded does: the
+// renderer writes each `]` of a label after an odd run of backslashes and doubles each backslash
+// that ends the label, so a label's call runs from its `[^` to the first `]` no backslash takes;
+// and folding maps markdown character by character and makes or removes no `[`, `^`, `]` or
+// backslash, so the fold of a call's label is the same span of markdown folded.
 func (keys FootnoteLabelKeys) Written(markdown string) []string {
-	if len(keys.labels) == 0 || !strings.Contains(markdown, "[^") {
+	first := strings.Index(markdown, "[^")
+	if len(keys.labels) == 0 || first < 0 {
 		return nil
 	}
-	written := footnoteLabelKey(markdown)
-	var calls []string
-	for _, label := range keys.labels {
-		if strings.Contains(written, footnoteLabelKey("[^"+escapeFootnoteLabel(label)+"]")) {
-			calls = append(calls, label)
+	var (
+		keyer        footnoteKeyer
+		open, called []int
+	)
+	bound := 4 * keys.longest
+	for index := first; index < len(markdown); index++ {
+		if markdown[index] == '\\' {
+			// The byte a backslash takes closes nothing, but the bracket of a `[^` still opens a
+			// call.
+			index++
+			if !strings.HasPrefix(markdown[index:], "[^") {
+				continue
+			}
+		}
+		switch {
+		case strings.HasPrefix(markdown[index:], "[^"):
+			open = append(open, index+2)
+			index++
+		case markdown[index] == ']':
+			// The calls opened last have the shortest labels, so the first one past the bound
+			// ends the calls to fold.
+			for each := len(open) - 1; each >= 0 && index-open[each] <= bound; each-- {
+				if held, ok := keys.byKey[keyer.key(markdown[open[each]:index])]; ok {
+					called = append(append(called, held.first), held.later...)
+				}
+			}
+			open = open[:0]
 		}
 	}
-	return calls
+	if len(called) == 0 {
+		return nil
+	}
+	slices.Sort(called)
+	called = slices.Compact(called)
+	labels := make([]string, len(called))
+	for each, index := range called {
+		labels[each] = keys.labels[index]
+	}
+	return labels
+}
+
+// footnoteKeyer makes the keys of footnote labels (footnoteLabelKey) with one caser lowering and
+// one uppercasing, which it makes on the first label it needs them for: a label all ASCII has its
+// ASCII upper case as its key, which is what lowering and then uppercasing it under language.Und
+// makes of it. A caser holds state while it maps, so a keyer is not safe for concurrent use, and
+// each reading makes its own.
+type footnoteKeyer struct {
+	lower, upper cases.Caser
+	made         bool
+}
+
+// key is label's footnoteLabelKey.
+func (keyer *footnoteKeyer) key(label string) string {
+	for index := range len(label) {
+		if label[index] < utf8.RuneSelf {
+			continue
+		}
+		if !keyer.made {
+			keyer.lower, keyer.upper, keyer.made = cases.Lower(language.Und), cases.Upper(language.Und), true
+		}
+		return keyer.upper.String(keyer.lower.String(label))
+	}
+	return strings.ToUpper(label)
 }
 
 // WithStandInDefinitions is markdown with a stand-in definition of each of labels after it: for
