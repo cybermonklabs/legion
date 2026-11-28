@@ -5,6 +5,7 @@ import {
   editArtifact,
   getArtifactText,
   patchIssue,
+  putIssueRoleHolders,
   putProjectDefaultRepository,
   recordCheckResult,
   retractCheckResult,
@@ -37,13 +38,23 @@ A check says whether a pass of it stands.
 :::
 `;
 
-/** Seeds the project and its default repository, the issue and its spec, and the pull request
- *  the results are measured against, whose head is `head` and whose title attributes it to the
- *  issue. */
+/** The session of each role a result below is recorded as, one session for each role. Dispatch
+ *  stores the role the recording session holds on the issue, as the project's Legion daemon
+ *  published it, so `seedIssue` gives each session its role before any result is recorded. */
+const tester = { actor: { id: "e2e-tester", kind: "session" as const }, as: "agent" as const };
+const reviewer = { actor: { id: "e2e-reviewer", kind: "session" as const }, as: "agent" as const };
+
+/** Seeds the project and its default repository, the issue and its spec, the sessions that hold
+ *  its tester and reviewer roles, and the pull request the results are measured against, whose
+ *  head is `head` and whose title attributes it to the issue. */
 async function seedIssue(title: string, head: string) {
   await createProject({ key: "VER", name: "Verification" });
   await putProjectDefaultRepository("VER", repository);
   const issue = await createIssue({ project: "VER", spec, title });
+  await putIssueRoleHolders(issue.key, [
+    { role: "tester", session: tester.actor.id },
+    { role: "reviewer", session: reviewer.actor.id },
+  ]);
   await seedFakeGithub({
     [repository]: {
       commit_pulls: { [head]: [7] },
@@ -82,27 +93,35 @@ A check nobody has run yet reads no result.
 `,
     name: "verification.md",
   });
-  await recordCheckResult(issue.key, {
-    check: "c-passed",
-    commit: secondHead,
-    negative_control: "Removed the list and the run failed.",
-    observed: "3 checks listed",
-    role: "tester",
-    run: "bun run e2e -- e2e/verification.e2e.ts",
-    surface: "browser",
-    verdict: "pass",
-  });
-  await recordCheckResult(issue.key, {
-    check: "c-failed",
-    commit: secondHead,
-    failed: 2,
-    negative_control: "Fixed the panel and the run passed.",
-    observed: "2 failed",
-    role: "tester",
-    run: "bun test web/src",
-    surface: "cli",
-    verdict: "fail",
-  });
+  await recordCheckResult(
+    issue.key,
+    {
+      check: "c-passed",
+      commit: secondHead,
+      negative_control: "Removed the list and the run failed.",
+      observed: "3 checks listed",
+      role: "tester",
+      run: "bun run e2e -- e2e/verification.e2e.ts",
+      surface: "browser",
+      verdict: "pass",
+    },
+    tester
+  );
+  await recordCheckResult(
+    issue.key,
+    {
+      check: "c-failed",
+      commit: secondHead,
+      failed: 2,
+      negative_control: "Fixed the panel and the run passed.",
+      observed: "2 failed",
+      role: "tester",
+      run: "bun test web/src",
+      surface: "cli",
+      verdict: "fail",
+    },
+    tester
+  );
 
   const alice = await asUser(browser, "alice");
   try {
@@ -222,20 +241,28 @@ A result at another commit of the linked repository names that repository.
   // Neither commit is the issue's own repository's, so each is taken as the linked repository's,
   // whose open pull request the issue links, and the first record's read-through teaches the
   // server that pull request's head.
-  await recordCheckResult(issue.key, {
-    check: "c-linked-head",
-    commit: linkedHead,
-    observed: "41 passed",
-    role: "tester",
-    verdict: "pass",
-  });
-  await recordCheckResult(issue.key, {
-    check: "c-linked-other",
-    commit: linkedOther,
-    observed: "41 passed",
-    role: "tester",
-    verdict: "pass",
-  });
+  await recordCheckResult(
+    issue.key,
+    {
+      check: "c-linked-head",
+      commit: linkedHead,
+      observed: "41 passed",
+      role: "tester",
+      verdict: "pass",
+    },
+    tester
+  );
+  await recordCheckResult(
+    issue.key,
+    {
+      check: "c-linked-other",
+      commit: linkedOther,
+      observed: "41 passed",
+      role: "tester",
+      verdict: "pass",
+    },
+    tester
+  );
 
   const alice = await asUser(browser, "alice");
   try {
@@ -293,13 +320,17 @@ A result at the head is a pass that stands.
   });
   // Recorded at the head as it stands, so the read-through stores that head and the result is
   // at what the check compares with the moment it is written.
-  await recordCheckResult(issue.key, {
-    check: "c-past",
-    commit: firstHead,
-    observed: "41 passed",
-    role: "tester",
-    verdict: "pass",
-  });
+  await recordCheckResult(
+    issue.key,
+    {
+      check: "c-past",
+      commit: firstHead,
+      observed: "41 passed",
+      role: "tester",
+      verdict: "pass",
+    },
+    tester
+  );
 
   // The work moves on: the pull request's head is now a later commit, and the next result's
   // read-through teaches the server that head.
@@ -312,13 +343,17 @@ A result at the head is a pass that stands.
       pulls: { "7": { head_sha: secondHead, state: "open", title: `${issue.key} the tab` } },
     },
   });
-  await recordCheckResult(issue.key, {
-    check: "c-head",
-    commit: secondHead,
-    observed: "41 passed",
-    role: "tester",
-    verdict: "pass",
-  });
+  await recordCheckResult(
+    issue.key,
+    {
+      check: "c-head",
+      commit: secondHead,
+      observed: "41 passed",
+      role: "tester",
+      verdict: "pass",
+    },
+    tester
+  );
 
   const alice = await asUser(browser, "alice");
   try {
@@ -372,32 +407,47 @@ A retracted pass stands for nothing.
     name: "verification.md",
   });
   // Both observations stay visible, but their conflicting verdicts leave the required head
-  // unknown. Retracting the fail below restores the original positive pass control.
-  await recordCheckResult(issue.key, {
-    check: "c-both",
-    commit: secondHead,
-    observed: "41 passed, 0 failed",
-    role: "tester",
-    verdict: "pass",
-  });
-  const conflictingFail = await recordCheckResult(issue.key, {
-    check: "c-both",
-    commit: secondHead,
-    failed: 1,
-    observed: "40 passed, 1 failed",
-    role: "reviewer",
-    verdict: "fail",
-  });
-  const retract = await recordCheckResult(issue.key, {
-    check: "c-retracted",
-    commit: secondHead,
-    observed: "41 passed",
-    role: "tester",
-    verdict: "pass",
-  });
-  await retractCheckResult(retract.result.id, {
-    reason: "The run was against the wrong branch.",
-  });
+  // unknown. Retracting the fail below restores the original positive pass control. A result is
+  // retracted by the session that recorded it.
+  await recordCheckResult(
+    issue.key,
+    {
+      check: "c-both",
+      commit: secondHead,
+      observed: "41 passed, 0 failed",
+      role: "tester",
+      verdict: "pass",
+    },
+    tester
+  );
+  const conflictingFail = await recordCheckResult(
+    issue.key,
+    {
+      check: "c-both",
+      commit: secondHead,
+      failed: 1,
+      observed: "40 passed, 1 failed",
+      role: "reviewer",
+      verdict: "fail",
+    },
+    reviewer
+  );
+  const retract = await recordCheckResult(
+    issue.key,
+    {
+      check: "c-retracted",
+      commit: secondHead,
+      observed: "41 passed",
+      role: "tester",
+      verdict: "pass",
+    },
+    tester
+  );
+  await retractCheckResult(
+    retract.result.id,
+    { reason: "The run was against the wrong branch." },
+    tester
+  );
 
   const alice = await asUser(browser, "alice");
   try {
@@ -420,9 +470,11 @@ A retracted pass stands for nothing.
     );
     await expect(both.getByTestId("verification-check-roles")).toHaveCount(0);
 
-    await retractCheckResult(conflictingFail.result.id, {
-      reason: "Control: remove the conflicting fail.",
-    });
+    await retractCheckResult(
+      conflictingFail.result.id,
+      { reason: "Control: remove the conflicting fail." },
+      reviewer
+    );
     await page.reload();
     await expect(both.getByTestId("verification-result")).toHaveCount(2);
     await expect(both).toHaveAttribute("data-pass-stands", "yes");
@@ -633,13 +685,17 @@ End.
     name: "verification.md",
   });
   const artifactId = created.artifact.id;
-  await recordCheckResult(issue.key, {
-    check: "c-old",
-    commit: secondHead,
-    observed: "41 passed",
-    role: "tester",
-    verdict: "pass",
-  });
+  await recordCheckResult(
+    issue.key,
+    {
+      check: "c-old",
+      commit: secondHead,
+      observed: "41 passed",
+      role: "tester",
+      verdict: "pass",
+    },
+    tester
+  );
   await editArtifact(artifactId, { ops: [{ block: "c-old", op: "delete" }] });
 
   const alice = await asUser(browser, "alice");

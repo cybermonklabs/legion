@@ -102,8 +102,10 @@
 #                   is told the implementer has finished; its world is worker_fixture's, with GitHub
 #                   a recording stand-in, the remote a local bare repository, and the implementer's
 #                   handoff a record on the run's own Dispatch issue (seed.ts tester-proof and
-#                   implement-handoff). After the run, seed.ts capture-handoffs reads back every
-#                   handoff record of the issue. Scored by testerProof.
+#                   implement-handoff). Once the worker's claim registers, its session gets the
+#                   tester role of the issue (hold_tester_role, seed.ts tester-role). After the run,
+#                   seed.ts capture-handoffs reads back every handoff record of the issue. Scored by
+#                   testerProof.
 #   measure-before-ask
 #                   A plain session is told to ask Sami which of three ways to finish an owner
 #                   session posted, with the export the message names in its working directory;
@@ -461,10 +463,10 @@ tmux_socket=$work/tmux.sock
 tmux() { command tmux -S "$tmux_socket" "$@"; }
 
 # What a command started, for its exit trap: the run directory and its agent's tmux session, the
-# pids lib/rig.sh's start_process sets (a run's own Dispatch server among them), and the services'
-# ports, URLs and directory.
+# pids lib/rig.sh's start_process sets (a run's own Dispatch server among them), the pid of
+# run_tester_proof's hold_tester_role, and the services' ports, URLs and directory.
 R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_scenario=''
-proxy_pid='' model_pid='' omp_pid='' rpc_fd=''
+proxy_pid='' model_pid='' omp_pid='' holder_pid='' rpc_fd=''
 S='' envoy_port='' dispatch_port='' pg_url='' nats_url=''
 
 label_dir() {
@@ -1019,7 +1021,7 @@ stop_panes() {
 stop_run() {
   local pid
   [ -z "$rpc_fd" ] || { exec {rpc_fd}>&- && rpc_fd=''; } 2>/dev/null || true
-  for pid in "$omp_pid" "$daemon_pid" "$proxy_pid" "$model_pid" "$dispatch_pid"; do
+  for pid in "$omp_pid" "$daemon_pid" "$proxy_pid" "$model_pid" "$dispatch_pid" "$holder_pid"; do
     [ -z "$pid" ] || { stop_tree "$pid" && wait "$pid" 2>/dev/null || true; }
   done
   [ -z "$session" ] || stop_panes "$session"
@@ -2045,6 +2047,25 @@ handoff_line() {
   printf '%s\n' "${line//"{issue}"/"$3"}"
 }
 
+# hold_tester_role gives the tester's session the tester role of the run's issue (seed.ts
+# tester-role) once the session's claim registration names it in the daemon stand-in's log,
+# $R/daemon.log. Dispatch stores, as a result's role, the role its recording session holds on the
+# issue, as the Legion daemon published it, and testerProof reads the tester's line in the PR body
+# by that role (`recorded by tester`). The stand-in publishes nothing to Dispatch, and the session's
+# id is Oh My Pi's own, which the rig learns only from that registration. The session registers as
+# it boots and records its result only after its test run, so run_tester_proof runs this beside
+# launch. A run that ends with no registration (launch's `exit=` line in out.txt) has no session
+# to give the role, and the score reads that run as it stands.
+hold_tester_role() {
+  local registered=''
+  until registered=$(jq -rn 'first(inputs | select(.path == "/legion/v1/claims/register" and .status == 200) | .sessionId // empty)' "$R/daemon.log" 2>/dev/null) &&
+    [ -n "$registered" ]; do
+    tail -n 1 "$R/out.txt" 2>/dev/null | grep -q '^exit=' && return 0
+    sleep 1
+  done
+  seed_ts tester-role "$R/fixture.json" "$registered"
+}
+
 run_tester_proof() {
   local name=$1 n=$2 index=$3 start=$4 state project port pr head version handoff
   # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
@@ -2083,7 +2104,11 @@ run_tester_proof() {
   # recording stand-in, as the pane's real gh.
   bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" tester "$co"
   tester_pane
+  hold_tester_role &
+  holder_pid=$!
   launch "$name"
+  wait "$holder_pid" || fail "the tester's role was not written; see $R/fixture.log"
+  holder_pid=''
   # What the run left on its issue: every handoff record, each with its body, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
 }

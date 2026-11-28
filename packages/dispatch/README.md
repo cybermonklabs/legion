@@ -660,6 +660,13 @@ A repository `gh` cannot read fails the run, naming it.
 Where `FAKE_GITHUB_PORT` is set the setup also gives that repository, that head, the look-alike and the pull request to the fake, since a server reading the fake asks the fake and not GitHub; a server reading the real GitHub needs no such seeding, and a fake-backed run proves this script's fixture and its count rather than a server talking to GitHub.
 Every other check runs either way, the `result` section's two refusals among them: a malformed field and an unknown check are refused before any commit is read.
 
+Dispatch stores, as a result's role, the role its recording session holds on the issue, so the
+script gives its own session the tester role of each issue it records a result on, through
+`PUT /api/v1/issues/{key}/role-holders` as the Legion daemon of `PROJECT` (`hold_roles` in
+`e2e/acceptance/lib.sh`). The shared bearer may write that only on a server with
+`DISPATCH_LEGION_STATUS_SCOPE` off and a `PROJECT` with proven sessions off, as on the local
+harness; elsewhere the write is refused `403` and the run fails there.
+
 It writes four issues in `PROJECT` — a root with a spec, a Verification document and a plan, a
 child of it, a sibling in another tree and one more whose spec and Verification document are
 approved together — and closes every one of them, also when a check fails, which withdraws any
@@ -733,7 +740,9 @@ runs with NATS disabled, so no `pull_request` event stores a pull request head: 
 each head with `psql` as one `pull_request_heads` row attributed to its issue, and gives the fake
 one repository holding the same pull requests and each head's check runs, replacing every
 repository the fake served. That repository is `PROJECT`'s default where it has one, and
-otherwise one of the run's own, which is no project's default. It writes nine issues in
+otherwise one of the run's own, which is no project's default. Before its first result, the run
+gives its own session the tester role of `k1`'s issue, as `verification.sh` does, since `k4` reads
+the tester's pass back by the role Dispatch stores. It writes nine issues in
 `PROJECT` and closes every one of them, also when a check fails; on exit it deletes the rows it
 staged and empties the fake. Against `bun run dispatch:local`, with the URL, the fake GitHub's
 port and the database it prints:

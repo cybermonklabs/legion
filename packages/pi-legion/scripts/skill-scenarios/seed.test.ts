@@ -122,6 +122,8 @@ class FakeDispatch {
     body: string;
   }[] = [];
   results: Record<string, unknown>[] = [];
+  /** The role holders of each issue, the whole set the last `PUT …/role-holders` published. */
+  roleHolders = new Map<string, { role: string; session: string }[]>();
   /** A seeded spec's ask blocks no settlement has indexed yet, by issue. Dispatch settles a
    * seeded document a moment after the issue is created; here the issue's second read of its asks
    * is the first to find them. */
@@ -422,16 +424,32 @@ class FakeDispatch {
         },
       ],
       [
+        /^PUT \/api\/v1\/issues\/([^/]+)\/role-holders$/,
+        (issue) => {
+          const holders = (body?.holders ?? []) as { role: string; session: string }[];
+          this.roleHolders.set(issue, holders);
+          return json({ issue, holders });
+        },
+      ],
+      [
         /^POST \/api\/v1\/issues\/([^/]+)\/results$/,
         (issue) => {
+          // The role Dispatch stores: the one the recording session holds on the issue, as its
+          // role holders were last published, and "" for a session that holds none and for a
+          // person, whatever role the body names.
+          const recorder = actor();
+          const held =
+            recorder.kind === "session"
+              ? this.roleHolders.get(issue)?.find((holder) => holder.session === recorder.id)
+              : undefined;
           const result = {
             id: this.id("result"),
             issue_key: issue,
             check: body?.check,
-            role: body?.role,
+            role: held?.role ?? "",
             verdict: body?.verdict,
             commit_sha: body?.commit,
-            actor: actor(),
+            actor: recorder,
             created_at: new Date().toISOString(),
           };
           this.results.push(result);
@@ -1155,8 +1173,9 @@ describe("tester-proof", () => {
   });
 
   // Catches: an implement record under the run's session (which the daemon would take as the
-  // tester's own), a body re-encoded on the way, a fixture that forgets the record's version, or a
-  // seed that leaves the tester no implementer result to judge.
+  // tester's own), a body re-encoded on the way, a fixture that forgets the record's version, a
+  // seed that leaves the tester no implementer result to judge, or a result recorded before its
+  // session holds the implementer role, which Dispatch stores under no role.
   test("records the implement handoff and the implementer's result, under its own session", async () => {
     const dir = freshDir("seed");
     const file = path.join(dir, "fixture.json");
@@ -1173,6 +1192,17 @@ describe("tester-proof", () => {
         author: seed.IMPLEMENTER,
         body: JSON.stringify(body),
       }),
+    ]);
+    expect(dispatch.calls.filter((call) => call.method === "PUT")).toEqual([
+      {
+        method: "PUT",
+        path: "/api/v1/issues/LWEVAL-2/role-holders",
+        who: "agent",
+        body: {
+          holders: [{ role: "implementer", session: seed.IMPLEMENTER.id }],
+          actor: { kind: "session", id: "legion-daemon:LWEVAL" },
+        },
+      },
     ]);
     expect(dispatch.results).toEqual([
       expect.objectContaining({
@@ -1201,7 +1231,32 @@ describe("tester-proof", () => {
       seed.implementHandoff(file, path.join(dir, "implement.json"), "1".repeat(40))
     ).rejects.toThrow("holds no JSON object");
     expect(dispatch.handoffs).toEqual([]);
+    expect(dispatch.roleHolders.size).toBe(0);
     expect(dispatch.results).toEqual([]);
+  });
+
+  // Catches: a tester whose result Dispatch stores under no role, so the line the score reads
+  // (`recorded by tester`) is never printed: a holder written as anyone but the project's daemon,
+  // a session other than the one rig.sh names, or a set that keeps the retired implementer.
+  test("gives the run's session the tester role, as the project's daemon publishes it", async () => {
+    const dir = freshDir("seed");
+    const file = path.join(dir, "fixture.json");
+    await seed.testerProofIssue(file);
+    writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ phase: "implement" }));
+    await seed.implementHandoff(file, path.join(dir, "implement.json"), "3".repeat(40));
+    await seed.testerRole(file, runSession.id);
+    expect(dispatch.calls.filter((call) => call.method === "PUT").at(-1)).toEqual({
+      method: "PUT",
+      path: "/api/v1/issues/LWEVAL-2/role-holders",
+      who: "agent",
+      body: {
+        holders: [{ role: "tester", session: runSession.id }],
+        actor: { kind: "session", id: "legion-daemon:LWEVAL" },
+      },
+    });
+    expect(dispatch.roleHolders.get("LWEVAL-2")).toEqual([
+      { role: "tester", session: runSession.id },
+    ]);
   });
 
   // Catches: a capture that keeps only the metadata Dispatch lists, or loses the newest-first order

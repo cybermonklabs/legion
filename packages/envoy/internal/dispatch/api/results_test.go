@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/legionagents"
 )
 
 // twoChecks is a Verification document with one pre-merge check and one after-merge check.
@@ -114,9 +115,47 @@ func resultBody(check, verdict, commit string, fields map[string]any) map[string
 	return body
 }
 
+// recordResult records body on issue as the session that holds the role the body names, as a
+// Legion role session records it: the stored role is the role the recording session holds on the
+// recording issue (resultRoleOf, dispatch://INFRA-3994), never the role a body names, so a test
+// that wants a result of a role first gives a session that role. The session is `ses-<role>`, and
+// it is given the role through the Legion daemon's own route (holdRole). A body whose role is no
+// Legion role, such as the refusals of a malformed one, is recorded as person alice, who holds no
+// role, as before.
 func recordResult(t *testing.T, handler http.Handler, issue string, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
-	return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/results", body, "alice")
+	role, _ := body["role"].(string)
+	if !slices.Contains(legionagents.Roles, role) {
+		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/results", body, "alice")
+	}
+	session := "ses-" + role
+	holdRole(t, handler, issue, role, session)
+	body["actor"] = map[string]any{"kind": "session", "id": session}
+	return bearerRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/results", body)
+}
+
+// holdRole gives session the role on issue, as the Legion daemon of the issue's project publishes
+// it (PUT /api/v1/issues/{key}/role-holders). A publication replaces the issue's whole set, so a
+// PUT of the one pair would take every other role of the issue away, and a result recorded after
+// it by another role's session would store no role: holdRole reads the stored set, adds or moves
+// the one pair, and publishes the whole set again. A role already held by session is left alone.
+func holdRole(t *testing.T, handler http.Handler, issue, role, session string) {
+	t.Helper()
+	holders := []issueRoleHolder{{Role: role, Session: session}}
+	for _, stored := range readRoleHolders(t, handler, issue).Holders {
+		if stored.Role == role && stored.Session == session {
+			return
+		}
+		if stored.Role != role && stored.Session != session {
+			holders = append(holders, issueRoleHolder{Role: stored.Role, Session: stored.Session})
+		}
+	}
+	response := putRoleHoldersAs(t, handler, issue, map[string]any{
+		"holders": holders, "actor": map[string]any{"kind": "session", "id": legionDaemonSessionOf(issue)},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("give %s the role %s on %s: status=%d body=%s", session, role, issue, response.Code, response.Body.String())
+	}
 }
 
 func readResults(t *testing.T, handler http.Handler, issue string) issueResults {

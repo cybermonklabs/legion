@@ -904,13 +904,28 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
     }
     throw error;
   }
+  // Dispatch records the role the session holds on the issue, never one the call names. A session
+  // that holds none there is named, with what to do where the daemon's roles have not arrived;
+  // a person holds no role, so the actor is named. `role_notice` says what became of a role the
+  // call named, and stands as its own paragraph.
+  const stored = recorded.result;
+  const recorder =
+    stored.role !== ""
+      ? `as ${stored.role}.`
+      : stored.session === ""
+        ? `as ${actorText(stored.actor)}, who holds no role of ${stored.issue_key}.`
+        : `as session ${stored.session}, which holds no role of ${stored.issue_key}. If the Legion daemon started this session, its role has not reached Dispatch yet. Record the result again in one minute.`;
+  const notice =
+    recorded.role_notice === undefined || recorded.role_notice === ""
+      ? ""
+      : `\n\n${recorded.role_notice}`;
   return {
-    text: `Recorded ${recorded.result.verdict} for check ${recorded.result.check_block_id} of ${recorded.result.check_issue_key} at ${recorded.result.commit_sha}, as ${recorded.result.role}.\n\nPull request body line:\n${recorded.line}`,
+    text: `Recorded ${stored.verdict} for check ${stored.check_block_id} of ${stored.check_issue_key} at ${stored.commit_sha}, ${recorder}${notice}\n\nPull request body line:\n${recorded.line}`,
     details: {
       issue,
-      result: recorded.result.id,
-      check: recorded.result.check_block_id,
-      verdict: recorded.result.verdict,
+      result: stored.id,
+      check: stored.check_block_id,
+      verdict: stored.verdict,
       line: recorded.line,
     },
   };

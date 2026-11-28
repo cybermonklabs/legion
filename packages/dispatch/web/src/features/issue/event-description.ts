@@ -271,8 +271,16 @@ function describe(event: DispatchEvent): string | SentencePart[] {
       return `Repaired block ${event.payload.block_id}`;
     case "block.invalid":
       return blockInvalidDescription(event.payload);
-    case "result.recorded":
-      return `Check ${event.payload.check_block_id} ${event.payload.verdict === "pass" ? "passed" : "failed"} at ${event.payload.commit_sha}, recorded by ${event.payload.role}${event.payload.issue === event.payload.check_issue ? "" : ` on ${event.payload.issue}`}`;
+    case "result.recorded": {
+      // The role is the one the recording session holds on the issue it recorded on, and empty
+      // where it holds none there. That line names the recording issue, so it adds no " on".
+      const { issue, role } = event.payload;
+      const outcome = `Check ${event.payload.check_block_id} ${event.payload.verdict === "pass" ? "passed" : "failed"} at ${event.payload.commit_sha}`;
+      if (role !== "") {
+        return `${outcome}, recorded by ${role}${issue === event.payload.check_issue ? "" : ` on ${issue}`}`;
+      }
+      return `${outcome}, recorded by ${event.actor.kind === "user" ? "a person who holds" : "a session that holds"} no role of ${issue}`;
+    }
     case "result.retracted":
       // The reason is shown as the characters it is, as the result it withdraws is: the reading
       // list's `check-retraction-reason` (`DISPATCH_READING_SURFACES`).

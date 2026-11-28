@@ -9102,6 +9102,80 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // Dispatch records the role the recording session holds on the issue, never the role the call
+  // names. The answer prints the role it stored, names a session that holds none with what to do
+  // when the Legion daemon's roles have not arrived yet, and prints the server's role_notice as a
+  // paragraph of its own before the pull-request body line.
+  test("dispatch_result prints the role Dispatch stored, no role, and the role notice", async () => {
+    const commit = "1".repeat(40);
+    const record = async (answer: { role: string; session: string; notice?: string }) => {
+      const asked: string[] = [];
+      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        asked.push(`${init?.method ?? "GET"} ${new URL(String(url)).pathname}`);
+        return response({
+          result: {
+            id: "res-1",
+            issue_key: "DSP-42",
+            check_issue_key: "DSP-40",
+            check_artifact_id: "verification",
+            check_block_id: "k1",
+            check_version: 1,
+            check_sha256: "digest",
+            role: answer.role,
+            surface: "",
+            run: "",
+            observed: "",
+            commit_sha: commit,
+            negative_control: "",
+            failed: 0,
+            skipped: 0,
+            excluded: 0,
+            verdict: "pass",
+            screenshots: [],
+            session: answer.session,
+            actor:
+              answer.session === ""
+                ? { kind: "user", id: "alice" }
+                : { kind: "session", id: answer.session },
+            created_at: "2026-11-28T10:00:00Z",
+          },
+          line: `- Check k1 (before_merge): pass at ${commit}, recorded by tester.`,
+          ...(answer.notice === undefined ? {} : { role_notice: answer.notice }),
+        });
+      };
+      const result = await executeDispatchTool({
+        tool: "dispatch_result",
+        args: { issue: "DSP-42", check: "k1", role: "tester", verdict: "pass", commit },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        sessionId: answer.session === "" ? "session-one" : answer.session,
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      expect(asked).toContain("POST /api/v1/issues/DSP-42/results");
+      return result.text;
+    };
+    const line = `\n\nPull request body line:\n- Check k1 (before_merge): pass at ${commit}, recorded by tester.`;
+
+    expect(await record({ role: "tester", session: "ses-tester" })).toBe(
+      `Recorded pass for check k1 of DSP-40 at ${commit}, as tester.${line}`
+    );
+    expect(await record({ role: "", session: "ses-none" })).toBe(
+      `Recorded pass for check k1 of DSP-40 at ${commit}, as session ses-none, which holds no role of DSP-42. If the Legion daemon started this session, its role has not reached Dispatch yet. Record the result again in one minute.${line}`
+    );
+    // A person holds no role, and no session recorded the result: the actor is named.
+    expect(await record({ role: "", session: "" })).toBe(
+      `Recorded pass for check k1 of DSP-40 at ${commit}, as user alice, who holds no role of DSP-42.${line}`
+    );
+    const notTaken =
+      "Dispatch did not take the role tester that this call named. It recorded the role that the session holds on DSP-42: implementer. A later release refuses a result that names a role.";
+    expect(await record({ role: "implementer", session: "ses-impl", notice: notTaken })).toBe(
+      `Recorded pass for check k1 of DSP-40 at ${commit}, as implementer.\n\n${notTaken}${line}`
+    );
+  });
+
   // A Dispatch older than a result's dry run answers its path no route. The dry run says so and
   // never falls back to the record's own path: an older build would drop what it does not know
   // and record the result there.

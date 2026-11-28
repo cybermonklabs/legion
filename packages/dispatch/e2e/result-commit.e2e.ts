@@ -2,6 +2,7 @@ import {
   createIssue,
   createIssueArtifact,
   createProject,
+  putIssueRoleHolders,
   putProjectDefaultRepository,
   recordCheckResult,
 } from "./api";
@@ -28,6 +29,15 @@ const spec = `:::requirement{#r1}
 A recorded result names the commit it ran at, whole.
 :::
 `;
+
+/** The two sessions that record the results, one for each role. Dispatch stores the role the
+ *  recording session holds on the issue, as the project's Legion daemon published it, so each
+ *  session is given its role before it records. */
+const tester = { actor: { id: "e2e-tester", kind: "session" as const }, as: "agent" as const };
+const implementer = {
+  actor: { id: "e2e-implementer", kind: "session" as const },
+  as: "agent" as const,
+};
 
 // Two pages print a result's line as plain text, where no title attribute can carry the commit
 // the line cut: the Activity tab, through `activity-model.ts`, and the review margin's Pinned
@@ -73,26 +83,38 @@ A result's line names the whole commit it ran at.
   });
   // The two results differ in the commit they ran at and in the role that recorded them; the
   // role is how each line is found below, so no assertion depends on the commit it reads.
-  await recordCheckResult(issue.key, {
-    check: "c-whole",
-    commit: mistyped,
-    negative_control: "Cut the commit and the row fails.",
-    observed: "1 check listed",
-    role: "tester",
-    run: "bun run e2e -- e2e/result-commit.e2e.ts",
-    surface: "browser",
-    verdict: "pass",
-  });
-  await recordCheckResult(issue.key, {
-    check: "c-whole",
-    commit: head,
-    negative_control: "Cut the commit and the row fails.",
-    observed: "1 check listed",
-    role: "implementer",
-    run: "bun run e2e -- e2e/result-commit.e2e.ts",
-    surface: "browser",
-    verdict: "pass",
-  });
+  await putIssueRoleHolders(issue.key, [
+    { role: "implementer", session: implementer.actor.id },
+    { role: "tester", session: tester.actor.id },
+  ]);
+  await recordCheckResult(
+    issue.key,
+    {
+      check: "c-whole",
+      commit: mistyped,
+      negative_control: "Cut the commit and the row fails.",
+      observed: "1 check listed",
+      role: "tester",
+      run: "bun run e2e -- e2e/result-commit.e2e.ts",
+      surface: "browser",
+      verdict: "pass",
+    },
+    tester
+  );
+  await recordCheckResult(
+    issue.key,
+    {
+      check: "c-whole",
+      commit: head,
+      negative_control: "Cut the commit and the row fails.",
+      observed: "1 check listed",
+      role: "implementer",
+      run: "bun run e2e -- e2e/result-commit.e2e.ts",
+      surface: "browser",
+      verdict: "pass",
+    },
+    implementer
+  );
 
   const alice = await asUser(browser, "alice");
   try {

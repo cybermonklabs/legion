@@ -108,6 +108,42 @@ test("a recorded deploy names its program and build without claiming a check pas
   ]);
 });
 
+// A result's role is the one the recording session holds on the issue it recorded on, and empty
+// where it holds none there. The line names that issue in place of a role named "", and a
+// person, who holds no role, reads as a person. The Activity tab's line: activity-model.test.ts.
+test("eventDescription says a session or a person with no role holds no role of the issue", () => {
+  const payload = {
+    result_id: "res-1",
+    issue: "CORE-9",
+    check_issue: "CORE-1",
+    check_artifact_id: "artifact-1",
+    check_block_id: "k1",
+    check_version: 1,
+    when: "before_merge" as const,
+    verdict: "pass" as const,
+    role: "tester",
+    commit_sha: "1".repeat(40),
+  };
+  const recorded = (role: string, actor: DispatchEvent["actor"]): DispatchEvent => ({
+    ...commentEvent("comment.edited"),
+    actor,
+    type: "result.recorded",
+    payload: { ...payload, role },
+  });
+  const session = { id: "ses-none", kind: "session" } as const;
+  const person = { id: "alice", kind: "user" } as const;
+
+  expect(eventDescription(recorded("tester", session))).toEqual([
+    `Check k1 passed at ${payload.commit_sha}, recorded by tester on CORE-9`,
+  ]);
+  expect(eventDescription(recorded("", session))).toEqual([
+    `Check k1 passed at ${payload.commit_sha}, recorded by a session that holds no role of CORE-9`,
+  ]);
+  expect(eventDescription(recorded("", person))).toEqual([
+    `Check k1 passed at ${payload.commit_sha}, recorded by a person who holds no role of CORE-9`,
+  ]);
+});
+
 test("eventDescription labels an edited ask with its new question", () => {
   // The question is a part of its own, which the one reader draws (`SentenceParts`): the line
   // never carries the question's source.

@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `POST /api/v1/issues/{key}/results` takes `role` as optional, and its description says that
+  Dispatch stores the role the recording session holds on the issue, never the one the call names.
+  Its answer, `CheckResultRecorded`, gains `role_notice` and `role_not_taken`, and `pass_stands`,
+  on the issue's results and on each head, gains `no_role`: a pass of a session that holds no role
+  of the issue stands.
+time: 2026-11-28T17:50:30Z
+custom:
+  Issue: pr6082

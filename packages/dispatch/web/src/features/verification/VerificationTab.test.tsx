@@ -211,6 +211,40 @@ test("a check whose newest result failed still reads the pass that stands", asyn
   ).toEqual(["Fail", "Pass"]);
 });
 
+// A session that holds no role of the issue it recorded on records its result with no role, and
+// the server names its pass in no_role, never as a role named "": the head line adds a session
+// with no role to the roles the pass stands from, and the result's role cell says it holds none,
+// naming the issue it recorded on where that is not this one.
+test("a pass of a session with no role reads as such, beside the roles and alone", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    check(
+      "c-both",
+      [result({ id: "result-1", role: "", session: "ses-none" }), result({ id: "result-2" })],
+      {
+        pass_stands: { answer: "yes", no_role: true, roles: ["tester"] },
+      }
+    ),
+    check(
+      "c-alone",
+      [result({ id: "result-3", issue_key: "CORE-9", role: "", session: "ses-none" })],
+      { pass_stands: { answer: "yes", no_role: true } }
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("verification-checks");
+  expect(screen.getAllByTestId("verification-check-roles").map((row) => row.textContent)).toEqual([
+    "from tester, a session with no role",
+    "from a session with no role",
+  ]);
+  expect(screen.getAllByTestId("verification-result-role").map((cell) => cell.textContent)).toEqual(
+    ["no role of this issue", "tester", "no role of CORE-9"]
+  );
+});
+
 // The two facts of R4, kept apart: where the result's commit stands, and whether the check's
 // words moved after it was recorded, with both versions as the reader's handles.
 test("a result says where its commit stands and which words it was recorded against", async () => {

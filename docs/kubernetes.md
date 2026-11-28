@@ -2696,6 +2696,7 @@ A `400` from the route is final: the daemon ends the row and logs one ERROR line
 **The session of an ended claim keeps its role for a time.**
 It keeps its role until the daemon's publication of the end lands.
 The claim write that ends the claim queues that publication in its own transaction, so the end and its publication commit together or not at all.
+When a claim changes while the daemon sends the set of its issue, the daemon sends the new set as soon as that send ends, not when the send's 30 s outbox lease lapses.
 An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published only when the daemon makes that write again, at the claim's next decision, because until then the store still holds the claim live.
 In that time, a process whose stop failed can still write with the pane's Dispatch bearer, because a failed claim and a suspended claim can let go of such a process.
 An end whose claim write failed and is not owed leaves the daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
@@ -2724,6 +2725,29 @@ After such a release is live, an earlier daemon publishes nothing, and each new 
 So roll Dispatch back first, to the release before that one, and then roll back the daemon.
 With `DISPATCH_LEGION_STATUS_SCOPE` on, Dispatch also reads the set to let an architect's status write through (R26), and an earlier daemon leaves each stored set as it stands, so turn that setting off before such a rollback.
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
+
+#### Rolling back the release that takes the role of a result from its session
+
+From this Dispatch release, a result's stored role is the role that the recording session holds on the recording issue, as the daemon last published it (`issue_role_holders`, above), and never the role that the request names (dispatch://INFRA-3994).
+A session or a person that holds no role of the issue records its result with no role, the empty string.
+Its migration `20261128161114_check_results_no_role` widens the role check of `check_results` to take the empty string, `not valid`, so it reads no stored row and rewrites none.
+
+**Deploy it after the daemon publishes.**
+Deploy this Dispatch release only after `GET /api/v1/issues/<KEY>/role-holders` on each running Legion issue lists the session of each running role.
+Before that, each Legion role session records its results with no role, and the answer of each write tells it so.
+A session whose role changed waits for the daemon's next publication to land, and in that time Dispatch takes the role from the set it holds: a new session records with no role, and the session of an ended claim keeps its role ("The session of an ended claim keeps its role for a time", above).
+
+**A named role is counted.**
+Callers still send a role until the plugins drop `--role`.
+Dispatch stores none of them and refuses none, and counts each write that names one in `envoy_dispatch_result_roles_named_total` on `/metrics`, labelled `held="yes"` or `held="no"`, and logs it as `dispatch: a result write named its role`.
+A later release refuses a body that names a role once the counter rises nowhere and the logs hold no such line for 72 hours; a restart sets the counter back to 0, so the log line is the read that spans restarts.
+
+**Rolling back.**
+Dispatch goes back to the earlier build with no statement.
+The widened check stays, and the earlier build never writes the empty role.
+The rows with the empty role stay: the earlier build prints such a result as `recorded by .` and a standing pass of it as `from `, a fault of the display alone.
+While the earlier build serves, the role each request names is stored again, as before this release.
+Do not put the narrower check back: it refuses each row with the empty role.
 
 #### Rolling out and rolling back the release that publishes the daemon's state events
 

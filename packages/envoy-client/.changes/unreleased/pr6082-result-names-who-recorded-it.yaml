@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `dispatch result` says whom Dispatch recorded the result as: the role the session holds on the
+  issue, or, where it holds none, the session and that it holds no role of the issue, with "If the
+  Legion daemon started this session, its role has not reached Dispatch yet. Record the result
+  again in one minute."; a person is named as the actor they are. The answer's `role_notice`
+  follows as its own paragraph. `dispatch results` prints such a result as `pass by session <s>,
+  which holds no role of <issue>, at <commit>`, and `A pass stands: yes` names "a session with no
+  role of the issue" where the server's `no_role` says such a pass stands.
+time: 2026-11-28T17:50:30Z
+custom:
+  Issue: pr6082

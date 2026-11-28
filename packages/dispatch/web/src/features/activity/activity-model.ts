@@ -287,8 +287,16 @@ function describe(
       return `repaired server-owned state on block ${event.payload.block_id}`;
     case "block.invalid":
       return blockInvalidDescription(event.payload);
-    case "result.recorded":
-      return `recorded ${event.payload.verdict} for check ${event.payload.check_block_id} at ${event.payload.commit_sha} as ${event.payload.role}`;
+    case "result.recorded": {
+      // The role is the one the recording session holds on the issue it recorded on, and empty
+      // where it holds none there, as the issue log's line reads it (`event-description.ts`).
+      const { issue, role } = event.payload;
+      const recorder =
+        role !== ""
+          ? role
+          : `${event.actor.kind === "user" ? "a person who holds" : "a session that holds"} no role of ${issue}`;
+      return `recorded ${event.payload.verdict} for check ${event.payload.check_block_id} at ${event.payload.commit_sha} as ${recorder}`;
+    }
     case "result.retracted":
       // The reason is shown as the characters it is, as the result it withdraws is: the reading
       // list's `check-retraction-reason` (`DISPATCH_READING_SURFACES`).

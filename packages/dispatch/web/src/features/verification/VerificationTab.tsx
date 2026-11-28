@@ -224,7 +224,15 @@ function Result({
             Retracted
           </span>
         )}
-        <span data-testid="verification-result-role">{result.role}</span>
+        {/* The role is the one the recording session holds on the issue it recorded on, and
+            empty where it holds none there: a result recorded on another issue names it. */}
+        <span data-testid="verification-result-role">
+          {result.role !== ""
+            ? result.role
+            : result.issue_key === result.check_issue_key
+              ? "no role of this issue"
+              : `no role of ${result.issue_key}`}
+        </span>
         <span aria-hidden="true">·</span>
         <Timestamp at={result.created_at} />
       </div>
@@ -302,12 +310,16 @@ function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
 }
 
 /** One check of the Verification document. Its head line's groups, in this order: its standing
- *  (whether its pass stands, and from which roles), then its words; when the line is too narrow
+ *  (whether its pass stands, and from which roles, and from a session with no role of the issue
+ *  where the server says the pass of one stands), then its words; when the line is too narrow
  *  the words move under the standing whole and wrap inside themselves. Its facts follow as a list
  *  of names and values, then its results. */
 function Check({ check }: { check: CheckBlock }): ReactNode {
   const stands = check.pass_stands.answer;
-  const roles = check.pass_stands.roles ?? [];
+  const from = [
+    ...(check.pass_stands.roles ?? []),
+    ...(check.pass_stands.no_role === true ? ["a session with no role"] : []),
+  ];
   const results = check.results ?? [];
   return (
     <li
@@ -323,12 +335,12 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
           >
             {PASS_STANDS_LABELS[stands]}
           </span>
-          {roles.length === 0 ? null : (
+          {from.length === 0 ? null : (
             <span
               className={`text-sm ${textMutedOnSurface}`}
               data-testid="verification-check-roles"
             >
-              from {roles.join(", ")}
+              from {from.join(", ")}
             </span>
           )}
         </span>

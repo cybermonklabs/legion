@@ -2770,7 +2770,7 @@ env). In envoy-go-checks they are queued right after the Go cache restore and th
 step that queued it), longest first. Two plain steps stand after the fourth harness's step, when
 the first four hold every slot: the one that generates en_US.UTF-8 where the runner lacks it, and
 the one that pulls the Compose 2.12.2 image the deploy tests take. envoy-session-stall queues its
-thirteen stack suites the same way, after the contracts build they all import and the build of the
+fourteen stack suites the same way, after the contracts build they all import and the build of the
 Go commands they build that the go-envoy entry does not hold
 (#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack).
 
@@ -3626,7 +3626,9 @@ the session state rig 88 s, claude-envoy's stall 77 s, the broker credential tes
 mention 17 s, the design-gate advice 9 s, the keyed resend 8 s and the moved-approval advice 7 s.
 The three that joined the job after that probe are placed by their walls in job 140859710731:
 the CI-result suite 56.3 s, queued after claude-envoy's stall, and the role topics 16.4 s and the
-refused result 17.0 s, queued after the comment mention.
+refused result 17.0 s, queued after the comment mention. The result-role suite joined the job
+after that job and has no wall measured in the pool yet; it is queued last, after the
+moved-approval advice, the suite whose rows it is built like.
 
 ## What the refill live proof shows
 

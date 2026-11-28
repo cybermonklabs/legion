@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -468,5 +469,100 @@ func TestAClaimWriteAndThePublicationItQueuesCommitTogether(t *testing.T) {
 	}
 	if got := queuedRoleHolders(t, s); len(got) != 0 {
 		t.Fatalf("the refused writes left the role-holder publications of %v, want none", got)
+	}
+}
+
+// A queue that meets the row under a lane's lease marks that lease (requeuedLease), and only the
+// run that holds the marked lease makes the row due again once it ends (RedueRoleHolders): a
+// second queue inside the same run keeps the one mark, and the run's redue clears the lease and
+// leaves the row due now, with its attempts. A queue of a row no lane holds leaves it unleased. A
+// redue under any other lease changes nothing: a lane that never held the row, the same run's
+// redue a second time, over the unleased row, and the run whose lease lapsed and that another lane
+// leased the row from.
+//
+// The control is the queue before this change, which gave a live lease a fresh random token: the
+// read after the two queues under lane-a's run finds a token that names no lane, and the run's
+// redue matches nothing.
+func TestOnlyTheRunWhoseLeaseAQueueMarkedMakesTheRowDueAgain(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := migratedStore(t)
+	queue := func(what string) {
+		t.Helper()
+		if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+			queued, err := EnqueueRoleHolders(ctx, tx, "LEGION", holderIssue, time.Now().UTC())
+			if err == nil && !queued {
+				t.Errorf("%s: the publication of %s was refused as another project's", what, holderIssue)
+			}
+			return err
+		}); err != nil {
+			t.Fatalf("%s: queue the publication of %s: %v", what, holderIssue, err)
+		}
+	}
+	var id int64
+	type leased struct {
+		token    string
+		held     bool
+		due      bool
+		attempts int
+	}
+	read := func(what string) leased {
+		t.Helper()
+		var row leased
+		if err := s.pool.QueryRow(ctx, `select id, lease_token, lease_until is not null, next_at <= now(), attempts from outbox
+			where kind = $1 and issue = $2`, roleHoldersPublishKind, holderIssue).Scan(&id, &row.token, &row.held, &row.due, &row.attempts); err != nil {
+			t.Fatalf("%s: read the publication of %s: %v", what, holderIssue, err)
+		}
+		return row
+	}
+	lease := func(token string) {
+		t.Helper()
+		if _, err := s.pool.Exec(ctx, `update outbox set lease_token = $3, lease_until = now() + interval '30 seconds', attempts = 2
+			where kind = $1 and issue = $2`, roleHoldersPublishKind, holderIssue, token); err != nil {
+			t.Fatalf("lease the publication of %s as %s: %v", holderIssue, token, err)
+		}
+	}
+	redue := func(what, token string, want bool) {
+		t.Helper()
+		var redued bool
+		if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			redued, err = RedueRoleHolders(ctx, tx, id, token, time.Now().UTC())
+			return err
+		}); err != nil {
+			t.Fatalf("%s: make the publication due again under %s: %v", what, token, err)
+		}
+		if redued != want {
+			t.Fatalf("%s: the redue under %s made the row due again = %t, want %t", what, token, redued, want)
+		}
+	}
+
+	queue("the first queue")
+	if row := read("the first queue"); row.token != "" || row.held {
+		t.Fatalf("the first queue left the row leased %q (held %t), want it unleased", row.token, row.held)
+	}
+	lease("lane-a")
+	queue("a queue under lane-a's run")
+	queue("a second queue under lane-a's run")
+	if row := read("two queues under lane-a's run"); row.token != requeuedLease+"lane-a" || !row.held {
+		t.Fatalf("two queues under lane-a's run left the lease %q (held %t), want %q, still held", row.token, row.held, requeuedLease+"lane-a")
+	}
+	redue("a lane that never held the row", "lane-b", false)
+	redue("lane-a's run once it settled", "lane-a", true)
+	if row := read("lane-a's redue"); row.token != "" || row.held || !row.due || row.attempts != 2 {
+		t.Fatalf("lane-a's redue left the row %+v, want it unleased, due now and its 2 attempts kept", row)
+	}
+	redue("lane-a's redue a second time", "lane-a", false)
+	queue("a queue of the row no lane holds")
+	if row := read("a queue of the row no lane holds"); row.token != "" || row.held {
+		t.Fatalf("a queue of the row no lane holds left it leased %q (held %t), want it unleased", row.token, row.held)
+	}
+
+	lease("lane-c")
+	queue("a queue under lane-c's run")
+	lease("lane-d")
+	redue("lane-c's run, whose lease lane-d took after it lapsed", "lane-c", false)
+	if row := read("lane-c's late redue"); row.token != "lane-d" || !row.held {
+		t.Fatalf("lane-c's late redue left the lease %q (held %t), want lane-d's, still held", row.token, row.held)
 	}
 }

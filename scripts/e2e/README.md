@@ -4575,6 +4575,9 @@ The driver's setup seeds the fake GitHub with two repositories — `acme/verific
 the record route's read-through asks GitHub which pull requests name a result's commit, so with no answer there the only thing that can teach Dispatch a head is the envelope a case publishes.
 `pulls`, what GitHub answers about one pull request, is empty until the attribution case seeds the two its own stored rows name, since one reader alone reads it: the reconcile's refresh of a stored head row.
 Each case after the first seeds the issue it drives, with a spec that marks one requirement and a Verification document holding that case's checks.
+The seed then gives the run's session the tester role of that issue through `PUT /api/v1/issues/{key}/role-holders`, written as the Legion daemon of the issue's project (`legion-daemon:<PROJECT>`), which the server takes from the agent token because it runs without `DISPATCH_LEGION_STATUS_SCOPE` and its projects record no proven sessions.
+Dispatch stores, as a result's role, the role its recording session holds on the issue it is recorded on, so every result the session records there is the tester's, whatever role the call names.
+The probe issue of the first case gets no role: its one result is refused, so no role is stored, and a role-holders write in the setup would stop the negative control's run there, before the case it must fail at.
 
 Each item below names a case and how it is driven, then what must hold for it to pass.
 

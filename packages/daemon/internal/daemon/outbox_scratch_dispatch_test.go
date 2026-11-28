@@ -335,6 +335,81 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 	}
 }
 
+// A result's stored role is the one its session holds in the set the daemon last published, and a
+// session whose claim ended records with no role once the daemon publishes the end. Against a real
+// Dispatch built from this tree: the issue's Verification document holds one check, a ready tester
+// claim with session ses-tester is published, and a pass ses-tester records through the results
+// route, naming no role, is stored as the tester's. The claim retires and the daemon publishes the
+// set again, and the next pass is stored with no role, under a pull-request line that says so.
+//
+// The control is the pass recorded after the retirement and before its publication: Dispatch still
+// holds the set that names ses-tester, so it is stored as the tester's. What moves the stored role
+// is the publication, not the retirement in the daemon's own database.
+func TestAnEndedClaimRecordsWithNoRoleInScratchDispatch(t *testing.T) {
+	t.Parallel()
+	baseURL, token := startScratchDispatch(t)
+	issue := createScratchDispatchIssue(t, baseURL)
+	dispatchCall(t, baseURL, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]string{
+		"name": "verification.md",
+		"content": ":::check{#k1 surface=\"cli\" run=\"go test ./...\" negative_control=\"Break it and watch it fail.\"}\n" +
+			"The scratch Dispatch records a result against the check.\n:::\n",
+	}, nil)
+	r := newRoleHoldersRig(t)
+	r.runner.dispatch = dispatch.New(baseURL, dispatch.BearerTransport(token, nil))
+	tester := r.seedClaim(issue, claim.RoleTester, "ses-tester", "ready", time.Minute)
+
+	publish := func() {
+		t.Helper()
+		r.enqueue(issue)
+		if err := r.runner.RunOnce(r.ctx); err != nil {
+			t.Fatalf("run the outbox: %v", err)
+		}
+		if rows := outboxRows(t, r.pool); rows != 0 {
+			t.Fatalf("the outbox holds %d rows after the run, want the publication finished", rows)
+		}
+	}
+	// recordPass records a pass of k1 on the issue as session ses-tester through the results route,
+	// naming no role, and answers the role Dispatch stored and the pull-request body line.
+	recordPass := func(when string) (string, string) {
+		t.Helper()
+		status, answer := dispatchAnswerWith(t, baseURL, http.MethodPost, "/api/v1/issues/"+issue+"/results", map[string]any{
+			"check": "k1", "verdict": "pass", "commit": "1111111111111111111111111111111111111111",
+			"actor": map[string]string{"kind": "session", "id": "ses-tester"},
+		}, bearing(token))
+		if status != http.StatusCreated {
+			t.Fatalf("%s: record a pass as ses-tester = %d: %s", when, status, answer)
+		}
+		var recorded struct {
+			Line   string `json:"line"`
+			Result struct {
+				Role    string `json:"role"`
+				Session string `json:"session"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(answer, &recorded); err != nil {
+			t.Fatalf("%s: decode the answer %s: %v", when, answer, err)
+		}
+		if recorded.Result.Session != "ses-tester" {
+			t.Fatalf("%s: the pass was recorded as session %q, want ses-tester", when, recorded.Result.Session)
+		}
+		return recorded.Result.Role, recorded.Line
+	}
+
+	publish()
+	if role, _ := recordPass("while the claim holds its role"); role != "tester" {
+		t.Fatalf("while the tester's ready claim is published, the pass was stored with role %q, want tester", role)
+	}
+	r.moveClaim(tester, "retired")
+	if role, _ := recordPass("after the retirement, before its publication"); role != "tester" {
+		t.Fatalf("control: before the retirement was published, the pass was stored with role %q, want tester: Dispatch still holds the set that names ses-tester", role)
+	}
+	publish()
+	role, line := recordPass("after the retirement was published")
+	if role != "" || !strings.Contains(line, "recorded by a session that holds no role of the issue.") {
+		t.Fatalf("after the retirement was published, the pass was stored with role %q under the line %q, want no role and a line that says so", role, line)
+	}
+}
+
 // messageCreatedEvent is the issue's message.created event as Dispatch serves it: the body the
 // event carries, and whether Dispatch says that body is only the first part of the message's.
 func messageCreatedEvent(t *testing.T, baseURL, token, issue string) (string, bool) {

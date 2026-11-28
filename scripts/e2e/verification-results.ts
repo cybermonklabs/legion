@@ -1,5 +1,6 @@
 // The driver of verification-results.sh: it drives a real envoy-dispatch over HTTP as one session
-// (the run's agent token, each write naming the session as `actor`) and one person (the dev
+// (the run's agent token, each write naming the session as `actor`, but for the role holders it
+// publishes as the Legion daemon of the issue's project, `holdRoles`) and one person (the dev
 // sign-in cookie), seeds the run's fake GitHub, publishes each pull-request event as the
 // normalized `pull_request` envelope on the run's own NATS, the one path Dispatch's delivery
 // intake reads, and reads two of its answers back through the `dispatch results` command as well
@@ -251,6 +252,24 @@ function issuePath(key: string, rest = ""): string {
   return `/api/v1/issues/${encodeURIComponent(key)}${rest}`;
 }
 
+/** Publishes the session that holds each Legion role of `key`, the issue's whole set, as the
+ *  Legion daemon of its project publishes it: `PUT /api/v1/issues/{key}/role-holders` over the
+ *  agent token, naming the session `legion-daemon:<PROJECT>`, `<PROJECT>` the key up to its first
+ *  `-`. The run's server takes it from that token because it runs without
+ *  DISPATCH_LEGION_STATUS_SCOPE and its projects record no proven sessions. Dispatch stores, as a
+ *  result's role, the role its recording session holds on the issue it is recorded on. */
+async function holdRoles(key: string, holders: Record<string, string>): Promise<void> {
+  await call(
+    "PUT",
+    issuePath(key, "/role-holders"),
+    { Authorization: `Bearer ${agentToken}` },
+    {
+      actor: { id: `legion-daemon:${key.slice(0, key.indexOf("-"))}`, kind: "session" },
+      holders: Object.entries(holders).map(([role, holder]) => ({ role, session: holder })),
+    }
+  );
+}
+
 /** The checks of an issue's Verification document, each with the commits and branches its results
  *  are compared with, whether a pass of it stands, and every result recorded against it, as
  *  `GET /api/v1/issues/{key}/results` answers. `at` names one commit (`?at=`), which becomes the
@@ -286,12 +305,16 @@ async function commitStandsAt(key: string, blockID: string, commit: string): Pro
   return result === undefined ? "absent" : standsOf(result);
 }
 
-/** Whether a pass of `blockID` stands, in one word with the roles it names: the `pass_stands`
+/** Whether a pass of `blockID` stands, in one word with the roles it names, and with a session
+ *  with no role of the issue where `no_role` says such a session's pass stands: the `pass_stands`
  *  answer the gate reads. */
 async function passStandsOf(key: string, blockID: string): Promise<string> {
   const pass = (await checkOf(key, blockID)).pass_stands;
-  const roles = pass.roles ?? [];
-  return roles.length === 0 ? pass.answer : `${pass.answer} (${roles.join(", ")})`;
+  const from = [
+    ...(pass.roles ?? []),
+    ...(pass.no_role === true ? ["a session with no role of the issue"] : []),
+  ];
+  return from.length === 0 ? pass.answer : `${pass.answer} (${from.join(", ")})`;
 }
 
 /** Waits, bounded, for the commit of the result at `commit` to stand where `want` says, and
@@ -459,8 +482,9 @@ function stepFailed(
   ].join("\n   ");
 }
 
-/** The argv of `dispatch result` recording an implementer's pass of `check` on `issue` at
- *  `commit`, which a step extends with the fields it sends. */
+/** The argv of `dispatch result` recording a pass of `check` on `issue` at `commit`, naming the
+ *  role implementer, which a step extends with the fields it sends. Dispatch stores the role the
+ *  run's session holds on the issue instead, tester (`seedIssue`), and says so in its answer. */
 function resultArgv(issue: string, check: string, commit: string): string[] {
   return [
     "result",
@@ -710,6 +734,8 @@ for (const [key, name, defaultRepo] of [
  *  that exists, so the requirement is written with the issue, before any check points at it — and
  *  answers that key. `parent` makes it the child of another issue, which the attribution case
  *  needs: a child's pull request answers for the child's own checks and for no check above it.
+ *  The run's session is given the tester role of the issue (`holdRoles`), so each result it
+ *  records there is stored as the tester's, which the cases read back.
  *
  *  `force` is what every seed here needs: the run's issues are all about checks and pull
  *  requests, so a create of the next one is answered 409 POSSIBLE_DUPLICATE naming the issues
@@ -732,6 +758,7 @@ async function seedIssue(
     content: `How ${key} is proved.\n\n${checks.replaceAll("%KEY%", key)}`,
     name: "verification.md",
   });
+  await holdRoles(key, { tester: session });
   return key;
 }
 
@@ -803,7 +830,7 @@ The result read back under this check is the one that was recorded.
     `${a2Issue} check a2 (${check.when}) holds ${check.results.length} result(s): ${check.results
       .map(
         (row) =>
-          `${row.verdict} at ${row.commit_sha.slice(0, 12)} by ${row.role} (${standsOf(row)})`
+          `${row.verdict} at ${row.commit_sha.slice(0, 12)} ${row.role === "" ? `by session ${row.session}, which holds no role of ${row.issue_key}` : `by ${row.role}`} (${standsOf(row)})`
       )
       .join(", ")}`
   );

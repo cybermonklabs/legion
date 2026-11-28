@@ -337,9 +337,13 @@ func TestAResultsDryRunAnswersTheLineAndRecordsNothing(t *testing.T) {
 		"observed":         "RESK-1's open-items v14 lists every row.",
 		"negative_control": "Broke RESK-1's guard and watched it fail.",
 	})
+	// The dry run names the role the session holds, as the record does, so the implementer's
+	// session holds its role before the issue's events are read.
+	holdRole(t, handler, issue.Key, "implementer", "ses-implementer")
 	events := issueEventTypes(t, handler, issue.Key)
 
-	dry := dispatchRequest(t, handler, http.MethodPost, target, body, "alice")
+	body["actor"] = map[string]any{"kind": "session", "id": "ses-implementer"}
+	dry := bearerRequest(t, handler, http.MethodPost, target, body)
 	if dry.Code != http.StatusOK {
 		t.Fatalf("dry-run a result: status=%d body=%s, want 200", dry.Code, dry.Body.String())
 	}
