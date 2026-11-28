@@ -204,11 +204,12 @@ function reasonLine(reason: Reason, project: string): ReactNode {
 }
 
 /** What a blocking commit's absent row says of its files (R9): how many GitHub listed with no
- *  patch (`cols.files`); where its listing falls short of the commit by a number no answer names
- *  (`cols.unlisted`), at least that many, or, where it listed none with no patch, that the list
- *  falls short, in words that claim no cause, since files[] can list every file and still fall
- *  short where GitHub serves a text file with no patch and changes 0; nothing where the row states
- *  no count. */
+ *  patch (`cols.files`); where its files[] listing may not hold the whole commit (`cols.unlisted`:
+ *  it listed GitHub's limit of 3,000 files, named no stats, or its entries change fewer lines than
+ *  the commit's stats count), at least that many, or, where it listed none with no patch, that the
+ *  list may not hold the whole commit, in words that claim no cause, since files[] can list every
+ *  file and its lines still fall short where GitHub serves a text file with no patch and changes 0;
+ *  nothing where the row states no count. */
 function blockedFiles(row: EvalItemRow): string {
   const files = row.cols?.files;
   if (row.cols?.unlisted !== true) {
@@ -216,7 +217,7 @@ function blockedFiles(row: EvalItemRow): string {
   }
   return typeof files === "number" && files > 0
     ? ` (at least ${plural(files, "file")})`
-    : " (GitHub's file list falls short of the commit)";
+    : " (GitHub's file list may not hold the whole commit)";
 }
 
 /** The line of an absent row, of its own `cause`: the commit that blocks days of the window,

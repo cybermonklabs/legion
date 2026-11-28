@@ -1065,10 +1065,10 @@ func TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository(t *te
 	}
 }
 
-// TestABlockedCommitWhoseListingLeftFilesOutStatesNoCountItDoesNotKnow (R9): a files[] that
-// GitHub cut at its limit of 3,000 files, every listed patch there, withholds no file it lists and
-// leaves out files whose number no answer names, and the absent row of the commit it blocks days
-// by states the count it knows and that more are unlisted, never a count of files it does not
+// TestABlockedCommitWhoseListingLeftFilesOutStatesNoCountItDoesNotKnow (R9): a files[] that lists
+// GitHub's limit of 3,000 files, every listed patch there, withholds no file it lists and may not
+// hold the whole commit, and the absent row of the commit it blocks days by states the count it
+// knows and that the listing may not hold the whole commit, never a count of files it does not
 // know. In newCodeStrayRig's seed, day 1's commit adds 3,000 files and the double refuses its patch
 // with a 406 and serves all 3,000 on files[]. Over days 0 to 8, HOME and LONE answer in both code
 // evals that commit's row with files 0 and unlisted true, and GitHub's limit as its reason, beside
@@ -1078,7 +1078,7 @@ func TestABlockedCommitWhoseListingLeftFilesOutStatesNoCountItDoesNotKnow(t *tes
 	r := newCodeStrayRig(t, codesurvivaltest.FilesLimit, codesurvivaltest.Refusal{Status: 406, Body: "Sorry, the diff exceeded the maximum number of files"})
 	day := func(n int) string { return codeItemsDay(n).Format(time.DateOnly) }
 	want := []string{
-		fmt.Sprintf("blocked@%s@%s: blocked by %s of %s, 0 files and more unlisted, diff refused (406), files[] withheld 0 of 3000 files and listed 3000 files, GitHub's limit, days %v",
+		fmt.Sprintf("blocked@%s@%s: blocked by %s of %s, 0 files, unlisted, diff refused (406), files[] withheld 0 of 3000 files and listed 3000 files, GitHub's limit, days %v",
 			codeStrayRepo, r.blocked, r.blocked, codeStrayRepo, []string{day(0), day(1)}),
 		fmt.Sprintf("marked@%s@%s: marked day %s of %s, first change %s", day(5), codeStrayRepo, day(5), codeStrayRepo, r.marked),
 	}
@@ -1092,8 +1092,7 @@ func TestABlockedCommitWhoseListingLeftFilesOutStatesNoCountItDoesNotKnow(t *tes
 }
 
 // absentWords is what an absent row names, in words a failure shows: a blocked row's count of
-// files, and "and more unlisted" after it where its listing left out files whose number no answer
-// names.
+// files, and ", unlisted" after it where its files[] listing may not hold the whole commit.
 func absentWords(t *testing.T, row evalItemRow) string {
 	t.Helper()
 	switch cause := colText(t, row, "cause"); cause {
@@ -1107,7 +1106,7 @@ func absentWords(t *testing.T, row evalItemRow) string {
 		}
 		files := fmt.Sprintf("%g files", colNumber(t, row, "files"))
 		if colBool(t, row, "unlisted") {
-			files += " and more unlisted"
+			files += ", unlisted"
 		}
 		return fmt.Sprintf("blocked by %s of %s, %s, %s, days %v", colText(t, row, "sha"), colText(t, row, "repo"), files, colText(t, row, "reason"), days)
 	case "repo_unreadable":

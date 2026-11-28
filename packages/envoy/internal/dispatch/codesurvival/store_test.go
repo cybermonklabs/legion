@@ -172,7 +172,8 @@ var allowed = map[string]string{
 	"code_pairs.lines":             "integer",
 	"code_pairs.days_between":      "double precision",
 	// Days: a count and a 32-byte digest, a state, its times, and a blocking commit's SHA with
-	// the count of its withheld files, whether its listing left files out, and a reason.
+	// the count of its withheld files, whether its files[] listing may not hold the whole commit,
+	// and a reason.
 	"code_days.repo":             "text",
 	"code_days.day":              "date",
 	"code_days.commits":          "integer",

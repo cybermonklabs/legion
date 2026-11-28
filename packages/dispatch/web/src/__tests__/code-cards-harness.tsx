@@ -363,7 +363,7 @@ const BLOCKED_SHA = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
 const BLOCKED_HREF = `https://github.com/acme/widgets/commit/${BLOCKED_SHA}`;
 
 /** The absent row of the blocking commit: GitHub listed `files` of its files with no patch, and,
- *  where `unlisted`, its listing falls short of the commit by a number no answer names (`reason`). */
+ *  where `unlisted`, its files[] listing may not hold the whole commit (`reason` says why). */
 function blockedRow(files: number, unlisted: boolean, reason: string): EvalItemRow {
   return absentRow(
     `blocked@acme/widgets@${BLOCKED_SHA}`,
@@ -934,7 +934,7 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
       }),
     ],
     [
-      '19 no data | the blocking commit\'s listing left out files and listed none with no patch | "No data" with the commit and "GitHub\'s file list falls short of the commit", and no count',
+      '19 no data | the blocking commit\'s listing reached GitHub\'s 3,000 files and listed none with no patch | "No data" with the commit and "GitHub\'s file list may not hold the whole commit", and no count',
       row(async (context) => {
         const { socket } = await painted(
           context,
@@ -954,7 +954,7 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
         serve(socket, snapshotFrame(absent.sub, itemsPage([blocking])));
         await waitFor(() =>
           expect(noData(card)).toEqual([
-            "No data: GitHub did not give the whole patch of commit 1a2b3c4 (GitHub's file list falls short of the commit)",
+            "No data: GitHub did not give the whole patch of commit 1a2b3c4 (GitHub's file list may not hold the whole commit)",
           ])
         );
         // A listing cut at GitHub's 3,000 files can leave out thousands: no count is the run's.
@@ -967,7 +967,7 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
       }),
     ],
     [
-      '20 no data | the blocking commit\'s listing withheld 3 files and left out more | "No data" with the commit and "at least 3 files", and no exact count',
+      '20 no data | the blocking commit\'s listing reached GitHub\'s 3,000 files and withheld 3 of them | "No data" with the commit and "at least 3 files", and no exact count',
       row(async (context) => {
         const { socket } = await painted(
           context,
@@ -997,7 +997,7 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
       }),
     ],
     [
-      '21 no data | the blocking commit\'s listing lists every file and its lines fall short of the commit\'s | "No data" with the commit and "GitHub\'s file list falls short of the commit", and no count',
+      '21 no data | the blocking commit\'s listing lists every file and its lines fall short of the commit\'s | "No data" with the commit and "GitHub\'s file list may not hold the whole commit", and no count',
       row(async (context) => {
         const { socket } = await painted(
           context,
@@ -1017,7 +1017,7 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
         serve(socket, snapshotFrame(absent.sub, itemsPage([blocking])));
         await waitFor(() =>
           expect(noData(card)).toEqual([
-            "No data: GitHub did not give the whole patch of commit 1a2b3c4 (GitHub's file list falls short of the commit)",
+            "No data: GitHub did not give the whole patch of commit 1a2b3c4 (GitHub's file list may not hold the whole commit)",
           ])
         );
         // files[] lists every file, but a text file served with no patch and changes 0 leaves

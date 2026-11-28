@@ -689,8 +689,8 @@ func (g *GitHub) Changes(ctx context.Context, r Repository, chain []survival.Com
 // PatchRead is one commit's patch as Patch read it: the replay's form of it, the route it came
 // through, and the bytes GitHub answered for it, which the run's stream holds until the replay
 // applied it. Reason says, for a patch read through files[] in place of a diff GitHub refused, how
-// the diff route refused it, how many of the commit's files files[] withheld, and how files[]
-// showed it lists less than the whole commit where it did (filesListing), as
+// the diff route refused it, how many of the commit's files files[] withheld, and, where files[]
+// may not hold the whole commit, why (filesListing), as
 // code_days.blocked_reason keeps it for a commit that blocks a day: "diff refused (406), files[]
 // withheld 3 of 12 files", or "diff refused (422), files[] withheld 0 of 10 files and listed 20 of
 // the commit's 24 changed lines", say.
@@ -709,8 +709,8 @@ type PatchRead struct {
 //
 // A patch GitHub refuses (refusal) is read once through the commit's files[] in its place, every
 // page of it, in the replay's form, with the files GitHub withheld counted (survival.FilesPatch), a
-// listing that shows it holds less than the whole commit marked as leaving out files whose number
-// no answer names (filesListing.patch), and the refusal and the count named in the read's Reason.
+// listing that may not hold the whole commit marked Unlisted (filesListing.patch), and the refusal
+// and the count named in the read's Reason.
 // A failure that may pass is asked again (get), and one that still fails after the last try, or a
 // failure that is no refusal, fails the read: the run stores nothing and tries again at its next
 // pass. A rate limit is the budget's, returned at once as the *githubapp.RateLimitError.
@@ -793,8 +793,8 @@ func (l *filesListing) read(page filesPage) []survival.FileDiff {
 	return diffs
 }
 
-// short says how the listing shows it holds less than the whole commit, "" where it shows nothing
-// of the kind (R9): it reached GitHub's limit (filesLimit), past which files[] lists no file
+// short says why the listing may not hold the whole commit, "" where nothing says so (R9): it
+// reached GitHub's limit (filesLimit), past which files[] lists no file
 // whatever the commit holds; its first page named no stats to hold it to; or its files changed
 // fewer lines than the stats count, each file counted by the additions and deletions its entry
 // carries whether or not GitHub gave its patch, a file it withheld among them. Its lines fall short
@@ -813,9 +813,9 @@ func (l *filesListing) short() string {
 }
 
 // patch is files, the listing's files in the replay's form, as the commit's patch: Withheld, how
-// many files it listed with no whole patch, and, where it is short, Unlisted, since the files it
-// left out are a number no answer names. A patch with either blocks the days whose 30 days hold
-// its commit (survival.Measure).
+// many files it listed with no whole patch, and Unlisted where it is short, since such a listing
+// may not hold the whole commit. A patch with either blocks the days whose 30 days hold its commit
+// (survival.Measure).
 func (l *filesListing) patch(files []survival.FileDiff) survival.Patch {
 	return survival.Patch{Files: files, Withheld: l.withheld, Unlisted: l.short() != ""}
 }

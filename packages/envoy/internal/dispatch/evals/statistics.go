@@ -913,10 +913,10 @@ func codeGroupStatistics(figures fold.GroupFigures) Statistics {
 
 // A code eval's `status` (fold.Status): measured_days, marked_days, blocked_days, blocked_files
 // (the files GitHub listed with no patch, summed over the blocked days, so a commit whose listing
-// left files out blocks its days and adds none of the files it left out), first_marked_day (the
-// oldest marked day's UTC midnight in Unix seconds, nil with none), groups (the groups the rows
-// were built under, nil with no row), repo_unreadable (the rows naming a repository the App cannot
-// read) and waiting_days (the days of the range after its newest row).
+// may not hold the whole commit blocks its days and adds only the files it listed with no patch),
+// first_marked_day (the oldest marked day's UTC midnight in Unix seconds, nil with none), groups
+// (the groups the rows were built under, nil with no row), repo_unreadable (the rows naming a
+// repository the App cannot read) and waiting_days (the days of the range after its newest row).
 func codeStatusStatistics(status fold.Status) Statistics {
 	stats := Statistics{
 		"measured_days": new(float64(status.MeasuredDays)), "marked_days": new(float64(status.MarkedDays)),

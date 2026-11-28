@@ -109,7 +109,7 @@ func filesReads(requests []codesurvivaltest.Request, sha string) int {
 
 // requireBlocked fails t unless r's first pass blocked days 0 to 3 by the commit sha and measured
 // days 4 to 27: each blocked day's code_days row names sha, its count of withheld files files,
-// whether its listing left out files whose number no answer names (unlisted) and its reason, its
+// whether its files[] listing may not hold the whole commit (unlisted) and its reason, its
 // status row counts one blocked day and those files, and every window that holds one reads "no
 // data", never 0, with its blocked days and their files.
 func requireBlocked(t *testing.T, r *rig, sha string, files int, unlisted bool, reason string) {
@@ -235,10 +235,10 @@ func TestAWithheldFileBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
 
 // A files[] that lists GitHub's limit of 3,000 files blocks the days whose 30 days hold its commit
 // (R9), though every patch it lists is there: GitHub lists no file past the limit, so such a
-// listing may hold only part of the commit, and no answer names how many files it left out. Day
+// listing may hold only part of the commit, and no answer says whether it left any file out. Day
 // 3's commit, which merged no pull request, adds 3,000 files; the double refuses its patch with a
 // 406 and serves all 3,000 on files[], 30 pages. Days 0 to 3 are blocked by it, each naming the
-// commit, no file withheld (blocked_files 0), files left unlisted in a number no answer names
+// commit, no file withheld (blocked_files 0), that its listing may not hold the whole commit
 // (blocked_unlisted), and GitHub's limit; every window that holds one reads "no data", never 0;
 // days 4 to 27 read what a run whose diff route answered reads.
 func TestAFilesListOfGitHubsLimitBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
@@ -281,15 +281,15 @@ func TestAFilesListShortOfTheCommitsStatsBlocksTheDaysWhoseThirtyDaysHoldIt(t *t
 
 // A files[] that withholds a file is still held to the commit's stats (R9): each file it lists is
 // counted by the additions and deletions its entry carries whether or not GitHub gave its patch,
-// so where its files change fewer lines than the stats count, the listing holds only part of the
-// commit, and its row marks files left unlisted in a number no answer names beside the file it
-// withheld, stating at least that count and never an exact one. Day 3's commit of 12 files and 24
-// lines, which merged no pull request, refuses on the diff route; its files[] lists all 12, the
-// first with no patch and its 2 changed lines, the second with no patch and changes 0, as GitHub
-// serves a text file it shows no diff of, 22 lines in all, while its stats count all 24. Days 0 to
-// 3 are blocked by it, each naming the commit, the one file withheld, files left unlisted, and the
-// lines it holds of the commit's; every window that holds one reads "no data", never 0; days 4 to
-// 27 read what a run whose diff route answered reads.
+// so where its files change fewer lines than the stats count, the listing may not hold the whole
+// commit, and its row says so (unlisted) beside the file it withheld, stating at least that count
+// and never an exact one. Day 3's commit of 12 files and 24 lines, which merged no pull request,
+// refuses on the diff route; its files[] lists all 12, the first with no patch and its 2 changed
+// lines, the second with no patch and changes 0, as GitHub serves a text file it shows no diff of,
+// 22 lines in all, while its stats count all 24. Days 0 to 3 are blocked by it, each naming the
+// commit, the one file withheld, that its listing may not hold the whole commit, and the lines it
+// holds of the commit's; every window that holds one reads "no data", never 0; days 4 to 27 read
+// what a run whose diff route answered reads.
 func TestAFilesListThatWithholdsAFileIsStillHeldToTheCommitsStats(t *testing.T) {
 	t.Parallel()
 	set := refusalBranch(t)

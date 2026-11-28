@@ -133,7 +133,7 @@ func PutRepo(ctx context.Context, db Querier, r Repo) error {
 // the changes and pairs, and one code_days row, measured or blocked as the day's result says, with
 // the fingerprint out holds for it, at as measured_at (of a measured day) and as tried_at, and, for
 // a blocked day, the commit that blocked it, the count of the files it withheld, whether its
-// listing left out files whose number no answer names (blocked_unlisted), and the reason reasons
+// files[] listing may not hold the whole commit (blocked_unlisted), and the reason reasons
 // gives it (none where it gives none). A day's old row carries nothing over, so a replace clears
 // the mark of a day it measures and the blocking commit of a day it no longer blocks. Every other
 // day out fingerprints is written as replayed, a fingerprint and nothing else, and only where the

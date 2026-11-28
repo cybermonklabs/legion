@@ -313,7 +313,7 @@ func TestTheRangeHoldsAnOutOfOrderCommit(t *testing.T) {
 
 // A commit whose patch could not be read whole blocks the selected days whose 30 days hold it:
 // one whose listing withheld 3 files names them, and one whose listing gave every file it listed
-// whole but left out files whose number no answer names (Unlisted) names no file and that fact.
+// whole but may not hold the whole commit (Unlisted) names no file and that fact.
 func TestAnUnreadableCommitBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
 	t.Parallel()
 	h := synthetic(5, 90)

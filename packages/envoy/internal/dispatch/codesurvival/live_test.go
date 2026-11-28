@@ -865,8 +865,8 @@ func (p *liveProxy) reads() []forwardedRead {
 // parse keeps the replay's form of one answer forwarded with capture, and none of its text: a
 // diff answer's file diffs (survival.ParseDiff), or a files[] page's, read as the run reads the
 // pages (filesListing), added to its commit's earlier pages', with the files the pages so far
-// withheld and whether they left files out (filesListing.patch); the first page starts the
-// commit's patch again, in place of a diff the run refused for passing its limit.
+// withheld and whether they may not hold the whole commit (filesListing.patch); the first page
+// starts the commit's patch again, in place of a diff the run refused for passing its limit.
 func (p *liveProxy) parse(read forwardedRead, body []byte) {
 	if sha, ok := read.Patch(); ok {
 		files, err := survival.ParseDiff(body)
@@ -898,8 +898,8 @@ func (p *liveProxy) parse(read forwardedRead, body []byte) {
 }
 
 // githubPatches is each patch the proxy forwarded with capture, by its commit's SHA, in the
-// replay's form, with the files a files[] read withheld and whether it left files out; and each
-// answer that did not parse.
+// replay's form, with the files a files[] read withheld and whether it may not hold the whole
+// commit; and each answer that did not parse.
 func (p *liveProxy) githubPatches() (map[string]survival.Patch, []string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1154,7 +1154,7 @@ func patchDifference(github survival.Patch, git []survival.FileDiff) string {
 		notes = append(notes, fmt.Sprintf("GitHub withheld %d files", github.Withheld))
 	}
 	if github.Unlisted {
-		notes = append(notes, "GitHub's files[] left out files")
+		notes = append(notes, "GitHub's files[] may not hold the whole commit")
 	}
 	for key, g := range ours {
 		w, ok := theirs[key]

@@ -433,8 +433,8 @@ func (s *server) absentItemRows(ctx context.Context, read evalItemsRead) ([]eval
 }
 
 // codeStopped is one repository's day as code_days holds it: marked, or blocked by a commit with
-// the count of its withheld files, whether its listing left out files whose number no answer
-// names, and why, and when the run last tried it.
+// the count of its withheld files, whether its files[] listing may not hold the whole commit, and
+// why, and when the run last tried it.
 type codeStopped struct {
 	repo     string
 	day      time.Time
@@ -456,9 +456,9 @@ type codeStopped struct {
 // its day: the day, the repository and its first change, to which it is addressed, or to the
 // project's settings page where the day holds none. A blocking commit is one row keyed
 // `blocked@<repo>@<sha>`, measured on the oldest day of the range it blocks: its repository, its
-// SHA, how many files it withheld (files, the count the run knows), whether its listing left out
-// files whose number no answer names (unlisted), why, and the days of the range it blocks;
-// addressed to the commit, with a via link to it.
+// SHA, how many files it withheld (files, the count the run knows), whether its files[] listing
+// may not hold the whole commit (unlisted), why, and the days of the range it blocks; addressed
+// to the commit, with a via link to it.
 func (r *codeRange) stoppedItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	want := map[codeCutDay]survival.DayState{}
 	var repos []string

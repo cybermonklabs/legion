@@ -18,10 +18,9 @@ type Commit struct {
 }
 
 // Patch is one commit's patch as Measure reads it: its file diffs, how many of the files its
-// listing named with changes came with no whole patch (Withheld), and whether its listing left out
-// files whose number no answer names (Unlisted). A patch with a withheld file or unlisted files
-// could not be read whole: it blocks the selected days whose 30 days hold its commit, and its files
-// are not applied.
+// listing named with changes came with no whole patch (Withheld), and whether its listing may not
+// hold the whole commit (Unlisted). A patch with a withheld file or Unlisted could not be read
+// whole: it blocks the selected days whose 30 days hold its commit, and its files are not applied.
 type Patch struct {
 	Files    []FileDiff
 	Withheld int
@@ -64,7 +63,7 @@ type Pair struct {
 
 // DayResult is one selected day's state after a measurement: measured, or blocked by the first
 // commit in chain order whose patch could not be read whole, with how many files it withheld and
-// whether its listing left out files whose number no answer names.
+// whether its listing may not hold the whole commit.
 type DayResult struct {
 	Day             time.Time
 	State           DayState
@@ -170,9 +169,9 @@ func (m *measurement) step(index int) error {
 	return nil
 }
 
-// block blocks every selected day whose 30 days hold commit, which withheld files and left files
-// unlisted where unlisted says so, and drops their changes' lines; a day a commit before it blocked
-// stays blocked by that one.
+// block blocks every selected day whose 30 days hold commit, whose listing withheld files and may
+// not hold the whole commit where unlisted says so, and drops their changes' lines; a day a commit
+// before it blocked stays blocked by that one.
 func (m *measurement) block(commit Commit, files int, unlisted bool) {
 	last := dayNumber(commit.CommittedAt)
 	for number := last - blockDays; number <= last; number++ {

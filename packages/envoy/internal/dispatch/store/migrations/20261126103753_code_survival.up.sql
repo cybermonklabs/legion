@@ -41,11 +41,11 @@
 --             day (marked_at); it reads as no data until a run measures it again.
 --   blocked   a commit whose patch neither route gave whole blocks the day (R9): blocked_sha
 --             names it, blocked_files counts the files it withheld (listed with changes and no
---             whole patch), and blocked_unlisted says its listing left out files whose number no
---             answer names (GitHub's limit of 3,000 files, no stats, or fewer lines than the
---             stats count), so blocked_files is 0 only where blocked_unlisted holds;
---             blocked_reason may say why, tried_at says when. The SHA is kept only while the day
---             is blocked, and the row that measures the day replaces it.
+--             whole patch), and blocked_unlisted says its files[] listing may not hold the whole
+--             commit (it listed GitHub's limit of 3,000 files, named no stats, or its entries
+--             change fewer lines than the commit's stats count), so blocked_files is 0 only where
+--             blocked_unlisted holds; blocked_reason may say why, tried_at says when. The SHA is
+--             kept only while the day is blocked, and the row that measures the day replaces it.
 -- Each state's checks name the columns it holds and the columns it leaves null, or false for
 -- blocked_unlisted, so no row says two things.
 --
