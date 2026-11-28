@@ -108,7 +108,7 @@ You also judge what no program decides, in steps 3 to 5.
      - A name of a person with a letter such as `é`, which the check finds only in the Unicode form of the person's email.
      - A name of an incident, a pull request or a person beside the letters of a script with no spaces, as in `见#12`.
 
-     Its node is the id of the statement or of the check, `terms` for a definition, or `prose`.
+     Its node is the node that step 1 prints for the text, `terms` for a definition, or `prose`.
      Its subject is the rule that the text breaks: `instructions`, `dispatch-link`, `incident`, `pull-request` or `person`, or `language` for a text that is not in English.
 
 7. Print one line for each finding, and no other text:
@@ -120,7 +120,7 @@ You also judge what no program decides, in steps 3 to 5.
    - `<kind>` is one of the eight kinds.
      The lines come in this order of kinds: `principle`, `undefined-noun`, `other-meaning`, `repeated-meaning`, `wide-claim`, `agent-choice`, `agent-where-program`, `form-limit`.
 
-   - `<node>` is the id of the statement or of the check, with no `#`, or `terms`, or `prose`.
+   - `<node>` is the node that step 1 prints for the text, with no `#`, or `terms` for a definition, or `prose`.
 
    - `<subject>` is the noun or the term as the text writes it, for the three kinds of step 4, and the rule for `form-limit`.
      It is `-` for the other four kinds.

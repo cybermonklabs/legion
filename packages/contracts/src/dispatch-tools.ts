@@ -2443,7 +2443,7 @@ export const dispatchToolSpecs = [
     example: { issue: "DSP-1", summary: "A live sync replaces the nightly export." },
     description:
       "Ask a human to approve a document at its current version. Where the spec is large, or changed in a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual claims; a Legion architect can use `plan-gap-analyst` and `plan-reviewer`. " +
-      "For a document under The Spec, run dispatch spec-form and have a fresh reviewer read it with skill://spec-statement-review first. " +
+      "For the spec or Verification document of an issue under a root of The Spec, run dispatch spec-form and have a fresh reviewer read it with skill://spec-statement-review first. " +
       "Opens an approval ask (Approve / " +
       "Request changes) in the human's Inbox whose question names the document and version, " +
       "followed by the summary; the answer pins a review to that version and arrives as " +
