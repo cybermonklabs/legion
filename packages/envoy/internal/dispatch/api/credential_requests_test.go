@@ -270,16 +270,21 @@ func TestCredentialRouteRelaysRequestBodyVerbatim(t *testing.T) {
 // forward a machine login's typed code — never an approver, or anything else, the browser put in
 // its body. A dismissal reads no body at all, so it sends the approver alone whatever the browser
 // sent.
+// Approval of a Dispatch sign-in forwards the scopes the browser selected; a denial forwards none,
+// whatever the browser sent, since a denial grants nothing.
 func TestDecisionsNameTheCallerNeverTheBrowsersApprover(t *testing.T) {
 	t.Parallel()
 	browserBody := map[string]any{"approver": "bob", "code": "ABCD-1234", "assertion": map[string]string{"id": "x"}}
+	browserScopes := map[string]any{"approver": "bob", "code": "ABCD-1234", "scopes": []string{"person"}, "assertion": map[string]string{"id": "x"}}
 	for _, tc := range []struct {
 		path     string
 		body     any
 		wantBody string
 	}{
 		{"/api/v1/credential-requests/rec1/approve", browserBody, `{"approver":"alice","code":"ABCD-1234"}`},
+		{"/api/v1/credential-requests/rec1/approve", browserScopes, `{"approver":"alice","code":"ABCD-1234","scopes":["person"]}`},
 		{"/api/v1/credential-requests/rec1/deny", browserBody, `{"approver":"alice","code":"ABCD-1234"}`},
+		{"/api/v1/credential-requests/rec1/deny", browserScopes, `{"approver":"alice","code":"ABCD-1234"}`},
 		{"/api/v1/credential-requests/rec1/approve", nil, `{"approver":"alice"}`},
 		{"/api/v1/credential-requests/rec1/dismiss", browserBody, `{"approver":"alice"}`},
 		{"/api/v1/credential-requests/rec1/dismiss", nil, `{"approver":"alice"}`},
@@ -515,43 +520,52 @@ func TestOnePersonReachesNoneOfAnothersSignIns(t *testing.T) {
 func TestCredentialCapabilitiesFollowTheBrokersMetadata(t *testing.T) {
 	t.Parallel()
 	const metadata = "GET /.well-known/oauth-authorization-server"
-	ask := func(t *testing.T, handler http.Handler) bool {
+	type answer struct {
+		MachineCodePage bool `json:"machine_code_page"`
+		DispatchSignIn  bool `json:"dispatch_sign_in"`
+	}
+	ask := func(t *testing.T, handler http.Handler) answer {
 		t.Helper()
 		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/credentials/capabilities", nil, "alice")
 		if response.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200: %s", response.Code, response.Body.String())
 		}
-		return decodeBody[struct {
-			MachineCodePage bool `json:"machine_code_page"`
-		}](t, response).MachineCodePage
+		return decodeBody[answer](t, response)
 	}
 
-	t.Run("the broker serves the device grant", func(t *testing.T) {
+	t.Run("the broker serves the device grant and the Dispatch sign-in", func(t *testing.T) {
 		rig := newFakeBrokerRig(t)
-		rig.bodyByRoute[metadata] = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:device_code"]}`
+		rig.bodyByRoute[metadata] = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:device_code"],"scopes_supported":["machine","dispatch"]}`
 		handler := newCredentialTestHandler(t, rig.server.URL)
-		if !ask(t, handler) {
-			t.Fatalf("machine_code_page = false, want true: the metadata names the device code")
+		if got := ask(t, handler); got != (answer{MachineCodePage: true, DispatchSignIn: true}) {
+			t.Fatalf("capabilities = %+v, want both: the metadata names the device code and the scope dispatch", got)
 		}
-		if !ask(t, handler) || rig.calls != 1 {
+		if got := ask(t, handler); !got.MachineCodePage || rig.calls != 1 {
 			t.Fatalf("the broker was read %d times for two asks, want 1: the read is cached", rig.calls)
+		}
+	})
+	t.Run("the broker serves the device grant and no Dispatch sign-in", func(t *testing.T) {
+		rig := newFakeBrokerRig(t)
+		rig.bodyByRoute[metadata] = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:device_code"],"scopes_supported":["machine"]}`
+		if got := ask(t, newCredentialTestHandler(t, rig.server.URL)); got != (answer{MachineCodePage: true}) {
+			t.Fatalf("capabilities = %+v, want the machine code page and no Dispatch sign-in: the metadata names no scope dispatch", got)
 		}
 	})
 	t.Run("the broker serves no device grant", func(t *testing.T) {
 		rig := newFakeBrokerRig(t)
 		rig.bodyByRoute[metadata] = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:token-exchange"]}`
-		if ask(t, newCredentialTestHandler(t, rig.server.URL)) {
-			t.Fatalf("machine_code_page = true, want false: the metadata names no device code")
+		if got := ask(t, newCredentialTestHandler(t, rig.server.URL)); got != (answer{}) {
+			t.Fatalf("capabilities = %+v, want neither: the metadata names no device code", got)
 		}
 	})
 	t.Run("no broker at all", func(t *testing.T) {
-		if ask(t, newCredentialTestHandler(t, "")) {
-			t.Fatalf("machine_code_page = true, want false: no broker prints a code for anyone to type")
+		if got := ask(t, newCredentialTestHandler(t, "")); got != (answer{}) {
+			t.Fatalf("capabilities = %+v, want neither: no broker prints a code for anyone to type", got)
 		}
 	})
 	t.Run("the broker cannot be read", func(t *testing.T) {
-		if !ask(t, newCredentialTestHandler(t, "http://"+testport.Refused(t))) {
-			t.Fatalf("machine_code_page = false, want true: a page that vanishes on one failed read is worse than one that lingers")
+		if got := ask(t, newCredentialTestHandler(t, "http://"+testport.Refused(t))); got != (answer{MachineCodePage: true}) {
+			t.Fatalf("capabilities = %+v, want the page kept and no sign-in offered: a page that vanishes on one failed read is worse than one that lingers", got)
 		}
 	})
 	t.Run("a bearer is refused as every credential page is", func(t *testing.T) {

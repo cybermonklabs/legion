@@ -381,6 +381,79 @@ describe("dispatch inbox", () => {
     ).toBe(true);
   });
 
+  // A row whose dispatch_scopes is a list is a Dispatch sign-in, as the web Inbox reads it
+  // (CredentialRequestsSection.tsx): its line names it as one, the scopes it asks for and the
+  // reason its request gave in place of the session it never names; "no scope" and "gives no
+  // reason" where it gives none. Anybody who reaches the broker's device route writes that
+  // reason and the named person's agents read it here, so the line marks it as the requester's
+  // own words, unchecked, and quotes it as JSON, so a line break stays on its line. The control:
+  // a current broker's machine login, whose dispatch_scopes is null, and a secret request beside
+  // it print as they did before sign-ins, byte for byte.
+  test("a Dispatch sign-in's line names it, the scopes it asks for and its reason; a machine login's and a secret request's are unchanged", async () => {
+    const noSession = { request: null, enrollment: null };
+    pendingAnswer = {
+      status: 200,
+      body: {
+        pending: [
+          {
+            record_id: "rec-20",
+            kind: "launcher_credential",
+            identifiers: ["agentbox-1"],
+            requested_at: "2026-11-26T20:00:00Z",
+            session: noSession,
+            state: "pending",
+            dispatch_scopes: ["p0", "person"],
+            reason: "the release tool",
+          },
+          {
+            record_id: "rec-21",
+            kind: "launcher_credential",
+            identifiers: ["agentbox-2"],
+            requested_at: "2026-11-26T20:01:00Z",
+            session: noSession,
+            state: "pending",
+            dispatch_scopes: [],
+            reason: "",
+          },
+          {
+            record_id: "rec-22",
+            kind: "launcher_credential",
+            identifiers: ["agentbox-3"],
+            requested_at: "2026-11-26T20:02:00Z",
+            session: noSession,
+            state: "pending",
+            dispatch_scopes: ["person"],
+            reason: 'two "lines"\nof reason',
+          },
+          {
+            record_id: "rec-23",
+            kind: "launcher_credential",
+            identifiers: ["agentbox-4"],
+            requested_at: "2026-11-26T20:03:00Z",
+            session: noSession,
+            state: "pending",
+            dispatch_scopes: null,
+            reason: "",
+          },
+          { ...PENDING[0], dispatch_scopes: null, reason: "" },
+        ],
+      },
+    };
+
+    const { code, stdout, stderr } = await runInbox();
+
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout.trimEnd().split("\n").slice(-6)).toEqual([
+      "Credential requests 5",
+      '- Dispatch sign-in · agentbox-1 · asks for p0, person · 2026-11-26T20:00:00Z · requester\'s words (unchecked): "the release tool"',
+      "- Dispatch sign-in · agentbox-2 · asks for no scope · 2026-11-26T20:01:00Z · gives no reason",
+      '- Dispatch sign-in · agentbox-3 · asks for person · 2026-11-26T20:02:00Z · requester\'s words (unchecked): "two \\"lines\\"\\nof reason"',
+      "- launcher_credential · agentbox-4 · 2026-11-26T20:03:00Z · session request=-, enrollment=-",
+      "- agent_secret · github/token, aws/role · 2026-11-02T09:00:00Z · session request=ses-7, enrollment=ses-8 · https://broker.example.com/approve/rec-1",
+    ]);
+  });
+
   // dispatch://INFRA-3921 R1: the Inbox gives an expired request no control to approve or deny
   // it, and the web Inbox links an expired row nowhere (CredentialRequestsSection's
   // ExpiredRowLines). The command is a reader of that same list, so an expired secret request's
