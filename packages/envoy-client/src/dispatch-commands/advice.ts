@@ -1,4 +1,5 @@
 import type { DocumentWriteAdvice, WriteAdvice } from "@legion/contracts";
+import type { DispatchClient } from "../dispatch-http";
 import { messageFor } from "../errors";
 
 const triageAdviceShown = new Set<string>();
@@ -114,6 +115,8 @@ export function renderAdvice(
     isPlan?: boolean;
     setsStatus?: boolean;
     replyToOwnAsk?: boolean;
+    /** Legion runs the issue this write posted on (`legionRunsPostedIssue`). */
+    legionRunsIssue?: boolean;
   }
 ): string[] {
   if (advice === undefined) return [];
@@ -125,7 +128,7 @@ export function renderAdvice(
   const issueAdvice: WriteAdvice | undefined = "issue_status" in advice ? advice : undefined;
   const hasIssueAdvice = issueAdvice !== undefined;
   const openAsks = issueAdvice?.your_open_asks ?? undefined;
-  const writesSinceHuman = issueAdvice?.session_writes_since_human;
+  const cadence = cadenceCount(tool, issueAdvice, opts.isAskReply);
   const lines: string[] = [];
   const unparsed = advice.unparsed_openers;
   if (
@@ -284,25 +287,79 @@ export function renderAdvice(
   }
 
   // The cadence line comes last and opens by saying the write went through: behind `| tail -1`
-  // it is the only line an agent sees, and "Stop posting" alone reads as a refusal.
-  if (
-    hasIssueAdvice &&
-    writesSinceHuman !== undefined &&
-    writesSinceHuman >= 3 &&
-    (tool === "dispatch_message" ||
-      tool === "dispatch_ask" ||
-      (tool === "dispatch_comment" && opts.isAskReply !== true))
-  ) {
+  // it is the only line an agent sees, and "Stop posting" alone reads as a refusal. An issue
+  // Legion runs gets no cadence line: its posts are the records Legion's roles keep for each
+  // other, no person is meant to answer them, and so the count never ends there.
+  if (cadence !== undefined && opts.legionRunsIssue !== true) {
     const middle =
-      writesSinceHuman >= 6
+      cadence >= 6
         ? "Stop posting here until a human replies. Their reply ends this: post then what you held back."
         : "Progress ledger or scratchpad? If so, stop.";
     lines.push(
-      `Posted. You've sent ${writesSinceHuman} messages on ${key} with no human response. ${middle} See the \`dispatch\` skill, "Structure over stream".`
+      `Posted. You've sent ${cadence} messages on ${key} with no human response. ${middle} See the \`dispatch\` skill, "Structure over stream".`
     );
   }
 
   return lines;
+}
+
+/** The count the cadence line reports for this write, or undefined when the write prints no
+ *  cadence line. The line follows a message, a question, or a comment that is not a reply on an
+ *  ask, on an issue where this session wrote three times or more since a person's last event. */
+function cadenceCount(
+  tool: string,
+  issueAdvice: WriteAdvice | undefined,
+  isAskReply: boolean | undefined
+): number | undefined {
+  const count = issueAdvice?.session_writes_since_human;
+  const posts =
+    tool === "dispatch_message" ||
+    tool === "dispatch_ask" ||
+    (tool === "dispatch_comment" && isAskReply !== true);
+  return posts && count !== undefined && count >= 3 ? count : undefined;
+}
+
+/** Whether Legion runs the issue `issueKey` that a message, a question or a comment went to.
+ *  The answer decides only the cadence line, so nothing is read for a write that prints none.
+ *  Dispatch's own `legion_managed_status` comes first, but Dispatch sends it only on an issue in
+ *  triage. Otherwise the client reads the issue and the issues above it
+ *  (`legionLabelOnChain`). A read that fails answers false, so the line prints as before. */
+export async function legionRunsPostedIssue(
+  client: DispatchClient,
+  tool: string,
+  issueKey: string | null,
+  advice: WriteAdvice | DocumentWriteAdvice | undefined,
+  isAskReply?: boolean
+): Promise<boolean> {
+  const issueAdvice = advice !== undefined && "issue_status" in advice ? advice : undefined;
+  if (issueKey === null || cadenceCount(tool, issueAdvice, isAskReply) === undefined) return false;
+  const answered = issueAdvice?.legion_managed_status;
+  if (answered !== undefined) return answered;
+  try {
+    return await legionLabelOnChain(client, issueKey);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether the issue `key`, or an issue above it in its own project, carries the label `legion`
+ *  in any ASCII case. This is the rule by which Dispatch answers `legion_managed_status`: a
+ *  Legion child issue holds no label of its own, and the label is on an issue above it. Without
+ *  the `u` flag, the `i` flag matches no character outside ASCII to an ASCII letter, so the test
+ *  reads a label as Dispatch's `lower()` in the "C" collation does. The walk reads one issue at
+ *  a time and stops at the root, at a parent of another project, or at an issue it already read. */
+async function legionLabelOnChain(client: DispatchClient, key: string): Promise<boolean> {
+  let issue = await client.getIssue(key);
+  const project = issue.project;
+  const read = new Set<string>();
+  while (!(issue.labels ?? []).some((label) => /^legion$/i.test(label))) {
+    read.add(issue.key);
+    const parent = issue.parent ?? null;
+    if (parent === null || read.has(parent)) return false;
+    issue = await client.getIssue(parent);
+    if (issue.project !== project) return false;
+  }
+  return true;
 }
 
 /** The advice lines a write prints after its related-item check, or one line saying why they

@@ -135,7 +135,17 @@ against another checkout, Compose project, or dump directory.
 It needs, on the host it runs on, a running Docker daemon, Docker with the Compose plugin (`docker
 compose version` must succeed), and `python3`, as does `scripts/up-dispatch.sh`. The tests need the
 same daemon and an anonymous pull from `ghcr.io/cybermonklabs/legion/ci`, where they take Compose
-2.12.2 from the repository's digest-pinned copy. Both scripts read `compose/.env` only through
+2.12.2 from the repository's digest-pinned copy. `deploy/scripts/autodeploy_test.sh` runs one group
+of its cases per run, `autodeploy_test.sh <group>`, and `--groups` lists the groups; each group runs
+from a fresh fixture, as CI runs each as a pool entry of its own. Every group runs, from
+`packages/envoy`, with `bash -c 'gs=$(bash deploy/scripts/autodeploy_test.sh --groups) || exit 1; for g in $gs; do bash deploy/scripts/autodeploy_test.sh "$g" || exit 1; done'`,
+which runs the loop under bash whatever shell reads it, and exits 1 at the first group that fails
+or when `--groups` fails.
+`autodeploy_test.sh` runs its Compose reads on the Compose plugin straight, with `DOCKER_HOST` on a
+socket nothing listens on, while the scripts themselves call `docker compose`. It takes the first
+`docker-compose` in the docker CLI's default plugin directories (its config directory's
+`cli-plugins`, then the four system directories), which must answer the version `docker compose`
+answers, or the fixture fails by name. Both scripts read `compose/.env` only through
 Compose's own resolution, and only through `docker compose config --format json`, so a setting
 counts as Compose gives it to the container, quotes, `${...}` and an `export` prefix included; they
 run on Compose 2.12.2, the oldest release their tests run (`autodeploy_test.sh` and
