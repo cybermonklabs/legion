@@ -4026,9 +4026,10 @@ func PhaseOwed(serving, generation uint64, entry, rowEntry int64, completed, mer
 
 // MergedInMerging is whether the issue stands in merging (at) with pr, its pull request, merged:
 // the fact that finishes merging, by the rule workflow.PhaseFinished applies, since the merger
-// merges and a merged root then stands in merging until the rest of its tree leaves, which can be
-// days. A merger in merging owes nothing once it holds (PhaseOwed), and owes the merge while the
-// pull request is not merged. A pull request the record does not hold (nil) is not merged.
+// merges and the merge then moves the issue on to verifying (workflow's closeMerged), where its
+// close waits for its checks and for the issues beneath it. A merger in merging owes nothing once
+// it holds (PhaseOwed), and owes the merge while the pull request is not merged. A pull request
+// the record does not hold (nil) is not merged.
 func MergedInMerging(pr *PullRequest, at phase.Phase) bool {
 	return at == phase.Merging && pr != nil && pr.State == PullRequestMerged
 }

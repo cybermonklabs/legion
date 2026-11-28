@@ -22,12 +22,12 @@ import (
 // worker's completion, so no worker of it is started or resumed for it. Merging's fact is the pull
 // request being merged, which it reads by the one statement of that rule (record.MergedInMerging,
 // where a pull request the record does not hold is not merged): the merger merges, the daemon
-// merges nothing, and a merged root then stands in merging until the rest of its tree leaves the
-// workflow (closeMerged), which can be days. Accepting's is the architect's sign-off, which moves
-// the issue on in the transaction that records it, so an issue standing in accepting is always
-// still waiting for it; every other phase ends with its worker's completion, which moves the
-// issue too. A recorded completion answers nothing here: the merger's is recorded and moves no
-// issue. The pull request's state is all it reads, so it reads the row alone
+// merges nothing, and the merge then moves the issue on to verifying (closeMerged), where its
+// close waits for its checks and for the issues beneath it. Accepting's is the architect's
+// sign-off, which moves the issue on in the transaction that records it, so an issue standing in
+// accepting is always still waiting for it; every other phase ends with its worker's completion,
+// which moves the issue too. A recorded completion answers nothing here: the merger's is recorded
+// and moves no issue. The pull request's state is all it reads, so it reads the row alone
 // (record.Store.PullRequestRow).
 func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Merging {

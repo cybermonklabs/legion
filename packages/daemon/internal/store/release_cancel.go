@@ -478,12 +478,12 @@ type ReleaseCancelled struct {
 // unpushed work; and, for the worker of the issue's open phase that gets one
 // (ReleaseCancelPause.GetsBackstop, of its whole claim, ClaimTx, since the run and the entry it
 // serves, supervise.Claim.ServingAt's, and the task it holds are read from what releasedRole does
-// not carry, at the generation its own start serves, IssueRun.StartOf, the tree's run for a root's
-// architect), its backstop, which the record arms only where the stop owes no launch. A paused
-// cancel with a backstop always carries both rules, OpenPhaseRole and GetsBackstop: the cancel
-// refused one that lacks either before its transaction (checkBackstopRules). A wake taken since is
-// left open: it is the launch the role is owed, and its start row runs at the resume. The caller
-// holds the issue's lock and held's row for share.
+// not carry), its backstop, which the record arms only where the stop owes no launch. The cancel
+// asks that rule at the generation the worker's own start serves (IssueRun.StartOf, the tree's run
+// for a root's architect). A paused cancel with a backstop always carries both rules,
+// OpenPhaseRole and GetsBackstop: the cancel refused one that lacks either before its transaction
+// (checkBackstopRules). A wake taken since is left open: it is the launch the role is owed, and its
+// start row runs at the resume. The caller holds the issue's lock and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
 	standing issueStanding, paused ReleaseCancelPause) error {
 	at := paused.At.UTC()

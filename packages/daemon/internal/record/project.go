@@ -1224,8 +1224,8 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 // against none of the issues that have a change still to write. Work the architect sends back
 // from accepting or from retro to implementing is at work again, so it takes a slot again, and
 // it waits for one among the issues whose work came back; so does a step after accepting whose
-// phase keeps a slot. A merged root stands in merging until the rest of its tree leaves the
-// workflow (workflow's closeMerged), and it stands there on no slot, as accepting and retro do.
+// phase keeps a slot. A merge moves its issue on to verifying (workflow's closeMerged), where its
+// close waits for its checks and for the issues beneath it, and it waits there on no slot.
 //
 // Where the issue stands is StandsAt's reading and not the record's field alone, so an issue a
 // failed claim held keeps exactly the row the phase it was working keeps.
