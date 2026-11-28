@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,9 +30,15 @@ import (
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
+// testKey is the one App key testKeyPEM answers every caller, generated once per test binary on
+// first use: generating a 2048-bit key costs 70-200 ms, more on a loaded runner, and no caller
+// needs a key of its own. A test only reads the key once it is made, and rsa.PrivateKey signs
+// safely from many goroutines, so parallel tests share it.
+var testKey = sync.OnceValues(func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.Reader, 2048) })
+
 func testKeyPEM(t *testing.T) (*rsa.PrivateKey, string) {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := testKey()
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
