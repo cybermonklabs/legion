@@ -34,7 +34,7 @@ import { ReferenceNamesProvider } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import { chipName, drawnLine, FIRST_LINE_LIMIT, firstLineOf } from "./first-line";
-import { agentsOnlyItem } from "./issue-address";
+import { historyItem } from "./issue-address";
 import {
   buildIssueTree,
   lineWordsRaw,
@@ -2808,9 +2808,10 @@ test("a reply to an ask is drawn under the ask, whatever state it is in", () => 
   ]);
 });
 
-// R1, R15: a comment or message an agent wrote outside every thread a person wrote in is no node
-// of the outline: the history in the panel draws it. A thread a person wrote in is the
-// conversation's, the agents' turns in it included, and a reply to an ask is in the ask's thread.
+// A comment thread tied to no text that no person wrote in, and a message thread the Legion
+// daemon began, are no node of the outline: the history in the panel draws them. A comment
+// thread a person wrote in is the conversation's, the agents' turns in it included, and a reply
+// to an ask is in the ask's thread.
 test("a thread no person wrote in is no node, and one a person replied in is drawn whole", () => {
   const agent = { id: "planner", kind: "session" as const };
   const status = { ...comment("status", "2026-11-04T09:00:00Z"), author: agent };
@@ -2837,7 +2838,12 @@ test("a thread no person wrote in is no node, and one a person replied in is dra
     asks: [question("ask-1")],
     comments: [status, among, answer, joined, person, underAsk],
     issue: issueDetails([]),
-    messages: [{ ...daemon, message: { ...daemon.message, author: agent } }],
+    messages: [
+      {
+        ...daemon,
+        message: { ...daemon.message, author: { id: "legion-daemon:CORE", kind: "session" } },
+      },
+    ],
   });
 
   for (const id of ["status", "among", "answer", "daemon"]) {
@@ -2846,6 +2852,62 @@ test("a thread no person wrote in is no node, and one a person replied in is dra
   expect(placementsOf(root, "joined").map((one) => one.parent)).toEqual([KEY]);
   expect(placementsOf(root, "person").map((one) => one.parent)).toEqual(["joined"]);
   expect(placementsOf(root, "under-ask").map((one) => one.parent)).toEqual(["ask-1"]);
+});
+
+// Root R37: a message thread only Threads draws (`agents-only.ts`'s `isThreadsOnly`) is no node of
+// the outline, neither its root nor any reply of it: an agent's note no person answered, and a
+// thread between agents, which no person wrote in. A thread a person wrote in is the
+// conversation's, an agent's turns in it included, whether a person answered an agent's note or
+// began the thread, and the thread the Legion daemon began stays the history's.
+test("an agent's note no person answered and a thread between agents are no node, and a note a person answered and a thread a person began are drawn whole", () => {
+  const planner = { id: "planner", kind: "session" as const };
+  const reviewer = { id: "reviewer", kind: "session" as const };
+  const alice = { id: "alice", kind: "user" as const };
+  const daemon = { id: "legion-daemon:CORE", kind: "session" as const };
+  /** A message `author` wrote at `at`, with the fields of `extra`. */
+  const entry = (
+    id: string,
+    at: string,
+    author: Message["author"],
+    extra: Partial<Message> = {}
+  ): Message => ({ ...thread(id, at).message, author, ...extra });
+  const messages: MessageRead[] = [
+    {
+      message: entry("note", "2026-11-04T09:00:00Z", planner),
+      replies: [entry("note-agent", "2026-11-04T09:10:00Z", reviewer, { in_reply_to: "note" })],
+    },
+    {
+      message: entry("answered", "2026-11-04T09:30:00Z", planner),
+      replies: [
+        entry("answered-agent", "2026-11-04T09:40:00Z", reviewer, { in_reply_to: "answered" }),
+        entry("answered-person", "2026-11-04T09:50:00Z", alice, { in_reply_to: "answered" }),
+      ],
+    },
+    {
+      message: entry("between", "2026-11-04T10:00:00Z", planner, { target: "session:reviewer" }),
+      replies: [
+        entry("between-reply", "2026-11-04T10:10:00Z", reviewer, { in_reply_to: "between" }),
+      ],
+    },
+    {
+      message: entry("person", "2026-11-04T11:00:00Z", alice, { target: "session:planner" }),
+      replies: [entry("person-reply", "2026-11-04T11:10:00Z", planner, { in_reply_to: "person" })],
+    },
+    {
+      message: entry("daemon", "2026-11-04T12:00:00Z", daemon),
+      replies: [entry("daemon-reply", "2026-11-04T12:10:00Z", alice, { in_reply_to: "daemon" })],
+    },
+  ];
+  const root = buildIssueTree({ issue: issueDetails([]), messages });
+
+  for (const id of ["note", "note-agent", "between", "between-reply", "daemon", "daemon-reply"]) {
+    expect(nodeOf(root, id), `${id} is drawn in the outline`).toBeUndefined();
+  }
+  expect(placementsOf(root, "answered").map((one) => one.parent)).toEqual([KEY]);
+  expect(placementsOf(root, "answered-agent").map((one) => one.parent)).toEqual(["answered"]);
+  expect(placementsOf(root, "answered-person").map((one) => one.parent)).toEqual(["answered"]);
+  expect(placementsOf(root, "person").map((one) => one.parent)).toEqual([KEY]);
+  expect(placementsOf(root, "person-reply").map((one) => one.parent)).toEqual(["person"]);
 });
 
 // The tree draws no approval request, so the replies under one are in no node's thread. Those
@@ -2870,7 +2932,7 @@ test("an agent's reply under an approval request is no node until a person repli
   expect(nodeOf(root, "quiet"), "the agents' reply is drawn in the outline").toBeUndefined();
   expect(placementsOf(root, "asked").map((one) => one.parent)).toEqual([KEY]);
   expect(placementsOf(root, "answered").map((one) => one.parent)).toEqual([KEY]);
-  const landing = (id: string) => agentsOnlyItem({ id, kind: "item" }, comments, undefined, asks);
+  const landing = (id: string) => historyItem({ id, kind: "item" }, comments, undefined, asks);
   expect(landing("quiet")).toBe("quiet");
   expect(landing("asked")).toBeUndefined();
 });

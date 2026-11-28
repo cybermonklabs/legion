@@ -109,6 +109,11 @@ type Options struct {
 	// named them: what register_gate resolves a registration's step against, and what the
 	// controller secret route answers `legion controller start`. The empty list gates no step.
 	Steps []record.DesignStep
+	// WatchedWorkflows are the project's `watched_workflows` (config.Project.WatchedWorkflows), in
+	// the order the file names them: what the controller's registration answers both launch forms
+	// and the controller secret route answers `legion controller start`
+	// (watchedWorkflowsContract). None watches nothing.
+	WatchedWorkflows []config.WatchedWorkflow
 	// ControllerLaunched is the daemon launching the project's controller itself (`controller:
 	// daemon`): one controller runs per project, so the controller secret route refuses the operator
 	// and a registration registers the controller only from a launch of the controller's claim.
@@ -370,6 +375,9 @@ type server struct {
 	controller      ControllerStore
 	// steps is Options.Steps, resolved: the deployment's design-gate steps, nil never.
 	steps []record.DesignStep
+	// watchedWorkflows is Options.WatchedWorkflows as the controller's answers carry it
+	// (WatchedWorkflowsOf), nil never.
+	watchedWorkflows []WatchedWorkflow
 	// controllerLaunched is Options.ControllerLaunched.
 	controllerLaunched bool
 	// pluginRelaunchable is Options.PluginRelaunchable, noPluginInstall Options.NoPluginInstall.
@@ -487,6 +495,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		dispatchProject:    opts.DispatchProject,
 		controller:         opts.Controller,
 		steps:              opts.Steps,
+		watchedWorkflows:   WatchedWorkflowsOf(opts.WatchedWorkflows),
 		controllerLaunched: opts.ControllerLaunched,
 		pluginRelaunchable: opts.PluginRelaunchable,
 		noPluginInstall:    opts.NoPluginInstall,

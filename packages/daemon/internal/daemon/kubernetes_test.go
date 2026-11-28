@@ -1256,6 +1256,36 @@ func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
 	}
 }
 
+// The controller's runtime is handed the project's watched workflows, entries and events as the
+// file names them, which it records with the controller's addresses (sandbox's address record),
+// so a daemon restarted with another list relaunches the controller; no entry is no list.
+func TestSandboxOptionsCarryTheProjectsWatchedWorkflows(t *testing.T) {
+	t.Parallel()
+	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+	project := cfg.Projects[cfg.Project]
+	project.WatchedWorkflows = []config.WatchedWorkflow{
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "y.yml", Events: []string{"schedule"}},
+	}
+	cfg.Projects = map[string]config.Project{cfg.Project: project}
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sandbox.WatchedWorkflow{
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "y.yml", Events: []string{"schedule"}},
+	}
+	if !reflect.DeepEqual(opts.ControllerWatchedWorkflows, want) {
+		t.Fatalf("ControllerWatchedWorkflows = %v, want %v", opts.ControllerWatchedWorkflows, want)
+	}
+	project.WatchedWorkflows = nil
+	cfg.Projects[cfg.Project] = project
+	if opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger()); len(opts.ControllerWatchedWorkflows) != 0 {
+		t.Fatalf("ControllerWatchedWorkflows = %v with no entry, want none", opts.ControllerWatchedWorkflows)
+	}
+}
+
 // No credential material — no key, no launcher credential, no bearer, no ServiceAccount token —
 // ever reaches a pod or a launch secret: the daemon's login reads its own token from token_file and
 // holds the key it wins only in the *cipher.Client's process memory, which sandbox.Options

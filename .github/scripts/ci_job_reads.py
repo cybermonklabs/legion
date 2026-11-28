@@ -629,6 +629,25 @@ def go_notices_runs():
     return out
 
 
+RELEASE_PATHS_STEP = "Check the legion release's version paths cover every package the binary links"
+RELEASE_PATHS_CHECK = ".github/scripts/check-legion-release-paths.sh"
+RELEASE_BUILD_LEGION = ".github/scripts/release-build-legion.sh"
+
+
+def legion_release_paths_runs():
+    """The go list lint's release-path check runs for each legion target: the line is
+    release-build-legion.sh's list mode, which the check runs with -deps over ./cmd/legion, with
+    the environment that script's build gives the target."""
+    started_by = at("lint", RELEASE_PATHS_STEP)
+    out = []
+    for target in targets(GO_TARGETS, "legion"):
+        goos, goarch = target.split("/")
+        out.append(script_run(RELEASE_BUILD_LEGION, 'for_target "$target" go -C packages/daemon list "$@" ./cmd/legion',
+                              started_by, DAEMON, ["./cmd/legion"], mode="build",
+                              env={"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch}))
+    return out
+
+
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-build's
 # pack step, envoy-smoke's schema step, and the tag steps below.
 PACK_STEP = "Pack envoy binaries"
@@ -788,7 +807,8 @@ CEILING_GO_RUN = 'server=$(cd -- "$repo_root/packages/envoy" && go run ./interna
 
 def ceiling_run(job, workflow=""):
     """The go run pg-connection-ceiling.sh starts in `job`'s ceiling step, in `workflow` when the
-    job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml)."""
+    job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml;
+    dispatch-two-builds-same's, in ci-job-dispatch-two-builds.yaml)."""
     return script_run(CEILING, CEILING_GO_RUN, f"run by {at(job, CEILING_STEP, workflow)}", ENVOY,
                       ["./internal/dispatch/store/cmd/connections"], mode="build")
 
@@ -2597,7 +2617,7 @@ LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl
 # scripts/approve/scan.ts.
 SCAN_TESTS_STEP = "Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)"
 # The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
-# and is the verdict on them; envoy-go-checks and the test job each end with one.
+# and is the verdict on them; envoy-go-checks, the test job and envoy-session-stall each have one.
 HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run

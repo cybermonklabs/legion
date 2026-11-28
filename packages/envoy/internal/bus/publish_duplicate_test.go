@@ -1,7 +1,12 @@
 package bus
 
 import (
+	"context"
+	"strconv"
+	"strings"
 	"testing"
+
+	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -75,5 +80,62 @@ func TestPublishReportingDuplicateReportsTheStreamsVerdict(t *testing.T) {
 		if duplicate {
 			t.Fatalf("an agent-sourced publish carries no MsgId and cannot be a duplicate")
 		}
+	}
+}
+
+// PublishRetained stores a payload that is not an envelope on a subject the stream captures, keeps
+// one copy of every publish under one MsgId, and refuses a subject the stream does not capture
+// rather than waiting out an acknowledgement JetStream never sends.
+func TestPublishRetainedKeepsOneCopyPerMsgID(t *testing.T) {
+	client, err := ConnectOwningStream([]string{testnats.URL(t)})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	ctx := context.Background()
+	const subject = "notifications.legion.infra.agents.ses_handoff"
+
+	// The duplicate's acknowledgement names the copy the stream already holds, by its sequence.
+	var first uint64
+	for i, want := range []bool{false, true} {
+		ack, err := client.PublishRetained(ctx, subject, []byte(`{"copy":`+strconv.Itoa(i)+`}`), "handoff.key-1")
+		if err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+		if ack.Duplicate != want {
+			t.Fatalf("publish %d duplicate = %t, want %t", i, ack.Duplicate, want)
+		}
+		switch {
+		case ack.Sequence == 0:
+			t.Fatalf("publish %d sequence = 0, want the sequence the stream holds its copy at", i)
+		case i == 0:
+			first = ack.Sequence
+		case ack.Sequence != first:
+			t.Fatalf("publish %d sequence = %d, want %d, the sequence of the copy the stream holds", i, ack.Sequence, first)
+		}
+	}
+	if ack, err := client.PublishRetained(ctx, subject, []byte(`{"copy":2}`), "handoff.key-2"); err != nil || ack.Duplicate {
+		t.Fatalf("another MsgId = %+v, %v; want stored", ack, err)
+	}
+	info, err := client.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: subject})
+	if err != nil {
+		t.Fatalf("stream info: %v", err)
+	}
+	if got := info.State.Subjects[subject]; got != 2 {
+		t.Fatalf("the stream holds %d messages on %s, want 2", got, subject)
+	}
+	stored, err := client.JS().GetMsg(Stream, info.State.FirstSeq)
+	if err != nil {
+		t.Fatalf("read the first stored copy: %v", err)
+	}
+	if string(stored.Data) != `{"copy":0}` {
+		t.Fatalf("stored %s, want the first copy", stored.Data)
+	}
+
+	// A role topic is live delivery the listener's role lane owns, and no stream subject captures
+	// it (streamSubjects).
+	if _, err := client.PublishRetained(ctx, "notifications.role.legion-infra-infra-204-tester", []byte(`{}`), ""); err == nil ||
+		!strings.Contains(err.Error(), "does not capture") {
+		t.Fatalf("a subject the stream does not capture = %v, want refused", err)
 	}
 }

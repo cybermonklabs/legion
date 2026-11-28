@@ -83,6 +83,12 @@ var contractComparisonRows = []contractComparisonRow{
 	{row: "The registrations' replaced session", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(replacesContract)"),
 	}},
+	// The watched-workflows entry's row of shapeAnswer (contract_20261127193422_watched-workflows.go),
+	// which takes `watchedWorkflows` off the controller's registration; the Design's table predates
+	// the entry.
+	{row: "The controller registration's watched workflows", compares: []comparisonSite{
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(watchedWorkflowsContract)"),
+	}},
 	{row: "A caller's recorded contract", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "recordedContractAtOrBelow", "n >= DaemonAPIVersion()"),
 		comparedIn("internal/api/shaping.go", "restoreContract", "n < ServingFloor"),
