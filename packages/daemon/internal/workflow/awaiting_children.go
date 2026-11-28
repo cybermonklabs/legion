@@ -70,11 +70,6 @@ type childrenHold struct {
 	// (record.PhaseEnded): the worker the admission pass stops in the middle of its phase, and ""
 	// for a move the transition's guard holds.
 	Ended claim.Role
-	// Return is the held start at its place on the walk of the issue's run and the start the
-	// return takes it to where the pull request has not merged (Walk.childrenReturn: the first
-	// step after the implementer's, record.ReturnStep), each with the role of its step, which the
-	// notice names; the move fills it (awaitChildren).
-	Return childrenReturn
 }
 
 // awaitChildren moves issue into awaiting_children in place of the start hold names, and is the
@@ -140,7 +135,6 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return fmt.Errorf("a move of %s into awaiting_children holds a start of planning through accepting or of step with its task and its cause, for an open child; this one holds %q with a task of %d bytes, cause %q and %d open children",
 			issue.Key, hold.Start, len(hold.Task), hold.Cause, len(hold.Open))
 	}
-	hold.Return = w.childrenReturn(hold.Start)
 	from, now := issue.Phase, e.now()
 	reason := childrenWaitReason(issue.Key, hold)
 	status := PhaseStatus(phase.AwaitingChildren)
@@ -188,7 +182,7 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	e.logOnCommit(ctx, "workflow: a parent waits on its open children", "issue", issue.Key, "tree", issue.Tree,
 		"from", from, "holds", hold.Start, "children", openChildNames(hold.Open))
-	if err := e.notice(ctx, tx, issue.Key, awaitingChildrenNotice(issue.Key, from, hold)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, awaitingChildrenNotice(issue.Key, from, hold, w.childrenReturn(hold.Start))); err != nil {
 		return err
 	}
 	if dropped != nil && hold.Ended != dropped.Role {
@@ -365,15 +359,17 @@ func openChildNames(open []record.OpenChild) string {
 // for, each open child with its Dispatch status, each child whose own blocked_by link names an
 // issue above it on its parent chain (ChildCycleReason), since that wait never ends by itself,
 // what ends the wait, and the step the return goes to where that is another place than the held
-// start's (returnClause over childrenHold.Return), each start named by its place (waitStart.named).
-// It carries the summary and the verdict the phase-finished notice it replaces carried, and the
-// phase the parent left. The architect's levers are the children: the notice names no move of a
-// child under another started issue, which would make that issue wait too (dispatch://INFRA-3320
-// R11).
-func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) record.Notice {
+// start's (returnClause over returns), each start named by its place (waitStart.named). returns is
+// the held start at its place on the walk of the issue's run and the start the return takes it to
+// where the pull request has not merged (Walk.childrenReturn of hold.Start: the first step after
+// the implementer's, record.ReturnStep), each with the role of its step. It carries the summary and
+// the verdict the phase-finished notice it replaces carried, and the phase the parent left. The
+// architect's levers are the children: the notice names no move of a child under another started
+// issue, which would make that issue wait too (dispatch://INFRA-3320 R11).
+func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold, returns childrenReturn) record.Notice {
 	reason := fmt.Sprintf("%s is in awaiting_children, holding the start of %s: %s. No phase of %s starts while Dispatch shows an open child under it: %s.",
-		parent, hold.Return.Held.named(), hold.Cause, parent, openChildNames(hold.Open)) + childCycleSentences(hold.Open)
-	back := returnClause(hold.Return)
+		parent, returns.Held.named(), hold.Cause, parent, openChildNames(hold.Open)) + childCycleSentences(hold.Open)
+	back := returnClause(returns)
 	reason += fmt.Sprintf(" The wait ends when no child under %[1]s is open: each one released and run until it leaves the workflow, closed, moved to icebox, or moved out from under %[1]s to an issue outside its tree or to no parent."+
 		" Then %[1]s goes back to the start it held by itself%[4]s, on a task that names each child that merged during the wait; the return asks for no forward merge, and each testing round of %[1]s runs on its head merged with the tip of the pull request's base branch."+
 		" It holds no admission slot while it waits, and request_backward_move, sign_off and stop_task on it are refused (%[2]s)."+

@@ -117,14 +117,15 @@ type Pods interface {
 	// cutover's repair reads it to pass over a merger something will still wake
 	// (cutoverMergerRepair).
 	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
-	// WaitsForItsSlot is whether issue owes a worker a start of its current phase and generation,
-	// and at step of the role of the running step (record.Issue.HoldsQueued), that waits for its
-	// admission slot while no slot of the issue stands (record.SuperviseRequest.NeedsSlot, which
-	// the outbox holds back until the slot comes): such an issue waits in the admission line, and
-	// the slot's start is what brings its worker back, so its backstop wakes no one
-	// (podBackstopDue). An older such start, or one of a step the task has left, brings no one
-	// back, since admission finishes it without acting, so it silences no backstop.
-	WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// SlotWaitingStarts is every start issue owes a worker that waits for its admission slot while
+	// no slot of the issue stands (record.SuperviseRequest.NeedsSlot, which the outbox holds back
+	// until the slot comes), each with the role, phase and run it was queued for, judged by
+	// nothing. Which of them is the issue's current work is record.Issue.HoldsQueued's to say, on
+	// the start's run, which podBackstopDue asks of each: an issue that owes one waits in the
+	// admission line, and the slot's start is what brings its worker back, so its backstop wakes no
+	// one. An older such start, or one of a step the task has left, brings no one back, since
+	// admission finishes it without acting, so it silences no backstop.
+	SlotWaitingStarts(ctx context.Context, tx pgx.Tx, issue string) ([]store.WaitingStart, error)
 	// CancelPodBackstops drops every open backstop of issue: a parent that moves into
 	// awaiting_children has no phase for one to wake a role of it into (awaitChildren).
 	CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error
@@ -658,13 +659,25 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // backstop two passes read fires once, and the row survives a restart, so one that came due while
 // the daemon was down fires at the first pass after it starts.
 //
-// A backstop of an issue that waits for its admission slot fires and wakes no one
-// (Pods.WaitsForItsSlot). The issue gave its slot back to wait on another, or had its work come
-// back, and owes its worker a start that the outbox holds until the slot comes; the idle rule
-// releases its pod meanwhile. A wake would tell that worker to take up its phase while the
-// admission cap says the issue may not run, and its pod would go idle, be released and be woken
-// again, each idle period and backstop, for the whole wait. The slot's start brings the worker
-// back, with its task.
+// A backstop of an issue that waits for its admission slot fires and wakes no one. The issue gave
+// its slot back to wait on another, or had its work come back, and owes its worker a start that the
+// outbox holds until the slot comes (Pods.SlotWaitingStarts); the idle rule releases its pod
+// meanwhile. A wake would tell that worker to take up its phase while the admission cap says the
+// issue may not run, and its pod would go idle, be released and be woken again, each idle period
+// and backstop, for the whole wait. The slot's start brings the worker back, with its task.
+//
+// Only a start of the issue's current work counts: one of its run (generation) that the issue
+// holds by the rule's one statement (record.Issue.HoldsQueued), so of its phase and, at the phase
+// step, of the role of the step its task stands at. Every role a deployment defines runs as the one
+// phase step, so a task moved from one such role's step to another's in one run leaves the first
+// role's start at the same phase and run. Any other start stays in the outbox until admission
+// finishes it without acting (admit's finishFencedStarts, which asks the same question of the same
+// rows), which a pause defers and a dead lane's lease delays, so it brings no worker back; a
+// backstop it silenced would leave the released worker with nothing to wake it once that row goes.
+// The run and HoldsQueued are the whole judgement here although finishFencedStarts also finishes a
+// row whose issue left the workflow or whose tree lingers, and one a retired claim's stop outlived:
+// the wake refuses the first two itself (wakeReleased reads pods.InWorkflowNotLingering), and a
+// retired claim is never the released claim the backstop wakes.
 func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -677,18 +690,20 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	if err != nil || !found {
 		return intake.Result{}, err
 	}
-	waits, err := e.cfg.Pods.WaitsForItsSlot(ctx, tx, fact.Issue)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	if waits {
-		e.logOnCommit(ctx, "wake: the backstop of an issue that waits for its admission slot wakes no one; the slot's start brings the role back",
-			"issue", fact.Issue, "role", fact.Role)
-		return intake.Result{}, nil
-	}
 	issue, err := e.store.Issue(ctx, tx, released.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
+	}
+	starts, err := e.cfg.Pods.SlotWaitingStarts(ctx, tx, fact.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if slices.ContainsFunc(starts, func(s store.WaitingStart) bool {
+		return s.Generation == issue.Generation && issue.HoldsQueued(s.Role, s.Phase)
+	}) {
+		e.logOnCommit(ctx, "wake: the backstop of an issue that waits for its admission slot wakes no one; the slot's start brings the role back",
+			"issue", fact.Issue, "role", fact.Role)
+		return intake.Result{}, nil
 	}
 	detail := fmt.Sprintf("the backstop armed for %s's %s came due", fact.Issue, fact.Role)
 	_, err = e.wakeReleased(ctx, tx, issue, released, pods.WakeBackstop, detail)

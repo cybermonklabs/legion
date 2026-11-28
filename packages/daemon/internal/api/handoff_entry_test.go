@@ -816,9 +816,10 @@ func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
 
 // holdPhases wires the supervisor to the issue record the way daemon.go wires
 // workflowRuntime.phaseHolds in production, with the predicate that function answers with
-// (record.PhaseHolds): a task carries the phase and the run it was queued for, and one the issue
-// has left is dropped rather than sent. The harness wires none of its own, so every delivery
-// holds until a test asks for this.
+// (record.DeliveryHolds, which holds a start that brings a role back to its phase and run alone and
+// every other delivery to its role's place too): a task carries the phase and the run it was queued
+// for, and one the issue has left is dropped rather than sent. The harness wires none of its own,
+// so every delivery holds until a test asks for this.
 //
 // It must be called before the test creates its first claim: testSupervisor.Create copies deps
 // by value into each machine it makes (supervise.NewMachine), so a machine made before this call
@@ -834,7 +835,7 @@ func holdPhases(h *harness) {
 		}); err != nil {
 			return false, err
 		}
-		return record.PhaseHolds(issue, c.Role, d.Phase, d.Generation), nil
+		return record.DeliveryHolds(issue, c.Role, d), nil
 	}
 }
 

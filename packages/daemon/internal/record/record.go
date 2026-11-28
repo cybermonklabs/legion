@@ -3859,11 +3859,14 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 // owner's or a project's default steps, that names a role at two steps is refused (plan.Supported),
 // as the phases row of a role assumes too (PhaseRow.StepPlace). Away from step the phase alone is
 // compared: one role works several phases (the implementer implementing and retro), and a phase
-// names its one role. It is the one definition of that question, which the four judges of queued
-// work ask, each on its own read: the outbox before it runs a start (daemon's supervise), the
-// admission pass before it lets an owed start take a slot (admit's finishFencedStarts), the
-// supervisor before it sends a queued task (PhaseHolds), and the supervisor again before it
-// brings a claim back for a start (supervise.StartWork, through PhaseHolds).
+// names its one role. It is the one definition of that question, which each judge of queued work
+// asks on its own read: the outbox before it runs a start (daemon's supervise, through
+// HoldsStart), the admission pass before it lets an owed start take a slot (admit's
+// finishFencedStarts), the workflow before a start that waits for its slot silences a backstop
+// (workflow's podBackstopDue), and the supervisor before it sends a queued task and before it
+// brings a claim back for a start (supervise.StartWork), through PhaseHolds, which DeliveryHolds
+// chooses for all of them but one: a start that brings a role back and hands it nothing, which is
+// held to its phase alone (HoldsStart, BroughtBackHolds).
 func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
 	return i.Phase == queuedFor && i.StepIsOf(role)
 }
@@ -3875,8 +3878,8 @@ func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
 // member that ran another step of the task, or the member's own architect, comes back and is told
 // nothing wherever the member stands. The outbox asks it before it runs a start (daemon's
 // supervise), and the supervisor judges the same start again under the machine's lock
-// (supervise.StartWork): a start that brings a role back by BroughtBackHolds, the same rule on the
-// phase and the run, and every other start by PhaseHolds.
+// (supervise.StartWork) by DeliveryHolds: a start that brings a role back by BroughtBackHolds, the
+// same rule on the phase and the run, and every other start by PhaseHolds.
 func (i Issue) HoldsStart(start SuperviseRequest) bool {
 	if start.BringsBack() {
 		return i.Phase == start.Phase
@@ -3888,11 +3891,8 @@ func (i Issue) HoldsStart(start SuperviseRequest) bool {
 // the work of issue, the record of the issue its claim works: the issue holds the work
 // (HoldsQueued) and, for a task of a run (generation above 0), is on that run. An issue the record
 // does not hold (nil) holds every task, since only a claim the workflow never made has none. It is
-// the one definition of that question: the daemon answers supervise's Deps.PhaseHolds with it,
-// and with BroughtBackHolds for a delivery marked BringsBack (daemon's workflowRuntime.phaseHolds,
-// which says why each half is compared). A test that wires the answer itself calls it too (api's
-// holdPhases calls it alone), so the rule it exercises on a delivery not marked BringsBack is the
-// one production runs.
+// the one definition of that question, which DeliveryHolds asks of every delivery not marked
+// BringsBack.
 func PhaseHolds(issue *Issue, role claim.Role, queuedFor phase.Phase, generation uint64) bool {
 	return issue == nil || (issue.HoldsQueued(role, queuedFor) && (generation == 0 || generation == issue.Generation))
 }
@@ -3901,10 +3901,25 @@ func PhaseHolds(issue *Issue, role claim.Role, queuedFor phase.Phase, generation
 // (SuperviseRequest.BringsBack, the promotion's start of a mid-phase member's other roles): the
 // issue still stands in the phase it names, as Issue.HoldsStart holds it, and, for a start of a run,
 // is on that run. It never reads the role of the step: at the phase step the role brought back ran
-// another step of the task. The machine judges it again under its own lock with this rule (daemon's
-// workflowRuntime.phaseHolds), so a move that commits after the outbox's read stops it there too.
+// another step of the task. The machine judges it again under its own lock with this rule
+// (DeliveryHolds), so a move that commits after the outbox's read stops it there too.
 func BroughtBackHolds(issue *Issue, queuedFor phase.Phase, generation uint64) bool {
 	return issue == nil || (issue.Phase == queuedFor && (generation == 0 || generation == issue.Generation))
+}
+
+// DeliveryHolds says whether d, a delivery queued for a claim of role or a start the supervisor
+// judges for one (supervise.Deps.PhaseHolds), is still the work of issue, the record of the issue
+// that claim works: a start that brings the role back and hands it nothing
+// (supervise.Delivery.BringsBack) by BroughtBackHolds, and every other delivery by PhaseHolds. It
+// is the one place that choice is made: the daemon answers supervise's Deps.PhaseHolds with it
+// (daemon's workflowRuntime.phaseHolds, which says why each half is compared), and a test that
+// wires that answer itself calls it too (api's holdPhases), so the rule it exercises is the one
+// production runs.
+func DeliveryHolds(issue *Issue, role claim.Role, d supervise.Delivery) bool {
+	if d.BringsBack {
+		return BroughtBackHolds(issue, d.Phase, d.Generation)
+	}
+	return PhaseHolds(issue, role, d.Phase, d.Generation)
 }
 
 // ParentOf is an observed parent key as a record holds it: nil for none. Dispatch says "no parent"

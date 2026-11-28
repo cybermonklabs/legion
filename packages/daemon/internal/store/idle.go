@@ -105,8 +105,8 @@ func idleWaitingRow(prefix string) string {
 // its payload writes as `"needsSlot": true`) while no slot of that issue stands. It is record's
 // outboxInOrder rule for such a row, which holds it back until the slot comes, written out here as
 // the store writes every statement of its own; TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot
-// holds the two together. The idle rule leaves such a start out (idleWaitingRow); what it means
-// for a backstop is PodRecords.WaitsForItsSlot's to say.
+// holds the two together. The idle rule leaves such a start out (idleWaitingRow); which such start
+// silences a backstop is the workflow's to judge (its podBackstopDue, over PodRecords.SlotWaitingStarts).
 const slotWaitingStart = `kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'needsSlot', '') = 'true'
 	and not exists (select 1 from slots where slots.issue = outbox.issue)`
 
@@ -814,9 +814,11 @@ func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) e
 // issueStepRoleColumn is the role of the step the task of issue i's generation stands at, "" where
 // its plan rows hold none or the task stands at no step: the subquery record.issueColumns ends
 // with, written here a second time over the alias i, since store and record import neither each
-// other. The idle view, a release's cancel, an update round's keep (PodKeepOf) and the fence of a
-// start that waits for its slot (PodRecords.WaitsForItsSlot) read it, so each names the worker of
-// a step's open phase as the issue's own record does (record.Issue.StepRole).
+// other. The idle view, a release's cancel and an update round's keep (PodKeepOf) read it, so each
+// names the worker of a step's open phase as the issue's own record does (record.Issue.StepRole).
+// No statement here judges a queued start by it: whether a start is the work of the step the task
+// stands at is record.Issue.HoldsQueued's one statement to say, which the workflow asks of the
+// starts PodRecords.SlotWaitingStarts reads.
 const issueStepRoleColumn = `coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position
 			where t.issue = i.key and t.generation = i.generation and t.running_kind = 'step'), '')`
 

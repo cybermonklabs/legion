@@ -1388,19 +1388,16 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 //
 // A claim on an issue the daemon does not record holds too. The workflow never deletes an issue,
 // so there is no record only for a claim the workflow never made — the operator's own spawn, whose
-// issue key need not be an issue key at all. The comparison itself is record.PhaseHolds, which a
-// test that wires this answer without a daemon calls too. A start that brings a role back and hands
-// it nothing (supervise.Delivery.BringsBack) is held to its phase and run alone
-// (record.BroughtBackHolds), as the outbox's own read holds it (record.Issue.HoldsStart).
+// issue key need not be an issue key at all. The comparison itself, and the choice of it for a
+// start that brings a role back and hands it nothing (supervise.Delivery.BringsBack), which is
+// held to its phase and run alone as the outbox's own read holds it (record.Issue.HoldsStart), is
+// record.DeliveryHolds, which a test that wires this answer without a daemon calls too.
 func (w *workflowRuntime) phaseHolds(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error) {
 	issue, err := w.recordedIssue(ctx, c.Issue)
 	if err != nil {
 		return false, fmt.Errorf("read %s for the phase of its task: %w", c.Issue, err)
 	}
-	if d.BringsBack {
-		return record.BroughtBackHolds(issue, d.Phase, d.Generation), nil
-	}
-	return record.PhaseHolds(issue, c.Role, d.Phase, d.Generation), nil
+	return record.DeliveryHolds(issue, c.Role, d), nil
 }
 
 // phaseRole answers supervise's Deps.PhaseRole from the issue record: the worker of key's open

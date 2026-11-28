@@ -1506,7 +1506,9 @@ func (m *Machine) relaunchAfterDrop(ctx context.Context) error {
 }
 
 // phaseHolds asks whether the issue is still in the phase and run this task was queued for, and,
-// at the phase step, at the step of this claim's role. A delivery that names no phase is nobody's
+// at the phase step, at the step of this claim's role, but for a start that brings the role back
+// and hands it nothing (Delivery.BringsBack), which is held to its phase and run alone: the daemon's
+// answer makes that choice (record.DeliveryHolds). A delivery that names no phase is nobody's
 // to drop — an operator's own, an architect's — and is never put to the answer at all, so the
 // exemption this package documents is this package's own rather than a promise every
 // implementation has to keep. A daemon with no workflow configured supplies no answer, and every

@@ -284,8 +284,8 @@ func TestTheChildrenNoticesEndEachCycleSentenceWithAFullStop(t *testing.T) {
 	want := " " + ChildCycleReason(cwChild, cwParent) + ". " + ChildCycleReason("LEGION-211", cwParent) + "."
 	for name, reason := range map[string]string{
 		"children-first": ChildrenFirstNotice(record.ChildWait{Parent: cwParent, Open: open}).Reason,
-		"awaiting_children": awaitingChildrenNotice(cwParent, phase.Testing, childrenHold{Start: phase.Reviewing, Cause: "the tester completed testing", Open: open,
-			Return: todaysWalk().childrenReturn(phase.Reviewing)}).Reason,
+		"awaiting_children": awaitingChildrenNotice(cwParent, phase.Testing, childrenHold{Start: phase.Reviewing, Cause: "the tester completed testing", Open: open},
+			todaysWalk().childrenReturn(phase.Reviewing)).Reason,
 	} {
 		if !strings.Contains(reason, want) {
 			t.Errorf("the %s notice's reason %q does not say %q", name, reason, want)

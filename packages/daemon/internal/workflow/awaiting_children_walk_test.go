@@ -230,10 +230,11 @@ func TestAParentAtADeploymentStepWaitsForAnOpenChild(t *testing.T) {
 // to the linter's step 3, whose start an open child holds; the return takes that start back to the
 // checker's step 2, the first step after the implementer's, which runs as step too. So the wait
 // goes back to another place than the start it holds, and each text says so by the steps' roles:
-// the architect's notice carries the return clause naming the checker's step, a refused stop_task
-// names the checker's step it goes back to, and the checker's return task names the linter's step
-// as the start it takes the place of. A comparison of the two phases reads the return as the held
-// start itself, and a name of the phase alone names neither role.
+// the architect's notice carries the return clause naming the checker's step, and a refused
+// stop_task and the checker's return task each name both steps, the checker's, which the return
+// goes back to, before the linter's, the start it holds. The names are the test's own: a text that
+// swapped the two steps names the linter's step first, a comparison of the two phases reads the
+// return as the held start itself, and a name of the phase alone names neither role.
 func TestAWaitAtADeploymentStepNamesTheStepItGoesBackTo(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -258,33 +259,41 @@ func TestAWaitAtADeploymentStepNamesTheStepItGoesBackTo(t *testing.T) {
 		returns = w.childrenReturn(waiting.ChildrenWait.Start)
 		return err
 	})
+	const checkerStep, linterStep = "the checker's step", "the linter's step"
 	linter := waitStart{Place: record.TaskPlace{Kind: record.PlaceStep, Position: 3}, At: phase.Step, Role: "linter"}
 	checker := waitStart{Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, At: phase.Step, Role: "checker"}
 	if returns.Held != linter || returns.Back != checker || !returns.Past || !returns.moves() {
 		t.Fatalf("the wait's return = %+v, moving %t; want the linter's step 3 held and the checker's step 2 gone back to, past the implementer's, at another place",
 			returns, returns.moves())
 	}
-	for _, start := range []waitStart{returns.Held, returns.Back} {
-		if !strings.Contains(start.named(), string(start.Role)) {
-			t.Fatalf("the step at %+v is named %q, which names no %s", start.Place, start.named(), start.Role)
+	if held, back := returns.Held.named(), returns.Back.named(); held != linterStep || back != checkerStep {
+		t.Fatalf("the held start is named %q and the start gone back to %q, want %q and %q", held, back, linterStep, checkerStep)
+	}
+	// backFirst fails unless text carries part whole, and part, the words goesBack or returnStarts
+	// wrote of the return, names the checker's step, which the return goes back to, before the
+	// linter's, the start it holds.
+	backFirst := func(what, text, part string) {
+		t.Helper()
+		back, held := strings.Index(part, checkerStep), strings.Index(part, linterStep)
+		if !strings.Contains(text, part) || back < 0 || held < 0 || back > held {
+			t.Fatalf("%s %q; want it to carry %q, which names %q (at %d) before %q (at %d)", what, text, part, checkerStep, back, linterStep, held)
 		}
 	}
 
 	clause := returnClause(returns)
 	told := noticesOfKind(t, pool, root.Key, AwaitingChildrenNoticeKind)
-	if clause == "" || !strings.Contains(clause, returns.Back.named()) || len(told) != 1 || !strings.Contains(told[0].Reason, clause) {
-		t.Fatalf("the awaiting-children notices = %+v; want one whose reason carries the return clause %q, which names %s", told, clause, returns.Back.named())
+	if !strings.Contains(clause, checkerStep) || len(told) != 1 || !strings.Contains(told[0].Reason, clause) {
+		t.Fatalf("the awaiting-children notices = %+v; want one whose reason carries the return clause %q, which names %s", told, clause, checkerStep)
 	}
-	refusedWith(t, applyFacts(t, pool, engine)("stop", ownersStop(t, waiting, "a")), waitingOnChildren, goesBack(returns), returns.Back.named())
+	refusal := refusedWith(t, applyFacts(t, pool, engine)("stop", ownersStop(t, waiting, "a")), waitingOnChildren, checkerStep, linterStep)
+	backFirst("the refusal of stop_task", refusal, goesBack(returns))
 
 	returnsFromChildren(t, pool, engine, root.Key)
 
 	assertWalksAt(t, pool, engine, root.Key, phase.Step, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
-	starts := returnStarts(returns)
 	checkers := roleStartsOf(t, pool, root.Key, "checker")
-	if !strings.Contains(starts, returns.Held.named()) || len(checkers) == 0 || checkers[len(checkers)-1].Phase != phase.Step ||
-		!strings.Contains(checkers[len(checkers)-1].Task, starts) {
-		t.Fatalf("the checker's starts after the return = %+v; want the last of step, on a task that says it starts %q, naming the held %s",
-			checkers, starts, returns.Held.named())
+	if len(checkers) == 0 || checkers[len(checkers)-1].Phase != phase.Step {
+		t.Fatalf("the checker's starts after the return = %+v; want the last of step", checkers)
 	}
+	backFirst("the checker's return task", checkers[len(checkers)-1].Task, returnStarts(returns))
 }
