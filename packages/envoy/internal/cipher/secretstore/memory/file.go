@@ -12,7 +12,14 @@ import (
 // file is the shape of the memory secrets file BROKER_MEMORY_SECRETS_FILE names:
 // {"secrets": [Secret, ...]}.
 type file struct {
-	Secrets []Secret `json:"secrets"`
+	Secrets []fileSecret `json:"secrets"`
+}
+
+// fileSecret is one entry of the file: a Secret, and kms_key_id, a field of the fake secrets file
+// the memory store replaced, which the decoder reads so that parseFile can refuse it by name.
+type fileSecret struct {
+	Secret
+	KMSKeyID *json.RawMessage `json:"kms_key_id,omitempty"`
 }
 
 // Open reads path, a memory secrets file, into a store that follows it: each call reads the file
@@ -48,20 +55,23 @@ func parseFile(path string, data []byte) ([]Secret, error) {
 			return nil, fmt.Errorf("%s: not JSON (at byte %d)", path, syntax.Offset)
 		case errors.As(err, &typeErr):
 			return nil, fmt.Errorf("%s: %s is not a %s (at byte %d)", path, typeErr.Field, typeErr.Type, typeErr.Offset)
-		case err.Error() == `json: unknown field "kms_key_id"`:
-			return nil, fmt.Errorf("%s: kms_key_id is a field of the fake secrets file the memory store replaced; take it out (off_key: true marks a secret off the agent-secrets key)", path)
 		case strings.HasPrefix(err.Error(), "json: unknown field "):
 			return nil, fmt.Errorf("%s: %s", path, strings.TrimPrefix(err.Error(), "json: "))
 		default:
 			return nil, fmt.Errorf("%s: not a memory secrets file", path)
 		}
 	}
+	secrets := make([]Secret, 0, len(f.Secrets))
 	for i, s := range f.Secrets {
+		if s.KMSKeyID != nil {
+			return nil, fmt.Errorf("%s: kms_key_id is a field of the fake secrets file the memory store replaced; take it out (off_key: true marks a secret off the agent-secrets key)", path)
+		}
 		if s.Name == "" {
 			return nil, fmt.Errorf("%s: secrets[%d] has no name", path, i)
 		}
+		secrets = append(secrets, s.Secret)
 	}
-	return f.Secrets, nil
+	return secrets, nil
 }
 
 // follow reads an Open store's file again and, when its bytes have changed since they were last
