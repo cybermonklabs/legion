@@ -303,9 +303,6 @@ func unfenced(payload record.OutboxPayload) record.OutboxPayload {
 	case record.UpdateAsk:
 		value.Generation, value.Entry = 0, 0
 		return value
-	case record.ClaimRelease:
-		value.Generation, value.Entry = 0, 0
-		return value
 	case record.PhaseEnded:
 		value.Generation, value.Entry = 0, 0
 		return value

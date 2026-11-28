@@ -145,9 +145,10 @@ func (r SuperviseRequest) Stops() bool {
 }
 
 // FenceOf is the fence payload names, and whether its kind carries one at all: the parts of
-// Fence it carries, each zero where it names none. The claim release of a session the daemon left
-// behind (ClaimRelease.Session) carries none: it releases that session's claim whatever run or
-// phase entry the issue stands at, since the left session is dead to the daemon either way.
+// Fence it carries, each zero where it names none. A claim release (ClaimRelease) carries none, of
+// either shape: it is judged on the issue's record when it runs (the daemon's releaseClaim), so a
+// row that runs after a return, a second stop or a new run harms nothing of that run, and a fence
+// would drop the record of why a claim it leaves stands (Issue.ClaimLeft).
 func FenceOf(payload OutboxPayload) (Fence, bool) {
 	switch value := payload.(type) {
 	case StatusWrite:
@@ -195,11 +196,6 @@ func FenceOf(payload OutboxPayload) (Fence, bool) {
 		return Fence{Generation: value.Generation, Entry: value.Entry}, true
 	case MergeQueueRemoval:
 		return Fence{Generation: value.Generation, Entry: value.Entry}, true
-	case ClaimRelease:
-		if value.Session != "" {
-			return Fence{}, false
-		}
-		return Fence{Generation: value.Generation, Entry: value.Entry}, true
 	}
 	return Fence{}, false
 }
@@ -245,7 +241,7 @@ type FenceKeys struct {
 var fencedPayloads = []OutboxPayload{
 	StatusWrite{}, MessagePost{}, Notice{}, ControllerNotice{}, GateSeed{}, PendingBasisSeed{}, RetentionEnd{},
 	IssueSuspend{}, IssueWorkspaceCheck{}, IssueRelease{}, IssueBranch{}, CheckWakeDue{}, CheckLook{}, CheckBound{},
-	RoleMessage{}, PhaseEnded{}, HookPrompt{}, UpdateAsk{}, MergeForwardMessage{}, MergeQueueRemoval{}, ClaimRelease{},
+	RoleMessage{}, PhaseEnded{}, HookPrompt{}, UpdateAsk{}, MergeForwardMessage{}, MergeQueueRemoval{},
 }
 
 // FencedKinds is every kind whose rows carry a fence, with the parts of it each carries, read off
@@ -382,10 +378,6 @@ func fenced(payload OutboxPayload, fence Fence) (OutboxPayload, fenceStamp) {
 		entry(&value.Entry)
 		return value, stamp
 	case MergeQueueRemoval:
-		generation(&value.Generation)
-		entry(&value.Entry)
-		return value, stamp
-	case ClaimRelease:
 		generation(&value.Generation)
 		entry(&value.Entry)
 		return value, stamp

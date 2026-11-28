@@ -217,7 +217,10 @@ func (e *Engine) suspendPod(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 
 // releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is
 // parked rather than closed: Dispatch releases a claim at a close alone. The row carries
-// nothing of the holder, which it reads with the issue's record when it runs.
+// nothing of the holder, which it reads with the issue's record when it runs, and no run or
+// phase-entry fence (record.FenceOf): it is judged on the issue's record then, so a row that runs
+// after a return to work leaves the claim to the run that returned and writes why
+// (record.ClaimLeftIssueRuns).
 func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
 	if status == "done" {
 		return nil

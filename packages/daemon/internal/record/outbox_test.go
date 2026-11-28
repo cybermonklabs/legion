@@ -575,6 +575,7 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 		history         = "it is the record of a step or a plan of one run, keyed by that run's own id: a late write records what that run did and acts on no later run"
 		owedWhenRun     = "it reads what its gate root's tree owes when it runs (OwedNews), never what it owed when queued, and acts on no pod and no claim: a role hears it only through a news-only start, a supervise row fenced by its own run and entry"
 		stateSequence   = "it is the event of the committed write that queued it, in its project's one sequence (StateSeq), which Dispatch reads for a gap, so a late one still publishes, and it acts on no pod and no claim"
+		judgedWhenRun   = "it is judged on the issue's record when it runs (the daemon's releaseClaim), which leaves the claim of a run that returned to work and writes why (issue-runs), so a late row harms nothing of that run, and a fence would only finish it unrun with that record unwritten (the architect's ruling of 2026-11-28 on dispatch://INFRA-4730, item 2)"
 	)
 	decided := map[OutboxKind]struct {
 		generation, entry, target fencePart
@@ -653,10 +654,11 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 		OutboxKindRoleHoldersPublish: {lacks(currentState), lacks(currentState), lacks(currentState), nil},
 		OutboxKindMergeQueueRead:     {lacks(readsAndApplies), lacks(readsAndApplies), lacks(readsAndApplies), nil},
 		OutboxKindConflictConfirm:    {lacks(readsAndApplies), lacks(readsAndApplies), lacks(readsAndApplies), nil},
-		// It releases the issue's Dispatch claim when a park left the issue: a late one must not
-		// release the claim of the run a return opened.
-		OutboxKindClaimRelease: {carries("Generation"), carries("Entry"),
-			lacks("it releases the issue's Dispatch claim, which no pod and no claim of the daemon's holds"), ClaimRelease{}},
+		// It releases the issue's Dispatch claim when a park left the issue, and its executor reads
+		// the issue's record when it runs: a row that runs after a return leaves the claim of the
+		// run that returned and says why, so neither of its shapes carries a fence.
+		OutboxKindClaimRelease: {lacks(judgedWhenRun), lacks(judgedWhenRun),
+			lacks("it releases the issue's Dispatch claim, which no pod and no claim of the daemon's holds"), nil},
 		OutboxKindStepRecord: {lacks(history), lacks(history), lacks(history), nil},
 		OutboxKindPlanRecord: {lacks(history), lacks(history), lacks(history), nil},
 		// Main's reconcile of a tree's news (#3995) carries nothing but its gate root, the row's issue:
@@ -813,45 +815,51 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 	}
 }
 
-// The claim release of a session the daemon left behind (ClaimRelease.Session, which store's
-// putClaim queues in the claim write that moved the claim off that session) carries no fence: the
-// left session is dead to the daemon whatever run or phase entry the issue stands at. FenceOf says
-// it carries none, NewOutboxRow takes it with no run and no entry, and no later run or phase entry
-// makes it late (LateAt), not even where a writer stamped one on it. The row of a move out of the
-// workflow names no session and carries its fence as every effect does, so NewOutboxRow still
-// refuses it without its run.
-func TestALeftSessionsClaimReleaseCarriesNoFence(t *testing.T) {
+// No claim release carries a fence, of either shape (the architect's ruling of 2026-11-28 on
+// dispatch://INFRA-4730, item 2): the row of a move out of the workflow names no session, and the
+// row of a session the daemon left behind names that session (ClaimRelease.Session, which store's
+// putClaim queues in the claim write that moved the claim off it). Each is judged on the issue's
+// record when it runs (the daemon's releaseClaim), so a late one harms nothing of a run that
+// returned to work. FenceOf says each carries none, Fenced stamps nothing on it, NewOutboxRow takes
+// it with no run and no entry and encodes nothing beside the session it names, and no later run or
+// phase entry makes it late (LateAt).
+func TestNoClaimReleaseCarriesAFence(t *testing.T) {
 	now := time.Date(2026, 11, 28, 3, 0, 0, 0, time.UTC)
-	left := ClaimRelease{Session: "ses_x"}
-	if fence, carries := FenceOf(left); carries || fence != (Fence{}) {
-		t.Errorf("FenceOf(%+v) = %+v, %t, want no fence: the release of a left session is fenced by no run and no entry", left, fence, carries)
-	}
-	switch row, err := NewOutboxRow("LEGION-208", left, now); {
-	case err != nil:
-		t.Errorf("NewOutboxRow refuses the release of a left session, which names no run and no entry: %v", err)
-	case row.Kind != OutboxKindClaimRelease || string(row.Payload) != `{"session":"ses_x"}`:
-		t.Errorf("the release row of a left session = %s %s, want claim_release {\"session\":\"ses_x\"}", row.Kind, row.Payload)
-	}
-	stamped := ClaimRelease{Session: "ses_x", Generation: 2, Entry: 3}
-	for _, at := range []Fence{{Generation: 1, Entry: 1}, {Generation: 2, Entry: 3}, {Generation: 3, Entry: 3}, {Generation: 2, Entry: 4}, {Generation: 9, Entry: 9}} {
-		for _, payload := range []ClaimRelease{left, stamped} {
-			if LateAt(at, payload) {
-				t.Errorf("the release %+v of a left session is late at %+v, want it run at every run and phase entry", payload, at)
+	for _, tc := range []struct {
+		name    string
+		release ClaimRelease
+		encoded string
+	}{
+		{name: "the release of a move", release: ClaimRelease{}, encoded: `{}`},
+		{name: "the release of a left session", release: ClaimRelease{Session: "ses_x"}, encoded: `{"session":"ses_x"}`},
+	} {
+		if fence, carries := FenceOf(tc.release); carries || fence != (Fence{}) {
+			t.Errorf("FenceOf(%s) = %+v, %t, want no fence: a claim release is judged on the issue's record when it runs", tc.name, fence, carries)
+		}
+		if stamped := Fenced(tc.release, Fence{Generation: 2, Entry: 3, PodUID: "pod-uid-1"}); stamped != OutboxPayload(tc.release) {
+			t.Errorf("Fenced(%s) = %#v, want %#v as it was: a claim release carries no part of a fence", tc.name, stamped, tc.release)
+		}
+		switch row, err := NewOutboxRow("LEGION-208", tc.release, now); {
+		case err != nil:
+			t.Errorf("NewOutboxRow refuses %s, which names no run and no entry: %v", tc.name, err)
+		case row.Kind != OutboxKindClaimRelease || string(row.Payload) != tc.encoded:
+			t.Errorf("%s queues as %s %s, want claim_release %s", tc.name, row.Kind, row.Payload, tc.encoded)
+		}
+		for _, at := range []Fence{{Generation: 1, Entry: 1}, {Generation: 1, Entry: 2}, {Generation: 2, Entry: 1}, {Generation: 9, Entry: 9}} {
+			if LateAt(at, tc.release) {
+				t.Errorf("%s is late at %+v, want it run at every run and phase entry", tc.name, at)
 			}
 		}
-	}
-	if _, err := NewOutboxRow("LEGION-208", ClaimRelease{}, now); err == nil {
-		t.Fatal("NewOutboxRow takes the release of a move that names no session and no run, want it refused: such a row could be queued unfenced")
 	}
 }
 
 // The first boot's conversion stamps the fence its kind carries on each unfinished row the release
-// before queued without one (StampReleaseBeforeFences), and stamps none on the claim release of a
-// session the daemon left behind, which main's daemon (#5908) queues as {"session": …} with no
-// fence: such a row releases that session's claim at whatever run or phase entry the issue stands
-// (FenceOf). Beside it, a move's claim release, {}, is stamped with the run and the phase entry the
-// issue stands at, and the left session's row is still read as fenced by nothing.
-func TestTheConversionStampsNoFenceOnALeftSessionsClaimRelease(t *testing.T) {
+// before queued without one (StampReleaseBeforeFences), and none on a claim release of either
+// shape: {}, as main's daemon queues a move's, and {"session": …}, as its #5908 queues a left
+// session's. No claim release carries a fence (FenceOf). Beside them, a message the release before
+// queued without its fence is stamped with the run and the phase entry the issue stands at, so the
+// stamp read the issue's rows and passed both claim releases over.
+func TestTheConversionStampsNoFenceOnAClaimRelease(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
@@ -859,16 +867,18 @@ func TestTheConversionStampsNoFenceOnALeftSessionsClaimRelease(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
 	})
-	queue := func(payload string) int64 {
+	queue := func(kind OutboxKind, payload string) int64 {
 		t.Helper()
 		var id int64
 		if err := st.Pool().QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-			values ('claim_release', $1, $2::jsonb, 0, now(), '') returning id`, issue.Key, payload).Scan(&id); err != nil {
-			t.Fatalf("queue the claim release %s as main's daemon queued it: %v", payload, err)
+			values ($1, $2, $3::jsonb, 0, now(), '') returning id`, string(kind), issue.Key, payload).Scan(&id); err != nil {
+			t.Fatalf("queue the %s row %s as main's daemon queued it: %v", kind, payload, err)
 		}
 		return id
 	}
-	move, left := queue(`{}`), queue(`{"session": "ses-left"}`)
+	move := queue(OutboxKindClaimRelease, `{}`)
+	left := queue(OutboxKindClaimRelease, `{"session": "ses-left"}`)
+	message := queue(OutboxKindDispatchMessage, `{"body": "The checks of the head settled."}`)
 
 	var stamped int64
 	inTx(t, st, func(tx pgx.Tx) {
@@ -880,26 +890,35 @@ func TestTheConversionStampsNoFenceOnALeftSessionsClaimRelease(t *testing.T) {
 		t.Helper()
 		var payload string
 		if err := st.Pool().QueryRow(ctx, `select payload::text from outbox where id = $1`, id).Scan(&payload); err != nil {
-			t.Fatalf("read the claim release %d: %v", id, err)
+			t.Fatalf("read the row %d: %v", id, err)
 		}
 		return payload
 	}
-	if got, want := read(move), `{"entry": 1, "generation": 3}`; got != want {
-		t.Errorf("the move's claim release after the conversion = %s, want %s: the run and the phase entry %s stands at", got, want, issue.Key)
+	for _, release := range []struct {
+		name string
+		id   int64
+		want string
+	}{
+		{name: "the move's claim release", id: move, want: `{}`},
+		{name: "the left session's claim release", id: left, want: `{"session": "ses-left"}`},
+	} {
+		got := read(release.id)
+		if got != release.want {
+			t.Errorf("%s after the conversion = %s, want %s as it was queued: no claim release carries a fence", release.name, got, release.want)
+		}
+		payload, err := DecodeOutboxPayload(OutboxRow{ID: release.id, Kind: OutboxKindClaimRelease, Issue: issue.Key, Payload: []byte(got)})
+		if err != nil {
+			t.Fatalf("decode %s as the executor does: %v", release.name, err)
+		}
+		if fence, carries := FenceOf(payload); carries {
+			t.Errorf("%s reads fence %+v after the conversion, want none", release.name, fence)
+		}
 	}
-	got := read(left)
-	if want := `{"session": "ses-left"}`; got != want {
-		t.Errorf("the left session's claim release after the conversion = %s, want %s as it was queued: it carries no fence", got, want)
+	if got, want := read(message), `{"body": "The checks of the head settled.", "entry": 1, "generation": 3}`; got != want {
+		t.Errorf("the message after the conversion = %s, want %s: the run and the phase entry %s stands at", got, want, issue.Key)
 	}
 	if stamped != 1 {
-		t.Errorf("the conversion stamped %d rows, want the move's alone", stamped)
-	}
-	payload, err := DecodeOutboxPayload(OutboxRow{ID: left, Kind: OutboxKindClaimRelease, Issue: issue.Key, Payload: []byte(got)})
-	if err != nil {
-		t.Fatalf("decode the left session's claim release as the executor does: %v", err)
-	}
-	if fence, carries := FenceOf(payload); carries {
-		t.Errorf("the left session's claim release reads fence %+v after the conversion, want none", fence)
+		t.Errorf("the conversion stamped %d rows, want the message's alone", stamped)
 	}
 }
 

@@ -270,7 +270,6 @@ func TestTheFirstBootFencesEachRowTheReleaseBeforeQueued(t *testing.T) {
 		record.MergeForwardMessage{Step: record.MergeForwardAsk, Role: claim.RoleImplementer, Head: "abc123", Base: "main", Phase: phase.Merging,
 			PullRequest: 42, Why: record.ConflictMergeNext},
 		record.MergeQueueRemoval{Number: 42, Head: "abc123"},
-		record.ClaimRelease{},
 		record.SuperviseRequest{Op: "suspend", Tree: key, Role: claim.RoleImplementer},
 		record.SuperviseRequest{Op: "step_stop", Tree: key, Role: claim.RoleImplementer, Reason: "task a of " + key + " was stopped by its owner"},
 		record.SuperviseRequest{Op: "issue_close", Tree: key, Role: claim.RoleImplementer},

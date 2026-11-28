@@ -824,7 +824,9 @@ func suspendedItsClaim(t *testing.T, rig oneStartRig, err error) bool {
 // is delivered at N+1 and does nothing in G+1. The pod's suspension is
 // TestACleanupDeletesOnlyItsOwnIssuesPod's, which reads the pod it acts on beside the fence; an
 // idle release's save, role stop and teardown cancel the release they belong to rather than acting
-// (the outbox's podStands and release arms).
+// (the outbox's podStands and release arms). A claim release is no fenced kind: its executor judges
+// the issue's record when it runs, so a late one leaves the claim of a run that returned
+// (left_session_claims_test.go).
 func TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -832,7 +834,6 @@ func TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing(t *testing.T) {
 	effects := []lateEffect{
 		{"dispatch_status", record.OrdinaryStatusWrite("testing", "in_progress", ""), false, reachedItsEffect},
 		{"dispatch_message", record.MessagePost{Body: "A message of the run."}, false, reachedItsEffect},
-		{"claim_release", record.ClaimRelease{}, false, reachedItsEffect},
 		{"notice", record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, Phase: phase.Planning}, false, reachedItsEffect},
 		{"controller_notice", record.ControllerNotice{Kind: record.TriageNotice}, false, reachedItsEffect},
 		{"role_message", record.RoleMessage{Role: "legion-legion-legion-208-implementer", Body: "The checks of the head settled."}, false, reachedItsEffect},

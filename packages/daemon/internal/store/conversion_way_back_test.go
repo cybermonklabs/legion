@@ -123,12 +123,12 @@ func decodedBeforeTheConversion(kind record.OutboxKind, payload []byte) string {
 //
 // The control comes first, on the same rows: the strict decode of the release before refuses each
 // row that carries a key this release adds or is of a kind or a notice kind it adds, and takes the
-// gate seed and the branch, whose shape it shares. Then the block runs for LEGION as the
-// migration's header carries it, as one exec (the simple protocol a psql run uses). After it, the
-// rows of the new kinds and of an option are gone; every other LEGION row is still there, the
-// release before's decode takes it, and so does this release's, which reads it on the roll
-// forward; LEGION-2's and LEGION-3's records, claims, lifecycle, handed_over_roots row and queued
-// rows are what that release's own re-admission would have written; LEGION's record of the
+// gate seed, the branch and the claim release, whose shape it shares. Then the block runs for
+// LEGION as the migration's header carries it, as one exec (the simple protocol a psql run uses).
+// After it, the rows of the new kinds and of an option are gone; every other LEGION row is still
+// there, the release before's decode takes it, and so does this release's, which reads it on the
+// roll forward; LEGION-2's and LEGION-3's records, claims, lifecycle, handed_over_roots row and
+// queued rows are what that release's own re-admission would have written; LEGION's record of the
 // conversion is gone; one reassert status write in the release before's shape sets back the held
 // writes of the record in the workflow that Dispatch shows at another status, at the last held
 // write's sequence, no row is queued for any other, and every held list of LEGION is empty; the
@@ -296,7 +296,9 @@ func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 			refused: true, after: `{"look":1,"reason":"the agent's own wake"}`},
 		{name: "a production check's look", issue: root, payload: record.Fenced(record.CheckLook{Look: 1}, fence), refused: true, after: `{"look":1}`},
 		{name: "a production check's bound", issue: root, payload: record.Fenced(record.CheckBound{}, fence), refused: true, after: `{}`},
-		{name: "a claim release", issue: root, payload: record.Fenced(record.ClaimRelease{}, fence), refused: true, after: `{}`},
+		// A claim release carries no fence (record.FenceOf), so the release before takes it as this
+		// release queues it, and the way back leaves it so.
+		{name: "a claim release", issue: root, payload: record.Fenced(record.ClaimRelease{}, fence), after: `{}`},
 		{name: "a role message", issue: root, payload: record.Fenced(record.RoleMessage{Role: "legion-legion-legion-1-implementer",
 			Body: "The checks of the head settled."}, fence), refused: true,
 			after: `{"role":"legion-legion-legion-1-implementer","body":"The checks of the head settled."}`},

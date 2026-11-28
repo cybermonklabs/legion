@@ -3761,7 +3761,7 @@ update outbox set payload = payload - 'generation' - 'entry' - 'to'
   where kind in ('notice', 'controller_notice') and split_part(issue, '-', 1) = '<PROJECT>';
 update outbox set payload = payload - 'generation' - 'entry'
   where kind in ('dispatch_message', 'role_message', 'phase_ended', 'hook_prompt', 'update_ask', 'merge_forward',
-    'merge_queue_removal', 'claim_release') and split_part(issue, '-', 1) = '<PROJECT>';
+    'merge_queue_removal') and split_part(issue, '-', 1) = '<PROJECT>';
 update outbox set payload = payload - 'generation'
   where kind in ('check_wake', 'check_look', 'check_bound') and split_part(issue, '-', 1) = '<PROJECT>';
 update outbox set payload = payload - 'entry' - 'podUid' - 'readPodUid'

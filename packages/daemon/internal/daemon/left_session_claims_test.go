@@ -1086,7 +1086,7 @@ func (tr *leftTree) reruns(status string) bool {
 }
 
 // fence is the fence key stands at as the store holds it now (record.ReadFence): the run and the
-// phase entry a row queued now names, and against which a row queued earlier is late.
+// phase entry a fenced row queued now names, and against which a fenced row queued earlier is late.
 func (r *leftRig) fence(key string) record.Fence {
 	r.t.Helper()
 	var fence record.Fence
@@ -1103,7 +1103,8 @@ func (r *leftRig) fence(key string) record.Fence {
 // wantReturned holds key back in Legion's work after a person set it to todo, in the run it stood
 // in when it stopped, at stopped: R20 of dispatch://INFRA-3320 keeps the generation on a return
 // and resumes the issue at a new phase entry, so key stands at stopped's generation and at a later
-// entry, and a row queued at stopped is late.
+// entry, and a fenced row queued at stopped is late. A claim release carries no fence
+// (record.FenceOf), so it is late at no entry.
 func (r *leftRig) wantReturned(key string, stopped record.Fence) {
 	r.t.Helper()
 	got, at := r.issue(key), r.fence(key)
@@ -1304,9 +1305,10 @@ var leftArms = map[record.ClaimLeftReason][]leftArm{
 		r.queueRelease(record.ClaimRelease{})
 	}, holder: "session:" + claimTreeSession}},
 	// R20 of dispatch://INFRA-3320 keeps the generation on a return: the issue is back in the
-	// workflow in the run and the phase it stopped in, and the row is queued at the fence it stands
-	// at, so no later entry makes it late.
-	record.ClaimLeftIssueRuns: {{name: "a move's row of the fence the issue stands at runs while the issue is in the workflow again, in its run", set: func(r *leftRig) {
+	// workflow in the run and the phase it stopped in. The move's row carries no fence
+	// (record.FenceOf), so it runs at whatever entry the issue stands, and judges the issue on its
+	// record then.
+	record.ClaimLeftIssueRuns: {{name: "a move's row runs while the issue is in the workflow again, in its run", set: func(r *leftRig) {
 		returned := parkedIssue()
 		returned.Status = "in_progress"
 		r.put(returned)
@@ -1499,17 +1501,18 @@ func TestAMoveToBacklogReleasesTheClaimOfTheArchitectSessionAFreshSessionReplace
 // R4 of dispatch://INFRA-3144: a claim held by the session that works a claim of the issue's tree
 // now stays, and no claim release takes it; Dispatch is sent no DELETE at all. A person's todo
 // returns the root to Legion's work before the move's row runs, in its run at a new phase entry
-// (R20 of dispatch://INFRA-3320 keeps the generation on a return), so the move's row, queued at the
-// entry the root stopped at, is late (record.LateAt) and finishes unrun: it leaves the claim and
-// writes nothing into the record. The left session's row acts only on the session it names: a
-// claim the new session took is another holder, which that row judges nothing of, so the record
-// keeps the entry it had. And a left session whose name is a claim of the tree's current session
-// again, which an operator's release of its names freed and another claim took, is that claim's,
-// and the row leaves it (`works-now`).
+// (R20 of dispatch://INFRA-3320 keeps the generation on a return). The move's row carries no fence
+// (record.FenceOf), so it runs after the return all the same: it finds the issue in the workflow
+// again, leaves its holder's claim and records why (`issue-runs`), which INFRA-3144's R2 owes and a
+// fence would drop. The left session's row acts only on the session it names: a claim the new
+// session took is another holder, which that row judges nothing of, so the record keeps the entry
+// it had. And a left session whose name is a claim of the tree's current session again, which an
+// operator's release of its names freed and another claim took, is that claim's, and the row
+// leaves it (`works-now`).
 func TestAClaimReleaseLeavesTheClaimOfTheSessionThatWorksTheIssueNow(t *testing.T) {
 	t.Parallel()
 
-	t.Run("the issue returns to the workflow before the move's row runs, and its architect works in the session that holds the claim", func(t *testing.T) {
+	t.Run("the issue returns to the workflow before the move's row runs, which leaves the claim of the session its architect works in and says why", func(t *testing.T) {
 		t.Parallel()
 		r := newLeftRig(t)
 		tr := leftTreeOf(r, leftRoot)
@@ -1525,11 +1528,13 @@ func TestAClaimReleaseLeavesTheClaimOfTheSessionThatWorksTheIssueNow(t *testing.
 		if got := r.dispatch.holder(leftRoot); got != "session:"+tr.session {
 			t.Fatalf("Dispatch shows %s claimed by %q, want the claim of %s, whose architect works the issue now", leftRoot, got, tr.session)
 		}
-		if left := r.claimLeft(leftRoot); left != nil {
-			t.Fatalf("the record of %s names claimLeft %v, want none: the move's row of entry %d is late at the return's entry and finishes unrun", leftRoot, left, stopped.Entry)
+		left := r.claimLeft(leftRoot)
+		if left == nil || left["reason"] != string(record.ClaimLeftIssueRuns) || left["holder"] != "session:"+tr.session {
+			t.Fatalf("the record of %s names claimLeft %v, want %s left with the reason %s: the move's row runs after the return and finds the issue in the workflow",
+				leftRoot, left, tr.session, record.ClaimLeftIssueRuns)
 		}
 		if queued := r.queuedReleases(); len(queued) != 0 {
-			t.Fatalf("the claim releases %+v are still queued after the rows ran, want the move's row finished", queued)
+			t.Fatalf("the claim releases %+v are still queued after the rows ran, want the move's row run and finished", queued)
 		}
 		if n := r.dispatch.deleted(); n != 0 {
 			t.Fatalf("Dispatch was sent %d claim releases, want none", n)
@@ -1592,6 +1597,165 @@ func TestAClaimReleaseLeavesTheClaimOfTheSessionThatWorksTheIssueNow(t *testing.
 			t.Fatalf("Dispatch was sent %d claim releases, want none", n)
 		}
 	})
+}
+
+// leftMoveRow is one claim release row of a move out of the workflow the outbox still holds (one
+// that names no session): its id and how often it has run.
+type leftMoveRow struct {
+	id       int64
+	attempts int
+}
+
+// moveReleases is each claim release row of issue that names no session, oldest first.
+func (r *leftRig) moveReleases(issue string) []leftMoveRow {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.ctx, `select id, attempts from outbox
+		where kind = $1 and issue = $2 and coalesce(payload->>'session', '') = '' order by id`,
+		string(record.OutboxKindClaimRelease), issue)
+	if err != nil {
+		r.t.Fatalf("read the move's claim releases of %s: %v", issue, err)
+	}
+	queued, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (leftMoveRow, error) {
+		var q leftMoveRow
+		return q, row.Scan(&q.id, &q.attempts)
+	})
+	if err != nil {
+		r.t.Fatalf("read the move's claim releases of %s: %v", issue, err)
+	}
+	return queued
+}
+
+// claimStates is each claim of issue as the store holds it, in token order: its token, its state,
+// its session and its launch generation.
+func (r *leftRig) claimStates(issue string) []string {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.ctx, `select token || ' ' || state || ' ' || session || ' ' || generation from claims
+		where issue = $1 order by token`, issue)
+	if err != nil {
+		r.t.Fatalf("read the claims of %s: %v", issue, err)
+	}
+	states, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		r.t.Fatalf("read the claims of %s: %v", issue, err)
+	}
+	return states
+}
+
+// The architect's ruling of 2026-11-28 on dispatch://INFRA-4730 (item 2): the row a move out of
+// Legion's work queues (record.ClaimRelease{}) carries no fence, since its executor judges the
+// issue's record when it runs (#5908's releaseClaim), so a return before it runs neither drops it
+// nor lets it harm the run that returned (R20 of dispatch://INFRA-3320). The issue's own architect
+// claims it on Dispatch in its session. A person moves the issue to backlog, which queues the
+// move's row; the person's todo returns the issue to its run at a later phase entry, the row still
+// unrun, and its architect comes back up in that session; a second move to backlog queues a second
+// row. Then the rows run, oldest first. The first finds the issue out of work and the architect's
+// session gone, and takes the claim from that session: Dispatch is sent one DELETE. The second
+// finds no claim and clears the issue's claimLeft, here an entry an earlier release wrote. Neither
+// changes the issue's run, phase, status or phase entry, or any claim of it; and a child's rows
+// leave the root's claim, which the root architect's live session holds. A move's row that runs
+// while the issue is back in work leaves the claim and records `issue-runs`: that is the first
+// subtest of TestAClaimReleaseLeavesTheClaimOfTheSessionThatWorksTheIssueNow.
+func TestAMovesClaimReleaseQueuedBeforeAReturnRunsAfterASecondStopAndReleasesTheClaimOnce(t *testing.T) {
+	t.Parallel()
+	const rootArchitect = "ses-root-architect"
+	for _, issue := range []string{leftRoot, leftChild} {
+		t.Run(issue, func(t *testing.T) {
+			t.Parallel()
+			r := newLeftRig(t)
+			tr := leftTreeOf(r, issue)
+			if issue == leftChild {
+				r.dispatch.takes(leftRoot, rootArchitect)
+			}
+			r.dispatch.takes(issue, tr.session)
+
+			tr.moveOut("backlog")
+			stopped := r.fence(issue)
+			first := r.moveReleases(issue)
+			if len(first) != 1 || first[0].attempts != 0 {
+				t.Fatalf("the move of %s to backlog queued the claim releases %+v, want one, unrun", issue, first)
+			}
+
+			r.move(issue, "todo")
+			r.admitPass()
+			r.wantReturned(issue, stopped)
+			r.runStarts(issue, claim.RoleArchitect)
+			r.bringUp(tr.token, tr.session)
+			r.takeTask(tr.token)
+			if got := r.moveReleases(issue); !slices.Equal(got, first) {
+				t.Fatalf("the move's claim releases of %s after the return are %+v, want %+v, the first move's row still queued and unrun", issue, got, first)
+			}
+
+			tr.moveOut("backlog")
+			rows := r.moveReleases(issue)
+			if len(rows) != 2 || rows[0] != first[0] || rows[1].attempts != 0 {
+				t.Fatalf("after the second move of %s to backlog the move's claim releases are %+v, want the first move's row %+v and the second's, unrun", issue, rows, first[0])
+			}
+			run, fence, claims := r.issue(issue), r.fence(issue), r.claimStates(issue)
+			if run.Generation != stopped.Generation || fence.Generation != stopped.Generation || fence.Entry <= stopped.Entry {
+				t.Fatalf("%s stopped again at generation %d, %+v, want the run that returned, generation %d, at an entry after %d",
+					issue, run.Generation, fence, stopped.Generation, stopped.Entry)
+			}
+
+			// The first move's row runs alone, oldest as its lane takes it.
+			due, err := r.runner.listDue(r.ctx, issue, []record.OutboxKind{record.OutboxKindClaimRelease}, r.clock.Now().UTC())
+			if err != nil {
+				t.Fatalf("list the due claim releases of %s: %v", issue, err)
+			}
+			if len(due) == 0 || due[0].ID != first[0].id {
+				t.Fatalf("the due claim releases of %s are %+v, want the first move's row %d first", issue, due, first[0].id)
+			}
+			if err := r.runner.runRow(r.ctx, due[0]); err != nil {
+				t.Fatalf("run the first move's claim release of %s: %v", issue, err)
+			}
+			released := []leftRelease{{issue: issue, holder: "session:" + tr.session}}
+			if got := leftReleasesOf(r, issue); !slices.Equal(got, released) {
+				t.Fatalf("Dispatch released %+v of %s after the first move's row ran, want %+v: the issue is out of work again and its architect's session is gone", got, issue, released)
+			}
+			if got := r.dispatch.holder(issue); got != "" {
+				t.Fatalf("Dispatch shows %s claimed by %q after the first move's row ran, want no claim", issue, got)
+			}
+			if got := r.moveReleases(issue); !slices.Equal(got, rows[1:]) {
+				t.Fatalf("the move's claim releases of %s after the first ran are %+v, want the second move's row %+v alone, unrun", issue, got, rows[1])
+			}
+
+			earlier := record.ClaimLeft{Holder: "user:alice", Reason: record.ClaimLeftPerson, At: time.Now().Add(-time.Hour).UTC()}
+			r.recordClaimLeft(issue, earlier)
+			if left := r.claimLeft(issue); left == nil {
+				t.Fatalf("the record of %s names no claimLeft after the earlier entry was written", issue)
+			}
+			r.releases()
+			if got := r.moveReleases(issue); len(got) != 0 {
+				t.Fatalf("the move's claim releases %+v of %s are still queued after both ran, want them finished", got, issue)
+			}
+			if left := r.claimLeft(issue); left != nil {
+				t.Fatalf("the record of %s names claimLeft %v after the second move's row ran, want it cleared: that row found no claim", issue, left)
+			}
+			if n := r.dispatch.deleted(); n != 1 {
+				t.Fatalf("Dispatch was sent %d claim releases, want the first move's one: %+v", n, r.dispatch.releases())
+			}
+
+			after := r.issue(issue)
+			if after.Generation != run.Generation || after.Phase != run.Phase || after.Status != run.Status {
+				t.Errorf("%s after the rows ran stands at generation %d, phase %s, status %s, want generation %d, phase %s, status %s as the second move left it",
+					issue, after.Generation, after.Phase, after.Status, run.Generation, run.Phase, run.Status)
+			}
+			if got := r.fence(issue); got != fence {
+				t.Errorf("%s after the rows ran stands at %+v, want %+v, the run and the phase entry the return opened", issue, got, fence)
+			}
+			if got := r.claimStates(issue); !slices.Equal(got, claims) {
+				t.Errorf("the claims of %s after the rows ran are %q, want %q: a claim release changes no claim", issue, got, claims)
+			}
+			if issue == leftChild {
+				if got := r.dispatch.holder(leftRoot); got != "session:"+rootArchitect {
+					t.Errorf("Dispatch shows %s claimed by %q, want the claim of %s, the root architect's live session, kept", leftRoot, got, rootArchitect)
+				}
+				if of := leftReleasesOf(r, leftRoot); len(of) != 0 {
+					t.Errorf("Dispatch released the claim of %s: %+v, want none: its holder %s works the root now", leftRoot, of, rootArchitect)
+				}
+			}
+			r.wantNoUnattributedLine()
+		})
+	}
 }
 
 // leftPath is one path of the plan's "Which paths leave a session behind" that has an issue: leave

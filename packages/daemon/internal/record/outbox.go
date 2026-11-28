@@ -311,18 +311,14 @@ type OwedStart struct {
 // OutboxPayload is the sealed vocabulary of payloads a workflow may enqueue.
 type OutboxPayload interface{ OutboxKind() OutboxKind }
 
-// ClaimRelease releases the issue's Dispatch claim: the row's issue column, its fence and the
-// session it names, if any, are the whole of what it carries. The holder and the issue's record
-// are read when the row runs, not when it is queued, so a second park or a person who claims the
-// issue meanwhile each end the row on their own, and a late row of an earlier run or phase entry
-// (Fence) releases nothing of the run a return opened.
+// ClaimRelease releases the issue's Dispatch claim: the row's issue column and the session it
+// names, if any, are the whole of what it carries. The holder and the issue's record are read when
+// the row runs, not when it is queued, so a return to work, a second park or a person who claims
+// the issue meanwhile each end the row on their own. Since it is judged on the issue's record when
+// it runs, it carries no run or phase-entry fence (FenceOf): the move's row that runs after a
+// return finds the issue in work and leaves the claim to the run that returned, writing why
+// (ClaimLeftIssueRuns), where a fence would finish it unrun with the reason unwritten.
 type ClaimRelease struct {
-	// Generation and Entry are the run and the phase entry of the move the row answers
-	// (NewFencedRow): a row a later run or phase entry outlives finishes unrun (LateAt). The row of
-	// a session the daemon left behind names neither, so nothing fences it: the left session is
-	// dead to the daemon whatever the issue does.
-	Generation uint64 `json:"generation,omitempty"`
-	Entry      int64  `json:"entry,omitempty"`
 	// Session, when set, is the session the daemon left behind for a claim of the issue: store's
 	// putClaim queued the row in the claim write that moved the claim off it, and the row acts only
 	// while Dispatch shows that session as the holder. Empty is the row of a move out of the

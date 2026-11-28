@@ -56,10 +56,11 @@ const (
 // the issue would find it claimed by a session that is gone. The row comes in two shapes, and each
 // reads the holder from Dispatch and the issue from the daemon's own record when it runs, never
 // from when it was queued, because that is the reading that is current when the DELETE is sent: a
-// person who claimed the issue since, a second move or a holder that let the claim go on its own
-// each end the row on their own. The row of a move carries its fence, so a return to work or a new
-// run stands at a later phase entry or run, at whose fence the row finishes unrun before this runs
-// (outbox.outlived).
+// person who claimed the issue since, a return to work, a second move or a holder that let the
+// claim go on its own each end the row on their own. So neither shape carries a run or a
+// phase-entry fence (record.FenceOf): a move's row that runs after a return or a new run finds the
+// issue in work, leaves the claim to that run and writes why (issue-runs), and one that runs once
+// a later move has taken the issue out of work again releases as that move's own row would.
 //
 // The row of a move out of the workflow, and of the boot pass, names no session. It releases a
 // session of the issue or of that gate tree while the record says the issue stopped: a session a
@@ -75,15 +76,14 @@ const (
 // claim of one of them names as its session now is theirs whatever claim_sessions holds the name
 // for.
 //
-// The row of a session the daemon left behind names that session and no fence: store's putClaim
-// queued it in the claim write that moved the claim off the session. It judges that session's
-// claim alone. Any other holder is a person who took the issue since or the new session's own
-// claim, of which the row judges nothing, so it writes nothing either. A left session is dead to
-// the daemon whatever the issue does, so this row does not ask whether the issue stopped. It
-// releases the claim unless the operator holds the issue, or a claim names the session as its
-// current one again (a name an operator's release of a claim's names freed and another claim
-// took): a claim of the issue or of its gate tree (works-now), the project controller's or one
-// under another gate root.
+// The row of a session the daemon left behind names that session: store's putClaim queued it in
+// the claim write that moved the claim off the session. It judges that session's claim alone.
+// Any other holder is a person who took the issue since or the new session's own claim, of which
+// the row judges nothing, so it writes nothing either. A left session is dead to the daemon
+// whatever the issue does, so this row does not ask whether the issue stopped. It releases the
+// claim unless the operator holds the issue, or a claim names the session as its current one again
+// (a name an operator's release of a claim's names freed and another claim took): a claim of the
+// issue or of its gate tree (works-now), the project controller's or one under another gate root.
 //
 // Each outcome that leaves a claim on purpose is written into the issue's record with its reason
 // and holder (record.Store.RecordClaimLeft), in the transaction that read what decided it, so a
@@ -391,7 +391,7 @@ func (w *workflowRuntime) releaseParkedClaims(ctx context.Context, tx pgx.Tx, sc
 		if issue == nil || !record.Stopped(*issue) {
 			continue
 		}
-		row, err := record.NewFencedRow(ctx, tx, w.records, key, record.ClaimRelease{}, time.Now().UTC())
+		row, err := record.NewOutboxRow(key, record.ClaimRelease{}, time.Now().UTC())
 		if err != nil {
 			return err
 		}

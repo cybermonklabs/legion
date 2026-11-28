@@ -217,11 +217,11 @@ func seedOperatorTree(t *testing.T, pool *pgxpool.Pool, key string) {
 }
 
 // claimReleases is the issue of each queued claim_release row, oldest first. Each row's payload is
-// read too: it holds nothing of the claim's holder, which the row reads when it runs, and nothing
-// but the run and the phase entry it was queued at (record.Fence).
+// read too: it holds nothing of the claim's holder, which the row reads when it runs, and no run or
+// phase entry either, since the row is judged on the issue's record then (record.FenceOf).
 func claimReleases(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), "select issue, (payload - 'generation' - 'entry')::text from outbox where kind = 'claim_release' order by id")
+	rows, err := pool.Query(t.Context(), "select issue, payload::text from outbox where kind = 'claim_release' order by id")
 	if err != nil {
 		t.Fatalf("read claim releases: %v", err)
 	}
@@ -233,7 +233,7 @@ func claimReleases(t *testing.T, pool *pgxpool.Pool) []string {
 			t.Fatalf("scan claim release: %v", err)
 		}
 		if payload != "{}" {
-			t.Fatalf("claim release of %s carries %s beside its fence, want nothing more", issue, payload)
+			t.Fatalf("claim release of %s carries %s, want an empty payload", issue, payload)
 		}
 		issues = append(issues, issue)
 	}
