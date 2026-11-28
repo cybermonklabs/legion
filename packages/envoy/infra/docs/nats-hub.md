@@ -159,7 +159,10 @@ It refuses:
   deliveries and its CI settlements alike.
 - `dispatchMachineId`: the user shared by `envoy-dispatch` and the listener beside it, granted
   `DispatchPermissions(dispatchMachineId)`. Give it that listener's `machineId`, since the set
-  names its durable consumer and queue group.
+  names its durable consumer and queue group. A `gcp:Dispatch` given `natsAudience` needs no such
+  user: its two pods connect through the auth service instead, each as a `dispatch` entry of the
+  broker's `BROKER_NATS_SERVICES` for machine id `<hostname>`, with the same grant
+  ([`gcp:Dispatch`'s inputs](../README.md#inputs-1)).
 - `daemon: true`: the dedicated user of one Legion daemon, granted `DaemonPermissions()` (see
   [Permission sets](../README.md#permission-sets)). Its seed belongs only to that daemon.
 - `permissions`: `{publish, subscribe}`, each a `nats:Rules`, an `allow` list and an optional
@@ -285,7 +288,8 @@ With `authCallout`, the server admits every client that is not one of its users 
 service, which reads the client's token and answers with that connection's
 grant, as [NATS authorization](../README.md#nats-authorization) renders it: one `auth_callout`
 block inside the authorization block, whose `auth_users` is the key of every user above, the
-hub's own listener's and the session user's included. After the
+hub's own seeded listener's and the session user's included; a `gcp:ClusteredNatsHub` listener
+given `natsAudience` has no key there (below). After the
 authorization block come the ping lines, `ping_interval: "20s"` and `ping_max: 2`, so a hung
 replica of the auth service leaves the callout's queue group within 80 s. A static user
 connects by its seed and the session user's client with no credential, and neither reaches the
@@ -303,12 +307,20 @@ granted more (below). There is no `accounts` block: the service places each clie
 account, beside the static users, so turning the callout on moves no stream.
 
 A hub with `authCallout` keeps its own session listener (`listener`, or `gcp:ClusteredNatsHub`'s
-`tailnet.listener`). The listener connects as a user whose seed the hub stores, so its key is in
-`auth_users` beside every other static user's, and it is admitted by its nkey with its listener
-grant and never reaches the auth service (`gcp/clusteredhub_callout_live_test.go`,
-`TestAClusteredHubsSeededListenerSkipsTheCallout`). Its move to a service identity, with which it
-would connect through the auth service instead, is a later change. `privateProjects` refuses that
-seeded listener, as it refuses every user but the service's (below).
+`tailnet.listener`). With a seed, the listener connects as a user whose seed the hub stores, so its
+key is in `auth_users` beside every other static user's, and it is admitted by its nkey with its
+listener grant and never reaches the auth service (`gcp/clusteredhub_callout_live_test.go`,
+`TestAClusteredHubsSeededListenerSkipsTheCallout`). `privateProjects` refuses that seeded
+listener, as it refuses every user but the service's (below). `gcp:ClusteredNatsHub`'s listener
+may connect through the auth service by its service identity instead: given `natsAudience`, it
+presents a projected token of its own ServiceAccount, `<n>-listener`, for that audience, the hub
+renders no user for it and `auth_users` holds no key of it, and the auth service admits it by the
+broker's `BROKER_NATS_SERVICES` entry
+`listener/<machine id>/*=system:serviceaccount:<namespace>:<n>-listener` as
+`listener/<machine id>`, with the listener grant of that machine id (the same file,
+`TestAClusteredHubsTokenListenerIsAdmittedThroughTheCallout`, against a stand-in auth service).
+[The session listener](../README.md#the-session-listener) says what that mode needs: the entry,
+the audience, the image and the order of the switch.
 
 **What the callout alone does not change.** While the hub has a `sessionUser`, a client presenting
 no credential still becomes it without reaching the auth service, with the session user's grant:
@@ -328,9 +340,14 @@ auth service, and the authorization has no callout`); beside a `sessionUser`
 (`privateProjects: sessionUser "<name>" is noAuthUser: a client presenting no credential would
 become it while a project is private`); beside any entry of `users` but the service's
 (`privateProjects: users[<i>] "<name>": a stored client seed while a project is private`); beside
-the hub's own session listener (`listener`, or `gcp:ClusteredNatsHub`'s `tailnet.listener`),
-whose user connects by a stored seed (`privateProjects: listener "<machine id>": a stored client
-seed while a project is private; …`, the machine id being `gcp:NatsHub`'s `hostname`); with an
+the hub's own session listener with a seed (`listener`, or `gcp:ClusteredNatsHub`'s
+`tailnet.listener`), whose user connects by a stored seed (`privateProjects: listener "<machine id>": a stored client
+seed while a project is private; …`, the machine id being `gcp:NatsHub`'s `hostname`); beside a
+`gcp:ClusteredNatsHub` `tailnet.listener` given `natsAudience` and no `clientNamespaces`, which
+renders no user but serves `/v1` with no credential, naming `tailnet.listener` and not
+`privateProjects` (`tailnet.listener and privateProjects: a tailnet.listener with no
+clientNamespaces serves /v1 with no credential (ENVOY_API_ALLOW_UNAUTHENTICATED), …`), while a
+listener given `natsAudience` that requires every caller's token is taken; with an
 `authCallout.serviceUser` that names an entry of `users` other than a `permissions` entry
 (`privateProjects: authCallout.serviceUser "<name>" names users[<i>], a
 <machineId|listenerMachineId|dispatchMachineId|daemon> user, whose seed its client stores; the auth
@@ -1059,10 +1076,13 @@ sizing and what the consumer prepares, with an example. This section is what dif
 ### The same users
 
 Both hubs render their users through one function, `authorization` in `gcp/natshub.go`, and
-`core`'s `Render` under the same header, so the same `users`, listener and `sessionUser` give the
-same authorization byte for byte (`TestClusteredNatsHubRendersTheVMHubsAuthorization`). Everything
+`core`'s `Render` under the same header, so the same `users`, seeded listener and `sessionUser`
+give the same authorization byte for byte (`TestClusteredNatsHubRendersTheVMHubsAuthorization`).
+A clustered listener given `natsAudience`, which `gcp:NatsHub` has no input for, renders no user:
+`auth.conf` holds no `listener "<machine id>"` user and `auth_users` no key of it, while its
+durable stays reserved ([The auth service](#the-auth-service)). Everything
 [The hub's users](#the-hubs-users) says holds for the clustered hub, with one difference: the
-listener's user is named after its `machineId` (`listener.machineId` or `tailnet.listener.machineId`,
+seeded listener's user is named after its `machineId` (`listener.machineId` or `tailnet.listener.machineId`,
 wherever the listener is declared), which defaults to `tailnet.serviceName` with `tailnet` and is
 required without it, where the VM names it after its `hostname`. A deployment that moves from a
 `gcp:NatsHub` whose `hostname` is `envoy-hub` keeps the machine id `envoy-hub`, by naming its
@@ -1130,7 +1150,8 @@ The callout is the third exception. nats-server 2.15.1 refuses a whole reload th
 changes `auth_callout`, logging `config reload not supported for AuthCallout`
 (`gcp/clusteredhub_callout_live_test.go` measures it, with a grant change on the same server as the
 control that reloads), and `auth_users` lists every user's key, so adding or removing a user changes
-it too. The ping lines that follow the authorization block beside a callout (the README's
+it too, as does a clustered listener's move between a seed and `natsAudience`, which adds or removes
+its key. The ping lines that follow the authorization block beside a callout (the README's
 [NATS authorization](../README.md#nats-authorization)) come and go only with that block, so the one
 reload of them the server would take is an edit of their value (`server/reload.go:1751-1754`).
 `pingIntervalOption.Apply` only logs (`server/reload.go:670-672`), and `setPingTimer` reads the

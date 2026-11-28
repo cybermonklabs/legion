@@ -144,8 +144,9 @@ to Envoy's session listener, which the hub runs as a workload of its own. It hol
 its users and their grants unchanged;
 [The clustered hub](docs/nats-hub.md#the-clustered-hub-gcpclusterednatshub) in `docs/nats-hub.md`
 says how running and updating it differ from the VM, and what its metrics are. The cluster, the
-namespace, the priority class, the Tailscale Service and the listener's seed are the consumer's;
-the component creates none of them (see [Before the first deployment](#before-the-first-deployment)).
+namespace, the priority class, the Tailscale Service, and the listener's seed or, for a listener
+with `natsAudience`, its entry in the broker's `BROKER_NATS_SERVICES`, are the consumer's; the
+component creates none of them (see [Before the first deployment](#before-the-first-deployment)).
 
 A hub whose `name` is `<n>` registers these resources in `namespace`, each a child of the hub and
 named after `<n>` rather than after the hub's own name:
@@ -162,7 +163,7 @@ named after `<n>` rather than after the hub's own name:
 | ServiceAccount `<n>-tailnet` (only with `tailnet`) | The tailnet hosts' account, which mounts no token: no container of theirs calls the Kubernetes API. |
 | Deployment `<n>-tailnet` (only with `tailnet`) | `tailnet.replicas` tailnet hosts (see [The tailnet hosts](#the-tailnet-hosts)), rolled with `maxUnavailable: 0` and `maxSurge: 1`. It waits on the Secret, the ConfigMap, the ServiceAccount and the priority class read. |
 | PodDisruptionBudget `<n>-tailnet` (only with `tailnet`) | `maxUnavailable: 1` over the tailnet hosts. |
-| ServiceAccount `<n>-listener` (only with `tailnet`) | The session listener's account, which mounts no token: the listener calls no Kubernetes API. |
+| ServiceAccount `<n>-listener` (only with `tailnet`) | The session listener's account, which automounts no token: the listener calls no Kubernetes API. With `natsAudience` the listener pod projects one token of it, for that audience, as its NATS credential ([The session listener](#the-session-listener)). |
 | Deployment `<n>-listener` (only with `tailnet`) | One session listener pod (see [The session listener](#the-session-listener)), rolled with `maxUnavailable: 0` and `maxSurge: 1`; with `listener.replaceUnderHold: true` or `tailnet.listener.replaceUnderHold: true`, `Recreate` with no `rollingUpdate` block, and `pulumi.com/skipAwait: "true"` ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). It waits on the ServiceAccount and the priority class read. |
 | Service `<n>-listener` (only with `tailnet`) | Port 9020 to the listener pod's port 9020. Each tailnet host forwards the Tailscale Service's port 9020 to it. |
 | NetworkPolicy `<n>-listener` (only with `tailnet`) | An Ingress policy on the listener's pods with exactly one rule: TCP 9020 from the tailnet hosts' pods. Every other port of that pod is admitted to nobody. |
@@ -186,7 +187,8 @@ refused reload blocks every later one, a `users` change's included, until the se
 and, while `authCallout` is set, a change of the callout's lines (`core.Authorization.CalloutLines()`:
 the `auth_callout` block, the ping lines and, beside `privateProjects`, the server tag), which a
 change of `authCallout`, of `privateProjects`, of the keys in `users`, a user added or removed
-among them, or of the session listener's key makes (`auth_users` lists every user's key).
+among them, or of the session listener's key, its move between a seed and `natsAudience` included,
+makes (`auth_users` lists every user's key, and a listener with `natsAudience` has none).
 [A reload, not a replacement](docs/nats-hub.md#a-reload-not-a-replacement) says why a change of
 the ping lines or the server tag, either of which nats-server can reload, rolls the pods too.
 The StatefulSet carries `config.kubernetes.io/depends-on` naming the chart's ConfigMap
@@ -212,14 +214,14 @@ The StatefulSet carries `config.kubernetes.io/depends-on` naming the chart's Con
 | `clientNamespaces` | required | The namespaces admitted to NATS's client port, 4222: at least one, each a DNS label, none repeated. |
 | `monitorNamespaces` | none | The namespaces admitted to NATS's monitoring port, 8222, with the same rules. Without one, no namespace is. Refused beside `privateProjects`: the port answers `/connz`, `/subsz` and `/jsz` with no authentication, naming every client's subjects, connections and consumers, a private project's among them. No reader needs it then: the kubelet probes from the pod's own node, which the NetworkPolicy does not fence; the exporter in each pod reads `localhost:8222`; `kubectl port-forward` and `exec` go through the API server; and Managed Prometheus reads the exporter's port. |
 | `metricsNamespaces` | `gmp-system`, `gke-gmp-system` | The namespaces admitted to the exporter's port, 7777, with the same rules: by default Google Managed Prometheus's, whose collectors run in `gmp-system` on a Standard cluster and in `gke-gmp-system` on Autopilot. |
-| `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub runs a session listener, which is a user of its own. |
+| `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub runs a session listener, which with a seed is a user of its own. A listener with `natsAudience` is no user, and the `authCallout` it needs names its `serviceUser` among `users`. |
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
-| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). The session listener, `listener` or `tailnet.listener`, stays beside it: the listener connects as a user with a stored seed, whose key is in `auth_users`, so it never reaches the auth service, and `privateProjects` refuses it. While `sessionUser` is set, a client presenting no credential still becomes the session user past the auth service. Set, `auth.conf` ends with the ping lines, followed beside `privateProjects` by the server tag ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block, the ping lines and, beside `privateProjects`, the server tag, so a change to `authCallout`, to the keys of `users` or the listener's key while it is set, to `privateProjects`, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
-| `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, beside the session listener (`listener` or `tailnet.listener`), whose user connects by a stored seed, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. Set, the chart waits on the hub pods' NetworkPolicy, so no pod takes the server tag, by reload or by restart, before the policy that closes the monitoring port, 8222, is applied. Nothing orders its removal, so turn it off only after every project is public again, and give `monitorNamespaces` back only in a later apply, after the removal has restarted every hub pod on the untagged lines (see [The auth service](docs/nats-hub.md#the-auth-service)). |
+| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). The session listener, `listener` or `tailnet.listener`, stays beside it. With a seed the listener connects as a user with a stored seed, whose key is in `auth_users`, so it never reaches the auth service, and `privateProjects` refuses it; with `natsAudience` it connects through the auth service by a projected token of its own ServiceAccount, and the hub renders no user for it ([The session listener](#the-session-listener)). While `sessionUser` is set, a client presenting no credential still becomes the session user past the auth service. Set, `auth.conf` ends with the ping lines, followed beside `privateProjects` by the server tag ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block, the ping lines and, beside `privateProjects`, the server tag, so a change to `authCallout`, to the keys of `users` or the listener's key while it is set, the listener's move between a seed and `natsAudience` among them, to `privateProjects`, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, beside the session listener (`listener` or `tailnet.listener`) with a seed, whose user connects by a stored seed, beside a `tailnet.listener` with `natsAudience` and no `clientNamespaces`, naming `tailnet.listener`, since that listener serves `/v1` with no credential and answers every project's sessions and messages to every caller the tailnet hosts forward, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. A listener with `natsAudience` that requires every caller's token, the hub's own `listener` or a `tailnet.listener` with `clientNamespaces`, is taken. Set, the chart waits on the hub pods' NetworkPolicy, so no pod takes the server tag, by reload or by restart, before the policy that closes the monitoring port, 8222, is applied. Nothing orders its removal, so turn it off only after every project is public again, and give `monitorNamespaces` back only in a later apply, after the removal has restarted every hub pod on the untagged lines (see [The auth service](docs/nats-hub.md#the-auth-service)). |
 | `routeAuthorization` | unset | The routes' credential: `secretName` and `secretKey`, an existing Kubernetes Secret in `namespace` and its key, holding the route password, which the component names by reference and never reads; and `stage`, `env`, `routes` or `authorization`, each one apply after the one before it has finished. `env` gives the nats container `NATS_ROUTE_PASSWORD` and `NATS_ROUTE_URLS` and rolls the pods, `routes` names `$NATS_ROUTE_URLS` as `nats.conf`'s cluster routes, and `authorization` names the user `route` and `$NATS_ROUTE_PASSWORD` as its authorization, each applied by the reloader. The password holds letters and digits only, a letter first, and at least 32 characters. Change `secretKey` only together with `stage: env`. Unset, routes carry no credential, as before. See [Route authorization](docs/nats-hub.md#route-authorization). |
-| `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused, and its `image` must be `legion-envoy-v30.32.0` or later, the first listener that reads `ENVOY_OIDC_ACCOUNTS`: an older one admits every subject the issuer signs for the audience. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener. Beside `authCallout` its user connects by its seed and skips the callout, as `tailnet.listener`'s does. |
+| `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused, and its `image` must be `legion-envoy-v30.32.0` or later, the first listener that reads `ENVOY_OIDC_ACCOUNTS`: an older one admits every subject the issuer signs for the audience. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener. Beside `authCallout` it connects by its seed and skips the callout, or, with `natsAudience`, by its projected token through the auth service, as `tailnet.listener` does. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to, unless the hub's own `listener` declares it. |
-| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default, which also names the listener's NATS user, so it must be a valid NATS user name too: 1 to 48 lower-case letters, digits and hyphens, with no hyphen first or last, and so no dot or space; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). Two more prepare a replacement under the writer hold: `consumerNames`, `fixed` or `fresh`, and `replaceUnderHold`, `false` by default ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). |
+| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default, which with a seed also names the listener's NATS user, so it must then be a valid NATS user name too: 1 to 48 lower-case letters, digits and hyphens, with no hyphen first or last, and so no dot or space, while with `natsAudience` it names no user, so a dotted one is taken and one holding a space, `*` or `>`, which no `BROKER_NATS_SERVICES` entry can name, is refused; the listener's NATS credential, one of two: a seed, as `nkey`, the public key of the listener user's seed, and `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads, each required without `natsAudience`; or `natsAudience`, the audience of the projected token of the listener's own ServiceAccount, `<n>-listener`, that it presents to the auth service instead, which needs `authCallout`, is refused beside `nkey`, `seedSecretName` or `seedSecretKey`, and must equal the broker's `BROKER_NATS_K8S_AUDIENCE` ([The session listener](#the-session-listener)); `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). Two more prepare a replacement under the writer hold: `consumerNames`, `fixed` or `fresh`, and `replaceUnderHold`, `false` by default ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
 
 Only `kubeconfig` and `tailnetAuthKey` may come from another resource's output. Every other input
@@ -235,7 +237,7 @@ input:
   `priorityClassName`, an entry of any of the three namespace lists, a user's `machineId`,
   `listenerMachineId` or `dispatchMachineId`, `routeAuthorization`'s `secretName`, `secretKey` and
   `stage`, and, of `tailnet`, `serviceName`, `tailnetDnsName`, `tailscaleImage`, a tag,
-  and, of `listener` or `tailnet.listener`, `image`, `seedSecretName`, `seedSecretKey`, `machineId`,
+  and, of `listener` or `tailnet.listener`, `image`, `seedSecretName`, `seedSecretKey`, `natsAudience`, `machineId`,
   `cpu`, `memory`, `oidcIssuer`, `oidcAudience`, `consumerNames`, and `clientNamespaces`,
   `allowedHosts` and `oidcAccounts` entries, and `authCallout`'s `issuer`, `xkey` and
   `serviceUser`. The refusal's message names the input by its path and never its value;
@@ -267,12 +269,18 @@ input:
   at: no `machineId` without `tailnet`, a `machineId` the shared machine-id rule refuses, an empty
   `nkey`, a `seedSecretName` that is not a DNS subdomain, a `seedSecretKey` that is no Secret's
   key (letters, digits, `-`, `_` and `.`, at most 253 characters, and neither `.` nor `..` nor
-  one that begins with `..`), no `clientNamespaces` without `tailnet` and an entry that is not a DNS label
+  one that begins with `..`), these three only without `natsAudience`, no `clientNamespaces` without `tailnet` and an entry that is not a DNS label
   or repeats an earlier one, an `allowedHosts` entry refused as `gcp:NatsHub`'s
   `listener.allowedHosts` entries are, a `senderMessagesPerMinute` outside 1 to 60000, a
   `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a `consumerNames` other than
   `fixed` or `fresh`, and a `cpu` or `memory` at which Autopilot would not run the listener pod as
-  rendered (see [Sizing](#sizing)); of a listener
+  rendered (see [Sizing](#sizing)); of a listener with `natsAudience`, each naming
+  `<l>.natsAudience`: no `authCallout`, a non-empty `nkey`, `seedSecretName` or `seedSecretKey`
+  beside it, an audience holding whitespace or a control character (the broker reads its own
+  `BROKER_NATS_K8S_AUDIENCE` trimmed, so a token for such an audience never verifies), and one
+  equal to the listener's own `oidcAudience` (the listener receives its callers' tokens for that
+  audience, and the auth service admits a token by its account alone), and then a `machineId`
+  holding a space, `*` or `>`, naming `<l>.machineId`; of a listener
   that requires a credential (the hub's own `listener`, or a `tailnet.listener` with
   `clientNamespaces`): no `oidcIssuer`, `oidcAudience` or `oidcAccounts`, an `oidcIssuer` that is
   not an https URL with a host and no user, query or fragment, an `oidcAudience` holding whitespace
@@ -281,11 +289,12 @@ input:
   `clientNamespaces`, any of `oidcIssuer`, `oidcAudience` and `oidcAccounts`;
 - no `users` without a session listener, and a user refused as
   [The hub's users](docs/nats-hub.md#the-hubs-users) lists, a user whose machine id gives the
-  session listener's durable among them; the listener's user is named after its machine id, so a
-  listener `machineId` that is no valid NATS user name, such as a dotted one, is refused naming
-  the input that declares the listener, `listener` or `tailnet.listener`, as `listener "envoy.hub":
-  name must match ^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$`, though the shared machine-id rule takes
-  it.
+  session listener's durable among them, with a seed or with `natsAudience`; a listener with a seed
+  has a user named after its machine id, so its `machineId` that is no valid NATS user name, such
+  as a dotted one, is refused naming the input that declares the listener, `listener` or
+  `tailnet.listener`, as `listener "envoy.hub": name must match ^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$`,
+  though the shared machine-id rule takes it. A listener with `natsAudience` has no user, so a
+  dotted `machineId` is taken there, as the auth service takes it.
 
 Once each Pulumi input resolves, before any child takes it, it refuses a blank or
 whitespace-only `kubeconfig` or `tailnetAuthKey`, or one holding an nkey seed, naming the input and
@@ -347,12 +356,15 @@ under `<l>.replaceUnderHold: true` (below). The listener is declared once, as `l
 or as `tailnet.listener`, and the hub renders the same objects either way but for the listener
 container's token check, which a listener declared as `listener` always carries (below); `<l>`
 stands for the path it is declared at. The pod runs under the ServiceAccount
-`<n>-listener`, which mounts no token, since the listener calls no Kubernetes API. It runs as uid
+`<n>-listener`, which automounts no token, since the listener calls no Kubernetes API. It runs as uid
 999, the listener image's own user, with no privilege escalation and every Linux capability
 dropped, and with `priorityClassName` it names the class. Its one container, `listener`, runs
 `<l>.image` at `<l>.cpu` and `<l>.memory` (`500m` and `1Gi`
-by default). The NATS seed is mounted read-only at `/var/run/secrets/envoy/nats-seed`, from the
-consumer's Secret by reference.
+by default). With a seed, the NATS seed is mounted read-only at `/var/run/secrets/envoy/nats-seed`,
+from the consumer's Secret by reference. With `<l>.natsAudience` the pod mounts no Secret: its one
+volume, `nats-token`, projects one token of `<n>-listener` for `<l>.natsAudience`, with
+`expirationSeconds: 3600`, read-only at `/var/run/secrets/envoy/nats-token`, and the kubelet
+rewrites it before it lapses (below).
 
 A listener that requires a credential, one declared as `listener` or given `clientNamespaces`, must
 run `legion-envoy-v30.32.0` or later. That release is the first whose listener reads
@@ -361,7 +373,49 @@ requires a bearer, but takes no account list, and admits every subject the issue
 for the audience: any pod of a client namespace could then call `/v1` as any session. The
 component cannot refuse an older image itself: `<l>.image` is a digest, and no input, label or
 version it reads says which release built it, so this line is the guard. A listener with no
-credential, a `tailnet.listener` with no `clientNamespaces`, runs on any release.
+credential, a `tailnet.listener` with no `clientNamespaces`, runs on any release, unless it connects
+to NATS with `<l>.natsAudience` (below).
+
+The listener connects to NATS in one of two modes. With a seed, `<l>.nkey`, `<l>.seedSecretName`
+and `<l>.seedSecretKey`, it connects as the user the hub renders for it, named after
+`<l>.machineId` and granted `core.ListenerPermissions` for it, whose key is in `auth_users`, so beside
+`authCallout` it never reaches the auth service. With `<l>.natsAudience`, which needs
+`authCallout`, it presents the projected token above to the auth service as user `service`, and
+the hub renders no user for it: `auth.conf` holds no `listener "<l.machineId>"` user and
+`auth_users` no key of it. Its durable `listener-<l.machineId>` stays reserved all the same, so a
+user of `users` whose machine id gives that durable is still refused. Its machine id names no NATS
+user, so a dotted one is taken, as the auth service takes it, while one holding a space, `*` or
+`>` is refused, since no `BROKER_NATS_SERVICES` entry can name it. The auth service admits the
+listener as `listener/<l.machineId>`, with the listener's grant for that machine id, only where
+three things hold:
+
+- the broker's `BROKER_NATS_SERVICES` lists the listener's account as a listener of that machine
+  id, with `*`: `listener/<l.machineId>/*=system:serviceaccount:<namespace>:<n>-listener`. With
+  `-` in place of `*` the auth service refuses the connection, since it cannot hold a listener's
+  grant to projects. The grant it answers is the whole listener grant, held to no project, as the
+  seeded listener's user is;
+- `<l>.natsAudience` is the broker's `BROKER_NATS_K8S_AUDIENCE`. The component cannot read the
+  broker's setting. It refuses an audience holding whitespace or a control character, which the
+  broker's own audience, read trimmed, never holds, and one equal to `<l>.oidcAudience`, since the
+  listener receives its callers' tokens for that audience and the auth service admits a token by
+  its account alone;
+- `<l>.image` is `legion-envoy-v32.9.0` or later, the first release whose listener reads
+  `NATS_SERVICE_TOKEN_FILE`. An older listener ignores the variable and connects with no
+  credential, which a hub with a `sessionUser` admits as that user, with a session's grant, and
+  whose connection the auth service refuses on a hub without one. The component cannot refuse an
+  older image, for the reason above.
+
+Move a running listener to `<l>.natsAudience` in this order. First add its entry to the broker's
+`BROKER_NATS_SERVICES` and let the broker roll out with it, so the entry is live before any
+listener presents a token. Then, in one update, set `<l>.natsAudience` and unset `<l>.nkey`,
+`<l>.seedSecretName` and `<l>.seedSecretKey`. That update rolls the listener pod onto the token,
+and, since `auth_users` loses the listener's key, it changes the hub pods' callout annotation and
+restarts them one at a time as well ([Inputs](#inputs), `authCallout`). With `privateProjects` a
+listener with `<l>.natsAudience` is taken only where it requires a credential on `/v1`, the hub's
+own `listener` or a `tailnet.listener` with `clientNamespaces`; a `tailnet.listener` with no
+`clientNamespaces` is refused, naming `tailnet.listener`, since its `/v1` would answer every
+project's sessions and messages, a private project's among them, to every caller the tailnet hosts
+forward.
 
 The component writes the pod count, one, and no input changes it. Two copies would contend for the
 one durable `listener-<l.machineId>`: until cybermonklabs/legion#2404 gives the
@@ -402,7 +456,9 @@ are ([The listener's sender limit](#the-listeners-sender-limit)). Setting, chang
 either changes the pod's environment, so the update rolls the pod as above. `ENVOY_CONSUMER_NAMES`
 is set exactly when `<l>.consumerNames` is, and a change to it rolls the pod the same way
 ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)).
-`NATS_NKEY_SEED_FILE` names the mounted seed. There is no `ENVOY_API_TOKEN`.
+`NATS_NKEY_SEED_FILE` names the mounted seed, or, with `<l>.natsAudience`, `NATS_SERVICE_TOKEN_FILE`
+names the projected token, `/var/run/secrets/envoy/nats-token`, in the same place among the
+variables. There is no `ENVOY_API_TOKEN`.
 
 How `/v1` admits a caller depends on who reaches the listener:
 
@@ -583,10 +639,15 @@ With `tailnet`, also:
   only once approved. The same policy decides which devices reach the Service's 4222 and 9020:
   `gcp:NatsHub`'s [listener](docs/nats-hub.md#the-hubs-listener) and
   [session user](docs/nats-hub.md#the-hubs-users) cautions hold for them as written.
-- The Secret `<l>.seedSecretName` of the session listener, declared as `listener` or
-  `tailnet.listener`, in `namespace`, holds the listener user's seed under `<l>.seedSecretKey`, its
+- For a session listener with a seed, declared as `listener` or `tailnet.listener`, the Secret
+  `<l>.seedSecretName` in `namespace` holds the listener user's seed under `<l>.seedSecretKey`, its
   public key being `<l>.nkey`. The listener's pod starts only once the Secret exists; the component
   never reads, creates or waits on it.
+- For a session listener with `<l>.natsAudience`, the broker that runs the hub's auth service is
+  running with `listener/<l.machineId>/*=system:serviceaccount:<namespace>:<n>-listener` in its
+  `BROKER_NATS_SERVICES` and `<l>.natsAudience` as its `BROKER_NATS_K8S_AUDIENCE`, and
+  `<l>.image` is `legion-envoy-v32.9.0` or later
+  ([The session listener](#the-session-listener)). The component reads neither setting.
 
 A hub may run without `tailnet` first and take it in a later update. A listener declared as
 `listener` stays where it is when `tailnet` arrives: the hosts forward to it, its NetworkPolicy
@@ -738,7 +799,7 @@ resources each of those is, the sandbox and the public origin in the paragraph u
 | Private services access range and connection | Cloud SQL receives a private IP on the component's VPC. | Not built |
 | Autopilot cluster | Enables the Secret Manager add-on, Secret Sync with rotation (GKE 1.33 or later; a new Secret Manager version reaches a synced Kubernetes Secret whose SecretProviderClass reads `versions/latest` without an apply), and Workload Identity. | Built |
 | Cloud SQL instance, database, user and generated password | PostgreSQL 18 by default (`databaseVersion`), private IP only, automated backups and point-in-time recovery. | Not built |
-| Kubernetes namespace (not with `existingNamespace`), ServiceAccounts `<hostname>` and `<hostname>-listener`, Secrets, ConfigMap and SecretProviderClass | The app's account, `<hostname>`, which Workload Identity lets mount the NATS seed and whose projected token the app presents to the listener, and the listener's own, `<hostname>-listener`, which Workload Identity lets mount the seed and which holds nothing else, so no listener pod carries the app's account; the generated application secrets (`<hostname>-dispatch`), the listener's generated bearer in a Secret of its own (`<hostname>-listener`, one key `ENVOY_API_TOKEN`), the front door's auth key (`<hostname>-tailnet-auth-key`, one key `TS_AUTHKEY`), the Serve configuration (ConfigMap `<hostname>-serve`, rendered from the component's own names and registered after the Tailscale Service), and the NATS seed mount (and, with `azureEmbedKeySecret`, a second SecretProviderClass, `<hostname>-azure-embed-key`, for the Azure embedder's key, and with `chatTokenSecret` a third, `<hostname>-chat-token`, for the answerer's bearer token). | Not built |
+| Kubernetes namespace (not with `existingNamespace`), ServiceAccounts `<hostname>` and `<hostname>-listener`, Secrets, ConfigMap and SecretProviderClass | The app's account, `<hostname>`, which Workload Identity lets mount the NATS seed, or whose projected token for `natsAudience` the NATS auth service admits, and whose projected token the app presents to the listener, and the listener's own, `<hostname>-listener`, which Workload Identity lets mount the seed, or whose projected token for `natsAudience` the NATS auth service admits, and which holds nothing else, so no listener pod carries the app's account; the generated application secrets (`<hostname>-dispatch`), the listener's generated bearer in a Secret of its own (`<hostname>-listener`, one key `ENVOY_API_TOKEN`), the front door's auth key (`<hostname>-tailnet-auth-key`, one key `TS_AUTHKEY`), the Serve configuration (ConfigMap `<hostname>-serve`, rendered from the component's own names and registered after the Tailscale Service), and the NATS seed mount, SecretProviderClass `<hostname>-nats-seed`, which is not registered with `natsAudience` (and, with `azureEmbedKeySecret`, a second SecretProviderClass, `<hostname>-azure-embed-key`, for the Azure embedder's key, and with `chatTokenSecret` a third, `<hostname>-chat-token`, for the answerer's bearer token). | Not built |
 | Tailscale Service `svc:<hostname>` | The name every reader reaches Dispatch at, which the component declares itself through the `tailscale` provider it is given: one port, `tcp:443`, no tags, and a comment naming `<hostname>.<tailnetDnsName>`, the tailnet name it serves. It requests no tags because the OAuth client that creates it may not be allowed to set any, and Tailscale refuses a Service whose requested tags that client may not set; the hosts' own `tags` are what auto-approve them as the Service's hosts, and a tailnet policy grants the Service by its name. It is a tailnet resource and no child of the cluster, so it is parented on the component alone, its `protect` follows `deletionProtection` rather than being fixed (a child's explicit `Protect` overrides what it would inherit, so a fixed one could be changed only by a resource transform on the component or a state edit), and it is registered after the Cloud SQL instance. The provider's create is an upsert, so one that already exists under that name is adopted, its comment and ports overwritten; the request carries no tags, and Tailscale's API reference does not say whether the live Service keeps its own ([Moving a stack that declares the Service itself](#moving-a-stack-that-declares-the-service-itself)). | Not built |
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
 | Secret `<hostname>-tailnet-tls` | The Tailscale Service's certificate, its key and the ACME account key (keys `tls.crt`, `tls.key` and `acme-account.key.pem`), which the front door's pods publish and seed from ([The front door](#the-front-door)). The component declares it with no data and ignores its contents, so a later preview never plans to undo what the pods wrote, and no pod template carries its checksum, so a renewed certificate rolls no pod. | Not built |
@@ -940,11 +1001,13 @@ reports, so a cluster in the same project gives the same principal. With
 
 ### Inputs
 
-The schema requires `region` and `hostname` alone. Twelve inputs that configure Dispatch itself
+The schema requires `region` and `hostname` alone. Thirteen inputs that configure Dispatch itself
 are optional in the schema, and the resolver is what requires them while `clusterOnly` is off.
-Four of them — the digest-pinned images `envoyImage` and `cloudSqlProxyImage`, `natsUrl` and
-`natsSeedSecret` — every deployment sets, and each missing one is refused by name as it always
-was. The other eight are two groups, each set whole or left wholly unset: the tailnet group
+Three of them — the digest-pinned images `envoyImage` and `cloudSqlProxyImage`, and `natsUrl` —
+every deployment sets, and each missing one is refused by name as it always was. Of
+`natsSeedSecret` and `natsAudience`, the pods' NATS credential, every deployment sets exactly one,
+and with neither `natsSeedSecret` is refused by name, as `natsSeedSecret is required unless
+natsAudience is set` (below). The other eight are two groups, each set whole or left wholly unset: the tailnet group
 `tailnetDnsName`, `tags`, `tailnetAuthKey`, `tailscaleImage` and `frontDoorToolsImage`, which
 builds the front door and serves Dispatch at its tailnet name, and
 the sign-in group `signInClientId`, `signInClientSecret` and `signInDomain`, which runs people's
@@ -960,7 +1023,7 @@ drops its sign-in inputs. Such a stack also pins an `envoyImage` built from a cy
 no `DISPATCH_SIGNIN_*` setting, so the app's pods never start. A
 group set in part is refused by the per-input refusal it always gave, trailing one clause that
 names every input of that group still unset, such as `(the tailnet inputs are set together or not
-at all; unset: tags, tailnetAuthKey)`, so one run names the whole shortfall. The twelve are
+at all; unset: tags, tailnetAuthKey)`, so one run names the whole shortfall. The thirteen are
 optional in the schema because a generated SDK's constructor refuses a nil required input, so a
 cluster-only consumer, which sets none of them, could not call the component at all while they
 stayed required. `tailnetAuthKey`, `natsUrl`, `natsSeedSecret`, `signInClientSecret`,
@@ -987,6 +1050,35 @@ so no other program can have made the namespace yet. With `existingCluster` the 
 before the first apply, so another program may own the namespace from the start.
 `allowedNamespaces`, empty by default, each a DNS label, names the in-cluster namespaces the
 NetworkPolicy admits on port 8766.
+
+`natsAudience`, unset by default, a plain string, moves both pods' NATS connections behind the
+hub's NATS auth service. Unset, the app and the listener connect as the NATS user whose seed
+`natsSeedSecret` holds. Set, each pod presents a projected token of its own ServiceAccount for that
+audience instead, the app's `<hostname>` and the listener's `<hostname>-listener`, as user
+`service`, and nothing of the seed is registered: no SecretProviderClass `<hostname>-nats-seed`
+and no grant of the seed, by name or by uid ([The pods](#the-pods)). Both pods connect as Dispatch
+of machine id `<hostname>`, with the one grant they share as they share the seed
+(`natsgrant.Dispatch`), so the broker that runs the hub's auth service lists both accounts in its
+`BROKER_NATS_SERVICES`, each with `*`:
+
+```text
+dispatch/<hostname>/*=system:serviceaccount:<namespace>:<hostname>
+dispatch/<hostname>/*=system:serviceaccount:<namespace>:<hostname>-listener
+```
+
+Each entry is of kind `dispatch`, the listener's account's too: a `listener` entry would grant the
+listener pod the session consumers' calls, which Dispatch's listener never had. With `-` in place
+of `*` the auth service refuses the connection, since it cannot hold the grant to projects.
+`natsAudience` must be the broker's `BROKER_NATS_K8S_AUDIENCE`, and `envoyImage` must be
+`legion-envoy-v32.9.0` or later, the first release whose `envoy-dispatch` and `envoy-listener` read
+`NATS_SERVICE_TOKEN_FILE`: an older one ignores the variable and connects with no credential, which
+a hub with a session user admits as that user. The component reads neither the broker's setting
+nor the image's release. Add both entries to the broker, and let it roll out with them, before the
+update that sets `natsAudience` and unsets `natsSeedSecret`. That update rolls both Deployments onto
+the token, and Pulumi deletes the seed's SecretProviderClass and its four grants, which the
+component no longer registers. The component refuses `natsAudience` beside `natsSeedSecret`, with
+`clusterOnly`, holding whitespace or a control character, and equal to another audience the
+component renders (below).
 
 `existingCluster` and `existingDatabaseInstance` run the component in a cluster and on a Cloud SQL
 instance that another program makes, and `regionalNetwork` controls the regional part of its
@@ -1669,7 +1761,16 @@ other than `fixed` or `fresh`, a `priorityClassName` that is empty, not a DNS su
 Deployment's replica count, a `databaseAvailabilityType` other than `ZONAL` or `REGIONAL`, a
 negative `signingKeyGenerations` entry, which names no resource, or a repeated one, which would
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
-seeds in its own name and in plain inputs before it registers a resource; it
+seeds in its own name and in plain inputs before it registers a resource; it refuses the two NATS
+credentials together and neither of them: `natsAudience` beside `natsSeedSecret`, naming
+`natsAudience`, and neither, naming `natsSeedSecret` (`natsSeedSecret is required unless
+natsAudience is set`); it refuses a `natsAudience` holding whitespace or a control character,
+which the broker's own audience, read trimmed, never holds, and a `natsAudience` equal to another
+audience the component renders, since a token minted for one would be spendable at the other,
+each naming `natsAudience`, the second also naming the other: `agentSecretsAudience`, the
+listener's own audience (its URL, `http://<hostname>-listener.<namespace>.svc.cluster.local:9020`),
+`oidcAudience`, or the keyless Azure form's (`azureFederationAudience`, or
+`api://AzureADTokenExchange` while that is unset); it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
 `oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
 above states, a `publicOrigin` that breaks the rule its own paragraph states or is set beside the
@@ -1747,9 +1848,11 @@ turned on after `clusterOnly`, on the move onto `existingCluster` without `exist
 on a change of `namespace`; a cluster the preview cannot reach; server-side apply's
 `AlreadyExists`) shows that grant's member as unknown. This release keeps the grants by name
 beside them, so a running pod mounts the seed through either while a consumer moves; a later
-release drops the grants by name. The app and the listener, which mount the seed, each wait for
-their own account's grants to be written, as the app waits for the Azure key's and the chat
-token's. IAM can take minutes to apply
+release drops the grants by name. With `natsAudience` none of these four seed grants is
+registered, by name or by uid, since no pod mounts the seed: neither account can read it, the
+listener's account holds no grant at all, and the listener's uid is not read. Without it, the app
+and the listener, which mount the seed, each wait for their own account's grants to be written, as
+the app waits for the Azure key's and the chat token's. IAM can take minutes to apply
 a new binding (Google cites typically two, sometimes seven or more), and a pod restarts until it
 can mount. Each pod runs as an account of its own: the app as `<hostname>`, the listener as
 `<hostname>-listener` and the front door as `<hostname>-tailnet`, so only the app's pods can
@@ -1817,8 +1920,13 @@ for the front door, which the app must come back without), so while both roll a 
 reach an old listener pod, and such a call is made again on the shared token rather than refused. A
 send for a `role:` route is never made on it: one an old listener refuses fails its attempt, which
 the delivery records. The listener runs as machine `<hostname>`, so the hub's user for this deployment
-sets `dispatchMachineId` to the component's `hostname`. Both Envoy containers mount the NATS seed
-at `/var/run/secrets/envoy/nats-seed`; the seed remains outside Pulumi state. With
+sets `dispatchMachineId` to the component's `hostname`, or, with `natsAudience`, the broker's two
+`dispatch/<hostname>/*` entries name it ([Inputs](#inputs-1)). Both Envoy containers mount the NATS
+seed at `/var/run/secrets/envoy/nats-seed`, which `NATS_NKEY_SEED_FILE` names; the seed remains
+outside Pulumi state. With `natsAudience` each mounts in its place the projected token of its own
+pod's ServiceAccount for that audience, `expirationSeconds: 3600`, rewritten by the kubelet before
+it lapses, read-only at `/var/run/secrets/envoy/nats-token`, which `NATS_SERVICE_TOKEN_FILE` names,
+and there is no seed. With
 `agentSecretsUrl` set, the `envoy-dispatch` container alone also mounts its projected
 ServiceAccount token, read-only, at `/var/run/secrets/dispatch/agent-secrets-account-token`; with
 `azureEmbedKeySecret`, the Azure key at `/var/run/secrets/azure-embed/key`; with the keyless
@@ -2010,7 +2118,9 @@ these are preconditions of that procedure, not guarantees the component makes.
 The projected tokens need no restart either: the kubelet rewrites them in place, and Dispatch
 reads the broker token on every call, the keyless Azure form's token on every exchange with
 Entra — the answerer's sign-in as much as the embedder's — and the answerer's bearer token on
-every call. The secrets the component does not own carry no checksum, so after rotating one, restart
+every call; with `natsAudience` each pod's NATS connection moves to the newer copy of its token
+ten minutes before the one it connected with lapses. The secrets the component does not own carry
+no checksum, so after rotating one, restart
 the Deployments that read it, once the synced Kubernetes Secret or the mounted file holds the new
 value:
 
@@ -3841,10 +3951,12 @@ server's from their `users`, `listener` and `sessionUser`, with `authCallout` an
 `privateProjects` as `callout` and `privateProjects` (see
 [The hub's users](docs/nats-hub.md#the-hubs-users) and
 [The auth service](docs/nats-hub.md#the-auth-service)). A hub's own listener stays beside
-`authCallout`: it connects as a user whose seed the hub stores, so its key is in `auth_users` and
-it never reaches the auth service; `privateProjects` refuses it, as every user but the service's,
-until its service identity, with which it would connect through the auth service, arrives in a
-later change. With `privateProjects`, a hub also refuses an
+`authCallout`. With a seed it connects as a user whose seed the hub stores, so its key is in
+`auth_users` and it never reaches the auth service, and `privateProjects` refuses it, as every
+user but the service's. `gcp:ClusteredNatsHub`'s listener with `natsAudience` connects through the
+auth service instead, by a projected token of its own ServiceAccount, so the hub renders no user
+for it, `auth_users` holds no key of it, and `privateProjects` has no user of it to refuse
+([The session listener](#the-session-listener)). With `privateProjects`, a hub also refuses an
 `authCallout.serviceUser` that names an entry of `users` other than a `permissions` entry
 (`privateProjects: authCallout.serviceUser "<name>" names users[<i>], a
 <machineId|listenerMachineId|dispatchMachineId|daemon> user, whose seed its client stores; the auth
@@ -4520,9 +4632,11 @@ client on the server gets, other listeners' durable push deliveries included. Th
 `core/dispatch_permissions_live_test.go`, which also checks Dispatch's own user is refused a
 publish to a session's frames.
 
-Two grants have no static set, since no hub renders a user for them: the auth service alone
-answers them, to the `BROKER_NATS_SERVICES` entries of kinds `operator` and `probe`, each listed
-once, as `operator/-/*=<account>` and `probe/-/*=<account>`. `natsgrant.Operator(phase)` is the
+Three grants have no static set, since no hub renders a user for them: the auth service alone
+answers them, to the `BROKER_NATS_SERVICES` entries of kinds `operator`, `probe` and `jsread`. The
+first two are each listed once, as `operator/-/*=<account>` and `probe/-/*=<account>`, and
+`jsread` once for each account the deployment's Legion pods run under, as `jsread/-/*=<account>`.
+`natsgrant.Operator(phase)` is the
 deployment's one operator identity's grant, a function of the NATS writer hold's phase, which the
 hold's row in the secrets broker's Postgres holds and the auth service reads at each decision. Each
 phase holds the one before it, and every phase subscribes `_INBOX_envoy._operator.>` alone, so an
@@ -4578,6 +4692,20 @@ operator connects with that inbox prefix, which sits under the one reply root `_
 No phase names a `$SYS` subject or the retired hold bucket `KV_envoy_maintenance`.
 `natsgrant.HoldProbe()` is the hold probe's grant: publish and subscribe `_ENVOY_HOLD_PROBE.none`,
 a subject nothing else uses, so the probe only shows whether the hub admits a connection.
+
+`natsgrant.JSRead()` is the JetStream reader's grant, a copy, entry for entry, of the lists of the
+static user `legion-jsread` the deployment repository renders today. It publishes `$JS.API.INFO`,
+`$JS.API.STREAM.NAMES`, `$JS.API.STREAM.LIST`, `$JS.API.STREAM.INFO.*`, `$JS.API.CONSUMER.NAMES.*`,
+`$JS.API.CONSUMER.LIST.*` and `$JS.API.CONSUMER.INFO.*.*`, and subscribes its own inbox prefix
+alone, `_INBOX_legion_jsread.>` (`natsgrant.JSReadInbox`), so the reader connects with that prefix,
+never `_INBOX.>`; it has no deny list. It reads no message: it holds no direct get, no
+stored-message get and no consumer create. It changes nothing: it holds no create, update, delete
+or purge of a stream or consumer. A stream's info still names the stream's subjects and, asked
+with a subject filter, how many stored messages each subject holds, every project's among them, so
+the grant cannot be held to projects: a `jsread` entry takes no machine id and `*` alone, and the
+broker refuses one with a machine id or with `-` at its start, naming the entry. No project may be
+private while `BROKER_NATS_SERVICES` lists a `jsread` entry. This repository's auth service holds
+no privacy rule for any kind; the rule is the deployment repository's (dispatch://INFRA-6425, R7).
 
 **The operator's clocks.** Every `envoy-infra hold` command signs the row it writes with its own
 machine's clock, and the broker refuses a row signed more than five minutes
