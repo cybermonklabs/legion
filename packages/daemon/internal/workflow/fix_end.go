@@ -207,15 +207,22 @@ func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.I
 		return moveTo, nil, nil
 	}
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	// TESTER CONTROL (C6): the StartedAt.After(EndedAt) decision of bb0f95d6ae75's parent in
+	// place of the carried mark: a start moves the copy unless a step of the task started after
+	// the fix ended by the clock. It counts only the task's step starts, as that code did.
 	switch {
 	case err != nil || fix == nil || fix.State != record.FixEnded:
 		return moveTo, nil, err
-	case fix.MoveCarried:
-		return "", nil, nil
 	case moveTo != "":
 		return moveTo, fix, nil
-	case fix.EndHead == "" || fix.EndHead == fix.Head:
+	case fix.EndedAt == nil || fix.EndHead == "" || fix.EndHead == fix.Head:
 		return "", nil, nil
+	}
+	for place := range w.Steps {
+		start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place + 1})
+		if err != nil || start.StartedAt.After(*fix.EndedAt) {
+			return "", nil, err
+		}
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
