@@ -161,7 +161,7 @@ func ArchitectStartPending(root record.Issue, entry int64, run record.RoleRun) (
 		}
 		return "", false
 	}
-	if p := run.Claim.Pending; p != nil && p.SupersededBy(root.TreeRun(), entry) {
+	if p := run.Claim.Pending; p != nil && p.SupersededBy(root.Generation, entry) {
 		held := *run.Claim
 		held.Pending = nil
 		run.Claim = &held
