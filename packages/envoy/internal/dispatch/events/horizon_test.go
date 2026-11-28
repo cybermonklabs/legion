@@ -381,6 +381,9 @@ func TestHorizonAwaitReturnsAnObservationErrorThatPersists(t *testing.T) {
 	horizon.now = func() time.Time { return clock }
 	horizon.stallAfter = 24 * time.Hour // the stall warning is not under test
 	horizon.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	// The backoff returns at once: the bound is on the horizon's clock, which each observation
+	// advances, so a real wait between observations would add only time, 2.8s of it.
+	horizon.pause = func(context.Context, time.Duration) {}
 
 	safe, err := horizon.Await(ctx)
 	if !errors.Is(err, refused) || errors.Is(err, context.DeadlineExceeded) {
