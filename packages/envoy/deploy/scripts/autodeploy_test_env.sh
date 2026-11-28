@@ -20,6 +20,7 @@ if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv" ||
   [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
   fail 'deployer backed up or ran compose with no identity for Dispatch in .env'
 fi
+printf 'PASS: %s\n' 'a .env with neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE is refused, naming both, before the backup or any compose run'
 
 # The four settings the deployer checks before its backup are read from Compose's own resolution
 # (`docker compose config`, the real binary on the real compose file). For each, as the setting the
@@ -61,14 +62,17 @@ for setting in \
         if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv"; then
           fail "deployer backed up or ran compose with $spelling, which Compose resolves empty"
         fi
+        printf -v resolution 'empty, is refused before the backup, naming %s' "$refusal"
         ;;
       *)
         output=$(AUTODEPLOY_TEST_VALUE="$value" deploy_once) || true
         if [[ "$output" == *"$refusal"*"not deploying"* ]] || ! grep -q '^pg_dump ' "$argv"; then
           fail "deployer did not go on to its backup with $spelling, which Compose resolves to $value"
         fi
+        printf -v resolution 'to %s, goes on to the backup' "$value"
         ;;
     esac
+    printf 'PASS: %s\n' "$spelling, which Compose resolves $resolution"
   done
 done
 
@@ -85,6 +89,7 @@ if [[ "$output" != *"Compose refused"*"NATS_URLS"*"not deploying new-image"* ]] 
   [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv"; then
   fail 'deployer did not refuse a configuration Compose refuses, by Compose'"'"'s own line, before its backup'
 fi
+printf 'PASS: %s\n' "NATS_URLS missing is refused before the backup by Compose's own line, naming NATS_URLS"
 fresh_env
 with_line DATABASE_URL "DATABASE_URL=\"postgres://dispatch:$password@db.test:5432/dispatch"
 if output=$(deploy_once); then
@@ -92,6 +97,7 @@ if output=$(deploy_once); then
 fi
 no_secret 'Compose'"'"'s refusal of a DATABASE_URL it cannot read'
 [[ "$output" == *"not deploying new-image"* ]] || fail 'deployer did not refuse a DATABASE_URL Compose cannot read'
+printf 'PASS: %s\n' "a DATABASE_URL that Compose cannot read is refused, with its password in no output and no process's arguments"
 
 # A configuration Compose refuses is logged by no text of Compose's: its output can begin with a
 # warning, and can quote a .env line whole. With a `${...}` warning first and NATS_URLS missing, the
@@ -106,6 +112,7 @@ if output=$(deploy_once); then
 fi
 [[ "$output" == *"a required variable is missing a value: NATS_URLS; not deploying new-image"* && "$output" != *level=warning* && "$output" != *AUTODEPLOY_TEST_UNSET* ]] ||
   fail 'deployer did not name NATS_URLS alone when Compose warned first'
+printf 'PASS: %s\n' "NATS_URLS missing behind a \${...} warning is refused naming NATS_URLS alone, with no text of the warning"
 for line in "DATABASE_URL=\"postgres://dispatch@db.test:5432/dispatch?password='se cret'" 'DISPATCH_AGENT_TOKEN="agent-token-CANARY-1234'; do
   fresh_env
   with_line "${line%%=*}" "$line"
@@ -116,6 +123,7 @@ for line in "DATABASE_URL=\"postgres://dispatch@db.test:5432/dispatch?password='
     [[ "$output" != *"docker compose config exited "[0-9]*"; its message is not shown"*"docker compose -p dispatch-test -f $compose/dispatch.compose.yml config"* ]]; then
     fail "deployer logged a value from Compose's refusal of ${line%%=*}, or no command to read it"
   fi
+  printf 'PASS: %s\n' "an unterminated quote in ${line%%=*} logs no value and names the command that shows Compose's message"
 done
 fresh_env
 if output=$(AUTODEPLOY_TEST_PYTHON_FAIL=1 deploy_once); then
@@ -123,12 +131,14 @@ if output=$(AUTODEPLOY_TEST_PYTHON_FAIL=1 deploy_once); then
 fi
 [[ "$output" == *"from docker compose config: python3 exited 3; could not read the deployed ENVOY_IMAGE_TAG; not deploying new-image"* && ! -s "$log" ]] ||
   fail 'deployer did not name the python3 failure'
+printf 'PASS: %s\n' 'a python3 that cannot read the configuration is refused by name, before any compose run'
 fresh_env
 if output=$(AUTODEPLOY_TEST_CONFIG_TIMEOUT=1 deploy_once); then
   fail 'deployer deployed when docker compose config timed out'
 fi
 [[ "$output" == *"docker compose config did not answer within 60 s; run \`docker compose -p dispatch-test -f $compose/dispatch.compose.yml config\` to see why; could not read the deployed ENVOY_IMAGE_TAG; not deploying new-image"* && ! -s "$log" ]] ||
   fail 'deployer did not name the config timeout'
+printf 'PASS: %s\n' 'a docker compose config that does not answer within 60 s is refused by name, with the command to run'
 
 # A read of the deployed tag that fails is refused by name, before anything of the deploy runs, and
 # never taken for an env file that names no tag. On `d8760c42c9`, whose read swallowed the failure,
@@ -141,6 +151,7 @@ if [[ "$output" != *"docker compose config exited 1; its message is not shown"*"
   [[ "$output" == *"resolves no ENVOY_IMAGE_TAG"* || -s "$log" ]] || grep -q '^pg_dump ' "$argv"; then
   fail 'deployer did not refuse a failed read of the deployed tag by name, before its backup'
 fi
+printf 'PASS: %s\n' 'a failed read of the deployed tag is refused by name before the backup, and never read as no tag'
 
 # Every line the deployer logs is on its standard output, the line of a reader that runs inside a
 # command substitution included, so a host that keeps the standard output alone keeps why the
@@ -151,6 +162,7 @@ if [[ "$output" != *"could not read the deployed ENVOY_IMAGE_TAG; not deploying 
   "$(<"$root/stderr")" == *"could not read the deployed ENVOY_IMAGE_TAG"* ]]; then
   fail "deployer did not log the failed read of the deployed tag on its standard output; its standard error held: $(<"$root/stderr")"
 fi
+printf 'PASS: %s\n' 'the failed read of the deployed tag is logged on standard output, not on standard error'
 
 # Without `docker compose`, the deployer refuses by name, before its backup.
 fresh_env
@@ -163,6 +175,7 @@ if [[ "$output" != *"docker compose cannot run"*"not deploying new-image"* ]] ||
   [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv"; then
   fail 'deployer did not refuse, by name and before its backup, when docker compose cannot run'
 fi
+printf 'PASS: %s\n' 'a docker compose that cannot run is refused by name before the backup'
 
 # compose_resolves NAME [VAR=value...] prints NAME as Compose resolves it from the test's
 # compose/.env, by the real binary (`docker compose config --environment`), in the environment the
@@ -209,17 +222,20 @@ good_deploy() {
 fresh_env
 with_line DISPATCH_PORT 'DISPATCH_PORT="8766"'
 good_deploy 'DISPATCH_PORT="8766"'
+printf 'PASS: %s\n' 'DISPATCH_PORT="8766" is read as Compose resolves it, and a good deploy lands'
 fresh_env
 with_line DISPATCH_PORT "DISPATCH_PORT=\${PORT_FROM_SHELL}"
 # The row's name is the .env line as written, `${...}` unexpanded.
 # shellcheck disable=SC2016
 good_deploy 'DISPATCH_PORT=${PORT_FROM_SHELL}' PORT_FROM_SHELL=9123 AUTODEPLOY_TEST_PORT=9123
+printf 'PASS: %s\n' "DISPATCH_PORT=\${PORT_FROM_SHELL} is read from the deployer's environment as Compose resolves it, and a good deploy lands"
 # The tag an operator wrote as `export ENVOY_IMAGE_TAG="old-image"` is read as old-image, and the
 # deploy's write leaves Compose reading new-image from one line, not the operator's line.
 fresh_env
 with_line ENVOY_IMAGE_TAG 'export ENVOY_IMAGE_TAG="old-image"'
 good_deploy 'export ENVOY_IMAGE_TAG="old-image"'
 [[ "$output" == *"(deployed old-image)"* ]] || fail 'the deployer did not read export ENVOY_IMAGE_TAG="old-image" as old-image'
+printf 'PASS: %s\n' 'export ENVOY_IMAGE_TAG="old-image" is read as old-image, and the deploy leaves one line that sets ENVOY_IMAGE_TAG, to new-image'
 # A DISPATCH_PORT Compose resolves to no port is refused before the backup.
 fresh_env
 with_line DISPATCH_PORT 'DISPATCH_PORT=not-a-port'
@@ -230,6 +246,7 @@ if [[ "$output" != *"DISPATCH_PORT to 'not-a-port'"*"not deploying new-image"* |
   grep -q '^pg_dump ' "$argv"; then
   fail 'deployer did not refuse DISPATCH_PORT=not-a-port before its backup'
 fi
+printf 'PASS: %s\n' 'DISPATCH_PORT=not-a-port is refused before the backup'
 
 # The static check: in autodeploy.sh, up-dispatch.sh and compose-refusal.sh, which both source, no
 # line outside env_file, the one writer, refers to the env file's path - `COMPOSE_ENV`,
@@ -269,6 +286,7 @@ PY
 here=$(dirname "$0")
 env_reads "$here/autodeploy.sh" "$here/up-dispatch.sh" "$here/compose-refusal.sh" >"$root/env-reads.txt" ||
   fail "a script refers to the env file's path outside its one writer: $(<"$root/env-reads.txt")"
+printf 'PASS: %s\n' "no line of autodeploy.sh, up-dispatch.sh or compose-refusal.sh outside env_file names the env file's path"
 # The plants are written as the script would hold them, `$(...)` and `$COMPOSE_DIR` unexpanded.
 # shellcheck disable=SC2016
 for plant in \
@@ -287,6 +305,8 @@ sys.stdout.write(text.replace(anchor, anchor + "  " + os.environ["PLANT"] + "\n"
   if env_reads "$root/planted.sh" >/dev/null; then
     fail "the static check passed a copy of autodeploy.sh with this read of the env file planted: $plant"
   fi
+  printf -v plant_shown %s "$(LC_ALL=C; if [[ "$plant" == *[![:print:]]* ]]; then printf %q "$plant"; else printf %s "$plant"; fi)"
+  printf 'PASS: %s\n' "the static check refuses a copy of autodeploy.sh with this read of the env file planted: $plant_shown"
 done
 
 # The text scan above is fast, and it is a text scan: a path spelled in pieces or matched by a glob
@@ -305,6 +325,7 @@ with_line DISPATCH_PORT 'DISPATCH_PORT="${AUTODEPLOY_TEST_PORT_VALUE}" # the por
 with_line ENVOY_ACCOUNT_GOOGLE_AUDIENCE "export ENVOY_ACCOUNT_GOOGLE_AUDIENCE='envoy-listener'"
 good_deploy 'a .env whose every raw value differs from Compose'"'"'s resolution' \
   AUTODEPLOY_TEST_ORIGIN=http://browser.test:8766 AUTODEPLOY_TEST_PORT_VALUE=9124 AUTODEPLOY_TEST_PORT=9124
+printf 'PASS: %s\n' "a .env whose every raw value differs from Compose's resolution lands a good deploy, so only Compose's reading is read"
 
 # The env file owns the deployed tag: a deployer started with ENVOY_IMAGE_TAG in its environment
 # deploys once, reads the tag it wrote back, and the next pass deploys nothing, where one that let
@@ -317,6 +338,7 @@ output=$(export ENVOY_IMAGE_TAG=old-image; deploy_once) || true
 if [[ "$output" == *"main has a newer published image"* || -s "$log" ]] || grep -q '^pg_dump ' "$argv"; then
   fail 'a deployer started with ENVOY_IMAGE_TAG exported deployed the same image again on its next pass'
 fi
+printf 'PASS: %s\n' 'a deployer started with ENVOY_IMAGE_TAG=old-image exported deploys once, and its next pass deploys nothing'
 
 # The writer stages beside the env file, mode 0600, and gives the replacement its target's mode.
 # A symlink's own mode is normally 777; the target's 0600 is what must reach the replacement.
@@ -328,6 +350,7 @@ ln -s "$target" "$compose/.env"
 good_deploy 'a .env symlink whose 0600 target keeps the replacement private'
 [[ ! -L "$compose/.env" && "$(stat -c %a "$compose/.env")" == 600 && "$(stat -c %a "$target")" == 600 ]] ||
   fail "the 0600 target of a symlinked .env did not keep its replacement private: .env=$(stat -c %a "$compose/.env"), target=$(stat -c %a "$target")"
+printf 'PASS: %s\n' 'a .env symlink to a file of mode 0600 is replaced by a file of mode 0600, and the target keeps 0600'
 
 # A sweep leaves a stage file a live writer may still append, then deletes the one a SIGKILL left
 # over a minute ago. The old sweep deletes the fresh file, so this row fails there.
@@ -339,6 +362,7 @@ deploy_once >/dev/null 2>&1 || true
 touch -d '2 minutes ago' "$running"
 deploy_once >/dev/null 2>&1 || true
 [[ ! -e "$running" ]] || fail 'the start did not sweep a staging file older than one minute'
+printf 'PASS: %s\n' 'a start keeps a staging file younger than a minute and deletes one older than a minute'
 
 # The env file is written through a staging file beside it, `.env.stage.XXXXXX`, mode 0600, renamed
 # over it. A deployer killed there by SIGKILL, which no trap sees, leaves that file: git ignores
@@ -367,11 +391,13 @@ deploy_once >/dev/null 2>&1 || true
 [[ -f "$compose/env.stage.keep" && -f "$compose/.env.staged" && -d "$compose/.env.stage.dir" ]] ||
   fail 'the start removed a file or directory of COMPOSE_DIR other than a regular .env.stage.* file'
 rm -rf "$compose/env.stage.keep" "$compose/.env.staged" "$compose/.env.stage.dir"
+printf 'PASS: %s\n' 'a deployer killed by SIGKILL at its rename leaves one .env.stage.XXXXXX of mode 0600 that git ignores, and the next start deletes it and nothing else'
 fresh_env
 AUTODEPLOY_TEST_TERM_AT_ENV_MV=1 deploy_once >/dev/null 2>&1 || true
 grep -q '^mv-source ' "$argv" || fail 'UNKNOWN: the deployer reached no move onto the env file under TERM'
 left=$(find "$compose" -maxdepth 1 -name '.env.stage.*' | head -n 1)
 [[ -z "$left" ]] || fail "a deployer stopped by TERM at its rename left its staging file: $left"
+printf 'PASS: %s\n' 'a deployer stopped by TERM at its rename leaves no staging file'
 
 # The deployer sets no INT or TERM trap, so one stopped by TERM while it waits out its poll stops at
 # once, where a TERM trap made bash wait for the running `sleep` to end first. The poll is an hour,
@@ -441,6 +467,7 @@ $stopped || kill -KILL "$deployer" 2>/dev/null || true
 kill "$poll_sleep" 2>/dev/null || true
 wait "$job" || true
 $stopped || fail "a deployer stopped by TERM while it waited out its hour's poll was still running $((SECONDS - termed)) s later"
+printf 'PASS: %s\n' 'a deployer stopped by TERM while it waits out its poll stops at once'
 
 # With the schema already recorded for the serving tag, the deploy's first write of the env file is
 # its tag's, after the new image serves; BACKUPS on another filesystem than the env file changes
@@ -452,6 +479,7 @@ fresh_env
 with_line ENVOY_IMAGE_SCHEMA 'ENVOY_IMAGE_SCHEMA=old-image:5'
 good_deploy 'the schema recorded for the serving tag and BACKUPS on another filesystem' test_backups="$other_fs"
 rm -rf "$other_fs"
+printf 'PASS: %s\n' 'a deploy with BACKUPS on another filesystem than the env file lands with its tag written'
 
 # The deployer reads only through `docker compose config --format json`, so it runs on Compose
 # releases that lack `config --environment` (before 2.28): a good deploy lands through Compose
@@ -479,4 +507,5 @@ good_deploy 'a deploy through Compose 2.12.2'
 unset test_real_docker
 [[ $(grep -c ' config ' "$root/compose-2.12.calls") -ge 2 ]] ||
   fail "UNKNOWN: Compose 2.12.2 served $(grep -c ' config ' "$root/compose-2.12.calls") config reads, want the one of the tag and the schema record, and the settings'"
+printf 'PASS: %s\n' 'a good deploy lands through Compose 2.12.2, taken by digest out of its image'
 
