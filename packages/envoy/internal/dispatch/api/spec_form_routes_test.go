@@ -507,6 +507,7 @@ func TestSpecFormReadNamesEachFinding(t *testing.T) {
 			specform.KindStatement: 1, specform.KindClaim: 0, specform.KindProcedure: 0, specform.KindFailingExample: 0,
 			specform.KindName: 0, specform.KindPurpose: 0, specform.KindDefinition: 0,
 		},
+		Nodes: []specFormText{{Kind: specform.KindStatement, Node: "store-comment"}}, Definitions: []specFormDefinition{},
 		Findings: fault.findings(issue, 1), FindingsTotal: 1,
 		FindingLines: []string{
 			"Dispatch refuses an approval request of spec.md version 1, because 1 text breaks the form of The Spec.",

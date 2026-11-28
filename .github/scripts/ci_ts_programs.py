@@ -62,6 +62,8 @@ PROGRAMS = [
      at("tooling-checks", "Typecheck the session message-wait script (bunx tsc --noEmit -p scripts/sessions)", "test")),
     ("tooling_checks", "scripts/approval-eval",
      at("tooling-checks", "Typecheck the approval-eval statistics (bunx tsc --noEmit -p scripts/approval-eval)", "test")),
+    ("tooling_checks", "scripts/spec-review-eval",
+     at("tooling-checks", "Typecheck the statement review evaluation (bunx tsc --noEmit -p scripts/spec-review-eval)", "test")),
     ("tooling_checks", "scripts/e2e/lib",
      at("tooling-checks", "Typecheck the e2e scripts and their tests (bunx tsc --noEmit -p scripts/e2e/lib)", "test")),
 ]
@@ -87,6 +89,9 @@ BUNDLES = [
     ("envoy_go_checks", "packages/envoy/scripts/approve/scan.ts",
      at("envoy-go-checks", "Scan tests of approve-check's session (bun test scripts/approve/, whose tests spawn "
                            "`bun scripts/approve/scan.ts`)")),
+    ("test", "scripts/spec-review-eval/run.ts",
+     at("test", "Test the statement review evaluation (bun test scripts/spec-review-eval, whose rows spawn "
+                "`bun run.ts` at `scripts/spec-review-eval/__tests__/run.test.ts#RUN`)")),
 ]
 
 # The trees a filter names file by file rather than whole: the changes job's generation writes

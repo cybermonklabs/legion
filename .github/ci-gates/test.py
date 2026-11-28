@@ -45,6 +45,11 @@ GATE = gate("test", "test", runs=[
                                                          "packages/envoy-client/test/route-answers.ts, whose `packages/envoy-client/test/route-answers.ts#document` reads it"),
     ("scripts/dispatch/**", at("test", "Test the Dispatch census script")),
     ("scripts/approval-eval/**", at("test", "Test the approval-eval statistics")),
+    ("scripts/spec-review-eval/**", at("test", "Test the statement review evaluation")),
+    ("packages/envoy-client/test/dispatch-stack.ts", "`scripts/spec-review-eval/run.ts#startDispatchStack` imports it by path, "
+                                                     f"and {at('test', 'Test the statement review evaluation')} loads run.ts"),
+    ("packages/envoy-client/test/envoy-stack.ts", "`packages/envoy-client/test/dispatch-stack.ts#awaitReady` imports it, so "
+                                                  f"{at('test', 'Test the statement review evaluation')} loads it too"),
     ("scripts/search-measure/**", f"{at('test', 'Test the search-measure helpers')}: pg_test.py imports pg.py; stream_test.py imports harvest.py, load_fixture.py, corpus.py, dispatch_read.py and pg.py"),
     (f"{ENVOY}/scripts/fixtures/pg-url.json", f"{at('test', 'Test the search-measure helpers')}: `scripts/search-measure/pg_test.py#CORPUS` reads it"),
     ("skills/approval-review/references/never-decide.md",

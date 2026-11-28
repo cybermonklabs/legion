@@ -2409,6 +2409,7 @@ export const dispatchToolSpecs = [
       "It lists each statement, check, component purpose and term that breaks the form, with its rule. " +
       "It writes nothing. " +
       "It says whether the document is under a root of The Spec, and how many texts it read. " +
+      "Then it names each text that it read, by its kind and its node, and each term that the document defines. " +
       "With root, it lists each issue under that root and the form of each document that the root covers. " +
       "With terms, it lists the terms of the document's root in place of the findings, each with its definition and the document that defines it.",
     arguments: (z) => ({
@@ -2446,7 +2447,9 @@ export const dispatchToolSpecs = [
     name: "dispatch_request_approval",
     example: { issue: "DSP-1", summary: "A live sync replaces the nightly export." },
     description:
-      "Ask a human to approve a document at its current version. Where the spec is large, or changed in a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual claims; a Legion architect can use `plan-gap-analyst` and `plan-reviewer`. Opens an approval ask (Approve / " +
+      "Ask a human to approve a document at its current version. Where the spec is large, or changed in a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual claims; a Legion architect can use `plan-gap-analyst` and `plan-reviewer`. " +
+      "For the spec or Verification document of an issue under a root of The Spec, run dispatch spec-form and have a fresh reviewer read it with skill://spec-statement-review first. " +
+      "Opens an approval ask (Approve / " +
       "Request changes) in the human's Inbox whose question names the document and version, " +
       "followed by the summary; the answer pins a review to that version and arrives as " +
       "artifact.approved or artifact.changes_requested. " +

@@ -8,6 +8,7 @@ import {
   optionalString,
 } from "./context";
 import { dispatchAnswered, refusalWithCode } from "./failures";
+import { textsHeading } from "./spec-form-texts";
 
 // `dispatch spec-form` and the line `dispatch request-approval` prints on the form of The Spec.
 // The server judges the form (`specFormOf` in packages/envoy/internal/dispatch/api/spec_form.go);
@@ -108,6 +109,29 @@ function noVersionLine(name: string): string {
 }
 
 /**
+ * The texts that Dispatch read in `form`'s version, a part that an answer prints after its other
+ * lines: each text by its kind and its node, in the order of the document (`nodes`), then each
+ * term that the version itself defines (`definitions`), from the one reading that judged the
+ * version. The reviewer of skill://spec-statement-review finds each statement, check and term by
+ * these lines, and reads the prose outside them too. A version with no text adds no line.
+ */
+function textLines(form: SpecFormRead): string[] {
+  const texts = [
+    ...(form.nodes ?? []).map(({ kind, node }) => `${kind} ${node}`),
+    ...(form.definitions ?? []).map(({ term }) => `definition ${term}`),
+  ];
+  return texts.length === 0 ? [] : [textsHeading(form.name, form.version), ...texts];
+}
+
+/**
+ * The last line of an answer about a covered document, a change request under a root, and not
+ * about the root's own terms.md: a program decides the form, and skill://spec-statement-review
+ * tells a reviewer of the request what no program decides.
+ */
+const REVIEWER_LINE =
+  "Before you request approval, have a fresh reviewer read it with skill://spec-statement-review.";
+
+/**
  * The list of terms of `form`'s root with each approved version that Dispatch could not read as it
  * made the list (`specFormList` in packages/envoy/internal/dispatch/api/spec_form.go): one value,
  * so the text and the details of `--terms` each carry the whole record beside the list.
@@ -200,8 +224,9 @@ async function issueForms(client: DispatchClient, issue: string): Promise<Dispat
   const lines = read.flatMap(({ artifact, form }) =>
     form === undefined
       ? [noVersionLine(artifact.name)]
-      : [`${form.name} version ${form.version}:`, ...documentLines(form)]
+      : [`${form.name} version ${form.version}:`, ...documentLines(form), ...textLines(form)]
   );
+  if (read.some(({ form }) => form?.scope === "covered")) lines.push(REVIEWER_LINE);
   return {
     text:
       read.length === 0
@@ -360,7 +385,11 @@ export async function specFormCommand(context: CommandContext): Promise<Dispatch
     };
   }
   return {
-    text: documentLines(form).join("\n"),
+    text: [
+      ...documentLines(form),
+      ...textLines(form),
+      ...(form.scope === "covered" ? [REVIEWER_LINE] : []),
+    ].join("\n"),
     details: {
       ...documentOwnerDetails,
       artifact: form.artifact_id,

@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `SpecFormRead` carries `nodes` (`SpecFormText`, `{kind, node}`) and `definitions`
+  (`SpecFormDefinition`, `{term, definition}`): each text that `texts` counts in the version, and
+  each term that the version itself defines. The `dispatch_spec_form` spec says that the command
+  names them.
+custom:
+    Issue: pr4210

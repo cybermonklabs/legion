@@ -74,6 +74,13 @@ const verification = (key: string): StubArtifact => ({
   role: "verification",
   latest: 1,
 });
+const terms = (key: string): StubArtifact => ({
+  id: `${key}-terms`,
+  slug: "terms-md",
+  name: "terms.md",
+  primary: false,
+  latest: 2,
+});
 const notes = (key: string): StubArtifact => ({
   id: `${key}-notes`,
   slug: "notes-md",
@@ -83,7 +90,13 @@ const notes = (key: string): StubArtifact => ({
 });
 
 const ISSUES: readonly StubIssue[] = [
-  { key: "ACME-1", title: "The Spec", status: "in_progress", parent: null, artifacts: [] },
+  {
+    key: "ACME-1",
+    title: "The Spec",
+    status: "in_progress",
+    parent: null,
+    artifacts: [terms("ACME-1")],
+  },
   {
     key: "ACME-2",
     title: "The queue",
@@ -262,6 +275,8 @@ function formRead(
     terms: [],
     unread: [],
     refuses_approval: inScope && findings.length > 0,
+    nodes: [],
+    definitions: [],
   };
 }
 
@@ -412,6 +427,10 @@ const REFUSAL = {
   findings_total: 1,
 };
 
+/** The last line of an answer about a covered document, a change request under a root. */
+const REVIEWER_LINE =
+  "Before you request approval, have a fresh reviewer read it with skill://spec-statement-review.";
+
 describe("dispatch spec-form", () => {
   test("a covered document with no finding prints what Dispatch read and that no text breaks the form", async () => {
     forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 3, "covered", { statement: 1 });
@@ -421,9 +440,23 @@ describe("dispatch spec-form", () => {
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(stdout).toBe(
-      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions: no text breaks it.\n"
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions: no text breaks it.\n" +
+        `${REVIEWER_LINE}\n`
     );
     expect(formReads()).toEqual(["/api/v1/artifacts/ACME-2-spec/spec-form"]);
+  });
+
+  // The root's terms.md is in scope as the list, and no change request: the reviewer of
+  // skill://spec-statement-review reads a change request under the root.
+  test("the root's terms.md, in scope as the list, ends with no reviewer line", async () => {
+    forms["ACME-1-terms"] = formRead("ACME-1-terms", "terms.md", 2, "list", { definition: 3 });
+
+    const { code, stdout } = await run(["spec-form", "ACME-1", "--artifact", "terms.md"]);
+
+    expect(code).toBe(0);
+    expect(stdout).toBe(
+      "Dispatch read the form of 0 statements, 0 claims, 0 purposes and 3 definitions: no text breaks it.\n"
+    );
   });
 
   test("a document that holds no text of The Spec says that Dispatch decided nothing about its form", async () => {
@@ -433,7 +466,8 @@ describe("dispatch spec-form", () => {
 
     expect(code).toBe(0);
     expect(stdout).toBe(
-      "Dispatch found no text of The Spec in spec.md version 2, so it decided nothing about its form.\n"
+      "Dispatch found no text of The Spec in spec.md version 2, so it decided nothing about its form.\n" +
+        `${REVIEWER_LINE}\n`
     );
   });
 
@@ -449,6 +483,7 @@ describe("dispatch spec-form", () => {
     expect(stdout.split("\n")).toEqual([
       "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions: no text breaks it.",
       UNREAD.line,
+      REVIEWER_LINE,
       "",
     ]);
   });
@@ -478,6 +513,7 @@ describe("dispatch spec-form", () => {
       "Dispatch refuses an approval request of spec.md version 2, because 2 texts break the form of The Spec.",
       `- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`,
       `- statement one-write in spec.md version 2: ${LONG_SENTENCE}.`,
+      REVIEWER_LINE,
       "",
     ]);
   });
@@ -516,7 +552,7 @@ describe("dispatch spec-form", () => {
     const outside = await run(["spec-form", "ACME-3", "--artifact", "notes.md"]);
 
     expect(covered.code).toBe(0);
-    expect(covered.stdout.split("\n")).toEqual([...planted, ""]);
+    expect(covered.stdout.split("\n")).toEqual([...planted, REVIEWER_LINE, ""]);
     expect(outside.code).toBe(0);
     expect(outside.stdout.split("\n")).toEqual([
       "notes.md is not the spec or the Verification document of its issue, so Dispatch refuses no approval request of it for its form.",
@@ -662,6 +698,7 @@ describe("dispatch spec-form", () => {
       "verification.md version 1:",
       "Dispatch refuses an approval request of verification.md version 1, because 1 text breaks the form of The Spec.",
       `- claim v-one in verification.md version 1: ${LONG_SENTENCE}.`,
+      REVIEWER_LINE,
       "",
     ]);
     expect(formReads()).toEqual([
@@ -686,6 +723,7 @@ describe("dispatch spec-form", () => {
       "spec.md has no version yet, so Dispatch read no text in it.",
       "verification.md version 1:",
       "Dispatch read the form of 0 statements, 1 claim, 0 purposes and 0 definitions: no text breaks it.",
+      REVIEWER_LINE,
       "",
     ]);
   });
@@ -766,6 +804,122 @@ describe("dispatch spec-form", () => {
       );
       expect(requests, extra.join(" ")).toEqual([]);
     }
+  });
+});
+
+// After its other lines, an answer names each text that Dispatch read in the version, by its kind
+// and its node, then each term that the version itself defines, from the route's `nodes` and
+// `definitions`. So the reviewer of a change request finds each text by its node, and no line
+// that an earlier part prints changes.
+describe("dispatch spec-form names each text that Dispatch read", () => {
+  const DOORS = {
+    nodes: [
+      { kind: "statement", node: "door-close" },
+      { kind: "statement", node: "quoted-calm" },
+      { kind: "claim", node: "v-door-close" },
+      { kind: "procedure", node: "v-door-close" },
+    ],
+    definitions: [
+      {
+        term: "door alarm",
+        definition: "A sound that the door controller makes when a door stays open.",
+      },
+    ],
+  };
+  const DOOR_LINES = [
+    "Dispatch read these texts in spec.md version 2, each by its kind and its node:",
+    "statement door-close",
+    "statement quoted-calm",
+    "claim v-door-close",
+    "procedure v-door-close",
+    "definition door alarm",
+  ];
+
+  test("a covered document lists its texts after its findings and its unread lines, before the reviewer line", async () => {
+    forms["ACME-2-spec"] = {
+      ...formRead(
+        "ACME-2-spec",
+        "spec.md",
+        2,
+        "covered",
+        { statement: 2 },
+        [finding("ACME-2-spec", "spec.md", 2, "door-close", "statement", THREE_SENTENCES)],
+        [
+          "Dispatch refuses an approval request of spec.md version 2, because 1 text breaks the form of The Spec.",
+          `- statement door-close in spec.md version 2: ${THREE_SENTENCES}.`,
+        ]
+      ),
+      unread: [UNREAD],
+      ...DOORS,
+    };
+
+    const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
+
+    expect(code).toBe(0);
+    expect(stdout.split("\n")).toEqual([
+      "Dispatch refuses an approval request of spec.md version 2, because 1 text breaks the form of The Spec.",
+      `- statement door-close in spec.md version 2: ${THREE_SENTENCES}.`,
+      UNREAD.line,
+      ...DOOR_LINES,
+      REVIEWER_LINE,
+      "",
+    ]);
+  });
+
+  test("a document out of scope lists its texts after its other lines", async () => {
+    forms["ACME-2-spec"] = {
+      ...formRead("ACME-2-spec", "spec.md", 2, "outside", { statement: 2 }),
+      ...DOORS,
+    };
+
+    const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
+
+    expect(code).toBe(0);
+    expect(stdout.split("\n")).toEqual([
+      "spec.md is not under a root of The Spec, so Dispatch refuses no approval request of it for its form.",
+      "Dispatch read the form of 2 statements, 0 claims, 0 purposes and 0 definitions: no text breaks it.",
+      ...DOOR_LINES,
+      "",
+    ]);
+  });
+
+  test("with no --artifact, each document lists its own texts after its own lines", async () => {
+    forms["ACME-5-spec"] = {
+      ...formRead("ACME-5-spec", "spec.md", 2, "covered", { statement: 2 }),
+      ...DOORS,
+    };
+    forms["ACME-5-verification"] = {
+      ...formRead("ACME-5-verification", "verification.md", 1, "covered", { claim: 1 }),
+      nodes: [{ kind: "claim", node: "v-door-open" }],
+    };
+
+    const { code, stdout } = await run(["spec-form", "ACME-5"]);
+
+    expect(code).toBe(0);
+    expect(stdout.split("\n")).toEqual([
+      "spec.md version 2:",
+      "Dispatch read the form of 2 statements, 0 claims, 0 purposes and 0 definitions: no text breaks it.",
+      ...DOOR_LINES,
+      "verification.md version 1:",
+      "Dispatch read the form of 0 statements, 1 claim, 0 purposes and 0 definitions: no text breaks it.",
+      "Dispatch read these texts in verification.md version 1, each by its kind and its node:",
+      "claim v-door-open",
+      REVIEWER_LINE,
+      "",
+    ]);
+  });
+
+  test("a version with no text lists none, and an answer with no nodes and no definitions adds no line", async () => {
+    forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, "covered", {});
+
+    const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
+
+    expect(code).toBe(0);
+    expect(stdout.split("\n")).toEqual([
+      "Dispatch found no text of The Spec in spec.md version 2, so it decided nothing about its form.",
+      REVIEWER_LINE,
+      "",
+    ]);
   });
 });
 

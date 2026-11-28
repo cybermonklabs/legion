@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `dispatch spec-form` names each text that `texts` counts in a version, after its other lines:
+  "Dispatch read these texts in <document> version <N>, each by its kind and its node:", then one
+  line `<kind> <node>` for each text and one line `definition <term>` for each term that the
+  version defines. A version with no text adds no line.
+custom:
+    Issue: pr4210

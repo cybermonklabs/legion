@@ -427,6 +427,21 @@ jobs:
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
 
+      # The rows of scripts/spec-review-eval/__tests__/agent.test.ts that start the evaluation's
+      # bubblewrap sandbox fail rather than skip under GITHUB_ACTIONS, so a change to its arguments
+      # is judged here. The job installs bubblewrap and turns off Ubuntu 24.04's AppArmor
+      # restriction of unprivileged user namespaces, as the machine watch's step does (`|| true`:
+      # a runner image without the key restricts nothing); the bwrap after them is the verdict
+      # that a sandbox starts.
+      - name: Install bubblewrap (the statement review evaluation's sandbox)
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --ro-bind / / true
+
+      - name: Test the statement review evaluation
+        run: bun test scripts/spec-review-eval
+
       # scripts/search-measure's helpers: the password a DSN carries reaches psql in PGPASSWORD
       # alone, in no argument (pg_test), and the harvest and the load write and load, a row at a
       # time, what reading every answer and every file at once did (stream_test). A stand-in psql
@@ -700,6 +715,14 @@ jobs:
       # scripts/approval-eval is no workspace either; the root package pins its TypeScript and Bun types.
       - name: Typecheck the approval-eval statistics
         run: bunx tsc --noEmit -p scripts/approval-eval
+
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
+      - name: Lint the statement review evaluation
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/spec-review-eval
+
+      # scripts/spec-review-eval is no workspace either; the root package pins its TypeScript and Bun types.
+      - name: Typecheck the statement review evaluation
+        run: bunx tsc --noEmit -p scripts/spec-review-eval
 
       # scripts/e2e/lib is no workspace either. Its tsconfig.json takes every TypeScript file under
       # the directory (`**/*.ts`): the read tools and the step models comparator, and every other

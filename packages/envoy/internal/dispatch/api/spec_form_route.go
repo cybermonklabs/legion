@@ -18,11 +18,12 @@ type specFormQuery struct {
 //
 // The form of The Spec of one version of a document, with no side effect: where the document
 // stands (its scope, its root and the part it plays), the count of each kind of text it holds,
-// and its findings, which it lists for a document out of scope too: at most specFormFindingsHeld
-// of them, as a refusal's body holds, and the count of all of them. finding_lines are the lines
-// that list them (specform.Listing), which `dispatch spec-form` prints as they are, so the words
-// of each finding's line are the refusal's own. It also answers the list of terms of its root with
-// each approved version that Dispatch could not read as it made the list (specFormList), this
+// each of those texts by its node and each term that it defines, and its findings, which it lists
+// for a document out of scope too: at most specFormFindingsHeld of them, as a refusal's body
+// holds, and the count of all of them. finding_lines are the lines that list them
+// (specform.Listing), which `dispatch spec-form` prints as they are, so the words of each
+// finding's line are the refusal's own. It also answers the list of terms of its root with each
+// approved version that Dispatch could not read as it made the list (specFormList), this
 // document's own among them. refuses_approval says whether the form gate refuses an approval
 // request or an approval of that version. The judgment runs on the request's context, so a caller
 // that hangs up stops it.
@@ -61,6 +62,7 @@ func (s *server) getArtifactSpecForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	document := result.documents[0]
+	nodes, definitions := textsRead(document.extracted)
 	plays := ""
 	switch {
 	case isSpecDocument(artifact):
@@ -78,7 +80,9 @@ func (s *server) getArtifactSpecForm(w http.ResponseWriter, r *http.Request) {
 		Scope:           document.scope,
 		Plays:           plays,
 		Root:            document.root,
-		Texts:           document.texts,
+		Texts:           document.extracted.Counts,
+		Nodes:           nodes,
+		Definitions:     definitions,
 		Findings:        findings,
 		FindingsTotal:   len(document.findings),
 		FindingLines:    specform.Listing(artifact.Name, version, refuses, plainFindings(findings), len(document.findings)),

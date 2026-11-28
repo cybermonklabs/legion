@@ -263,6 +263,12 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
         finding_lines: [],
         terms: [],
         refuses_approval: false,
+        nodes: [
+          { kind: "statement", node: "store-comment" },
+          { kind: "statement", node: "index-comment" },
+          { kind: "purpose", node: "comments" },
+        ],
+        definitions: [],
       });
     }
     if (rest === "plan-reviews") return response(planReviewBody(), 201);

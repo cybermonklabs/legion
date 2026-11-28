@@ -1,0 +1,73 @@
+{
+  "roots": [
+    { "name": "without", "key": "ACME-1", "terms": "terms-without.md" },
+    { "name": "with", "key": "ACME-2", "terms": "terms-with.md" },
+    { "name": "locker", "key": "ACME-3", "terms": "terms-locker.md" }
+  ],
+  "fixtures": [
+    {
+      "id": "1-principle",
+      "root": "without",
+      "spec": "1-principle.md",
+      "planted": [{ "kind": "principle", "node": "inbox-simple" }],
+      "mustNotName": [{ "node": "inbox-page-limit" }]
+    },
+    {
+      "id": "2-undefined-noun",
+      "root": "without",
+      "spec": "2-undefined-noun.md",
+      "planted": [{ "kind": "undefined-noun", "node": "daily-digest", "subject": "digest" }],
+      "mustNotName": [{ "node": "answer-closes-ask" }]
+    },
+    {
+      "id": "3-defined-noun",
+      "root": "with",
+      "spec": "2-undefined-noun.md",
+      "planted": [],
+      "mustNotName": [
+        { "node": "daily-digest", "subject": "digest" },
+        { "node": "answer-closes-ask" }
+      ]
+    },
+    {
+      "id": "4-other-meaning",
+      "root": "without",
+      "spec": "4-other-meaning.md",
+      "planted": [{ "kind": "other-meaning", "node": "person-session-ends", "subject": "session" }],
+      "mustNotName": [{ "node": "session-in-ask" }]
+    },
+    {
+      "id": "5-repeated-meaning",
+      "root": "without",
+      "spec": "5-repeated-meaning.md",
+      "planted": [{ "kind": "repeated-meaning", "node": "terms", "subject": "agent thread" }],
+      "mustNotName": [{ "node": "read-state-set" }, { "node": "terms", "subject": "read state" }]
+    },
+    {
+      "id": "6-check-faults",
+      "root": "locker",
+      "spec": "6-check-faults.md",
+      "planted": [
+        { "kind": "wide-claim", "node": "v-wait-wide" },
+        { "kind": "agent-choice", "node": "agent-runs-tests" },
+        { "kind": "agent-where-program", "node": "v-lockout-agent" }
+      ],
+      "mustNotName": [
+        { "node": "door-writer" },
+        { "node": "kiosk-memory" },
+        { "node": "wait-notice" },
+        { "node": "kiosk-lockout" },
+        { "node": "code-purge" },
+        { "node": "notice-plain" },
+        { "node": "v-door-writer" },
+        { "node": "v-kiosk-memory" },
+        { "node": "v-wait-normal" },
+        { "node": "v-wait-boundary" },
+        { "node": "v-wait-failure" },
+        { "node": "v-lockout-program" },
+        { "node": "v-code-purge" },
+        { "node": "v-notice-plain" }
+      ]
+    }
+  ]
+}

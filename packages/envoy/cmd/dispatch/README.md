@@ -7544,7 +7544,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Read the form of The Spec in one version of a document, with no side effect.
   The version is `?version=N`, or else the latest settled version, which an approval request would name.
-  It answers `{artifact_id, name, version, in_scope, scope, plays, root, texts, findings, findings_total, finding_lines, terms, unread, refuses_approval}`.
+  It answers `{artifact_id, name, version, in_scope, scope, plays, root, texts, findings, findings_total, finding_lines, terms, unread, refuses_approval, nodes, definitions}`.
   `scope` is `covered` or `list` when the document is in scope.
   `no_root` means that the setting names no root, and `root` is a document of a root other than its `terms.md`.
   `outside` means that no named root holds the issue, or that the document has no issue.
@@ -7559,6 +7559,13 @@ Each item below names a path with its method and identity, then its purpose.
   `terms` is the list of terms of the root, sorted by term, each `{term, definition, document, version, issue}`.
   It is empty when no root holds the document.
   `unread` is each approved version under the root that Dispatch could not read as it made the list, also a version of this document (When Dispatch cannot read a version, above).
+  `nodes` is each text that `texts` counts in the version, `{kind, node}`, in the order of the document, as a finding names a text.
+  A line in the form of a term line outside `Terms`, which Dispatch reads only for a second definition, is no node.
+  `definitions` is each term that the version itself defines under `Terms`, `{term, definition}`, in the order of the document.
+  These are no part of the list of terms until a person approves the document.
+  `texts` counts both: the count of each kind is the number of its `nodes`, and the count of definitions is the number of `definitions`.
+  So the reviewer of R25 finds each statement, check and term of the version by its node, and it needs no second reader of the form.
+  It still reads the prose that Dispatch does not judge, and each text in the forms that the rules do not read (Which texts Dispatch judges, above).
   A version that the document does not have is `404 VERSION_NOT_FOUND`.
   A `version` that is not a whole number of 1 or more is `400 INVALID_QUERY`.
   Without `version`, a document with no settled version is `409 NO_VERSION`.

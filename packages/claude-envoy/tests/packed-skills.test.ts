@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { cp, mkdir, mkdtemp, readdir, readlink, rm, symlink } from "node:fs/promises"
 import { join, resolve } from "node:path"
+import { sharedDispatchSkillNames } from "@legion/pi-shared/test/shared-dispatch-text"
 import { memoryRoot } from "@legion/test-fixtures/temporary-directories"
 
 // What the first tarball of this package held: no package/skills member at all. skills/<name> is
@@ -138,6 +139,17 @@ test("the pack resolves every skills link into the skill's own files", async () 
   expect(skillNames.filter((name) => !packed.includes(`package/skills/${name}/SKILL.md`))).toEqual(
     [],
   )
+})
+
+// The Dispatch tool text and the `dispatch` command's own output reach a Claude Code session
+// through this plugin, so each skill that text names is one of the links here, or a session that
+// the text sends to the skill loads nothing. packages/pi-shared's skills-partition test holds the
+// same names to the Envoy plugin's partition. A read that finds no name fails, so a scan that read
+// nothing never passes.
+test("every skill:// name the shared Dispatch text uses is a skill this plugin ships", () => {
+  const named = sharedDispatchSkillNames()
+  expect(named.length).toBeGreaterThan(0)
+  expect(named.filter((name) => !skillNames.includes(name))).toEqual([])
 })
 
 test("the pack puts the links back, leaving the package as it found it", async () => {

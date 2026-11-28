@@ -2820,8 +2820,9 @@ export class DispatchClient {
 
   /** `GET /api/v1/artifacts/{id}/spec-form[?version=N]`: the form of The Spec in one version of a
    *  document (the latest settled one without `version`), which writes nothing: where the
-   *  document stands, the count of each kind of text it holds, and every finding, in scope or
-   *  not. A document with no settled version is `409 NO_VERSION`. */
+   *  document stands, the count of each kind of text it holds, each of those texts by its kind and
+   *  its node (`nodes`) and each term that the version defines (`definitions`), and every finding,
+   *  in scope or not. A document with no settled version is `409 NO_VERSION`. */
   async specForm(id: string, version?: number): Promise<SpecFormRead> {
     return this.#json(
       "GET",

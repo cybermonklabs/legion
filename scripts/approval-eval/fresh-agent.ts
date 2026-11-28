@@ -89,10 +89,10 @@ import {
  */
 
 /** The model both arms run on, which is the model the round's numbers were measured on. */
-const MODEL = "claude-opus-5-5";
+export const MODEL = "claude-opus-5-5";
 
 /** The profile name both arms use, each under its own home, so neither sees the other's state. */
-const PROFILE = "fresh";
+export const PROFILE = "fresh";
 
 /** How many cases both arms are scored over where no `--cases` says otherwise. */
 const DEFAULT_CASES = 100;
