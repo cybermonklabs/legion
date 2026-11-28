@@ -119,9 +119,11 @@ func clusteredListenerPlacements() []struct {
 // admits every static user, without asking the auth service. That holds for gcp:NatsHub's
 // listener and for gcp:ClusteredNatsHub's session listener wherever it is declared
 // (clusteredListenerPlacements). The clustered hub's pods then carry the callout's annotation,
-// whose digest covers auth_users, and the hub registers. dispatch://INFRA-840's t-e-13, which moves
-// the listener to a service identity that connects through the auth service, takes the listener's
-// seeded user out of auth_users and replaces this test.
+// whose digest covers auth_users, and the hub registers. This seeded mode stays beside the
+// clustered hub's token mode (natsAudience), in which the listener connects by a projected token
+// through the auth service and the hub renders no user for it, so no key of it in auth_users
+// (TestAClusteredHubsTokenListenerHasNoStaticUser): a hub that sets no natsAudience renders what
+// this test holds, as before.
 //
 // Controls: put back the refusal of a listener beside authCallout (gcp/clusteredhub.go, before
 // newClusteredHubTailnet; gcp/natshub.go, before hubListener) and every subtest fails with that
